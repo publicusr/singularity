@@ -14,10 +14,14 @@ cargo build --release
 ./target/release/singularity        # starts the Daemon (singularityd) automatically
 ```
 
+After rebuilding, stop the old Daemon once (`pkill -x singularityd`) so the next Client starts the new one; until
+then a new Client talks to the old Daemon and misses new features.
+
 - **Playback** needs your Soloist key in the keyring (see `spikes/soloist-control/README.md`). The Daemon downloads
   Soloist and appears as the Connect device **"Singularity"**; pick it once from your phone, and set its quality to
   Lossless there (device picker → Change quality settings).
-- **Browsing**: Ctrl+K → "Log in to Spotify" (approve the code at spotify.com/pair). Home Shelves show as text for now.
+- **Browsing**: Ctrl+K → "Log in to Spotify" (approve the code at spotify.com/pair). Home, the library sidebar and
+  track lists appear once logged in.
 - `singularityd --fake-engine` runs a pretend player for UI work; `--no-catalogue` skips Spotify browsing;
   `--fake-catalogue crates/client/tests/fixtures/home.json` serves a recorded (anonymised) Home feed.
 - Music keeps playing when you quit the Client; `systemctl --user` unit in `packaging/systemd/`.
