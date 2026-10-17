@@ -11,6 +11,9 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use singularity_proto::{TrackPage, TrackRow};
 
+/// Liked Songs as the Daemon names it.
+pub const LIKED: &str = "spotify:collection";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Col {
     Title,
@@ -62,6 +65,8 @@ impl TrackList {
 pub struct TrackView {
     pub uri: String,
     pub title: String,
+    /// what it is: "Playlist · Nova Drift", an album's artists…
+    pub subtitle: String,
     /// column and descending?
     pub sort: Option<(Col, bool)>,
     pub filter: String,
@@ -76,7 +81,7 @@ pub struct TrackView {
 
 impl TrackView {
     pub fn new(uri: &str, title: &str) -> TrackView {
-        TrackView { uri: uri.into(), title: title.into(), sort: None, filter: String::new(), filtering: false, sel: 0, top: 0, visible: 1 }
+        TrackView { uri: uri.into(), title: title.into(), subtitle: String::new(), sort: None, filter: String::new(), filtering: false, sel: 0, top: 0, visible: 1 }
     }
 
     /// Indexes into `rows` in display order.
@@ -203,6 +208,11 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     text(buf, x0, r.y, w, &view.title, th.title());
     let tw = view.title.chars().count() as u16 + 2;
     text(buf, x0 + tw, r.y, w.saturating_sub(tw), &count, th.s(th.dim));
+    // second line: ▶ Play and what this is
+    let play = " ▶ Play ";
+    text(buf, x0, r.y + 1, 8, play, th.chip(th.accent));
+    hits.push((Rect::new(x0, r.y + 1, 8, 1), Hit::PlayView));
+    text(buf, x0 + 9, r.y + 1, w.saturating_sub(10), &clip(&view.subtitle, w.saturating_sub(10)), th.s(th.dim));
     let flabel = if view.filtering {
         format!("filter: {}▏", view.filter)
     } else if !view.filter.is_empty() {

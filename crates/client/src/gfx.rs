@@ -71,9 +71,10 @@ pub struct Kitty {
     /// this frame's placements and the images still to transmit
     queue: Vec<(u32, u32, Rect)>,
     uploads: Vec<(u32, RgbImage)>,
-    /// animated images (Visuals): re-sent every frame under a fixed id, with their rect
-    frames: Vec<(u32, Rect, u32, u32, Vec<u8>)>,
-    animated: HashMap<u32, Rect>,
+    /// animated images (Visuals) this frame: a new picture, or None to keep the one on screen
+    frames: Vec<(u32, Rect, Option<(u32, u32, std::sync::Arc<Vec<u8>>)>)>,
+    /// per Visual: which of its two image ids is on screen, and where
+    animated: HashMap<u32, (u32, Rect)>,
     shm_pending: Vec<(std::time::Instant, std::ffi::CString)>,
 }
 
@@ -119,10 +120,19 @@ impl Kitty {
         self.queue.push((id, pid, rect));
     }
 
-    /// Show one frame of an animated image (`id` < 1000, one per Visual) over `rect`: RGBA8, `w`×`h` pixels.
-    pub fn frame(&mut self, id: u32, rect: Rect, w: u32, h: u32, rgba: Vec<u8>) {
-        debug_assert!(id < FIRST_ID);
-        self.frames.push((id, rect, w, h, rgba));
+    /// Show a new frame of Visual `id` (< 500) over `rect`: RGBA8, `w`×`h` pixels.
+    pub fn frame(&mut self, id: u32, rect: Rect, w: u32, h: u32, rgba: std::sync::Arc<Vec<u8>>) {
+        debug_assert!(id < FIRST_ID / 2);
+        self.frames.push((id, rect, Some((w, h, rgba))));
+    }
+
+    /// Keep Visual `id`'s current frame on screen; false if there is none at `rect` (send a new one instead).
+    pub fn keep(&mut self, id: u32, rect: Rect) -> bool {
+        let ok = self.animated.get(&id).is_some_and(|(_, r)| *r == rect);
+        if ok {
+            self.frames.push((id, rect, None));
+        }
+        ok
     }
 
     /// Write this frame's uploads, placements and removals. Call after ratatui has drawn.
@@ -132,13 +142,28 @@ impl Kitty {
             self.transmit(out, id, (w, h), img.as_raw(), 24, None)?;
         }
         let mut shown = HashMap::new();
-        for (id, rect, w, h, rgba) in std::mem::take(&mut self.frames) {
-            // a=T replaces the image and its placement in one go: no flicker between frames
-            self.transmit(out, id, (w, h), &rgba, 32, Some(rect))?;
-            shown.insert(id, rect);
+        for (id, rect, px) in std::mem::take(&mut self.frames) {
+            let old = self.animated.remove(&id);
+            let Some((w, h, rgba)) = px else {
+                if let Some(o) = old {
+                    shown.insert(id, o);
+                }
+                continue;
+            };
+            // double-buffered: the new frame goes up under the other id first, then the old one is freed, so there
+            // is never a moment without a picture (re-sending under the same id makes kitty drop it first: flicker)
+            let real = match old {
+                Some((r, _)) if r == id * 2 => id * 2 + 1,
+                _ => id * 2,
+            };
+            self.transmit(out, real, (w, h), &rgba, 32, Some(rect))?;
+            if let Some((r, _)) = old {
+                write!(out, "\x1b_Ga=d,d=I,i={r},q=2\x1b\\")?;
+            }
+            shown.insert(id, (real, rect));
         }
-        for id in self.animated.keys().filter(|id| !shown.contains_key(id)) {
-            write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
+        for (r, _) in self.animated.values() {
+            write!(out, "\x1b_Ga=d,d=I,i={r},q=2\x1b\\")?;
         }
         self.animated = shown;
         let mut now: HashMap<(u32, u32), Rect> = HashMap::new();
@@ -320,12 +345,18 @@ mod tests {
     fn animated_frames_are_resent_and_removed_when_gone() {
         let mut k = Kitty::new(false);
         let r = Rect::new(1, 1, 3, 2);
-        k.frame(1, r, 2, 2, vec![0; 16]);
+        k.frame(1, r, 2, 2, vec![0; 16].into());
         let s = flush(&mut k);
-        assert!(s.contains("\x1b[2;2H\x1b_Ga=T,f=32,o=z,i=1,s=2,v=2,p=1,c=3,r=2,C=1,z=-1"), "{s:?}");
-        k.frame(1, r, 2, 2, vec![0; 16]);
-        assert!(flush(&mut k).contains("a=T"), "every frame is sent");
-        assert_eq!(flush(&mut k), "\x1b_Ga=d,d=I,i=1,q=2\x1b\\", "a Visual that's gone is freed");
+        assert!(s.contains("\x1b[2;2H\x1b_Ga=T,f=32,o=z,i=2,s=2,v=2,p=1,c=3,r=2,C=1,z=-1"), "{s:?}");
+        // the next frame goes up under the other id, and only then is the first freed
+        k.frame(1, r, 2, 2, vec![0; 16].into());
+        let s = flush(&mut k);
+        let (up, free) = (s.find("a=T,f=32,o=z,i=3,").unwrap(), s.find("a=d,d=I,i=2,").unwrap());
+        assert!(up < free, "{s:?}");
+        // keeping the frame costs nothing on the wire
+        assert!(k.keep(1, r) && flush(&mut k).is_empty());
+        assert!(!k.keep(1, Rect::new(0, 0, 3, 2)), "moved: needs a new frame");
+        assert_eq!(flush(&mut k), "\x1b_Ga=d,d=I,i=3,q=2\x1b\\", "a Visual that's gone is freed");
     }
 
     #[test]

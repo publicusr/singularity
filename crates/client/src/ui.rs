@@ -673,14 +673,29 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_card_plays_it_and_shift_wheel_scrolls_its_shelf() {
+    fn clicking_a_card_opens_its_list_and_play_plays_it() {
         use singularity_proto::Command;
         let (mut app, mut rx) = home_app();
         render(&mut app, 200, 64);
         let r = card_rect(&app, 1, 0);
         click(&mut app, r.x + 2, r.y + 1);
-        assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:playlist:mfy1".into()) }]);
+        // never plays on a click: the list opens in the main Pane
+        assert_eq!(sent(&mut rx), vec![Command::GetTracks { uri: "spotify:playlist:mfy1".into() }]);
         assert_eq!(app.focus, "home");
+        let s = render(&mut app, 200, 64);
+        assert!(s.contains("Daily Mix 1") && s.contains("▶ Play"), "{s}");
+        let play = app.hits.iter().find_map(|(r, h)| (*h == Hit::PlayView).then_some(*r)).unwrap();
+        click(&mut app, play.x + 2, play.y);
+        assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:playlist:mfy1".into()) }]);
+        // Esc is back to Home, where it was
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.view.is_none());
+    }
+
+    #[test]
+    fn home_shelves_scroll_sideways_with_shift_wheel() {
+        let (mut app, _rx) = home_app();
+        render(&mut app, 200, 64);
         let rad = scroll_to(&mut app, 2);
         app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: rad.x + 1, row: rad.y + 1, modifiers: KeyModifiers::SHIFT }, rad.x as f64 + 1.5, false);
         render(&mut app, 200, 64);
@@ -688,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn arrows_browse_home_and_enter_plays() {
+    fn arrows_browse_home_and_enter_opens() {
         use singularity_proto::Command;
         let (mut app, mut rx) = home_app();
         app.focus = "home".into();
@@ -697,7 +712,8 @@ mod tests {
         key(&mut app, KeyCode::Down); // selects the first Card
         key(&mut app, KeyCode::Right);
         key(&mut app, KeyCode::Enter);
-        assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:playlist:mix1".into()) }]);
+        assert_eq!(sent(&mut rx), vec![Command::GetTracks { uri: "spotify:playlist:mix1".into() }]);
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         // Shift+arrows still seek while Home has focus
         app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
         assert_eq!(app.display_position(singularity_proto::now_ms()), 5000);
@@ -880,7 +896,7 @@ mod tests {
         app.kitty.as_mut().unwrap().flush(&mut out).unwrap();
         let out = String::from_utf8(out).unwrap();
         // (the CPU renderer caps the resolution; the terminal scales it into the cells)
-        assert!(out.contains("a=T,f=32,o=z,i=1,") && out.contains(&format!("p=1,c={},r={},C=1,z=-1", well.width - 4, well.height - 2)), "{}", &out[..out.len().min(200)]);
+        assert!(out.contains("a=T,f=32,o=z,i=2,") && out.contains(&format!("p=1,c={},r={},C=1,z=-1", well.width - 4, well.height - 2)), "{}", &out[..out.len().min(200)]);
     }
 
     #[test]

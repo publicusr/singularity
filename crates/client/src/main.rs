@@ -41,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
     execute!(stdout(), EnableMouseCapture, EnableFocusChange)?;
     // unfocused, the whole Client (and so the Visuals) runs at 10 fps instead of 30
     let mut focused = true;
+    let mut last_draw = std::time::Instant::now();
     // pixel-precise pointer where the terminal supports it (#24)
     let mut units = term::MouseUnits::detect();
     units.enable(&mut stdout())?;
@@ -49,6 +50,11 @@ async fn main() -> anyhow::Result<()> {
             while let Ok(ev) = conn_rx.try_recv() {
                 apply(&mut app, ev);
             }
+            // at most ~60 redraws a second, however fast input arrives (a moving mouse sends hundreds of events)
+            if let Some(wait) = Duration::from_millis(16).checked_sub(last_draw.elapsed()) {
+                std::thread::sleep(wait);
+            }
+            last_draw = std::time::Instant::now();
             app.tick();
             let mut out = stdout().lock();
             out.write_all(b"\x1b[?2026h")?; // synchronized output: the frame and its images appear together

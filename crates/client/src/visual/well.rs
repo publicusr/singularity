@@ -32,13 +32,15 @@ pub fn draw(buf: &mut Buffer, outer: Rect, app: &mut App, th: &Theme) {
     if inner.width >= 4 && inner.height >= 3 {
         if let Some((cw, ch)) = app.pixel_tier_for(inner) {
             let (w, h) = app.hole.render_size((inner.width as f64 * cw) as usize, (inner.height as f64 * ch) as usize);
-            let px = app.hole.render(w, h);
-            if let Some(k) = app.kitty.as_mut() {
+            let (px, fresh) = app.hole.frame(w, h);
+            if let Some(k) = app.kitty.as_mut()
+                && (fresh || !k.keep(HOLE_ID, inner))
+            {
                 k.frame(HOLE_ID, inner, w as u32, h as u32, px);
             }
         } else {
             let (w, h) = (inner.width as usize, inner.height as usize * 2);
-            let px = app.hole.render(w, h);
+            let (px, _) = app.hole.frame(w, h);
             let img = image::RgbImage::from_fn(w as u32, h as u32, |x, y| {
                 let i = (y as usize * w + x as usize) * 4;
                 image::Rgb([px[i], px[i + 1], px[i + 2]])

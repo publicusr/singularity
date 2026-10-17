@@ -7,6 +7,11 @@ mod gpu;
 pub mod well;
 
 use blackhole::{Frame, LOOKS};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// The hole's own pace: at most 30 new frames a second, however often the screen redraws (e.g. while the mouse moves).
+const FRAME: Duration = Duration::from_millis(33);
 use singularity_proto::SpectrumFrame;
 
 /// Widest image the GPU renders (wider Panes are upscaled by the terminal); the CPU gets far fewer pixels.
@@ -21,11 +26,13 @@ pub struct BlackHole {
     t: f32,
     beat: f32,
     bass: f32,
+    /// the last frame: when, its size, its pixels
+    last: Option<(Instant, (usize, usize), Arc<Vec<u8>>)>,
 }
 
 impl Default for BlackHole {
     fn default() -> Self {
-        BlackHole { gpu: None, allow_gpu: false, look: 0, t: 0.0, beat: 0.0, bass: 0.0 }
+        BlackHole { gpu: None, allow_gpu: false, look: 0, t: 0.0, beat: 0.0, bass: 0.0, last: None }
     }
 }
 
@@ -36,6 +43,20 @@ impl BlackHole {
 
     pub fn next_look(&mut self) {
         self.look = (self.look + 1) % LOOKS.len();
+        self.last = None;
+    }
+
+    /// A `w`×`h` frame: a new one when it's due (or the size changed), else the last one again. `true` = new.
+    pub fn frame(&mut self, w: usize, h: usize) -> (Arc<Vec<u8>>, bool) {
+        if let Some((t, size, px)) = &self.last
+            && *size == (w, h)
+            && t.elapsed() < FRAME
+        {
+            return (px.clone(), false);
+        }
+        let px = Arc::new(self.render(w, h));
+        self.last = Some((Instant::now(), (w, h), px.clone()));
+        (px, true)
     }
 
     /// Which renderer is in use, once known.
@@ -148,7 +169,7 @@ mod tests {
             for i in 0..150 {
                 bh.advance(1.0 / 30.0, None);
                 let px = bh.render(w, h);
-                kitty.frame(1, rect, w as u32, h as u32, px);
+                kitty.frame(1, rect, w as u32, h as u32, px.into());
                 kitty.flush(&mut std::io::sink()).unwrap();
                 // pace to 30 fps
                 let next = std::time::Duration::from_secs_f64((i + 1) as f64 / 30.0);

@@ -164,6 +164,8 @@ pub enum Hit {
     SortCol(Col),
     /// the gravity well: a click cycles the Disk look
     Well,
+    /// ▶ Play on the open track list
+    PlayView,
 }
 
 /// Two clicks on the same row within this time play it.
@@ -477,7 +479,7 @@ impl App {
             KeyCode::PageUp => v.move_sel(0, -(v.visible.max(1) as i32)),
             KeyCode::PageDown => v.move_sel(0, v.visible.max(1) as i32),
             KeyCode::Enter => match v.sel {
-                Some(c) => self.play_card(c),
+                Some(c) => self.open_card(c),
                 None => v.move_sel(0, 0),
             },
             KeyCode::Menu | KeyCode::F(10) => {
@@ -505,19 +507,51 @@ impl App {
         }
         let Some(it) = self.library.as_ref().and_then(|l| l.items.get(row - 1)).cloned() else { return };
         match it.kind.as_str() {
-            "liked" | "playlist" | "album" => {
-                if self.view.as_ref().is_none_or(|v| v.uri != it.uri) {
-                    self.view = Some(TrackView::new(&it.uri, &it.name));
-                }
-                if self.lists.get(&it.uri).is_none_or(|l| !l.complete()) {
-                    self.lists.remove(&it.uri);
-                    self.send(Command::GetTracks { uri: it.uri.clone() });
-                }
-            }
             "folder" => self.say("Folders are listed with their playlists indented below"),
-            "artist" => self.say("Artist pages arrive with #11"),
-            _ => {}
+            _ => self.open(&it.uri, &it.name, &it.subtitle, &it.kind),
         }
+    }
+
+    /// Open something in the main Pane: an album, playlist or Liked Songs shows its track list.
+    pub fn open(&mut self, uri: &str, name: &str, subtitle: &str, kind: &str) {
+        // Home's "Liked Songs" shortcut comes as the user's collection URI
+        let uri = if kind == "liked" || uri.ends_with(":collection") || uri.contains(":collection:") { crate::tracks::LIKED } else { uri };
+        match kind {
+            "liked" | "playlist" | "album" | "collection" => {}
+            _ if uri == crate::tracks::LIKED => {}
+            "artist" => return self.say("Artist pages arrive with #11"),
+            "show" | "episode" => return self.say("Podcasts arrive in v1.x"),
+            _ => return,
+        }
+        self.focus = "home".into();
+        if self.view.as_ref().is_none_or(|v| v.uri != uri) {
+            let mut v = TrackView::new(uri, name);
+            v.subtitle = subtitle.to_string();
+            self.view = Some(v);
+        }
+        if self.lists.get(uri).is_none_or(|l| !l.complete()) {
+            self.lists.remove(uri);
+            self.send(Command::GetTracks { uri: uri.to_string() });
+        }
+    }
+
+    /// Open a Home Card (clicking never plays it: the list opens, with ▶ Play there).
+    fn open_card(&mut self, c: CardRef) {
+        self.home_view.sel = Some(c);
+        if let Some(k) = self.card(c).cloned() {
+            self.open(&k.uri, &k.name, &k.subtitle, &k.kind);
+        }
+    }
+
+    /// ▶ Play on the open list: the whole context from its first track.
+    fn play_view(&mut self) {
+        let Some(v) = self.view.as_ref() else { return };
+        let cmd = if v.uri == crate::tracks::LIKED {
+            Command::PlayFrom { context_uri: v.uri.clone(), index: 0, track_uri: None }
+        } else {
+            Command::Play { uri: Some(v.uri.clone()) }
+        };
+        self.send(cmd);
     }
 
     fn sort(&mut self, col: Col) {
@@ -832,8 +866,9 @@ impl App {
                     }
                     Some(Hit::Card(c)) => {
                         self.focus = "home".into();
-                        self.play_card(c);
+                        self.open_card(c);
                     }
+                    Some(Hit::PlayView) => self.play_view(),
                     Some(Hit::ShelfScroll(row, d)) => self.home_view.scroll_shelf(row, d),
                     Some(Hit::MenuItem(_)) => {}
                     Some(Hit::Focus(s)) => self.focus = s,
