@@ -4,7 +4,7 @@ A terminal Spotify client for Linux and macOS that feels like the desktop app, p
 and looks spectacular: a Home feed, Made For You, full library, mouse *and* keyboard, btop-grade themes, and
 built-in audio-reactive visuals (yes, including a black hole).
 
-**Status:** Phase 2, walking skeleton. Spec in `docs/SPEC.md`; v1 tickets are GitHub issues (#2–#23).
+**Status:** Phase 2, walking skeleton. Spec in `docs/SPEC.md`; v1 tickets are GitHub issues (#2–#24).
 Product code lives in `crates/`; throwaway code in `prototypes/` and `spikes/`.
 
 ## Try it (early, Phase 2)
@@ -25,7 +25,8 @@ cargo build --release
 
 | Doc | What's in it |
 |-----|--------------|
-| [docs/SPEC.md](docs/SPEC.md) | Problem, solution, user stories, (proposed) implementation decisions |
+| [docs/HANDOFF.md](docs/HANDOFF.md) | Current state, owner feedback, next tickets, prompt for the next session |
+| [docs/SPEC.md](docs/SPEC.md) | v1 spec: problem, solution, 67 user stories, implementation and testing decisions |
 | [docs/DESIGN-TREE.md](docs/DESIGN-TREE.md) | Every open decision, its dependencies, and the grilling round log |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phased plan, spikes first |
 | [docs/research/2026-10-platform-constraints.md](docs/research/2026-10-platform-constraints.md) | What Spotify does and doesn't allow in 2026, with sources |

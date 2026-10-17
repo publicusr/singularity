@@ -1,0 +1,75 @@
+# Session handoff (2026-10-17)
+
+Read this first in a new session, then `CLAUDE.md`, `docs/SPEC.md` and `GLOSSARY.md`.
+
+## Where things stand
+
+- **Phase 0 (planning) ✅**: four grilling rounds; decisions in `docs/DESIGN-TREE.md`; ADRs 0001–0004.
+- **Phase 1 (spikes) ✅**: Soloist streams lossless FLAC once the Connect device's quality is set to Lossless
+  (per device, from the phone); the private API returns the owner's real Home feed. See `spikes/*/FINDINGS.md`.
+- **Phase 2 (walking skeleton) 🔄**: spec issue **#1** with v1 tickets **#2–#24** on GitHub (`publicusr/singularity`,
+  label `ready-for-agent`, native "blocked by" links). **Closed: #2, #3, #4, #7.** The owner tested the build: "everything
+  feels good".
+
+## What exists in `crates/`
+
+| Crate | What it does now |
+|-------|------------------|
+| `proto` | Versioned length-prefixed JSON protocol: Hello/Welcome/Incompatible, Command, Event (Playback, Engine, Catalogue, Home, Error), unknown-variant tolerant |
+| `daemon` (`singularityd`) | Hub + Unix socket; `Engine` trait (task + channels) with `SoloistEngine` (download, keyring key, WebSocket, restart/backoff, expiry, PDEATHSIG), `FakeEngine` (`--fake-engine`), `NoEngine`; `catalogue` (device-code login, librespot fork session, Home → Shelves/Cards); `queries` (QueryRegistry: hashes from web-player chunks, 3-day cache, refresh on 412) |
+| `client` (`singularity`) | Autostarts/reconnects to the Daemon; split-tree layout (Singularity preset, draggable dividers); theme tokens (OLED); hit-testing; command palette; help; player bar with transport/seek/volume/shuffle/repeat; login overlay; Home as a text preview |
+
+Tests: 19 passing (`cargo test`), covering protocol seam tests with FakeEngine, a Soloist transcript contract test, layout
+invariants, UI snapshots, the Home parser and QueryRegistry fixtures.
+
+Local state on the owner's machine (not in git): Soloist at `~/.local/share/singularity/soloist/`, its pairing in
+`…/soloist-state/`, Spotify credentials in `…/catalogue/credentials.json` (0600, copied from spike 2; move to the
+keyring in #5), query cache in `~/.cache/singularity/pathfinder-queries.json`.
+
+## Owner feedback to act on
+
+- **Seek precision (#24):** dragging the seek bar jumps 3–4 s per step; it must be precise to 1 s like the native
+  client. Approach and acceptance criteria are in the issue (SGR-Pixels mouse on kitty/Ghostty + relative fine-drag
+  fallback + tooltip + seek on release).
+- Owner preferences established across the rounds (also in SPEC § Design principles): OLED black everywhere, calm
+  visuals, no white peaks, full resolution first, function before spectacle, terminal-driven aesthetics, never cover
+  or move content (only the idle takeover may).
+
+## Next tickets (frontier, in suggested order)
+
+1. **#24** seek precision (small, owner-visible)
+2. **#8** Home with cover-art cards (needs the pixel render tier: port `prototypes/design-directions/src/gfx.rs`, the kitty
+   direct + shm transfer and the half-block fallback; cache images on disk)
+3. **#9** Library + play-from-track-N (Soloist can't start a context at an offset: use connect-state via ConnectRemote, or test
+   `play` with a track URI plus context first)
+4. **#15** AudioTap → spectrum stream; **#16** GPU black hole + gravity well (port from the prototype: `blackhole.wgsl`,
+   `gpu.rs`, `bend_borders`, `warped_frame`)
+5. Then #5 (setup wizard + keyring for the Spotify credentials), #6 (auto-update), #12, #13, #14, #18, #19, #20, #21, #22, #23, #17, #10, #11
+
+## Working rules (from CLAUDE.md, repeated because they matter)
+
+- One ticket at a time: code + tests, run `cargo test`, verify in a pty (`/tmp/…/scratchpad/shot.py` pattern: pyte + PIL screenshots;
+  recreate it if the scratchpad is gone), commit with `Closes #N` and the co-author line, push.
+- Never commit secrets or personal listening data. Fixtures are anonymised.
+- Kill only processes you started (match by exact name and by the socket/state path; never `pkill -f` patterns that match your own shell).
+- Unix socket paths must stay short (< 108 bytes): use `$XDG_RUNTIME_DIR/sgl-…` for test sockets.
+- Spotify's private API: metadata only, no crawling, back off, never retry in a loop.
+
+---
+
+## Prompt for the next session
+
+> You're continuing **Singularity**, a terminal Spotify client in Rust (ratatui) at `~/src/singularity`
+> (GitHub: `publicusr/singularity`, private). Start by reading `docs/HANDOFF.md`, then `CLAUDE.md`, `docs/SPEC.md`,
+> `GLOSSARY.md` and the ADRs in `docs/adr/`. Planning and spikes are done; we're building v1 ticket by ticket from the
+> GitHub issues (`gh issue list -R publicusr/singularity --label ready-for-agent --state open`), following Matt Pocock's
+> flow (spec → tickets → implement), with the project's vocabulary.
+>
+> Work the frontier in this order: **#24** (seek bar precise to 1 s when dragging, owner feedback: currently it jumps 3–4 s),
+> then **#8** (Home with cover-art cards, pixel tier via kitty + half-block fallback), then **#9**, **#15**, **#16**. For each
+> ticket: implement with tests at the seams named in the spec, run `cargo test`, verify the real binaries in a pseudo-terminal
+> (screenshots), commit with `Closes #N` plus the co-author line, push, and keep `docs/` current (DESIGN-TREE round log,
+> ROADMAP, HANDOFF). Reuse the prototype in `prototypes/design-directions` for rendering and visuals, rewritten to production
+> quality. Don't commit secrets or personal listening data; only kill processes you started. When a decision is genuinely
+> the owner's, ask in the grilling format (numbered questions, a ➡️ recommendation each, worded so "yes" accepts). Keep
+> messages to the owner concise; they test the builds themselves and give feedback.

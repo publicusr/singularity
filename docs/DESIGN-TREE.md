@@ -102,3 +102,6 @@ flowchart LR
   device's quality is set to Lossless (it's per Connect device). Private API: device-code login + Pathfinder `home`
   gave the owner's real Home feed (31 shelves, ~1.5 s). Open: D17 (can Singularity set the device quality itself, via
   connect-state, instead of the phone?) and the automatic refresh of Pathfinder query hashes.
+- **Phase 2** (2026-10-17): spec written (`docs/SPEC.md`), 22 tickets published (#2–#23), plus #24 from owner feedback.
+  Built and closed #2, #3, #4, #7. Owner test: "everything feels good", but seek dragging must be precise to 1 s (#24).
+  Handoff: `docs/HANDOFF.md`.

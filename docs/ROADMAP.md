@@ -7,7 +7,7 @@ usable, not just infrastructure.
 |-------|------|----------------|
 | 0. Plan ✅ | Grilling → final spec → tickets | Design-tree frontier empty, owner confirms (done 2026-10-17, except D17 which needs a spike) |
 | 1. Spike ✅ | Prove the risky integrations | Throwaway programs: (a) start, pair and control Soloist over WebSocket, and find out which settings it exposes (D17); (b) fetch the Home feed from the private Catalogue; (c) tap the Soloist PipeWire node and print an FFT. Already proven in the prototype: GPU black hole via wgpu, kitty shared-memory transfer |
-| 2. Walking skeleton | Daemon + Client, layout, sidebar, now-playing bar, mouse + palette, one theme | Play a Liked Songs track with transport controls by mouse and keyboard; music survives closing the Client |
+| 2. Walking skeleton 🔄 | Daemon + Client, layout, sidebar, now-playing bar, mouse + palette, one theme | Play a Liked Songs track with transport controls by mouse and keyboard; music survives closing the Client |
 | 3. Core parity | Home, search, library, entity pages, queue, devices | Daily-drivable replacement for the desktop app |
 | 4. Eye candy | Visual engine, black hole, spectrum, album art, lyrics, layout presets | LARP preset works and stays within its CPU budget |
 | 5. Personalisation | Theme gallery + picker, album-adaptive theme, settings screen, keymap config | Everything configurable in-app and in files |
@@ -16,3 +16,6 @@ usable, not just infrastructure.
 
 Phase 1 comes before any UI work on purpose. If the Soloist or catalogue spike fails, the whole
 architecture changes, and it is better to learn that in a day than after a month of UI.
+
+**Progress (2026-10-17):** v1 tickets are GitHub issues #2–#24 under spec issue #1. Done: #2 Daemon↔Client, #3 Client shell,
+#4 Soloist playback, #7 Catalogue session. Next: #24 seek precision, #8 Home cards, #9 Library. See `docs/HANDOFF.md`.
