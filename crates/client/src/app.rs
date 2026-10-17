@@ -178,6 +178,8 @@ pub enum Hit {
     PlayView,
     /// a queue entry, by index in `playback.queue`
     QueueRow(usize),
+    /// a synced lyric line: where it starts (ms)
+    Lyric(u64),
 }
 
 /// Two clicks on the same row within this time play it.
@@ -279,6 +281,10 @@ pub struct App {
     pub setup: crate::setup::Setup,
     pub hole: BlackHole,
     pub queue_view: crate::queue::QueueView,
+    pub lyrics: Option<singularity_proto::Lyrics>,
+    /// first line shown of unsynced lyrics
+    pub lyrics_scroll: usize,
+    lyrics_asked: Option<String>,
     /// where the hole was drawn this frame (for bending the neighbouring borders)
     pub hole_at: Option<Hole>,
     last_tick: Instant,
@@ -328,6 +334,9 @@ impl App {
             setup: Default::default(),
             hole: BlackHole::default(),
             queue_view: Default::default(),
+            lyrics: None,
+            lyrics_scroll: 0,
+            lyrics_asked: None,
             hole_at: None,
             last_tick: Instant::now(),
             told_backend: false,
@@ -993,6 +1002,15 @@ impl App {
         let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
         self.last_tick = Instant::now();
         self.hole.advance(dt, self.meters.frame.as_ref());
+        // lyrics follow the track, if a lyrics Pane is on screen
+        if let Some(uri) = self.playback.item.as_ref().map(|i| i.uri.clone()).filter(|u| !u.is_empty())
+            && self.lyrics_asked.as_deref() != Some(uri.as_str())
+            && matches!(self.link, Link::Connected { .. })
+            && self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| s == "lyrics")
+        {
+            self.lyrics_asked = Some(uri.clone());
+            self.send(Command::GetLyrics { uri });
+        }
         // the health check refreshes itself while it's open
         if self.health_open && self.health_asked.is_none_or(|t| t.elapsed() > Duration::from_secs(3)) {
             self.health_asked = Some(Instant::now());
@@ -1100,6 +1118,8 @@ impl App {
                         self.focus = "queue".into();
                         self.queue_view.sel = i;
                     }
+                    // click a lyric line: jump there
+                    Some(Hit::Lyric(ms)) => self.seek_to(ms),
                     Some(Hit::Well) => {
                         self.focus = "well".into();
                         self.run(Action::NextLook);
@@ -1182,6 +1202,10 @@ impl App {
                     if let Some(v) = self.view.as_mut() {
                         v.scroll(-sign * 3, len);
                     }
+                    return;
+                }
+                if matches!(&hit, Some(Hit::Focus(s)) if s == "lyrics") && self.lyrics.as_ref().is_some_and(|l| !l.synced) {
+                    self.lyrics_scroll = (self.lyrics_scroll as i64 - sign as i64 * 3).max(0) as usize;
                     return;
                 }
                 if matches!(&hit, Some(Hit::QueueRow(_))) || matches!(&hit, Some(Hit::Focus(s)) if s == "queue") {

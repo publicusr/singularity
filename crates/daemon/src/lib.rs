@@ -6,6 +6,7 @@ pub mod connect;
 pub mod engine;
 pub mod health;
 pub mod library;
+pub mod lyrics;
 pub mod queries;
 pub mod secrets;
 pub mod soloist;
@@ -205,6 +206,9 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                 *hub.library.lock().await = Some(l.clone());
                 let _ = hub.events.send(Event::Library(l));
             }
+            CatEvent::Lyrics(l) => {
+                let _ = hub.events.send(Event::Lyrics(l));
+            }
             CatEvent::Tracks(t) => {
                 let _ = hub.events.send(Event::Tracks(t));
             }
@@ -313,6 +317,17 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                     let _ = out_tx.send(DaemonMsg::Pong { id }).await;
                 }
                 ClientMsg::Command(Command::Shutdown) => hub.shutdown.notify_one(),
+                ClientMsg::Command(Command::GetLyrics { uri }) => match &hub.catalogue {
+                    Some(c) => {
+                        // what we know about the track helps the fallback search
+                        let pb = hub.playback.lock().await.clone();
+                        let meta = pb.item.into_iter().chain(pb.queue.into_iter().map(|q| q.item)).find(|i| i.uri == uri);
+                        let _ = c.send(CatCmd::Lyrics { uri, meta }).await;
+                    }
+                    None => {
+                        let _ = out_tx.send(DaemonMsg::Event(Event::Lyrics(proto::Lyrics { uri, ..Default::default() }))).await;
+                    }
+                },
                 ClientMsg::Command(Command::GetHealth) => {
                     let expires = match hub.engine_status.lock().await.clone() {
                         Some(proto::EngineStatus::Ready { expires_in_days, .. }) => expires_in_days,

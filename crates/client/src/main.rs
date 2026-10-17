@@ -6,6 +6,7 @@ mod covers;
 mod gfx;
 mod home;
 mod layout;
+mod lyrics;
 mod meters;
 mod queue;
 mod scrub;
@@ -150,6 +151,12 @@ fn apply(app: &mut App, ev: ConnEvent) {
         }
         ConnEvent::Msg(DaemonMsg::Event(Event::Stream(s))) => app.stream = Some(s),
         ConnEvent::Msg(DaemonMsg::Event(Event::Health(h))) => app.health = Some(h),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Lyrics(l))) => {
+            if app.playback.item.as_ref().is_some_and(|i| i.uri == l.uri) {
+                app.lyrics_scroll = 0;
+                app.lyrics = Some(l);
+            }
+        }
         ConnEvent::Msg(DaemonMsg::Event(Event::Notice { message })) => app.say(message),
         ConnEvent::Msg(_) => {}
     }

@@ -224,3 +224,21 @@ async fn queue_edits_and_bare_entries_get_names() {
     proto::write_msg(&mut a, &cmd(Command::ClearQueue)).await.unwrap();
     queue_where(&mut a, |q| q.is_empty()).await;
 }
+
+#[tokio::test]
+async fn lyrics_round_trip() {
+    use singularity_proto::{Command, HomeFeed};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ly.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
+    let mut a = connect(&path).await;
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::GetLyrics { uri: "spotify:track:l".into() })).await.unwrap();
+    loop {
+        if let DaemonMsg::Event(Event::Lyrics(l)) = proto::read_msg::<_, DaemonMsg>(&mut a).await.unwrap().unwrap() {
+            assert_eq!(l.uri, "spotify:track:l");
+            assert!(l.synced && !l.lines.is_empty());
+            break;
+        }
+    }
+}

@@ -49,6 +49,21 @@ async fn main() -> anyhow::Result<()> {
     let creds = singularityd::catalogue::saved_credentials(&dirs).ok_or_else(|| anyhow::anyhow!("no saved login; log in from the Client first"))?;
     let session = Session::new(SessionConfig::default(), Some(cache));
     session.connect(creds, true).await?;
+    if op == "--lyrics" {
+        // the lyrics endpoint isn't Pathfinder: spclient color-lyrics, by track id
+        let id = librespot_core::SpotifyId::from_base62(vars.rsplit(':').next().unwrap_or(vars))?;
+        let t = std::time::Instant::now();
+        let r = session.spclient().get_lyrics(&id).await;
+        eprintln!("lyrics: {:?} in {:?}", r.as_ref().map(|b| b.len()), t.elapsed());
+        let answer: Value = serde_json::from_slice(&r?)?;
+        if let Some(i) = args.iter().position(|a| a == "--raw") {
+            std::fs::write(&args[i + 1], serde_json::to_vec_pretty(&answer)?)?;
+        }
+        let mut out = String::new();
+        shape(&answer, 0, &mut out);
+        print!("{out}");
+        return Ok(());
+    }
     let mut registry = QueryRegistry::new(dirs.queries);
     let hash = registry.hash(op).await?;
     let t = std::time::Instant::now();

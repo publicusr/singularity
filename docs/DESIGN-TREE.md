@@ -149,3 +149,7 @@ flowchart LR
   removed. Queue entries Soloist sends bare get names from `getTrack` (cached). Queue Widget: now playing, Next in queue,
   Next from <context>, Autoplay (marked); right-click or Delete edits; track rows got a context menu (play from here,
   play next, add to queue, copy link).
+- **#14 Lyrics** (2026-10-18): Spotify's `color-lyrics` (via the Catalogue session; Musixmatch, line-synced) with
+  LRCLIB as fallback (artist, title, album, duration only), cached per track including "none". Widget: current line
+  lit and held ~40 % down, `[mm:ss]` stamps like a log (the Pane is `tail -f lyrics.log`), click a line to seek, unsynced
+  lyrics scroll, calm empty state, credit line. Lyrics are only asked for while a lyrics Pane is on screen.

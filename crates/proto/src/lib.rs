@@ -74,6 +74,8 @@ pub enum Command {
     PlayFrom { context_uri: String, index: u32, track_uri: Option<String> },
     /// Store the Soloist API key (keyring, else an owner-only file) and (re)start the Engine with it.
     SetSoloistKey { key: String },
+    /// Fetch lyrics for a track (Spotify's, else LRCLIB's); arrives as `Event::Lyrics`.
+    GetLyrics { uri: String },
     /// Ask for a health report; arrives as `Event::Health`.
     GetHealth,
     /// Exit so a newer `singularityd` can take over (sent by a Client that's newer than this Daemon).
@@ -111,6 +113,8 @@ pub enum Event {
     Tracks(TrackPage),
     /// What the Engine is streaming right now (from Soloist's verbose log).
     Stream(StreamInfo),
+    /// Lyrics for a track (answer to `GetLyrics`); `lines` is empty when there are none.
+    Lyrics(Lyrics),
     /// Answer to `GetHealth`.
     Health(Health),
     /// Something worth telling the user that isn't an error.
@@ -282,6 +286,22 @@ impl StreamInfo {
     pub fn lossless(&self) -> bool {
         self.codec.eq_ignore_ascii_case("flac")
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Lyrics {
+    pub uri: String,
+    /// lines carry start times
+    pub synced: bool,
+    pub lines: Vec<LyricLine>,
+    /// where they came from, for the credit line ("Musixmatch", "LRCLIB")
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct LyricLine {
+    pub start_ms: u64,
+    pub text: String,
 }
 
 /// What the Daemon knows about its own health (the rest comes from the status events).

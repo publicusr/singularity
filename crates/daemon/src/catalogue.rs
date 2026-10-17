@@ -40,6 +40,8 @@ pub enum CatCmd {
     Queue(QueueEdit),
     /// look up names, artists and durations for these track URIs (Soloist sometimes sends bare URIs)
     Describe(Vec<String>),
+    /// lyrics for a track; `meta` (name, artists, album, duration) helps the LRCLIB fallback
+    Lyrics { uri: String, meta: Option<singularity_proto::Item> },
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +53,7 @@ pub enum CatEvent {
     /// the Catalogue couldn't do it; the Engine should (e.g. play the track alone)
     ToEngine(Command),
     Described(Vec<singularity_proto::Item>),
+    Lyrics(singularity_proto::Lyrics),
     Error(String),
 }
 
@@ -88,11 +91,12 @@ struct State {
     remote: Option<ConnectRemote>,
     tracks: HashMap<String, (Instant, Vec<TrackPage>)>,
     described: HashMap<String, singularity_proto::Item>,
+    lyrics: HashMap<String, singularity_proto::Lyrics>,
 }
 
 async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
     let registry = QueryRegistry::new(dirs.queries.clone());
-    let mut st = State { dirs, session: None, registry, ev, remote: None, tracks: HashMap::new(), described: HashMap::new() };
+    let mut st = State { dirs, session: None, registry, ev, remote: None, tracks: HashMap::new(), described: HashMap::new(), lyrics: HashMap::new() };
     // resume a previous login
     if saved_credentials(&st.dirs).is_some() {
         if st.connect(None).await {
@@ -117,6 +121,7 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
             CatCmd::PlayFrom { context_uri, index, track_uri } => st.play_from(context_uri, index, track_uri).await,
             CatCmd::Queue(edit) => st.queue(edit).await,
             CatCmd::Describe(uris) => st.describe(uris).await,
+            CatCmd::Lyrics { uri, meta } => st.lyrics(uri, meta).await,
         }
     }
 }
@@ -144,6 +149,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                     QueueEdit::Remove { uri, uid } => Command::RemoveFromQueue { uri, uid },
                     QueueEdit::Clear => Command::ClearQueue,
                 })],
+                CatCmd::Lyrics { uri, .. } => vec![CatEvent::Lyrics(fake_lyrics(&uri))],
                 CatCmd::Describe(uris) => vec![CatEvent::Described(
                     uris.into_iter().map(|u| singularity_proto::Item { name: format!("Described {}", u.rsplit(':').next().unwrap_or("")), uri: u, artists: vec!["Fake Artist".into()], duration_ms: 180_000, ..Default::default() }).collect(),
                 )],
@@ -154,6 +160,13 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
         }
     });
     (cmd_tx, ev_rx)
+}
+
+/// Invented synced lyrics, one line every 4 s, for UI work.
+fn fake_lyrics(uri: &str) -> singularity_proto::Lyrics {
+    let words = ["Light bends where the music falls", "Every line a slow orbit", "We drift past the photon sphere", "", "Nothing escapes the chorus", "Hold on to the event horizon"];
+    let lines = (0..48).map(|i| singularity_proto::LyricLine { start_ms: 2_000 + i * 4_000, text: words[i as usize % words.len()].into() }).collect();
+    singularity_proto::Lyrics { uri: uri.into(), synced: true, lines, source: "fake".into() }
 }
 
 /// The fake library: Liked Songs plus the Home feed's shortcuts and first Shelf.
@@ -464,6 +477,36 @@ impl State {
         if !out.is_empty() {
             let _ = self.ev.send(CatEvent::Described(out)).await;
         }
+    }
+
+    /// Spotify's lyrics, else LRCLIB's; remembered either way (also "none"), so a track is asked about once.
+    async fn lyrics(&mut self, uri: String, meta: Option<singularity_proto::Item>) {
+        if let Some(l) = self.lyrics.get(&uri) {
+            let _ = self.ev.send(CatEvent::Lyrics(l.clone())).await;
+            return;
+        }
+        let mut found = None;
+        if let (Some(session), Ok(id)) = (self.session().await, librespot_core::SpotifyId::from_base62(uri.rsplit(':').next().unwrap_or(""))) {
+            match session.spclient().get_lyrics(&id).await {
+                Ok(bytes) => found = serde_json::from_slice(&bytes).ok().and_then(|v| crate::lyrics::parse_spotify(&uri, &v)),
+                Err(e) => tracing::debug!("Spotify lyrics for {uri}: {e}"),
+            }
+        }
+        if found.is_none() {
+            let meta = match meta.filter(|m| !m.name.is_empty()) {
+                Some(m) => Some(m),
+                None => {
+                    self.describe(vec![uri.clone()]).await;
+                    self.described.get(&uri).cloned()
+                }
+            };
+            if let Some(m) = meta {
+                found = crate::lyrics::lrclib(&uri, &m.artists.first().cloned().unwrap_or_default(), &m.name, m.album.as_deref(), m.duration_ms).await;
+            }
+        }
+        let l = found.unwrap_or_else(|| singularity_proto::Lyrics { uri: uri.clone(), ..Default::default() });
+        self.lyrics.insert(uri, l.clone());
+        let _ = self.ev.send(CatEvent::Lyrics(l)).await;
     }
 
     /// Start a context at track N through ConnectRemote; if that fails, the Engine plays the track alone.

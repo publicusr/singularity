@@ -19,7 +19,7 @@ fn slot_info(slot: &str) -> (&'static str, &'static str) {
         "home" => ("home", ""),
         "queue" => ("queue", ""),
         "well" => ("gravity well", "the black hole arrives with #16"),
-        "lyrics" => ("tail -f lyrics.log", "synced lyrics arrive with #14"),
+        "lyrics" => ("tail -f lyrics.log", ""),
         "loudness" => ("loudness", "arrives with #15"),
         "fft" => ("fft", "arrives with #15"),
         _ => ("?", ""),
@@ -189,6 +189,10 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         f.render_widget(block, *rect);
         if slot == "library" {
             crate::sidebar::draw(f.buffer_mut(), inner, app, th);
+            continue;
+        }
+        if slot == "lyrics" {
+            crate::lyrics::draw(f.buffer_mut(), inner, app, th);
             continue;
         }
         if slot == "queue" {
@@ -1043,5 +1047,30 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(sent(&mut rx), vec![Command::PlayNext { uri: "spotify:track:t3".into() }]);
+    }
+
+    // ── Lyrics (#14) ──
+
+    #[test]
+    fn lyrics_follow_the_song_and_a_click_seeks() {
+        use singularity_proto::{Command, LyricLine, Lyrics};
+        let (mut app, mut rx) = playing_app(200_000);
+        app.playback.item.as_mut().unwrap().uri = "spotify:track:s".into();
+        app.tick();
+        assert_eq!(sent(&mut rx), vec![Command::GetLyrics { uri: "spotify:track:s".into() }], "asked once for the new track");
+        app.tick();
+        assert!(sent(&mut rx).is_empty());
+        let lines = (0..20).map(|i| LyricLine { start_ms: i * 5_000, text: format!("line {i}") }).collect();
+        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "Musixmatch".into() });
+        app.playback.position_ms = 31_000; // line 6 plays
+        app.playback.timestamp_ms = singularity_proto::now_ms();
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("[00:30] line 6") && s.contains("lyrics: Musixmatch"), "{s}");
+        let l9 = app.hits.iter().find_map(|(r, h)| (*h == Hit::Lyric(45_000)).then_some(*r)).unwrap();
+        click(&mut app, l9.x + 10, l9.y);
+        assert_eq!(sent(&mut rx), vec![Command::Seek { position_ms: 45_000 }]);
+        // none: a calm empty state
+        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), ..Default::default() });
+        assert!(render(&mut app, 160, 48).contains("no lyrics for this one"));
     }
 }

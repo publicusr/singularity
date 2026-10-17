@@ -553,7 +553,7 @@ impl SoloistState {
             // Soloist can't start a context at an offset (tested 2026-10-17); ConnectRemote does that. Here, as a
             // last resort, the track plays on its own.
             Command::PlayFrom { track_uri: Some(u), .. } => vec![json!({"type":"command","command":"play","uri":u})],
-            Command::PlayFrom { .. } | Command::GetLibrary | Command::GetTracks { .. } | Command::Spectrum { .. } | Command::Shutdown | Command::SetSoloistKey { .. } | Command::GetHealth => vec![],
+            Command::PlayFrom { .. } | Command::GetLibrary | Command::GetTracks { .. } | Command::Spectrum { .. } | Command::Shutdown | Command::SetSoloistKey { .. } | Command::GetHealth | Command::GetLyrics { .. } => vec![],
             // Soloist only appends; the rest goes through ConnectRemote
             Command::PlayNext { uri } => vec![json!({"type":"command","command":"add_to_queue","uri":uri})],
             Command::RemoveFromQueue { .. } | Command::ClearQueue => vec![],
