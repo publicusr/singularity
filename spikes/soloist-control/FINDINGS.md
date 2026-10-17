@@ -43,3 +43,19 @@ Appended automatically by each run. Contains no secrets.
   with all Premium accounts. That is another point for ADR-0001.
 - Implication for the real app: the Daemon can read the codec/bitrate from Soloist's verbose log (for the "LOSSLESS" badge
   and stream-stats panel) and should tell the user if the device isn't set to Lossless.
+
+## Run 2026-10-17 21:32
+
+- Version: `soloist 1.3.9.32 build 1792173722 (20261016) (g440165f200) (linux/x86_64)`
+- Build lifetime log: `20:32:41.696 I [f:128                           ] client expires in 88 days[0m`
+- Pairing from the phone worked; session stored
+- Codec/quality log line: `20:33:20.824 I [f:1118                          ] FileStreamer bandwidth sample: 36792.140351 kBps[0m`
+
+### Lossless confirmed (2026-10-17, after setting the device to Lossless from the phone)
+
+- ✅ `codec: flac`, nominal `1400000 bits/s`, file average **1 689 310 bit/s**, decoded to 32-bit float at 44.1 kHz.
+  The switch applied on the next track, with no Soloist restart.
+- Bit depth isn't logged. A 1.69 Mbit/s average is above what 16-bit/44.1 FLAC normally reaches, which hints at 24-bit source
+  material, but that's not proof.
+- Download bandwidth samples of 15–37 MB/s: the whole track is fetched quickly.
+- **ADR-0001 validated end to end**: official engine, lossless FLAC, local control, push events, isolatable audio.

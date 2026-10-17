@@ -1,3 +1,7 @@
+---
+status: accepted (validated by spike 2, 2026-10-17: real Home feed, 31 shelves in ~1.5 s)
+---
+
 # The catalogue comes from Spotify's private APIs, with the Web API as fallback
 
 Home, Made For You, search, library, entity pages, playlist edits, and lyrics come from Spotify's

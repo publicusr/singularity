@@ -6,7 +6,7 @@ usable, not just infrastructure.
 | Phase | Goal | Exit criterion |
 |-------|------|----------------|
 | 0. Plan ✅ | Grilling → final spec → tickets | Design-tree frontier empty, owner confirms (done 2026-10-17, except D17 which needs a spike) |
-| 1. Spike 🔄 | Prove the risky integrations | Throwaway programs: (a) start, pair and control Soloist over WebSocket, and find out which settings it exposes (D17); (b) fetch the Home feed from the private Catalogue; (c) tap the Soloist PipeWire node and print an FFT. Already proven in the prototype: GPU black hole via wgpu, kitty shared-memory transfer |
+| 1. Spike ✅ | Prove the risky integrations | Throwaway programs: (a) start, pair and control Soloist over WebSocket, and find out which settings it exposes (D17); (b) fetch the Home feed from the private Catalogue; (c) tap the Soloist PipeWire node and print an FFT. Already proven in the prototype: GPU black hole via wgpu, kitty shared-memory transfer |
 | 2. Walking skeleton | Daemon + Client, layout, sidebar, now-playing bar, mouse + palette, one theme | Play a Liked Songs track with transport controls by mouse and keyboard; music survives closing the Client |
 | 3. Core parity | Home, search, library, entity pages, queue, devices | Daily-drivable replacement for the desktop app |
 | 4. Eye candy | Visual engine, black hole, spectrum, album art, lyrics, layout presets | LARP preset works and stays within its CPU budget |

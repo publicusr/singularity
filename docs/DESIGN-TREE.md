@@ -98,6 +98,7 @@ flowchart LR
   sideways, with a moat around the well); the idle takeover using *the* hole from the well (done); a 3–5 min idle timer
   (3 min) with an easy off switch (Shift+I, palette, config); an assessment of free tiling (moderate effort, see research).
   Phase 1 started: spike 1 (Soloist control + audio tap) built, waiting on the owner's API key and pairing.
-- **Phase 1** (2026-10-17): Spike 1 ✅ (pair, control, events, expiry visible, audio tap; lossless still to confirm with
-  `--verbose`). Spike 2 built (device-code login + Pathfinder `home`, query hash read from the web player bundle),
-  waiting for the owner to run it.
+- **Phase 1** (2026-10-17): all spikes ✅. Soloist: pair, control, events, expiry, audio tap, and **lossless FLAC** once the
+  device's quality is set to Lossless (it's per Connect device). Private API: device-code login + Pathfinder `home`
+  gave the owner's real Home feed (31 shelves, ~1.5 s). Open: D17 (can Singularity set the device quality itself, via
+  connect-state, instead of the phone?) and the automatic refresh of Pathfinder query hashes.
