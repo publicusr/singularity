@@ -34,6 +34,15 @@ pub struct Hub {
     pub spectrum: broadcast::Sender<proto::SpectrumFrame>,
     pub spectrum_listeners: std::sync::atomic::AtomicUsize,
     pub spectrum_wake: tokio::sync::Notify,
+    /// a Client asked this Daemon to make way for a newer one
+    pub shutdown: tokio::sync::Notify,
+}
+
+/// What `serve` ended with.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Served {
+    /// asked to make way for a newer Daemon (exit non-zero, so systemd's `Restart=on-failure` starts the new one)
+    Replaced,
 }
 
 /// A running Catalogue task (see `catalogue::spawn`); `None` disables it (tests, offline use).
@@ -57,7 +66,7 @@ pub fn bind(path: &Path) -> std::io::Result<UnixListener> {
 }
 
 /// Run the Daemon on `listener` with `engine` until the process ends.
-pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: Option<CatalogueHandle>, tap: Option<tap::TapSource>) -> anyhow::Result<()> {
+pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: Option<CatalogueHandle>, tap: Option<tap::TapSource>) -> anyhow::Result<Served> {
     let (events, _) = broadcast::channel(256);
     let (commands, command_rx) = mpsc::channel(64);
     let (cat_tx, cat_rx) = match catalogue {
@@ -77,6 +86,7 @@ pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: O
         spectrum: broadcast::channel(8).0,
         spectrum_listeners: Default::default(),
         spectrum_wake: Default::default(),
+        shutdown: Default::default(),
     });
     if let Some(source) = tap {
         tokio::spawn(tap::run(hub.clone(), source));
@@ -86,7 +96,13 @@ pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: O
         tokio::spawn(run_catalogue(rx, hub.clone()));
     }
     loop {
-        let (stream, _) = listener.accept().await?;
+        let stream = tokio::select! {
+            r = listener.accept() => r?.0,
+            _ = hub.shutdown.notified() => {
+                tracing::info!("a newer Client asked this Daemon to make way");
+                return Ok(Served::Replaced);
+            }
+        };
         let hub = hub.clone();
         tokio::spawn(async move {
             if let Err(e) = client_session(stream, hub).await {
@@ -241,6 +257,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                 ClientMsg::Ping { id } => {
                     let _ = out_tx.send(DaemonMsg::Pong { id }).await;
                 }
+                ClientMsg::Command(Command::Shutdown) => hub.shutdown.notify_one(),
                 ClientMsg::Command(Command::GetState) => {
                     let s = hub.playback.lock().await.clone();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;

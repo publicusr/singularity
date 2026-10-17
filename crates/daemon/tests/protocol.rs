@@ -180,3 +180,16 @@ async fn two_clients_share_one_tap_and_frames_stop_when_paused() {
     }
     assert!(last.is_some_and(|f| f.bands.iter().all(|v| *v == 0)), "the last frame clears the bars");
 }
+
+#[tokio::test]
+async fn shutdown_makes_way_for_a_newer_daemon() {
+    use singularity_proto::Command;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("x.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    let served = tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), None, None));
+    let mut a = connect(&path).await;
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::Shutdown)).await.unwrap();
+    let r = tokio::time::timeout(std::time::Duration::from_secs(2), served).await.expect("serve returns").unwrap().unwrap();
+    assert_eq!(r, singularityd::Served::Replaced);
+}

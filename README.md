@@ -14,8 +14,8 @@ cargo build --release
 ./target/release/singularity        # starts the Daemon (singularityd) automatically
 ```
 
-After rebuilding, stop the old Daemon once (`pkill -x singularityd`) so the next Client starts the new one; until
-then a new Client talks to the old Daemon and misses new features.
+After a rebuild, the next Client notices the running Daemon is older than `target/release/singularityd` and replaces
+it by itself ("Updating singularityd…"; music pauses for a second while Soloist restarts).
 
 - **Playback** needs your Soloist key in the keyring (see `spikes/soloist-control/README.md`). The Daemon downloads
   Soloist and appears as the Connect device **"Singularity"**; pick it once from your phone, and set its quality to

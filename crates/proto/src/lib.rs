@@ -66,6 +66,8 @@ pub enum Command {
     GetTracks { uri: String },
     /// Play a context starting at its `index`-th track (`track_uri` guards against the list having changed).
     PlayFrom { context_uri: String, index: u32, track_uri: Option<String> },
+    /// Exit so a newer `singularityd` can take over (sent by a Client that's newer than this Daemon).
+    Shutdown,
     /// Start or stop receiving `Event::Spectrum` frames (the tap runs only while someone listens).
     Spectrum { on: bool },
     #[serde(other)]

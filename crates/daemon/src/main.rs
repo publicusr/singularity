@@ -39,12 +39,15 @@ async fn main() -> anyhow::Result<()> {
     let tap = if args.iter().any(|a| a == "--fake-engine") { singularityd::tap::TapSource::Synthetic } else { singularityd::tap::TapSource::PipeWire };
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = tokio::select! {
-        r = singularityd::serve(listener, engine, catalogue, Some(tap)) => r,
-        _ = tokio::signal::ctrl_c() => Ok(()),
-        _ = term.recv() => Ok(()),
+        r = singularityd::serve(listener, engine, catalogue, Some(tap)) => r.map(Some),
+        _ = tokio::signal::ctrl_c() => Ok(None),
+        _ = term.recv() => Ok(None),
     };
     // dropping the runtime drops the Engine task, and with it Soloist (kill_on_drop + PDEATHSIG)
     let _ = std::fs::remove_file(&path);
     tracing::info!("singularityd stopped");
-    result
+    if matches!(result, Ok(Some(singularityd::Served::Replaced))) {
+        std::process::exit(75); // EX_TEMPFAIL
+    }
+    result.map(|_| ())
 }

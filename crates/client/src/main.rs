@@ -112,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
 fn apply(app: &mut App, ev: ConnEvent) {
     match ev {
         ConnEvent::Connecting => {}
+        ConnEvent::Updating => app.say("Updating singularityd…"),
         ConnEvent::Disconnected => app.link = Link::Connecting,
         ConnEvent::Connected { daemon_version } => {
             app.link = Link::Connected { version: daemon_version };
