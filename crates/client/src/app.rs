@@ -51,6 +51,8 @@ pub enum Action {
     SortAdded,
     SortDuration,
     NextLook,
+    Health,
+    Setup,
     FocusNext,
     ResetLayout,
     Palette,
@@ -59,7 +61,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 27] = [
+    pub const ALL: [Action; 29] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -82,6 +84,8 @@ impl Action {
         Action::SortAdded,
         Action::SortDuration,
         Action::NextLook,
+        Action::Health,
+        Action::Setup,
         Action::FocusNext,
         Action::ResetLayout,
         Action::Palette,
@@ -112,6 +116,8 @@ impl Action {
             Action::SortAdded => "Sort list by date added",
             Action::SortDuration => "Sort list by duration",
             Action::NextLook => "Black hole: next Disk look",
+            Action::Health => "Health check (Engine, login, audio, stream quality)",
+            Action::Setup => "Setup: key, pairing, login, audio check",
             Action::FocusNext => "Focus next pane",
             Action::ResetLayout => "Reset layout",
             Action::Palette => "Command palette",
@@ -137,6 +143,7 @@ impl Action {
             Action::Filter => "/",
             Action::SortTitle | Action::SortArtist | Action::SortAlbum | Action::SortAdded | Action::SortDuration => "",
             Action::NextLook => "v",
+            Action::Health | Action::Setup => "",
             Action::FocusNext => "Tab",
             Action::ResetLayout => "",
             Action::Palette => "Ctrl+K",
@@ -245,6 +252,11 @@ pub struct App {
     pub view: Option<TrackView>,
     last_click: Option<(Instant, usize)>,
     pub meters: Meters,
+    pub stream: Option<singularity_proto::StreamInfo>,
+    pub health: Option<singularity_proto::Health>,
+    pub health_open: bool,
+    health_asked: Option<Instant>,
+    pub setup: crate::setup::Setup,
     pub hole: BlackHole,
     /// where the hole was drawn this frame (for bending the neighbouring borders)
     pub hole_at: Option<Hole>,
@@ -288,6 +300,11 @@ impl App {
             view: None,
             last_click: None,
             meters: Meters::default(),
+            stream: None,
+            health: None,
+            health_open: false,
+            health_asked: None,
+            setup: Default::default(),
             hole: BlackHole::default(),
             hole_at: None,
             last_tick: Instant::now(),
@@ -382,6 +399,14 @@ impl App {
             Action::SortAlbum => self.sort(Col::Album),
             Action::SortAdded => self.sort(Col::Added),
             Action::SortDuration => self.sort(Col::Duration),
+            Action::Health => {
+                self.health_open = true;
+                self.health_asked = None;
+            }
+            Action::Setup => {
+                self.setup.forced = true;
+                self.setup.dismissed = false;
+            }
             Action::NextLook => {
                 self.hole.next_look();
                 self.say(format!("Disk look: {}", self.hole.look().name));
@@ -416,6 +441,15 @@ impl App {
         }
         if self.palette.is_some() {
             return self.palette_key(k);
+        }
+        if crate::setup::wanted(self) {
+            return self.wizard_key(k);
+        }
+        if self.health_open {
+            if matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+                self.health_open = false;
+            }
+            return;
         }
         if self.menu.is_some() {
             return self.menu_key(k);
@@ -709,6 +743,52 @@ impl App {
         }
     }
 
+    /// Keys while the setup wizard is open.
+    fn wizard_key(&mut self, k: KeyEvent) {
+        use crate::setup::Step;
+        let step = crate::setup::step(self);
+        match k.code {
+            KeyCode::Esc => {
+                self.setup.dismissed = true;
+                self.setup.forced = false;
+                self.setup.rekey = false;
+            }
+            KeyCode::Char(c) if step == Step::Key => self.setup.key.push(c),
+            KeyCode::Backspace if step == Step::Key => {
+                self.setup.key.pop();
+            }
+            KeyCode::Enter if step == Step::Key => {
+                let key = std::mem::take(&mut self.setup.key);
+                if !key.trim().is_empty() {
+                    self.setup.rekey = false;
+                    self.send(Command::SetSoloistKey { key: key.trim().to_string() });
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Char('K') if step == Step::Engine => self.setup.rekey = true,
+            KeyCode::Enter if step == Step::Login && !matches!(self.catalogue, Some(CatalogueStatus::LoginPending { .. })) => self.run(Action::Login),
+            KeyCode::Char(' ') if step == Step::Audio => self.run(Action::TogglePlay),
+            KeyCode::Enter if matches!(step, Step::Audio | Step::Done) => {
+                self.setup.forced = false;
+                self.setup.dismissed = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// Pasted text (bracketed paste): into the wizard's key field, the palette or the filter.
+    pub fn paste(&mut self, s: &str) {
+        let s = s.trim();
+        if crate::setup::wanted(self) && crate::setup::step(self) == crate::setup::Step::Key {
+            self.setup.key.push_str(s);
+        } else if let Some(p) = self.palette.as_mut() {
+            p.query.push_str(s);
+            p.selected = 0;
+        } else if let Some(v) = self.view.as_mut().filter(|v| v.filtering) {
+            let f = format!("{}{s}", v.filter);
+            v.set_filter(f);
+        }
+    }
+
     fn palette_key(&mut self, k: KeyEvent) {
         let n = self.palette_items().len();
         let Some(p) = self.palette.as_mut() else { return };
@@ -776,6 +856,13 @@ impl App {
         let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
         self.last_tick = Instant::now();
         self.hole.advance(dt, self.meters.frame.as_ref());
+        // the health check refreshes itself while it's open
+        if self.health_open && self.health_asked.is_none_or(|t| t.elapsed() > Duration::from_secs(3)) {
+            self.health_asked = Some(Instant::now());
+            if matches!(self.link, Link::Connected { .. }) {
+                self.send(Command::GetHealth);
+            }
+        }
         if !self.told_backend
             && let Some(b) = self.hole.backend()
         {

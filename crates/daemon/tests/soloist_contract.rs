@@ -40,3 +40,23 @@ fn commands_map_to_soloist() {
     assert_eq!(rep[1]["command"], "set_repeat_track");
     assert_eq!(st.to_soloist(Command::SetVolume { percent: 150 })[0]["volume"], 100);
 }
+
+/// Soloist's verbose log, recorded in spike 1 (stream lines only): the first track Vorbis, then FLAC after the
+/// device was set to Lossless.
+#[test]
+fn verbose_log_gives_lifetime_and_stream_format() {
+    use singularityd::soloist::{LogNews, LogParser};
+    let log = include_str!("fixtures/soloist_verbose.log");
+    let mut p = LogParser::default();
+    let news: Vec<LogNews> = log.lines().filter_map(|l| p.line(l)).collect();
+    assert_eq!(news[0], LogNews::Lifetime(88));
+    let streams: Vec<_> = news.iter().filter_map(|n| if let LogNews::Stream(s) = n { Some(s.clone()) } else { None }).collect();
+    assert_eq!(streams.len(), 2);
+    assert_eq!((streams[0].codec.as_str(), streams[0].bitrate, streams[0].lossless()), ("vorbis", 160_000, false));
+    let flac = &streams[1];
+    assert_eq!((flac.codec.as_str(), flac.bitrate, flac.average_bitrate, flac.sample_rate), ("flac", 1_400_000, Some(1_689_310), 44_100));
+    assert_eq!(flac.sample_format, "32-bit-float-pcm");
+    assert!(flac.lossless());
+    assert_eq!(p.line("Error: another session is running for data directory \"/x\"."), Some(LogNews::Locked));
+    assert_eq!(p.line("login failed: make sure --api-key is valid"), Some(LogNews::BadKey));
+}

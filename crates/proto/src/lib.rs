@@ -66,6 +66,10 @@ pub enum Command {
     GetTracks { uri: String },
     /// Play a context starting at its `index`-th track (`track_uri` guards against the list having changed).
     PlayFrom { context_uri: String, index: u32, track_uri: Option<String> },
+    /// Store the Soloist API key (keyring, else an owner-only file) and (re)start the Engine with it.
+    SetSoloistKey { key: String },
+    /// Ask for a health report; arrives as `Event::Health`.
+    GetHealth,
     /// Exit so a newer `singularityd` can take over (sent by a Client that's newer than this Daemon).
     Shutdown,
     /// Start or stop receiving `Event::Spectrum` frames (the tap runs only while someone listens).
@@ -99,6 +103,12 @@ pub enum Event {
     Library(Library),
     /// One page of a track list; pages arrive in order until `offset + tracks.len() == total`.
     Tracks(TrackPage),
+    /// What the Engine is streaming right now (from Soloist's verbose log).
+    Stream(StreamInfo),
+    /// Answer to `GetHealth`.
+    Health(Health),
+    /// Something worth telling the user that isn't an error.
+    Notice { message: String },
     /// One frame of audio analysis (~30 Hz while audio plays), only to Clients that asked for it.
     Spectrum(SpectrumFrame),
     /// A command was refused or failed.
@@ -244,6 +254,38 @@ pub struct TrackRow {
     pub added_at: Option<String>,
     pub duration_ms: u64,
     pub playable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct StreamInfo {
+    /// `flac`, `vorbis`, …
+    pub codec: String,
+    /// nominal bitrate, bits/s
+    pub bitrate: u32,
+    /// the file's measured average, bits/s (when Soloist reports it)
+    pub average_bitrate: Option<u32>,
+    pub sample_rate: u32,
+    /// what Soloist decodes to, e.g. `32-bit-float-pcm`
+    pub sample_format: String,
+}
+
+impl StreamInfo {
+    pub fn lossless(&self) -> bool {
+        self.codec.eq_ignore_ascii_case("flac")
+    }
+}
+
+/// What the Daemon knows about its own health (the rest comes from the status events).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Health {
+    /// where the Soloist key lives: `keyring`, a file path, or `missing`
+    pub soloist_key: String,
+    /// where the Spotify login lives: `keyring`, a file path, or `missing`
+    pub spotify_login: String,
+    /// the PipeWire output the Engine plays to, if it's playing
+    pub audio_output: Option<String>,
+    /// days until this Soloist build expires
+    pub engine_expires_in_days: Option<u32>,
 }
 
 /// What the AudioTap heard in the last ~33 ms. Levels are relative to the track's own recent loudness

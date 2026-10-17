@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
     let (op, vars) = (args.get(1).expect("operation"), args.get(2).map(String::as_str).unwrap_or("{}"));
     let dirs = Dirs::from_env();
     let cache = Cache::new(Some(&dirs.credentials), None, None, None)?;
-    let creds = cache.credentials().ok_or_else(|| anyhow::anyhow!("no saved login; log in from the Client first"))?;
+    let creds = singularityd::catalogue::saved_credentials(&dirs).ok_or_else(|| anyhow::anyhow!("no saved login; log in from the Client first"))?;
     let session = Session::new(SessionConfig::default(), Some(cache));
     session.connect(creds, true).await?;
     let mut registry = QueryRegistry::new(dirs.queries);

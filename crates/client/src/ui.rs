@@ -15,7 +15,7 @@ use singularity_proto::{CatalogueStatus, EngineStatus, PlayStatus};
 fn slot_info(slot: &str) -> (&'static str, &'static str) {
     match slot {
         "library" => ("~/library", "library sidebar arrives with #9"),
-        "stream" => ("stream", "stream stats arrive with #5"),
+        "stream" => ("stream", ""),
         "home" => ("home", ""),
         "queue" => ("queue", "queue arrives with #12"),
         "well" => ("gravity well", "the black hole arrives with #16"),
@@ -54,13 +54,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let [top, body, player, hints] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(3), Constraint::Length(1)]).areas(area);
     // popups are known up front, so pixel images under them can step down to cells this frame
     let login_r = match &app.catalogue {
-        Some(CatalogueStatus::LoginPending { .. }) if !app.login_hidden => Some(centered(area, 64, 9)),
+        // the wizard shows the code itself
+        Some(CatalogueStatus::LoginPending { .. }) if !app.login_hidden && !crate::setup::wanted(app) => Some(centered(area, 64, 9)),
         _ => None,
     };
     let overlays = [
         login_r,
         app.palette.is_some().then(|| palette_rect(area, app)),
         app.help.then(|| help_rect(area)),
+        crate::setup::wanted(app).then(|| crate::setup::rect(area)),
+        app.health_open.then(|| crate::setup::health_rect(area)),
         app.menu.as_ref().map(|m| menu_rect(area, m)),
         app.toast.as_ref().map(|(msg, _)| toast_rect(area, msg)),
     ];
@@ -81,6 +84,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.help {
         help(f, area, &th);
     }
+    if app.health_open {
+        crate::setup::draw_health(f.buffer_mut(), crate::setup::health_rect(area), app, &th);
+    }
+    if crate::setup::wanted(app) {
+        crate::setup::draw_wizard(f.buffer_mut(), crate::setup::rect(area), app, &th);
+    }
     if let Some((msg, _)) = app.toast.clone() {
         let r = toast_rect(area, &msg);
         text(f.buffer_mut(), r.x, r.y, r.width, &format!("  {msg}  "), th.chip(th.accent));
@@ -92,8 +101,11 @@ fn toast_rect(area: Rect, msg: &str) -> Rect {
     Rect::new(area.right().saturating_sub(w + 1), area.bottom().saturating_sub(5), w, 1)
 }
 
+const PALETTE_ROWS: usize = 16;
+
 fn palette_rect(area: Rect, app: &App) -> Rect {
-    centered(area, 60, (app.palette_items().len() as u16 + 4).max(6))
+    // at most 16 rows of actions; the list scrolls with the selection
+    centered(area, 60, (app.palette_items().len().min(PALETTE_ROWS) as u16 + 4).max(6))
 }
 
 fn menu_rect(area: Rect, m: &Menu) -> Rect {
@@ -177,6 +189,10 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         f.render_widget(block, *rect);
         if slot == "library" {
             crate::sidebar::draw(f.buffer_mut(), inner, app, th);
+            continue;
+        }
+        if slot == "stream" {
+            crate::setup::draw_stream(f.buffer_mut(), inner, app, th);
             continue;
         }
         if slot == "fft" {
@@ -331,9 +347,19 @@ fn hint_bar(buf: &mut Buffer, r: Rect, th: &Theme) {
     }
 }
 
-fn centered(r: Rect, w: u16, h: u16) -> Rect {
+pub fn centered(r: Rect, w: u16, h: u16) -> Rect {
     let (w, h) = (w.min(r.width), h.min(r.height));
     Rect::new(r.x + (r.width - w) / 2, r.y + (r.height - h) / 3, w, h)
+}
+
+/// Draw a popup frame over `r` (cleared first); returns the inside.
+pub fn popup(buf: &mut Buffer, r: Rect, th: &Theme, title: &str) -> Rect {
+    use ratatui::widgets::Widget;
+    Clear.render(r, buf);
+    let block = overlay_block(th, title);
+    let inner = block.inner(r);
+    block.render(r, buf);
+    inner
 }
 
 fn overlay_block<'a>(th: &Theme, title: &'a str) -> Block<'a> {
@@ -355,8 +381,10 @@ fn palette(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
     f.render_widget(block, r);
     let buf = f.buffer_mut();
     text(buf, inner.x + 1, inner.y, inner.width.saturating_sub(2), &format!("› {query}▏"), th.s(th.fg).add_modifier(Modifier::BOLD));
-    for (i, a) in items.iter().enumerate() {
-        let y = inner.y + 1 + i as u16;
+    let rows = (inner.height.saturating_sub(1) as usize).min(PALETTE_ROWS).max(1);
+    let first = selected.saturating_sub(rows - 1);
+    for (i, a) in items.iter().enumerate().skip(first).take(rows) {
+        let y = inner.y + 1 + (i - first) as u16;
         if y >= inner.bottom() {
             break;
         }
@@ -507,6 +535,9 @@ mod tests {
         // and by mouse
         app.help = false;
         app.run(Action::Palette);
+        for c in "quit".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
         render(&mut app, 120, 40);
         let quit_idx = app.palette_items().iter().position(|a| *a == Action::Quit).unwrap();
         // palette rows start one line below the query line inside the box
@@ -921,5 +952,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── Setup, health, stream (#5) ──
+
+    #[test]
+    fn first_run_wizard_takes_the_key_without_showing_it() {
+        use singularity_proto::{Command, EngineStatus};
+        let (mut app, mut rx) = playing_app(1);
+        app.engine = Some(EngineStatus::NotConfigured { reason: "no Soloist API key yet".into() });
+        let s = render(&mut app, 120, 40);
+        assert!(s.contains("Set up Singularity") && s.contains("Spotify Premium") && s.contains(crate::setup::KEY_URL), "{s}");
+        app.paste("spak_secret123");
+        let s = render(&mut app, 120, 40);
+        assert!(!s.contains("secret123") && s.contains("••••"), "the key never shows");
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(sent(&mut rx), vec![Command::SetSoloistKey { key: "spak_secret123".into() }]);
+        // next steps follow what the Daemon reports
+        app.engine = Some(EngineStatus::NeedsPairing { device_name: "Singularity".into() });
+        assert!(render(&mut app, 120, 40).contains("device picker"));
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!render(&mut app, 120, 40).contains("Set up Singularity"), "Esc: later");
+    }
+
+    #[test]
+    fn stream_pane_and_health_show_quality_and_the_fix() {
+        use singularity_proto::{Command, StreamInfo};
+        let (mut app, mut rx) = playing_app(1);
+        app.stream = Some(StreamInfo { codec: "vorbis".into(), bitrate: 160_000, average_bitrate: None, sample_rate: 44_100, sample_format: "32-bit-float-pcm".into() });
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("NOT LOSSLESS") && s.contains("VORBIS"), "{s}");
+        app.stream = Some(StreamInfo { codec: "flac".into(), bitrate: 1_400_000, average_bitrate: Some(1_689_310), sample_rate: 44_100, sample_format: "32-bit-float-pcm".into() });
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("LOSSLESS") && !s.contains("NOT LOSSLESS") && s.contains("1.69 Mbit/s"));
+        app.run(Action::Health);
+        app.tick();
+        assert_eq!(sent(&mut rx), vec![Command::GetHealth]);
+        app.health = Some(singularity_proto::Health { soloist_key: "keyring".into(), spotify_login: "keyring".into(), audio_output: Some("DAC Pro".into()), engine_expires_in_days: Some(80) });
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("Health check") && s.contains("DAC Pro") && s.contains("FLAC · 1.40 Mbit/s"), "{s}");
     }
 }

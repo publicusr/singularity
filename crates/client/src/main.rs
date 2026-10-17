@@ -8,6 +8,7 @@ mod home;
 mod layout;
 mod meters;
 mod scrub;
+mod setup;
 mod sidebar;
 mod term;
 mod theme;
@@ -17,7 +18,7 @@ mod visual;
 
 use app::{App, Link};
 use conn::ConnEvent;
-use ratatui::crossterm::event::{self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event as TermEvent, KeyEventKind};
+use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event as TermEvent, KeyEventKind};
 use ratatui::crossterm::execute;
 use singularity_proto::{DaemonMsg, Event};
 use std::io::{Write, stdout};
@@ -38,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
         app.kitty = Some(gfx::Kitty::new(term::kitty_shm()));
     }
     let mut tui = ratatui::init();
-    execute!(stdout(), EnableMouseCapture, EnableFocusChange)?;
+    execute!(stdout(), EnableMouseCapture, EnableFocusChange, EnableBracketedPaste)?;
     // unfocused, the whole Client (and so the Visuals) runs at 10 fps instead of 30
     let mut focused = true;
     let mut last_draw = std::time::Instant::now();
@@ -78,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
                             let (m, fx, precise) = units.to_cells(m);
                             app.pointer(m, fx, precise);
                         }
+                        TermEvent::Paste(s) => app.paste(&s),
                         TermEvent::FocusLost => focused = false,
                         TermEvent::FocusGained => focused = true,
                         TermEvent::Resize(..) => {
@@ -104,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
         let _ = k.reset(&mut stdout());
     }
     let _ = units.disable(&mut stdout());
-    let _ = execute!(stdout(), DisableMouseCapture, DisableFocusChange);
+    let _ = execute!(stdout(), DisableMouseCapture, DisableFocusChange, DisableBracketedPaste);
     ratatui::restore();
     res
 }
@@ -138,7 +140,16 @@ fn apply(app: &mut App, ev: ConnEvent) {
         ConnEvent::Msg(DaemonMsg::Event(Event::Home(h))) => app.home = Some(h),
         ConnEvent::Msg(DaemonMsg::Event(Event::Library(l))) => app.library = Some(l),
         ConnEvent::Msg(DaemonMsg::Event(Event::Tracks(p))) => app.track_page(p),
-        ConnEvent::Msg(DaemonMsg::Event(Event::Spectrum(f))) => app.meters.push(f),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Spectrum(f))) => {
+            // the setup's audio check passes once real sound comes through
+            if f.level > 20 {
+                app.setup.heard = true;
+            }
+            app.meters.push(f);
+        }
+        ConnEvent::Msg(DaemonMsg::Event(Event::Stream(s))) => app.stream = Some(s),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Health(h))) => app.health = Some(h),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Notice { message })) => app.say(message),
         ConnEvent::Msg(_) => {}
     }
 }

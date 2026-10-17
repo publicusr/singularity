@@ -89,7 +89,7 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
     let registry = QueryRegistry::new(dirs.queries.clone());
     let mut st = State { dirs, session: None, registry, ev, remote: None, tracks: HashMap::new() };
     // resume a previous login
-    if cache(&st.dirs).ok().and_then(|c| c.credentials()).is_some() {
+    if saved_credentials(&st.dirs).is_some() {
         if st.connect(None).await {
             let _ = self_tx.send(CatCmd::Home).await;
             let _ = self_tx.send(CatCmd::Library).await;
@@ -179,6 +179,28 @@ fn fake_tracks(uri: &str) -> Vec<CatEvent> {
         .collect()
 }
 
+/// The reusable Spotify login: keyring first, then librespot's cache file (older installs, or no keyring).
+pub fn saved_credentials(dirs: &Dirs) -> Option<Credentials> {
+    if let Some(json) = crate::secrets::get("spotify")
+        && let Ok(c) = serde_json::from_str(&json)
+    {
+        return Some(c);
+    }
+    cache(dirs).ok().and_then(|c| c.credentials())
+}
+
+/// librespot writes the reusable login to its cache file after connecting; move it into the keyring (spec D24).
+/// Without a keyring it stays where it is, owner-only.
+fn keep_credentials_in_keyring(dirs: &Dirs) {
+    let file = dirs.credentials.join("credentials.json");
+    let Ok(json) = std::fs::read_to_string(&file) else { return };
+    if let Ok(crate::secrets::Stored::Keyring) = crate::secrets::set("spotify", json.trim()) {
+        let _ = std::fs::remove_file(&file);
+    } else {
+        crate::secrets::clear("spotify"); // the fallback copy would only duplicate the cache file
+    }
+}
+
 fn cache(dirs: &Dirs) -> anyhow::Result<Cache> {
     std::fs::create_dir_all(&dirs.credentials)?;
     use std::os::unix::fs::PermissionsExt;
@@ -227,7 +249,7 @@ impl State {
                 return false;
             }
         };
-        let Some(creds) = fresh.or_else(|| cache.credentials()) else {
+        let Some(creds) = fresh.or_else(|| saved_credentials(&self.dirs)) else {
             self.status(CatalogueStatus::LoggedOut).await;
             return false;
         };
@@ -246,6 +268,7 @@ impl State {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         let premium = product.as_deref() == Some("premium");
+        keep_credentials_in_keyring(&self.dirs);
         self.status(CatalogueStatus::Ready { username: session.username(), country: session.country(), premium }).await;
         self.session = Some(session);
         true
@@ -258,6 +281,7 @@ impl State {
             s.shutdown();
         }
         let _ = std::fs::remove_file(self.dirs.credentials.join("credentials.json"));
+        crate::secrets::clear("spotify");
         self.status(CatalogueStatus::LoggedOut).await;
     }
 

@@ -134,3 +134,12 @@ flowchart LR
   gravity well's frame sags with the bass; neighbouring borders bend toward it (structure only, tested). `v`, a click
   or the palette cycles the Disk looks (Inferno first, as in the prototype; Pixel ember at 1/5 resolution, dithered).
   Unfocused, the Client drops to 10 fps (no terminal reports "hidden"). Budget met: 16.5 % / 6.5 % of a core.
+- **Owner feedback** (2026-10-18): the black hole flickered (fixed: double-buffered kitty frames, 30 fps pace,
+  redraws capped at 60/s) and clicking an album played it (fixed: Cards open their track list; ▶ Play there). The Client
+  now replaces an outdated Daemon by itself after a rebuild.
+- **#5 Setup & health** (2026-10-18): secrets in the keyring via `secret-tool` (Soloist key and, migrated on the next
+  connect, the Spotify login), owner-only file fallback with a notice; `SINGULARITY_NO_KEYRING=1` for tests. Soloist's
+  output is piped through the Daemon: stream format (codec, bitrate, average, rate), build lifetime, rejected key and
+  a locked data dir are parsed from it, and the log rotates instead of being truncated. First-run wizard (requirements
+  up front, masked key entry with paste, download, pairing, login, audio check), Health check in the palette, stream
+  stats Pane with a LOSSLESS badge and the exact fix when it isn't.

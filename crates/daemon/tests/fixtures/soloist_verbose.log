@@ -1,0 +1,20 @@
+20:32:41.696 I [f:128                           ] client expires in 88 days[0m
+20:32:42.891 I [f:134                           ] FileStreamer file average bitrate: 160000[0m
+20:32:53.605 I [f:134                           ] FileStreamer file average bitrate: 160000[0m
+20:32:53.606 I [f:388                           ] vorbis_info.bitrate_nominal: 160000[0m
+20:32:53.607 I [f:347                           ]     codec: vorbis[0m
+20:32:53.607 I [f:348                           ]     bitrate: 160000 bits/s[0m
+20:32:53.607 I [f:349                           ]     sample rate: 44100 Hz[0m
+20:32:53.607 I [f:350                           ]     sample format: 32-bit-float-pcm[0m
+20:33:19.803 I [f:134                           ] FileStreamer file average bitrate: 1689310[0m
+20:33:20.173 I [f:347                           ]     codec: flac[0m
+20:33:20.173 I [f:348                           ]     bitrate: 1400000 bits/s[0m
+20:33:20.173 I [f:349                           ]     sample rate: 44100 Hz[0m
+20:33:20.173 I [f:350                           ]     sample format: 32-bit-float-pcm[0m
+20:33:20.694 I [f:1118                          ] FileStreamer bandwidth sample: 15807.678392 kBps[0m
+20:33:20.824 I [f:1118                          ] FileStreamer bandwidth sample: 36792.140351 kBps[0m
+20:33:24.805 I [f:134                           ] FileStreamer file average bitrate: 0[0m
+20:33:48.612 I [f:1118                          ] FileStreamer bandwidth sample: 38130.036364 kBps[0m
+20:33:48.783 I [f:1118                          ] FileStreamer bandwidth sample: 33644.149733 kBps[0m
+20:34:18.407 I [f:1118                          ] FileStreamer bandwidth sample: 31300.776119 kBps[0m
+20:34:18.571 I [f:1118                          ] FileStreamer bandwidth sample: 31457.280000 kBps[0m

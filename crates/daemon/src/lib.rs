@@ -4,8 +4,10 @@
 pub mod catalogue;
 pub mod connect;
 pub mod engine;
+pub mod health;
 pub mod library;
 pub mod queries;
+pub mod secrets;
 pub mod soloist;
 pub mod tap;
 
@@ -27,6 +29,7 @@ pub struct Hub {
     pub catalogue_status: Mutex<Option<proto::CatalogueStatus>>,
     pub home: Mutex<Option<proto::HomeFeed>>,
     pub library: Mutex<Option<proto::Library>>,
+    pub stream: Mutex<Option<proto::StreamInfo>>,
     pub events: broadcast::Sender<Event>,
     pub commands: mpsc::Sender<Command>,
     pub catalogue: Option<mpsc::Sender<CatCmd>>,
@@ -80,6 +83,7 @@ pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: O
         catalogue_status: Mutex::new(None),
         home: Mutex::new(None),
         library: Mutex::new(None),
+        stream: Mutex::new(None),
         events,
         commands,
         catalogue: cat_tx,
@@ -126,8 +130,15 @@ async fn run_engine(engine: Box<dyn Engine>, hub: Arc<Hub>, mut commands: mpsc::
                     *hub.engine_status.lock().await = Some(status.clone());
                     let _ = hub.events.send(Event::Engine(status));
                 }
+                Some(EngineEvent::Stream(info)) => {
+                    *hub.stream.lock().await = Some(info.clone());
+                    let _ = hub.events.send(Event::Stream(info));
+                }
                 Some(EngineEvent::Error(message)) => {
                     let _ = hub.events.send(Event::Error { message });
+                }
+                Some(EngineEvent::Notice(message)) => {
+                    let _ = hub.events.send(Event::Notice { message });
                 }
                 None => break,
             },
@@ -199,6 +210,9 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     if let Some(l) = hub.library.lock().await.clone() {
         proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Library(l))).await?;
     }
+    if let Some(s) = hub.stream.lock().await.clone() {
+        proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Stream(s))).await?;
+    }
 
     let mut events = hub.events.subscribe();
     let (out_tx, mut out_rx) = mpsc::channel::<DaemonMsg>(64);
@@ -258,6 +272,15 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                     let _ = out_tx.send(DaemonMsg::Pong { id }).await;
                 }
                 ClientMsg::Command(Command::Shutdown) => hub.shutdown.notify_one(),
+                ClientMsg::Command(Command::GetHealth) => {
+                    let expires = match hub.engine_status.lock().await.clone() {
+                        Some(proto::EngineStatus::Ready { expires_in_days, .. }) => expires_in_days,
+                        _ => None,
+                    };
+                    let mut h = tokio::task::spawn_blocking(health::report).await.unwrap_or_default();
+                    h.engine_expires_in_days = expires;
+                    let _ = out_tx.send(DaemonMsg::Event(Event::Health(h))).await;
+                }
                 ClientMsg::Command(Command::GetState) => {
                     let s = hub.playback.lock().await.clone();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;

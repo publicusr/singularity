@@ -8,7 +8,10 @@ use tokio::sync::mpsc;
 pub enum EngineEvent {
     Playback(PlaybackState),
     Status(EngineStatus),
+    /// what is streaming now (codec, bitrate)
+    Stream(singularity_proto::StreamInfo),
     Error(String),
+    Notice(String),
 }
 
 pub trait Engine: Send + 'static {

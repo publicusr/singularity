@@ -17,9 +17,8 @@ cargo build --release
 After a rebuild, the next Client notices the running Daemon is older than `target/release/singularityd` and replaces
 it by itself ("Updating singularityd…"; music pauses for a second while Soloist restarts).
 
-- **Playback** needs your Soloist key in the keyring (see `spikes/soloist-control/README.md`). The Daemon downloads
-  Soloist and appears as the Connect device **"Singularity"**; pick it once from your phone, and set its quality to
-  Lossless there (device picker → Change quality settings).
+- **First run**: a setup wizard asks for your Soloist API key (stored in the keyring), downloads Soloist, and walks you
+  through pairing from your phone, the Spotify login and an audio check. Ctrl+K → "Health check" shows what's working.
 - **Browsing**: Ctrl+K → "Log in to Spotify" (approve the code at spotify.com/pair). Home, the library sidebar and
   track lists appear once logged in.
 - `singularityd --fake-engine` runs a pretend player for UI work; `--no-catalogue` skips Spotify browsing;

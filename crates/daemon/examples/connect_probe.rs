@@ -16,7 +16,7 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let dirs = Dirs::from_env();
     let cache = Cache::new(Some(&dirs.credentials), None, None, None)?;
-    let creds = cache.credentials().ok_or_else(|| anyhow::anyhow!("no saved login"))?;
+    let creds = singularityd::catalogue::saved_credentials(&dirs).ok_or_else(|| anyhow::anyhow!("no saved login"))?;
     let session = Session::new(SessionConfig::default(), Some(cache));
     session.connect(creds, true).await?;
 
