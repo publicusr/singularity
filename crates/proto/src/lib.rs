@@ -1,0 +1,234 @@
+//! The Daemon↔Client protocol (ADR-0003, D27).
+//!
+//! Transport: a Unix socket in the user's runtime dir. Framing: a 4-byte big-endian length followed by a
+//! JSON message. JSON keeps the wire debuggable; spectrum frames are small enough that it doesn't matter.
+//!
+//! Versioning: the first exchange is `Hello` → `Welcome` (or `Incompatible`). Bump [`PROTOCOL_VERSION`] on
+//! any breaking change; additive changes (new optional fields, new variants the other side may ignore)
+//! don't need a bump because unknown fields are ignored and unknown variants decode as `Unknown`.
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+pub const PROTOCOL_VERSION: u32 = 1;
+/// Upper bound for one frame; anything larger is a bug or an attack.
+pub const MAX_FRAME: usize = 16 * 1024 * 1024;
+
+/// Messages a Client sends.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "t", rename_all = "snake_case")]
+pub enum ClientMsg {
+    Hello { protocol: u32, client: String },
+    Ping { id: u64 },
+    Command(Command),
+    #[serde(other)]
+    Unknown,
+}
+
+/// Messages the Daemon sends.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "t", rename_all = "snake_case")]
+pub enum DaemonMsg {
+    Welcome { protocol: u32, daemon_version: String, started_unix_ms: u64 },
+    Incompatible { protocol: u32, message: String },
+    Pong { id: u64 },
+    Event(Event),
+    #[serde(other)]
+    Unknown,
+}
+
+/// Things a Client asks the Daemon to do.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "cmd", rename_all = "snake_case")]
+pub enum Command {
+    /// Resume, or start playing a Spotify URI (track, album, playlist, …).
+    Play { uri: Option<String> },
+    Pause,
+    TogglePlay,
+    Next,
+    Previous,
+    Seek { position_ms: u64 },
+    SetVolume { percent: u8 },
+    SetShuffle { enabled: bool },
+    SetRepeat { mode: RepeatMode },
+    AddToQueue { uri: String },
+    /// Ask for a full snapshot (sent automatically after `Welcome`).
+    GetState,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepeatMode {
+    #[default]
+    Off,
+    Context,
+    Track,
+}
+
+/// Things the Daemon tells Clients.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "ev", rename_all = "snake_case")]
+pub enum Event {
+    /// Full playback snapshot; Clients replace their copy.
+    Playback(PlaybackState),
+    /// Engine health/status changes (starting, needs pairing, ready, error…).
+    Engine(EngineStatus),
+    /// A command was refused or failed.
+    Error { message: String },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PlaybackState {
+    pub status: PlayStatus,
+    pub item: Option<Item>,
+    pub context_uri: Option<String>,
+    pub context_name: Option<String>,
+    /// Position anchor: `position_ms` at `timestamp_ms` (Unix ms), advancing at `speed` (0 when paused).
+    pub position_ms: u64,
+    pub timestamp_ms: u64,
+    pub speed: f32,
+    pub volume: u8,
+    pub shuffle: bool,
+    pub repeat: RepeatMode,
+    pub queue: Vec<QueueEntry>,
+}
+
+impl PlaybackState {
+    /// Interpolated position at `now_ms` (Unix ms), clamped to the item's duration.
+    pub fn position_at(&self, now_ms: u64) -> u64 {
+        let elapsed = now_ms.saturating_sub(self.timestamp_ms) as f64 * self.speed as f64;
+        let pos = self.position_ms as f64 + elapsed;
+        let max = self.item.as_ref().map(|i| i.duration_ms).filter(|d| *d > 0).unwrap_or(u64::MAX);
+        (pos.max(0.0) as u64).min(max)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlayStatus {
+    #[default]
+    Idle,
+    Playing,
+    Paused,
+    Buffering,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Item {
+    pub uri: String,
+    pub name: String,
+    pub artists: Vec<String>,
+    pub album: Option<String>,
+    pub cover_url: Option<String>,
+    pub duration_ms: u64,
+    pub explicit: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueueEntry {
+    pub item: Item,
+    /// `context`, `queue` or `autoplay`.
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum EngineStatus {
+    NotConfigured { reason: String },
+    Starting,
+    /// Running, but no Spotify Connect session yet: pick the device on a phone once.
+    NeedsPairing { device_name: String },
+    Ready { device_name: String, active: bool, version: String, expires_in_days: Option<u32> },
+    Failed { message: String },
+}
+
+/// Where the Daemon listens: `$XDG_RUNTIME_DIR/singularity/daemon.sock` (falls back to /tmp/singularity-$UID).
+pub fn socket_path() -> PathBuf {
+    if let Ok(p) = std::env::var("SINGULARITY_SOCKET") {
+        return PathBuf::from(p);
+    }
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("singularity-{}", uid())));
+    base.join("singularity").join("daemon.sock")
+}
+
+fn uid() -> String {
+    std::env::var("UID").unwrap_or_else(|_| {
+        std::fs::metadata("/proc/self").map(|m| std::os::unix::fs::MetadataExt::uid(&m).to_string()).unwrap_or_else(|_| "user".into())
+    })
+}
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// Write one frame.
+pub async fn write_msg<W: AsyncWriteExt + Unpin, T: Serialize>(w: &mut W, msg: &T) -> std::io::Result<()> {
+    let body = serde_json::to_vec(msg).map_err(std::io::Error::other)?;
+    if body.len() > MAX_FRAME {
+        return Err(std::io::Error::other("frame too large"));
+    }
+    w.write_all(&(body.len() as u32).to_be_bytes()).await?;
+    w.write_all(&body).await?;
+    w.flush().await
+}
+
+/// Read one frame. `Ok(None)` means the peer closed the connection cleanly.
+pub async fn read_msg<R: AsyncReadExt + Unpin, T: for<'de> Deserialize<'de>>(r: &mut R) -> std::io::Result<Option<T>> {
+    let mut len = [0u8; 4];
+    match r.read_exact(&mut len).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e),
+    }
+    let len = u32::from_be_bytes(len) as usize;
+    if len > MAX_FRAME {
+        return Err(std::io::Error::other("frame too large"));
+    }
+    let mut body = vec![0u8; len];
+    r.read_exact(&mut body).await?;
+    serde_json::from_slice(&body).map(Some).map_err(std::io::Error::other)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn frames_round_trip() {
+        let (mut a, mut b) = tokio::io::duplex(1024);
+        let msg = ClientMsg::Command(Command::Seek { position_ms: 42_000 });
+        write_msg(&mut a, &msg).await.unwrap();
+        let got: ClientMsg = read_msg(&mut b).await.unwrap().unwrap();
+        assert_eq!(got, msg);
+    }
+
+    #[test]
+    fn unknown_variants_do_not_break_old_peers() {
+        let m: DaemonMsg = serde_json::from_str(r#"{"t":"something_new","x":1}"#).unwrap();
+        assert_eq!(m, DaemonMsg::Unknown);
+        let c: Command = serde_json::from_str(r#"{"cmd":"teleport"}"#).unwrap();
+        assert_eq!(c, Command::Unknown);
+    }
+
+    #[test]
+    fn position_interpolates_and_clamps() {
+        let s = PlaybackState {
+            position_ms: 10_000,
+            timestamp_ms: 1_000,
+            speed: 1.0,
+            item: Some(Item { duration_ms: 12_000, ..Default::default() }),
+            ..Default::default()
+        };
+        assert_eq!(s.position_at(2_000), 11_000);
+        assert_eq!(s.position_at(60_000), 12_000);
+        let paused = PlaybackState { speed: 0.0, ..s };
+        assert_eq!(paused.position_at(60_000), 10_000);
+    }
+}

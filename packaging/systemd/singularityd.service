@@ -1,0 +1,14 @@
+# Singularity Daemon: owns playback so music keeps going when every terminal is closed.
+# Install:  cp packaging/systemd/singularityd.service ~/.config/systemd/user/
+#           systemctl --user daemon-reload && systemctl --user enable --now singularityd
+[Unit]
+Description=Singularity Daemon (terminal Spotify client backend)
+After=pipewire.service network-online.target
+
+[Service]
+ExecStart=%h/.cargo/bin/singularityd
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
