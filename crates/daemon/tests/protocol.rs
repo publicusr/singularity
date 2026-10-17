@@ -193,3 +193,34 @@ async fn shutdown_makes_way_for_a_newer_daemon() {
     let r = tokio::time::timeout(std::time::Duration::from_secs(2), served).await.expect("serve returns").unwrap().unwrap();
     assert_eq!(r, singularityd::Served::Replaced);
 }
+
+#[tokio::test]
+async fn queue_edits_and_bare_entries_get_names() {
+    use singularity_proto::{Command, HomeFeed};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("q.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    let catalogue = singularityd::catalogue::spawn_fake(HomeFeed::default());
+    tokio::spawn(singularityd::serve(listener, Box::new(singularityd::engine::FakeEngine), Some(catalogue), None));
+    let mut a = connect(&path).await;
+    let cmd = |c| ClientMsg::Command(c);
+    async fn queue_where(s: &mut UnixStream, ok: impl Fn(&[singularity_proto::QueueEntry]) -> bool) -> Vec<singularity_proto::QueueEntry> {
+        loop {
+            let p = next_playback(s).await;
+            if ok(&p.queue) {
+                return p.queue;
+            }
+        }
+    }
+    proto::write_msg(&mut a, &cmd(Command::AddToQueue { uri: "spotify:track:x1".into() })).await.unwrap();
+    proto::write_msg(&mut a, &cmd(Command::PlayNext { uri: "spotify:track:x2".into() })).await.unwrap();
+    // the second goes first; both arrive bare and get their names from the Catalogue
+    let q = queue_where(&mut a, |q| q.len() == 2 && q.iter().all(|e| !e.item.name.is_empty())).await;
+    assert_eq!(q.iter().map(|e| e.item.uri.as_str()).collect::<Vec<_>>(), ["spotify:track:x2", "spotify:track:x1"]);
+    assert_eq!(q[0].item.name, "Described x2");
+    proto::write_msg(&mut a, &cmd(Command::RemoveFromQueue { uri: "spotify:track:x2".into(), uid: Some(q[0].uid.clone()) })).await.unwrap();
+    let q = queue_where(&mut a, |q| q.len() == 1).await;
+    assert_eq!(q[0].item.uri, "spotify:track:x1");
+    proto::write_msg(&mut a, &cmd(Command::ClearQueue)).await.unwrap();
+    queue_where(&mut a, |q| q.is_empty()).await;
+}

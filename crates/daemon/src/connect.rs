@@ -80,6 +80,80 @@ impl ConnectRemote {
     }
 }
 
+/// One change to what plays next. Only user-queued tracks (`provider == "queue"`) can be removed.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QueueEdit {
+    PlayNext(String),
+    Remove { uri: String, uid: Option<String> },
+    Clear,
+}
+
+/// Apply `edit` to the player's `next_tracks` (as sent back in `set_queue`). False if there was nothing to change.
+pub fn edit_queue(next: &mut Vec<serde_json::Value>, edit: &QueueEdit) -> bool {
+    let queued = |t: &serde_json::Value| t["provider"] == "queue";
+    match edit {
+        QueueEdit::PlayNext(uri) => {
+            next.insert(0, json!({ "uri": uri, "uid": "", "metadata": { "is_queued": "true" }, "provider": "queue" }));
+            true
+        }
+        QueueEdit::Remove { uri, uid } => {
+            let by_uid = uid.as_deref().filter(|u| !u.is_empty()).and_then(|u| next.iter().position(|t| queued(t) && t["uid"] == u));
+            match by_uid.or_else(|| next.iter().position(|t| queued(t) && t["uri"] == uri.as_str())) {
+                Some(i) => {
+                    next.remove(i);
+                    true
+                }
+                None => false,
+            }
+        }
+        QueueEdit::Clear => {
+            let before = next.len();
+            next.retain(|t| !queued(t));
+            next.len() != before
+        }
+    }
+}
+
+impl ConnectRemote {
+    /// Change what plays next on device `to`, against the player's current queue revision.
+    pub async fn edit_queue(&self, to: &str, edit: &QueueEdit) -> anyhow::Result<()> {
+        let ps = self.devices().await?.player_state.unwrap_or_default();
+        let as_json = |t: &librespot_protocol::player::ProvidedTrack| json!({ "uri": t.uri, "uid": t.uid, "metadata": t.metadata, "provider": t.provider });
+        let mut next: Vec<serde_json::Value> = ps.next_tracks.iter().map(as_json).collect();
+        anyhow::ensure!(edit_queue(&mut next, edit), "that track isn't in the queue any more");
+        let prev: Vec<serde_json::Value> = ps.prev_tracks.iter().map(as_json).collect();
+        let cmd = json!({ "endpoint": "set_queue", "next_tracks": next, "prev_tracks": prev, "queue_revision": ps.queue_revision });
+        self.session.spclient().send_player_command(to, cmd).await?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn q() -> Vec<serde_json::Value> {
+        vec![
+            json!({"uri": "spotify:track:a", "uid": "u1", "provider": "queue"}),
+            json!({"uri": "spotify:track:a", "uid": "u2", "provider": "queue"}),
+            json!({"uri": "spotify:track:c", "uid": "u3", "provider": "context"}),
+            json!({"uri": "spotify:track:d", "uid": "u4", "provider": "autoplay"}),
+        ]
+    }
+
+    #[test]
+    fn queue_edits_touch_only_queued_tracks() {
+        let mut n = q();
+        assert!(edit_queue(&mut n, &QueueEdit::Remove { uri: "spotify:track:a".into(), uid: Some("u2".into()) }));
+        assert_eq!(n.iter().map(|t| t["uid"].as_str().unwrap()).collect::<Vec<_>>(), ["u1", "u3", "u4"], "the right copy goes");
+        assert!(!edit_queue(&mut n, &QueueEdit::Remove { uri: "spotify:track:c".into(), uid: None }), "context tracks can't be removed");
+        assert!(edit_queue(&mut n, &QueueEdit::PlayNext("spotify:track:z".into())));
+        assert_eq!((n[0]["uri"].as_str(), n[0]["provider"].as_str()), (Some("spotify:track:z"), Some("queue")));
+        assert!(edit_queue(&mut n, &QueueEdit::Clear));
+        assert!(n.iter().all(|t| t["provider"] != "queue") && n.len() == 2, "context and autoplay stay");
+    }
+}
+
 impl Drop for ConnectRemote {
     fn drop(&mut self) {
         let session = self.session.clone();

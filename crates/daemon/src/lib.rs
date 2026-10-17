@@ -30,6 +30,9 @@ pub struct Hub {
     pub home: Mutex<Option<proto::HomeFeed>>,
     pub library: Mutex<Option<proto::Library>>,
     pub stream: Mutex<Option<proto::StreamInfo>>,
+    /// track metadata the Catalogue filled in, for queue entries Soloist sent bare; and what's being asked for
+    pub described: Mutex<std::collections::HashMap<String, proto::Item>>,
+    pub describing: Mutex<std::collections::HashSet<String>>,
     pub events: broadcast::Sender<Event>,
     pub commands: mpsc::Sender<Command>,
     pub catalogue: Option<mpsc::Sender<CatCmd>>,
@@ -84,6 +87,8 @@ pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: O
         home: Mutex::new(None),
         library: Mutex::new(None),
         stream: Mutex::new(None),
+        described: Default::default(),
+        describing: Default::default(),
         events,
         commands,
         catalogue: cat_tx,
@@ -122,7 +127,13 @@ async fn run_engine(engine: Box<dyn Engine>, hub: Arc<Hub>, mut commands: mpsc::
     loop {
         tokio::select! {
             ev = events.recv() => match ev {
-                Some(EngineEvent::Playback(state)) => {
+                Some(EngineEvent::Playback(mut state)) => {
+                    let missing = fill_queue(&hub, &mut state).await;
+                    if !missing.is_empty()
+                        && let Some(c) = &hub.catalogue
+                    {
+                        let _ = c.send(CatCmd::Describe(missing)).await;
+                    }
                     *hub.playback.lock().await = state.clone();
                     let _ = hub.events.send(Event::Playback(state));
                 }
@@ -149,9 +160,39 @@ async fn run_engine(engine: Box<dyn Engine>, hub: Arc<Hub>, mut commands: mpsc::
     }
 }
 
+/// Fill bare queue entries from the Catalogue's answers; returns the URIs still unknown (and not yet asked for).
+async fn fill_queue(hub: &Hub, state: &mut PlaybackState) -> Vec<String> {
+    let described = hub.described.lock().await;
+    let mut asking = hub.describing.lock().await;
+    let mut missing = vec![];
+    for q in state.queue.iter_mut().filter(|q| q.item.name.is_empty() && q.item.uri.starts_with("spotify:track:")) {
+        match described.get(&q.item.uri) {
+            Some(i) => q.item = i.clone(),
+            None if asking.insert(q.item.uri.clone()) => missing.push(q.item.uri.clone()),
+            None => {}
+        }
+    }
+    missing
+}
+
 async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
     while let Some(ev) = events.recv().await {
         match ev {
+            CatEvent::Described(items) => {
+                {
+                    let mut d = hub.described.lock().await;
+                    let mut asking = hub.describing.lock().await;
+                    for i in items {
+                        asking.remove(&i.uri);
+                        d.insert(i.uri.clone(), i);
+                    }
+                }
+                // show them at once
+                let mut state = hub.playback.lock().await.clone();
+                fill_queue(&hub, &mut state).await;
+                *hub.playback.lock().await = state.clone();
+                let _ = hub.events.send(Event::Playback(state));
+            }
             CatEvent::Status(s) => {
                 *hub.catalogue_status.lock().await = Some(s.clone());
                 let _ = hub.events.send(Event::Catalogue(s));
@@ -285,7 +326,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                     let s = hub.playback.lock().await.clone();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;
                 }
-                ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. })) => match &hub.catalogue {
+                ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. } | Command::PlayNext { .. } | Command::RemoveFromQueue { .. } | Command::ClearQueue)) => match &hub.catalogue {
                     Some(tx) => {
                         let c = match cmd {
                             Command::Login => CatCmd::Login,
@@ -293,12 +334,15 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                             Command::GetLibrary => CatCmd::Library,
                             Command::GetTracks { uri } => CatCmd::Tracks(uri),
                             Command::PlayFrom { context_uri, index, track_uri } => CatCmd::PlayFrom { context_uri, index, track_uri },
+                            Command::PlayNext { uri } => CatCmd::Queue(connect::QueueEdit::PlayNext(uri)),
+                            Command::RemoveFromQueue { uri, uid } => CatCmd::Queue(connect::QueueEdit::Remove { uri, uid }),
+                            Command::ClearQueue => CatCmd::Queue(connect::QueueEdit::Clear),
                             _ => CatCmd::Home,
                         };
                         let _ = tx.send(c).await;
                     }
-                    // without a Catalogue the Engine still plays the track itself
-                    None if matches!(cmd, Command::PlayFrom { .. }) => {
+                    // without a Catalogue the Engine still plays the track itself (and appends instead of "next")
+                    None if matches!(cmd, Command::PlayFrom { .. } | Command::PlayNext { .. }) => {
                         let _ = hub.commands.send(cmd).await;
                     }
                     None => {

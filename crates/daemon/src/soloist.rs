@@ -248,8 +248,19 @@ enum Exit {
     Expired,
 }
 
+/// Is a Soloist already running on this state directory? (Its pid file names a live `soloist` process.)
+pub fn running_soloist(state: &std::path::Path) -> Option<u32> {
+    let pid: u32 = std::fs::read_to_string(state.join("data/soloist.pid")).ok()?.trim().parse().ok()?;
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    (comm.trim() == "soloist").then_some(pid)
+}
+
 async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<EngineEvent>) -> anyhow::Result<Exit> {
     let state = engine.state_dir();
+    // another Daemon's Soloist owns these files: touch nothing (its port file, its log)
+    if let Some(pid) = running_soloist(&state) {
+        anyhow::bail!("Soloist is already running (pid {pid}) with Singularity's data: is a second singularityd running?");
+    }
     tokio::fs::create_dir_all(state.join("data")).await?;
     tokio::fs::create_dir_all(state.join("cache")).await?;
     let _ = tokio::fs::remove_file(state.join("data/ws.port")).await;
@@ -478,7 +489,7 @@ impl SoloistState {
                         a.iter()
                             .filter_map(|q| {
                                 let item = entity(&q["item"]).unwrap_or_else(|| Item { uri: q["uid"].as_str().unwrap_or_default().into(), ..Default::default() });
-                                Some(QueueEntry { item, source: q["source"].as_str().unwrap_or("context").into() })
+                                Some(QueueEntry { item, source: q["source"].as_str().unwrap_or("context").into(), uid: q["uid"].as_str().unwrap_or_default().into() })
                             })
                             .collect()
                     })
@@ -543,6 +554,9 @@ impl SoloistState {
             // last resort, the track plays on its own.
             Command::PlayFrom { track_uri: Some(u), .. } => vec![json!({"type":"command","command":"play","uri":u})],
             Command::PlayFrom { .. } | Command::GetLibrary | Command::GetTracks { .. } | Command::Spectrum { .. } | Command::Shutdown | Command::SetSoloistKey { .. } | Command::GetHealth => vec![],
+            // Soloist only appends; the rest goes through ConnectRemote
+            Command::PlayNext { uri } => vec![json!({"type":"command","command":"add_to_queue","uri":uri})],
+            Command::RemoveFromQueue { .. } | Command::ClearQueue => vec![],
             Command::Login | Command::Logout | Command::GetHome | Command::Unknown => vec![],
         }
     }

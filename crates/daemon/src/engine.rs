@@ -90,6 +90,21 @@ impl Engine for FakeEngine {
                         st.context_uri = Some(context_uri);
                         st.status = PlayStatus::Playing;
                     }
+                    // a queue, so the queue Widget has something to show; entries come bare, like Soloist's sometimes do
+                    Command::AddToQueue { ref uri } | Command::PlayNext { ref uri } => {
+                        let uri = uri.clone();
+                        let n = st.queue.len();
+                        let entry = singularity_proto::QueueEntry { item: Item { uri, ..Default::default() }, source: "queue".into(), uid: format!("q{now}{n}") };
+                        let first_context = st.queue.iter().position(|q| q.source != "queue").unwrap_or(n);
+                        let at = if matches!(cmd, Command::PlayNext { .. }) { 0 } else { first_context };
+                        st.queue.insert(at, entry);
+                    }
+                    Command::RemoveFromQueue { uri, uid } => {
+                        if let Some(i) = st.queue.iter().position(|q| q.source == "queue" && (uid.as_deref() == Some(q.uid.as_str()) || q.item.uri == uri)) {
+                            st.queue.remove(i);
+                        }
+                    }
+                    Command::ClearQueue => st.queue.retain(|q| q.source != "queue"),
                     Command::Seek { position_ms } => st.position_ms = position_ms,
                     Command::SetVolume { percent } => st.volume = percent.min(100),
                     Command::SetShuffle { enabled } => st.shuffle = enabled,

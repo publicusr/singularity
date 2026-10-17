@@ -143,3 +143,9 @@ flowchart LR
   a locked data dir are parsed from it, and the log rotates instead of being truncated. First-run wizard (requirements
   up front, masked key entry with paste, download, pairing, login, audio check), Health check in the palette, stream
   stats Pane with a LOSSLESS badge and the exact fix when it isn't.
+- **#12 Queue** (2026-10-18): Soloist only appends, so play next / remove / clear go through ConnectRemote as a Connect
+  `set_queue` (the player's `next_tracks` from the cluster, edited, sent back with its `queue_revision`; only
+  `provider=queue` entries can be removed). Verified live on the owner's (paused) Soloist with one test track, added and
+  removed. Queue entries Soloist sends bare get names from `getTrack` (cached). Queue Widget: now playing, Next in queue,
+  Next from <context>, Autoplay (marked); right-click or Delete edits; track rows got a context menu (play from here,
+  play next, add to queue, copy link).

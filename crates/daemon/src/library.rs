@@ -79,6 +79,23 @@ pub fn parse_library(v: &Value, depth: u8) -> LibraryPage {
     page
 }
 
+/// A `getTrack` answer → an Item (for queue entries Soloist sent without metadata).
+pub fn parse_track(v: &Value) -> Option<singularity_proto::Item> {
+    let t = &v["data"]["trackUnion"];
+    let uri = t["uri"].as_str()?.to_string();
+    let mut artists = names(&t["firstArtist"]["items"]);
+    artists.extend(names(&t["otherArtists"]["items"]));
+    Some(singularity_proto::Item {
+        uri,
+        name: t["name"].as_str().unwrap_or_default().to_string(),
+        artists,
+        album: t["albumOfTrack"]["name"].as_str().map(String::from),
+        cover_url: image(&t["albumOfTrack"]["coverArt"]["sources"]),
+        duration_ms: t["duration"]["totalMilliseconds"].as_u64().unwrap_or(0),
+        explicit: t["contentRating"]["label"] == "EXPLICIT",
+    })
+}
+
 /// One page of a track list, in any of the three shapes, plus the list's total length.
 pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
     let (items, total) = match uri.split(':').nth(1) {
@@ -166,6 +183,16 @@ mod tests {
         assert_eq!((al.len(), n), (2, 19));
         assert_eq!(al[0].album, "Quiet Orbit", "album tracks take the album's name");
         assert_eq!(al[1].duration_ms, 185_500);
+    }
+
+    #[test]
+    fn get_track_fills_an_item() {
+        let v = serde_json::json!({"data": {"trackUnion": {"__typename": "Track", "uri": "spotify:track:t", "name": "Perihelion",
+            "firstArtist": {"items": [{"profile": {"name": "Lumen Fields"}}]}, "otherArtists": {"items": [{"profile": {"name": "Mira Vale"}}]},
+            "albumOfTrack": {"name": "Quiet Orbit", "coverArt": {"sources": [{"url": "https://i.scdn.co/image/c300", "width": 300}]}},
+            "duration": {"totalMilliseconds": 210000}, "contentRating": {"label": "NONE"}}}});
+        let i = parse_track(&v).unwrap();
+        assert_eq!((i.name.as_str(), i.artists.len(), i.duration_ms, i.album.as_deref()), ("Perihelion", 2, 210_000, Some("Quiet Orbit")));
     }
 
     #[test]

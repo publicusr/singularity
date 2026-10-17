@@ -7,6 +7,7 @@ mod gfx;
 mod home;
 mod layout;
 mod meters;
+mod queue;
 mod scrub;
 mod setup;
 mod sidebar;

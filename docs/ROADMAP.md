@@ -18,4 +18,4 @@ Phase 1 comes before any UI work on purpose. If the Soloist or catalogue spike f
 architecture changes, and it is better to learn that in a day than after a month of UI.
 
 **Progress (2026-10-17):** v1 tickets are GitHub issues #2–#24 under spec issue #1. Done: #2 Daemon↔Client, #3 Client shell,
-#4 Soloist playback, #7 Catalogue session, #24 seek precision, #8 Home, #9 Library, #15 AudioTap, #16 black hole, #5 setup & health. Next: #12 queue, #14 lyrics, #11 album/artist pages. See `docs/HANDOFF.md`.
+#4 Soloist playback, #7 Catalogue session, #24 seek precision, #8 Home, #9 Library, #15 AudioTap, #16 black hole, #5 setup & health, #12 queue. Next: #14 lyrics, #11 album/artist pages. See `docs/HANDOFF.md`.

@@ -32,3 +32,11 @@ Timing: ~0.9–2.2 s per request. Lists page at 50 (library) and 100 (tracks), s
 
 Soloist is started with `--api-key <key>` on its command line, so the key shows in `ps` for any local user. Worth
 fixing in #5 (keyring) if Soloist accepts the key another way.
+
+## Editing the queue (verified live, 2026-10-18)
+
+Soloist's `add_to_queue` appends. Everything else is a Connect `set_queue` command: take `player_state.next_tracks`
+(and `prev_tracks`, `queue_revision`) from the cluster (the answer to the hidden controller's `PUT connect-state`),
+edit the list, send it back: `{endpoint: "set_queue", next_tracks, prev_tracks, queue_revision}`. User-queued entries
+have `provider: "queue"`; a new entry `{uri, uid: "", metadata: {is_queued: "true"}, provider: "queue"}` inserted at the
+front plays next (Spotify assigns its uid). `getTrack {uri}` → `data.trackUnion` fills names for bare queue entries.

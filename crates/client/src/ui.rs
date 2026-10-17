@@ -17,7 +17,7 @@ fn slot_info(slot: &str) -> (&'static str, &'static str) {
         "library" => ("~/library", "library sidebar arrives with #9"),
         "stream" => ("stream", ""),
         "home" => ("home", ""),
-        "queue" => ("queue", "queue arrives with #12"),
+        "queue" => ("queue", ""),
         "well" => ("gravity well", "the black hole arrives with #16"),
         "lyrics" => ("tail -f lyrics.log", "synced lyrics arrive with #14"),
         "loudness" => ("loudness", "arrives with #15"),
@@ -189,6 +189,10 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         f.render_widget(block, *rect);
         if slot == "library" {
             crate::sidebar::draw(f.buffer_mut(), inner, app, th);
+            continue;
+        }
+        if slot == "queue" {
+            crate::queue::draw(f.buffer_mut(), inner, app, th);
             continue;
         }
         if slot == "stream" {
@@ -991,5 +995,53 @@ mod tests {
         app.health = Some(singularity_proto::Health { soloist_key: "keyring".into(), spotify_login: "keyring".into(), audio_output: Some("DAC Pro".into()), engine_expires_in_days: Some(80) });
         let s = render(&mut app, 160, 48);
         assert!(s.contains("Health check") && s.contains("DAC Pro") && s.contains("FLAC · 1.40 Mbit/s"), "{s}");
+    }
+
+    // ── Queue (#12) ──
+
+    #[test]
+    fn queue_widget_marks_autoplay_and_edits_through_menus() {
+        use singularity_proto::{Command, Item, QueueEntry};
+        let (mut app, mut rx) = playing_app(200_000);
+        app.playback.context_name = Some("Night Drive".into());
+        let e = |n: &str, src: &str| QueueEntry { item: Item { uri: format!("spotify:track:{n}"), name: n.into(), artists: vec!["Nova Drift".into()], duration_ms: 200_000, ..Default::default() }, source: src.into(), uid: format!("uid-{n}") };
+        app.playback.queue = vec![e("Mine", "queue"), e("Ctx", "context"), e("Auto", "autoplay")];
+        let s = render(&mut app, 160, 48);
+        for part in ["Next in queue", "Next from Night Drive", "Autoplay", "autoplay  3:20"] {
+            assert!(s.contains(part), "missing {part:?}\n{s}");
+        }
+        // right-click the queued one → Remove
+        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::QueueRow(0)).then_some(*r)).unwrap();
+        app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column: row.x + 2, row: row.y, modifiers: KeyModifiers::NONE });
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("Remove from queue") && s.contains("Clear queue"));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(sent(&mut rx), vec![Command::RemoveFromQueue { uri: "spotify:track:Mine".into(), uid: Some("uid-Mine".into()) }]);
+        // a context track can be played next, not removed
+        app.focus = "queue".into();
+        app.queue_view.sel = 1;
+        app.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert!(sent(&mut rx).is_empty());
+        app.run(Action::ClearQueue);
+        assert_eq!(sent(&mut rx), vec![Command::ClearQueue]);
+    }
+
+    #[test]
+    fn track_rows_can_play_next_or_be_queued() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = library_app();
+        render(&mut app, 160, 48);
+        let r = side_rect(&app, 1);
+        click(&mut app, r.x + 3, r.y);
+        sent(&mut rx);
+        app.track_page(page(0, 10, 10));
+        render(&mut app, 160, 48);
+        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::Track(3)).then_some(*r)).unwrap();
+        app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column: row.x + 5, row: row.y, modifiers: KeyModifiers::NONE });
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("Play from here") && s.contains("Play next") && s.contains("Add to queue"));
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(sent(&mut rx), vec![Command::PlayNext { uri: "spotify:track:t3".into() }]);
     }
 }

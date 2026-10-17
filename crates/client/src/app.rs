@@ -51,6 +51,7 @@ pub enum Action {
     SortAdded,
     SortDuration,
     NextLook,
+    ClearQueue,
     Health,
     Setup,
     FocusNext,
@@ -61,7 +62,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 29] = [
+    pub const ALL: [Action; 30] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -84,6 +85,7 @@ impl Action {
         Action::SortAdded,
         Action::SortDuration,
         Action::NextLook,
+        Action::ClearQueue,
         Action::Health,
         Action::Setup,
         Action::FocusNext,
@@ -116,6 +118,7 @@ impl Action {
             Action::SortAdded => "Sort list by date added",
             Action::SortDuration => "Sort list by duration",
             Action::NextLook => "Black hole: next Disk look",
+            Action::ClearQueue => "Clear the queue",
             Action::Health => "Health check (Engine, login, audio, stream quality)",
             Action::Setup => "Setup: key, pairing, login, audio check",
             Action::FocusNext => "Focus next pane",
@@ -143,7 +146,7 @@ impl Action {
             Action::Filter => "/",
             Action::SortTitle | Action::SortArtist | Action::SortAlbum | Action::SortAdded | Action::SortDuration => "",
             Action::NextLook => "v",
-            Action::Health | Action::Setup => "",
+            Action::Health | Action::Setup | Action::ClearQueue => "",
             Action::FocusNext => "Tab",
             Action::ResetLayout => "",
             Action::Palette => "Ctrl+K",
@@ -173,24 +176,41 @@ pub enum Hit {
     Well,
     /// ▶ Play on the open track list
     PlayView,
+    /// a queue entry, by index in `playback.queue`
+    QueueRow(usize),
 }
 
 /// Two clicks on the same row within this time play it.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
-/// What a context-menu entry does to its Card.
+/// What a context-menu entry does to its target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAct {
     Play,
+    /// play the open track list from this row
+    PlayHere,
+    PlayNext,
     Queue,
+    Dequeue,
+    ClearQueue,
     GoTo,
     CopyLink,
 }
 
+/// What a context menu is about.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Target {
+    Card(CardRef),
+    /// a row of the open track list, by view position
+    Row(usize),
+    /// a queue entry: its URI and uid, and whether the user queued it
+    Queued { uri: String, uid: String, name: String, queued: bool },
+}
+
 pub struct Menu {
-    /// where it opened (the pointer, or the selected Card)
+    /// where it opened (the pointer, or the selected item)
     pub at: (u16, u16),
-    pub card: CardRef,
+    pub target: Target,
     pub items: Vec<(String, MenuAct)>,
     pub selected: usize,
 }
@@ -258,6 +278,7 @@ pub struct App {
     health_asked: Option<Instant>,
     pub setup: crate::setup::Setup,
     pub hole: BlackHole,
+    pub queue_view: crate::queue::QueueView,
     /// where the hole was drawn this frame (for bending the neighbouring borders)
     pub hole_at: Option<Hole>,
     last_tick: Instant,
@@ -306,6 +327,7 @@ impl App {
             health_asked: None,
             setup: Default::default(),
             hole: BlackHole::default(),
+            queue_view: Default::default(),
             hole_at: None,
             last_tick: Instant::now(),
             told_backend: false,
@@ -399,6 +421,14 @@ impl App {
             Action::SortAlbum => self.sort(Col::Album),
             Action::SortAdded => self.sort(Col::Added),
             Action::SortDuration => self.sort(Col::Duration),
+            Action::ClearQueue => {
+                if self.playback.queue.iter().any(|q| q.source == "queue") {
+                    self.send(Command::ClearQueue);
+                    self.say("Queue cleared");
+                } else {
+                    self.say("Nothing queued");
+                }
+            }
             Action::Health => {
                 self.health_open = true;
                 self.health_asked = None;
@@ -469,6 +499,9 @@ impl App {
             return;
         }
         if self.focus == "library" && !shift && self.side_key(k) {
+            return;
+        }
+        if self.focus == "queue" && !shift && self.queue_key(k) {
             return;
         }
         match k.code {
@@ -615,6 +648,32 @@ impl App {
         self.send(cmd);
     }
 
+    fn queue_key(&mut self, k: KeyEvent) -> bool {
+        let n = self.playback.queue.len();
+        if n == 0 {
+            return false;
+        }
+        match k.code {
+            KeyCode::Up => self.queue_view.move_sel(-1, n),
+            KeyCode::Down => self.queue_view.move_sel(1, n),
+            KeyCode::Delete | KeyCode::Backspace => {
+                let Some(q) = self.playback.queue.get(self.queue_view.sel).cloned() else { return true };
+                if q.source == "queue" {
+                    let uid = (!q.uid.is_empty()).then_some(q.uid);
+                    self.send(Command::RemoveFromQueue { uri: q.item.uri, uid });
+                } else {
+                    self.say("Only tracks you queued can be removed");
+                }
+            }
+            KeyCode::Menu | KeyCode::F(10) | KeyCode::Enter => {
+                let i = self.queue_view.sel;
+                self.open_queue_menu(i, None);
+            }
+            _ => return false,
+        }
+        true
+    }
+
     fn tracks_key(&mut self, k: KeyEvent) -> bool {
         let len = self.view_order().len();
         let Some(v) = self.view.as_mut() else { return false };
@@ -629,6 +688,10 @@ impl App {
             KeyCode::Enter => {
                 let sel = v.sel;
                 self.play_row(sel);
+            }
+            KeyCode::Menu | KeyCode::F(10) => {
+                let sel = v.sel;
+                self.open_row_menu(sel, None);
             }
             // Esc clears the filter, then goes back to Home (it never quits from inside a list)
             KeyCode::Esc if !v.filter.is_empty() => v.set_filter(String::new()),
@@ -695,35 +758,109 @@ impl App {
         let Some(card) = self.card(c) else { return };
         let kind = card.kind.clone();
         let mut items = vec![("Play".to_string(), MenuAct::Play)];
-        // Soloist queues single items; queueing whole albums and playlists needs their tracks (#12)
         if matches!(kind.as_str(), "track" | "episode") {
+            items.push(("Play next".into(), MenuAct::PlayNext));
             items.push(("Add to queue".into(), MenuAct::Queue));
         }
         if matches!(kind.as_str(), "album" | "artist" | "playlist" | "show") {
             items.push((format!("Go to {kind}"), MenuAct::GoTo));
         }
         items.push(("Copy link".into(), MenuAct::CopyLink));
-        let at = at.or_else(|| self.hits.iter().find(|(_, h)| *h == Hit::Card(c)).map(|(r, _)| (r.x + 2, r.y + 1))).unwrap_or((0, 0));
+        let at = at.or_else(|| self.hit_rect(&Hit::Card(c)).map(|r| (r.x + 2, r.y + 1))).unwrap_or((0, 0));
         self.home_view.sel = Some(c);
-        self.menu = Some(Menu { at, card: c, items, selected: 0 });
+        self.menu = Some(Menu { at, target: Target::Card(c), items, selected: 0 });
+    }
+
+    /// Right-click on a track-list row.
+    pub fn open_row_menu(&mut self, vi: usize, at: Option<(u16, u16)>) {
+        if let Some(v) = self.view.as_mut() {
+            v.sel = vi;
+        }
+        let items = vec![
+            ("Play from here".to_string(), MenuAct::PlayHere),
+            ("Play next".into(), MenuAct::PlayNext),
+            ("Add to queue".into(), MenuAct::Queue),
+            ("Copy link".into(), MenuAct::CopyLink),
+        ];
+        let at = at.or_else(|| self.hit_rect(&Hit::Track(vi)).map(|r| (r.x + 4, r.y + 1))).unwrap_or((0, 0));
+        self.menu = Some(Menu { at, target: Target::Row(vi), items, selected: 0 });
+    }
+
+    /// Right-click on a queue entry.
+    pub fn open_queue_menu(&mut self, i: usize, at: Option<(u16, u16)>) {
+        let Some(q) = self.playback.queue.get(i).cloned() else { return };
+        self.queue_view.sel = i;
+        let queued = q.source == "queue";
+        let mut items = vec![];
+        if queued {
+            items.push(("Remove from queue".to_string(), MenuAct::Dequeue));
+        } else {
+            items.push(("Play next".to_string(), MenuAct::PlayNext));
+        }
+        if self.playback.queue.iter().any(|q| q.source == "queue") {
+            items.push(("Clear queue".into(), MenuAct::ClearQueue));
+        }
+        items.push(("Copy link".into(), MenuAct::CopyLink));
+        let at = at.or_else(|| self.hit_rect(&Hit::QueueRow(i)).map(|r| (r.x + 4, r.y + 1))).unwrap_or((0, 0));
+        let target = Target::Queued { uri: q.item.uri.clone(), uid: q.uid.clone(), name: q.item.name.clone(), queued };
+        self.menu = Some(Menu { at, target, items, selected: 0 });
+    }
+
+    fn hit_rect(&self, h: &Hit) -> Option<Rect> {
+        self.hits.iter().find(|(_, x)| x == h).map(|(r, _)| *r)
+    }
+
+    /// URI and name of a menu's target.
+    fn target_track(&self, t: &Target) -> Option<(String, String, String)> {
+        match t {
+            Target::Card(c) => self.card(*c).map(|k| (k.uri.clone(), k.name.clone(), k.kind.clone())),
+            Target::Row(vi) => {
+                let order = self.view_order();
+                let v = self.view.as_ref()?;
+                let row = self.lists.get(&v.uri)?.rows.get(*order.get(*vi)?)?;
+                Some((row.uri.clone(), row.name.clone(), "track".into()))
+            }
+            Target::Queued { uri, name, .. } => Some((uri.clone(), name.clone(), "track".into())),
+        }
     }
 
     fn menu_run(&mut self, i: usize) {
         let Some(m) = self.menu.take() else { return };
         let Some((_, act)) = m.items.get(i).cloned() else { return };
-        let Some(card) = self.card(m.card).cloned() else { return };
+        let Some((uri, name, kind)) = self.target_track(&m.target) else { return };
+        let name = if name.is_empty() { "it".to_string() } else { name };
         match act {
-            MenuAct::Play => self.play_card(m.card),
+            MenuAct::Play => match m.target {
+                Target::Card(c) => self.play_card(c),
+                _ => self.send(Command::Play { uri: Some(uri) }),
+            },
+            MenuAct::PlayHere => {
+                if let Target::Row(vi) = m.target {
+                    self.play_row(vi);
+                }
+            }
+            MenuAct::PlayNext => {
+                self.send(Command::PlayNext { uri });
+                self.say(format!("{name} plays next"));
+            }
             MenuAct::Queue => {
-                self.send(Command::AddToQueue { uri: card.uri });
-                self.say(format!("Queued {}", card.name));
+                self.send(Command::AddToQueue { uri });
+                self.say(format!("Queued {name}"));
             }
-            MenuAct::GoTo => {
-                let ticket = if card.kind == "playlist" { "#9" } else { "#11" };
-                self.say(format!("{} pages arrive with {ticket}", capitalise(&card.kind)));
+            MenuAct::Dequeue => {
+                let uid = match &m.target {
+                    Target::Queued { uid, .. } if !uid.is_empty() => Some(uid.clone()),
+                    _ => None,
+                };
+                self.send(Command::RemoveFromQueue { uri, uid });
             }
+            MenuAct::ClearQueue => self.run(Action::ClearQueue),
+            MenuAct::GoTo => match m.target {
+                Target::Card(c) => self.open_card(c),
+                _ => self.say(format!("{} pages arrive with #11", capitalise(&kind))),
+            },
             MenuAct::CopyLink => {
-                self.clipboard = Some(web_link(&card.uri));
+                self.clipboard = Some(web_link(&uri));
                 self.say("Link copied");
             }
         }
@@ -917,9 +1054,21 @@ impl App {
             },
             MouseEventKind::Down(MouseButton::Right) => {
                 self.menu = None;
-                if let Some(Hit::Card(c)) = self.hit_at(m.column, m.row) {
-                    self.focus = "home".into();
-                    self.open_menu(c, Some((m.column, m.row)));
+                let at = Some((m.column, m.row));
+                match self.hit_at(m.column, m.row) {
+                    Some(Hit::Card(c)) => {
+                        self.focus = "home".into();
+                        self.open_menu(c, at);
+                    }
+                    Some(Hit::Track(vi)) => {
+                        self.focus = "home".into();
+                        self.open_row_menu(vi, at);
+                    }
+                    Some(Hit::QueueRow(i)) => {
+                        self.focus = "queue".into();
+                        self.open_queue_menu(i, at);
+                    }
+                    _ => {}
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -947,6 +1096,10 @@ impl App {
                         }
                     }
                     Some(Hit::SortCol(c)) => self.sort(c),
+                    Some(Hit::QueueRow(i)) => {
+                        self.focus = "queue".into();
+                        self.queue_view.sel = i;
+                    }
                     Some(Hit::Well) => {
                         self.focus = "well".into();
                         self.run(Action::NextLook);
@@ -1029,6 +1182,11 @@ impl App {
                     if let Some(v) = self.view.as_mut() {
                         v.scroll(-sign * 3, len);
                     }
+                    return;
+                }
+                if matches!(&hit, Some(Hit::QueueRow(_))) || matches!(&hit, Some(Hit::Focus(s)) if s == "queue") {
+                    let lines = crate::queue::lines(self).len();
+                    self.queue_view.scroll(-sign * 3, lines);
                     return;
                 }
                 if matches!(&hit, Some(Hit::Side(_))) || matches!(&hit, Some(Hit::Focus(s)) if s == "library") {

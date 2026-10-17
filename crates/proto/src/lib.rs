@@ -53,6 +53,12 @@ pub enum Command {
     SetShuffle { enabled: bool },
     SetRepeat { mode: RepeatMode },
     AddToQueue { uri: String },
+    /// Queue a track to play right after the current one.
+    PlayNext { uri: String },
+    /// Take a queued track out of the queue (`uid` picks the entry when the same track is queued twice).
+    RemoveFromQueue { uri: String, uid: Option<String> },
+    /// Remove everything the user queued (the context and autoplay continue).
+    ClearQueue,
     /// Ask for a full snapshot (sent automatically after `Welcome`).
     GetState,
     /// Start the Spotify login (device-code flow); progress arrives as `Event::Catalogue`.
@@ -169,6 +175,9 @@ pub struct QueueEntry {
     pub item: Item,
     /// `context`, `queue` or `autoplay`.
     pub source: String,
+    /// the player's id for this entry (tells apart the same track queued twice)
+    #[serde(default)]
+    pub uid: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

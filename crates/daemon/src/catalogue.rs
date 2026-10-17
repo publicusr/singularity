@@ -9,7 +9,7 @@ use crate::queries::QueryRegistry;
 use librespot_core::{authentication::Credentials, cache::Cache, config::SessionConfig, error::ErrorKind, session::Session};
 use librespot_oauth::DeviceAuthClientBuilder;
 use serde_json::{Value, json};
-use crate::connect::ConnectRemote;
+use crate::connect::{ConnectRemote, QueueEdit};
 use crate::library;
 use singularity_proto::{Card, CatalogueStatus, Command, HomeFeed, Library, Shelf, TrackPage};
 use std::collections::HashMap;
@@ -37,6 +37,9 @@ pub enum CatCmd {
     Library,
     Tracks(String),
     PlayFrom { context_uri: String, index: u32, track_uri: Option<String> },
+    Queue(QueueEdit),
+    /// look up names, artists and durations for these track URIs (Soloist sometimes sends bare URIs)
+    Describe(Vec<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +50,7 @@ pub enum CatEvent {
     Tracks(TrackPage),
     /// the Catalogue couldn't do it; the Engine should (e.g. play the track alone)
     ToEngine(Command),
+    Described(Vec<singularity_proto::Item>),
     Error(String),
 }
 
@@ -83,11 +87,12 @@ struct State {
     ev: mpsc::Sender<CatEvent>,
     remote: Option<ConnectRemote>,
     tracks: HashMap<String, (Instant, Vec<TrackPage>)>,
+    described: HashMap<String, singularity_proto::Item>,
 }
 
 async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
     let registry = QueryRegistry::new(dirs.queries.clone());
-    let mut st = State { dirs, session: None, registry, ev, remote: None, tracks: HashMap::new() };
+    let mut st = State { dirs, session: None, registry, ev, remote: None, tracks: HashMap::new(), described: HashMap::new() };
     // resume a previous login
     if saved_credentials(&st.dirs).is_some() {
         if st.connect(None).await {
@@ -110,6 +115,8 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
             CatCmd::Library => st.library().await,
             CatCmd::Tracks(uri) => st.track_list(uri).await,
             CatCmd::PlayFrom { context_uri, index, track_uri } => st.play_from(context_uri, index, track_uri).await,
+            CatCmd::Queue(edit) => st.queue(edit).await,
+            CatCmd::Describe(uris) => st.describe(uris).await,
         }
     }
 }
@@ -131,6 +138,15 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 CatCmd::Library => vec![CatEvent::Library(fake_library(&home))],
                 CatCmd::Tracks(uri) => fake_tracks(&uri),
                 CatCmd::PlayFrom { context_uri, index, track_uri } => vec![CatEvent::ToEngine(Command::PlayFrom { context_uri, index, track_uri })],
+                // no Connect here: the fake Engine edits its own queue
+                CatCmd::Queue(e) => vec![CatEvent::ToEngine(match e {
+                    QueueEdit::PlayNext(uri) => Command::PlayNext { uri },
+                    QueueEdit::Remove { uri, uid } => Command::RemoveFromQueue { uri, uid },
+                    QueueEdit::Clear => Command::ClearQueue,
+                })],
+                CatCmd::Describe(uris) => vec![CatEvent::Described(
+                    uris.into_iter().map(|u| singularity_proto::Item { name: format!("Described {}", u.rsplit(':').next().unwrap_or("")), uri: u, artists: vec!["Fake Artist".into()], duration_ms: 180_000, ..Default::default() }).collect(),
+                )],
             };
             for ev in evs {
                 let _ = ev_tx.send(ev).await;
@@ -390,16 +406,71 @@ impl State {
         self.tracks.insert(uri, (Instant::now(), pages));
     }
 
+    /// ConnectRemote (started on first use) and Soloist's Connect id.
+    async fn remote(&mut self) -> anyhow::Result<(Session, &mut ConnectRemote, String)> {
+        let session = self.session().await.ok_or_else(|| anyhow::anyhow!("not logged in to Spotify"))?;
+        if self.remote.is_none() {
+            self.remote = Some(ConnectRemote::start(session.clone()).await?);
+        }
+        let remote = self.remote.as_mut().expect("just started");
+        let to = remote.device_id(crate::soloist::DEVICE_NAME).await?;
+        Ok((session, remote, to))
+    }
+
+    /// Queue edits Soloist can't make (play next, remove, clear) go through Connect.
+    async fn queue(&mut self, edit: QueueEdit) {
+        let result = async {
+            let (_, remote, to) = self.remote().await?;
+            remote.edit_queue(&to, &edit).await
+        }
+        .await;
+        if let Err(e) = result {
+            tracing::warn!("queue edit via Connect failed: {e}");
+            self.remote = None;
+            match edit {
+                // Soloist can at least append it
+                QueueEdit::PlayNext(uri) => {
+                    let _ = self.ev.send(CatEvent::ToEngine(Command::AddToQueue { uri })).await;
+                    let _ = self.ev.send(CatEvent::Error("Couldn't put it first; added it to the end of the queue".into())).await;
+                }
+                _ => {
+                    let _ = self.ev.send(CatEvent::Error(format!("Couldn't change the queue: {e}"))).await;
+                }
+            }
+        }
+    }
+
+    /// Names for bare track URIs, from `getTrack` (cached; at most 20 a time, one by one).
+    async fn describe(&mut self, uris: Vec<String>) {
+        let mut out = vec![];
+        for uri in uris.into_iter().take(20) {
+            if let Some(i) = self.described.get(&uri) {
+                out.push(i.clone());
+                continue;
+            }
+            match self.query("getTrack", json!({ "uri": uri })).await {
+                Ok(v) => {
+                    if let Some(item) = library::parse_track(&v) {
+                        self.described.insert(uri, item.clone());
+                        out.push(item);
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!("getTrack {uri}: {e}");
+                    break; // back off: no retry loop
+                }
+            }
+        }
+        if !out.is_empty() {
+            let _ = self.ev.send(CatEvent::Described(out)).await;
+        }
+    }
+
     /// Start a context at track N through ConnectRemote; if that fails, the Engine plays the track alone.
     async fn play_from(&mut self, context_uri: String, index: u32, track_uri: Option<String>) {
         let result = async {
-            let session = self.session().await.ok_or_else(|| anyhow::anyhow!("not logged in to Spotify"))?;
-            if self.remote.is_none() {
-                self.remote = Some(ConnectRemote::start(session.clone()).await?);
-            }
             // a failure below drops the remote, so a stale device id is looked up again next time
-            let remote = self.remote.as_mut().expect("just started");
-            let to = remote.device_id(crate::soloist::DEVICE_NAME).await?;
+            let (session, remote, to) = self.remote().await?;
             let context = if context_uri == library::LIKED { format!("spotify:user:{}:collection", session.username()) } else { context_uri.clone() };
             remote.play_from(&to, &context, index, track_uri.as_deref()).await
         }

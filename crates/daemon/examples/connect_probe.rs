@@ -50,7 +50,52 @@ async fn main() -> anyhow::Result<()> {
     for (id, d) in &cluster.device {
         println!("{id}  {:?}  {:?}  hidden={}", d.name, d.device_type, d.capabilities.hidden);
     }
-
+    let ps = &cluster.player_state;
+    println!("context {}  queue_revision {}  next {}", ps.context_uri.split(':').nth(1).unwrap_or(""), ps.queue_revision, ps.next_tracks.len());
+    for t in ps.next_tracks.iter().take(3) {
+        // kinds only, never ids: provider, metadata keys, whether uid/uri are set
+        println!("  provider={:?} uri_kind={:?} uid={} metadata={:?}", t.provider, t.uri.split(':').nth(1).unwrap_or(""), !t.uid.is_empty(), t.metadata.keys().collect::<Vec<_>>());
+    }
+    if args.get(1).map(String::as_str) == Some("--play-next") {
+        // insert a track at the front of what's next, as a queued item
+        let uri = args.get(2).expect("uri");
+        let as_json = |t: &librespot_protocol::player::ProvidedTrack| serde_json::json!({"uri": t.uri, "uid": t.uid, "metadata": t.metadata, "provider": t.provider});
+        let mut next: Vec<serde_json::Value> = ps.next_tracks.iter().map(as_json).collect();
+        next.insert(0, serde_json::json!({"uri": uri, "uid": "", "metadata": {"is_queued": "true"}, "provider": "queue"}));
+        let prev: Vec<serde_json::Value> = ps.prev_tracks.iter().map(as_json).collect();
+        let to = cluster.device.iter().find(|(_, d)| d.name == "Singularity").map(|(id, _)| id.clone()).expect("Soloist");
+        let cmd = serde_json::json!({"endpoint": "set_queue", "next_tracks": next, "prev_tracks": prev, "queue_revision": ps.queue_revision});
+        println!("set_queue: {:?}", session.spclient().send_player_command(&to, cmd).await.map(|b| String::from_utf8_lossy(&b).to_string()));
+        let _ = session.spclient().delete_connect_state_request().await;
+        return Ok(());
+    }
+    if args.get(1).map(String::as_str) == Some("--remove-queued") {
+        // remove one user-queued track (by URI, first match): send the rest back with the current revision
+        let uri = args.get(2).expect("uri");
+        let mut gone = false;
+        let as_json = |t: &librespot_protocol::player::ProvidedTrack| serde_json::json!({"uri": t.uri, "uid": t.uid, "metadata": t.metadata, "provider": t.provider});
+        let keep: Vec<serde_json::Value> = ps
+            .next_tracks
+            .iter()
+            .filter(|t| {
+                let drop = !gone && t.provider == "queue" && &t.uri == uri;
+                gone |= drop;
+                !drop
+            })
+            .map(as_json)
+            .collect();
+        println!("found the queued track: {gone}");
+        if !gone {
+            let _ = session.spclient().delete_connect_state_request().await;
+            return Ok(());
+        }
+        let prev: Vec<serde_json::Value> = ps.prev_tracks.iter().map(as_json).collect();
+        let to = cluster.device.iter().find(|(_, d)| d.name == "Singularity").map(|(id, _)| id.clone()).expect("Soloist");
+        let cmd = serde_json::json!({"endpoint": "set_queue", "next_tracks": keep, "prev_tracks": prev, "queue_revision": ps.queue_revision});
+        println!("set_queue: {:?}", session.spclient().send_player_command(&to, cmd).await.map(|b| String::from_utf8_lossy(&b).to_string()));
+        let _ = session.spclient().delete_connect_state_request().await;
+        return Ok(());
+    }
     if let (Some(name), Some(ctx), Some(idx)) = (args.get(1), args.get(2), args.get(3)) {
         let to = cluster.device.iter().find(|(_, d)| &d.name == name).map(|(id, _)| id.clone()).ok_or_else(|| anyhow::anyhow!("no device {name}"))?;
         let idx: u32 = idx.parse()?;
