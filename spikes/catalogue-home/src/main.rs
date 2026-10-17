@@ -84,7 +84,16 @@ async fn main() {
         findings(&format!("\n## Run\n\n- ❌ Session connect failed: `{e}`"));
         return;
     }
-    let product = session.get_user_attribute("type").unwrap_or_else(|| "?".into());
+    // country and account type arrive in packets shortly after login
+    let mut product = None;
+    for _ in 0..30 {
+        product = session.get_user_attribute("type");
+        if product.is_some() && !session.country().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let product = product.unwrap_or_else(|| "?".into());
     say(&format!("Connected in {:?} · country {} · account type {product}", t0.elapsed(), session.country()));
     findings(&format!("\n## Run\n\n- ✅ Device-code login + librespot session (fork 0.8.6): connected in {:?}, account type `{product}`", t0.elapsed()));
 

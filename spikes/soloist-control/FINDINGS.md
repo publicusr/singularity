@@ -25,3 +25,21 @@ Appended automatically by each run. Contains no secrets.
 - ❓ Lossless is not provable from the stream format: PipeWire carries float32 regardless of source. Next: enable
   Lossless in the phone app (Settings → Media quality), rerun with `--verbose`, and use the `codec` command.
 - Some queue items arrive without metadata (`?`). The Client will fill those from the Catalogue by URI.
+
+## Run 2026-10-17 21:26
+
+- Version: `soloist 1.3.9.32 build 1792173722 (20261016) (g440165f200) (linux/x86_64)`
+- Build lifetime log: `20:26:27.844 I [f:128                           ] client expires in 88 days[0m`
+- Pairing from the phone worked; session stored
+- Codec/quality log line: `20:27:12.783 I [f:134                           ] FileStreamer file average bitrate: 0[0m`
+
+### Lossless check (2026-10-17, `--verbose`)
+
+- ❌ First check streamed **Ogg Vorbis 160 kbps** (`codec: vorbis`, `bitrate: 160000`), decoded to 32-bit float PCM at 44.1 kHz.
+- Cause (per Spotify support): quality is set **per Connect device**. The phone's own Media quality setting doesn't
+  apply. Fix to verify: phone → device picker → tap "Singularity (spike)" → *Change quality settings* → Lossless. Music
+  Assistant's docs (which also use Soloist) describe lossless as a ceiling that Soloist honours.
+- Side note from the same docs: librespot usually won't play on accounts created since Dec 2024, and Soloist works
+  with all Premium accounts. That is another point for ADR-0001.
+- Implication for the real app: the Daemon can read the codec/bitrate from Soloist's verbose log (for the "LOSSLESS" badge
+  and stream-stats panel) and should tell the user if the device isn't set to Lossless.
