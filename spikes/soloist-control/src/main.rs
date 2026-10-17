@@ -65,8 +65,11 @@ fn start(exe: &Path, key: &str, state: &Path) -> std::io::Result<Child> {
     std::fs::create_dir_all(state.join("cache"))?;
     let log = std::fs::File::create(state.join("soloist.log"))?;
     let _ = std::fs::remove_file(state.join("data/ws.port"));
-    Command::new(exe)
-        .args(["--device-name", DEVICE, "--api-key", key, "--ws", "127.0.0.1:0"])
+    let mut cmd = Command::new(exe);
+    if std::env::args().any(|a| a == "--verbose") {
+        cmd.arg("--verbose");
+    }
+    cmd.args(["--device-name", DEVICE, "--api-key", key, "--ws", "127.0.0.1:0"])
         .arg("--data-dir")
         .arg(state.join("data"))
         .arg("--cache-dir")
@@ -203,7 +206,7 @@ fn tap(secs: u64) {
 fn help() {
     println!(
         "  commands: play <spotify-uri> · pause · resume · next · prev · seek <sec> · vol <0-100>\n            \
-         shuffle on|off · queue · state · add <track-uri> · tap [secs] · help · quit"
+         shuffle on|off · queue · state · add <track-uri> · tap [secs] · codec · help · quit"
     );
 }
 
@@ -278,6 +281,7 @@ fn main() {
         let cmd = it.next().unwrap_or("");
         let arg = it.next().unwrap_or("");
         let msg = match cmd {
+            "play" if arg.is_empty() => json!({"type":"command","command":"play"}),
             "play" => json!({"type":"command","command":"play","uri":arg}),
             "resume" => json!({"type":"command","command":"play"}),
             "pause" => json!({"type":"command","command":"pause"}),
@@ -291,6 +295,21 @@ fn main() {
             "add" => json!({"type":"command","command":"add_to_queue","uri":arg}),
             "tap" => {
                 tap(arg.parse().unwrap_or(10));
+                continue;
+            }
+            "codec" => {
+                // grep Soloist's own log for anything that reveals the stream format
+                let log = std::fs::read_to_string(state.join("soloist.log")).unwrap_or_default();
+                let hits: Vec<&str> = log.lines().filter(|l| { let l = l.to_lowercase(); ["flac", "lossless", "bitrate", "quality", "codec", "vorbis", "format", "kbps", "bit depth", "24-bit", "16-bit"].iter().any(|k| l.contains(k)) }).collect();
+                if hits.is_empty() {
+                    say("No codec/quality lines in the log yet (try running with --verbose).");
+                }
+                for h in hits.iter().rev().take(15).rev() {
+                    println!("    {h}");
+                }
+                if let Some(h) = hits.last() {
+                    findings(&format!("- Codec/quality log line: `{h}`"));
+                }
                 continue;
             }
             "help" | "" => {
