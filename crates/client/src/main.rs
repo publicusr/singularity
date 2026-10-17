@@ -3,6 +3,8 @@
 mod app;
 mod conn;
 mod layout;
+mod scrub;
+mod term;
 mod theme;
 mod ui;
 
@@ -22,19 +24,29 @@ async fn main() -> anyhow::Result<()> {
     }
     let (cmd_tx, mut conn_rx) = conn::spawn();
     let mut app = App::new(Some(cmd_tx));
-    let mut term = ratatui::init();
+    let mut tui = ratatui::init();
     execute!(stdout(), EnableMouseCapture)?;
+    // pixel-precise pointer where the terminal supports it (#24)
+    let mut units = term::MouseUnits::detect();
+    units.enable(&mut stdout())?;
     let res = (|| -> anyhow::Result<()> {
         while !app.quit {
             while let Ok(ev) = conn_rx.try_recv() {
                 apply(&mut app, ev);
             }
-            term.draw(|f| ui::draw(f, &mut app))?;
+            app.tick();
+            tui.draw(|f| ui::draw(f, &mut app))?;
             if event::poll(Duration::from_millis(33))? {
                 loop {
                     match event::read()? {
                         TermEvent::Key(k) if k.kind != KeyEventKind::Release => app.key(k),
-                        TermEvent::Mouse(m) => app.mouse(m),
+                        TermEvent::Mouse(m) => {
+                            let (m, fx, precise) = units.to_cells(m);
+                            app.pointer(m, fx, precise);
+                        }
+                        TermEvent::Resize(..) if units != term::MouseUnits::Cells => {
+                            units = term::MouseUnits::measure().unwrap_or(units);
+                        }
                         _ => {}
                     }
                     if !event::poll(Duration::ZERO)? {
@@ -45,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Ok(())
     })();
+    let _ = units.disable(&mut stdout());
     let _ = execute!(stdout(), DisableMouseCapture);
     ratatui::restore();
     res

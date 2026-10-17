@@ -1,6 +1,7 @@
 //! Rendering. Pure function of `App` state, plus hit-box registration for the mouse.
 
 use crate::app::{Action, App, Hit, Link};
+use crate::scrub::{self, Bar};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -176,29 +177,44 @@ fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     }
     // progress line
     let now_ms = singularity_proto::now_ms();
-    let pos = pb.position_at(now_ms);
+    let pos = app.display_position(now_ms);
     let dur = pb.item.as_ref().map(|i| i.duration_ms).unwrap_or(0);
+    let scrubbing = app.scrub.as_ref().map(|s| s.bar);
     let bar = Rect::new(mx + 6, y + 1, mid_w.saturating_sub(12), 1);
+    let seeking = scrubbing == Some(Bar::Seek);
     let buf = f.buffer_mut();
-    text(buf, mx, y + 1, 6, &fmt_ms(pos), th.s(th.dim));
+    text(buf, mx, y + 1, 6, &fmt_ms(pos), th.s(if seeking { th.accent } else { th.dim }));
     text(buf, bar.right() + 1, y + 1, 6, &fmt_ms(dur), th.s(th.dim));
-    let k = if dur > 0 { (pos as f64 / dur as f64 * bar.width as f64) as u16 } else { 0 };
+    let (full, tip) = scrub::fill(pos, dur, bar.width);
     for x in 0..bar.width {
-        let (ch, col) = if x < k { ("━", th.accent) } else if x == k && dur > 0 { ("╸", th.accent) } else { ("─", th.border) };
+        let (ch, col) = if x < full { ("━", th.accent) } else if x == full && tip { ("╸", th.accent) } else { ("─", th.border) };
         text(buf, bar.x + x, bar.y, 1, ch, th.s(col));
     }
-    app.hit(bar, Hit::Seek(bar));
+    if seeking {
+        // the target time floats above the knob while dragging
+        let label = format!(" {} ", fmt_ms(pos));
+        let w = label.chars().count() as u16;
+        let kx = (bar.x + full.min(bar.width.saturating_sub(1))).saturating_sub(w / 2).clamp(bar.x, bar.right().saturating_sub(w));
+        text(buf, kx, y, w, &label, th.chip(th.accent));
+    }
+    app.hit(bar, Hit::Bar(Bar::Seek, bar));
     // volume
     let vw = 12u16;
     let vx = r.right().saturating_sub(vw + 2);
     if vx > bar.right() + 8 {
+        let vol = app.display_volume();
+        let vbar = Rect::new(vx, y + 1, vw, 1);
         let buf = f.buffer_mut();
-        text(buf, vx.saturating_sub(4), y + 1, 3, "vol", th.s(th.dim));
-        let lit = (pb.volume as f32 / 100.0 * vw as f32).round() as u16;
+        if scrubbing == Some(Bar::Volume) {
+            text(buf, vx.saturating_sub(5), y + 1, 4, &format!("{vol:>3}%"), th.s(th.accent));
+        } else {
+            text(buf, vx.saturating_sub(4), y + 1, 3, "vol", th.s(th.dim));
+        }
+        let lit = (vol as f32 / 100.0 * vw as f32).round() as u16;
         for x in 0..vw {
             text(buf, vx + x, y + 1, 1, if x < lit { "▬" } else { "─" }, th.s(if x < lit { th.fg } else { th.border }));
         }
-        app.hit(Rect::new(vx, y + 1, vw, 1), Hit::Volume(Rect::new(vx, y + 1, vw, 1)));
+        app.hit(vbar, Hit::Bar(Bar::Volume, vbar));
     }
 }
 
@@ -427,5 +443,97 @@ mod tests {
         let _ = quit_idx;
         click(&mut app, col, row);
         assert!(app.quit);
+    }
+
+    fn playing_app(dur_ms: u64) -> (App, tokio::sync::mpsc::Receiver<singularity_proto::Command>) {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let mut app = App::new(Some(tx));
+        app.link = Link::Connected { version: "test".into() };
+        app.playback.item = Some(singularity_proto::Item { name: "Song".into(), duration_ms: dur_ms, ..Default::default() });
+        app.playback.status = PlayStatus::Paused;
+        (app, rx)
+    }
+
+    fn sent(rx: &mut tokio::sync::mpsc::Receiver<singularity_proto::Command>) -> Vec<singularity_proto::Command> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn seek_bar(app: &App) -> Rect {
+        app.hits.iter().find_map(|(_, h)| match h { Hit::Bar(Bar::Seek, r) => Some(*r), _ => None }).unwrap()
+    }
+
+    fn mouse(app: &mut App, kind: MouseEventKind, fx: f64, row: u16, precise: bool) {
+        app.pointer(MouseEvent { kind, column: fx as u16, row, modifiers: KeyModifiers::NONE }, fx, precise);
+    }
+
+    #[test]
+    fn dragging_the_seek_bar_shows_a_tooltip_and_seeks_once_on_release() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = playing_app(240_000);
+        render(&mut app, 120, 40);
+        let bar = seek_bar(&app);
+        let row = bar.y;
+        let x0 = bar.x as f64 + 10.5;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x0, row, false);
+        let start = app.scrub.as_ref().unwrap().value;
+        for d in 1..=7 {
+            mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x0 + d as f64, row, false);
+        }
+        assert!(sent(&mut rx).is_empty(), "no seeks while dragging");
+        let s = render(&mut app, 120, 40);
+        let target = fmt_ms(start + 7000);
+        assert!(s.lines().nth(row as usize - 1).unwrap().contains(&format!(" {target} ")), "tooltip with {target} above the bar:\n{s}");
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x0 + 7.0, row, false);
+        assert_eq!(sent(&mut rx), vec![Command::Seek { position_ms: start + 7000 }]);
+        assert!(app.scrub.is_none());
+        assert_eq!(app.display_position(app.playback.timestamp_ms), start + 7000, "bar stays at the target");
+    }
+
+    #[test]
+    fn pixel_pointer_lands_on_the_exact_second() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = playing_app(240_000);
+        render(&mut app, 120, 40);
+        let bar = seek_bar(&app);
+        // aim for 1:37 with a sub-cell pointer
+        let f = 97_000.0 / 240_000.0;
+        let fx = bar.x as f64 + 0.5 + f * (bar.width - 1) as f64;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), fx, bar.y, true);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), fx, bar.y, true);
+        assert_eq!(sent(&mut rx), vec![Command::Seek { position_ms: 97_000 }]);
+    }
+
+    #[test]
+    fn wheel_and_shift_arrows_nudge_one_second_and_coalesce() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = playing_app(240_000);
+        app.playback.position_ms = 60_000;
+        app.playback.timestamp_ms = singularity_proto::now_ms();
+        render(&mut app, 120, 40);
+        let bar = seek_bar(&app);
+        for _ in 0..3 {
+            mouse(&mut app, MouseEventKind::ScrollUp, bar.x as f64 + 3.5, bar.y, false);
+        }
+        app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        assert_eq!(app.display_position(singularity_proto::now_ms()), 62_000);
+        app.tick();
+        assert!(sent(&mut rx).is_empty(), "waits for the nudging to settle");
+        std::thread::sleep(crate::app::NUDGE_SETTLE + std::time::Duration::from_millis(20));
+        app.tick();
+        assert_eq!(sent(&mut rx), vec![Command::Seek { position_ms: 62_000 }]);
+    }
+
+    #[test]
+    fn volume_wheel_moves_one_percent() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = playing_app(240_000);
+        app.playback.volume = 50;
+        render(&mut app, 160, 40);
+        let vbar = app.hits.iter().find_map(|(_, h)| match h { Hit::Bar(Bar::Volume, r) => Some(*r), _ => None }).unwrap();
+        mouse(&mut app, MouseEventKind::ScrollDown, vbar.x as f64 + 1.5, vbar.y, false);
+        assert_eq!(app.display_volume(), 49);
+        std::thread::sleep(crate::app::NUDGE_SETTLE + std::time::Duration::from_millis(20));
+        app.tick();
+        assert_eq!(sent(&mut rx), vec![Command::SetVolume { percent: 49 }]);
     }
 }

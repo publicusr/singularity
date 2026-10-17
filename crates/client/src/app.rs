@@ -2,6 +2,7 @@
 //! Every interactive element registers a hit-box while drawing, so the mouse works everywhere.
 
 use crate::layout::{Divider, Node};
+use crate::scrub::{Bar, Scrub};
 use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -24,6 +25,8 @@ pub enum Action {
     Previous,
     SeekForward,
     SeekBack,
+    SeekForwardFine,
+    SeekBackFine,
     VolumeUp,
     VolumeDown,
     Shuffle,
@@ -39,12 +42,14 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 17] = [
+    pub const ALL: [Action; 19] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
         Action::SeekForward,
         Action::SeekBack,
+        Action::SeekForwardFine,
+        Action::SeekBackFine,
         Action::VolumeUp,
         Action::VolumeDown,
         Action::Shuffle,
@@ -65,6 +70,8 @@ impl Action {
             Action::Previous => "Previous track",
             Action::SeekForward => "Seek forward 5 s",
             Action::SeekBack => "Seek back 5 s",
+            Action::SeekForwardFine => "Seek forward 1 s",
+            Action::SeekBackFine => "Seek back 1 s",
             Action::VolumeUp => "Volume up",
             Action::VolumeDown => "Volume down",
             Action::Shuffle => "Toggle shuffle",
@@ -86,6 +93,8 @@ impl Action {
             Action::Previous => "b",
             Action::SeekForward => "→",
             Action::SeekBack => "←",
+            Action::SeekForwardFine => "Shift+→",
+            Action::SeekBackFine => "Shift+←",
             Action::VolumeUp => "+",
             Action::VolumeDown => "-",
             Action::Shuffle => "s",
@@ -106,8 +115,17 @@ pub enum Hit {
     Divider(usize),
     Action(Action),
     PaletteItem(usize),
-    Seek(Rect),
-    Volume(Rect),
+    Bar(Bar, Rect),
+}
+
+/// Wheel and key nudges are coalesced: the bar moves at once, the command goes out once the nudging pauses.
+pub(crate) const NUDGE_SETTLE: Duration = Duration::from_millis(180);
+
+#[derive(Default)]
+struct Nudge {
+    seek: Option<u64>,
+    volume: Option<u8>,
+    due: Option<Instant>,
 }
 
 pub struct Palette {
@@ -131,10 +149,13 @@ pub struct App {
     /// the user dismissed the login overlay (the login itself keeps waiting)
     pub login_hidden: bool,
     pub dividers: Vec<Divider>,
-    hits: Vec<(Rect, Hit)>,
+    pub(crate) hits: Vec<(Rect, Hit)>,
     drag: Option<Hit>,
     /// boundary minus grab position, so a divider moves exactly with the mouse whichever grip cell was grabbed
     drag_offset: i32,
+    /// the seek or volume bar being dragged
+    pub scrub: Option<Scrub>,
+    nudge: Nudge,
     commands: Option<mpsc::Sender<Command>>,
 }
 
@@ -158,6 +179,8 @@ impl App {
             hits: vec![],
             drag: None,
             drag_offset: 0,
+            scrub: None,
+            nudge: Nudge::default(),
             commands,
         }
     }
@@ -196,15 +219,16 @@ impl App {
     // ── actions ───────────────────────────────────────────────────────
 
     pub fn run(&mut self, a: Action) {
-        let pos = self.playback.position_at(singularity_proto::now_ms());
         match a {
             Action::TogglePlay => self.send(Command::TogglePlay),
             Action::Next => self.send(Command::Next),
             Action::Previous => self.send(Command::Previous),
-            Action::SeekForward => self.send(Command::Seek { position_ms: pos + 5000 }),
-            Action::SeekBack => self.send(Command::Seek { position_ms: pos.saturating_sub(5000) }),
-            Action::VolumeUp => self.send(Command::SetVolume { percent: self.playback.volume.saturating_add(5).min(100) }),
-            Action::VolumeDown => self.send(Command::SetVolume { percent: self.playback.volume.saturating_sub(5) }),
+            Action::SeekForward => self.nudge_seek(5000),
+            Action::SeekBack => self.nudge_seek(-5000),
+            Action::SeekForwardFine => self.nudge_seek(1000),
+            Action::SeekBackFine => self.nudge_seek(-1000),
+            Action::VolumeUp => self.nudge_volume(5),
+            Action::VolumeDown => self.nudge_volume(-5),
             Action::Shuffle => self.send(Command::SetShuffle { enabled: !self.playback.shuffle }),
             Action::Repeat => {
                 use singularity_proto::RepeatMode::*;
@@ -258,6 +282,8 @@ impl App {
             KeyCode::Char(' ') => self.run(Action::TogglePlay),
             KeyCode::Char('n') => self.run(Action::Next),
             KeyCode::Char('b') => self.run(Action::Previous),
+            KeyCode::Right if k.modifiers.contains(KeyModifiers::SHIFT) => self.run(Action::SeekForwardFine),
+            KeyCode::Left if k.modifiers.contains(KeyModifiers::SHIFT) => self.run(Action::SeekBackFine),
             KeyCode::Right => self.run(Action::SeekForward),
             KeyCode::Left => self.run(Action::SeekBack),
             KeyCode::Char('+') | KeyCode::Char('=') => self.run(Action::VolumeUp),
@@ -295,9 +321,84 @@ impl App {
         }
     }
 
+    // ── seek & volume ─────────────────────────────────────────────────
+
+    fn duration_ms(&self) -> u64 {
+        self.playback.item.as_ref().map(|i| i.duration_ms).unwrap_or(0)
+    }
+
+    /// Where the seek bar stands: the drag target, a pending nudge, or the interpolated playback position.
+    pub fn display_position(&self, now_ms: u64) -> u64 {
+        match &self.scrub {
+            Some(s) if s.bar == Bar::Seek => s.value,
+            _ => self.nudge.seek.unwrap_or_else(|| self.playback.position_at(now_ms)),
+        }
+    }
+
+    pub fn display_volume(&self) -> u8 {
+        match &self.scrub {
+            Some(s) if s.bar == Bar::Volume => s.value as u8,
+            _ => self.nudge.volume.unwrap_or(self.playback.volume),
+        }
+    }
+
+    fn nudge_seek(&mut self, delta_ms: i64) {
+        let dur = self.duration_ms();
+        if dur == 0 {
+            return;
+        }
+        let base = self.display_position(singularity_proto::now_ms()) as i64;
+        self.nudge.seek = Some((base + delta_ms).clamp(0, dur as i64) as u64);
+        self.nudge.due = Some(Instant::now() + NUDGE_SETTLE);
+    }
+
+    fn nudge_volume(&mut self, delta: i64) {
+        self.nudge.volume = Some((self.display_volume() as i64 + delta).clamp(0, 100) as u8);
+        self.nudge.due = Some(Instant::now() + NUDGE_SETTLE);
+    }
+
+    /// Called every frame: sends nudges once they've settled.
+    pub fn tick(&mut self) {
+        if self.nudge.due.is_some_and(|d| Instant::now() >= d) {
+            self.flush_nudge();
+        }
+    }
+
+    fn flush_nudge(&mut self) {
+        let n = std::mem::take(&mut self.nudge);
+        if let Some(ms) = n.seek {
+            self.seek_to(ms);
+        }
+        if let Some(v) = n.volume {
+            self.set_volume(v);
+        }
+    }
+
+    /// Sends the seek and moves the local position anchor, so the bar doesn't snap back while the Daemon answers.
+    fn seek_to(&mut self, ms: u64) {
+        self.send(Command::Seek { position_ms: ms });
+        self.playback.position_ms = ms;
+        self.playback.timestamp_ms = singularity_proto::now_ms();
+    }
+
+    fn set_volume(&mut self, percent: u8) {
+        if percent != self.playback.volume {
+            self.send(Command::SetVolume { percent });
+            self.playback.volume = percent;
+        }
+    }
+
     // ── mouse ─────────────────────────────────────────────────────────
 
+    /// A mouse event in cell units (tests, and terminals without pixel reports).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn mouse(&mut self, m: MouseEvent) {
+        self.pointer(m, m.column as f64 + 0.5, false);
+    }
+
+    /// A mouse event; `fx` is the pointer's fractional column, `precise` whether it has real sub-cell resolution.
+    pub fn pointer(&mut self, m: MouseEvent, fx: f64, precise: bool) {
+        let coarse = m.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT);
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.help {
@@ -323,23 +424,49 @@ impl App {
                             self.run(a);
                         }
                     }
-                    Some(h @ (Hit::Seek(_) | Hit::Volume(_))) => {
-                        self.apply_drag(&h, m.column);
-                        self.drag = Some(h);
+                    Some(Hit::Bar(bar, r)) => {
+                        let max = match bar {
+                            Bar::Seek => self.duration_ms(),
+                            Bar::Volume => 100,
+                        };
+                        if max > 0 {
+                            self.nudge = Nudge::default();
+                            self.scrub = Some(Scrub::press(bar, r, max, fx, precise));
+                        }
                     }
                     None => self.palette = None,
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                if let Some(h) = self.drag.clone() {
-                    self.apply_drag(&h, if matches!(h, Hit::Divider(i) if self.dividers.get(i).is_some_and(|d| d.axis == crate::layout::Axis::Vertical)) { m.row } else { m.column });
+                if let Some(s) = self.scrub.as_mut() {
+                    s.drag(fx, coarse);
+                    // volume is heard while dragging (deduped per percent); the seek waits for the release
+                    if s.bar == Bar::Volume {
+                        let v = s.value as u8;
+                        self.set_volume(v);
+                    }
+                } else if let Some(Hit::Divider(i)) = self.drag.clone()
+                    && let Some(d) = self.dividers.get(i).cloned()
+                {
+                    let pos = if d.axis == crate::layout::Axis::Vertical { m.row } else { m.column };
+                    self.layout.drag(&d, (pos as i32 + self.drag_offset).max(0) as u16);
                 }
             }
-            MouseEventKind::Up(_) => self.drag = None,
+            MouseEventKind::Up(_) => {
+                self.drag = None;
+                if let Some(s) = self.scrub.take() {
+                    match s.bar {
+                        Bar::Seek => self.seek_to(s.value),
+                        Bar::Volume => self.set_volume(s.value as u8),
+                    }
+                }
+            }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let up = matches!(m.kind, MouseEventKind::ScrollUp);
+                let sign = if up { 1 } else { -1 };
                 match self.hit_at(m.column, m.row) {
-                    Some(Hit::Volume(_)) => self.run(if up { Action::VolumeUp } else { Action::VolumeDown }),
+                    Some(Hit::Bar(Bar::Seek, _)) => self.nudge_seek(sign * if coarse { 5000 } else { 1000 }),
+                    Some(Hit::Bar(Bar::Volume, _)) => self.nudge_volume(sign * if coarse { 5 } else { 1 }),
                     Some(Hit::PaletteItem(_)) => {
                         let n = self.palette_items().len();
                         if let Some(p) = self.palette.as_mut() {
@@ -348,28 +475,6 @@ impl App {
                     }
                     _ => {}
                 }
-            }
-            _ => {}
-        }
-    }
-
-    fn apply_drag(&mut self, h: &Hit, pos: u16) {
-        match h {
-            Hit::Divider(i) => {
-                if let Some(d) = self.dividers.get(*i).cloned() {
-                    self.layout.drag(&d, (pos as i32 + self.drag_offset).max(0) as u16);
-                }
-            }
-            Hit::Seek(r) => {
-                let dur = self.playback.item.as_ref().map(|i| i.duration_ms).unwrap_or(0);
-                if dur > 0 {
-                    let f = (pos.saturating_sub(r.x) as f64 / r.width.max(1) as f64).clamp(0.0, 1.0);
-                    self.send(Command::Seek { position_ms: (f * dur as f64) as u64 });
-                }
-            }
-            Hit::Volume(r) => {
-                let f = ((pos.saturating_sub(r.x) + 1) as f64 / r.width.max(1) as f64).clamp(0.0, 1.0);
-                self.send(Command::SetVolume { percent: (f * 100.0).round() as u8 });
             }
             _ => {}
         }
