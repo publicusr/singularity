@@ -30,6 +30,11 @@ _Avoid_: server, backend, service
 `singularity`, a terminal window that connects to the Daemon and draws the interface. Several can run at once.
 _Avoid_: frontend, TUI (as a noun for the process)
 
+**ConnectRemote**:
+Spotify Connect commands sent through the Catalogue session, for what the Engine can't do itself (start a context at
+track N, later device transfer and quality). Registers as a hidden device that never shows in device pickers.
+_Avoid_: remote API, Connect client
+
 ### Interface
 
 **Shelf**:
@@ -39,6 +44,11 @@ _Avoid_: section, row, carousel
 **Card**:
 One item on a Shelf (album, playlist, artist, show): its cover, name and subtitle. Clicking it plays it.
 _Avoid_: tile, item, thumbnail
+
+**Track list**:
+The tracks of Liked Songs, a playlist or an album, shown in the main Pane. Sorting and filtering change only what
+you see; playing a row always starts the list at that track.
+_Avoid_: playlist view, table
 
 **Widget**:
 Any self-contained thing that can occupy a Pane: a visual, lyrics, album art, queue, stats.

@@ -7,8 +7,10 @@ mod gfx;
 mod home;
 mod layout;
 mod scrub;
+mod sidebar;
 mod term;
 mod theme;
+mod tracks;
 mod ui;
 
 use app::{App, Link};
@@ -117,6 +119,8 @@ fn apply(app: &mut App, ev: ConnEvent) {
             app.catalogue = Some(c);
         }
         ConnEvent::Msg(DaemonMsg::Event(Event::Home(h))) => app.home = Some(h),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Library(l))) => app.library = Some(l),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Tracks(p))) => app.track_page(p),
         ConnEvent::Msg(_) => {}
     }
 }

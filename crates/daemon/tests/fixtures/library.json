@@ -1,0 +1,260 @@
+{
+ "data": {
+  "me": {
+   "libraryV3": {
+    "__typename": "LibraryPage",
+    "totalCount": 5,
+    "pagingInfo": {
+     "limit": 50,
+     "offset": 0
+    },
+    "availableFilters": [
+     {
+      "id": "0",
+      "name": "Playlists"
+     }
+    ],
+    "availableSortOrders": [
+     {
+      "id": "0",
+      "name": "Recents"
+     }
+    ],
+    "breadcrumbs": [],
+    "selectedFilters": [],
+    "selectedSortOrder": {
+     "id": "0",
+     "name": "Recents"
+    },
+    "items": [
+     {
+      "addedAt": {
+       "isoString": "2024-01-01T00:00:00Z"
+      },
+      "depth": 0,
+      "pinnable": false,
+      "pinned": true,
+      "playedAt": null,
+      "item": {
+       "__typename": "LibraryPseudoPlaylistResponseWrapper",
+       "_uri": "spotify:collection",
+       "data": {
+        "__typename": "PseudoPlaylist",
+        "count": 321,
+        "name": "Liked Songs",
+        "uri": "spotify:collection",
+        "image": {
+         "sources": [
+          {
+           "url": "https://i.scdn.co/image/liked64",
+           "width": 64,
+           "height": 64
+          },
+          {
+           "url": "https://i.scdn.co/image/liked300",
+           "width": 300,
+           "height": 300
+          },
+          {
+           "url": "https://i.scdn.co/image/liked640",
+           "width": 640,
+           "height": 640
+          }
+         ]
+        }
+       }
+      }
+     },
+     {
+      "addedAt": {
+       "isoString": "2024-02-01T00:00:00Z"
+      },
+      "depth": 0,
+      "pinnable": true,
+      "pinned": false,
+      "playedAt": null,
+      "item": {
+       "__typename": "PlaylistResponseWrapper",
+       "_uri": "spotify:playlist:p00",
+       "data": {
+        "__typename": "Playlist",
+        "name": "Night Drive",
+        "uri": "spotify:playlist:p00",
+        "description": "",
+        "format": "",
+        "revisionId": "r",
+        "attributes": [],
+        "currentUserCapabilities": {
+         "canEditItems": true,
+         "canView": true
+        },
+        "ownerV2": {
+         "data": {
+          "__typename": "User",
+          "name": "Nova Drift"
+         }
+        },
+        "images": {
+         "items": [
+          {
+           "sources": [
+            {
+             "url": "https://i.scdn.co/image/pl64",
+             "width": 64,
+             "height": 64
+            },
+            {
+             "url": "https://i.scdn.co/image/pl300",
+             "width": 300,
+             "height": 300
+            },
+            {
+             "url": "https://i.scdn.co/image/pl640",
+             "width": 640,
+             "height": 640
+            }
+           ]
+          }
+         ]
+        }
+       }
+      }
+     },
+     {
+      "addedAt": {
+       "isoString": "2024-02-02T00:00:00Z"
+      },
+      "depth": 0,
+      "pinnable": true,
+      "pinned": false,
+      "playedAt": null,
+      "item": {
+       "__typename": "LibraryFolderResponseWrapper",
+       "_uri": "spotify:user:someone:folder:f00",
+       "data": {
+        "__typename": "Folder",
+        "name": "Moods",
+        "uri": "spotify:user:someone:folder:f00",
+        "playlistCount": 3
+       }
+      }
+     },
+     {
+      "addedAt": {
+       "isoString": "2024-03-01T00:00:00Z"
+      },
+      "depth": 0,
+      "pinnable": true,
+      "pinned": false,
+      "playedAt": null,
+      "item": {
+       "__typename": "AlbumResponseWrapper",
+       "_uri": "spotify:album:a00",
+       "data": {
+        "__typename": "Album",
+        "name": "Quiet Orbit",
+        "uri": "spotify:album:a00",
+        "type": "ALBUM",
+        "artists": {
+         "items": [
+          {
+           "profile": {
+            "name": "Lumen Fields"
+           },
+           "uri": "spotify:artist:ar1"
+          }
+         ]
+        },
+        "coverArt": {
+         "sources": [
+          {
+           "url": "https://i.scdn.co/image/al64",
+           "width": 64,
+           "height": 64
+          },
+          {
+           "url": "https://i.scdn.co/image/al300",
+           "width": 300,
+           "height": 300
+          },
+          {
+           "url": "https://i.scdn.co/image/al640",
+           "width": 640,
+           "height": 640
+          }
+         ]
+        },
+        "date": {
+         "isoString": "2023-05-05T00:00:00Z",
+         "precision": "DAY"
+        },
+        "playability": {
+         "playable": true,
+         "reason": "PLAYABLE"
+        },
+        "preReleaseEndDateTime": null
+       }
+      }
+     },
+     {
+      "addedAt": {
+       "isoString": "2024-04-01T00:00:00Z"
+      },
+      "depth": 0,
+      "pinnable": true,
+      "pinned": false,
+      "playedAt": null,
+      "item": {
+       "__typename": "ArtistResponseWrapper",
+       "_uri": "spotify:artist:ar2",
+       "data": {
+        "__typename": "Artist",
+        "profile": {
+         "name": "Mira Vale"
+        },
+        "uri": "spotify:artist:ar2",
+        "visuals": {
+         "avatarImage": {
+          "sources": [
+           {
+            "url": "https://i.scdn.co/image/av64",
+            "width": 64,
+            "height": 64
+           },
+           {
+            "url": "https://i.scdn.co/image/av300",
+            "width": 300,
+            "height": 300
+           },
+           {
+            "url": "https://i.scdn.co/image/av640",
+            "width": 640,
+            "height": 640
+           }
+          ]
+         }
+        }
+       }
+      }
+     },
+     {
+      "addedAt": {
+       "isoString": "2024-04-01T00:00:00Z"
+      },
+      "depth": 0,
+      "pinnable": true,
+      "pinned": false,
+      "playedAt": null,
+      "item": {
+       "__typename": "SomethingNewResponseWrapper",
+       "_uri": "spotify:new:x",
+       "data": {
+        "__typename": "SomethingNew"
+       }
+      }
+     }
+    ]
+   }
+  }
+ }
+}

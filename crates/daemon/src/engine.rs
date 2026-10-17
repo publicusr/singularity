@@ -44,7 +44,7 @@ impl Engine for FakeEngine {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(16);
         let (ev_tx, ev_rx) = mpsc::channel(64);
         tokio::spawn(async move {
-            let tracks: Vec<Item> = (1..=3)
+            let mut tracks: Vec<Item> = (1..=3)
                 .map(|i| Item { uri: format!("spotify:track:fake{i}"), name: format!("Track {i}"), artists: vec!["Fake Artist".into()], duration_ms: 200_000, ..Default::default() })
                 .collect();
             let mut idx = 0usize;
@@ -56,8 +56,9 @@ impl Engine for FakeEngine {
                 match cmd {
                     Command::Play { uri } => {
                         if let Some(u) = uri {
-                            idx = tracks.iter().position(|t| t.uri == u).unwrap_or(0);
+                            idx = pick(&mut tracks, &u, None);
                             st.position_ms = 0;
+                            st.context_uri = Some(u);
                         } else {
                             st.position_ms = pos;
                         }
@@ -79,6 +80,13 @@ impl Engine for FakeEngine {
                         idx = (idx + tracks.len() - 1) % tracks.len();
                         st.position_ms = 0;
                     }
+                    Command::PlayFrom { context_uri, index, track_uri } => {
+                        let uri = track_uri.unwrap_or_else(|| format!("{context_uri}#{index}"));
+                        idx = pick(&mut tracks, &uri, Some(index));
+                        st.position_ms = 0;
+                        st.context_uri = Some(context_uri);
+                        st.status = PlayStatus::Playing;
+                    }
                     Command::Seek { position_ms } => st.position_ms = position_ms,
                     Command::SetVolume { percent } => st.volume = percent.min(100),
                     Command::SetShuffle { enabled } => st.shuffle = enabled,
@@ -93,4 +101,14 @@ impl Engine for FakeEngine {
         });
         (cmd_tx, ev_rx)
     }
+}
+
+/// The fake track for `uri`, made up on first sight.
+fn pick(tracks: &mut Vec<singularity_proto::Item>, uri: &str, index: Option<u32>) -> usize {
+    if let Some(i) = tracks.iter().position(|t| t.uri == uri) {
+        return i;
+    }
+    let name = index.map(|i| format!("Fake Track {:03}", i + 1)).unwrap_or_else(|| uri.rsplit(':').next().unwrap_or(uri).to_string());
+    tracks.push(singularity_proto::Item { uri: uri.into(), name, artists: vec!["Fake Artist".into()], duration_ms: 200_000, ..Default::default() });
+    tracks.len() - 1
 }

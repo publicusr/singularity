@@ -1,0 +1,170 @@
+{
+ "data": {
+  "me": {
+   "library": {
+    "tracks": {
+     "__typename": "UserLibraryTrackPage",
+     "totalCount": 321,
+     "pagingInfo": {
+      "limit": 100,
+      "offset": 0
+     },
+     "items": [
+      {
+       "__typename": "UserLibraryTrackResponse",
+       "addedAt": {
+        "isoString": "2025-01-01T10:00:00Z"
+       },
+       "track": {
+        "_uri": "spotify:track:l0",
+        "data": {
+         "__typename": "Track",
+         "name": "Gravity Well",
+         "albumOfTrack": {
+          "name": "Event Horizon",
+          "uri": "spotify:album:la0",
+          "artists": {
+           "items": [
+            {
+             "profile": {
+              "name": "Nova Drift"
+             },
+             "uri": "spotify:artist:ar0"
+            }
+           ]
+          },
+          "coverArt": {
+           "sources": [
+            {
+             "url": "https://i.scdn.co/image/lt64",
+             "width": 64,
+             "height": 64
+            },
+            {
+             "url": "https://i.scdn.co/image/lt300",
+             "width": 300,
+             "height": 300
+            },
+            {
+             "url": "https://i.scdn.co/image/lt640",
+             "width": 640,
+             "height": 640
+            }
+           ]
+          }
+         },
+         "artists": {
+          "items": [
+           {
+            "profile": {
+             "name": "Nova Drift"
+            },
+            "uri": "spotify:artist:ar0"
+           }
+          ]
+         },
+         "associationsV3": {
+          "audioAssociations": {
+           "totalCount": 0
+          },
+          "videoAssociations": {
+           "totalCount": 0
+          }
+         },
+         "contentRating": {
+          "label": "NONE"
+         },
+         "discNumber": 1,
+         "duration": {
+          "totalMilliseconds": 201000
+         },
+         "mediaType": "AUDIO",
+         "playability": {
+          "playable": true
+         },
+         "trackNumber": 1
+        }
+       }
+      },
+      {
+       "__typename": "UserLibraryTrackResponse",
+       "addedAt": {
+        "isoString": "2025-02-01T10:00:00Z"
+       },
+       "track": {
+        "_uri": "spotify:track:l1",
+        "data": {
+         "__typename": "Track",
+         "name": "Accretion",
+         "albumOfTrack": {
+          "name": "Event Horizon",
+          "uri": "spotify:album:la1",
+          "artists": {
+           "items": [
+            {
+             "profile": {
+              "name": "Nova Drift"
+             },
+             "uri": "spotify:artist:ar0"
+            }
+           ]
+          },
+          "coverArt": {
+           "sources": [
+            {
+             "url": "https://i.scdn.co/image/lt64",
+             "width": 64,
+             "height": 64
+            },
+            {
+             "url": "https://i.scdn.co/image/lt300",
+             "width": 300,
+             "height": 300
+            },
+            {
+             "url": "https://i.scdn.co/image/lt640",
+             "width": 640,
+             "height": 640
+            }
+           ]
+          }
+         },
+         "artists": {
+          "items": [
+           {
+            "profile": {
+             "name": "Nova Drift"
+            },
+            "uri": "spotify:artist:ar0"
+           }
+          ]
+         },
+         "associationsV3": {
+          "audioAssociations": {
+           "totalCount": 0
+          },
+          "videoAssociations": {
+           "totalCount": 0
+          }
+         },
+         "contentRating": {
+          "label": "NONE"
+         },
+         "discNumber": 1,
+         "duration": {
+          "totalMilliseconds": 188000
+         },
+         "mediaType": "AUDIO",
+         "playability": {
+          "playable": true
+         },
+         "trackNumber": 2
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

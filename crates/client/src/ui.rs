@@ -154,6 +154,11 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
     let computed = app.layout.compute(body);
     for (slot, rect) in &computed.slots {
         let (title, todo) = slot_info(slot);
+        // the main Pane is titled after what it shows
+        let title = match (slot.as_str(), &app.view) {
+            ("home", Some(v)) => v.title.clone(),
+            _ => title.to_string(),
+        };
         let focused = *slot == app.focus;
         let block = Block::default()
             .borders(Borders::ALL)
@@ -165,6 +170,14 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         f.render_widget(block, *rect);
         // the Pane's own hit first, so the things inside it win
         app.hit(*rect, Hit::Focus(slot.clone()));
+        if slot == "library" {
+            crate::sidebar::draw(f.buffer_mut(), inner, app, th);
+            continue;
+        }
+        if slot == "home" && app.view.is_some() {
+            crate::tracks::draw(f.buffer_mut(), inner, app, th);
+            continue;
+        }
         if slot == "home" {
             if !home_status(f.buffer_mut(), inner, app, th) {
                 crate::home::draw(f.buffer_mut(), inner, app, th);
@@ -675,7 +688,6 @@ mod tests {
 
     #[test]
     fn right_click_menu_offers_play_go_to_and_copy_link() {
-        use singularity_proto::Command;
         let (mut app, mut rx) = home_app();
         render(&mut app, 200, 64);
         let r = scroll_to(&mut app, 3);
@@ -709,5 +721,110 @@ mod tests {
         app.kitty.as_mut().unwrap().flush(&mut out).unwrap();
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("a=d,d=i") && !out.contains("a=t,"), "hidden placements removed, nothing re-sent");
+    }
+
+    // ── Library (#9) ──
+
+    fn library_app() -> (App, tokio::sync::mpsc::Receiver<singularity_proto::Command>) {
+        use singularity_proto::{Library, LibraryItem};
+        let (mut app, rx) = playing_app(200_000);
+        let item = |uri: &str, name: &str, kind: &str, depth| LibraryItem { uri: uri.into(), name: name.into(), subtitle: String::new(), kind: kind.into(), image_url: None, depth };
+        app.library = Some(Library {
+            items: vec![
+                item("spotify:collection", "Liked Songs", "liked", 0),
+                item("spotify:user:u:folder:f", "Moods", "folder", 0),
+                item("spotify:playlist:p", "Night Drive", "playlist", 1),
+                item("spotify:album:a", "Quiet Orbit", "album", 0),
+            ],
+        });
+        (app, rx)
+    }
+
+    fn page(offset: u32, n: u32, total: u32) -> singularity_proto::TrackPage {
+        let tracks = (offset..offset + n)
+            .map(|i| singularity_proto::TrackRow {
+                uri: format!("spotify:track:t{i}"),
+                name: format!("Song {:04}", total - i), // reverse alphabetical, so sorting visibly reorders
+                artists: vec![if i % 2 == 0 { "Nova Drift".into() } else { "Mira Vale".into() }],
+                album: "Album".into(),
+                added_at: Some("2025-01-01T00:00:00Z".into()),
+                duration_ms: 180_000 + i as u64,
+                playable: true,
+            })
+            .collect();
+        singularity_proto::TrackPage { uri: "spotify:collection".into(), offset, total, tracks }
+    }
+
+    fn side_rect(app: &App, row: usize) -> Rect {
+        app.hits.iter().find_map(|(r, h)| (*h == Hit::Side(row)).then_some(*r)).unwrap()
+    }
+
+    #[test]
+    fn sidebar_lists_the_library_with_folders_indented() {
+        let (mut app, _rx) = library_app();
+        let s = render(&mut app, 160, 48);
+        for part in ["⌂ Home", "♥ Liked Songs", "▸ Moods", "≡ Night Drive", "◎ Quiet Orbit"] {
+            assert!(s.contains(part), "missing {part:?}\n{s}");
+        }
+        let moods = side_rect(&app, 2);
+        let line = s.lines().nth(moods.y as usize + 1).unwrap();
+        assert!(line.find('≡').unwrap() > s.lines().nth(moods.y as usize).unwrap().find('▸').unwrap(), "the playlist sits inside the folder");
+    }
+
+    #[test]
+    fn liked_songs_load_progressively_and_play_from_the_clicked_track() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = library_app();
+        render(&mut app, 160, 48);
+        let r = side_rect(&app, 1);
+        click(&mut app, r.x + 3, r.y);
+        assert_eq!(sent(&mut rx), vec![Command::GetTracks { uri: "spotify:collection".into() }]);
+        app.track_page(page(0, 100, 3000));
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("Liked Songs") && s.contains("loading 100/3000"), "{s}");
+        // the rest streams in; the list stays usable meanwhile
+        for off in (100..3000).step_by(100) {
+            app.track_page(page(off, 100, 3000));
+        }
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("3000 songs") && !s.contains("loading"));
+        // double-click the third row
+        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::Track(2)).then_some(*r)).unwrap();
+        click(&mut app, row.x + 5, row.y);
+        click(&mut app, row.x + 5, row.y);
+        assert_eq!(sent(&mut rx), vec![Command::PlayFrom { context_uri: "spotify:collection".into(), index: 2, track_uri: Some("spotify:track:t2".into()) }]);
+    }
+
+    #[test]
+    fn sorted_and_filtered_rows_still_play_from_their_place_in_the_list() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = library_app();
+        render(&mut app, 160, 48);
+        let r = side_rect(&app, 1);
+        click(&mut app, r.x + 3, r.y);
+        sent(&mut rx);
+        app.track_page(page(0, 50, 50));
+        render(&mut app, 160, 48);
+        // sort by title via the header
+        let title = app.hits.iter().find_map(|(r, h)| (*h == Hit::SortCol(crate::tracks::Col::Title)).then_some(*r)).unwrap();
+        click(&mut app, title.x, title.y);
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("Title ↑"));
+        // type-to-filter: "/" then text
+        let key = |app: &mut App, c| app.key(KeyEvent::new(c, KeyModifiers::NONE));
+        key(&mut app, KeyCode::Char('/'));
+        for c in "mira".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Enter);
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("filter: mira") && s.contains("(25 shown)"), "{s}");
+        assert!(!s.contains("Nova Drift"));
+        // the first row now is the alphabetically first Mira Vale song: Song 0001 = t49
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(sent(&mut rx), vec![Command::PlayFrom { context_uri: "spotify:collection".into(), index: 49, track_uri: Some("spotify:track:t49".into()) }]);
+        // Backspace goes back to Home
+        key(&mut app, KeyCode::Backspace);
+        assert!(app.view.is_none());
     }
 }

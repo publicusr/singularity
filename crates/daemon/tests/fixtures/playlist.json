@@ -1,0 +1,199 @@
+{
+ "data": {
+  "playlistV2": {
+   "__typename": "Playlist",
+   "name": "Night Drive",
+   "uri": "spotify:playlist:p",
+   "content": {
+    "__typename": "PlaylistItemsPage",
+    "totalCount": 100,
+    "pagingInfo": {
+     "limit": 100,
+     "offset": 0
+    },
+    "items": [
+     {
+      "addedAt": {
+       "isoString": "2025-06-01T10:00:00Z"
+      },
+      "addedBy": null,
+      "attributes": [
+       {
+        "key": "shuffle.group_forward",
+        "value": "x"
+       }
+      ],
+      "uid": "uid0",
+      "itemV2": {
+       "__typename": "TrackResponseWrapper",
+       "data": {
+        "__typename": "Track",
+        "uri": "spotify:track:p0",
+        "name": "Low Orbit",
+        "albumOfTrack": {
+         "name": "Signals",
+         "uri": "spotify:album:pa",
+         "artists": {
+          "items": [
+           {
+            "profile": {
+             "name": "Nova Drift"
+            },
+            "uri": "spotify:artist:ar0"
+           }
+          ]
+         },
+         "coverArt": {
+          "sources": [
+           {
+            "url": "https://i.scdn.co/image/pt64",
+            "width": 64,
+            "height": 64
+           },
+           {
+            "url": "https://i.scdn.co/image/pt300",
+            "width": 300,
+            "height": 300
+           },
+           {
+            "url": "https://i.scdn.co/image/pt640",
+            "width": 640,
+            "height": 640
+           }
+          ]
+         },
+         "date": {
+          "isoString": "2020-01-01T00:00:00Z",
+          "precision": "DAY"
+         }
+        },
+        "artists": {
+         "items": [
+          {
+           "profile": {
+            "name": "Nova Drift"
+           },
+           "uri": "spotify:artist:ar0"
+          }
+         ]
+        },
+        "discNumber": 1,
+        "mediaType": "AUDIO",
+        "playability": {
+         "playable": true,
+         "reason": "PLAYABLE"
+        },
+        "playcount": "1000",
+        "trackDuration": {
+         "totalMilliseconds": 240000
+        },
+        "trackNumber": 1
+       }
+      }
+     },
+     {
+      "addedAt": {
+       "isoString": "2025-06-02T10:00:00Z"
+      },
+      "addedBy": null,
+      "attributes": [],
+      "uid": "uidE",
+      "itemV2": {
+       "__typename": "EpisodeResponseWrapper",
+       "data": {
+        "__typename": "Episode",
+        "uri": "spotify:episode:e0",
+        "name": "Talk"
+       }
+      }
+     },
+     {
+      "addedAt": {
+       "isoString": "2025-06-01T10:00:00Z"
+      },
+      "addedBy": null,
+      "attributes": [
+       {
+        "key": "shuffle.group_forward",
+        "value": "x"
+       }
+      ],
+      "uid": "uid1",
+      "itemV2": {
+       "__typename": "TrackResponseWrapper",
+       "data": {
+        "__typename": "Track",
+        "uri": "spotify:track:p1",
+        "name": "Static Bloom",
+        "albumOfTrack": {
+         "name": "Signals",
+         "uri": "spotify:album:pa",
+         "artists": {
+          "items": [
+           {
+            "profile": {
+             "name": "Mira Vale"
+            },
+            "uri": "spotify:artist:ar0"
+           }
+          ]
+         },
+         "coverArt": {
+          "sources": [
+           {
+            "url": "https://i.scdn.co/image/pt64",
+            "width": 64,
+            "height": 64
+           },
+           {
+            "url": "https://i.scdn.co/image/pt300",
+            "width": 300,
+            "height": 300
+           },
+           {
+            "url": "https://i.scdn.co/image/pt640",
+            "width": 640,
+            "height": 640
+           }
+          ]
+         },
+         "date": {
+          "isoString": "2020-01-01T00:00:00Z",
+          "precision": "DAY"
+         }
+        },
+        "artists": {
+         "items": [
+          {
+           "profile": {
+            "name": "Mira Vale"
+           },
+           "uri": "spotify:artist:ar0"
+          },
+          {
+           "profile": {
+            "name": "Lumen Fields"
+           },
+           "uri": "spotify:artist:ar1"
+          }
+         ]
+        },
+        "discNumber": 1,
+        "mediaType": "AUDIO",
+        "playability": {
+         "playable": false,
+         "reason": "NOT_AVAILABLE"
+        },
+        "playcount": "1000",
+        "trackDuration": {
+         "totalMilliseconds": 240000
+        },
+        "trackNumber": 2
+       }
+      }
+     }
+    ]
+   }
+  }
+ }
+}

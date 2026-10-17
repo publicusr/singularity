@@ -8,7 +8,7 @@ Read this first in a new session, then `CLAUDE.md`, `docs/SPEC.md` and `GLOSSARY
 - **Phase 1 (spikes) ✅**: Soloist streams lossless FLAC once the Connect device's quality is set to Lossless
   (per device, from the phone); the private API returns the owner's real Home feed. See `spikes/*/FINDINGS.md`.
 - **Phase 2 (walking skeleton) 🔄**: spec issue **#1** with v1 tickets **#2–#24** on GitHub (`publicusr/singularity`,
-  label `ready-for-agent`, native "blocked by" links). **Closed: #2, #3, #4, #7, #24, #8.** The owner tested the build: "everything
+  label `ready-for-agent`, native "blocked by" links). **Closed: #2, #3, #4, #7, #24, #8, #9.** The owner tested the build: "everything
   feels good".
 
 ## What exists in `crates/`
@@ -19,7 +19,7 @@ Read this first in a new session, then `CLAUDE.md`, `docs/SPEC.md` and `GLOSSARY
 | `daemon` (`singularityd`) | Hub + Unix socket; `Engine` trait (task + channels) with `SoloistEngine` (download, keyring key, WebSocket, restart/backoff, expiry, PDEATHSIG), `FakeEngine` (`--fake-engine`), `NoEngine`; `catalogue` (device-code login, librespot fork session, Home → Shelves/Cards); `queries` (QueryRegistry: hashes from web-player chunks, 3-day cache, refresh on 412) |
 | `client` (`singularity`) | Autostarts/reconnects to the Daemon; split-tree layout (Singularity preset, draggable dividers); theme tokens (OLED); hit-testing; command palette; help; player bar with transport/seek/volume/shuffle/repeat; login overlay; Home as a text preview |
 
-Tests: 49 passing (`cargo test`), covering protocol seam tests with FakeEngine, a Soloist transcript contract test, layout
+Tests: 60 passing (`cargo test`), covering protocol seam tests with FakeEngine, a Soloist transcript contract test, layout
 invariants, UI snapshots, the Home parser, QueryRegistry fixtures and the seek/volume scrub math.
 
 Local state on the owner's machine (not in git): Soloist at `~/.local/share/singularity/soloist/`, its pairing in
@@ -34,17 +34,20 @@ keyring in #5), query cache in `~/.cache/singularity/pathfinder-queries.json`.
 - **Home (#8) — done, awaiting the owner's test:** D28 settled (arrows browse the focused Pane; seek = Shift+←/→ and `,`/`.`;
   snap scrolling). Pixel tier lives in `client/src/gfx.rs` (`Kitty`: transmit once, place, evict) — reuse it for #16.
   Covers: `client/src/covers.rs`. Not verified in a real kitty window by me (pty only, APC stream decoded); owner to confirm.
+- **Library (#9) — done, awaiting the owner's test:** ConnectRemote (`daemon/src/connect.rs`) starts contexts at track N
+  (verified live on the owner's Soloist; facts in `docs/research/2026-10-library-and-connect.md`). Dev probes:
+  `cargo run -p singularityd --example probe -- <op> '<vars>'` (shape only) and `--example connect_probe` (device list).
+  `/` filters a list (type-to-filter needs a key because letters are bound); a folder's live shape is unverified
+  (the owner has none), the parser accepts any `*Folder*` typename. Follow-up for #5: Soloist's API key is visible in `ps`.
 - Owner preferences established across the rounds (also in SPEC § Design principles): OLED black everywhere, calm
   visuals, no white peaks, full resolution first, function before spectacle, terminal-driven aesthetics, never cover
   or move content (only the idle takeover may).
 
 ## Next tickets (frontier, in suggested order)
 
-1. **#9** Library + play-from-track-N (Soloist can't start a context at an offset: use connect-state via ConnectRemote, or test
-   `play` with a track URI plus context first)
-2. **#15** AudioTap → spectrum stream; **#16** GPU black hole + gravity well (port from the prototype: `blackhole.wgsl`,
+1. **#15** AudioTap → spectrum stream; **#16** GPU black hole + gravity well (port from the prototype: `blackhole.wgsl`,
    `gpu.rs`, `bend_borders`, `warped_frame`)
-3. Then #5 (setup wizard + keyring for the Spotify credentials), #6 (auto-update), #12, #13, #14, #18, #19, #20, #21, #22, #23, #17, #10, #11
+2. Then #5 (setup wizard + keyring for the Spotify credentials), #6 (auto-update), #12, #13, #14, #18, #19, #20, #21, #22, #23, #17, #10, #11
 
 ## Working rules (from CLAUDE.md, repeated because they matter)
 

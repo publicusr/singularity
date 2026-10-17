@@ -2,7 +2,9 @@
 //! Clients talk to it over the protocol in `singularity-proto` (ADR-0003).
 
 pub mod catalogue;
+pub mod connect;
 pub mod engine;
+pub mod library;
 pub mod queries;
 pub mod soloist;
 
@@ -23,6 +25,7 @@ pub struct Hub {
     pub engine_status: Mutex<Option<proto::EngineStatus>>,
     pub catalogue_status: Mutex<Option<proto::CatalogueStatus>>,
     pub home: Mutex<Option<proto::HomeFeed>>,
+    pub library: Mutex<Option<proto::Library>>,
     pub events: broadcast::Sender<Event>,
     pub commands: mpsc::Sender<Command>,
     pub catalogue: Option<mpsc::Sender<CatCmd>>,
@@ -62,6 +65,7 @@ pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: O
         engine_status: Mutex::new(None),
         catalogue_status: Mutex::new(None),
         home: Mutex::new(None),
+        library: Mutex::new(None),
         events,
         commands,
         catalogue: cat_tx,
@@ -118,6 +122,16 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                 *hub.home.lock().await = Some(h.clone());
                 let _ = hub.events.send(Event::Home(h));
             }
+            CatEvent::Library(l) => {
+                *hub.library.lock().await = Some(l.clone());
+                let _ = hub.events.send(Event::Library(l));
+            }
+            CatEvent::Tracks(t) => {
+                let _ = hub.events.send(Event::Tracks(t));
+            }
+            CatEvent::ToEngine(cmd) => {
+                let _ = hub.commands.send(cmd).await;
+            }
             CatEvent::Error(message) => {
                 let _ = hub.events.send(Event::Error { message });
             }
@@ -155,6 +169,9 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     if let Some(h) = hub.home.lock().await.clone() {
         proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Home(h))).await?;
     }
+    if let Some(l) = hub.library.lock().await.clone() {
+        proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Library(l))).await?;
+    }
 
     let mut events = hub.events.subscribe();
     let (out_tx, mut out_rx) = mpsc::channel::<DaemonMsg>(64);
@@ -188,14 +205,21 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                 let s = hub.playback.lock().await.clone();
                 let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;
             }
-            ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome)) => match &hub.catalogue {
+            ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. })) => match &hub.catalogue {
                 Some(tx) => {
                     let c = match cmd {
                         Command::Login => CatCmd::Login,
                         Command::Logout => CatCmd::Logout,
+                        Command::GetLibrary => CatCmd::Library,
+                        Command::GetTracks { uri } => CatCmd::Tracks(uri),
+                        Command::PlayFrom { context_uri, index, track_uri } => CatCmd::PlayFrom { context_uri, index, track_uri },
                         _ => CatCmd::Home,
                     };
                     let _ = tx.send(c).await;
+                }
+                // without a Catalogue the Engine still plays the track itself
+                None if matches!(cmd, Command::PlayFrom { .. }) => {
+                    let _ = hub.commands.send(cmd).await;
                 }
                 None => {
                     let _ = out_tx.send(DaemonMsg::Event(Event::Error { message: "the Catalogue is disabled in this Daemon".into() })).await;

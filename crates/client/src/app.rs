@@ -6,6 +6,9 @@ use crate::gfx::Kitty;
 use crate::home::{CardRef, HomeView};
 use crate::layout::{Divider, Node};
 use crate::scrub::{Bar, Scrub};
+use crate::sidebar::Sidebar;
+use crate::tracks::{Col, TrackList, TrackView};
+use std::collections::HashMap;
 use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -37,6 +40,13 @@ pub enum Action {
     Login,
     Logout,
     RefreshHome,
+    GoHome,
+    Filter,
+    SortTitle,
+    SortArtist,
+    SortAlbum,
+    SortAdded,
+    SortDuration,
     FocusNext,
     ResetLayout,
     Palette,
@@ -45,7 +55,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 19] = [
+    pub const ALL: [Action; 26] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -60,6 +70,13 @@ impl Action {
         Action::Login,
         Action::Logout,
         Action::RefreshHome,
+        Action::GoHome,
+        Action::Filter,
+        Action::SortTitle,
+        Action::SortArtist,
+        Action::SortAlbum,
+        Action::SortAdded,
+        Action::SortDuration,
         Action::FocusNext,
         Action::ResetLayout,
         Action::Palette,
@@ -82,6 +99,13 @@ impl Action {
             Action::Login => "Log in to Spotify",
             Action::Logout => "Log out of Spotify",
             Action::RefreshHome => "Refresh Home",
+            Action::GoHome => "Go to Home",
+            Action::Filter => "Filter this track list",
+            Action::SortTitle => "Sort list by title",
+            Action::SortArtist => "Sort list by artist",
+            Action::SortAlbum => "Sort list by album",
+            Action::SortAdded => "Sort list by date added",
+            Action::SortDuration => "Sort list by duration",
             Action::FocusNext => "Focus next pane",
             Action::ResetLayout => "Reset layout",
             Action::Palette => "Command palette",
@@ -103,6 +127,9 @@ impl Action {
             Action::Shuffle => "s",
             Action::Repeat => "r",
             Action::Login | Action::Logout | Action::RefreshHome => "",
+            Action::GoHome => "Backspace",
+            Action::Filter => "/",
+            Action::SortTitle | Action::SortArtist | Action::SortAlbum | Action::SortAdded | Action::SortDuration => "",
             Action::FocusNext => "Tab",
             Action::ResetLayout => "",
             Action::Palette => "Ctrl+K",
@@ -123,7 +150,15 @@ pub enum Hit {
     /// a Shelf's ‹ › buttons: row index, direction
     ShelfScroll(usize, i32),
     MenuItem(usize),
+    /// a sidebar row (0 = Home)
+    Side(usize),
+    /// a track-list row, by position in the view
+    Track(usize),
+    SortCol(Col),
 }
+
+/// Two clicks on the same row within this time play it.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// What a context-menu entry does to its Card.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -191,6 +226,13 @@ pub struct App {
     pub overlays: Vec<Rect>,
     /// text to put on the system clipboard (OSC 52), written by the main loop
     pub clipboard: Option<String>,
+    pub library: Option<singularity_proto::Library>,
+    pub sidebar: Sidebar,
+    /// track lists received so far, by URI
+    pub lists: HashMap<String, TrackList>,
+    /// the open track list (None: the main Pane shows Home)
+    pub view: Option<TrackView>,
+    last_click: Option<(Instant, usize)>,
     commands: Option<mpsc::Sender<Command>>,
 }
 
@@ -223,6 +265,11 @@ impl App {
             cell_px: None,
             overlays: vec![],
             clipboard: None,
+            library: None,
+            sidebar: Sidebar::default(),
+            lists: HashMap::new(),
+            view: None,
+            last_click: None,
             commands,
         }
     }
@@ -288,6 +335,22 @@ impl App {
             Action::Login => self.send(Command::Login),
             Action::Logout => self.send(Command::Logout),
             Action::RefreshHome => self.send(Command::GetHome),
+            Action::GoHome => {
+                self.view = None;
+                self.focus = "home".into();
+            }
+            Action::Filter => match self.view.as_mut() {
+                Some(v) => {
+                    v.filtering = true;
+                    self.focus = "home".into();
+                }
+                None => self.say("Open a playlist, album or Liked Songs to filter it"),
+            },
+            Action::SortTitle => self.sort(Col::Title),
+            Action::SortArtist => self.sort(Col::Artist),
+            Action::SortAlbum => self.sort(Col::Album),
+            Action::SortAdded => self.sort(Col::Added),
+            Action::SortDuration => self.sort(Col::Duration),
             Action::FocusNext => {
                 let slots: Vec<String> = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.into_iter().map(|(s, _)| s).collect();
                 let i = slots.iter().position(|s| *s == self.focus).map(|i| (i + 1) % slots.len()).unwrap_or(0);
@@ -327,7 +390,16 @@ impl App {
             return;
         }
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
-        if self.focus == "home" && !shift && self.home_key(k) {
+        if self.view.as_ref().is_some_and(|v| v.filtering) {
+            return self.filter_key(k);
+        }
+        if self.focus == "home" && !shift && self.view.is_some() && self.tracks_key(k) {
+            return;
+        }
+        if self.focus == "home" && !shift && self.view.is_none() && self.home_key(k) {
+            return;
+        }
+        if self.focus == "library" && !shift && self.side_key(k) {
             return;
         }
         match k.code {
@@ -339,9 +411,13 @@ impl App {
             KeyCode::Char(' ') => self.run(Action::TogglePlay),
             KeyCode::Char('n') => self.run(Action::Next),
             KeyCode::Char('b') => self.run(Action::Previous),
+            KeyCode::Left if k.modifiers.contains(KeyModifiers::ALT) => self.run(Action::GoHome),
             // arrows navigate a focused Pane that has something to navigate; elsewhere they seek
             KeyCode::Right => self.run(Action::SeekForward),
             KeyCode::Left => self.run(Action::SeekBack),
+            KeyCode::Char('/') => self.run(Action::Filter),
+            KeyCode::Char('f') if ctrl => self.run(Action::Filter),
+            KeyCode::Backspace => self.run(Action::GoHome),
             KeyCode::Char('.') => self.run(Action::SeekForwardFine),
             KeyCode::Char(',') => self.run(Action::SeekBackFine),
             KeyCode::Char('+') | KeyCode::Char('=') => self.run(Action::VolumeUp),
@@ -373,6 +449,127 @@ impl App {
             KeyCode::Menu | KeyCode::F(10) => {
                 if let Some(c) = v.sel {
                     self.open_menu(c, None);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    // ── library & track lists ──────────────────────────────────────
+
+    /// A page from the Daemon.
+    pub fn track_page(&mut self, p: singularity_proto::TrackPage) {
+        self.lists.entry(p.uri.clone()).or_default().add(&p);
+    }
+
+    /// Open sidebar row `row` (0 = Home).
+    fn open_side(&mut self, row: usize) {
+        self.sidebar.sel = row;
+        if row == 0 {
+            return self.run(Action::GoHome);
+        }
+        let Some(it) = self.library.as_ref().and_then(|l| l.items.get(row - 1)).cloned() else { return };
+        match it.kind.as_str() {
+            "liked" | "playlist" | "album" => {
+                if self.view.as_ref().is_none_or(|v| v.uri != it.uri) {
+                    self.view = Some(TrackView::new(&it.uri, &it.name));
+                }
+                if self.lists.get(&it.uri).is_none_or(|l| !l.complete()) {
+                    self.lists.remove(&it.uri);
+                    self.send(Command::GetTracks { uri: it.uri.clone() });
+                }
+            }
+            "folder" => self.say("Folders are listed with their playlists indented below"),
+            "artist" => self.say("Artist pages arrive with #11"),
+            _ => {}
+        }
+    }
+
+    fn sort(&mut self, col: Col) {
+        match self.view.as_mut() {
+            Some(v) => v.cycle_sort(col),
+            None => self.say("Open a playlist, album or Liked Songs to sort it"),
+        }
+    }
+
+    /// The view's visible order and the list length.
+    fn view_order(&self) -> Vec<usize> {
+        match (&self.view, self.view.as_ref().and_then(|v| self.lists.get(&v.uri))) {
+            (Some(v), Some(l)) => v.order(&l.rows),
+            _ => vec![],
+        }
+    }
+
+    /// Play the row at view position `vi`: the context starts at that track's place in the original list.
+    fn play_row(&mut self, vi: usize) {
+        let order = self.view_order();
+        let (Some(v), Some(&ri)) = (self.view.as_ref(), order.get(vi)) else { return };
+        let Some(row) = self.lists.get(&v.uri).and_then(|l| l.rows.get(ri)) else { return };
+        if !row.playable {
+            return self.say("This track isn't available");
+        }
+        let cmd = Command::PlayFrom { context_uri: v.uri.clone(), index: ri as u32, track_uri: Some(row.uri.clone()) };
+        self.send(cmd);
+    }
+
+    fn tracks_key(&mut self, k: KeyEvent) -> bool {
+        let len = self.view_order().len();
+        let Some(v) = self.view.as_mut() else { return false };
+        let page = v.visible.max(1) as i64;
+        match k.code {
+            KeyCode::Up => v.move_sel(-1, len),
+            KeyCode::Down => v.move_sel(1, len),
+            KeyCode::PageUp => v.move_sel(-page, len),
+            KeyCode::PageDown => v.move_sel(page, len),
+            KeyCode::Home => v.move_sel(-(len as i64), len),
+            KeyCode::End => v.move_sel(len as i64, len),
+            KeyCode::Enter => {
+                let sel = v.sel;
+                self.play_row(sel);
+            }
+            // Esc clears the filter, then goes back to Home (it never quits from inside a list)
+            KeyCode::Esc if !v.filter.is_empty() => v.set_filter(String::new()),
+            KeyCode::Esc => self.run(Action::GoHome),
+            _ => return false,
+        }
+        true
+    }
+
+    fn filter_key(&mut self, k: KeyEvent) {
+        let len = self.view_order().len();
+        let Some(v) = self.view.as_mut() else { return };
+        match k.code {
+            KeyCode::Esc => {
+                v.filtering = false;
+                v.set_filter(String::new());
+            }
+            KeyCode::Enter => v.filtering = false,
+            KeyCode::Backspace => {
+                let mut f = v.filter.clone();
+                f.pop();
+                v.set_filter(f);
+            }
+            KeyCode::Up => v.move_sel(-1, len),
+            KeyCode::Down => v.move_sel(1, len),
+            KeyCode::Char(c) => {
+                let f = format!("{}{c}", v.filter);
+                v.set_filter(f);
+            }
+            _ => {}
+        }
+    }
+
+    fn side_key(&mut self, k: KeyEvent) -> bool {
+        let n = crate::sidebar::len(self);
+        match k.code {
+            KeyCode::Up => self.sidebar.move_sel(-1, n),
+            KeyCode::Down => self.sidebar.move_sel(1, n),
+            KeyCode::Enter | KeyCode::Right => {
+                let row = self.sidebar.sel;
+                self.open_side(row);
+                if row > 0 && self.view.is_some() {
+                    self.focus = "home".into();
                 }
             }
             _ => return false,
@@ -567,6 +764,25 @@ impl App {
                     return;
                 }
                 match self.hit_at(m.column, m.row) {
+                    Some(Hit::Side(row)) => {
+                        self.focus = "library".into();
+                        self.open_side(row);
+                    }
+                    Some(Hit::Track(vi)) => {
+                        self.focus = "home".into();
+                        // a second click on the same row soon after plays it
+                        let double = self.last_click.is_some_and(|(t, i)| i == vi && t.elapsed() < DOUBLE_CLICK);
+                        if let Some(v) = self.view.as_mut() {
+                            v.sel = vi;
+                        }
+                        if double {
+                            self.last_click = None;
+                            self.play_row(vi);
+                        } else {
+                            self.last_click = Some((Instant::now(), vi));
+                        }
+                    }
+                    Some(Hit::SortCol(c)) => self.sort(c),
                     Some(Hit::Card(c)) => {
                         self.focus = "home".into();
                         self.play_card(c);
@@ -638,6 +854,19 @@ impl App {
                 let up = matches!(m.kind, MouseEventKind::ScrollUp);
                 let sign = if up { 1 } else { -1 };
                 let hit = self.hit_at(m.column, m.row);
+                let over_list = matches!(&hit, Some(Hit::Track(_) | Hit::SortCol(_))) || (self.view.is_some() && matches!(&hit, Some(Hit::Focus(s)) if s == "home"));
+                if over_list {
+                    let len = self.view_order().len();
+                    if let Some(v) = self.view.as_mut() {
+                        v.scroll(-sign * 3, len);
+                    }
+                    return;
+                }
+                if matches!(&hit, Some(Hit::Side(_))) || matches!(&hit, Some(Hit::Focus(s)) if s == "library") {
+                    let n = crate::sidebar::len(self);
+                    self.sidebar.scroll(-sign * 3, n);
+                    return;
+                }
                 let over_home = matches!(&hit, Some(Hit::Card(_) | Hit::ShelfScroll(..))) || matches!(&hit, Some(Hit::Focus(s)) if s == "home");
                 if over_home && self.menu.is_none() {
                     // Shift+wheel scrolls the Shelf under the pointer sideways

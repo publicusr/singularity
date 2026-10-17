@@ -60,6 +60,12 @@ pub enum Command {
     Logout,
     /// Fetch (or refresh) the Home feed; arrives as `Event::Home`.
     GetHome,
+    /// Fetch the library sidebar; arrives as `Event::Library`.
+    GetLibrary,
+    /// Fetch a track list (playlist, album, or `spotify:collection` for Liked Songs); arrives page by page as `Event::Tracks`.
+    GetTracks { uri: String },
+    /// Play a context starting at its `index`-th track (`track_uri` guards against the list having changed).
+    PlayFrom { context_uri: String, index: u32, track_uri: Option<String> },
     #[serde(other)]
     Unknown,
 }
@@ -85,6 +91,10 @@ pub enum Event {
     Catalogue(CatalogueStatus),
     /// The Home feed, Shelf by Shelf.
     Home(HomeFeed),
+    /// The library sidebar: Liked Songs, playlists (folders flattened with a depth), albums, artists.
+    Library(Library),
+    /// One page of a track list; pages arrive in order until `offset + tracks.len() == total`.
+    Tracks(TrackPage),
     /// A command was refused or failed.
     Error { message: String },
     #[serde(other)]
@@ -190,6 +200,44 @@ pub struct Card {
     pub image_url: Option<String>,
     /// `album`, `playlist`, `artist`, `episode`, `show` or `other`
     pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Library {
+    pub items: Vec<LibraryItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LibraryItem {
+    pub uri: String,
+    pub name: String,
+    pub subtitle: String,
+    /// `liked`, `playlist`, `folder`, `album`, `artist` or `other`
+    pub kind: String,
+    pub image_url: Option<String>,
+    /// nesting inside folders (0 = top level)
+    pub depth: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TrackPage {
+    /// the list this page belongs to (as requested)
+    pub uri: String,
+    pub offset: u32,
+    pub total: u32,
+    pub tracks: Vec<TrackRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TrackRow {
+    pub uri: String,
+    pub name: String,
+    pub artists: Vec<String>,
+    pub album: String,
+    /// when it was added to the list (ISO 8601), for playlists and Liked Songs
+    pub added_at: Option<String>,
+    pub duration_ms: u64,
+    pub playable: bool,
 }
 
 /// Where the Daemon listens: `$XDG_RUNTIME_DIR/singularity/daemon.sock` (falls back to /tmp/singularity-$UID).

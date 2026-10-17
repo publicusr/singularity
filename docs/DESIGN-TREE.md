@@ -116,3 +116,9 @@ flowchart LR
   (z=-1); any cover under a popup steps down to half-blocks for that frame. Short Panes get smaller square covers. Click
   plays, right-click menu (Play / Go to / Copy link via OSC 52; Add to queue for single tracks). `--fake-catalogue <json>`
   serves a recorded feed for UI work.
+- **#9 Library** (2026-10-17): owner allowed live read-only probes and quiet test plays. Facts in
+  `research/2026-10-library-and-connect.md`: Soloist can't start a context at an offset; a Connect `play` with
+  `skip_to.track_index` from a hidden controller (ConnectRemote) can, for albums, playlists and Liked Songs. Built:
+  sidebar (Home, Liked Songs, playlists with folders indented, albums, artists), track lists that stream in page by page,
+  header sort (asc → desc → list order), `/` filter, double-click/Enter plays from that track; the Engine plays the track
+  alone if Connect fails. Esc inside a list goes back to Home.

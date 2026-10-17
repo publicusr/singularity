@@ -96,3 +96,44 @@ async fn playback_flow_through_the_protocol() {
     proto::write_msg(&mut a, &send(Command::TogglePlay)).await.unwrap();
     assert_eq!(next_playback(&mut a).await.status, PlayStatus::Paused);
 }
+
+#[tokio::test]
+async fn library_track_pages_and_play_from_track_n() {
+    use singularity_proto::{Command, HomeFeed};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("l.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    let catalogue = singularityd::catalogue::spawn_fake(HomeFeed::default());
+    tokio::spawn(singularityd::serve(listener, Box::new(singularityd::engine::FakeEngine), Some(catalogue)));
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let mut a = connect(&path).await;
+    // the library is part of the snapshot once the Catalogue has it
+    let lib = loop {
+        if let DaemonMsg::Event(Event::Library(l)) = proto::read_msg::<_, DaemonMsg>(&mut a).await.unwrap().unwrap() {
+            break l;
+        }
+    };
+    assert_eq!((lib.items[0].kind.as_str(), lib.items[0].uri.as_str()), ("liked", "spotify:collection"));
+
+    // a long list arrives page by page, in order
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::GetTracks { uri: "spotify:collection".into() })).await.unwrap();
+    let mut got = 0;
+    while got < 250 {
+        if let DaemonMsg::Event(Event::Tracks(p)) = proto::read_msg::<_, DaemonMsg>(&mut a).await.unwrap().unwrap() {
+            assert_eq!((p.offset, p.total), (got, 250));
+            got += p.tracks.len() as u32;
+        }
+    }
+
+    // without Connect (fake Catalogue), play-from falls back to the Engine
+    let cmd = Command::PlayFrom { context_uri: "spotify:collection".into(), index: 41, track_uri: Some("spotify:track:fake41".into()) };
+    proto::write_msg(&mut a, &ClientMsg::Command(cmd)).await.unwrap();
+    let p = loop {
+        let p = next_playback(&mut a).await;
+        if p.item.is_some() {
+            break p;
+        }
+    };
+    assert_eq!(p.item.unwrap().uri, "spotify:track:fake41");
+    assert_eq!(p.context_uri.as_deref(), Some("spotify:collection"));
+}

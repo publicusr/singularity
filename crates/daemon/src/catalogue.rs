@@ -9,7 +9,11 @@ use crate::queries::QueryRegistry;
 use librespot_core::{authentication::Credentials, cache::Cache, config::SessionConfig, error::ErrorKind, session::Session};
 use librespot_oauth::DeviceAuthClientBuilder;
 use serde_json::{Value, json};
-use singularity_proto::{Card, CatalogueStatus, HomeFeed, Shelf};
+use crate::connect::ConnectRemote;
+use crate::library;
+use singularity_proto::{Card, CatalogueStatus, Command, HomeFeed, Library, Shelf, TrackPage};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
@@ -30,14 +34,26 @@ pub enum CatCmd {
     Login,
     Logout,
     Home,
+    Library,
+    Tracks(String),
+    PlayFrom { context_uri: String, index: u32, track_uri: Option<String> },
 }
 
 #[derive(Debug, Clone)]
 pub enum CatEvent {
     Status(CatalogueStatus),
     Home(HomeFeed),
+    Library(Library),
+    Tracks(TrackPage),
+    /// the Catalogue couldn't do it; the Engine should (e.g. play the track alone)
+    ToEngine(Command),
     Error(String),
 }
+
+/// Track lists stay fresh this long: reopening a playlist doesn't refetch it.
+const TRACKS_TTL: Duration = Duration::from_secs(10 * 60);
+/// Longest track list fetched (Liked Songs can be huge; pages are sequential and never retried in a loop).
+const MAX_TRACKS: u32 = 10_000;
 
 pub struct Dirs {
     pub credentials: PathBuf,
@@ -65,15 +81,18 @@ struct State {
     session: Option<Session>,
     registry: QueryRegistry,
     ev: mpsc::Sender<CatEvent>,
+    remote: Option<ConnectRemote>,
+    tracks: HashMap<String, (Instant, Vec<TrackPage>)>,
 }
 
 async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
     let registry = QueryRegistry::new(dirs.queries.clone());
-    let mut st = State { dirs, session: None, registry, ev };
+    let mut st = State { dirs, session: None, registry, ev, remote: None, tracks: HashMap::new() };
     // resume a previous login
     if cache(&st.dirs).ok().and_then(|c| c.credentials()).is_some() {
         if st.connect(None).await {
             let _ = self_tx.send(CatCmd::Home).await;
+            let _ = self_tx.send(CatCmd::Library).await;
         }
     } else {
         st.status(CatalogueStatus::LoggedOut).await;
@@ -83,10 +102,14 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
             CatCmd::Login => {
                 if st.login().await {
                     let _ = self_tx.send(CatCmd::Home).await;
+                    let _ = self_tx.send(CatCmd::Library).await;
                 }
             }
             CatCmd::Logout => st.logout().await,
             CatCmd::Home => st.home().await,
+            CatCmd::Library => st.library().await,
+            CatCmd::Tracks(uri) => st.track_list(uri).await,
+            CatCmd::PlayFrom { context_uri, index, track_uri } => st.play_from(context_uri, index, track_uri).await,
         }
     }
 }
@@ -99,16 +122,61 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
         let ready = CatalogueStatus::Ready { username: "fake".into(), country: "SE".into(), premium: true };
         let _ = ev_tx.send(CatEvent::Status(ready.clone())).await;
         let _ = ev_tx.send(CatEvent::Home(home.clone())).await;
+        let _ = ev_tx.send(CatEvent::Library(fake_library(&home))).await;
         while let Some(cmd) = cmd_rx.recv().await {
-            let ev = match cmd {
-                CatCmd::Home => CatEvent::Home(home.clone()),
-                CatCmd::Login => CatEvent::Status(ready.clone()),
-                CatCmd::Logout => CatEvent::Status(CatalogueStatus::LoggedOut),
+            let evs = match cmd {
+                CatCmd::Home => vec![CatEvent::Home(home.clone())],
+                CatCmd::Login => vec![CatEvent::Status(ready.clone())],
+                CatCmd::Logout => vec![CatEvent::Status(CatalogueStatus::LoggedOut)],
+                CatCmd::Library => vec![CatEvent::Library(fake_library(&home))],
+                CatCmd::Tracks(uri) => fake_tracks(&uri),
+                CatCmd::PlayFrom { context_uri, index, track_uri } => vec![CatEvent::ToEngine(Command::PlayFrom { context_uri, index, track_uri })],
             };
-            let _ = ev_tx.send(ev).await;
+            for ev in evs {
+                let _ = ev_tx.send(ev).await;
+            }
         }
     });
     (cmd_tx, ev_rx)
+}
+
+/// The fake library: Liked Songs plus the Home feed's shortcuts and first Shelf.
+fn fake_library(home: &HomeFeed) -> Library {
+    let mut items = vec![singularity_proto::LibraryItem {
+        uri: library::LIKED.into(),
+        name: "Liked Songs".into(),
+        subtitle: "250 songs".into(),
+        kind: "liked".into(),
+        image_url: None,
+        depth: 0,
+    }];
+    for c in home.shelves.iter().take(2).flat_map(|s| &s.cards).filter(|c| c.uri != "spotify:playlist:liked") {
+        items.push(singularity_proto::LibraryItem { uri: c.uri.clone(), name: c.name.clone(), subtitle: c.subtitle.clone(), kind: c.kind.clone(), image_url: c.image_url.clone(), depth: 0 });
+    }
+    Library { items }
+}
+
+/// Invented tracks in pages of 100: 250 for Liked Songs, 40 elsewhere.
+fn fake_tracks(uri: &str) -> Vec<CatEvent> {
+    let total = if uri == library::LIKED { 250 } else { 40 };
+    let artists = ["Nova Drift", "Mira Vale", "Lumen Fields", "Glass Harbour", "Polar Static"];
+    (0..total)
+        .step_by(100)
+        .map(|offset| {
+            let tracks = (offset..(offset + 100).min(total))
+                .map(|i| singularity_proto::TrackRow {
+                    uri: format!("spotify:track:fake{i}"),
+                    name: format!("Fake Track {:03}", i + 1),
+                    artists: vec![artists[i as usize % artists.len()].into()],
+                    album: format!("Album {}", (i * 7) % 13 + 1),
+                    added_at: Some(format!("2025-{:02}-{:02}T12:00:00Z", 1 + (i % 12), 1 + (i * 3) % 28)),
+                    duration_ms: 120_000 + (i as u64 * 7919) % 240_000,
+                    playable: i % 17 != 16,
+                })
+                .collect();
+            CatEvent::Tracks(TrackPage { uri: uri.into(), offset, total, tracks })
+        })
+        .collect()
 }
 
 fn cache(dirs: &Dirs) -> anyhow::Result<Cache> {
@@ -184,6 +252,8 @@ impl State {
     }
 
     async fn logout(&mut self) {
+        self.remote = None;
+        self.tracks.clear();
         if let Some(s) = self.session.take() {
             s.shutdown();
         }
@@ -195,6 +265,7 @@ impl State {
         if self.session.as_ref().is_some_and(|s| s.is_invalid()) {
             tracing::info!("catalogue session ended; reconnecting");
             self.session = None;
+            self.remote = None;
             self.connect(None).await;
         }
         self.session.clone()
@@ -212,6 +283,107 @@ impl State {
                 Ok(session.spclient().pathfinder_query(op, &hash, vars).await?)
             }
             r => Ok(r?),
+        }
+    }
+
+    async fn library(&mut self) {
+        match self.library_items().await {
+            Ok(items) => {
+                let _ = self.ev.send(CatEvent::Library(Library { items })).await;
+            }
+            Err(e) => {
+                let _ = self.ev.send(CatEvent::Error(format!("Library unavailable: {e}"))).await;
+            }
+        }
+    }
+
+    /// The top level, with each folder's contents spliced in right after it (one level deeper).
+    async fn library_items(&mut self) -> anyhow::Result<Vec<singularity_proto::LibraryItem>> {
+        let mut items = self.library_level(None, 0).await?;
+        let mut i = 0;
+        while i < items.len() {
+            // folders nest a few levels at most; guard anyway
+            if items[i].kind == "folder" && items[i].depth < 4 {
+                let children = self.library_level(Some(&items[i].uri.clone()), items[i].depth + 1).await?;
+                items.splice(i + 1..i + 1, children);
+            }
+            i += 1;
+        }
+        Ok(items)
+    }
+
+    async fn library_level(&mut self, folder: Option<&str>, depth: u8) -> anyhow::Result<Vec<singularity_proto::LibraryItem>> {
+        let mut items = vec![];
+        let mut offset = 0;
+        loop {
+            let page = library::parse_library(&self.query("libraryV3", library::library_vars(offset, folder)).await?, depth);
+            let n = page.items.len();
+            items.extend(page.items);
+            offset += library::LIBRARY_PAGE;
+            if n == 0 || offset >= page.total {
+                return Ok(items);
+            }
+        }
+    }
+
+    /// Fetch a track list page by page, sending each as it arrives (so long lists show at once).
+    async fn track_list(&mut self, uri: String) {
+        if let Some((at, pages)) = self.tracks.get(&uri)
+            && at.elapsed() < TRACKS_TTL
+        {
+            for p in pages.clone() {
+                let _ = self.ev.send(CatEvent::Tracks(p)).await;
+            }
+            return;
+        }
+        let mut pages = vec![];
+        let mut offset = 0u32;
+        loop {
+            let Some((op, vars)) = library::tracks_query(&uri, offset) else {
+                let _ = self.ev.send(CatEvent::Error(format!("can't list the tracks of {uri}"))).await;
+                return;
+            };
+            let v = match self.query(op, vars).await {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = self.ev.send(CatEvent::Error(format!("Track list unavailable: {e}"))).await;
+                    return;
+                }
+            };
+            let (tracks, total) = library::parse_tracks(&uri, &v);
+            let page_len = match op {
+                "getAlbum" => library::ALBUM_PAGE,
+                _ => library::TRACK_PAGE,
+            };
+            let page = TrackPage { uri: uri.clone(), offset, total, tracks };
+            let _ = self.ev.send(CatEvent::Tracks(page.clone())).await;
+            pages.push(page);
+            offset += page_len;
+            if offset >= total.min(MAX_TRACKS) {
+                break;
+            }
+        }
+        self.tracks.insert(uri, (Instant::now(), pages));
+    }
+
+    /// Start a context at track N through ConnectRemote; if that fails, the Engine plays the track alone.
+    async fn play_from(&mut self, context_uri: String, index: u32, track_uri: Option<String>) {
+        let result = async {
+            let session = self.session().await.ok_or_else(|| anyhow::anyhow!("not logged in to Spotify"))?;
+            if self.remote.is_none() {
+                self.remote = Some(ConnectRemote::start(session.clone()).await?);
+            }
+            // a failure below drops the remote, so a stale device id is looked up again next time
+            let remote = self.remote.as_mut().expect("just started");
+            let to = remote.device_id(crate::soloist::DEVICE_NAME).await?;
+            let context = if context_uri == library::LIKED { format!("spotify:user:{}:collection", session.username()) } else { context_uri.clone() };
+            remote.play_from(&to, &context, index, track_uri.as_deref()).await
+        }
+        .await;
+        if let Err(e) = result {
+            tracing::warn!("play from track {index} of {context_uri} via Connect failed: {e}");
+            self.remote = None;
+            let _ = self.ev.send(CatEvent::ToEngine(Command::PlayFrom { context_uri, index, track_uri })).await;
         }
     }
 

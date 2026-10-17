@@ -1,0 +1,87 @@
+{
+ "data": {
+  "albumUnion": {
+   "__typename": "Album",
+   "name": "Quiet Orbit",
+   "uri": "spotify:album:a",
+   "label": "Fixture Records",
+   "date": {
+    "isoString": "2023-05-05T00:00:00Z",
+    "precision": "DAY"
+   },
+   "tracksV2": {
+    "totalCount": 19,
+    "items": [
+     {
+      "uid": "au0",
+      "track": {
+       "uri": "spotify:track:a0",
+       "name": "Perihelion",
+       "artists": {
+        "items": [
+         {
+          "profile": {
+           "name": "Lumen Fields"
+          },
+          "uri": "spotify:artist:ar1"
+         }
+        ]
+       },
+       "associationsV3": {},
+       "contentRating": {
+        "label": "NONE"
+       },
+       "discNumber": 1,
+       "duration": {
+        "totalMilliseconds": 210000
+       },
+       "mediaType": "AUDIO",
+       "playability": {
+        "playable": true,
+        "reason": "PLAYABLE"
+       },
+       "playcount": "10",
+       "relinkingInformation": null,
+       "saved": false,
+       "trackNumber": 1
+      }
+     },
+     {
+      "uid": "au1",
+      "track": {
+       "uri": "spotify:track:a1",
+       "name": "Aphelion",
+       "artists": {
+        "items": [
+         {
+          "profile": {
+           "name": "Lumen Fields"
+          },
+          "uri": "spotify:artist:ar1"
+         }
+        ]
+       },
+       "associationsV3": {},
+       "contentRating": {
+        "label": "NONE"
+       },
+       "discNumber": 1,
+       "duration": {
+        "totalMilliseconds": 185500
+       },
+       "mediaType": "AUDIO",
+       "playability": {
+        "playable": true,
+        "reason": "PLAYABLE"
+       },
+       "playcount": "10",
+       "relinkingInformation": null,
+       "saved": false,
+       "trackNumber": 2
+      }
+     }
+    ]
+   }
+  }
+ }
+}
