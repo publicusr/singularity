@@ -55,6 +55,11 @@ pub enum Command {
     AddToQueue { uri: String },
     /// Ask for a full snapshot (sent automatically after `Welcome`).
     GetState,
+    /// Start the Spotify login (device-code flow); progress arrives as `Event::Catalogue`.
+    Login,
+    Logout,
+    /// Fetch (or refresh) the Home feed; arrives as `Event::Home`.
+    GetHome,
     #[serde(other)]
     Unknown,
 }
@@ -76,6 +81,10 @@ pub enum Event {
     Playback(PlaybackState),
     /// Engine health/status changes (starting, needs pairing, ready, error…).
     Engine(EngineStatus),
+    /// Catalogue (private API) session status.
+    Catalogue(CatalogueStatus),
+    /// The Home feed, Shelf by Shelf.
+    Home(HomeFeed),
     /// A command was refused or failed.
     Error { message: String },
     #[serde(other)]
@@ -145,6 +154,42 @@ pub enum EngineStatus {
     NeedsPairing { device_name: String },
     Ready { device_name: String, active: bool, version: String, expires_in_days: Option<u32> },
     Failed { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CatalogueStatus {
+    LoggedOut,
+    /// Open `url` (or go to spotify.com/pair) and enter `code`.
+    LoginPending { url: String, code: String },
+    Connecting,
+    Ready { username: String, country: String, premium: bool },
+    /// The private API is unreachable or changed; playback keeps working.
+    Unavailable { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct HomeFeed {
+    pub fetched_unix_ms: u64,
+    pub shelves: Vec<Shelf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Shelf {
+    pub title: String,
+    /// `shortcuts` (the grid at the top), `shelf` (a regular row) or `feed` (the endless tail)
+    pub kind: String,
+    pub cards: Vec<Card>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Card {
+    pub uri: String,
+    pub name: String,
+    pub subtitle: String,
+    pub image_url: Option<String>,
+    /// `album`, `playlist`, `artist`, `episode`, `show` or `other`
+    pub kind: String,
 }
 
 /// Where the Daemon listens: `$XDG_RUNTIME_DIR/singularity/daemon.sock` (falls back to /tmp/singularity-$UID).

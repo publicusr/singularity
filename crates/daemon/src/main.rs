@@ -26,9 +26,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("singularityd {} listening on {}", singularityd::VERSION, path.display());
     // --fake-engine: a pretend player, handy for UI work without Soloist or a Spotify account
     let engine: Box<dyn Engine> = if std::env::args().any(|a| a == "--fake-engine") { Box::new(FakeEngine) } else { Box::new(SoloistEngine::from_env()) };
+    // --no-catalogue: playback only (no Spotify login / private API)
+    let catalogue = (!std::env::args().any(|a| a == "--no-catalogue")).then(|| singularityd::catalogue::spawn(singularityd::catalogue::Dirs::from_env()));
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = tokio::select! {
-        r = singularityd::serve(listener, engine) => r,
+        r = singularityd::serve(listener, engine, catalogue) => r,
         _ = tokio::signal::ctrl_c() => Ok(()),
         _ = term.recv() => Ok(()),
     };

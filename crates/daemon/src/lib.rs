@@ -1,9 +1,12 @@
 //! `singularityd`: owns playback (Engine), later the Catalogue session, the audio tap and local data.
 //! Clients talk to it over the protocol in `singularity-proto` (ADR-0003).
 
+pub mod catalogue;
 pub mod engine;
+pub mod queries;
 pub mod soloist;
 
+use catalogue::{CatCmd, CatEvent};
 use engine::{Engine, EngineEvent};
 use singularity_proto::{self as proto, ClientMsg, Command, DaemonMsg, Event, PROTOCOL_VERSION, PlaybackState};
 use std::path::{Path, PathBuf};
@@ -18,9 +21,15 @@ pub struct Hub {
     pub started_unix_ms: u64,
     pub playback: Mutex<PlaybackState>,
     pub engine_status: Mutex<Option<proto::EngineStatus>>,
+    pub catalogue_status: Mutex<Option<proto::CatalogueStatus>>,
+    pub home: Mutex<Option<proto::HomeFeed>>,
     pub events: broadcast::Sender<Event>,
     pub commands: mpsc::Sender<Command>,
+    pub catalogue: Option<mpsc::Sender<CatCmd>>,
 }
+
+/// A running Catalogue task (see `catalogue::spawn`); `None` disables it (tests, offline use).
+pub type CatalogueHandle = (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>);
 
 /// Bind the socket (replacing a stale one) with owner-only permissions on its directory.
 pub fn bind(path: &Path) -> std::io::Result<UnixListener> {
@@ -40,17 +49,27 @@ pub fn bind(path: &Path) -> std::io::Result<UnixListener> {
 }
 
 /// Run the Daemon on `listener` with `engine` until the process ends.
-pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>) -> anyhow::Result<()> {
+pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: Option<CatalogueHandle>) -> anyhow::Result<()> {
     let (events, _) = broadcast::channel(256);
     let (commands, command_rx) = mpsc::channel(64);
+    let (cat_tx, cat_rx) = match catalogue {
+        Some((tx, rx)) => (Some(tx), Some(rx)),
+        None => (None, None),
+    };
     let hub = Arc::new(Hub {
         started_unix_ms: proto::now_ms(),
         playback: Mutex::new(PlaybackState::default()),
         engine_status: Mutex::new(None),
+        catalogue_status: Mutex::new(None),
+        home: Mutex::new(None),
         events,
         commands,
+        catalogue: cat_tx,
     });
     tokio::spawn(run_engine(engine, hub.clone(), command_rx));
+    if let Some(rx) = cat_rx {
+        tokio::spawn(run_catalogue(rx, hub.clone()));
+    }
     loop {
         let (stream, _) = listener.accept().await?;
         let hub = hub.clone();
@@ -88,6 +107,24 @@ async fn run_engine(engine: Box<dyn Engine>, hub: Arc<Hub>, mut commands: mpsc::
     }
 }
 
+async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
+    while let Some(ev) = events.recv().await {
+        match ev {
+            CatEvent::Status(s) => {
+                *hub.catalogue_status.lock().await = Some(s.clone());
+                let _ = hub.events.send(Event::Catalogue(s));
+            }
+            CatEvent::Home(h) => {
+                *hub.home.lock().await = Some(h.clone());
+                let _ = hub.events.send(Event::Home(h));
+            }
+            CatEvent::Error(message) => {
+                let _ = hub.events.send(Event::Error { message });
+            }
+        }
+    }
+}
+
 async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()> {
     let (mut rd, mut wr) = stream.into_split();
     let hello: Option<ClientMsg> = proto::read_msg(&mut rd).await?;
@@ -112,6 +149,12 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     }
     let snapshot = hub.playback.lock().await.clone();
     proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Playback(snapshot))).await?;
+    if let Some(c) = hub.catalogue_status.lock().await.clone() {
+        proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Catalogue(c))).await?;
+    }
+    if let Some(h) = hub.home.lock().await.clone() {
+        proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Home(h))).await?;
+    }
 
     let mut events = hub.events.subscribe();
     let (out_tx, mut out_rx) = mpsc::channel::<DaemonMsg>(64);
@@ -145,6 +188,19 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                 let s = hub.playback.lock().await.clone();
                 let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;
             }
+            ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome)) => match &hub.catalogue {
+                Some(tx) => {
+                    let c = match cmd {
+                        Command::Login => CatCmd::Login,
+                        Command::Logout => CatCmd::Logout,
+                        _ => CatCmd::Home,
+                    };
+                    let _ = tx.send(c).await;
+                }
+                None => {
+                    let _ = out_tx.send(DaemonMsg::Event(Event::Error { message: "the Catalogue is disabled in this Daemon".into() })).await;
+                }
+            },
             ClientMsg::Command(cmd) => {
                 let _ = hub.commands.send(cmd).await;
             }

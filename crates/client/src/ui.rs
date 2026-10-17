@@ -8,7 +8,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Clear};
-use singularity_proto::{EngineStatus, PlayStatus};
+use singularity_proto::{CatalogueStatus, EngineStatus, PlayStatus};
 
 /// Pane titles, and which ticket brings each Pane's real Widget.
 fn slot_info(slot: &str) -> (&'static str, &'static str) {
@@ -55,6 +55,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     panes(f, body, app, &th);
     player_bar(f, player, app, &th);
     hint_bar(f.buffer_mut(), hints, &th);
+    if let Some(CatalogueStatus::LoginPending { url, code }) = app.catalogue.clone() {
+        if !app.login_hidden {
+            login(f, area, &th, &url, &code);
+        }
+    }
     if app.palette.is_some() {
         palette(f, area, app, &th);
     }
@@ -83,7 +88,15 @@ fn top_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
         Some(EngineStatus::Ready { device_name, .. }) => format!("▶ {device_name}"),
         Some(EngineStatus::Failed { .. }) => "engine: failed".into(),
     };
-    let right = if engine.is_empty() { link } else { format!("{engine}  ·  {link}") };
+    let account = match &app.catalogue {
+        Some(CatalogueStatus::Ready { username, premium, .. }) => format!("{username}{}", if *premium { " · Premium" } else { "" }),
+        Some(CatalogueStatus::LoginPending { code, .. }) => format!("log in: code {code}"),
+        Some(CatalogueStatus::Connecting) => "connecting to Spotify…".into(),
+        Some(CatalogueStatus::LoggedOut) => "not logged in (^K → Log in)".into(),
+        Some(CatalogueStatus::Unavailable { .. }) => "Spotify browsing unavailable".into(),
+        None => String::new(),
+    };
+    let right = [engine, account, link].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("  ·  ");
     let w = right.chars().count() as u16;
     text(buf, r.right().saturating_sub(w + 1), r.y, w, &right, th.s(col));
 }
@@ -101,6 +114,10 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             .style(th.base());
         let inner = block.inner(*rect);
         f.render_widget(block, *rect);
+        if slot == "home" && home_preview(f.buffer_mut(), inner, app, th) {
+            app.hit(*rect, Hit::Focus(slot.clone()));
+            continue;
+        }
         if inner.height > 0 {
             let y = inner.y + inner.height / 2;
             let w = todo.chars().count() as u16;
@@ -255,6 +272,50 @@ fn palette(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
         text(buf, inner.right().saturating_sub(k.chars().count() as u16 + 2), y, 10, k, th.s(th.dim));
         app.hit(row, Hit::PaletteItem(i));
     }
+}
+
+/// Text preview of the Home feed (cover cards replace this in #8). Returns false when there's nothing to show.
+fn home_preview(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) -> bool {
+    let msg = match (&app.catalogue, &app.home) {
+        (_, Some(h)) if !h.shelves.is_empty() => None,
+        (Some(CatalogueStatus::LoggedOut), _) => Some("not logged in · Ctrl+K → \"Log in to Spotify\""),
+        (Some(CatalogueStatus::Connecting), _) | (Some(CatalogueStatus::Ready { .. }), None) => Some("loading your Home…"),
+        (Some(CatalogueStatus::Unavailable { .. }), _) => Some("Spotify browsing is unavailable right now; playback still works"),
+        _ => return false,
+    };
+    if let Some(m) = msg {
+        let w = m.chars().count() as u16;
+        text(buf, r.x + r.width.saturating_sub(w) / 2, r.y + r.height / 2, r.width, m, th.s(th.dim));
+        return true;
+    }
+    let Some(h) = &app.home else { return false };
+    let mut y = r.y;
+    for shelf in h.shelves.iter().filter(|s| s.kind != "feed") {
+        if y + 1 >= r.bottom() {
+            break;
+        }
+        let title = if shelf.title.is_empty() { "Jump back in" } else { shelf.title.as_str() };
+        text(buf, r.x + 1, y, r.width.saturating_sub(2), title, th.s(th.accent).add_modifier(Modifier::BOLD));
+        y += 1;
+        let names: Vec<&str> = shelf.cards.iter().map(|c| c.name.as_str()).collect();
+        text(buf, r.x + 2, y, r.width.saturating_sub(3), &names.join("  ·  "), th.s(th.fg));
+        y += 2;
+    }
+    true
+}
+
+fn login(f: &mut Frame, area: Rect, th: &Theme, url: &str, code: &str) {
+    let r = centered(area, 64, 9);
+    f.render_widget(Clear, r);
+    let block = overlay_block(th, "Log in to Spotify");
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    let buf = f.buffer_mut();
+    text(buf, inner.x + 2, inner.y + 1, inner.width.saturating_sub(4), "Your browser should have opened. If not, go to:", th.s(th.fg));
+    text(buf, inner.x + 2, inner.y + 2, inner.width.saturating_sub(4), url, th.s(th.accent2));
+    text(buf, inner.x + 2, inner.y + 4, 12, "and enter", th.s(th.fg));
+    text(buf, inner.x + 12, inner.y + 4, 20, &format!(" {code} "), th.chip(th.accent));
+    text(buf, inner.x + 2, inner.y + 6, inner.width.saturating_sub(4), "Singularity never sees your password.  Esc hides this.", th.s(th.dim));
 }
 
 fn help(f: &mut Frame, area: Rect, th: &Theme) {

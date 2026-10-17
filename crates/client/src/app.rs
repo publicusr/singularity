@@ -5,7 +5,7 @@ use crate::layout::{Divider, Node};
 use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use singularity_proto::{Command, EngineStatus, PlaybackState};
+use singularity_proto::{CatalogueStatus, Command, EngineStatus, HomeFeed, PlaybackState};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -28,6 +28,9 @@ pub enum Action {
     VolumeDown,
     Shuffle,
     Repeat,
+    Login,
+    Logout,
+    RefreshHome,
     FocusNext,
     ResetLayout,
     Palette,
@@ -36,7 +39,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 14] = [
+    pub const ALL: [Action; 17] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -46,6 +49,9 @@ impl Action {
         Action::VolumeDown,
         Action::Shuffle,
         Action::Repeat,
+        Action::Login,
+        Action::Logout,
+        Action::RefreshHome,
         Action::FocusNext,
         Action::ResetLayout,
         Action::Palette,
@@ -63,6 +69,9 @@ impl Action {
             Action::VolumeDown => "Volume down",
             Action::Shuffle => "Toggle shuffle",
             Action::Repeat => "Cycle repeat (off → all → one)",
+            Action::Login => "Log in to Spotify",
+            Action::Logout => "Log out of Spotify",
+            Action::RefreshHome => "Refresh Home",
             Action::FocusNext => "Focus next pane",
             Action::ResetLayout => "Reset layout",
             Action::Palette => "Command palette",
@@ -81,6 +90,7 @@ impl Action {
             Action::VolumeDown => "-",
             Action::Shuffle => "s",
             Action::Repeat => "r",
+            Action::Login | Action::Logout | Action::RefreshHome => "",
             Action::FocusNext => "Tab",
             Action::ResetLayout => "",
             Action::Palette => "Ctrl+K",
@@ -111,11 +121,15 @@ pub struct App {
     pub link: Link,
     pub engine: Option<EngineStatus>,
     pub playback: PlaybackState,
+    pub catalogue: Option<CatalogueStatus>,
+    pub home: Option<HomeFeed>,
     pub focus: String,
     pub palette: Option<Palette>,
     pub help: bool,
     pub toast: Option<(String, Instant)>,
     pub quit: bool,
+    /// the user dismissed the login overlay (the login itself keeps waiting)
+    pub login_hidden: bool,
     pub dividers: Vec<Divider>,
     hits: Vec<(Rect, Hit)>,
     drag: Option<Hit>,
@@ -132,11 +146,14 @@ impl App {
             link: Link::Connecting,
             engine: None,
             playback: PlaybackState::default(),
+            catalogue: None,
+            home: None,
             focus: "home".into(),
             palette: None,
             help: false,
             toast: None,
             quit: false,
+            login_hidden: false,
             dividers: vec![],
             hits: vec![],
             drag: None,
@@ -194,6 +211,9 @@ impl App {
                 let mode = match self.playback.repeat { Off => Context, Context => Track, Track => Off };
                 self.send(Command::SetRepeat { mode });
             }
+            Action::Login => self.send(Command::Login),
+            Action::Logout => self.send(Command::Logout),
+            Action::RefreshHome => self.send(Command::GetHome),
             Action::FocusNext => {
                 let slots: Vec<String> = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.into_iter().map(|(s, _)| s).collect();
                 let i = slots.iter().position(|s| *s == self.focus).map(|i| (i + 1) % slots.len()).unwrap_or(0);
@@ -233,6 +253,7 @@ impl App {
             KeyCode::Char('k') if ctrl => self.run(Action::Palette),
             KeyCode::Char(':') => self.run(Action::Palette),
             KeyCode::Char('?') => self.run(Action::Help),
+            KeyCode::Esc if matches!(self.catalogue, Some(CatalogueStatus::LoginPending { .. })) => self.login_hidden = true,
             KeyCode::Char('q') | KeyCode::Esc => self.run(Action::Quit),
             KeyCode::Char(' ') => self.run(Action::TogglePlay),
             KeyCode::Char('n') => self.run(Action::Next),

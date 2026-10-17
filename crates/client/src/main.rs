@@ -62,6 +62,17 @@ fn apply(app: &mut App, ev: ConnEvent) {
         ConnEvent::Msg(DaemonMsg::Event(Event::Engine(s))) => app.engine = Some(s),
         ConnEvent::Msg(DaemonMsg::Event(Event::Playback(p))) => app.playback = p,
         ConnEvent::Msg(DaemonMsg::Event(Event::Error { message })) => app.say(message),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Catalogue(c))) => {
+            if let singularity_proto::CatalogueStatus::LoginPending { url, .. } = &c {
+                if !matches!(app.catalogue, Some(singularity_proto::CatalogueStatus::LoginPending { .. })) {
+                    app.login_hidden = false;
+                    // open the pairing page in the user's browser (the code is also shown in the UI)
+                    let _ = std::process::Command::new("xdg-open").arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+                }
+            }
+            app.catalogue = Some(c);
+        }
+        ConnEvent::Msg(DaemonMsg::Event(Event::Home(h))) => app.home = Some(h),
         ConnEvent::Msg(_) => {}
     }
 }

@@ -372,7 +372,7 @@ impl SoloistState {
             }
             Command::AddToQueue { uri } => vec![json!({"type":"command","command":"add_to_queue","uri":uri})],
             Command::GetState => vec![c("get_state")],
-            Command::Unknown => vec![],
+            Command::Login | Command::Logout | Command::GetHome | Command::Unknown => vec![],
         }
     }
 }

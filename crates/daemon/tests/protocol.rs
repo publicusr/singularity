@@ -8,7 +8,7 @@ async fn start() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("s").join("daemon.sock");
     let listener = singularityd::bind(&path).unwrap();
-    tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() })));
+    tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), None));
     (dir, path)
 }
 
@@ -75,7 +75,7 @@ async fn playback_flow_through_the_protocol() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("d.sock");
     let listener = singularityd::bind(&path).unwrap();
-    tokio::spawn(singularityd::serve(listener, Box::new(singularityd::engine::FakeEngine)));
+    tokio::spawn(singularityd::serve(listener, Box::new(singularityd::engine::FakeEngine), None));
     let mut a = connect(&path).await;
     let mut b = connect(&path).await; // a second Client sees the same events
     let _ = next_playback(&mut a).await; // initial snapshots

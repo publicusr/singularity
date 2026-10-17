@@ -18,5 +18,10 @@ tokio-tungstenite = "0.30.0"
 futures-util = "0.3.34"
 libc = "0.2.191"
 
+librespot-core = { version = "=0.8.6", package = "spotatui-librespot-core" }
+librespot-oauth = { version = "=0.8.6", package = "spotatui-librespot-oauth" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
+regex = "1"
+
 [dev-dependencies]
 tempfile = "3"
