@@ -174,6 +174,14 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             crate::sidebar::draw(f.buffer_mut(), inner, app, th);
             continue;
         }
+        if slot == "fft" {
+            crate::meters::spectrum(f.buffer_mut(), inner, &app.meters, th);
+            continue;
+        }
+        if slot == "loudness" {
+            crate::meters::loudness(f.buffer_mut(), inner, &app.meters, th);
+            continue;
+        }
         if slot == "home" && app.view.is_some() {
             crate::tracks::draw(f.buffer_mut(), inner, app, th);
             continue;
@@ -826,5 +834,22 @@ mod tests {
         // Backspace goes back to Home
         key(&mut app, KeyCode::Backspace);
         assert!(app.view.is_none());
+    }
+
+    #[test]
+    fn spectrum_frames_light_the_fft_and_loudness_panes() {
+        let mut app = App::new(None);
+        for i in 0..60u32 {
+            let bands = (0..64).map(|b| ((b * 4 + i as usize) % 255) as u8).collect();
+            app.meters.push(singularity_proto::SpectrumFrame { bands, level: 180, vu: [220, 200], beat: i % 15 == 0 });
+        }
+        let s = render(&mut app, 160, 48);
+        let slots = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).slots;
+        let pane = |name: &str| slots.iter().find(|(s, _)| s == name).unwrap().1;
+        let region = |r: Rect| s.lines().skip(r.y as usize + 1).take(r.height as usize - 2).map(|l| l.chars().skip(r.x as usize + 1).take(r.width as usize - 2).collect::<String>()).collect::<Vec<_>>().join("\n");
+        assert!(region(pane("fft")).contains('█'), "{}", region(pane("fft")));
+        let loud = region(pane("loudness"));
+        assert!(loud.starts_with("L ▬") && loud.contains('█'), "{loud}");
+        assert!(!s.contains("arrives with #15"));
     }
 }

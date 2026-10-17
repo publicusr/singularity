@@ -35,9 +35,11 @@ async fn main() -> anyhow::Result<()> {
     } else {
         (!args.iter().any(|a| a == "--no-catalogue")).then(|| singularityd::catalogue::spawn(singularityd::catalogue::Dirs::from_env()))
     };
+    // the AudioTap listens to Soloist's own stream; the fake Engine "plays" a synthetic groove
+    let tap = if args.iter().any(|a| a == "--fake-engine") { singularityd::tap::TapSource::Synthetic } else { singularityd::tap::TapSource::PipeWire };
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = tokio::select! {
-        r = singularityd::serve(listener, engine, catalogue) => r,
+        r = singularityd::serve(listener, engine, catalogue, Some(tap)) => r,
         _ = tokio::signal::ctrl_c() => Ok(()),
         _ = term.recv() => Ok(()),
     };

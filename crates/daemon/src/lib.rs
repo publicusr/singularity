@@ -7,6 +7,7 @@ pub mod engine;
 pub mod library;
 pub mod queries;
 pub mod soloist;
+pub mod tap;
 
 use catalogue::{CatCmd, CatEvent};
 use engine::{Engine, EngineEvent};
@@ -29,6 +30,10 @@ pub struct Hub {
     pub events: broadcast::Sender<Event>,
     pub commands: mpsc::Sender<Command>,
     pub catalogue: Option<mpsc::Sender<CatCmd>>,
+    /// AudioTap frames, and how many Clients want them (the tap runs only while > 0)
+    pub spectrum: broadcast::Sender<proto::SpectrumFrame>,
+    pub spectrum_listeners: std::sync::atomic::AtomicUsize,
+    pub spectrum_wake: tokio::sync::Notify,
 }
 
 /// A running Catalogue task (see `catalogue::spawn`); `None` disables it (tests, offline use).
@@ -52,7 +57,7 @@ pub fn bind(path: &Path) -> std::io::Result<UnixListener> {
 }
 
 /// Run the Daemon on `listener` with `engine` until the process ends.
-pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: Option<CatalogueHandle>) -> anyhow::Result<()> {
+pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: Option<CatalogueHandle>, tap: Option<tap::TapSource>) -> anyhow::Result<()> {
     let (events, _) = broadcast::channel(256);
     let (commands, command_rx) = mpsc::channel(64);
     let (cat_tx, cat_rx) = match catalogue {
@@ -69,7 +74,13 @@ pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: O
         events,
         commands,
         catalogue: cat_tx,
+        spectrum: broadcast::channel(8).0,
+        spectrum_listeners: Default::default(),
+        spectrum_wake: Default::default(),
     });
+    if let Some(source) = tap {
+        tokio::spawn(tap::run(hub.clone(), source));
+    }
     tokio::spawn(run_engine(engine, hub.clone(), command_rx));
     if let Some(rx) = cat_rx {
         tokio::spawn(run_catalogue(rx, hub.clone()));
@@ -196,44 +207,80 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
             }
         }
     });
-    while let Some(msg) = proto::read_msg::<_, ClientMsg>(&mut rd).await? {
-        match msg {
-            ClientMsg::Ping { id } => {
-                let _ = out_tx.send(DaemonMsg::Pong { id }).await;
-            }
-            ClientMsg::Command(Command::GetState) => {
-                let s = hub.playback.lock().await.clone();
-                let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;
-            }
-            ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. })) => match &hub.catalogue {
-                Some(tx) => {
-                    let c = match cmd {
-                        Command::Login => CatCmd::Login,
-                        Command::Logout => CatCmd::Logout,
-                        Command::GetLibrary => CatCmd::Library,
-                        Command::GetTracks { uri } => CatCmd::Tracks(uri),
-                        Command::PlayFrom { context_uri, index, track_uri } => CatCmd::PlayFrom { context_uri, index, track_uri },
-                        _ => CatCmd::Home,
-                    };
-                    let _ = tx.send(c).await;
+    // this Client's spectrum subscription: a forwarder task while it's on
+    let mut spectrum: Option<tokio::task::JoinHandle<()>> = None;
+    let result = async {
+        while let Some(msg) = proto::read_msg::<_, ClientMsg>(&mut rd).await? {
+            match msg {
+                ClientMsg::Command(Command::Spectrum { on }) => {
+                    use std::sync::atomic::Ordering;
+                    if on && spectrum.is_none() {
+                        let mut frames = hub.spectrum.subscribe();
+                        let tx = out_tx.clone();
+                        spectrum = Some(tokio::spawn(async move {
+                            loop {
+                                match frames.recv().await {
+                                    // frames are disposable: a slow Client skips some rather than queueing them
+                                    Ok(f) => {
+                                        if let Err(mpsc::error::TrySendError::Closed(_)) = tx.try_send(DaemonMsg::Event(Event::Spectrum(f))) {
+                                            break;
+                                        }
+                                    }
+                                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                                    Err(_) => break,
+                                }
+                            }
+                        }));
+                        hub.spectrum_listeners.fetch_add(1, Ordering::SeqCst);
+                        hub.spectrum_wake.notify_waiters();
+                    } else if !on && let Some(t) = spectrum.take() {
+                        t.abort();
+                        hub.spectrum_listeners.fetch_sub(1, Ordering::SeqCst);
+                    }
                 }
-                // without a Catalogue the Engine still plays the track itself
-                None if matches!(cmd, Command::PlayFrom { .. }) => {
+                ClientMsg::Ping { id } => {
+                    let _ = out_tx.send(DaemonMsg::Pong { id }).await;
+                }
+                ClientMsg::Command(Command::GetState) => {
+                    let s = hub.playback.lock().await.clone();
+                    let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;
+                }
+                ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. })) => match &hub.catalogue {
+                    Some(tx) => {
+                        let c = match cmd {
+                            Command::Login => CatCmd::Login,
+                            Command::Logout => CatCmd::Logout,
+                            Command::GetLibrary => CatCmd::Library,
+                            Command::GetTracks { uri } => CatCmd::Tracks(uri),
+                            Command::PlayFrom { context_uri, index, track_uri } => CatCmd::PlayFrom { context_uri, index, track_uri },
+                            _ => CatCmd::Home,
+                        };
+                        let _ = tx.send(c).await;
+                    }
+                    // without a Catalogue the Engine still plays the track itself
+                    None if matches!(cmd, Command::PlayFrom { .. }) => {
+                        let _ = hub.commands.send(cmd).await;
+                    }
+                    None => {
+                        let _ = out_tx.send(DaemonMsg::Event(Event::Error { message: "the Catalogue is disabled in this Daemon".into() })).await;
+                    }
+                },
+                ClientMsg::Command(cmd) => {
                     let _ = hub.commands.send(cmd).await;
                 }
-                None => {
-                    let _ = out_tx.send(DaemonMsg::Event(Event::Error { message: "the Catalogue is disabled in this Daemon".into() })).await;
-                }
-            },
-            ClientMsg::Command(cmd) => {
-                let _ = hub.commands.send(cmd).await;
+                ClientMsg::Hello { .. } | ClientMsg::Unknown => {}
             }
-            ClientMsg::Hello { .. } | ClientMsg::Unknown => {}
         }
+        Ok::<(), std::io::Error>(())
+    }
+    .await;
+    if let Some(t) = spectrum.take() {
+        t.abort();
+        hub.spectrum_listeners.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
     forwarder.abort();
     writer.abort();
-    Ok(())
+    result
 }
 
 /// Default socket location (see `singularity_proto::socket_path`).

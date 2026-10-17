@@ -66,6 +66,8 @@ pub enum Command {
     GetTracks { uri: String },
     /// Play a context starting at its `index`-th track (`track_uri` guards against the list having changed).
     PlayFrom { context_uri: String, index: u32, track_uri: Option<String> },
+    /// Start or stop receiving `Event::Spectrum` frames (the tap runs only while someone listens).
+    Spectrum { on: bool },
     #[serde(other)]
     Unknown,
 }
@@ -95,6 +97,8 @@ pub enum Event {
     Library(Library),
     /// One page of a track list; pages arrive in order until `offset + tracks.len() == total`.
     Tracks(TrackPage),
+    /// One frame of audio analysis (~30 Hz while audio plays), only to Clients that asked for it.
+    Spectrum(SpectrumFrame),
     /// A command was refused or failed.
     Error { message: String },
     #[serde(other)]
@@ -238,6 +242,20 @@ pub struct TrackRow {
     pub added_at: Option<String>,
     pub duration_ms: u64,
     pub playable: bool,
+}
+
+/// What the AudioTap heard in the last ~33 ms. Levels are relative to the track's own recent loudness
+/// (automatic gain), so they look the same at any volume. All values 0–255.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SpectrumFrame {
+    /// log-spaced bands, 35 Hz → 16 kHz, smoothed (fast rise, slow fall)
+    pub bands: Vec<u8>,
+    /// overall loudness
+    pub level: u8,
+    /// left/right peak meters
+    pub vu: [u8; 2],
+    /// an onset (beat) starts in this frame
+    pub beat: bool,
 }
 
 /// Where the Daemon listens: `$XDG_RUNTIME_DIR/singularity/daemon.sock` (falls back to /tmp/singularity-$UID).

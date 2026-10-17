@@ -5,6 +5,7 @@ use crate::covers::Covers;
 use crate::gfx::Kitty;
 use crate::home::{CardRef, HomeView};
 use crate::layout::{Divider, Node};
+use crate::meters::Meters;
 use crate::scrub::{Bar, Scrub};
 use crate::sidebar::Sidebar;
 use crate::tracks::{Col, TrackList, TrackView};
@@ -233,6 +234,7 @@ pub struct App {
     /// the open track list (None: the main Pane shows Home)
     pub view: Option<TrackView>,
     last_click: Option<(Instant, usize)>,
+    pub meters: Meters,
     commands: Option<mpsc::Sender<Command>>,
 }
 
@@ -270,6 +272,7 @@ impl App {
             lists: HashMap::new(),
             view: None,
             last_click: None,
+            meters: Meters::default(),
             commands,
         }
     }
@@ -297,6 +300,14 @@ impl App {
     pub fn pixel_tier_for(&self, r: Rect) -> Option<(f64, f64)> {
         let px = self.cell_px?;
         (self.kitty.is_some() && !self.overlays.iter().any(|o| o.intersects(r))).then_some(px)
+    }
+
+    /// After (re)connecting: ask for spectrum frames if an audio Widget is on screen.
+    pub fn on_connected(&mut self) {
+        let slots = self.layout.compute(Rect::new(0, 0, 200, 60)).slots;
+        if slots.iter().any(|(s, _)| s == "fft" || s == "loudness") {
+            self.send(Command::Spectrum { on: true });
+        }
     }
 
     pub fn say(&mut self, msg: impl Into<String>) {

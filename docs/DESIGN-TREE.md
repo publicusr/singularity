@@ -122,3 +122,9 @@ flowchart LR
   sidebar (Home, Liked Songs, playlists with folders indented, albums, artists), track lists that stream in page by page,
   header sort (asc → desc → list order), `/` filter, double-click/Enter plays from that track; the Engine plays the track
   alone if Connect fails. Esc inside a list goes back to Home.
+- **#15 AudioTap** (2026-10-17): the Daemon taps Soloist's own PipeWire stream (`application.name="Spotify"` without a
+  process binary, so the official app is never picked up) with `parec --monitor-stream`, only while a Client listens and
+  only while playing. 2048-pt FFT at 30 Hz, 64 log bands, bass-flux onsets, automatic gain against the track's own
+  loudness envelope (re-seeded on volume changes). Frames go only to subscribed Clients and stop after silence. Spectrum,
+  loudness history and VU Widgets fill the `fft` and `loudness` Panes. Cost: analysis 0.04 % + parec < 0.1 % of a core.
+  `--fake-engine` feeds the tap a synthetic groove.

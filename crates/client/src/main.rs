@@ -6,6 +6,7 @@ mod covers;
 mod gfx;
 mod home;
 mod layout;
+mod meters;
 mod scrub;
 mod sidebar;
 mod term;
@@ -100,7 +101,10 @@ fn apply(app: &mut App, ev: ConnEvent) {
     match ev {
         ConnEvent::Connecting => {}
         ConnEvent::Disconnected => app.link = Link::Connecting,
-        ConnEvent::Connected { daemon_version } => app.link = Link::Connected { version: daemon_version },
+        ConnEvent::Connected { daemon_version } => {
+            app.link = Link::Connected { version: daemon_version };
+            app.on_connected();
+        }
         ConnEvent::Incompatible(m) => {
             app.say(m.clone());
             app.link = Link::Incompatible(m);
@@ -121,6 +125,7 @@ fn apply(app: &mut App, ev: ConnEvent) {
         ConnEvent::Msg(DaemonMsg::Event(Event::Home(h))) => app.home = Some(h),
         ConnEvent::Msg(DaemonMsg::Event(Event::Library(l))) => app.library = Some(l),
         ConnEvent::Msg(DaemonMsg::Event(Event::Tracks(p))) => app.track_page(p),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Spectrum(f))) => app.meters.push(f),
         ConnEvent::Msg(_) => {}
     }
 }
