@@ -26,6 +26,8 @@ pub enum Action {
     SeekBack,
     VolumeUp,
     VolumeDown,
+    Shuffle,
+    Repeat,
     FocusNext,
     ResetLayout,
     Palette,
@@ -34,7 +36,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 12] = [
+    pub const ALL: [Action; 14] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -42,6 +44,8 @@ impl Action {
         Action::SeekBack,
         Action::VolumeUp,
         Action::VolumeDown,
+        Action::Shuffle,
+        Action::Repeat,
         Action::FocusNext,
         Action::ResetLayout,
         Action::Palette,
@@ -57,6 +61,8 @@ impl Action {
             Action::SeekBack => "Seek back 5 s",
             Action::VolumeUp => "Volume up",
             Action::VolumeDown => "Volume down",
+            Action::Shuffle => "Toggle shuffle",
+            Action::Repeat => "Cycle repeat (off → all → one)",
             Action::FocusNext => "Focus next pane",
             Action::ResetLayout => "Reset layout",
             Action::Palette => "Command palette",
@@ -73,6 +79,8 @@ impl Action {
             Action::SeekBack => "←",
             Action::VolumeUp => "+",
             Action::VolumeDown => "-",
+            Action::Shuffle => "s",
+            Action::Repeat => "r",
             Action::FocusNext => "Tab",
             Action::ResetLayout => "",
             Action::Palette => "Ctrl+K",
@@ -180,6 +188,12 @@ impl App {
             Action::SeekBack => self.send(Command::Seek { position_ms: pos.saturating_sub(5000) }),
             Action::VolumeUp => self.send(Command::SetVolume { percent: self.playback.volume.saturating_add(5).min(100) }),
             Action::VolumeDown => self.send(Command::SetVolume { percent: self.playback.volume.saturating_sub(5) }),
+            Action::Shuffle => self.send(Command::SetShuffle { enabled: !self.playback.shuffle }),
+            Action::Repeat => {
+                use singularity_proto::RepeatMode::*;
+                let mode = match self.playback.repeat { Off => Context, Context => Track, Track => Off };
+                self.send(Command::SetRepeat { mode });
+            }
             Action::FocusNext => {
                 let slots: Vec<String> = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.into_iter().map(|(s, _)| s).collect();
                 let i = slots.iter().position(|s| *s == self.focus).map(|i| (i + 1) % slots.len()).unwrap_or(0);
@@ -227,6 +241,8 @@ impl App {
             KeyCode::Left => self.run(Action::SeekBack),
             KeyCode::Char('+') | KeyCode::Char('=') => self.run(Action::VolumeUp),
             KeyCode::Char('-') => self.run(Action::VolumeDown),
+            KeyCode::Char('s') => self.run(Action::Shuffle),
+            KeyCode::Char('r') => self.run(Action::Repeat),
             KeyCode::Tab => self.run(Action::FocusNext),
             _ => {}
         }

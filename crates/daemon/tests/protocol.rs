@@ -53,3 +53,46 @@ async fn second_daemon_refuses_to_bind() {
     let err = singularityd::bind(&path).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
 }
+
+async fn connect(path: &std::path::Path) -> UnixStream {
+    let mut s = UnixStream::connect(path).await.unwrap();
+    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() }).await.unwrap();
+    let _welcome: DaemonMsg = proto::read_msg(&mut s).await.unwrap().unwrap();
+    s
+}
+
+async fn next_playback(s: &mut UnixStream) -> singularity_proto::PlaybackState {
+    loop {
+        if let DaemonMsg::Event(Event::Playback(p)) = proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap() {
+            return p;
+        }
+    }
+}
+
+#[tokio::test]
+async fn playback_flow_through_the_protocol() {
+    use singularity_proto::{Command, PlayStatus};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("d.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    tokio::spawn(singularityd::serve(listener, Box::new(singularityd::engine::FakeEngine)));
+    let mut a = connect(&path).await;
+    let mut b = connect(&path).await; // a second Client sees the same events
+    let _ = next_playback(&mut a).await; // initial snapshots
+    let _ = next_playback(&mut b).await;
+
+    let send = |c: Command| ClientMsg::Command(c);
+    proto::write_msg(&mut a, &send(Command::Play { uri: Some("spotify:track:fake2".into()) })).await.unwrap();
+    let p = next_playback(&mut a).await;
+    assert_eq!((p.status, p.item.as_ref().unwrap().name.as_str()), (PlayStatus::Playing, "Track 2"));
+    assert_eq!(next_playback(&mut b).await.item.unwrap().name, "Track 2");
+
+    proto::write_msg(&mut a, &send(Command::Next)).await.unwrap();
+    assert_eq!(next_playback(&mut a).await.item.unwrap().name, "Track 3");
+    proto::write_msg(&mut a, &send(Command::Seek { position_ms: 90_000 })).await.unwrap();
+    assert_eq!(next_playback(&mut a).await.position_ms, 90_000);
+    proto::write_msg(&mut a, &send(Command::SetVolume { percent: 33 })).await.unwrap();
+    assert_eq!(next_playback(&mut a).await.volume, 33);
+    proto::write_msg(&mut a, &send(Command::TogglePlay)).await.unwrap();
+    assert_eq!(next_playback(&mut a).await.status, PlayStatus::Paused);
+}

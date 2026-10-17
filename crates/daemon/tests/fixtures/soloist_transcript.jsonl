@@ -1,0 +1,12 @@
+{"type":"auth_state","logged_in":true,"is_active":false,"device_name":"Singularity"}
+{"type":"options_changed","options":{"modes":{"context_enhancement":"NONE"},"playback_speed":1,"repeat":"off","shuffle":false}}
+{"type":"device_changed","device_name":"Singularity","is_active":true}
+{"type":"context_changed","context":{"decorations":{"identity":{"name":"Event Horizon"},"visual_identity":{"cover":[{"size":"default","url":"https://i.scdn.co/image/fixture"}]}},"entity_type":"album","uri":"spotify:album:fixture"}}
+{"type":"track_changed","item":{"uri":"spotify:track:one","entity_type":"track","decorations":{"identity":{"name":"Accretion Disk"},"creators":[{"entity":{"uri":"spotify:artist:a","entity_type":"artist","decorations":{"identity":{"name":"Nova Drift"}}}}],"parent":{"entity":{"uri":"spotify:album:fixture","entity_type":"album","decorations":{"identity":{"name":"Event Horizon"}}}},"visual_identity":{"cover":[{"url":"https://i.scdn.co/image/small","size":"small"},{"url":"https://i.scdn.co/image/large","size":"large"}]},"playback":{"duration_ms":227000,"content_ratings":["explicit"]}}}}
+{"type":"queue_changed","previous":[],"upcoming":[{"uid":"spotify:track:two","source":"context","item":{"uri":"spotify:track:two","entity_type":"track","decorations":{"identity":{"name":"Photon Sphere"}}}},{"uid":"spotify:track:three","source":"autoplay","item":{"uri":"spotify:track:three","entity_type":"track","decorations":{}}}]}
+{"type":"playback_changed","status":"buffering"}
+{"type":"playback_changed","status":"playing"}
+{"type":"position_sync","position":{"position_ms":45000,"timestamp_ms":1747654321000,"speed":1.0}}
+{"type":"volume_changed","volume":72}
+{"type":"options_changed","options":{"repeat":"context","shuffle":true,"playback_speed":1,"modes":{}}}
+{"type":"command_result","command":"set_volume"}

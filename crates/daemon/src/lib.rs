@@ -2,6 +2,7 @@
 //! Clients talk to it over the protocol in `singularity-proto` (ADR-0003).
 
 pub mod engine;
+pub mod soloist;
 
 use engine::{Engine, EngineEvent};
 use singularity_proto::{self as proto, ClientMsg, Command, DaemonMsg, Event, PROTOCOL_VERSION, PlaybackState};

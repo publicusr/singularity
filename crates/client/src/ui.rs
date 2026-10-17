@@ -132,11 +132,28 @@ fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     let mid_w = (r.width / 2).max(30).min(r.width.saturating_sub(4));
     let mx = r.x + (r.width - mid_w) / 2;
     let playing = pb.status == PlayStatus::Playing;
-    let buttons = [("|◀", Action::Previous), (if playing { "❚❚" } else { " ▶" }, Action::TogglePlay), ("▶|", Action::Next)];
+    let repeat = match pb.repeat {
+        singularity_proto::RepeatMode::Off => " ↻",
+        singularity_proto::RepeatMode::Context => " ↻",
+        singularity_proto::RepeatMode::Track => "↻1",
+    };
+    let buttons = [
+        (" ⇄", Action::Shuffle, pb.shuffle),
+        ("|◀", Action::Previous, false),
+        (if playing { "❚❚" } else { " ▶" }, Action::TogglePlay, false),
+        ("▶|", Action::Next, false),
+        (repeat, Action::Repeat, pb.repeat != singularity_proto::RepeatMode::Off),
+    ];
     let bx = mx + mid_w.saturating_sub(buttons.len() as u16 * 5) / 2;
-    for (i, (label, act)) in buttons.iter().enumerate() {
+    for (i, (label, act, on)) in buttons.iter().enumerate() {
         let x = bx + i as u16 * 5;
-        let st = if *act == Action::TogglePlay { th.chip(th.accent) } else { th.s(th.fg) };
+        let st = if *act == Action::TogglePlay {
+            th.chip(th.accent)
+        } else if *on {
+            th.s(th.accent).add_modifier(Modifier::BOLD)
+        } else {
+            th.s(if matches!(act, Action::Shuffle | Action::Repeat) { th.dim } else { th.fg })
+        };
         text(buf, x, y, 4, &format!(" {label} "), st);
         app.hit(Rect::new(x, y, 4, 1), Hit::Action(*act));
     }
@@ -173,11 +190,22 @@ fn fmt_ms(ms: u64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-const HINTS: [(&str, &str); 6] = [("␣", "play/pause"), ("←→", "seek"), ("Tab", "focus"), ("^K", "palette"), ("?", "help"), ("q", "quit")];
+const HINTS: [(&str, &str); 7] = [("␣", "play/pause"), ("←→", "seek"), ("n/b", "next/prev"), ("Tab", "focus"), ("^K", "palette"), ("?", "help"), ("q", "quit")];
 
+/// Shows as many hints as fit; when space runs out, the least important go first
+/// (play/pause, palette, help and quit always stay).
 fn hint_bar(buf: &mut Buffer, r: Rect, th: &Theme) {
+    const DROP_ORDER: [&str; 3] = ["n/b", "Tab", "←→"];
+    let width = |hs: &[(&str, &str)]| hs.iter().map(|(k, d)| k.chars().count() as u16 + d.chars().count() as u16 + 5).sum::<u16>() + 1;
+    let mut hints: Vec<(&str, &str)> = HINTS.to_vec();
+    for drop in DROP_ORDER {
+        if width(&hints) <= r.width {
+            break;
+        }
+        hints.retain(|(k, _)| *k != drop);
+    }
     let mut x = r.x + 1;
-    for (k, d) in HINTS {
+    for (k, d) in hints {
         let kw = k.chars().count() as u16 + 2;
         let dw = d.chars().count() as u16 + 3;
         if x + kw + dw > r.right() {
@@ -235,7 +263,7 @@ fn help(f: &mut Frame, area: Rect, th: &Theme) {
         ("Ctrl+K  :", "command palette: find any action by typing"),
         ("Space", "play / pause"),
         ("← →", "seek 5 s          n / b   next / previous"),
-        ("+ -", "volume"),
+        ("+ -", "volume           s / r   shuffle / repeat"),
         ("Tab", "focus the next pane"),
         ("q / Esc", "quit the Client (music keeps playing)"),
     ];

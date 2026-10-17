@@ -1,6 +1,7 @@
 //! `singularityd` binary: parse flags, pick the Engine, serve the socket.
 
-use singularityd::engine::NoEngine;
+use singularityd::engine::{Engine, FakeEngine};
+use singularityd::soloist::SoloistEngine;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,12 +24,16 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => return Err(e.into()),
     };
     tracing::info!("singularityd {} listening on {}", singularityd::VERSION, path.display());
-    let engine = Box::new(NoEngine { reason: "Soloist engine arrives in ticket #4".into() });
-    tokio::select! {
+    // --fake-engine: a pretend player, handy for UI work without Soloist or a Spotify account
+    let engine: Box<dyn Engine> = if std::env::args().any(|a| a == "--fake-engine") { Box::new(FakeEngine) } else { Box::new(SoloistEngine::from_env()) };
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let result = tokio::select! {
         r = singularityd::serve(listener, engine) => r,
-        _ = tokio::signal::ctrl_c() => {
-            let _ = std::fs::remove_file(&path);
-            Ok(())
-        }
-    }
+        _ = tokio::signal::ctrl_c() => Ok(()),
+        _ = term.recv() => Ok(()),
+    };
+    // dropping the runtime drops the Engine task, and with it Soloist (kill_on_drop + PDEATHSIG)
+    let _ = std::fs::remove_file(&path);
+    tracing::info!("singularityd stopped");
+    result
 }
