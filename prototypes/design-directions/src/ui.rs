@@ -8,7 +8,7 @@ use crate::viz;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
@@ -415,9 +415,14 @@ pub fn hero(f: &mut Frame, r: Rect, app: &mut App, th: &Theme, kind: Hero, label
         Hero::BlackHole(look) => {
             let probe = app.fb_for(r, true, 1280);
             let rh = blackhole::fit_rh(probe.w, probe.h, &crate::app::LOOKS[look % crate::app::LOOKS.len()]);
-            let st = app.bh_style(look, rh, (0.5, 0.5), false);
-            let fb = app.render_bh(r, 1280, st);
-            app.present(buf, r, 1, true, fb);
+            app.hole_origin = Some((r.x as f32 + r.width as f32 / 2.0, r.y as f32 + r.height as f32 / 2.0, rh * r.height as f32 * 2.0, look));
+            if app.idle() {
+                empty_well(buf, r, th);
+            } else {
+                let st = app.bh_style(look, rh, (0.5, 0.5), false);
+                let fb = app.render_bh(r, 1280, st);
+                app.present(buf, r, 1, true, fb);
+            }
         }
         Hero::Warp => {
             let ramp = th.ramp.clone();
@@ -453,33 +458,161 @@ pub fn hero(f: &mut Frame, r: Rect, app: &mut App, th: &Theme, kind: Hero, label
     }
 }
 
-/// Idle screensaver: after a while without input the hole drifts in over the whole body and bends
-/// everything, text included. Any key or click wakes the UI (and is swallowed).
-pub fn idle_hole(f: &mut Frame, area: Rect, app: &mut App, look: usize) {
+/// Idle takeover: after a while without input, *the* black hole on screen (the gravity well's, or the
+/// hero's) breaks out of its pane, grows, and drifts over the interface bending everything. Designs
+/// without a visible hole get one that falls in from the top-right corner. Any key or click wakes
+/// the UI instantly (and is swallowed). Off switch: Shift+I or the palette.
+pub fn idle_hole(f: &mut Frame, area: Rect, app: &mut App, default_look: usize) {
     if area.width < 20 || area.height < 10 {
         return;
     }
+    let (ox, oy, orh, look) = app
+        .hole_origin
+        .unwrap_or((area.right() as f32 + 6.0, area.y as f32 - 3.0, 0.4, default_look));
     let lk = crate::app::LOOKS[look % crate::app::LOOKS.len()];
     let t = app.t * 0.06;
     let lx = 0.75 * (t * 0.37).sin() + 0.25 * (t * 0.83 + 1.0).sin();
     let ly = 0.70 * (t * 0.54 + 2.1).sin() + 0.30 * (t * 1.07).sin();
-    let rh = (area.height as f32 * 2.0 * 0.07).max(2.5);
-    let reach = rh * blackhole::reach(&lk);
-    let cx = area.x as f32 + area.width as f32 * 0.5 + lx * (area.width as f32 * 0.5 - reach * 0.6).max(0.0);
-    let cy = area.y as f32 + area.height as f32 * 0.45 + ly * (area.height as f32 * 0.5 - reach * 0.3).max(0.0);
+    let rh_t = (area.height as f32 * 2.0 * 0.07).max(2.5);
+    let reach = rh_t * blackhole::reach(&lk);
+    let tx = area.x as f32 + area.width as f32 * 0.5 + lx * (area.width as f32 * 0.5 - reach * 0.6).max(0.0);
+    let ty = area.y as f32 + area.height as f32 * 0.45 + ly * (area.height as f32 * 0.5 - reach * 0.3).max(0.0);
+    // break-out: ease from the pane to the drift path over a few seconds
+    let k = (app.idle_t / 4.0).clamp(0.0, 1.0);
+    let e = k * k * (3.0 - 2.0 * k);
+    let cx = ox + (tx - ox) * e;
+    let cy = oy + (ty - oy) * e;
+    let rh = orh + (rh_t - orh) * e;
     let buf = f.buffer_mut();
-    // dim everything a little, then bend it
+    let dim = 1.0 - 0.5 * e;
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             if let Some(c) = buf.cell_mut((x, y)) {
                 if let ratatui::style::Color::Rgb(r, g, b) = c.fg {
-                    c.set_fg(ratatui::style::Color::Rgb(r / 2, g / 2, b / 2));
+                    let s = |v: u8| (v as f32 * dim) as u8;
+                    c.set_fg(ratatui::style::Color::Rgb(s(r), s(g), s(b)));
                 }
             }
         }
     }
     blackhole::lens_cells(buf, area, cx, cy, rh, false);
     overlay_hole(buf, area, app, look, cx, cy, rh, 8);
+}
+
+/// What a pane looks like after its hole has escaped.
+fn empty_well(buf: &mut Buffer, r: Rect, th: &Theme) {
+    gfx::fill(buf, r, th.bg.color());
+    let msg = "· the well is empty ·";
+    let w = msg.chars().count() as u16;
+    if r.width > w {
+        text(buf, r.x + (r.width - w) / 2, r.y + r.height / 2, w, msg, th.s(th.dim));
+    }
+}
+
+/// Space bends near the hole: border lines of neighbouring panes within reach are re-drawn as braille
+/// dots displaced toward the hole, so straight frames curve smoothly into the well. Only structure
+/// moves (box-drawing characters); text, titles and content never do, and no dot lands on text.
+pub fn bend_borders(buf: &mut Buffer, body: Rect, exclude: Rect, cx: f32, cy: f32, falloff: f32, amp: f32) {
+    use std::collections::HashMap;
+    fn segs(ch: char) -> Option<[bool; 4]> {
+        // left, right, up, down
+        Some(match ch {
+            '─' | '━' | '═' => [true, true, false, false],
+            '│' | '┃' | '║' => [false, false, true, true],
+            '┌' | '╭' | '╔' | '┏' => [false, true, false, true],
+            '┐' | '╮' | '╗' | '┓' => [true, false, false, true],
+            '└' | '╰' | '╚' | '┗' => [false, true, true, false],
+            '┘' | '╯' | '╝' | '┛' => [true, false, true, false],
+            '├' | '╠' => [false, true, true, true],
+            '┤' | '╣' => [true, false, true, true],
+            '┬' | '╦' => [true, true, false, true],
+            '┴' | '╩' => [true, true, true, false],
+            '┼' | '╬' => [true, true, true, true],
+            _ => return None,
+        })
+    }
+    let reach = falloff * 2.2;
+    let pull_at = |ux: f32, uy: f32| {
+        let (dx, dy) = (ux - cx, uy - cy * 2.0);
+        let dist = (dx * dx + dy * dy).sqrt().max(1e-3);
+        (dx / dist, dy / dist, amp * (-(dist / falloff).powi(2)).exp())
+    };
+    let x0 = (cx - reach).max(body.x as f32) as u16;
+    let x1 = ((cx + reach) as u16).min(body.right());
+    let y0 = (cy - reach / 2.0).max(body.y as f32) as u16;
+    let y1 = ((cy + reach / 2.0) as u16).min(body.bottom());
+    let inside = |x: u16, y: u16, r: Rect| x >= r.x && x < r.right() && y >= r.y && y < r.bottom();
+    // sample points along every border segment, in braille-dot coordinates
+    let mut pts: Vec<(f32, f32, Color, bool)> = vec![]; // x, y, colour, horizontal?
+    for y in y0..y1 {
+        for x in x0..x1 {
+            if inside(x, y, exclude) {
+                continue;
+            }
+            let Some(cell) = buf.cell_mut((x, y)) else { continue };
+            let Some(s) = cell.symbol().chars().next().and_then(segs) else { continue };
+            // cells that would barely move keep their solid line glyph: seamless straight→curved
+            if pull_at(x as f32 + 0.5, (y as f32 + 0.5) * 2.0).2 < 0.45 {
+                continue;
+            }
+            let col = cell.fg;
+            let (bx, by) = (x as f32 * 2.0 + 0.5, y as f32 * 4.0 + 1.5);
+            let mut add = |dx0: f32, dy0: f32, dx1: f32, dy1: f32| {
+                let horiz = dy0 == dy1;
+                for i in 0..=6 {
+                    let t = i as f32 / 6.0;
+                    pts.push((bx + dx0 + (dx1 - dx0) * t, by + dy0 + (dy1 - dy0) * t, col, horiz));
+                }
+            };
+            if s[0] { add(-0.5, 0.0, 0.0, 0.0); }
+            if s[1] { add(0.0, 0.0, 1.5, 0.0); }
+            if s[2] { add(0.0, -1.5, 0.0, 0.0); }
+            if s[3] { add(0.0, 0.0, 0.0, 2.5); }
+            cell.set_char(' ');
+        }
+    }
+    // displace toward the hole (lens units: x = cells, y = cells × 2 → dot x / 2, dot y / 2)
+    let mut cells: HashMap<(u16, u16), (u32, Color)> = HashMap::new();
+    const BITS: [[u32; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+    // keep a one-dot moat around the well so neighbours bow toward it without touching it
+    let moat = Rect::new(exclude.x.saturating_sub(1), exclude.y.saturating_sub(1), exclude.width + 2, exclude.height + 2);
+    let in_moat = |nx: f32, ny: f32| inside((nx / 2.0) as u16, (ny / 4.0) as u16, moat);
+    for (px, py, col, horiz) in pts {
+        let (ux, uy) = (px / 2.0, py / 2.0);
+        let (dxn, dyn_, pull) = pull_at(ux, uy);
+        // lines only move sideways (perpendicular to themselves): no gaps, no bunching
+        let (mut sx, mut sy) = if horiz { (0.0, dyn_ * pull) } else { (dxn * pull, 0.0) };
+        let mut np = ((ux - sx) * 2.0, (uy - sy) * 2.0);
+        for _ in 0..5 {
+            if !in_moat(np.0, np.1) {
+                break;
+            }
+            sx *= 0.5;
+            sy *= 0.5;
+            np = ((ux - sx) * 2.0, (uy - sy) * 2.0);
+        }
+        let (nx, ny) = np;
+        if nx < 0.0 || ny < 0.0 {
+            continue;
+        }
+        let (cxl, cyl) = ((nx / 2.0) as u16, (ny / 4.0) as u16);
+        let bit = BITS[(ny as usize) % 4][(nx as usize) % 2];
+        let e = cells.entry((cxl, cyl)).or_insert((0, col));
+        e.0 |= bit;
+    }
+    for ((x, y), (bits, col)) in cells {
+        if !inside(x, y, body) || inside(x, y, exclude) {
+            continue;
+        }
+        if let Some(c) = buf.cell_mut((x, y)) {
+            let ch = c.symbol().chars().next().unwrap_or(' ');
+            let free = ch == ' ' || ('\u{2800}'..='\u{28ff}').contains(&ch);
+            if free {
+                let old = if ch == ' ' { 0 } else { ch as u32 - 0x2800 };
+                c.set_char(char::from_u32(0x2800 + (old | bits)).unwrap_or(' ')).set_fg(col);
+            }
+        }
+    }
 }
 
 /// Draw the disk + shadow centred at (cx, cy) as a transparent overlay, clipped to `area`.
@@ -512,11 +645,18 @@ pub fn gravity_well(f: &mut Frame, outer: Rect, app: &mut App, th: &Theme, look:
     let buf = f.buffer_mut();
     gfx::fill(buf, outer, th.bg.color());
     let probe = app.fb_for(inner, true, 1280);
-    let mut st = app.bh_style(look, blackhole::fit_rh(probe.w, probe.h, &lk), (0.5, 0.5), false);
-    st.look.star = st.look.star.max(0.35);
-    let fb = app.render_bh(inner, 1280, st);
-    app.present(buf, inner, 1, true, fb);
-    warped_frame(buf, outer, 0.5 + app.frame.bass * 0.9, &[th.border, th.dim]);
+    let rh = blackhole::fit_rh(probe.w, probe.h, &lk);
+    app.hole_origin = Some((inner.x as f32 + inner.width as f32 / 2.0, inner.y as f32 + inner.height as f32 / 2.0, rh * inner.height as f32 * 2.0, look));
+    let idle = app.idle();
+    if idle {
+        empty_well(buf, inner, th);
+    } else {
+        let mut st = app.bh_style(look, rh, (0.5, 0.5), false);
+        st.look.star = st.look.star.max(0.35);
+        let fb = app.render_bh(inner, 1280, st);
+        app.present(buf, inner, 1, true, fb);
+    }
+    warped_frame(buf, outer, if idle { 0.0 } else { 0.5 + app.frame.bass * 0.9 }, &[th.border, th.dim]);
     text(buf, outer.x + 2, outer.y, 14, " gravity well ", th.s(th.accent));
     app.hit(outer, Act::CycleHero);
     let label = format!(" ◂ {} ▸ ", lk.name);

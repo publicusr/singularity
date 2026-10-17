@@ -4,7 +4,8 @@ A terminal Spotify client for Linux and macOS that feels like the desktop app, p
 and looks spectacular: a Home feed, Made For You, full library, mouse *and* keyboard, btop-grade themes, and
 built-in audio-reactive visuals (yes, including a black hole).
 
-**Status:** Phase 0, planning. The only code is the throwaway design prototype in `prototypes/design-directions/`.
+**Status:** Phase 1, spikes. Planning is done apart from one open question (D17). Throwaway code lives in
+`prototypes/` (the design prototype) and `spikes/` (integration experiments).
 
 ## Docs
 
@@ -19,6 +20,8 @@ built-in audio-reactive visuals (yes, including a black hole).
 | [docs/adr/](docs/adr/) | Hard-to-reverse decisions: Soloist Engine, private-API Catalogue, Daemon + Client, GPU visuals |
 | [docs/research/2026-10-private-api-risk.md](docs/research/2026-10-private-api-risk.md) | How risky the private API is for a one-person client |
 | [docs/research/2026-10-macos.md](docs/research/2026-10-macos.md) | How macOS support works (official app as Engine) |
+| [docs/research/2026-10-free-tiling.md](docs/research/2026-10-free-tiling.md) | What fully free tiling would take |
+| [spikes/soloist-control/](spikes/soloist-control/) | Spike 1: run, pair, control and tap Soloist (walkthrough inside) |
 | [prototypes/design-directions/](prototypes/design-directions/) | Five runnable design directions with a GPU black hole (`cargo run --release`) |
 
 ## Process

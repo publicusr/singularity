@@ -145,6 +145,31 @@ fn snapshot(dir: &str) -> std::io::Result<()> {
         std::fs::write(format!("{dir}/dir{}.cells", d + 1), format!("{w} {h}\n{out}"))?;
         app.variant = [0; 6];
     }
+    // idle break-out, ~2 s in (half way out of the gravity well) and fully out
+    for (name, ticks) in [("idle_mid", 60), ("idle_full", 150)] {
+        app.dir = 3;
+        app.idle_forced = true;
+        app.idle_t = 0.0;
+        for _ in 0..ticks {
+            app.tick(1.0 / 30.0);
+            app.begin_frame();
+            term.draw(|f| directions::draw(f, &mut app)).expect("draw");
+        }
+        let buf = term.backend().buffer();
+        let col = |c: ratatui::style::Color| match c {
+            ratatui::style::Color::Rgb(r, g, b) => format!("{r:02x}{g:02x}{b:02x}"),
+            _ => "000000".into(),
+        };
+        let mut out = String::new();
+        for y in 0..h {
+            for x in 0..w {
+                let c = &buf[(x, y)];
+                out.push_str(&format!("{}\t{}\t{}\t0\n", c.symbol().replace('\t', " "), col(c.fg), col(c.bg)));
+            }
+        }
+        std::fs::write(format!("{dir}/{name}.cells"), format!("{w} {h}\n{out}"))?;
+    }
+    app.idle_forced = false;
     let fr = app.frame.clone();
     let write_ppm = |name: &str, fb: &gfx::Fb| -> std::io::Result<()> {
         let mut data = format!("P6 {} {} 255\n", fb.w, fb.h).into_bytes();

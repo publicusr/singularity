@@ -53,8 +53,8 @@ The Pane that holds the black hole in the Singularity design. Its frame sags tow
 _Avoid_: hole pane, black hole widget
 
 **Idle mode**:
-After a stretch without input, the black hole drifts over the whole interface and bends its text (a screensaver).
-Any input ends it and is swallowed.
+After a stretch without input (3 min by default), the black hole on screen breaks out of its Pane and drifts over the
+whole interface, bending its text. Any input ends it and is swallowed. Can be switched off.
 _Avoid_: screensaver mode, drifting hole, floating mode
 
 **Palette variant**:

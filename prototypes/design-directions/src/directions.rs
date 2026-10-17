@@ -306,6 +306,14 @@ fn singularity(f: &mut Frame, body: Rect, np: Rect, app: &mut App, th: &Theme) {
         _ => 0,
     };
     ui::gravity_well(f, well, app, th, look);
+    if !app.idle() {
+        if let Some((cx, cy, _, _)) = app.hole_origin {
+            // gravity reaches about one well-size out; the pull breathes gently with the bass
+            let falloff = (well.width as f32).hypot(well.height as f32 * 2.0) * 0.55;
+            let amp = 2.2 * (1.0 + app.frame.bass * 0.3);
+            ui::bend_borders(f.buffer_mut(), body, well, cx, cy, falloff, amp);
+        }
+    }
 }
 
 /// 5 · Terminal: green phosphor on OLED black, file-tree library, rain, lyrics as a live log, scanlines.

@@ -135,8 +135,10 @@ spectacular:
 - **Visuals are theme-native.** A visual takes all of its colours from the active theme, and each slot offers a
   curated set of visuals that fit its shape and the design, so swapping never looks off-brand.
 - **Function first, spectacle second.** No visual may cover or move content you are using. The black hole lives in its
-  own pane (the *gravity well* in the Singularity design), and only when the app is idle (screensaver) does it drift
-  over the interface and bend its text. Any key or click wakes the UI instantly and is swallowed.
+  own pane (the *gravity well* in the Singularity design); its gravity bends only *structure* nearby (neighbouring
+  border lines curve toward it), never content. Only when the app is idle does the hole break out of its pane and
+  drift over the interface bending its text. Idle starts after 3 minutes (configurable), and can be switched off
+  (Shift+I, command palette, `config.toml`). Any key or click wakes the UI instantly and is swallowed.
 - **The black hole** is a port of ghostty-blackhole: thin Keplerian disk, blackbody colour, Doppler beaming, photon ring.
   Disk looks: Pixel ember (orange/red pixel art, the Event Horizon default), Inferno, Gargantua, M87*, Quasar, Blazar,
   Face-on ember. A disk look always fits its pane at any aspect ratio.
@@ -173,6 +175,9 @@ spectacular:
 - **Process model** (D22, settled, ADR-0003): `singularityd` Daemon (user service) + `singularity` Client(s).
 - **Platforms** (D10/D25, settled): Linux first (Soloist), macOS second (hidden official Spotify app as Engine).
 - **Secrets** (D24, settled): OS password store; owner-only file fallback with a warning.
+- **Layout** (D18, settled): a split-tree layout engine. v1 ships built-in layouts with swappable slots,
+  drag-to-resize and save-as; v1.x adds a free-tiling edit mode. All five designs ship; Singularity is the default.
+- **Daemon↔Client protocol** (D27, settled): local Unix socket, versioned length-prefixed messages, 60 Hz spectrum stream.
 - **Interaction model** (D6): sidebar + main view + now-playing bar like the desktop app.
   Everything is clickable, with context menus, a command palette (`Ctrl+K` / `:`), which-key popups
   and a context hint bar.

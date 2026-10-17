@@ -54,7 +54,7 @@ pub fn slot_options(dir: usize) -> &'static [Hero] {
 }
 
 /// Seconds without input before the black hole drifts in over the UI (screensaver).
-pub const IDLE_SECS: f32 = 30.0;
+pub const IDLE_SECS: f32 = 180.0;
 
 #[derive(Clone, Debug)]
 pub enum Act {
@@ -71,6 +71,7 @@ pub enum Act {
     SidebarScroll,
     CycleHero,
     ToggleHole,
+    ToggleIdle,
     Variant,
     TogglePixel,
     ToggleAudio,
@@ -109,6 +110,13 @@ pub struct App {
     pub variant: [usize; 6],
     pub idle_for: f32,
     pub idle_forced: bool,
+    /// the idle takeover can be switched off entirely (palette or Shift+I)
+    pub idle_enabled: bool,
+    /// seconds spent idle so far, drives the break-out animation
+    pub idle_t: f32,
+    /// where this frame's black hole lives (cx, cy in cells, shadow radius in lens units, look),
+    /// so the idle takeover can start from *that* hole instead of spawning a new one
+    pub hole_origin: Option<(f32, f32, f32, usize)>,
     pub gpu: Option<crate::gpu::Gpu>,
     pub sidebar_sel: usize,
     pub palette: Option<PaletteState>,
@@ -153,6 +161,9 @@ impl App {
             variant: [0; 6],
             idle_for: 0.0,
             idle_forced: false,
+            idle_enabled: true,
+            idle_t: 0.0,
+            hole_origin: None,
             gpu: crate::gpu::Gpu::new(),
             sidebar_sel: 5,
             palette: None,
@@ -198,6 +209,9 @@ impl App {
         self.scroll += dt * (0.6 + f.energy * 2.5 + f.beat * 1.2);
         self.warp.step(dt, &self.frame.clone());
         self.idle_for += dt;
+        if self.idle() {
+            self.idle_t += dt;
+        }
         self.hist_acc += dt;
         if self.hist_acc > 0.1 {
             self.hist_acc = 0.0;
@@ -227,6 +241,7 @@ impl App {
         self.hits.clear();
         self.kitty_queue.clear();
         self.kitty_keys_this_frame.clear();
+        self.hole_origin = None;
     }
 
     pub fn hit(&mut self, r: Rect, a: Act) {
@@ -251,7 +266,7 @@ impl App {
     }
 
     pub fn idle(&self) -> bool {
-        self.idle_forced || self.idle_for > IDLE_SECS
+        self.idle_forced || (self.idle_enabled && self.idle_for > IDLE_SECS)
     }
 
     /// Any input wakes the UI; returns true if it was idle (the input is then swallowed).
@@ -259,6 +274,7 @@ impl App {
         let was = self.idle();
         self.idle_for = 0.0;
         self.idle_forced = false;
+        self.idle_t = 0.0;
         was
     }
 
@@ -351,7 +367,8 @@ impl App {
             ("Previous track".into(), "b".into(), Act::Prev),
             ("Like / unlike current track".into(), "l".into(), Act::Like),
             ("Swap visual in hero slot".into(), "v".into(), Act::CycleHero),
-            ("Preview idle screensaver (black hole)".into(), "i".into(), Act::ToggleHole),
+            ("Preview idle takeover (black hole breaks out)".into(), "i".into(), Act::ToggleHole),
+            (if self.idle_enabled { "Turn idle takeover off".into() } else { "Turn idle takeover on".into() }, "I".into(), Act::ToggleIdle),
             ("Cycle colour palette of this design".into(), "t".into(), Act::Variant),
             ("Toggle pixel / cell render tier".into(), "p".into(), Act::TogglePixel),
             ("Toggle live / synthetic audio".into(), "a".into(), Act::ToggleAudio),
@@ -393,6 +410,10 @@ impl App {
             }
             Act::ToggleHole => {
                 self.idle_forced = true;
+            }
+            Act::ToggleIdle => {
+                self.idle_enabled = !self.idle_enabled;
+                self.say(if self.idle_enabled { "Idle takeover: on (after 3 min)" } else { "Idle takeover: off" });
             }
             Act::Variant => {
                 let n = crate::directions::variant_count(self.dir);
@@ -483,6 +504,7 @@ impl App {
             KeyCode::Char('l') => self.run(Act::Like),
             KeyCode::Char('v') => self.run(Act::CycleHero),
             KeyCode::Char('i') => self.run(Act::ToggleHole),
+            KeyCode::Char('I') => self.run(Act::ToggleIdle),
             KeyCode::Char('t') => self.run(Act::Variant),
             KeyCode::Char('p') => self.run(Act::TogglePixel),
             KeyCode::Char('a') => self.run(Act::ToggleAudio),

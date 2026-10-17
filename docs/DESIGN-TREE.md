@@ -27,7 +27,7 @@ so it cannot be settled by talking)
 | D5 | Rendering tiers (text-cell baseline vs kitty graphics) | none | settled | Pixel tier (kitty graphics: kitty, ghostty, wezterm) is the primary target; cell tier is the fallback. |
 | D6 | Interaction model (how to be keyboard-first *and* mouse-friendly without 1400 binds) | none | settled | Desktop-app layout, fully clickable, context menus, command palette, which-key popups, hint bar. |
 | D7 | Theming model | none | settled | btop-style TOML themes, bundled gallery, live picker, album-adaptive theme, transparency, themes drive visuals. |
-| D8 | Which visuals/widgets to prototype first | none | prototype | Iteration 3: Zen scrapped; Event Horizon, Classic+, Cockpit and Terminal kept (Cockpit and Terminal gained palette variants, `t`). Singularity reworked: the hole lives in a *gravity well* pane instead of drifting over content, and drifting is now only an idle screensaver. New *pixel ember* disk look (orange/red pixel art) as the Event Horizon default. Owner may still supply the exact black hole they had in mind. |
+| D8 | Which visuals/widgets to prototype first | none | settled | Five designs ship as built-in layout + theme pairs; **Singularity is the default**. Singularity = gravity-well pane + neighbouring borders bending toward it (structure only). Idle takeover: after 3 min (configurable) the visible hole breaks out of its pane and gobbles the UI; Shift+I / palette / config to switch it off. Pixel ember kept for now (not quite the remembered one). |
 | D9 | Project name | none | settled | **Singularity**. |
 | D10 | Platform scope (Linux-only?) | D1, D3 | settled | Linux first, **macOS second**, never Windows. macOS research: `research/2026-10-macos.md`. Engine choice on macOS → D25. |
 | D11 | Soloist lifecycle: who starts it, setup wizard (API key, pairing), expiry handling | D3 | settled | The Daemon supervises Soloist: setup wizard (API key → keyring, one-time pairing), silent auto-update from the CDN between tracks. (Folded into D22.) |
@@ -36,8 +36,8 @@ so it cannot be settled by talking)
 | D14 | Podcasts & audiobooks in scope? | D2, D13 | settled | Podcasts in v1.x (show pages, episodes, resume position); audiobooks later. |
 | D15 | Lyrics source (internal color-lyrics vs LRCLIB vs both) | D2 | settled | Spotify's synced lyrics first, LRCLIB as fallback. |
 | D16 | Audio tap for visualisers (PipeWire capture of the player node) | D3, D10 | settled | No real alternative: PipeWire monitor of the Engine node (Linux), Core Audio process tap (macOS). Lives in the Daemon. |
-| D17 | In-app Settings screen: which Spotify settings are controllable | D2, D3 | open | Needs the Soloist spike first: its CLI has no quality/crossfade flags, so it's unclear what we can control. |
-| D18 | Layout system (fixed presets vs free tiling vs presets + slot swapping) | D6 | frontier | Layout presets vs free slots: askable now that the directions have converged. |
+| D17 | In-app Settings screen: which Spotify settings are controllable | D2, D3 | open | Spike fact: Soloist's CLI exposes no quality, crossfade or normalisation options (only output device, initial volume, cache size). Remaining: can the private API set account playback settings? Spike 1/2. |
+| D18 | Layout system (fixed presets vs free tiling vs presets + slot swapping) | D6 | settled | (b) in v1: built-in layouts, swappable slots, drag-to-resize, save as your own layout. The layout engine is a split tree from day one, so (c) free tiling becomes a v1.x *layout edit mode*. Research: `research/2026-10-free-tiling.md`. |
 | D19 | Default keymap flavour (arrows/standard vs vim) | D6 | settled | Standard keys default (arrows, Enter, Space, Ctrl+K); vim preset as a one-line option; everything remappable. |
 | D20 | Local data: listening log/stats, caches, privacy | D1, D8 | settled | Local listening log + nightly library backups, on by default. Privacy: local only, never uploaded, no telemetry, owner-only file permissions, export/delete commands. |
 | D21 | Config format, locations, hot-reload | D4, D7 | settled | `~/.config/singularity/` (`config.toml`, `keys.toml`, `themes/`, `layouts/`), hot-reload. **Requirement:** the Settings screen and the files are one source of truth, edits preserve comments and formatting, and config is schema-versioned with automatic migrations so app updates never break it. |
@@ -46,7 +46,7 @@ so it cannot be settled by talking)
 | D24 | Credential storage (KWallet/Secret Service vs files) | D2, D3, D10 | settled | OS password store (KWallet/Secret Service on Linux, Keychain on macOS); owner-only file fallback with a warning. |
 | D25 | macOS Engine (Spotify.app over Connect vs librespot) | D10 | settled | The hidden official Spotify app as the macOS Engine (lossless, controlled over Connect); librespot fallback. |
 | D26 | Where visuals are computed (CPU vs GPU compute) | D4, D5 | settled | GPU (wgpu compute) first, CPU fallback; frames reach kitty via shared memory. ADR-0004. Measured 626% → 14% CPU for a full-res hole. |
-| D27 | Daemon↔Client protocol & local socket | D22 | frontier | |
+| D27 | Daemon↔Client protocol & local socket | D22 | settled | Local Unix socket, versioned length-prefixed messages; the audio spectrum streams over it at 60 Hz so several Clients share one tap. |
 
 ```mermaid
 flowchart LR
@@ -93,4 +93,8 @@ flowchart LR
   All settled. D8 iteration 3 built (see the D8 row). The GPU path was prototyped and measured (ADR-0004). Private repo
   `publicusr/singularity` created. Black hole search: couldn't identify an orange/red pixel-art terminal
   black hole with confidence, so the owner may supply a link; a pixel-art look was built meanwhile.
-- **Round 4** (2026-10-17): D8 iteration-3 reaction, D18, D27, D23, D17 sequencing asked.
+- **Round 4** (2026-10-17): D8 iteration-3 reaction, D18, D27, shipping set, Phase 1 go-ahead asked. All settled.
+  Owner asked for: more polished bending around the well (done: border lines re-drawn as braille, moving only
+  sideways, with a moat around the well); the idle takeover using *the* hole from the well (done); a 3–5 min idle timer
+  (3 min) with an easy off switch (Shift+I, palette, config); an assessment of free tiling (moderate effort, see research).
+  Phase 1 started: spike 1 (Soloist control + audio tap) built, waiting on the owner's API key and pairing.
