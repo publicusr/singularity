@@ -4,8 +4,22 @@ A terminal Spotify client for Linux and macOS that feels like the desktop app, p
 and looks spectacular: a Home feed, Made For You, full library, mouse *and* keyboard, btop-grade themes, and
 built-in audio-reactive visuals (yes, including a black hole).
 
-**Status:** Phase 1, spikes. Planning is done apart from one open question (D17). Throwaway code lives in
-`prototypes/` (the design prototype) and `spikes/` (integration experiments).
+**Status:** Phase 2, walking skeleton. Spec in `docs/SPEC.md`; v1 tickets are GitHub issues (#2–#23).
+Product code lives in `crates/`; throwaway code in `prototypes/` and `spikes/`.
+
+## Try it (early, Phase 2)
+
+```sh
+cargo build --release
+./target/release/singularity        # starts the Daemon (singularityd) automatically
+```
+
+- **Playback** needs your Soloist key in the keyring (see `spikes/soloist-control/README.md`). The Daemon downloads
+  Soloist and appears as the Connect device **"Singularity"**; pick it once from your phone, and set its quality to
+  Lossless there (device picker → Change quality settings).
+- **Browsing**: Ctrl+K → "Log in to Spotify" (approve the code at spotify.com/pair). Home Shelves show as text for now.
+- `singularityd --fake-engine` runs a pretend player for UI work; `--no-catalogue` skips Spotify browsing.
+- Music keeps playing when you quit the Client; `systemctl --user` unit in `packaging/systemd/`.
 
 ## Docs
 
