@@ -12,7 +12,10 @@ affordable there.
 ## Consequences
 
 - Visual code is written twice (WGSL + Rust) unless the CPU fallback is limited to the cheap looks.
-  Decide when building the Visual engine.
+  Decided in #16 (2026-10-17): both tracers stay, for every look, with the CPU one capped at 420 px wide. They share
+  one model and one output tail, and a test keeps them equal (mean |Δ| ≈ 0.02/255 on the owner's GPU).
+  Measured in #16: a full-resolution well (1280×720, Inferno) costs 16.5 % of a core at 30 fps including the shm
+  hand-off, Pixel ember 6.5 % (wgpu's low-power preference picks the Ryzen iGPU).
 - Apple Silicon (M2 Air, 8 GB) gets Metal through wgpu. Expected fine, but it needs a measurement in the macOS spike.
 - Shared-memory segments are swept after 2 s if the terminal never consumed them (tmux, other
   terminals), so a misbehaving terminal can't leak RAM. Non-kitty terminals use the direct transfer path.

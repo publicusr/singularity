@@ -13,10 +13,11 @@ mod term;
 mod theme;
 mod tracks;
 mod ui;
+mod visual;
 
 use app::{App, Link};
 use conn::ConnEvent;
-use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event as TermEvent, KeyEventKind};
+use ratatui::crossterm::event::{self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event as TermEvent, KeyEventKind};
 use ratatui::crossterm::execute;
 use singularity_proto::{DaemonMsg, Event};
 use std::io::{Write, stdout};
@@ -32,11 +33,14 @@ async fn main() -> anyhow::Result<()> {
     let mut app = App::new(Some(cmd_tx));
     app.covers = covers::Covers::spawn(cache_dir().join("covers"));
     app.cell_px = term::cell_px();
+    app.hole.allow_gpu = true;
     if term::kitty_graphics_supported() && app.cell_px.is_some() {
         app.kitty = Some(gfx::Kitty::new(term::kitty_shm()));
     }
     let mut tui = ratatui::init();
-    execute!(stdout(), EnableMouseCapture)?;
+    execute!(stdout(), EnableMouseCapture, EnableFocusChange)?;
+    // unfocused, the whole Client (and so the Visuals) runs at 10 fps instead of 30
+    let mut focused = true;
     // pixel-precise pointer where the terminal supports it (#24)
     let mut units = term::MouseUnits::detect();
     units.enable(&mut stdout())?;
@@ -60,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
             out.write_all(b"\x1b[?2026l")?;
             out.flush()?;
             drop(out);
-            if event::poll(Duration::from_millis(33))? {
+            if event::poll(Duration::from_millis(if focused { 33 } else { 100 }))? {
                 loop {
                     match event::read()? {
                         TermEvent::Key(k) if k.kind != KeyEventKind::Release => app.key(k),
@@ -68,6 +72,8 @@ async fn main() -> anyhow::Result<()> {
                             let (m, fx, precise) = units.to_cells(m);
                             app.pointer(m, fx, precise);
                         }
+                        TermEvent::FocusLost => focused = false,
+                        TermEvent::FocusGained => focused = true,
                         TermEvent::Resize(..) => {
                             if units != term::MouseUnits::Cells {
                                 units = term::MouseUnits::measure().unwrap_or(units);
@@ -92,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
         let _ = k.reset(&mut stdout());
     }
     let _ = units.disable(&mut stdout());
-    let _ = execute!(stdout(), DisableMouseCapture);
+    let _ = execute!(stdout(), DisableMouseCapture, DisableFocusChange);
     ratatui::restore();
     res
 }

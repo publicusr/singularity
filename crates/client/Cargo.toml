@@ -17,3 +17,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 flate2 = "1"
 libc = "0.2"
+wgpu = "30"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "1"
+rayon = "1"

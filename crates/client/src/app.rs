@@ -6,6 +6,8 @@ use crate::gfx::Kitty;
 use crate::home::{CardRef, HomeView};
 use crate::layout::{Divider, Node};
 use crate::meters::Meters;
+use crate::visual::BlackHole;
+use crate::visual::well::Hole;
 use crate::scrub::{Bar, Scrub};
 use crate::sidebar::Sidebar;
 use crate::tracks::{Col, TrackList, TrackView};
@@ -48,6 +50,7 @@ pub enum Action {
     SortAlbum,
     SortAdded,
     SortDuration,
+    NextLook,
     FocusNext,
     ResetLayout,
     Palette,
@@ -56,7 +59,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 26] = [
+    pub const ALL: [Action; 27] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -78,6 +81,7 @@ impl Action {
         Action::SortAlbum,
         Action::SortAdded,
         Action::SortDuration,
+        Action::NextLook,
         Action::FocusNext,
         Action::ResetLayout,
         Action::Palette,
@@ -107,6 +111,7 @@ impl Action {
             Action::SortAlbum => "Sort list by album",
             Action::SortAdded => "Sort list by date added",
             Action::SortDuration => "Sort list by duration",
+            Action::NextLook => "Black hole: next Disk look",
             Action::FocusNext => "Focus next pane",
             Action::ResetLayout => "Reset layout",
             Action::Palette => "Command palette",
@@ -131,6 +136,7 @@ impl Action {
             Action::GoHome => "Backspace",
             Action::Filter => "/",
             Action::SortTitle | Action::SortArtist | Action::SortAlbum | Action::SortAdded | Action::SortDuration => "",
+            Action::NextLook => "v",
             Action::FocusNext => "Tab",
             Action::ResetLayout => "",
             Action::Palette => "Ctrl+K",
@@ -156,6 +162,8 @@ pub enum Hit {
     /// a track-list row, by position in the view
     Track(usize),
     SortCol(Col),
+    /// the gravity well: a click cycles the Disk look
+    Well,
 }
 
 /// Two clicks on the same row within this time play it.
@@ -235,6 +243,11 @@ pub struct App {
     pub view: Option<TrackView>,
     last_click: Option<(Instant, usize)>,
     pub meters: Meters,
+    pub hole: BlackHole,
+    /// where the hole was drawn this frame (for bending the neighbouring borders)
+    pub hole_at: Option<Hole>,
+    last_tick: Instant,
+    told_backend: bool,
     commands: Option<mpsc::Sender<Command>>,
 }
 
@@ -273,6 +286,10 @@ impl App {
             view: None,
             last_click: None,
             meters: Meters::default(),
+            hole: BlackHole::default(),
+            hole_at: None,
+            last_tick: Instant::now(),
+            told_backend: false,
             commands,
         }
     }
@@ -282,6 +299,7 @@ impl App {
     pub fn begin_frame(&mut self) {
         self.hits.clear();
         self.overlays.clear();
+        self.hole_at = None;
         self.covers.poll();
         if self.toast.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_millis(2500)) {
             self.toast = None;
@@ -362,6 +380,10 @@ impl App {
             Action::SortAlbum => self.sort(Col::Album),
             Action::SortAdded => self.sort(Col::Added),
             Action::SortDuration => self.sort(Col::Duration),
+            Action::NextLook => {
+                self.hole.next_look();
+                self.say(format!("Disk look: {}", self.hole.look().name));
+            }
             Action::FocusNext => {
                 let slots: Vec<String> = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.into_iter().map(|(s, _)| s).collect();
                 let i = slots.iter().position(|s| *s == self.focus).map(|i| (i + 1) % slots.len()).unwrap_or(0);
@@ -427,6 +449,7 @@ impl App {
             KeyCode::Right => self.run(Action::SeekForward),
             KeyCode::Left => self.run(Action::SeekBack),
             KeyCode::Char('/') => self.run(Action::Filter),
+            KeyCode::Char('v') => self.run(Action::NextLook),
             KeyCode::Char('f') if ctrl => self.run(Action::Filter),
             KeyCode::Backspace => self.run(Action::GoHome),
             KeyCode::Char('.') => self.run(Action::SeekForwardFine),
@@ -716,6 +739,15 @@ impl App {
 
     /// Called every frame: sends nudges once they've settled.
     pub fn tick(&mut self) {
+        let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
+        self.last_tick = Instant::now();
+        self.hole.advance(dt, self.meters.frame.as_ref());
+        if !self.told_backend
+            && let Some(b) = self.hole.backend()
+        {
+            self.told_backend = true;
+            self.say(format!("Visuals: {b}"));
+        }
         if self.nudge.due.is_some_and(|d| Instant::now() >= d) {
             self.flush_nudge();
         }
@@ -794,6 +826,10 @@ impl App {
                         }
                     }
                     Some(Hit::SortCol(c)) => self.sort(c),
+                    Some(Hit::Well) => {
+                        self.focus = "well".into();
+                        self.run(Action::NextLook);
+                    }
                     Some(Hit::Card(c)) => {
                         self.focus = "home".into();
                         self.play_card(c);

@@ -167,9 +167,14 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             .title(Span::styled(format!(" {title} "), if focused { th.title() } else { th.s(th.accent) }))
             .style(th.base());
         let inner = block.inner(*rect);
-        f.render_widget(block, *rect);
         // the Pane's own hit first, so the things inside it win
         app.hit(*rect, Hit::Focus(slot.clone()));
+        if slot == "well" {
+            // the well draws its own (sagging) frame
+            crate::visual::well::draw(f.buffer_mut(), *rect, app, th);
+            continue;
+        }
+        f.render_widget(block, *rect);
         if slot == "library" {
             crate::sidebar::draw(f.buffer_mut(), inner, app, th);
             continue;
@@ -198,6 +203,10 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             let x = inner.x + inner.width.saturating_sub(w) / 2;
             text(f.buffer_mut(), x, y, inner.width, todo, th.s(th.dim));
         }
+    }
+    // space bends around the hole: neighbouring border lines curve toward it
+    if let Some(hole) = app.hole_at {
+        crate::visual::well::bend_borders(f.buffer_mut(), body, hole, app.hole.bass());
     }
     // dividers last, so their grips win over the Panes underneath
     for (i, d) in computed.dividers.iter().enumerate() {
@@ -851,5 +860,50 @@ mod tests {
         let loud = region(pane("loudness"));
         assert!(loud.starts_with("L ▬") && loud.contains('█'), "{loud}");
         assert!(!s.contains("arrives with #15"));
+    }
+
+    #[test]
+    fn the_well_cycles_looks_and_sends_animated_frames_in_the_pixel_tier() {
+        let mut app = App::new(None);
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("gravity well") && s.contains("◂ Inferno ▸"));
+        app.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert!(render(&mut app, 160, 48).contains("◂ Gargantua ▸"));
+        let well = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).slots.into_iter().find(|(s, _)| s == "well").unwrap().1;
+        click(&mut app, well.x + well.width / 2, well.y + well.height / 2);
+        assert!(render(&mut app, 160, 48).contains("◂ M87* ▸") && app.focus == "well");
+        // pixel tier: one animated frame per draw, covering the well's inside
+        app.kitty = Some(crate::gfx::Kitty::new(false));
+        app.cell_px = Some((10.0, 20.0));
+        render(&mut app, 160, 48);
+        let mut out = vec![];
+        app.kitty.as_mut().unwrap().flush(&mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        // (the CPU renderer caps the resolution; the terminal scales it into the cells)
+        assert!(out.contains("a=T,f=32,o=z,i=1,") && out.contains(&format!("p=1,c={},r={},C=1,z=-1", well.width - 4, well.height - 2)), "{}", &out[..out.len().min(200)]);
+    }
+
+    #[test]
+    fn bending_never_moves_text() {
+        // every letter on screen sits where it would without the hole
+        let mut app = App::new(None);
+        let with = render(&mut app, 160, 48);
+        let hole = app.hole_at.expect("the well is on screen");
+        let mut plain = App::new(None);
+        let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
+        t.draw(|f| {
+            draw(f, &mut plain);
+        })
+        .unwrap();
+        let without: Vec<Vec<char>> = (0..48u16).map(|y| (0..160u16).map(|x| t.backend().buffer()[(x, y)].symbol().chars().next().unwrap_or(' ')).collect()).collect();
+        let structural = |c: char| c == ' ' || ('\u{2500}'..='\u{257f}').contains(&c) || ('\u{2800}'..='\u{28ff}').contains(&c);
+        for (y, line) in with.lines().enumerate() {
+            for (x, c) in line.chars().enumerate() {
+                let inside_well = x as u16 >= hole.well.x && (x as u16) < hole.well.right() && y as u16 >= hole.well.y && (y as u16) < hole.well.bottom();
+                if !inside_well && (!structural(c) || !structural(without[y][x])) {
+                    assert_eq!(c, without[y][x], "cell ({x},{y}) changed");
+                }
+            }
+        }
     }
 }

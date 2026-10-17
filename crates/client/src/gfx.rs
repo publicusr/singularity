@@ -71,6 +71,9 @@ pub struct Kitty {
     /// this frame's placements and the images still to transmit
     queue: Vec<(u32, u32, Rect)>,
     uploads: Vec<(u32, RgbImage)>,
+    /// animated images (Visuals): re-sent every frame under a fixed id, with their rect
+    frames: Vec<(u32, Rect, u32, u32, Vec<u8>)>,
+    animated: HashMap<u32, Rect>,
     shm_pending: Vec<(std::time::Instant, std::ffi::CString)>,
 }
 
@@ -81,7 +84,18 @@ const FIRST_ID: u32 = 1000;
 
 impl Kitty {
     pub fn new(shm: bool) -> Kitty {
-        Kitty { shm, next_id: FIRST_ID, frame: 0, stored: HashMap::new(), placed: HashMap::new(), queue: vec![], uploads: vec![], shm_pending: vec![] }
+        Kitty {
+            shm,
+            next_id: FIRST_ID,
+            frame: 0,
+            stored: HashMap::new(),
+            placed: HashMap::new(),
+            queue: vec![],
+            uploads: vec![],
+            frames: vec![],
+            animated: HashMap::new(),
+            shm_pending: vec![],
+        }
     }
 
     /// Place the image `key` over `rect` this frame; `render` supplies its pixels if the terminal doesn't have them yet.
@@ -105,11 +119,28 @@ impl Kitty {
         self.queue.push((id, pid, rect));
     }
 
+    /// Show one frame of an animated image (`id` < 1000, one per Visual) over `rect`: RGBA8, `w`×`h` pixels.
+    pub fn frame(&mut self, id: u32, rect: Rect, w: u32, h: u32, rgba: Vec<u8>) {
+        debug_assert!(id < FIRST_ID);
+        self.frames.push((id, rect, w, h, rgba));
+    }
+
     /// Write this frame's uploads, placements and removals. Call after ratatui has drawn.
     pub fn flush(&mut self, out: &mut impl Write) -> std::io::Result<()> {
         for (id, img) in std::mem::take(&mut self.uploads) {
-            self.transmit(out, id, &img)?;
+            let (w, h) = img.dimensions();
+            self.transmit(out, id, (w, h), img.as_raw(), 24, None)?;
         }
+        let mut shown = HashMap::new();
+        for (id, rect, w, h, rgba) in std::mem::take(&mut self.frames) {
+            // a=T replaces the image and its placement in one go: no flicker between frames
+            self.transmit(out, id, (w, h), &rgba, 32, Some(rect))?;
+            shown.insert(id, rect);
+        }
+        for id in self.animated.keys().filter(|id| !shown.contains_key(id)) {
+            write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
+        }
+        self.animated = shown;
         let mut now: HashMap<(u32, u32), Rect> = HashMap::new();
         for (id, pid, r) in std::mem::take(&mut self.queue) {
             if self.placed.get(&(id, pid)) != Some(&r) {
@@ -133,6 +164,8 @@ impl Kitty {
         self.placed.clear();
         self.queue.clear();
         self.uploads.clear();
+        self.frames.clear();
+        self.animated.clear();
         write!(out, "\x1b_Ga=d,d=A,q=2\x1b\\")?;
         for (_, name) in self.shm_pending.drain(..) {
             unsafe { libc::shm_unlink(name.as_ptr()) };
@@ -155,13 +188,19 @@ impl Kitty {
         Ok(())
     }
 
-    fn transmit(&mut self, out: &mut impl Write, id: u32, img: &RgbImage) -> std::io::Result<()> {
-        let (w, h) = img.dimensions();
-        let data = img.as_raw();
+    /// Send pixels (`fmt` 24 = RGB, 32 = RGBA). With `place`, also show them there (a=T), else only store (a=t).
+    fn transmit(&mut self, out: &mut impl Write, id: u32, (w, h): (u32, u32), data: &[u8], fmt: u8, place: Option<Rect>) -> std::io::Result<()> {
+        let (action, placement) = match place {
+            Some(r) => {
+                write!(out, "\x1b[{};{}H", r.y + 1, r.x + 1)?;
+                ("T", format!(",p=1,c={},r={},C=1,z=-1", r.width, r.height))
+            }
+            None => ("t", String::new()),
+        };
         if self.shm
             && let Some(name) = self.shm_put(data)
         {
-            return write!(out, "\x1b_Ga=t,t=s,f=24,i={id},s={w},v={h},S={},q=2;{}\x1b\\", data.len(), base64(name.as_bytes()));
+            return write!(out, "\x1b_Ga={action},t=s,f={fmt},i={id},s={w},v={h},S={}{placement},q=2;{}\x1b\\", data.len(), base64(name.as_bytes()));
         }
         let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
         z.write_all(data)?;
@@ -170,7 +209,7 @@ impl Kitty {
         for (i, chunk) in chunks.iter().enumerate() {
             let more = u8::from(i + 1 < chunks.len());
             if i == 0 {
-                write!(out, "\x1b_Ga=t,f=24,o=z,i={id},s={w},v={h},q=2,m={more};")?;
+                write!(out, "\x1b_Ga={action},f={fmt},o=z,i={id},s={w},v={h}{placement},q=2,m={more};")?;
             } else {
                 write!(out, "\x1b_Gm={more};")?;
             }
@@ -275,6 +314,18 @@ mod tests {
         // gone: placement deleted, image kept for later
         assert_eq!(flush(&mut k), "\x1b_Ga=d,d=i,i=1000,p=1,q=2\x1b\\");
         assert_eq!(renders, 1);
+    }
+
+    #[test]
+    fn animated_frames_are_resent_and_removed_when_gone() {
+        let mut k = Kitty::new(false);
+        let r = Rect::new(1, 1, 3, 2);
+        k.frame(1, r, 2, 2, vec![0; 16]);
+        let s = flush(&mut k);
+        assert!(s.contains("\x1b[2;2H\x1b_Ga=T,f=32,o=z,i=1,s=2,v=2,p=1,c=3,r=2,C=1,z=-1"), "{s:?}");
+        k.frame(1, r, 2, 2, vec![0; 16]);
+        assert!(flush(&mut k).contains("a=T"), "every frame is sent");
+        assert_eq!(flush(&mut k), "\x1b_Ga=d,d=I,i=1,q=2\x1b\\", "a Visual that's gone is freed");
     }
 
     #[test]
