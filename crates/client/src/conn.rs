@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 pub enum ConnEvent {
     Connecting,
-    Connected { daemon_version: String, started_unix_ms: u64 },
+    Connected { daemon_version: String },
     Incompatible(String),
     Disconnected,
     Msg(DaemonMsg),
@@ -44,8 +44,8 @@ async fn run(mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>
             continue;
         }
         match proto::read_msg::<_, DaemonMsg>(&mut rd).await {
-            Ok(Some(DaemonMsg::Welcome { daemon_version, started_unix_ms, .. })) => {
-                let _ = ev_tx.send(ConnEvent::Connected { daemon_version, started_unix_ms }).await;
+            Ok(Some(DaemonMsg::Welcome { daemon_version, .. })) => {
+                let _ = ev_tx.send(ConnEvent::Connected { daemon_version }).await;
             }
             Ok(Some(DaemonMsg::Incompatible { message, .. })) => {
                 let _ = ev_tx.send(ConnEvent::Incompatible(message)).await;
