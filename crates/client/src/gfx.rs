@@ -1,0 +1,320 @@
+//! The two render tiers (spec D5), for anything made of pixels (cover art now, Visuals later):
+//! - *cell*: half-block characters, two vertical pixels per cell in truecolor; works anywhere;
+//! - *pixel*: the kitty graphics protocol (kitty, Ghostty, WezTerm), at the terminal's full resolution.
+//!
+//! Pixel-tier images are transmitted once and then only *placed*; moving or hiding one costs a few bytes.
+//! Frames are queued while ratatui draws and written after it flushes ([`Kitty::flush`]).
+
+use image::RgbImage;
+use image::imageops::{self, FilterType};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Color;
+use std::collections::HashMap;
+use std::io::Write;
+
+/// Crop `img` to the aspect ratio of `w`×`h` (centred) and resize it to exactly that size.
+pub fn fit(img: &RgbImage, w: u32, h: u32) -> RgbImage {
+    let (w, h) = (w.max(1), h.max(1));
+    let (iw, ih) = img.dimensions();
+    let (cw, ch) = if iw as u64 * h as u64 > ih as u64 * w as u64 {
+        ((ih as u64 * w as u64 / h as u64) as u32, ih)
+    } else {
+        (iw, (iw as u64 * h as u64 / w as u64) as u32)
+    };
+    let crop = imageops::crop_imm(img, (iw - cw) / 2, (ih - ch) / 2, cw.max(1), ch.max(1)).to_image();
+    // Lanczos keeps covers sharp at full resolution; Triangle averages well for the tiny cell-tier versions
+    let filter = if w * 4 < cw { FilterType::Triangle } else { FilterType::Lanczos3 };
+    imageops::resize(&crop, w, h, filter)
+}
+
+/// Cell tier: draw an image of `rect.width` × `rect.height * 2` pixels with '▀' (fg = upper pixel, bg = lower).
+pub fn blit_halfblocks(img: &RgbImage, buf: &mut Buffer, rect: Rect) {
+    let rgb = |x: u32, y: u32| {
+        let p = img.get_pixel(x, y).0;
+        Color::Rgb(p[0], p[1], p[2])
+    };
+    for cy in 0..rect.height as u32 {
+        for cx in 0..rect.width as u32 {
+            if cx >= img.width() || cy * 2 + 1 >= img.height() {
+                continue;
+            }
+            if let Some(cell) = buf.cell_mut((rect.x + cx as u16, rect.y + cy as u16)) {
+                cell.set_char('▀').set_fg(rgb(cx, cy * 2)).set_bg(rgb(cx, cy * 2 + 1));
+            }
+        }
+    }
+}
+
+/// What a pixel-tier image is: the source and the exact pixel size it was rendered at.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ImageKey {
+    pub source: String,
+    pub w: u32,
+    pub h: u32,
+}
+
+struct Stored {
+    id: u32,
+    last_used: u64,
+}
+
+/// The pixel tier's bookkeeping: which images the terminal holds, and where they are placed.
+pub struct Kitty {
+    /// pass pixels through POSIX shared memory (local kitty only), else inline (zlib + base64)
+    shm: bool,
+    next_id: u32,
+    frame: u64,
+    stored: HashMap<ImageKey, Stored>,
+    /// placements on screen: (image id, placement id) → cell rect
+    placed: HashMap<(u32, u32), Rect>,
+    /// this frame's placements and the images still to transmit
+    queue: Vec<(u32, u32, Rect)>,
+    uploads: Vec<(u32, RgbImage)>,
+    shm_pending: Vec<(std::time::Instant, std::ffi::CString)>,
+}
+
+/// Images kept in the terminal before the least recently used are freed.
+const MAX_STORED: usize = 300;
+/// Image ids below this are reserved for Visuals.
+const FIRST_ID: u32 = 1000;
+
+impl Kitty {
+    pub fn new(shm: bool) -> Kitty {
+        Kitty { shm, next_id: FIRST_ID, frame: 0, stored: HashMap::new(), placed: HashMap::new(), queue: vec![], uploads: vec![], shm_pending: vec![] }
+    }
+
+    /// Place the image `key` over `rect` this frame; `render` supplies its pixels if the terminal doesn't have them yet.
+    pub fn place(&mut self, key: ImageKey, rect: Rect, render: impl FnOnce() -> RgbImage) {
+        let frame = self.frame;
+        let id = match self.stored.get_mut(&key) {
+            Some(s) => {
+                s.last_used = frame;
+                s.id
+            }
+            None => {
+                let id = self.next_id;
+                self.next_id = self.next_id.wrapping_add(1).max(FIRST_ID);
+                self.uploads.push((id, render()));
+                self.stored.insert(key, Stored { id, last_used: frame });
+                id
+            }
+        };
+        // the same image may be on screen more than once; each copy gets its own placement id
+        let pid = 1 + self.queue.iter().filter(|(i, ..)| *i == id).count() as u32;
+        self.queue.push((id, pid, rect));
+    }
+
+    /// Write this frame's uploads, placements and removals. Call after ratatui has drawn.
+    pub fn flush(&mut self, out: &mut impl Write) -> std::io::Result<()> {
+        for (id, img) in std::mem::take(&mut self.uploads) {
+            self.transmit(out, id, &img)?;
+        }
+        let mut now: HashMap<(u32, u32), Rect> = HashMap::new();
+        for (id, pid, r) in std::mem::take(&mut self.queue) {
+            if self.placed.get(&(id, pid)) != Some(&r) {
+                // C=1: don't move the cursor; z=-1: under text, so nothing drawn on top is hidden
+                write!(out, "\x1b[{};{}H\x1b_Ga=p,i={id},p={pid},c={},r={},C=1,z=-1,q=2\x1b\\", r.y + 1, r.x + 1, r.width, r.height)?;
+            }
+            now.insert((id, pid), r);
+        }
+        for (id, pid) in self.placed.keys().filter(|k| !now.contains_key(k)) {
+            write!(out, "\x1b_Ga=d,d=i,i={id},p={pid},q=2\x1b\\")?;
+        }
+        self.placed = now;
+        self.evict(out)?;
+        self.frame += 1;
+        Ok(())
+    }
+
+    /// Forget everything (after a resize, which clears the screen, and on exit).
+    pub fn reset(&mut self, out: &mut impl Write) -> std::io::Result<()> {
+        self.stored.clear();
+        self.placed.clear();
+        self.queue.clear();
+        self.uploads.clear();
+        write!(out, "\x1b_Ga=d,d=A,q=2\x1b\\")?;
+        for (_, name) in self.shm_pending.drain(..) {
+            unsafe { libc::shm_unlink(name.as_ptr()) };
+        }
+        Ok(())
+    }
+
+    fn evict(&mut self, out: &mut impl Write) -> std::io::Result<()> {
+        if self.stored.len() <= MAX_STORED {
+            return Ok(());
+        }
+        let on_screen: std::collections::HashSet<u32> = self.placed.keys().map(|(i, _)| *i).collect();
+        let mut old: Vec<(u64, ImageKey)> = self.stored.iter().filter(|(_, s)| !on_screen.contains(&s.id)).map(|(k, s)| (s.last_used, k.clone())).collect();
+        old.sort_by_key(|(t, _)| *t);
+        for (_, k) in old.into_iter().take(self.stored.len() - MAX_STORED) {
+            if let Some(s) = self.stored.remove(&k) {
+                write!(out, "\x1b_Ga=d,d=I,i={},q=2\x1b\\", s.id)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn transmit(&mut self, out: &mut impl Write, id: u32, img: &RgbImage) -> std::io::Result<()> {
+        let (w, h) = img.dimensions();
+        let data = img.as_raw();
+        if self.shm
+            && let Some(name) = self.shm_put(data)
+        {
+            return write!(out, "\x1b_Ga=t,t=s,f=24,i={id},s={w},v={h},S={},q=2;{}\x1b\\", data.len(), base64(name.as_bytes()));
+        }
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        z.write_all(data)?;
+        let payload = base64(&z.finish()?);
+        let chunks: Vec<&[u8]> = payload.as_bytes().chunks(4096).collect();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let more = u8::from(i + 1 < chunks.len());
+            if i == 0 {
+                write!(out, "\x1b_Ga=t,f=24,o=z,i={id},s={w},v={h},q=2,m={more};")?;
+            } else {
+                write!(out, "\x1b_Gm={more};")?;
+            }
+            out.write_all(chunk)?;
+            out.write_all(b"\x1b\\")?;
+        }
+        Ok(())
+    }
+
+    /// Put pixels in a POSIX shared-memory object for kitty to read and unlink (`t=s`). Segments kitty never
+    /// picked up (a terminal that ignores the request) are swept after 2 s, so nothing piles up in /dev/shm.
+    fn shm_put(&mut self, data: &[u8]) -> Option<String> {
+        let now = std::time::Instant::now();
+        self.shm_pending.retain(|(t, name)| {
+            let keep = now.duration_since(*t).as_secs() < 2;
+            if !keep {
+                unsafe { libc::shm_unlink(name.as_ptr()) };
+            }
+            keep
+        });
+        let name = format!("/sgl-{}-{}", std::process::id(), self.next_id);
+        let cname = std::ffi::CString::new(name.clone()).ok()?;
+        // SAFETY: plain POSIX calls on a fresh, exclusively created segment; every failure path unlinks it
+        unsafe {
+            let fd = libc::shm_open(cname.as_ptr(), libc::O_CREAT | libc::O_RDWR | libc::O_EXCL, 0o600);
+            if fd < 0 {
+                return None;
+            }
+            let ok = libc::ftruncate(fd, data.len() as libc::off_t) == 0 && {
+                let p = libc::mmap(std::ptr::null_mut(), data.len(), libc::PROT_WRITE, libc::MAP_SHARED, fd, 0);
+                p != libc::MAP_FAILED && {
+                    std::ptr::copy_nonoverlapping(data.as_ptr(), p as *mut u8, data.len());
+                    libc::munmap(p, data.len());
+                    true
+                }
+            };
+            libc::close(fd);
+            if !ok {
+                libc::shm_unlink(cname.as_ptr());
+                return None;
+            }
+        }
+        self.shm_pending.push((now, cname));
+        Some(name)
+    }
+}
+
+impl Drop for Kitty {
+    fn drop(&mut self) {
+        for (_, name) in self.shm_pending.drain(..) {
+            unsafe { libc::shm_unlink(name.as_ptr()) };
+        }
+    }
+}
+
+pub fn base64(data: &[u8]) -> String {
+    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        s.push(B64[(n >> 18) as usize & 63] as char);
+        s.push(B64[(n >> 12) as usize & 63] as char);
+        s.push(if c.len() > 1 { B64[(n >> 6) as usize & 63] as char } else { '=' });
+        s.push(if c.len() > 2 { B64[n as usize & 63] as char } else { '=' });
+    }
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(s: &str) -> ImageKey {
+        ImageKey { source: s.into(), w: 20, h: 20 }
+    }
+
+    fn flush(k: &mut Kitty) -> String {
+        let mut out = vec![];
+        k.flush(&mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn transmits_once_then_only_places_and_removes() {
+        let mut k = Kitty::new(false);
+        let r = Rect::new(2, 3, 4, 2);
+        let mut renders = 0;
+        k.place(key("a"), r, || {
+            renders += 1;
+            RgbImage::new(20, 20)
+        });
+        let first = flush(&mut k);
+        assert!(first.contains("a=t,f=24,o=z,i=1000,s=20,v=20") && first.contains("a=p,i=1000,p=1,c=4,r=2"));
+        assert!(first.contains("\x1b[4;3H"), "placed at the rect's cell (1-based)");
+        // same place next frame: nothing to say
+        k.place(key("a"), r, || unreachable!());
+        assert_eq!(flush(&mut k), "");
+        // moved: re-placed, not re-sent
+        k.place(key("a"), Rect::new(2, 9, 4, 2), || unreachable!());
+        let moved = flush(&mut k);
+        assert!(moved.contains("a=p,i=1000,p=1") && !moved.contains("a=t"));
+        // gone: placement deleted, image kept for later
+        assert_eq!(flush(&mut k), "\x1b_Ga=d,d=i,i=1000,p=1,q=2\x1b\\");
+        assert_eq!(renders, 1);
+    }
+
+    #[test]
+    fn the_same_image_twice_gets_two_placements() {
+        let mut k = Kitty::new(false);
+        k.place(key("a"), Rect::new(0, 0, 2, 1), || RgbImage::new(20, 20));
+        k.place(key("a"), Rect::new(5, 0, 2, 1), || unreachable!());
+        let s = flush(&mut k);
+        assert!(s.contains("i=1000,p=1,") && s.contains("i=1000,p=2,"));
+    }
+
+    #[test]
+    fn evicts_least_recently_used_images_off_screen() {
+        let mut k = Kitty::new(false);
+        for i in 0..MAX_STORED + 5 {
+            k.place(key(&i.to_string()), Rect::new(0, 0, 1, 1), || RgbImage::new(1, 1));
+            flush(&mut k);
+        }
+        assert_eq!(k.stored.len(), MAX_STORED);
+        assert!(!k.stored.contains_key(&key("0")) && k.stored.contains_key(&key(&(MAX_STORED + 4).to_string())));
+    }
+
+    #[test]
+    fn fit_crops_to_aspect_and_halfblocks_fill_the_rect() {
+        let mut img = RgbImage::new(300, 200);
+        for (x, _, p) in img.enumerate_pixels_mut() {
+            *p = image::Rgb(if x < 150 { [200, 0, 0] } else { [0, 0, 200] });
+        }
+        let small = fit(&img, 4, 8);
+        assert_eq!(small.dimensions(), (4, 8));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 4));
+        blit_halfblocks(&small, &mut buf, Rect::new(0, 0, 4, 4));
+        assert_eq!(buf[(0, 0)].symbol(), "▀");
+        assert!(matches!(buf[(0, 3)].fg, Color::Rgb(r, _, b) if r > b), "left half stays red");
+        assert!(matches!(buf[(3, 3)].bg, Color::Rgb(r, _, b) if b > r), "right half stays blue");
+    }
+
+    #[test]
+    fn base64_matches_rfc4648() {
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64(b"fo"), "Zm8=");
+    }
+}

@@ -1,0 +1,1017 @@
+{
+ "fetched_unix_ms": 1760700000000,
+ "shelves": [
+  {
+   "title": "",
+   "kind": "shortcuts",
+   "cards": [
+    {
+     "uri": "spotify:playlist:liked",
+     "name": "Liked Songs",
+     "subtitle": "Playlist",
+     "image_url": "https://i.scdn.co/image/fixture000",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:mix1",
+     "name": "Daily Mix 1",
+     "subtitle": "Mira Vale, Lumen Fields and more",
+     "image_url": "https://i.scdn.co/image/fixture001",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:mix2",
+     "name": "Daily Mix 2",
+     "subtitle": "Lumen Fields, Glass Harbour and more",
+     "image_url": "https://i.scdn.co/image/fixture002",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:mix3",
+     "name": "Daily Mix 3",
+     "subtitle": "Glass Harbour, The Quiet Orbit and more",
+     "image_url": "https://i.scdn.co/image/fixture003",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:mix4",
+     "name": "Daily Mix 4",
+     "subtitle": "The Quiet Orbit, Saffron Echo and more",
+     "image_url": "https://i.scdn.co/image/fixture004",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:mix5",
+     "name": "Daily Mix 5",
+     "subtitle": "Saffron Echo, Polar Static and more",
+     "image_url": "https://i.scdn.co/image/fixture005",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:album:sc6",
+     "name": "Album Polar Static",
+     "subtitle": "Polar Static",
+     "image_url": "https://i.scdn.co/image/fixture006",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:sc7",
+     "name": "Album Velvet Comet",
+     "subtitle": "Velvet Comet",
+     "image_url": "https://i.scdn.co/image/fixture007",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:sc8",
+     "name": "Album Hollow Pines",
+     "subtitle": "Hollow Pines",
+     "image_url": "https://i.scdn.co/image/fixture008",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:playlist:dj",
+     "name": "DJ",
+     "subtitle": "Your personal DJ",
+     "image_url": "https://i.scdn.co/image/fixture009",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Made For You",
+   "kind": "shelf",
+   "cards": [
+    {
+     "uri": "spotify:playlist:mfy1",
+     "name": "Daily Mix 1",
+     "subtitle": "Mira Vale, The Quiet Orbit and more",
+     "image_url": "https://i.scdn.co/image/fixture010",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:mfy2",
+     "name": "Daily Mix 2",
+     "subtitle": "Lumen Fields, Saffron Echo and more",
+     "image_url": "https://i.scdn.co/image/fixture011",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:mfy3",
+     "name": "Daily Mix 3",
+     "subtitle": "Glass Harbour, Polar Static and more",
+     "image_url": "https://i.scdn.co/image/fixture012",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:mfy4",
+     "name": "Daily Mix 4",
+     "subtitle": "The Quiet Orbit, Velvet Comet and more",
+     "image_url": "https://i.scdn.co/image/fixture013",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:mfy5",
+     "name": "Daily Mix 5",
+     "subtitle": "Saffron Echo, Hollow Pines and more",
+     "image_url": "https://i.scdn.co/image/fixture014",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:mfy6",
+     "name": "Daily Mix 6",
+     "subtitle": "Polar Static, Neon Tidal and more",
+     "image_url": "https://i.scdn.co/image/fixture015",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:mfy7",
+     "name": "Daily Mix 7",
+     "subtitle": "Velvet Comet, Ash & Ember and more",
+     "image_url": "https://i.scdn.co/image/fixture016",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:mfy8",
+     "name": "Daily Mix 8",
+     "subtitle": "Hollow Pines, Low Satellite and more",
+     "image_url": "https://i.scdn.co/image/fixture017",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Recommended Stations",
+   "kind": "shelf",
+   "cards": [
+    {
+     "uri": "spotify:playlist:rad0",
+     "name": "Nova Drift Radio",
+     "subtitle": "With Lumen Fields, Saffron Echo",
+     "image_url": "https://i.scdn.co/image/fixture018",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:rad1",
+     "name": "Mira Vale Radio",
+     "subtitle": "With Glass Harbour, Polar Static",
+     "image_url": "https://i.scdn.co/image/fixture019",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:rad2",
+     "name": "Lumen Fields Radio",
+     "subtitle": "With The Quiet Orbit, Velvet Comet",
+     "image_url": "https://i.scdn.co/image/fixture020",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:rad3",
+     "name": "Glass Harbour Radio",
+     "subtitle": "With Saffron Echo, Hollow Pines",
+     "image_url": "https://i.scdn.co/image/fixture021",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:rad4",
+     "name": "The Quiet Orbit Radio",
+     "subtitle": "With Polar Static, Neon Tidal",
+     "image_url": "https://i.scdn.co/image/fixture022",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:rad5",
+     "name": "Saffron Echo Radio",
+     "subtitle": "With Velvet Comet, Ash & Ember",
+     "image_url": "https://i.scdn.co/image/fixture023",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:rad6",
+     "name": "Polar Static Radio",
+     "subtitle": "With Hollow Pines, Low Satellite",
+     "image_url": "https://i.scdn.co/image/fixture024",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:rad7",
+     "name": "Velvet Comet Radio",
+     "subtitle": "With Neon Tidal, Nova Drift",
+     "image_url": "https://i.scdn.co/image/fixture025",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:rad8",
+     "name": "Hollow Pines Radio",
+     "subtitle": "With Ash & Ember, Mira Vale",
+     "image_url": "https://i.scdn.co/image/fixture026",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:rad9",
+     "name": "Neon Tidal Radio",
+     "subtitle": "With Low Satellite, Lumen Fields",
+     "image_url": "https://i.scdn.co/image/fixture027",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Recently played",
+   "kind": "shelf",
+   "cards": [
+    {
+     "uri": "spotify:album:rp0",
+     "name": "Record 1",
+     "subtitle": "Nova Drift",
+     "image_url": "https://i.scdn.co/image/fixture028",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:rp1",
+     "name": "Record 2",
+     "subtitle": "Saffron Echo",
+     "image_url": "https://i.scdn.co/image/fixture029",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:rp2",
+     "name": "Record 3",
+     "subtitle": "Ash & Ember",
+     "image_url": "https://i.scdn.co/image/fixture030",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:rp3",
+     "name": "Record 4",
+     "subtitle": "Glass Harbour",
+     "image_url": "https://i.scdn.co/image/fixture031",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:rp4",
+     "name": "Record 5",
+     "subtitle": "Hollow Pines",
+     "image_url": "https://i.scdn.co/image/fixture032",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:rp5",
+     "name": "Record 6",
+     "subtitle": "Mira Vale",
+     "image_url": "https://i.scdn.co/image/fixture033",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:rp6",
+     "name": "Record 7",
+     "subtitle": "Polar Static",
+     "image_url": "https://i.scdn.co/image/fixture034",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:rp7",
+     "name": "Record 8",
+     "subtitle": "Low Satellite",
+     "image_url": "https://i.scdn.co/image/fixture035",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:rp8",
+     "name": "Record 9",
+     "subtitle": "The Quiet Orbit",
+     "image_url": "https://i.scdn.co/image/fixture036",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:rp9",
+     "name": "Record 10",
+     "subtitle": "Neon Tidal",
+     "image_url": "https://i.scdn.co/image/fixture037",
+     "kind": "album"
+    }
+   ]
+  },
+  {
+   "title": "New releases for you",
+   "kind": "shelf",
+   "cards": [
+    {
+     "uri": "spotify:album:nr0",
+     "name": "New Single 1",
+     "subtitle": "Nova Drift",
+     "image_url": "https://i.scdn.co/image/fixture038",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:nr1",
+     "name": "New Single 2",
+     "subtitle": "Velvet Comet",
+     "image_url": "https://i.scdn.co/image/fixture039",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:nr2",
+     "name": "New Single 3",
+     "subtitle": "Lumen Fields",
+     "image_url": "https://i.scdn.co/image/fixture040",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:nr3",
+     "name": "New Single 4",
+     "subtitle": "Neon Tidal",
+     "image_url": "https://i.scdn.co/image/fixture041",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:nr4",
+     "name": "New Single 5",
+     "subtitle": "The Quiet Orbit",
+     "image_url": "https://i.scdn.co/image/fixture042",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:nr5",
+     "name": "New Single 6",
+     "subtitle": "Low Satellite",
+     "image_url": "https://i.scdn.co/image/fixture043",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:nr6",
+     "name": "New Single 7",
+     "subtitle": "Polar Static",
+     "image_url": "https://i.scdn.co/image/fixture044",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:nr7",
+     "name": "New Single 8",
+     "subtitle": "Mira Vale",
+     "image_url": "https://i.scdn.co/image/fixture045",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:nr8",
+     "name": "New Single 9",
+     "subtitle": "Hollow Pines",
+     "image_url": "https://i.scdn.co/image/fixture046",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:nr9",
+     "name": "New Single 10",
+     "subtitle": "Glass Harbour",
+     "image_url": "https://i.scdn.co/image/fixture047",
+     "kind": "album"
+    }
+   ]
+  },
+  {
+   "title": "Your top mixes",
+   "kind": "shelf",
+   "cards": [
+    {
+     "uri": "spotify:playlist:tm0",
+     "name": "Ambient Mix",
+     "subtitle": "Nova Drift, Lumen Fields and more",
+     "image_url": "https://i.scdn.co/image/fixture048",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:tm1",
+     "name": "Synthwave Mix",
+     "subtitle": "Mira Vale, Glass Harbour and more",
+     "image_url": "https://i.scdn.co/image/fixture049",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:tm2",
+     "name": "Indie Mix",
+     "subtitle": "Lumen Fields, The Quiet Orbit and more",
+     "image_url": "https://i.scdn.co/image/fixture050",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:tm3",
+     "name": "Downtempo Mix",
+     "subtitle": "Glass Harbour, Saffron Echo and more",
+     "image_url": "https://i.scdn.co/image/fixture051",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:tm4",
+     "name": "Post-rock Mix",
+     "subtitle": "The Quiet Orbit, Polar Static and more",
+     "image_url": "https://i.scdn.co/image/fixture052",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:tm5",
+     "name": "Dream pop Mix",
+     "subtitle": "Saffron Echo, Velvet Comet and more",
+     "image_url": "https://i.scdn.co/image/fixture053",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:tm6",
+     "name": "Lo-fi Mix",
+     "subtitle": "Polar Static, Hollow Pines and more",
+     "image_url": "https://i.scdn.co/image/fixture054",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:tm7",
+     "name": "Shoegaze Mix",
+     "subtitle": "Velvet Comet, Neon Tidal and more",
+     "image_url": "https://i.scdn.co/image/fixture055",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:tm8",
+     "name": "Chillwave Mix",
+     "subtitle": "Hollow Pines, Ash & Ember and more",
+     "image_url": "https://i.scdn.co/image/fixture056",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:tm9",
+     "name": "IDM Mix",
+     "subtitle": "Neon Tidal, Low Satellite and more",
+     "image_url": "https://i.scdn.co/image/fixture057",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "For fans of Nova Drift",
+   "kind": "shelf",
+   "cards": [
+    {
+     "uri": "spotify:artist:ff0",
+     "name": "Mira Vale",
+     "subtitle": "Artist",
+     "image_url": "https://i.scdn.co/image/fixture058",
+     "kind": "artist"
+    },
+    {
+     "uri": "spotify:artist:ff1",
+     "name": "Lumen Fields",
+     "subtitle": "Artist",
+     "image_url": "https://i.scdn.co/image/fixture059",
+     "kind": "artist"
+    },
+    {
+     "uri": "spotify:artist:ff2",
+     "name": "Glass Harbour",
+     "subtitle": "Artist",
+     "image_url": "https://i.scdn.co/image/fixture060",
+     "kind": "artist"
+    },
+    {
+     "uri": "spotify:album:ffa0",
+     "name": "Collection 0",
+     "subtitle": "Nova Drift",
+     "image_url": "https://i.scdn.co/image/fixture061",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:ffa1",
+     "name": "Collection 1",
+     "subtitle": "Mira Vale",
+     "image_url": "https://i.scdn.co/image/fixture062",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:ffa2",
+     "name": "Collection 2",
+     "subtitle": "Lumen Fields",
+     "image_url": "https://i.scdn.co/image/fixture063",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:ffa3",
+     "name": "Collection 3",
+     "subtitle": "Glass Harbour",
+     "image_url": "https://i.scdn.co/image/fixture064",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:ffa4",
+     "name": "Collection 4",
+     "subtitle": "The Quiet Orbit",
+     "image_url": "https://i.scdn.co/image/fixture065",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:ffa5",
+     "name": "Collection 5",
+     "subtitle": "Saffron Echo",
+     "image_url": "https://i.scdn.co/image/fixture066",
+     "kind": "album"
+    }
+   ]
+  },
+  {
+   "title": "Jump back in",
+   "kind": "shelf",
+   "cards": [
+    {
+     "uri": "spotify:album:jb0",
+     "name": "Old Favourite 1",
+     "subtitle": "Nova Drift",
+     "image_url": "https://i.scdn.co/image/fixture067",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:jb1",
+     "name": "Old Favourite 2",
+     "subtitle": "Glass Harbour",
+     "image_url": "https://i.scdn.co/image/fixture068",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:jb2",
+     "name": "Old Favourite 3",
+     "subtitle": "Polar Static",
+     "image_url": "https://i.scdn.co/image/fixture069",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:jb3",
+     "name": "Old Favourite 4",
+     "subtitle": "Neon Tidal",
+     "image_url": "https://i.scdn.co/image/fixture070",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:jb4",
+     "name": "Old Favourite 5",
+     "subtitle": "Nova Drift",
+     "image_url": "https://i.scdn.co/image/fixture071",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:jb5",
+     "name": "Old Favourite 6",
+     "subtitle": "Glass Harbour",
+     "image_url": "https://i.scdn.co/image/fixture072",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:jb6",
+     "name": "Old Favourite 7",
+     "subtitle": "Polar Static",
+     "image_url": "https://i.scdn.co/image/fixture073",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:jb7",
+     "name": "Old Favourite 8",
+     "subtitle": "Neon Tidal",
+     "image_url": "https://i.scdn.co/image/fixture074",
+     "kind": "album"
+    }
+   ]
+  },
+  {
+   "title": "Late night",
+   "kind": "shelf",
+   "cards": [
+    {
+     "uri": "spotify:playlist:ln0",
+     "name": "Night 1",
+     "subtitle": "Calm music for late hours",
+     "image_url": "https://i.scdn.co/image/fixture075",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:ln1",
+     "name": "Night 2",
+     "subtitle": "Calm music for late hours",
+     "image_url": "https://i.scdn.co/image/fixture076",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:ln2",
+     "name": "Night 3",
+     "subtitle": "Calm music for late hours",
+     "image_url": "https://i.scdn.co/image/fixture077",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:ln3",
+     "name": "Night 4",
+     "subtitle": "Calm music for late hours",
+     "image_url": "https://i.scdn.co/image/fixture078",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:ln4",
+     "name": "Night 5",
+     "subtitle": "Calm music for late hours",
+     "image_url": "https://i.scdn.co/image/fixture079",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:ln5",
+     "name": "Night 6",
+     "subtitle": "Calm music for late hours",
+     "image_url": "https://i.scdn.co/image/fixture080",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:ln6",
+     "name": "Night 7",
+     "subtitle": "Calm music for late hours",
+     "image_url": "https://i.scdn.co/image/fixture081",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Electronic",
+   "kind": "shelf",
+   "cards": [
+    {
+     "uri": "spotify:playlist:el0",
+     "name": "Electronic 1",
+     "subtitle": "Fresh electronic picks",
+     "image_url": "https://i.scdn.co/image/fixture082",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:el1",
+     "name": "Electronic 2",
+     "subtitle": "Fresh electronic picks",
+     "image_url": "https://i.scdn.co/image/fixture083",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:el2",
+     "name": "Electronic 3",
+     "subtitle": "Fresh electronic picks",
+     "image_url": "https://i.scdn.co/image/fixture084",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:el3",
+     "name": "Electronic 4",
+     "subtitle": "Fresh electronic picks",
+     "image_url": "https://i.scdn.co/image/fixture085",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:el4",
+     "name": "Electronic 5",
+     "subtitle": "Fresh electronic picks",
+     "image_url": "https://i.scdn.co/image/fixture086",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:el5",
+     "name": "Electronic 6",
+     "subtitle": "Fresh electronic picks",
+     "image_url": "https://i.scdn.co/image/fixture087",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:el6",
+     "name": "Electronic 7",
+     "subtitle": "Fresh electronic picks",
+     "image_url": "https://i.scdn.co/image/fixture088",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:el7",
+     "name": "Electronic 8",
+     "subtitle": "Fresh electronic picks",
+     "image_url": "https://i.scdn.co/image/fixture089",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:el8",
+     "name": "Electronic 9",
+     "subtitle": "Fresh electronic picks",
+     "image_url": "https://i.scdn.co/image/fixture090",
+     "kind": "playlist"
+    },
+    {
+     "uri": "spotify:playlist:el9",
+     "name": "Electronic 10",
+     "subtitle": "Fresh electronic picks",
+     "image_url": "https://i.scdn.co/image/fixture091",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Albums with songs you like",
+   "kind": "shelf",
+   "cards": [
+    {
+     "uri": "spotify:album:aw0",
+     "name": "Album 1",
+     "subtitle": "Nova Drift",
+     "image_url": "https://i.scdn.co/image/fixture092",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:aw1",
+     "name": "Album 2",
+     "subtitle": "Lumen Fields",
+     "image_url": "https://i.scdn.co/image/fixture093",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:aw2",
+     "name": "Album 3",
+     "subtitle": "The Quiet Orbit",
+     "image_url": "https://i.scdn.co/image/fixture094",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:aw3",
+     "name": "Album 4",
+     "subtitle": "Polar Static",
+     "image_url": "https://i.scdn.co/image/fixture095",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:aw4",
+     "name": "Album 5",
+     "subtitle": "Hollow Pines",
+     "image_url": "https://i.scdn.co/image/fixture096",
+     "kind": "album"
+    },
+    {
+     "uri": "spotify:album:aw5",
+     "name": "Album 6",
+     "subtitle": "Ash & Ember",
+     "image_url": "https://i.scdn.co/image/fixture097",
+     "kind": "album"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Nova Drift",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed0",
+     "name": "Feed pick 1",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture098",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Mira Vale",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed1",
+     "name": "Feed pick 2",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture099",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Lumen Fields",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed2",
+     "name": "Feed pick 3",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture100",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Glass Harbour",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed3",
+     "name": "Feed pick 4",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture101",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to The Quiet Orbit",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed4",
+     "name": "Feed pick 5",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture102",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Saffron Echo",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed5",
+     "name": "Feed pick 6",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture103",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Polar Static",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed6",
+     "name": "Feed pick 7",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture104",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Velvet Comet",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed7",
+     "name": "Feed pick 8",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture105",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Hollow Pines",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed8",
+     "name": "Feed pick 9",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture106",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Neon Tidal",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed9",
+     "name": "Feed pick 10",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture107",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Ash & Ember",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed10",
+     "name": "Feed pick 11",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture108",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Low Satellite",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed11",
+     "name": "Feed pick 12",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture109",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Nova Drift",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed12",
+     "name": "Feed pick 13",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture110",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Mira Vale",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed13",
+     "name": "Feed pick 14",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture111",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Lumen Fields",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed14",
+     "name": "Feed pick 15",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture112",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Glass Harbour",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed15",
+     "name": "Feed pick 16",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture113",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to The Quiet Orbit",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed16",
+     "name": "Feed pick 17",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture114",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Saffron Echo",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed17",
+     "name": "Feed pick 18",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture115",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Polar Static",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed18",
+     "name": "Feed pick 19",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture116",
+     "kind": "playlist"
+    }
+   ]
+  },
+  {
+   "title": "Because you listened to Velvet Comet",
+   "kind": "feed",
+   "cards": [
+    {
+     "uri": "spotify:playlist:feed19",
+     "name": "Feed pick 20",
+     "subtitle": "",
+     "image_url": "https://i.scdn.co/image/fixture117",
+     "kind": "playlist"
+    }
+   ]
+  }
+ ]
+}

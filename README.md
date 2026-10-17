@@ -18,7 +18,8 @@ cargo build --release
   Soloist and appears as the Connect device **"Singularity"**; pick it once from your phone, and set its quality to
   Lossless there (device picker → Change quality settings).
 - **Browsing**: Ctrl+K → "Log in to Spotify" (approve the code at spotify.com/pair). Home Shelves show as text for now.
-- `singularityd --fake-engine` runs a pretend player for UI work; `--no-catalogue` skips Spotify browsing.
+- `singularityd --fake-engine` runs a pretend player for UI work; `--no-catalogue` skips Spotify browsing;
+  `--fake-catalogue crates/client/tests/fixtures/home.json` serves a recorded (anonymised) Home feed.
 - Music keeps playing when you quit the Client; `systemctl --user` unit in `packaging/systemd/`.
 
 ## Docs

@@ -1,6 +1,9 @@
 //! Client state and input. Rendering lives in `ui`; the connection in `conn`.
 //! Every interactive element registers a hit-box while drawing, so the mouse works everywhere.
 
+use crate::covers::Covers;
+use crate::gfx::Kitty;
+use crate::home::{CardRef, HomeView};
 use crate::layout::{Divider, Node};
 use crate::scrub::{Bar, Scrub};
 use crate::theme::Theme;
@@ -91,10 +94,10 @@ impl Action {
             Action::TogglePlay => "Space",
             Action::Next => "n",
             Action::Previous => "b",
-            Action::SeekForward => "→",
-            Action::SeekBack => "←",
-            Action::SeekForwardFine => "Shift+→",
-            Action::SeekBackFine => "Shift+←",
+            Action::SeekForward => "Shift+→",
+            Action::SeekBack => "Shift+←",
+            Action::SeekForwardFine => ".",
+            Action::SeekBackFine => ",",
             Action::VolumeUp => "+",
             Action::VolumeDown => "-",
             Action::Shuffle => "s",
@@ -116,6 +119,27 @@ pub enum Hit {
     Action(Action),
     PaletteItem(usize),
     Bar(Bar, Rect),
+    Card(CardRef),
+    /// a Shelf's ‹ › buttons: row index, direction
+    ShelfScroll(usize, i32),
+    MenuItem(usize),
+}
+
+/// What a context-menu entry does to its Card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuAct {
+    Play,
+    Queue,
+    GoTo,
+    CopyLink,
+}
+
+pub struct Menu {
+    /// where it opened (the pointer, or the selected Card)
+    pub at: (u16, u16),
+    pub card: CardRef,
+    pub items: Vec<(String, MenuAct)>,
+    pub selected: usize,
 }
 
 /// Wheel and key nudges are coalesced: the bar moves at once, the command goes out once the nudging pauses.
@@ -156,6 +180,17 @@ pub struct App {
     /// the seek or volume bar being dragged
     pub scrub: Option<Scrub>,
     nudge: Nudge,
+    pub home_view: HomeView,
+    pub menu: Option<Menu>,
+    pub covers: Covers,
+    /// the pixel tier, when the terminal speaks the kitty graphics protocol
+    pub kitty: Option<Kitty>,
+    /// one cell's size in pixels, when the terminal reports it
+    pub cell_px: Option<(f64, f64)>,
+    /// screen areas covered by popups this frame: pixel images there fall back to cells
+    pub overlays: Vec<Rect>,
+    /// text to put on the system clipboard (OSC 52), written by the main loop
+    pub clipboard: Option<String>,
     commands: Option<mpsc::Sender<Command>>,
 }
 
@@ -181,6 +216,13 @@ impl App {
             drag_offset: 0,
             scrub: None,
             nudge: Nudge::default(),
+            home_view: HomeView::default(),
+            menu: None,
+            covers: Covers::offline(),
+            kitty: None,
+            cell_px: None,
+            overlays: vec![],
+            clipboard: None,
             commands,
         }
     }
@@ -189,6 +231,8 @@ impl App {
 
     pub fn begin_frame(&mut self) {
         self.hits.clear();
+        self.overlays.clear();
+        self.covers.poll();
         if self.toast.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_millis(2500)) {
             self.toast = None;
         }
@@ -200,6 +244,12 @@ impl App {
 
     fn hit_at(&self, x: u16, y: u16) -> Option<Hit> {
         self.hits.iter().rev().find(|(r, _)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom()).map(|(_, h)| h.clone())
+    }
+
+    /// The pixel tier's cell size, if `r` can be drawn with it this frame.
+    pub fn pixel_tier_for(&self, r: Rect) -> Option<(f64, f64)> {
+        let px = self.cell_px?;
+        (self.kitty.is_some() && !self.overlays.iter().any(|o| o.intersects(r))).then_some(px)
     }
 
     pub fn say(&mut self, msg: impl Into<String>) {
@@ -269,8 +319,15 @@ impl App {
         if self.palette.is_some() {
             return self.palette_key(k);
         }
+        if self.menu.is_some() {
+            return self.menu_key(k);
+        }
         if self.help {
             self.help = false;
+            return;
+        }
+        let shift = k.modifiers.contains(KeyModifiers::SHIFT);
+        if self.focus == "home" && !shift && self.home_key(k) {
             return;
         }
         match k.code {
@@ -282,15 +339,107 @@ impl App {
             KeyCode::Char(' ') => self.run(Action::TogglePlay),
             KeyCode::Char('n') => self.run(Action::Next),
             KeyCode::Char('b') => self.run(Action::Previous),
-            KeyCode::Right if k.modifiers.contains(KeyModifiers::SHIFT) => self.run(Action::SeekForwardFine),
-            KeyCode::Left if k.modifiers.contains(KeyModifiers::SHIFT) => self.run(Action::SeekBackFine),
+            // arrows navigate a focused Pane that has something to navigate; elsewhere they seek
             KeyCode::Right => self.run(Action::SeekForward),
             KeyCode::Left => self.run(Action::SeekBack),
+            KeyCode::Char('.') => self.run(Action::SeekForwardFine),
+            KeyCode::Char(',') => self.run(Action::SeekBackFine),
             KeyCode::Char('+') | KeyCode::Char('=') => self.run(Action::VolumeUp),
             KeyCode::Char('-') => self.run(Action::VolumeDown),
             KeyCode::Char('s') => self.run(Action::Shuffle),
             KeyCode::Char('r') => self.run(Action::Repeat),
             KeyCode::Tab => self.run(Action::FocusNext),
+            _ => {}
+        }
+    }
+
+    /// Keys for the focused Home; returns false for keys it doesn't use.
+    fn home_key(&mut self, k: KeyEvent) -> bool {
+        if self.home.as_ref().is_none_or(|h| h.shelves.is_empty()) {
+            return false;
+        }
+        let v = &mut self.home_view;
+        match k.code {
+            KeyCode::Left => v.move_sel(-1, 0),
+            KeyCode::Right => v.move_sel(1, 0),
+            KeyCode::Up => v.move_sel(0, -1),
+            KeyCode::Down => v.move_sel(0, 1),
+            KeyCode::PageUp => v.move_sel(0, -(v.visible.max(1) as i32)),
+            KeyCode::PageDown => v.move_sel(0, v.visible.max(1) as i32),
+            KeyCode::Enter => match v.sel {
+                Some(c) => self.play_card(c),
+                None => v.move_sel(0, 0),
+            },
+            KeyCode::Menu | KeyCode::F(10) => {
+                if let Some(c) = v.sel {
+                    self.open_menu(c, None);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn card(&self, c: CardRef) -> Option<&singularity_proto::Card> {
+        self.home.as_ref()?.shelves.get(c.shelf)?.cards.get(c.card)
+    }
+
+    fn play_card(&mut self, c: CardRef) {
+        self.home_view.sel = Some(c);
+        if let Some(uri) = self.card(c).map(|k| k.uri.clone()) {
+            self.send(Command::Play { uri: Some(uri) });
+        }
+    }
+
+    /// Right-click (or the Menu key) on a Card. `at` is the pointer; None opens it under the selected Card.
+    pub fn open_menu(&mut self, c: CardRef, at: Option<(u16, u16)>) {
+        let Some(card) = self.card(c) else { return };
+        let kind = card.kind.clone();
+        let mut items = vec![("Play".to_string(), MenuAct::Play)];
+        // Soloist queues single items; queueing whole albums and playlists needs their tracks (#12)
+        if matches!(kind.as_str(), "track" | "episode") {
+            items.push(("Add to queue".into(), MenuAct::Queue));
+        }
+        if matches!(kind.as_str(), "album" | "artist" | "playlist" | "show") {
+            items.push((format!("Go to {kind}"), MenuAct::GoTo));
+        }
+        items.push(("Copy link".into(), MenuAct::CopyLink));
+        let at = at.or_else(|| self.hits.iter().find(|(_, h)| *h == Hit::Card(c)).map(|(r, _)| (r.x + 2, r.y + 1))).unwrap_or((0, 0));
+        self.home_view.sel = Some(c);
+        self.menu = Some(Menu { at, card: c, items, selected: 0 });
+    }
+
+    fn menu_run(&mut self, i: usize) {
+        let Some(m) = self.menu.take() else { return };
+        let Some((_, act)) = m.items.get(i).cloned() else { return };
+        let Some(card) = self.card(m.card).cloned() else { return };
+        match act {
+            MenuAct::Play => self.play_card(m.card),
+            MenuAct::Queue => {
+                self.send(Command::AddToQueue { uri: card.uri });
+                self.say(format!("Queued {}", card.name));
+            }
+            MenuAct::GoTo => {
+                let ticket = if card.kind == "playlist" { "#9" } else { "#11" };
+                self.say(format!("{} pages arrive with {ticket}", capitalise(&card.kind)));
+            }
+            MenuAct::CopyLink => {
+                self.clipboard = Some(web_link(&card.uri));
+                self.say("Link copied");
+            }
+        }
+    }
+
+    fn menu_key(&mut self, k: KeyEvent) {
+        let Some(m) = self.menu.as_mut() else { return };
+        match k.code {
+            KeyCode::Esc => self.menu = None,
+            KeyCode::Up => m.selected = m.selected.saturating_sub(1),
+            KeyCode::Down => m.selected = (m.selected + 1).min(m.items.len().saturating_sub(1)),
+            KeyCode::Enter => {
+                let i = m.selected;
+                self.menu_run(i);
+            }
             _ => {}
         }
     }
@@ -400,12 +549,30 @@ impl App {
     pub fn pointer(&mut self, m: MouseEvent, fx: f64, precise: bool) {
         let coarse = m.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT);
         match m.kind {
+            MouseEventKind::Down(MouseButton::Left) if self.menu.is_some() => match self.hit_at(m.column, m.row) {
+                Some(Hit::MenuItem(i)) => self.menu_run(i),
+                // a click elsewhere only closes the menu
+                _ => self.menu = None,
+            },
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.menu = None;
+                if let Some(Hit::Card(c)) = self.hit_at(m.column, m.row) {
+                    self.focus = "home".into();
+                    self.open_menu(c, Some((m.column, m.row)));
+                }
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.help {
                     self.help = false;
                     return;
                 }
                 match self.hit_at(m.column, m.row) {
+                    Some(Hit::Card(c)) => {
+                        self.focus = "home".into();
+                        self.play_card(c);
+                    }
+                    Some(Hit::ShelfScroll(row, d)) => self.home_view.scroll_shelf(row, d),
+                    Some(Hit::MenuItem(_)) => {}
                     Some(Hit::Focus(s)) => self.focus = s,
                     Some(Hit::Divider(i)) => {
                         if let Some(d) = self.dividers.get(i) {
@@ -461,10 +628,31 @@ impl App {
                     }
                 }
             }
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
+                let d = if m.kind == MouseEventKind::ScrollLeft { -1 } else { 1 };
+                if let Some(row) = self.home_row_at(m.column, m.row) {
+                    self.home_view.scroll_shelf(row, d);
+                }
+            }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let up = matches!(m.kind, MouseEventKind::ScrollUp);
                 let sign = if up { 1 } else { -1 };
-                match self.hit_at(m.column, m.row) {
+                let hit = self.hit_at(m.column, m.row);
+                let over_home = matches!(&hit, Some(Hit::Card(_) | Hit::ShelfScroll(..))) || matches!(&hit, Some(Hit::Focus(s)) if s == "home");
+                if over_home && self.menu.is_none() {
+                    // Shift+wheel scrolls the Shelf under the pointer sideways
+                    match self.home_row_at(m.column, m.row) {
+                        Some(row) if coarse => self.home_view.scroll_shelf(row, -sign as i32),
+                        _ => self.home_view.scroll_rows(-sign as i32),
+                    }
+                    return;
+                }
+                match hit {
+                    Some(Hit::MenuItem(_)) => {
+                        if let Some(menu) = self.menu.as_mut() {
+                            menu.selected = if up { menu.selected.saturating_sub(1) } else { (menu.selected + 1).min(menu.items.len().saturating_sub(1)) };
+                        }
+                    }
                     Some(Hit::Bar(Bar::Seek, _)) => self.nudge_seek(sign * if coarse { 5000 } else { 1000 }),
                     Some(Hit::Bar(Bar::Volume, _)) => self.nudge_volume(sign * if coarse { 5 } else { 1 }),
                     Some(Hit::PaletteItem(_)) => {
@@ -479,6 +667,31 @@ impl App {
             _ => {}
         }
     }
+}
+
+impl App {
+    /// The Home row under the pointer: a Card's row, or a Shelf title's ‹ › buttons.
+    fn home_row_at(&self, x: u16, y: u16) -> Option<usize> {
+        match self.hit_at(x, y)? {
+            Hit::Card(c) => self.home_view.rows.iter().position(|r| r.cards.contains(&c)),
+            Hit::ShelfScroll(row, _) => Some(row),
+            _ => None,
+        }
+    }
+}
+
+/// `spotify:album:abc` → `https://open.spotify.com/album/abc`
+pub fn web_link(uri: &str) -> String {
+    let parts: Vec<&str> = uri.split(':').collect();
+    match parts.as_slice() {
+        ["spotify", rest @ ..] if rest.len() >= 2 => format!("https://open.spotify.com/{}", rest.join("/")),
+        _ => uri.to_string(),
+    }
+}
+
+fn capitalise(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 fn fuzzy(hay: &str, q: &str) -> bool {

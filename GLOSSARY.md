@@ -36,6 +36,10 @@ _Avoid_: frontend, TUI (as a noun for the process)
 One titled horizontal row on the Home page ("Made For You", "Recently played").
 _Avoid_: section, row, carousel
 
+**Card**:
+One item on a Shelf (album, playlist, artist, show): its cover, name and subtitle. Clicking it plays it.
+_Avoid_: tile, item, thumbnail
+
 **Widget**:
 Any self-contained thing that can occupy a Pane: a visual, lyrics, album art, queue, stats.
 _Avoid_: module, applet, panel

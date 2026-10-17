@@ -91,6 +91,26 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
     }
 }
 
+/// A pretend Catalogue serving a recorded Home feed (`--fake-catalogue <home.json>`): UI work without a Spotify login.
+pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
+    let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+    let (ev_tx, ev_rx) = mpsc::channel(64);
+    tokio::spawn(async move {
+        let ready = CatalogueStatus::Ready { username: "fake".into(), country: "SE".into(), premium: true };
+        let _ = ev_tx.send(CatEvent::Status(ready.clone())).await;
+        let _ = ev_tx.send(CatEvent::Home(home.clone())).await;
+        while let Some(cmd) = cmd_rx.recv().await {
+            let ev = match cmd {
+                CatCmd::Home => CatEvent::Home(home.clone()),
+                CatCmd::Login => CatEvent::Status(ready.clone()),
+                CatCmd::Logout => CatEvent::Status(CatalogueStatus::LoggedOut),
+            };
+            let _ = ev_tx.send(ev).await;
+        }
+    });
+    (cmd_tx, ev_rx)
+}
+
 fn cache(dirs: &Dirs) -> anyhow::Result<Cache> {
     std::fs::create_dir_all(&dirs.credentials)?;
     use std::os::unix::fs::PermissionsExt;

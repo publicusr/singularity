@@ -6,12 +6,37 @@
 use ratatui::crossterm::event::MouseEvent;
 use std::io::Write;
 
-/// Terminals known to implement SGR-Pixels mouse reporting (and, later, the kitty graphics protocol).
-/// Not inside tmux/screen, which re-encode mouse reports per cell. `SINGULARITY_PIXEL_MOUSE=0|1` overrides.
+/// Terminals known to implement SGR-Pixels mouse reporting. `SINGULARITY_PIXEL_MOUSE=0|1` overrides.
 pub fn pixel_mouse_supported() -> bool {
-    if let Ok(v) = std::env::var("SINGULARITY_PIXEL_MOUSE") {
-        return v == "1";
+    match std::env::var("SINGULARITY_PIXEL_MOUSE") {
+        Ok(v) => v == "1",
+        Err(_) => modern_terminal(),
     }
+}
+
+/// The pixel render tier (kitty graphics protocol). `SINGULARITY_PIXEL=0|1` overrides.
+pub fn kitty_graphics_supported() -> bool {
+    match std::env::var("SINGULARITY_PIXEL") {
+        Ok(v) => v == "1",
+        Err(_) => modern_terminal(),
+    }
+}
+
+/// Pixels can go through shared memory: kitty itself, on this machine.
+pub fn kitty_shm() -> bool {
+    std::env::var("KITTY_WINDOW_ID").is_ok() && std::env::var("SSH_CONNECTION").is_err() && std::env::var("SINGULARITY_NO_SHM").is_err()
+}
+
+/// One cell's size in pixels, if the terminal reports its pixel size.
+pub fn cell_px() -> Option<(f64, f64)> {
+    match MouseUnits::measure()? {
+        MouseUnits::Pixels { cell_w, cell_h } => Some((cell_w, cell_h)),
+        MouseUnits::Cells => None,
+    }
+}
+
+/// kitty, Ghostty and WezTerm, not inside tmux/screen (which re-encode mouse reports and drop graphics).
+fn modern_terminal() -> bool {
     let var = |k: &str| std::env::var(k).unwrap_or_default().to_lowercase();
     if std::env::var("TMUX").is_ok() || var("TERM").starts_with("screen") || var("TERM").starts_with("tmux") {
         return false;

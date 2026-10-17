@@ -2,6 +2,9 @@
 
 mod app;
 mod conn;
+mod covers;
+mod gfx;
+mod home;
 mod layout;
 mod scrub;
 mod term;
@@ -13,7 +16,7 @@ use conn::ConnEvent;
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event as TermEvent, KeyEventKind};
 use ratatui::crossterm::execute;
 use singularity_proto::{DaemonMsg, Event};
-use std::io::stdout;
+use std::io::{Write, stdout};
 use std::time::Duration;
 
 #[tokio::main]
@@ -24,6 +27,11 @@ async fn main() -> anyhow::Result<()> {
     }
     let (cmd_tx, mut conn_rx) = conn::spawn();
     let mut app = App::new(Some(cmd_tx));
+    app.covers = covers::Covers::spawn(cache_dir().join("covers"));
+    app.cell_px = term::cell_px();
+    if term::kitty_graphics_supported() && app.cell_px.is_some() {
+        app.kitty = Some(gfx::Kitty::new(term::kitty_shm()));
+    }
     let mut tui = ratatui::init();
     execute!(stdout(), EnableMouseCapture)?;
     // pixel-precise pointer where the terminal supports it (#24)
@@ -35,7 +43,20 @@ async fn main() -> anyhow::Result<()> {
                 apply(&mut app, ev);
             }
             app.tick();
+            let mut out = stdout().lock();
+            out.write_all(b"\x1b[?2026h")?; // synchronized output: the frame and its images appear together
+            drop(out);
             tui.draw(|f| ui::draw(f, &mut app))?;
+            let mut out = stdout().lock();
+            if let Some(k) = app.kitty.as_mut() {
+                k.flush(&mut out)?;
+            }
+            if let Some(t) = app.clipboard.take() {
+                write!(out, "\x1b]52;c;{}\x07", gfx::base64(t.as_bytes()))?;
+            }
+            out.write_all(b"\x1b[?2026l")?;
+            out.flush()?;
+            drop(out);
             if event::poll(Duration::from_millis(33))? {
                 loop {
                     match event::read()? {
@@ -44,8 +65,15 @@ async fn main() -> anyhow::Result<()> {
                             let (m, fx, precise) = units.to_cells(m);
                             app.pointer(m, fx, precise);
                         }
-                        TermEvent::Resize(..) if units != term::MouseUnits::Cells => {
-                            units = term::MouseUnits::measure().unwrap_or(units);
+                        TermEvent::Resize(..) => {
+                            if units != term::MouseUnits::Cells {
+                                units = term::MouseUnits::measure().unwrap_or(units);
+                            }
+                            app.cell_px = term::cell_px();
+                            // the resize clears the screen, and with it every placement
+                            if let Some(k) = app.kitty.as_mut() {
+                                k.reset(&mut stdout())?;
+                            }
                         }
                         _ => {}
                     }
@@ -57,6 +85,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Ok(())
     })();
+    if let Some(k) = app.kitty.as_mut() {
+        let _ = k.reset(&mut stdout());
+    }
     let _ = units.disable(&mut stdout());
     let _ = execute!(stdout(), DisableMouseCapture);
     ratatui::restore();
@@ -88,4 +119,9 @@ fn apply(app: &mut App, ev: ConnEvent) {
         ConnEvent::Msg(DaemonMsg::Event(Event::Home(h))) => app.home = Some(h),
         ConnEvent::Msg(_) => {}
     }
+}
+
+fn cache_dir() -> std::path::PathBuf {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".cache")).join("singularity")
 }

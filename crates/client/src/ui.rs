@@ -1,6 +1,6 @@
 //! Rendering. Pure function of `App` state, plus hit-box registration for the mouse.
 
-use crate::app::{Action, App, Hit, Link};
+use crate::app::{Action, App, Hit, Link, Menu};
 use crate::scrub::{self, Bar};
 use crate::theme::Theme;
 use ratatui::Frame;
@@ -16,7 +16,7 @@ fn slot_info(slot: &str) -> (&'static str, &'static str) {
     match slot {
         "library" => ("~/library", "library sidebar arrives with #9"),
         "stream" => ("stream", "stream stats arrive with #5"),
-        "home" => ("home", "your Home feed arrives with #8"),
+        "home" => ("home", ""),
         "queue" => ("queue", "queue arrives with #12"),
         "well" => ("gravity well", "the black hole arrives with #16"),
         "lyrics" => ("tail -f lyrics.log", "synced lyrics arrive with #14"),
@@ -52,14 +52,28 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
     let [top, body, player, hints] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(3), Constraint::Length(1)]).areas(area);
+    // popups are known up front, so pixel images under them can step down to cells this frame
+    let login_r = match &app.catalogue {
+        Some(CatalogueStatus::LoginPending { .. }) if !app.login_hidden => Some(centered(area, 64, 9)),
+        _ => None,
+    };
+    let overlays = [
+        login_r,
+        app.palette.is_some().then(|| palette_rect(area, app)),
+        app.help.then(|| help_rect(area)),
+        app.menu.as_ref().map(|m| menu_rect(area, m)),
+        app.toast.as_ref().map(|(msg, _)| toast_rect(area, msg)),
+    ];
+    app.overlays = overlays.into_iter().flatten().collect();
     top_bar(f, top, app, &th);
     panes(f, body, app, &th);
     player_bar(f, player, app, &th);
     hint_bar(f.buffer_mut(), hints, &th);
-    if let Some(CatalogueStatus::LoginPending { url, code }) = app.catalogue.clone() {
-        if !app.login_hidden {
-            login(f, area, &th, &url, &code);
-        }
+    if let (Some(r), Some(CatalogueStatus::LoginPending { url, code })) = (login_r, app.catalogue.clone()) {
+        login(f, r, &th, &url, &code);
+    }
+    if app.menu.is_some() {
+        menu(f, area, app, &th);
     }
     if app.palette.is_some() {
         palette(f, area, app, &th);
@@ -68,8 +82,42 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         help(f, area, &th);
     }
     if let Some((msg, _)) = app.toast.clone() {
-        let w = (msg.chars().count() as u16 + 4).min(area.width);
-        text(f.buffer_mut(), area.right().saturating_sub(w + 1), area.bottom().saturating_sub(5), w, &format!("  {msg}  "), th.chip(th.accent));
+        let r = toast_rect(area, &msg);
+        text(f.buffer_mut(), r.x, r.y, r.width, &format!("  {msg}  "), th.chip(th.accent));
+    }
+}
+
+fn toast_rect(area: Rect, msg: &str) -> Rect {
+    let w = (msg.chars().count() as u16 + 4).min(area.width);
+    Rect::new(area.right().saturating_sub(w + 1), area.bottom().saturating_sub(5), w, 1)
+}
+
+fn palette_rect(area: Rect, app: &App) -> Rect {
+    centered(area, 60, (app.palette_items().len() as u16 + 4).max(6))
+}
+
+fn menu_rect(area: Rect, m: &Menu) -> Rect {
+    let w = m.items.iter().map(|(l, _)| l.chars().count() as u16).max().unwrap_or(0) + 6;
+    let h = m.items.len() as u16 + 2;
+    let x = m.at.0.min(area.right().saturating_sub(w));
+    let y = if m.at.1 + h > area.bottom() { m.at.1.saturating_sub(h) } else { m.at.1 };
+    Rect::new(x, y, w.min(area.width), h.min(area.height))
+}
+
+fn menu(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
+    let Some(m) = app.menu.as_ref() else { return };
+    let r = menu_rect(area, m);
+    let items = m.items.clone();
+    let selected = m.selected;
+    f.render_widget(Clear, r);
+    let block = Block::default().borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED).border_style(th.s(th.accent)).style(th.base());
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    for (i, (label, _)) in items.iter().enumerate() {
+        let y = inner.y + i as u16;
+        let st = if i == selected { th.s(th.accent).bg(th.selection.color()) } else { th.s(th.fg) };
+        text(f.buffer_mut(), inner.x, y, inner.width, &format!(" {label:<w$}", w = inner.width.saturating_sub(1) as usize), st);
+        app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::MenuItem(i));
     }
 }
 
@@ -115,8 +163,12 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             .style(th.base());
         let inner = block.inner(*rect);
         f.render_widget(block, *rect);
-        if slot == "home" && home_preview(f.buffer_mut(), inner, app, th) {
-            app.hit(*rect, Hit::Focus(slot.clone()));
+        // the Pane's own hit first, so the things inside it win
+        app.hit(*rect, Hit::Focus(slot.clone()));
+        if slot == "home" {
+            if !home_status(f.buffer_mut(), inner, app, th) {
+                crate::home::draw(f.buffer_mut(), inner, app, th);
+            }
             continue;
         }
         if inner.height > 0 {
@@ -125,7 +177,6 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             let x = inner.x + inner.width.saturating_sub(w) / 2;
             text(f.buffer_mut(), x, y, inner.width, todo, th.s(th.dim));
         }
-        app.hit(*rect, Hit::Focus(slot.clone()));
     }
     // dividers last, so their grips win over the Panes underneath
     for (i, d) in computed.dividers.iter().enumerate() {
@@ -223,12 +274,12 @@ fn fmt_ms(ms: u64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-const HINTS: [(&str, &str); 7] = [("␣", "play/pause"), ("←→", "seek"), ("n/b", "next/prev"), ("Tab", "focus"), ("^K", "palette"), ("?", "help"), ("q", "quit")];
+const HINTS: [(&str, &str); 7] = [("␣", "play/pause"), ("⇧←→", "seek"), ("n/b", "next/prev"), ("Tab", "focus"), ("^K", "palette"), ("?", "help"), ("q", "quit")];
 
 /// Shows as many hints as fit; when space runs out, the least important go first
 /// (play/pause, palette, help and quit always stay).
 fn hint_bar(buf: &mut Buffer, r: Rect, th: &Theme) {
-    const DROP_ORDER: [&str; 3] = ["n/b", "Tab", "←→"];
+    const DROP_ORDER: [&str; 3] = ["n/b", "Tab", "⇧←→"];
     let width = |hs: &[(&str, &str)]| hs.iter().map(|(k, d)| k.chars().count() as u16 + d.chars().count() as u16 + 5).sum::<u16>() + 1;
     let mut hints: Vec<(&str, &str)> = HINTS.to_vec();
     for drop in DROP_ORDER {
@@ -267,7 +318,7 @@ fn overlay_block<'a>(th: &Theme, title: &'a str) -> Block<'a> {
 fn palette(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
     let items = app.palette_items();
     let (query, selected) = app.palette.as_ref().map(|p| (p.query.clone(), p.selected)).unwrap_or_default();
-    let r = centered(area, 60, (items.len() as u16 + 4).max(6));
+    let r = palette_rect(area, app);
     f.render_widget(Clear, r);
     let block = overlay_block(th, "Command palette");
     let inner = block.inner(r);
@@ -290,38 +341,23 @@ fn palette(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
     }
 }
 
-/// Text preview of the Home feed (cover cards replace this in #8). Returns false when there's nothing to show.
-fn home_preview(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) -> bool {
-    let msg = match (&app.catalogue, &app.home) {
-        (_, Some(h)) if !h.shelves.is_empty() => None,
-        (Some(CatalogueStatus::LoggedOut), _) => Some("not logged in · Ctrl+K → \"Log in to Spotify\""),
-        (Some(CatalogueStatus::Connecting), _) | (Some(CatalogueStatus::Ready { .. }), None) => Some("loading your Home…"),
-        (Some(CatalogueStatus::Unavailable { .. }), _) => Some("Spotify browsing is unavailable right now; playback still works"),
-        _ => return false,
+/// Home's status line while there are no Shelves to show. Returns false once the feed can be drawn.
+fn home_status(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) -> bool {
+    let m = match (&app.catalogue, &app.home) {
+        (_, Some(h)) if !h.shelves.is_empty() => return false,
+        (Some(CatalogueStatus::LoginPending { .. }), _) => "waiting for the Spotify login…",
+        (Some(CatalogueStatus::LoggedOut), _) => "not logged in · Ctrl+K → \"Log in to Spotify\"",
+        (Some(CatalogueStatus::Connecting), _) | (Some(CatalogueStatus::Ready { .. }), None) => "loading your Home…",
+        (Some(CatalogueStatus::Unavailable { .. }), _) => "Spotify browsing is unavailable right now; playback still works",
+        (Some(CatalogueStatus::Ready { .. }), Some(_)) => "your Home is empty right now",
+        (None, _) => "Home appears once the Catalogue is connected",
     };
-    if let Some(m) = msg {
-        let w = m.chars().count() as u16;
-        text(buf, r.x + r.width.saturating_sub(w) / 2, r.y + r.height / 2, r.width, m, th.s(th.dim));
-        return true;
-    }
-    let Some(h) = &app.home else { return false };
-    let mut y = r.y;
-    for shelf in h.shelves.iter().filter(|s| s.kind != "feed") {
-        if y + 1 >= r.bottom() {
-            break;
-        }
-        let title = if shelf.title.is_empty() { "Jump back in" } else { shelf.title.as_str() };
-        text(buf, r.x + 1, y, r.width.saturating_sub(2), title, th.s(th.accent).add_modifier(Modifier::BOLD));
-        y += 1;
-        let names: Vec<&str> = shelf.cards.iter().map(|c| c.name.as_str()).collect();
-        text(buf, r.x + 2, y, r.width.saturating_sub(3), &names.join("  ·  "), th.s(th.fg));
-        y += 2;
-    }
+    let w = m.chars().count() as u16;
+    text(buf, r.x + r.width.saturating_sub(w) / 2, r.y + r.height / 2, r.width, m, th.s(th.dim));
     true
 }
 
-fn login(f: &mut Frame, area: Rect, th: &Theme, url: &str, code: &str) {
-    let r = centered(area, 64, 9);
+fn login(f: &mut Frame, r: Rect, th: &Theme, url: &str, code: &str) {
     f.render_widget(Clear, r);
     let block = overlay_block(th, "Log in to Spotify");
     let inner = block.inner(r);
@@ -334,17 +370,24 @@ fn login(f: &mut Frame, area: Rect, th: &Theme, url: &str, code: &str) {
     text(buf, inner.x + 2, inner.y + 6, inner.width.saturating_sub(4), "Singularity never sees your password.  Esc hides this.", th.s(th.dim));
 }
 
+const HELP_ROWS: [(&str, &str); 8] = [
+    ("Mouse", "click anything · drag pane borders · drag seek/volume · scroll"),
+    ("Ctrl+K  :", "command palette: find any action by typing"),
+    ("Space", "play / pause"),
+    ("⇧← ⇧→", "seek 5 s    , .  seek 1 s    n / b  next / previous"),
+    ("+ -", "volume           s / r   shuffle / repeat"),
+    ("↑↓←→ ⏎", "move through Home, play · right-click or Menu key: more"),
+    ("Tab", "focus the next pane"),
+    ("q / Esc", "quit the Client (music keeps playing)"),
+];
+
+fn help_rect(area: Rect) -> Rect {
+    centered(area, 76, HELP_ROWS.len() as u16 + 4)
+}
+
 fn help(f: &mut Frame, area: Rect, th: &Theme) {
-    let rows = [
-        ("Mouse", "click anything · drag pane borders · drag seek/volume · scroll"),
-        ("Ctrl+K  :", "command palette: find any action by typing"),
-        ("Space", "play / pause"),
-        ("← →", "seek 5 s          n / b   next / previous"),
-        ("+ -", "volume           s / r   shuffle / repeat"),
-        ("Tab", "focus the next pane"),
-        ("q / Esc", "quit the Client (music keeps playing)"),
-    ];
-    let r = centered(area, 72, rows.len() as u16 + 4);
+    let rows = HELP_ROWS;
+    let r = help_rect(area);
     f.render_widget(Clear, r);
     let block = overlay_block(th, "You only need these");
     let inner = block.inner(r);
@@ -514,7 +557,7 @@ mod tests {
         for _ in 0..3 {
             mouse(&mut app, MouseEventKind::ScrollUp, bar.x as f64 + 3.5, bar.y, false);
         }
-        app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        app.key(KeyEvent::new(KeyCode::Char(','), KeyModifiers::NONE));
         assert_eq!(app.display_position(singularity_proto::now_ms()), 62_000);
         app.tick();
         assert!(sent(&mut rx).is_empty(), "waits for the nudging to settle");
@@ -535,5 +578,136 @@ mod tests {
         std::thread::sleep(crate::app::NUDGE_SETTLE + std::time::Duration::from_millis(20));
         app.tick();
         assert_eq!(sent(&mut rx), vec![Command::SetVolume { percent: 49 }]);
+    }
+
+    // ── Home (#8): recorded, anonymised feed in, state and screen out ──
+
+    fn home_app() -> (App, tokio::sync::mpsc::Receiver<singularity_proto::Command>) {
+        let (mut app, rx) = playing_app(200_000);
+        let feed: singularity_proto::HomeFeed = serde_json::from_str(include_str!("../tests/fixtures/home.json")).unwrap();
+        // a few covers have arrived: solid colours, so the tier is visible in the buffer
+        for (i, url) in feed.shelves.iter().flat_map(|s| &s.cards).filter_map(|c| c.image_url.clone()).take(40).enumerate() {
+            let c = [(i * 40 % 255) as u8, 90, 160];
+            app.covers.insert(&url, image::RgbImage::from_pixel(300, 300, image::Rgb(c)));
+        }
+        app.catalogue = Some(CatalogueStatus::Ready { username: "u".into(), country: "SE".into(), premium: true });
+        app.home = Some(feed);
+        (app, rx)
+    }
+
+    fn card_rect(app: &App, shelf: usize, card: usize) -> Rect {
+        try_card_rect(app, shelf, card).unwrap()
+    }
+
+    fn try_card_rect(app: &App, shelf: usize, card: usize) -> Option<Rect> {
+        app.hits.iter().find_map(|(r, h)| (*h == Hit::Card(crate::home::CardRef { shelf, card })).then_some(*r))
+    }
+
+    /// Wheel Home down until the Shelf's first Card is on screen.
+    fn scroll_to(app: &mut App, shelf: usize) -> Rect {
+        let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        for _ in 0..40 {
+            render(app, 200, 64);
+            if let Some(r) = try_card_rect(app, shelf, 0) {
+                return r;
+            }
+            mouse(app, MouseEventKind::ScrollDown, home.x as f64 + 3.5, home.y + 2, false);
+        }
+        panic!("Shelf {shelf} never came into view");
+    }
+
+    #[test]
+    fn home_snapshot_shows_shortcuts_shelves_and_covers() {
+        let (mut app, _rx) = home_app();
+        let s = render(&mut app, 200, 64);
+        for part in ["Liked Songs", "Daily Mix 1", "Made For You"] {
+            assert!(s.contains(part), "missing {part:?}:\n{s}");
+        }
+        assert!(s.contains('▀'), "covers drawn as half-blocks in the cell tier");
+        assert!(s.contains('›'), "long Shelves can scroll sideways");
+        // never a Card cut in half at the bottom
+        let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        assert!(app.hits.iter().all(|(r, h)| !matches!(h, Hit::Card(_)) || r.bottom() < home.bottom()));
+    }
+
+    #[test]
+    fn home_scrolls_by_rows_to_the_feed_tail() {
+        let (mut app, _rx) = home_app();
+        render(&mut app, 200, 64);
+        scroll_to(&mut app, 30);
+        let s = render(&mut app, 200, 64);
+        assert!(s.contains("Feed pick 20"), "the feed tail is reachable:\n{s}");
+        assert!(s.contains('♪'), "covers still loading show a placeholder");
+        assert!(s.contains("Because you"), "feed Cards carry their section title");
+        assert!(!s.contains("Liked Songs"));
+    }
+
+    #[test]
+    fn clicking_a_card_plays_it_and_shift_wheel_scrolls_its_shelf() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = home_app();
+        render(&mut app, 200, 64);
+        let r = card_rect(&app, 1, 0);
+        click(&mut app, r.x + 2, r.y + 1);
+        assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:playlist:mfy1".into()) }]);
+        assert_eq!(app.focus, "home");
+        let rad = scroll_to(&mut app, 2);
+        app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: rad.x + 1, row: rad.y + 1, modifiers: KeyModifiers::SHIFT }, rad.x as f64 + 1.5, false);
+        render(&mut app, 200, 64);
+        assert_eq!(card_rect(&app, 2, 1).x, rad.x, "the Shelf moved one Card left");
+    }
+
+    #[test]
+    fn arrows_browse_home_and_enter_plays() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = home_app();
+        app.focus = "home".into();
+        render(&mut app, 200, 64);
+        let key = |app: &mut App, c| app.key(KeyEvent::new(c, KeyModifiers::NONE));
+        key(&mut app, KeyCode::Down); // selects the first Card
+        key(&mut app, KeyCode::Right);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:playlist:mix1".into()) }]);
+        // Shift+arrows still seek while Home has focus
+        app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+        assert_eq!(app.display_position(singularity_proto::now_ms()), 5000);
+    }
+
+    #[test]
+    fn right_click_menu_offers_play_go_to_and_copy_link() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = home_app();
+        render(&mut app, 200, 64);
+        let r = scroll_to(&mut app, 3);
+        app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column: r.x + 1, row: r.y + 1, modifiers: KeyModifiers::NONE });
+        let s = render(&mut app, 200, 64);
+        assert!(s.contains("Play") && s.contains("Go to album") && s.contains("Copy link"), "{s}");
+        let link = s.lines().position(|l| l.contains("Copy link")).unwrap() as u16;
+        let col = s.lines().nth(link as usize).unwrap().chars().position(|c| c == 'C').unwrap() as u16;
+        click(&mut app, col, link);
+        assert!(app.menu.is_none());
+        assert_eq!(app.clipboard.as_deref(), Some("https://open.spotify.com/album/rp0"));
+        assert!(sent(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn pixel_tier_places_covers_and_steps_down_under_popups() {
+        let (mut app, _rx) = home_app();
+        app.kitty = Some(crate::gfx::Kitty::new(false));
+        app.cell_px = Some((10.0, 20.0));
+        let s = render(&mut app, 200, 64);
+        assert!(!s.contains('▀'), "no half-blocks when kitty draws the covers");
+        let mut out = vec![];
+        app.kitty.as_mut().unwrap().flush(&mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.matches("a=t,").count() >= 10 && out.contains("a=p,"), "covers transmitted and placed");
+        // the palette covers the middle of Home: those covers become half-blocks, the rest stay pixels
+        app.run(Action::Palette);
+        let s = render(&mut app, 200, 64);
+        assert!(s.contains('▀'));
+        let mut out = vec![];
+        app.kitty.as_mut().unwrap().flush(&mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("a=d,d=i") && !out.contains("a=t,"), "hidden placements removed, nothing re-sent");
     }
 }
