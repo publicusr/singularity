@@ -48,6 +48,16 @@ so it cannot be settled by talking)
 | D26 | Where visuals are computed (CPU vs GPU compute) | D4, D5 | settled | GPU (wgpu compute) first, CPU fallback; frames reach kitty via shared memory. ADR-0004. Measured 626% → 14% CPU for a full-res hole. Low-power adapter (iGPU) by default, `gpu` setting to pick the dGPU (#20, owner 2026-10-18); 10 fps when unfocused. |
 | D27 | Daemon↔Client protocol & local socket | D22 | settled | Local Unix socket, versioned length-prefixed messages; the audio spectrum streams over it at 60 Hz so several Clients share one tap. |
 | D28 | Arrow keys in content Panes; Home scrolling | D19 | settled | Arrows + Enter navigate the focused Pane (Home Cards, later lists), like the desktop app; seek is Shift+←/→ (±5 s) and `,`/`.` (±1 s); ←/→ still seek in Panes with nothing to navigate. Home scrolls by whole rows and each Shelf sideways by whole Cards, so covers are never cut. |
+| D29 | v1.x order | D13 | settled | (1) stats, (2) unbuilt v1 items + polish, (3) playlist editing, (4) Settings screen, (5) album-adaptive theme + more Visuals, (6) podcasts, (7) free tiling, (8) macOS. |
+| D30 | Unbuilt v1 items | D13 | settled | Waveform seek bar and mini-player in batch 2; album-adaptive theme in batch 5 (on #33's tinting). |
+| D31 | Stats | D20 | settled | A Stats page (live Wrapped: top artists/tracks/albums per week/month/year/all time, minutes, streak, play counts, listening-by-hour) + Widgets "today" and "top this week"; the heatmap stays. |
+| D32 | Playlist editing scope | D2 | settled (covers: round 2) | Own playlists: create, rename/description, delete (asks twice), "Add to playlist…" picker with search, remove, drag to reorder. No folder management. Custom covers wanted "if not too hard": feasible (`research/2026-10-playlists-and-podcasts.md`). |
+| D33 | Settings screen | D21 | settled | Built from config.toml (comments as descriptions), clickable, written through the comment-keeping editor; a read-only keymap tab; rebinding later. |
+| D34 | Polish | D13 | settled | Mouse back/forward buttons (own input layer); ♥ on every track row (batched CheckSaved). |
+| D35 | Podcasts scope | D14 | settled (extras: round 2) | Show pages + episodes, play/resume, played marks, saved shows in the sidebar, search. Audiobooks / video / downloads: feasibility looked up. |
+| D36 | More Visuals | D8 | prototype | Demos to react to: warp starfield, up-next river, big now-playing marquee, album-art glow. |
+| D37 | Free tiling | D18 | settled | Build it (batch 7), remove it if the owner doesn't like it. |
+| D38 | macOS | D10, D25 | settled | Last; started when the owner has the Mac ready. |
 
 ```mermaid
 flowchart LR
@@ -375,3 +385,10 @@ flowchart LR
   are draggable now, each song within its own section (queued among queued, context among context); autoplay stays
   Spotify's. `MoveInQueue.to` = place within the song's own section. Open: the paused case is unconfirmed (asked the
   owner what "not playing" was).
+- **v1.x planning, round 1** (2026-10-18): owner said yes to the order (D29), the unbuilt v1 items (D30), stats (D31),
+  the Settings screen (D33), polish (D34), podcasts (D35, with the extras' feasibility to look up), demos for Visuals
+  (D36: "build out the demos"), free tiling as a trial (D37), macOS last (D38). Playlist editing as proposed, plus
+  custom covers "if it's not too hard" (D32). Found while preparing: waveform seek bar (story 40), mini-player (story
+  67) and the album-adaptive theme (D7) were never built or ticketed. Facts for round 2 in
+  `research/2026-10-playlists-and-podcasts.md`: every playlist edit and cover upload has a private route in the web
+  player; audiobooks launched in Poland 2026-10-15 (12 h/month with Premium).
