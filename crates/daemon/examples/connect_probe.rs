@@ -69,6 +69,58 @@ async fn main() -> anyhow::Result<()> {
         let _ = session.spclient().delete_connect_state_request().await;
         return Ok(());
     }
+    if args.get(1).map(String::as_str) == Some("--swap-context") {
+        // can "Next from" songs be reordered? Swap the 2nd and 3rd context songs ahead (never the next one), read the
+        // queue back, then swap them back. Prints positions and kinds only.
+        let to = cluster.device.iter().find(|(_, d)| d.name == "Singularity").map(|(id, _)| id.clone()).expect("Soloist");
+        let as_json = |t: &librespot_protocol::player::ProvidedTrack| serde_json::json!({"uri": t.uri, "uid": t.uid, "metadata": t.metadata, "provider": t.provider});
+        let read = |session: &Session| {
+            let session = session.clone();
+            async move {
+                let mut req = PutStateRequest::new();
+                req.member_type = MemberType::CONNECT_STATE.into();
+                req.put_state_reason = PutStateReason::NEW_DEVICE.into();
+                let mut info = DeviceInfo::new();
+                info.name = "Singularity remote".into();
+                info.device_id = session.device_id().to_string();
+                let mut caps = Capabilities::new();
+                caps.hidden = true;
+                caps.is_observable = true;
+                info.capabilities = Some(caps).into();
+                let mut dev = Device::new();
+                dev.device_info = Some(info).into();
+                req.device = Some(dev).into();
+                Cluster::parse_from_bytes(&session.spclient().put_connect_state_request(&req).await.unwrap()).unwrap()
+            }
+        };
+        let ctx: Vec<usize> = ps.next_tracks.iter().enumerate().filter(|(_, t)| t.provider == "context").map(|(i, _)| i).collect();
+        let (a, b) = (ctx[1], ctx[2]);
+        let (ua, ub) = (ps.next_tracks[a].uid.clone(), ps.next_tracks[b].uid.clone());
+        let mut next: Vec<serde_json::Value> = ps.next_tracks.iter().map(as_json).collect();
+        next.swap(a, b);
+        let prev: Vec<serde_json::Value> = ps.prev_tracks.iter().map(as_json).collect();
+        let cmd = serde_json::json!({"endpoint": "set_queue", "next_tracks": next, "prev_tracks": prev, "queue_revision": ps.queue_revision});
+        println!("swap positions {a} and {b}: {:?}", session.spclient().send_player_command(&to, cmd).await.map(|b| String::from_utf8_lossy(&b).to_string()));
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let after = read(&session).await;
+        let n = &after.player_state.next_tracks;
+        let pos = |u: &str| n.iter().position(|t| t.uid == u);
+        println!("after: first at {:?}, second at {:?}, providers there {:?}", pos(&ua), pos(&ub), [pos(&ua), pos(&ub)].map(|p| p.map(|p| n[p].provider.clone())));
+        // put them back
+        let mut back: Vec<serde_json::Value> = n.iter().map(as_json).collect();
+        if let (Some(x), Some(y)) = (pos(&ua), pos(&ub)) {
+            back.swap(x, y);
+        }
+        let prev: Vec<serde_json::Value> = after.player_state.prev_tracks.iter().map(as_json).collect();
+        let cmd = serde_json::json!({"endpoint": "set_queue", "next_tracks": back, "prev_tracks": prev, "queue_revision": after.player_state.queue_revision});
+        println!("swap back: {:?}", session.spclient().send_player_command(&to, cmd).await.map(|b| String::from_utf8_lossy(&b).to_string()));
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let fin = read(&session).await;
+        let n = &fin.player_state.next_tracks;
+        println!("restored: {}", n.iter().position(|t| t.uid == ua) == Some(a) && n.iter().position(|t| t.uid == ub) == Some(b));
+        let _ = session.spclient().delete_connect_state_request().await;
+        return Ok(());
+    }
     if args.get(1).map(String::as_str) == Some("--remove-queued") {
         // remove one user-queued track (by URI, first match): send the rest back with the current revision
         let uri = args.get(2).expect("uri");

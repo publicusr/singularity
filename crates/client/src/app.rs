@@ -1406,17 +1406,18 @@ impl App {
     }
 
     /// Right-click on a queue entry.
-    /// A dragged queued song let go: shown in its new place at once, then moved on Spotify (if Spotify refuses, the
-    /// Daemon sends the real queue back).
+    /// A dragged song let go: shown in its new place at once, then moved on Spotify (if Spotify refuses, the Daemon
+    /// sends the real queue back).
     fn drop_queued(&mut self, d: crate::queue::QueueDrag) {
-        if d.to == d.from || d.from >= crate::queue::queued(self) {
+        // the queue may have changed under the drag (a track ended): only a move inside the same section stands
+        if d.to == d.from || crate::queue::section(self, d.from) != Some(d.section) {
             return;
         }
         let e = self.playback.queue.remove(d.from);
         let (uri, uid) = (e.item.uri.clone(), (!e.uid.is_empty()).then(|| e.uid.clone()));
         self.playback.queue.insert(d.to, e);
         self.queue_view.sel = d.to;
-        self.send(Command::MoveInQueue { uri, uid, to: d.to });
+        self.send(Command::MoveInQueue { uri, uid, to: d.to - d.section.0 });
     }
 
     pub fn open_queue_menu(&mut self, i: usize, at: Option<(u16, u16)>) {
@@ -1812,10 +1813,8 @@ impl App {
                     Some(Hit::QueueRow(i)) => {
                         self.focus = "queue".into();
                         self.queue_view.sel = i;
-                        // a song you queued can be dragged (it shows on consecutive rows, from the first queued one)
-                        if i < crate::queue::queued(self) {
-                            self.queue_drag = Some(crate::queue::QueueDrag { from: i, to: i, top_y: m.row as i32 - i as i32 });
-                        }
+                        // a queued or context song can be dragged within its section
+                        self.queue_drag = crate::queue::QueueDrag::start(self, i, m.row);
                     }
                     // click a lyric line: jump there
                     Some(Hit::Lyric(ms)) => self.seek_to(ms),
@@ -1917,7 +1916,7 @@ impl App {
                         self.set_volume(v);
                     }
                 } else if let Some(mut d) = self.queue_drag {
-                    d.over(m.row, crate::queue::queued(self));
+                    d.over(m.row);
                     self.queue_drag = Some(d);
                 } else if let Some(Hit::Divider(i)) = self.drag.clone()
                     && let Some(d) = self.dividers.get(i).cloned()

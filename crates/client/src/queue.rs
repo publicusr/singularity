@@ -1,6 +1,7 @@
 //! The queue Widget (#12): what's playing, what you queued, what comes next from the context, and what autoplay added
 //! (marked as such, story 11). Right-click or Delete edits the queue; play next / remove / clear go through Connect.
-//! Songs you queued yourself can be dragged into a new order (#32): the list shows the new order while dragging.
+//! Songs you queued and the context's coming songs can be dragged into a new order (#32), each within its own section:
+//! the list shows the new order while dragging. Autoplay is Spotify's to choose.
 
 use crate::app::{App, Hit};
 use crate::theme::Theme;
@@ -28,25 +29,41 @@ impl QueueView {
     }
 }
 
-/// A queued song being dragged: where it was and where it would land (places among the queued songs), and the
-/// screen row the first queued song sits on (so the pointer's row is a place).
+/// A song being dragged: where it was and where it would land (indices into the queue, both inside `section`), and
+/// the screen row entry 0 would sit on if the section ran up there (rows in a section are consecutive).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct QueueDrag {
     pub from: usize,
     pub to: usize,
     pub top_y: i32,
+    /// the run of entries it can move among: (first index, how many)
+    pub section: (usize, usize),
 }
 
 impl QueueDrag {
+    /// Start dragging entry `i`, shown on screen row `y`; None if it can't move.
+    pub fn start(app: &App, i: usize, y: u16) -> Option<QueueDrag> {
+        let section = section(app, i)?;
+        Some(QueueDrag { from: i, to: i, top_y: y as i32 - i as i32, section })
+    }
+
     /// The pointer is on screen row `y`.
-    pub fn over(&mut self, y: u16, queued: usize) {
-        self.to = (y as i32 - self.top_y).clamp(0, queued.saturating_sub(1) as i32) as usize;
+    pub fn over(&mut self, y: u16) {
+        let (start, len) = self.section;
+        self.to = (y as i32 - self.top_y).clamp(start as i32, (start + len).saturating_sub(1) as i32) as usize;
     }
 }
 
-/// How many songs at the head of the queue you queued yourself: only these can be moved.
-pub fn queued(app: &App) -> usize {
-    app.playback.queue.iter().take_while(|e| e.source == "queue").count()
+/// The run of entries around `i` that it can be moved among: your queued songs, or the context's. None for autoplay.
+pub fn section(app: &App, i: usize) -> Option<(usize, usize)> {
+    let q = &app.playback.queue;
+    let src = q.get(i)?.source.as_str();
+    if src == "autoplay" {
+        return None;
+    }
+    let start = (0..=i).rev().take_while(|&k| q[k].source == src).last()?;
+    let len = q[start..].iter().take_while(|e| e.source == src).count();
+    Some((start, len))
 }
 
 /// Queue entries in the order shown: as they are, or with the dragged song at its new place.
@@ -198,12 +215,15 @@ mod tests {
     #[test]
     fn a_drag_shows_the_new_order() {
         assert_eq!(order(4, None), [0, 1, 2, 3]);
-        assert_eq!(order(4, Some(QueueDrag { from: 2, to: 0, top_y: 0 })), [2, 0, 1, 3]);
-        assert_eq!(order(4, Some(QueueDrag { from: 0, to: 2, top_y: 0 })), [1, 2, 0, 3]);
-        let mut d = QueueDrag { from: 1, to: 1, top_y: 10 };
-        d.over(3, 3);
+        assert_eq!(order(4, Some(QueueDrag { from: 2, to: 0, top_y: 0, section: (0, 4) })), [2, 0, 1, 3]);
+        assert_eq!(order(4, Some(QueueDrag { from: 0, to: 2, top_y: 0, section: (0, 4) })), [1, 2, 0, 3]);
+        let mut d = QueueDrag { from: 1, to: 1, top_y: 10, section: (0, 3) };
+        d.over(3);
         assert_eq!(d.to, 0, "above the queued songs: first");
-        d.over(40, 3);
+        d.over(40);
         assert_eq!(d.to, 2, "below them: last of the queued, never into the context");
+        let mut c = QueueDrag { from: 4, to: 4, top_y: 10, section: (3, 4) };
+        c.over(2);
+        assert_eq!(c.to, 3, "a context song never goes above the context");
     }
 }

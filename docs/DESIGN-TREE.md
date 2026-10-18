@@ -361,3 +361,17 @@ flowchart LR
   migration, tinted memo, cell-tier cover colour follows a Theme switch and `tint_art = false`, a tinted hole is
   green-dominant, GPU vs CPU tinted within tolerance (mean |Δ| ≤ 0.05). pty `home-pixels` in Singularity with
   `terminal-green`, tint on and off.
+- **Owner answers, after round 1** (2026-10-18): queue drag works while playing. Genius **dropped** (no timings,
+  fragile, against its terms; the Pane already says why there are no lyrics). v1.x planning: go.
+- **#32 follow-up: drag while paused; "Next from" songs** (2026-10-18): the paused snap-back was Connect, not the
+  drag. The Daemon log showed every move failing with "that track isn't in the queue any more": Soloist hadn't
+  played since the Daemon started, so it wasn't the active Connect device and Spotify's copy of the queue wasn't its
+  queue. Not patched over by rebuilding the list from Soloist's own (it reports only 20 upcoming of e.g. 80, so a
+  `set_queue` from it could cut the context short). Instead every Connect queue edit now checks that Singularity is
+  the active device first, and says so if not ("press play once"); play next then falls back to Soloist's
+  add-to-queue as before (before, it could be sent against another device's list). Quiet live test (probe
+  `--swap-context`, while the owner played): swapping two upcoming context songs via `set_queue` is accepted, both
+  stay `provider = context` in their new places, and swapping back restored the queue exactly. So "Next from" songs
+  are draggable now, each song within its own section (queued among queued, context among context); autoplay stays
+  Spotify's. `MoveInQueue.to` = place within the song's own section. Open: the paused case is unconfirmed (asked the
+  owner what "not playing" was).

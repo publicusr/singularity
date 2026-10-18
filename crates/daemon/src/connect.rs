@@ -241,13 +241,14 @@ pub fn remote_playback(cluster: &Cluster, engine_name: &str, now_ms: u64) -> Opt
     })
 }
 
-/// One change to what plays next. Only user-queued tracks (`provider == "queue"`) can be removed or moved.
+/// One change to what plays next. Only user-queued tracks (`provider == "queue"`) can be removed; those and the
+/// context's ("Next from …") can be moved, each within its own kind. Autoplay is Spotify's to choose.
 #[derive(Debug, Clone, PartialEq)]
 pub enum QueueEdit {
     PlayNext(String),
     Remove { uri: String, uid: Option<String> },
     Clear,
-    /// to place `to` among the queued tracks
+    /// to place `to` among the tracks of its own kind (queued, or the context's)
     Move { uri: String, uid: Option<String>, to: usize },
 }
 
@@ -267,10 +268,11 @@ pub fn edit_queue(next: &mut Vec<serde_json::Value>, edit: &QueueEdit) -> bool {
             None => false,
         },
         QueueEdit::Move { uri, uid, to } => {
-            let Some(i) = find_queued(next, uri, uid.as_deref()) else { return false };
+            let Some(i) = find_queued(next, uri, uid.as_deref()).or_else(|| find(next, "context", uri, uid.as_deref())) else { return false };
             let track = next.remove(i);
-            let places: Vec<usize> = (0..next.len()).filter(|&k| queued(&next[k])).collect();
-            // before the `to`-th queued track, else after the last one
+            let kind = track["provider"].clone();
+            let places: Vec<usize> = (0..next.len()).filter(|&k| next[k]["provider"] == kind).collect();
+            // before the `to`-th track of its kind, else after the last one
             let at = places.get(*to).copied().unwrap_or_else(|| places.last().map_or(0, |&k| k + 1));
             next.insert(at, track);
             at != i
@@ -285,15 +287,27 @@ pub fn edit_queue(next: &mut Vec<serde_json::Value>, edit: &QueueEdit) -> bool {
 
 /// A queued track by its uid, else its URI.
 fn find_queued(next: &[serde_json::Value], uri: &str, uid: Option<&str>) -> Option<usize> {
-    let queued = |t: &serde_json::Value| t["provider"] == "queue";
-    let by_uid = uid.filter(|u| !u.is_empty()).and_then(|u| next.iter().position(|t| queued(t) && t["uid"] == u));
-    by_uid.or_else(|| next.iter().position(|t| queued(t) && t["uri"] == uri))
+    find(next, "queue", uri, uid)
+}
+
+/// A track from `provider` by its uid, else its URI.
+fn find(next: &[serde_json::Value], provider: &str, uri: &str, uid: Option<&str>) -> Option<usize> {
+    let mine = |t: &serde_json::Value| t["provider"] == provider;
+    let by_uid = uid.filter(|u| !u.is_empty()).and_then(|u| next.iter().position(|t| mine(t) && t["uid"] == u));
+    by_uid.or_else(|| next.iter().position(|t| mine(t) && t["uri"] == uri))
 }
 
 impl ConnectRemote {
     /// Change what plays next on device `to`, against the player's current queue revision.
     pub async fn edit_queue(&self, to: &str, edit: &QueueEdit) -> anyhow::Result<()> {
-        let ps = self.devices().await?.player_state.unwrap_or_default();
+        let cluster = self.devices().await?;
+        // Spotify's copy of the queue is the active player's; until Singularity has played since it started, that
+        // copy isn't its queue, and an edit would be made against the wrong list
+        if cluster.active_device_id != to {
+            tracing::info!("queue edit: the active Connect device is {:?}, not Singularity", if cluster.active_device_id.is_empty() { "none" } else { "another" });
+            anyhow::bail!("Spotify doesn't see Singularity as the player yet; press play once, then try again");
+        }
+        let ps = cluster.player_state.unwrap_or_default();
         let as_json = |t: &librespot_protocol::player::ProvidedTrack| json!({ "uri": t.uri, "uid": t.uid, "metadata": t.metadata, "provider": t.provider });
         let mut next: Vec<serde_json::Value> = ps.next_tracks.iter().map(as_json).collect();
         anyhow::ensure!(edit_queue(&mut next, edit), "that track isn't in the queue any more");
@@ -380,7 +394,11 @@ mod tests {
         assert!(edit_queue(&mut m, &mv("spotify:track:b", "u5", 9)), "past the end: last of the queued");
         assert_eq!(m[2]["uid"], "u5");
         assert_eq!(m[3]["provider"], "context", "context order untouched");
-        assert!(!edit_queue(&mut m, &mv("spotify:track:c", "u3", 0)), "context tracks don't move");
+        // a context track moves among the context's: [u1 u2 u5 u3 u6 u4] → u6 first of the context
+        m.insert(4, json!({"uri": "spotify:track:e", "uid": "u6", "provider": "context"}));
+        assert!(edit_queue(&mut m, &mv("spotify:track:e", "u6", 0)));
+        assert_eq!(uids(&m), ["u1", "u2", "u5", "u6", "u3", "u4"], "it stays after the queued tracks");
+        assert!(!edit_queue(&mut m, &mv("spotify:track:d", "u4", 0)), "autoplay doesn't move");
         assert!(edit_queue(&mut n, &QueueEdit::Clear));
         assert!(n.iter().all(|t| t["provider"] != "queue") && n.len() == 2, "context and autoplay stay");
     }

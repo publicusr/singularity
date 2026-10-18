@@ -1456,7 +1456,7 @@ mod tests {
     // ── Queue drag (#32) ──
 
     #[test]
-    fn dragging_a_queued_song_reorders_it_and_context_songs_stay() {
+    fn dragging_reorders_queued_and_context_songs_within_their_sections() {
         use singularity_proto::{Command, Item, QueueEntry};
         let (mut app, mut rx) = playing_app(200_000);
         let e = |n: &str, source: &str| QueueEntry { item: Item { uri: format!("spotify:track:{n}"), name: format!("Song {n}"), ..Default::default() }, source: source.into(), uid: format!("u{n}") };
@@ -1482,14 +1482,22 @@ mod tests {
         mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), y);
         mouse(&mut app, MouseEventKind::Up(MouseButton::Left), y);
         assert_eq!(sent(&mut rx), vec![Command::MoveInQueue { uri: "spotify:track:c".into(), uid: Some("uc".into()), to: 2 }]);
-        // a context song doesn't move
+        // a context song moves among the context's, never above them
         render(&mut app, 160, 48);
-        let (x, top) = (row(&app, 3), row(&app, 0));
-        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x);
+        let (y, top) = (row(&app, 4), row(&app, 0));
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), y);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), top);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), top);
+        assert_eq!(sent(&mut rx), vec![Command::MoveInQueue { uri: "spotify:track:y".into(), uid: Some("uy".into()), to: 0 }], "first of the context");
+        assert_eq!(app.playback.queue.iter().map(|q| q.item.uri.rsplit(':').next().unwrap()).collect::<String>(), "abcyx");
+        // autoplay doesn't move
+        app.playback.queue.push(e("z", "autoplay"));
+        render(&mut app, 160, 48);
+        let (z, top) = (row(&app, 5), row(&app, 3));
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), z);
         mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), top);
         mouse(&mut app, MouseEventKind::Up(MouseButton::Left), top);
         assert!(sent(&mut rx).is_empty());
-        assert_eq!(app.playback.queue[3].item.uri, "spotify:track:x");
     }
 
     // ── Lyrics (#14) ──

@@ -117,10 +117,12 @@ impl Engine for FakeEngine {
                     }
                     Command::ClearQueue => st.queue.retain(|q| q.source != "queue"),
                     Command::MoveInQueue { uri, uid, to } => {
-                        let Some(i) = st.queue.iter().position(|q| q.source == "queue" && (uid.as_deref() == Some(q.uid.as_str()) || q.item.uri == uri)) else { continue };
+                        let Some(i) = st.queue.iter().position(|q| q.source != "autoplay" && (uid.as_deref() == Some(q.uid.as_str()) || q.item.uri == uri)) else { continue };
                         let e = st.queue.remove(i);
-                        let queued = st.queue.iter().take_while(|q| q.source == "queue").count();
-                        st.queue.insert(to.min(queued), e);
+                        // its own kind's run: the queued ones come first, then the context's
+                        let start = st.queue.iter().position(|q| q.source == e.source).unwrap_or(i);
+                        let len = st.queue[start..].iter().take_while(|q| q.source == e.source).count();
+                        st.queue.insert(start + to.min(len), e);
                     }
                     Command::Seek { position_ms } => st.position_ms = position_ms,
                     Command::SetVolume { percent } => st.volume = percent.min(100),

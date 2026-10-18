@@ -59,7 +59,8 @@ pub enum Command {
     RemoveFromQueue { uri: String, uid: Option<String> },
     /// Remove everything the user queued (the context and autoplay continue).
     ClearQueue,
-    /// Move a track the user queued to place `to` among the queued tracks (0 = plays next).
+    /// Move a track the user queued, or one coming up from the context, to place `to` among the tracks of its own
+    /// kind (0 = first of them). Autoplay tracks don't move.
     MoveInQueue { uri: String, uid: Option<String>, to: usize },
     /// Ask for a full snapshot (sent automatically after `Welcome`).
     GetState,

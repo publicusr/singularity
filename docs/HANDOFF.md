@@ -13,8 +13,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
   live answers). Clippy: only minor style warnings, all in older code (setup.rs, connect.rs, probe example) or
   harmless (`type_complexity` on theme tables, `needless_range_loop` in a test).
 - **Owner test round 1 is in** (2026-10-18): 9 points, findings and proposals in the DESIGN-TREE round log ("Owner
-  test round 1"). Answered; tickets **#25–#33** written (`ready-for-agent`), built in that order. Genius (opt-in lyrics fallback) is parked
-  pending one more answer.
+  test round 1"). Answered; tickets **#25–#33** written (`ready-for-agent`), built in that order. Genius was dropped.
   Their Daemon was a stale 00:08 build that ignored `Shutdown`; since #25 a new Client stops such a Daemon by itself.
 - The owner's round 1 covered the build of 2026-10-18 ~02:00 (up to #23). **#25 onwards is untested by the owner.**
 
@@ -38,7 +37,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `6a55da1` | #30 ✅ | Lyrics wrap; `Lyrics.missing` says why there are none; lookups logged at info |
 | `fd62c6a` | #31 ✅ | Wide terminals: the well keeps ~16:10 (`compute_shaped`), track-list columns capped |
 | `48915b7` | #32 🔄 | Drag to reorder your queued songs (`MoveInQueue`, `QueueEdit::Move`, `CatEvent::Resync`); issue open until the live check |
-| (last) | #33 ✅ | Covers and the black hole in the Theme's colours (`theme::Tint`, `ui.tint_art`, config schema 2) |
+| `672a646` | #33 ✅ | Covers and the black hole in the Theme's colours (`theme::Tint`, `ui.tint_art`, config schema 2) |
+| (last) | #32 | Drag "Next from" songs too (within their section); queue edits check Singularity is the active Connect device |
 
 ## What exists in `crates/`
 
@@ -64,7 +64,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 ## Then
 
 - Test round 1 tickets, in order: ~~#25 stale Daemon~~ ✅, ~~#26 wheel/highlight~~ ✅, ~~#27 Home by lines~~ ✅, ~~#28 back/forward~~ ✅,
-  ~~#29 meters~~ ✅, ~~#30 lyrics wrap~~ ✅, ~~#31 wide terminals~~ ✅, #32 queue drag (built, **open until one quiet live check** on the owner's account once their Daemon is the new build: queue two songs, drag, check the order in the phone app, remove them), ~~#33 Theme tint~~ ✅. **Round 1 is done** except #32's live check; Genius still parked. Genius parked.
+  ~~#29 meters~~ ✅, ~~#30 lyrics wrap~~ ✅, ~~#31 wide terminals~~ ✅, #32 queue drag (owner: works while playing; open for the paused case), ~~#33 Theme tint~~ ✅. **Round 1 is done.** #32 works while playing (owner); drags while paused now explain themselves, the real cause is open (see the round log). Genius dropped.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
 - v1.x (spec "Out of Scope"): playlist editing, stats widgets (the listening log is ready for them), Settings screen,
   more Visuals, free-tiling, podcasts, macOS Engine. Turn into tickets with the owner before building.
