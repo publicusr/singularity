@@ -456,8 +456,8 @@ pub struct App {
     pub picker: Option<crate::looks::Picker>,
     /// state of the Widgets other designs bring (rain, scope, top)
     pub widgets: crate::widgets::State,
-    /// the Visual demos' own state (D36)
-    pub demos: crate::demos::State,
+    /// the ambient Widgets' own state (starfield, marquee, glow)
+    pub ambient: crate::ambient::State,
     /// the saved layout on screen (its file name), the ones there are, and the name being typed for a new one (#19)
     pub layout_name: Option<String>,
     pub saved_layouts: Vec<crate::layouts::Saved>,
@@ -551,7 +551,7 @@ impl App {
             theme_dir: None,
             picker: None,
             widgets: Default::default(),
-            demos: Default::default(),
+            ambient: Default::default(),
             layout_name: None,
             saved_layouts: vec![],
             naming: None,

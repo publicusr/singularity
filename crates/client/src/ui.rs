@@ -28,13 +28,12 @@ fn slot_info(slot: &str) -> (&'static str, &'static str) {
         "listening" => ("listening · 26 weeks", ""),
         "rain" => ("rain", ""),
         "scope" => ("osc", ""),
-        "top" => ("top", ""),
+        "top" => ("top · system", ""),
         "today" => ("today", ""),
         "topweek" => ("top this week", ""),
-        "starfield" => ("starfield · demo", ""),
-        "river" => ("up next · demo", ""),
-        "marquee" => ("marquee · demo", ""),
-        "glow" => ("glow · demo", ""),
+        "starfield" => ("starfield", ""),
+        "marquee" => ("marquee", ""),
+        "glow" => ("glow", ""),
         _ => ("?", ""),
     }
 }
@@ -360,13 +359,12 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
                 app.hit(inner, Hit::Action(Action::Stats));
             }
             "topweek" => crate::stats::top_week(f.buffer_mut(), inner, app, th),
-            "starfield" => crate::demos::starfield(f.buffer_mut(), inner, app, th),
-            "river" => crate::demos::river(f.buffer_mut(), inner, app, th),
-            "marquee" => crate::demos::marquee(f.buffer_mut(), inner, app, th),
-            "glow" => crate::demos::glow(f.buffer_mut(), inner, app, th),
+            "starfield" => crate::ambient::starfield(f.buffer_mut(), inner, app, th),
+            "marquee" => crate::ambient::marquee(f.buffer_mut(), inner, app, th),
+            "glow" => crate::ambient::glow(f.buffer_mut(), inner, app, th),
             _ => {}
         }
-        if matches!(slot.as_str(), "hole" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top" | "today" | "topweek" | "starfield" | "river" | "marquee" | "glow") {
+        if matches!(slot.as_str(), "hole" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top" | "today" | "topweek" | "starfield" | "marquee" | "glow") {
             continue;
         }
         if slot == "library" {
@@ -1841,10 +1839,10 @@ mod tests {
         assert!(app.artist.as_ref().unwrap().shelves.offset > 0, "the Shelves scrolled");
     }
 
-    // ── Visual demos (D36) ──
+    // ── Ambient Widgets (#44) ──
 
     #[test]
-    fn every_demo_stays_inside_its_pane_at_any_size() {
+    fn every_ambient_widget_stays_inside_its_pane_at_any_size() {
         use singularity_proto::{Item, QueueEntry};
         let (mut app, _rx) = playing_app(200_000);
         app.playback.item.as_mut().unwrap().name = "Łódź à la carte, vol. 2!".into();
@@ -1853,7 +1851,7 @@ mod tests {
         app.playback.item.as_mut().unwrap().cover_url = Some("https://i.scdn.co/image/c".into());
         let th = app.theme.clone();
         type Draw = fn(&mut ratatui::buffer::Buffer, Rect, &mut App, &crate::theme::Theme);
-        let demos: [(&str, Draw); 4] = [("starfield", crate::demos::starfield), ("river", crate::demos::river), ("marquee", crate::demos::marquee), ("glow", crate::demos::glow)];
+        let demos: [(&str, Draw); 3] = [("starfield", crate::ambient::starfield), ("marquee", crate::ambient::marquee), ("glow", crate::ambient::glow)];
         for (name, draw) in demos {
             for (w, h) in [(12u16, 3u16), (20, 5), (40, 8), (80, 14), (160, 30)] {
                 let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, w + 2, h + 2));
@@ -1869,15 +1867,20 @@ mod tests {
                 }
             }
         }
-        // the marquee spells the title in big pixels (accents fall back), the river names what's next
+        // the starfield costs next to nothing: 600 stars at 160×30, well under a millisecond a frame in release
+        // (a debug build is far slower; this only catches a mistake that makes it heavy)
+        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 160, 30));
+        let t0 = std::time::Instant::now();
+        for _ in 0..100 {
+            crate::ambient::starfield(&mut buf, Rect::new(0, 0, 160, 30), &mut app, &th);
+        }
+        let per = t0.elapsed().as_secs_f64() * 1000.0 / 100.0;
+        assert!(per < 8.0, "starfield {per:.2} ms a frame");
+        // the marquee spells the title in big pixels (accents fall back)
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 160, 10));
-        crate::demos::marquee(&mut buf, Rect::new(0, 0, 160, 10), &mut app, &th);
+        crate::ambient::marquee(&mut buf, Rect::new(0, 0, 160, 10), &mut app, &th);
         let s: String = (0..10).map(|y| (0..160).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect();
         assert!(s.contains('█') || s.contains('▀'), "{s}");
-        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 160, 5));
-        crate::demos::river(&mut buf, Rect::new(0, 0, 160, 5), &mut app, &th);
-        let s: String = (0..5).map(|y| (0..160).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect();
-        assert!(s.contains("Song 0") && s.contains("now") && s.contains("+5m"), "{s}");
     }
 
     // ── Lyrics (#14) ──

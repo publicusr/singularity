@@ -45,7 +45,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `9d70991` | D36 | Visual demos (`client/src/demos.rs`): starfield, up next, marquee, glow |
 | `c07559c` | #38–#41 ✅ | Artist/search wheel, calmer rain, well at 4:3, kitty images under cell backgrounds (popups don't pixelate) |
 | `a8a8f95` | #42 ✅ | Every Design keeps Home, library, queue, lyrics (D43) |
-| (last) | #43 ✅ | All arrows at the right of a Pane's title; back/forward as ← → (D44) |
+| `08ba7a2` | #43 ✅ | All arrows at the right of a Pane's title; back/forward as ← → (D44) |
+| (last) | #44 ✅ | Ambient Widgets (`client/src/ambient.rs`): starfield, marquee, glow; up next dropped; round 2 done |
 
 ## What exists in `crates/`
 
@@ -73,8 +74,8 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 - Test round 1 tickets, in order: ~~#25 stale Daemon~~ ✅, ~~#26 wheel/highlight~~ ✅, ~~#27 Home by lines~~ ✅, ~~#28 back/forward~~ ✅,
   ~~#29 meters~~ ✅, ~~#30 lyrics wrap~~ ✅, ~~#31 wide terminals~~ ✅, #32 queue drag (owner: works while playing; open for the paused case), ~~#33 Theme tint~~ ✅. **Round 1 is done.** #32 works while playing (owner); drags while paused now explain themselves, the real cause is open (see the round log). Genius dropped.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
-- **v1.x is planned** (DESIGN-TREE D29–D41, SPEC.md "v1.x", spec issue #34). Batch 1 (stats) ✅: #35, #36, #37. Visual demos built (D36), **waiting on the
-  owner's verdict** (keep → tickets, else delete). **Next: batch 2**
+- **v1.x is planned** (DESIGN-TREE D29–D41, SPEC.md "v1.x", spec issue #34). Batch 1 (stats) ✅: #35, #36, #37. Visual demos judged (round 2): starfield,
+  marquee, glow kept and finished (#44). Owner test round 2 fixed (#38–#44). **Next: batch 2**
   (waveform seek bar, mini-player, mouse back/forward, ♥ on every row, album song into "Next in queue" (D42)).
 - Gap left on #11: mouse back/forward buttons (crossterm drops SGR buttons 8/9; needs our own small input layer next
   to the SGR-Pixels code in `client/src/term.rs`).
@@ -84,7 +85,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 
 `singularity` and `singularityd` are installed in `~/.cargo/bin` (on the owner's PATH) with
 `cargo install --locked --path crates/daemon` and `--path crates/client`. Reinstall both after each closed ticket so the
-owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #43.
+owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #44.
 
 ## Local state on the owner's machine (not in git)
 

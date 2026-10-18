@@ -7,10 +7,9 @@ use serde::Deserialize;
 use std::path::Path;
 
 /// Widgets that can take each other's place. Panes outside these (Home, the library, the black hole) keep theirs.
-// (the demos, D36, are tried out here before any of them becomes a ticket)
 const GROUPS: [&[&str]; 2] = [
     &["fft", "loudness", "levels", "scope", "rain", "starfield"],
-    &["lyrics", "queue", "nowplaying", "stream", "top", "listening", "today", "topweek", "river", "marquee", "glow"],
+    &["lyrics", "queue", "nowplaying", "stream", "top", "listening", "today", "topweek", "marquee", "glow"],
 ];
 
 /// What a Slot showing `widget` can show instead (itself included), if anything.

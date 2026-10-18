@@ -3,8 +3,8 @@
 mod app;
 mod artist;
 mod conn;
+mod ambient;
 mod covers;
-mod demos;
 mod design;
 mod gfx;
 mod home;

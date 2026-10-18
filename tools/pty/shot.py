@@ -496,8 +496,8 @@ def arrows(t, out):
     t.send(b"q", 0.5)
 
 
-def demos(t, out):
-    """D36: each Visual demo swapped into a Pane while a song plays (pixel tier, so the glow has a cover)."""
+def ambient(t, out):
+    """#44: starfield, marquee and glow swapped in while a song plays (pixel tier, so the glow has a cover)."""
     t.pump(1.0)
     x, y = t.find("♥ Liked Songs")
     mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
@@ -515,9 +515,6 @@ def demos(t, out):
     swap_in(t, out, "marquee", "glow")
     t.pump(1.5)
     t.shot(f"{out}/2-glow.png")
-    swap_in(t, out, "glow", "up next")
-    t.pump(1.0)
-    t.shot(f"{out}/3-up-next.png")
     t.send(b" ", 0.3)
     t.send(b"q", 0.5)
 
@@ -647,12 +644,12 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "demos", "arrows", "popup"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "demos", "popup") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "ambient", "popup") else "0"
         # kitty's layer under cell backgrounds (#41); the harness composites it as kitty does
-        env["SINGULARITY_BELOW_BG"] = "1" if scenario in ("popup", "demos") else "0"
+        env["SINGULARITY_BELOW_BG"] = "1" if scenario in ("popup", "ambient") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
     if scenario == "listening":
         env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
@@ -690,8 +687,8 @@ def main():
             return stats(t, out)
         if scenario == "stats-widgets":
             return stats_widgets(t, out)
-        if scenario == "demos":
-            return demos(t, out)
+        if scenario == "ambient":
+            return ambient(t, out)
         if scenario == "arrows":
             return arrows(t, out)
         if scenario == "popup":
