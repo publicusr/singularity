@@ -939,4 +939,27 @@ mod tests {
         assert!(app.toast.as_ref().unwrap().0.contains("Clear the sort"));
         assert!(sent(&mut rx).is_empty());
     }
+
+    #[test]
+    fn the_wheel_moves_the_add_picker_not_the_list_behind() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+        let (mut app, _rx) = app();
+        for n in 0..30 {
+            app.library.as_mut().unwrap().items.push(item(&format!("spotify:playlist:p{n}"), &format!("List {n}"), true));
+        }
+        app.ask_add(vec!["spotify:track:t".into()], "Song");
+        let wheel = |app: &mut App, kind, modifiers| app.pointer(MouseEvent { kind, column: 60, row: 10, modifiers }, 60.0, false);
+        for _ in 0..3 {
+            wheel(&mut app, MouseEventKind::ScrollDown, KeyModifiers::NONE);
+        }
+        assert_eq!(app.playlists.adding.as_ref().unwrap().sel, 3);
+        wheel(&mut app, MouseEventKind::ScrollDown, KeyModifiers::SHIFT);
+        assert_eq!(app.playlists.adding.as_ref().unwrap().sel, 13, "Shift: a page");
+        wheel(&mut app, MouseEventKind::ScrollUp, KeyModifiers::NONE);
+        assert_eq!(app.playlists.adding.as_ref().unwrap().sel, 12);
+        for _ in 0..50 {
+            wheel(&mut app, MouseEventKind::ScrollDown, KeyModifiers::NONE);
+        }
+        assert_eq!(app.playlists.adding.as_ref().unwrap().sel, app.adding_rows().len() - 1, "stops at the end");
+    }
 }

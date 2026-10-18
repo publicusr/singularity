@@ -612,3 +612,7 @@ flowchart LR
   filter…" instead; others' playlists don't arm a drag at all (a shaky click in Liked Songs stays quiet). Live check
   (`playlist_probe --move`): three rows → after the last, then before the first, both read back as expected
   (~0.16 s, `data.moveItemsInPlaylist`); scratch deleted.
+- **Owner test of #52–#55** (2026-10-18): "looks good", but the wheel did nothing in the Add to playlist picker
+  (only clicks): the wheel code didn't count it as a popup, so it scrolled the list behind. Fixed: while the picker is
+  open the wheel moves its highlight wherever the pointer is (Shift: ten); the details form and naming popup swallow
+  it. Unit test + pty `playlist-add` wheel step.

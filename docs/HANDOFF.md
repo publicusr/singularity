@@ -12,7 +12,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
   #50 album song into the queue; #48 mouse buttons dropped, D45) · **3 playlist editing (in progress: #51–#55 ✅, next #56)** · 4 Settings screen ·
   5 album-adaptive theme + more Visuals · 6 podcasts and audiobooks · 7 free tiling (trial) · 8 macOS.
   Visual demos judged: starfield, marquee, glow kept and finished (#44, `ambient.rs`).
-- Tests: **232 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
+- Tests: **233 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
 - **No open bugs.** The waveform seek bar (#46) was removed again at the owner's call (D46).
 - Rule since round 2 (D43): every built-in Design keeps Home, library, queue and lyrics (a test enforces it).
 

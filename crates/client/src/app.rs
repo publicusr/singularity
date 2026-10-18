@@ -2317,6 +2317,14 @@ impl App {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let up = matches!(m.kind, MouseEventKind::ScrollUp);
                 let sign = if up { 1 } else { -1 };
+                // the "Add to playlist" picker takes the wheel wherever the pointer is (Shift: a page)
+                if self.playlists.adding.is_some() {
+                    return self.adding_move(-(sign as i32) * if coarse { 10 } else { 1 });
+                }
+                // the details form has nothing to scroll; what's under it stays put
+                if self.playlists.details.is_some() || self.naming.is_some() {
+                    return;
+                }
                 let hit = self.hit_at(m.column, m.row);
                 let popup = self.menu.is_some() || self.palette.is_some() || self.picker.is_some();
                 // the Pane under the pointer, whatever's in it (a row's artist and album names are links of their own)
@@ -2398,7 +2406,6 @@ impl App {
                     }
                     Some(Hit::Bar(Bar::Seek, _)) => self.nudge_seek(sign * if coarse { 5000 } else { 1000 }),
                     Some(Hit::Bar(Bar::Volume, _)) => self.nudge_volume(sign * if coarse { 5 } else { 1 }),
-                    Some(Hit::AddPick(_)) => self.adding_move(if up { -1 } else { 1 }),
                     Some(Hit::PickerItem(_)) => {
                         let sel = self.picker.as_ref().map(|p| p.sel).unwrap_or(0);
                         self.picker_select(if up { sel.saturating_sub(1) } else { sel + 1 });

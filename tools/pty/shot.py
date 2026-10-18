@@ -607,6 +607,11 @@ def playlist_add(t, out):
     mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=1.0)
     add_from_first_row()
     t.shot(f"{out}/0-picker.png")
+    px, py = t.find("New playlist")
+    mouse(t, 65, px, py, wait=0.3)  # wheel down over the picker
+    t.shot(f"{out}/0b-wheeled.png")
+    print("wheel picks:", [l.split("›")[-1].strip()[:20] for l in t.screen.display if "› " in l and "Mixtape" in l][:1], "| list behind still on row 1:", any("› " not in l and " 1  Fake Track 001" in l for l in t.screen.display))
+    mouse(t, 64, px, py, wait=0.3)  # and back up
     t.send(b"mix", 0.3)
     t.shot(f"{out}/1-filtered.png")
     print("filtered:", [l.strip()[:60] for l in t.screen.display if "New playlist" in l or "Fake Mixtape" in l and "›" in l][:3])
