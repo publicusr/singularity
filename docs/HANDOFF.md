@@ -9,7 +9,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - **Phase 0 (planning) ✅, Phase 1 (spikes) ✅.** ADRs 0001–0004.
 - **Phase 2/3 (v1 build) ✅ (pending the owner's test round).** Spec issue **#1**, tickets on GitHub
   (`publicusr/singularity`, label `ready-for-agent`). **All v1 tickets are closed (#2–#24).**
-- Tests: **213 passing** (`cargo test`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
+- Tests: **215 passing** (`cargo test`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
   live answers). Clippy: only minor style warnings, all in older code (setup.rs, connect.rs, probe example) or
   harmless (`type_complexity` on theme tables, `needless_range_loop` in a test).
 - **Owner test round 1 is in** (2026-10-18): 9 points, findings and proposals in the DESIGN-TREE round log ("Owner
@@ -46,7 +46,9 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `c07559c` | #38–#41 ✅ | Artist/search wheel, calmer rain, well at 4:3, kitty images under cell backgrounds (popups don't pixelate) |
 | `a8a8f95` | #42 ✅ | Every Design keeps Home, library, queue, lyrics (D43) |
 | `08ba7a2` | #43 ✅ | All arrows at the right of a Pane's title; back/forward as ← → (D44) |
-| (last) | #44 ✅ | Ambient Widgets (`client/src/ambient.rs`): starfield, marquee, glow; up next dropped; round 2 done |
+| `e2232c4` | #44 ✅ | Ambient Widgets (`client/src/ambient.rs`): starfield, marquee, glow; up next dropped; round 2 done |
+| `522c2ba` | #41 follow-up | Popups opaque over under-background images in kitty (#010101) |
+| (last) | #45 ✅ | Stream Pane shows download speed and stalls; one toast when the connection is too slow |
 
 ## What exists in `crates/`
 
@@ -67,7 +69,7 @@ folder. Later: `idle-pixels`/`idle-cells` (#17), `listening` (#23, seeds a scrat
 Daemon never listens to the owner's Soloist), `SINGULARITY_DBUS=<address>|off` (MPRIS bus; fake-Engine Daemons stay
 off the session bus unless asked), plus the older `SINGULARITY_CPU`, `SINGULARITY_PIXEL`, `SINGULARITY_PIXEL_MOUSE`,
 `SINGULARITY_NO_KEYRING`, `SINGULARITY_SOCKET`. #23: `SINGULARITY_DATA=<dir>|off` (LocalStore; fake-Engine Daemons
-keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SHUTDOWN` (#25 tests), `SINGULARITY_BELOW_BG=1|0` (#41: kitty's under-background layer), and `XDG_DOWNLOAD_DIR` decides where exports go. `SINGULARITY_NOTIFY` is gone (now `notifications.track_change`).
+keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SHUTDOWN` (#25 tests), `SINGULARITY_BELOW_BG=1|0` (#41: kitty's under-background layer), `SINGULARITY_FAKE_STALLS=1` (#45: the fake Engine starves), and `XDG_DOWNLOAD_DIR` decides where exports go. `SINGULARITY_NOTIFY` is gone (now `notifications.track_change`).
 
 ## Then
 
@@ -85,7 +87,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 
 `singularity` and `singularityd` are installed in `~/.cargo/bin` (on the owner's PATH) with
 `cargo install --locked --path crates/daemon` and `--path crates/client`. Reinstall both after each closed ticket so the
-owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #44.
+owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #45.
 
 ## Local state on the owner's machine (not in git)
 

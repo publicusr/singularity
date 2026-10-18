@@ -94,10 +94,16 @@ pub enum LogNews {
     Locked,
     /// Spotify refused the API key
     BadKey,
+    /// a download speed sample, kB/s
+    Bandwidth(u32),
+    /// playback ran dry
+    Stall,
 }
 
 /// Reads Soloist's verbose log line by line. Per track it logs `FileStreamer file average bitrate: N`, then a block
-/// with `codec:`, `bitrate: N bits/s`, `sample rate: N Hz` and `sample format:` (verified 2026-10-17).
+/// with `codec:`, `bitrate: N bits/s`, `sample rate: N Hz` and `sample format:` (verified 2026-10-17). While it
+/// streams: `FileStreamer bandwidth sample: N kBps`, and `audioThreadMain: underrun` when playback runs dry
+/// (verified 2026-10-18).
 #[derive(Default)]
 pub struct LogParser {
     average: Option<u32>,
@@ -114,6 +120,13 @@ impl LogParser {
         }
         if line.contains("make sure --api-key is valid") {
             return Some(LogNews::BadKey);
+        }
+        if let Some(rest) = after("FileStreamer bandwidth sample:") {
+            return rest.split_whitespace().next().and_then(|n| n.parse::<f64>().ok()).map(|k| LogNews::Bandwidth(k.round() as u32));
+        }
+        // (the recovery line, "updateInternalDriverToPlaying: underrun", isn't a new stall)
+        if line.contains("audioThreadMain: underrun") {
+            return Some(LogNews::Stall);
         }
         if let Some(rest) = after("client expires in") {
             return num(rest).map(LogNews::Lifetime);
@@ -382,6 +395,8 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
     // wait for the WebSocket endpoint files
     let mut addr = None;
     let mut expires_in_days = None;
+    // the stream's download speed and recent stalls (#45)
+    let mut delivery = singularity_proto::Delivery::default();
     for _ in 0..100 {
         if let Some(st) = child.try_wait()? {
             // let the output catch up: it says why
@@ -403,7 +418,7 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                 }
                 LogNews::Locked => anyhow::bail!("another Soloist is already running with Singularity's data (is a second singularityd running?)"),
                 LogNews::BadKey => return Err(BadKey.into()),
-                LogNews::Stream(_) => {}
+                LogNews::Stream(_) | LogNews::Bandwidth(_) | LogNews::Stall => {}
             }
         }
         if let (Ok(p), Ok(a)) = (std::fs::read_to_string(state.join("data/ws.port")), std::fs::read_to_string(state.join("data/ws.addr"))) {
@@ -475,6 +490,17 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
             }
             Some(n) = news_rx.recv() => match n {
                 LogNews::Stream(info) => { let _ = ev_tx.send(EngineEvent::Stream(info)).await; }
+                LogNews::Bandwidth(k) => {
+                    delivery.bandwidth_kbps = Some(k);
+                    delivery.measured_ms = singularity_proto::now_ms();
+                    let _ = ev_tx.send(EngineEvent::Delivery(delivery.clone())).await;
+                }
+                LogNews::Stall => {
+                    let now = singularity_proto::now_ms();
+                    delivery.stalls_ms.retain(|t| now.saturating_sub(*t) <= 120_000);
+                    delivery.stalls_ms.push(now);
+                    let _ = ev_tx.send(EngineEvent::Delivery(delivery.clone())).await;
+                }
                 LogNews::Lifetime(d) => {
                     expires_in_days = Some(d);
                     upd.days.send_replace(Some(d));

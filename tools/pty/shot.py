@@ -476,6 +476,27 @@ def popup(t, out):
     t.send(b"q", 0.5)
 
 
+def stalls(t, out):
+    """#45: the fake Engine starves (SINGULARITY_FAKE_STALLS=1): one toast says why, the stream Pane shows it."""
+    t.pump(1.0)
+    t.send(b" ", 0.5)
+    toasts = 0
+    for _ in range(80):  # 16 s: stalls every 4 s
+        t.pump(0.2)
+        if any("too slow" in l for l in t.screen.display):
+            if toasts == 0:
+                t.shot(f"{out}/0-toast.png")
+                print("toast:", [l.strip()[-120:] for l in t.screen.display if "too slow" in l][:1])
+            toasts += 1
+        elif toasts:
+            toasts = -abs(toasts)  # gone again; a second appearance would count up from here
+    t.shot(f"{out}/1-pane.png")
+    print("stream Pane:", [l.split("││")[0].strip("│ ").strip() for l in t.screen.display if "kB/s" in l or "60s" in l])
+    print("shown once, not per stall:", toasts < 0)
+    t.send(b" ", 0.3)
+    t.send(b"q", 0.5)
+
+
 def arrows(t, out):
     """The owner's report: cycling a narrow Pane onto a long title hid its ◂ ▸. Walk two Panes through every Widget."""
     t.pump(1.0)
@@ -645,7 +666,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "ambient", "popup") else "0"
@@ -658,6 +679,8 @@ def main():
         env["SINGULARITY_BACKUP_CHECK_SECS"] = "2"
         os.makedirs(env["XDG_DOWNLOAD_DIR"], exist_ok=True)
         seed_listening(env["SINGULARITY_DATA"])
+    if scenario == "stalls":
+        env["SINGULARITY_FAKE_STALLS"] = "1"
     if scenario in ("stats", "stats-widgets"):
         env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
         seed_listening(env["SINGULARITY_DATA"])
@@ -694,6 +717,8 @@ def main():
             return arrows(t, out)
         if scenario == "popup":
             return popup(t, out)
+        if scenario == "stalls":
+            return stalls(t, out)
         if scenario == "wheel":
             return wheel(t, out)
         if scenario == "history":

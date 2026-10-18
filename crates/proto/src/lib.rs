@@ -137,6 +137,8 @@ pub enum Event {
     Tracks(TrackPage),
     /// What the Engine is streaming right now (from Soloist's verbose log).
     Stream(StreamInfo),
+    /// How well the stream keeps up: the Engine's download speed and its recent stalls (#45).
+    Delivery(Delivery),
     /// Whether things are in the library, as Spotify says (after `SetSaved` this is the truth to settle on: on a
     /// failure it carries the old value back).
     Saved { entries: Vec<SavedFlag> },
@@ -397,6 +399,23 @@ pub struct StreamInfo {
 impl StreamInfo {
     pub fn lossless(&self) -> bool {
         self.codec.eq_ignore_ascii_case("flac")
+    }
+}
+
+/// How well the Engine's stream keeps up (#45), from its own measurements.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Delivery {
+    /// the latest download speed, kB/s, and when it was measured (Unix ms)
+    pub bandwidth_kbps: Option<u32>,
+    pub measured_ms: u64,
+    /// when playback ran dry recently (Unix ms, the last two minutes)
+    pub stalls_ms: Vec<u64>,
+}
+
+impl Delivery {
+    /// Stalls in the minute before `now_ms`.
+    pub fn stalls_last_minute(&self, now_ms: u64) -> usize {
+        self.stalls_ms.iter().filter(|t| now_ms.saturating_sub(**t) <= 60_000).count()
     }
 }
 

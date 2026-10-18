@@ -10,6 +10,8 @@ pub enum EngineEvent {
     Status(EngineStatus),
     /// what is streaming now (codec, bitrate)
     Stream(singularity_proto::StreamInfo),
+    /// download speed and stalls (#45)
+    Delivery(singularity_proto::Delivery),
     Error(String),
     Notice(String),
     /// the Engine restarted (a Soloist update): pick up where playback was
@@ -64,6 +66,26 @@ impl Engine for FakeEngine {
             let mut idx = 0usize;
             let mut st = PlaybackState { volume: 50, ..Default::default() };
             let _ = ev_tx.send(EngineEvent::Status(EngineStatus::Ready { device_name: "Fake".into(), active: true, version: "fake".into(), expires_in_days: Some(90) })).await;
+            // SINGULARITY_FAKE_STALLS=1: a lossless stream on a starving connection, for the stream Pane (#45)
+            if std::env::var("SINGULARITY_FAKE_STALLS").is_ok_and(|v| v == "1") {
+                let ev = ev_tx.clone();
+                tokio::spawn(async move {
+                    let info = singularity_proto::StreamInfo { codec: "flac".into(), bitrate: 1_400_000, average_bitrate: Some(1_643_334), sample_rate: 44_100, sample_format: "32-bit-float-pcm".into() };
+                    let _ = ev.send(EngineEvent::Stream(info)).await;
+                    let mut d = singularity_proto::Delivery::default();
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                        let now = singularity_proto::now_ms();
+                        d.bandwidth_kbps = Some(44);
+                        d.measured_ms = now;
+                        d.stalls_ms.retain(|t| now.saturating_sub(*t) <= 120_000);
+                        d.stalls_ms.push(now);
+                        if ev.send(EngineEvent::Delivery(d.clone())).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
             while let Some(cmd) = cmd_rx.recv().await {
                 let now = singularity_proto::now_ms();
                 let pos = st.position_at(now);

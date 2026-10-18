@@ -35,6 +35,8 @@ pub struct Hub {
     pub home: Mutex<Option<proto::HomeFeed>>,
     pub library: Mutex<Option<proto::Library>>,
     pub stream: Mutex<Option<proto::StreamInfo>>,
+    /// the Engine's download speed and stalls (#45)
+    pub delivery: Mutex<Option<proto::Delivery>>,
     /// what the Engine reports, and another device's playback while that one is active (then it's what Clients see)
     pub engine_playback: Mutex<PlaybackState>,
     pub remote: Mutex<Option<PlaybackState>>,
@@ -120,6 +122,7 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
         home: Mutex::new(None),
         library: Mutex::new(None),
         stream: Mutex::new(None),
+        delivery: Mutex::new(None),
         engine_playback: Mutex::new(PlaybackState::default()),
         remote: Mutex::new(None),
         devices: Mutex::new(None),
@@ -192,6 +195,10 @@ async fn run_engine(engine: Box<dyn Engine>, hub: Arc<Hub>, mut commands: mpsc::
                 Some(EngineEvent::Stream(info)) => {
                     *hub.stream.lock().await = Some(info.clone());
                     let _ = hub.events.send(Event::Stream(info));
+                }
+                Some(EngineEvent::Delivery(d)) => {
+                    *hub.delivery.lock().await = Some(d.clone());
+                    let _ = hub.events.send(Event::Delivery(d));
                 }
                 Some(EngineEvent::Error(message)) => {
                     let _ = hub.events.send(Event::Error { message });
@@ -455,6 +462,9 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     }
     if let Some(s) = hub.stream.lock().await.clone() {
         proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Stream(s))).await?;
+    }
+    if let Some(d) = hub.delivery.lock().await.clone() {
+        proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Delivery(d))).await?;
     }
 
     let mut events = hub.events.subscribe();

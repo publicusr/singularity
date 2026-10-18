@@ -61,6 +61,21 @@ fn verbose_log_gives_lifetime_and_stream_format() {
     assert_eq!(p.line("login failed: make sure --api-key is valid"), Some(LogNews::BadKey));
 }
 
+/// Lines from a real stall episode (2026-10-18, the connection saturated by another program): speed samples and
+/// underruns. The recovery line ("updateInternalDriverToPlaying: underrun") isn't a new stall.
+#[test]
+fn verbose_log_gives_download_speed_and_stalls() {
+    use singularityd::soloist::{LogNews, LogParser};
+    let log = "16:55:27.737 I [f:1118                          ] FileStreamer bandwidth sample: 224.270345 kBps\x1b[0m
+16:55:56.543 I [f:776                           ] audioThreadMain: underrun, _is_processing_audio now false\x1b[0m
+16:56:23.708 I [f:1118                          ] FileStreamer bandwidth sample: 121.894370 kBps\x1b[0m
+16:53:56.943 I [f:972                           ] updateInternalDriverToPlaying: underrun, _is_processing_audio now true\x1b[0m
+16:59:55.638 I [f:1118                          ] FileStreamer bandwidth sample: 43.717687 kBps\x1b[0m";
+    let mut p = LogParser::default();
+    let news: Vec<LogNews> = log.lines().filter_map(|l| p.line(l)).collect();
+    assert_eq!(news, vec![LogNews::Bandwidth(224), LogNews::Stall, LogNews::Bandwidth(122), LogNews::Bandwidth(44)]);
+}
+
 #[test]
 fn updates_restart_soloist_only_at_quiet_moments() {
     use singularity_proto::{Item, PlayStatus, PlaybackState};

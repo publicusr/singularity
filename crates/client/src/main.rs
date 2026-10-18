@@ -165,6 +165,7 @@ fn apply(app: &mut App, ev: ConnEvent) {
             app.meters.push(f);
         }
         ConnEvent::Msg(DaemonMsg::Event(Event::Stream(s))) => app.stream = Some(s),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Delivery(d))) => app.delivery_event(d),
         ConnEvent::Msg(DaemonMsg::Event(Event::Health(h))) => app.health = Some(h),
         ConnEvent::Msg(DaemonMsg::Event(Event::Artist(p))) => app.artist_page(p),
         ConnEvent::Msg(DaemonMsg::Event(Event::Devices { devices })) => app.devices = devices,

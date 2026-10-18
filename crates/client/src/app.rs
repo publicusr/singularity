@@ -390,6 +390,9 @@ pub struct App {
     pub cell_px: Option<(f64, f64)>,
     /// screen areas covered by popups this frame: pixel images there fall back to cells
     pub overlays: Vec<Rect>,
+    /// the Engine's download speed and stalls (#45), and when we last said it's too slow
+    pub delivery: Option<singularity_proto::Delivery>,
+    delivery_warned: Option<Instant>,
     /// text to put on the system clipboard (OSC 52), written by the main loop
     pub clipboard: Option<String>,
     pub library: Option<singularity_proto::Library>,
@@ -505,6 +508,8 @@ impl App {
             kitty: None,
             cell_px: None,
             overlays: vec![],
+            delivery: None,
+            delivery_warned: None,
             clipboard: None,
             library: None,
             sidebar: Sidebar::default(),
@@ -720,6 +725,35 @@ impl App {
         // under cell backgrounds (kitty), a popup simply covers an image; elsewhere the image steps down to cells
         let k = self.kitty.as_ref()?;
         (k.below_backgrounds || !self.overlays.iter().any(|o| o.intersects(r))).then_some(px)
+    }
+
+    /// What the playing stream needs, kB/s (its measured average, else its nominal bitrate).
+    pub fn need_kbps(&self) -> Option<u32> {
+        let s = self.stream.as_ref()?;
+        let bits = s.average_bitrate.unwrap_or(s.bitrate);
+        (bits > 0).then(|| (bits as f64 / 8.0 / 1000.0).round() as u32)
+    }
+
+    /// The Engine's latest download speed and stalls. When playback keeps running dry on a slow connection, say so
+    /// once (not once per stall): music that "keeps pausing" shouldn't look like a Singularity bug (#45).
+    pub fn delivery_event(&mut self, d: singularity_proto::Delivery) {
+        let now = singularity_proto::now_ms();
+        let need = self.need_kbps();
+        let slow = d.bandwidth_kbps.filter(|_| now.saturating_sub(d.measured_ms) < 180_000);
+        let starving = d.stalls_last_minute(now) >= 2 && match (slow, need) {
+            (Some(k), Some(n)) => k < n,
+            _ => true,
+        };
+        if starving && self.delivery_warned.is_none_or(|t| t.elapsed() > Duration::from_secs(600)) {
+            self.delivery_warned = Some(Instant::now());
+            let lossless = self.stream.as_ref().is_some_and(|s| s.lossless());
+            let what = if lossless { "lossless" } else { "this stream" };
+            self.say(match (slow, need) {
+                (Some(k), Some(n)) => format!("Connection too slow for {what} right now: {k} kB/s, about {n} needed; is something else using it?"),
+                _ => "Playback keeps running dry: the connection is too slow right now; is something else using it?".to_string(),
+            });
+        }
+        self.delivery = Some(d);
     }
 
     /// Clear the cells an image is placed under: blank, and with the terminal's default background when images sit

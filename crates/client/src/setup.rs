@@ -187,6 +187,20 @@ pub fn draw_stream(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
             }
             row(buf, &mut y, "rate", &format!("{:.1} kHz", s.sample_rate as f64 / 1000.0), th.s(th.fg));
             row(buf, &mut y, "decoded", &s.sample_format.replace("-pcm", "").replace('-', " "), th.s(th.dim));
+            // how well the download keeps up (#45): red when it's below what this stream needs
+            let now = singularity_proto::now_ms();
+            if let Some(d) = &app.delivery {
+                if let (Some(k), true) = (d.bandwidth_kbps, now.saturating_sub(d.measured_ms) < 180_000) {
+                    let need = app.need_kbps().unwrap_or(0);
+                    let short = need > 0 && k < need;
+                    let v = if short { format!("{k} kB/s, need {need}") } else { format!("{k} kB/s") };
+                    row(buf, &mut y, "download", &v, th.s(if short { th.error } else { th.fg }));
+                }
+                let n = d.stalls_last_minute(now);
+                if n > 0 {
+                    row(buf, &mut y, "stalls", &format!("{n} in the last 60s"), th.s(th.error));
+                }
+            }
         }
         None => {
             text(buf, x, y, w, "play something to see the stream", th.s(th.dim));

@@ -1485,6 +1485,30 @@ mod tests {
     }
 
     #[test]
+    fn a_starving_stream_is_explained_once() {
+        use singularity_proto::{Delivery, StreamInfo};
+        let mut app = App::new(None);
+        app.stream = Some(StreamInfo { codec: "flac".into(), bitrate: 1_400_000, average_bitrate: Some(1_643_334), sample_rate: 44_100, sample_format: "32-bit-float-pcm".into() });
+        assert_eq!(app.need_kbps(), Some(205));
+        let now = singularity_proto::now_ms();
+        // one stall: nothing said yet
+        app.delivery_event(Delivery { bandwidth_kbps: Some(44), measured_ms: now, stalls_ms: vec![now] });
+        assert!(app.toast.is_none());
+        // they keep coming on a slow connection: said once, with the numbers
+        app.delivery_event(Delivery { bandwidth_kbps: Some(44), measured_ms: now, stalls_ms: vec![now - 15_000, now] });
+        let msg = app.toast.take().map(|(m, _)| m).unwrap_or_default();
+        assert!(msg.contains("too slow for lossless") && msg.contains("44 kB/s") && msg.contains("205"), "{msg}");
+        app.delivery_event(Delivery { bandwidth_kbps: Some(40), measured_ms: now, stalls_ms: vec![now - 30_000, now - 15_000, now] });
+        assert!(app.toast.is_none(), "not once per stall");
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("40 kB/s, need 205") && s.contains("3 in the last 60s"), "{s}");
+        // a healthy stream: no stall line, no warning colour
+        app.delivery_event(Delivery { bandwidth_kbps: Some(900), measured_ms: now, stalls_ms: vec![] });
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("900 kB/s") && !s.contains(", need") && !s.contains("in the last 60s"));
+    }
+
+    #[test]
     fn stream_pane_and_health_show_quality_and_the_fix() {
         use singularity_proto::{Command, StreamInfo};
         let (mut app, mut rx) = playing_app(1);
