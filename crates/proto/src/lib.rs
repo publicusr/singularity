@@ -94,6 +94,12 @@ pub enum Command {
     Shutdown,
     /// Start or stop receiving `Event::Spectrum` frames (the tap runs only while someone listens).
     Spectrum { on: bool },
+    /// The listening log, summed up; arrives as `Event::Listening` (also sent after every logged play).
+    GetListening,
+    /// Write the listening log and the latest library backup to one JSON file in the Downloads folder (`Notice`).
+    ExportLocalData,
+    /// Delete the listening log and every library backup (the Client confirms first).
+    DeleteLocalData,
     #[serde(other)]
     Unknown,
 }
@@ -144,6 +150,8 @@ pub enum Event {
     Spectrum(SpectrumFrame),
     /// A command was refused or failed.
     Error { message: String },
+    /// The listening log, summed up (answer to `GetListening`, and after every logged play).
+    Listening(ListeningSummary),
     #[serde(other)]
     Unknown,
 }
@@ -399,6 +407,25 @@ pub struct LyricLine {
     pub start_ms: u64,
     pub text: String,
 }
+
+/// The local listening log, summed up for the listening Pane. Days are local calendar days.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ListeningSummary {
+    /// minutes listened per day, oldest first, the last one today (`LISTENING_DAYS` of them)
+    pub minutes: Vec<u32>,
+    /// weekday of the last day (0 = Monday), so a heatmap can line its columns up by week
+    pub today_weekday: u8,
+    pub hours_this_year: f32,
+    /// the artist with the most listening time this year
+    pub top_artist: Option<String>,
+    /// days in a row with any listening, up to today (or yesterday, if nothing yet today)
+    pub streak_days: u32,
+    /// plays in the whole log
+    pub plays: u64,
+}
+
+/// How many days `ListeningSummary::minutes` covers: 26 weeks.
+pub const LISTENING_DAYS: usize = 182;
 
 /// What the Daemon knows about its own health (the rest comes from the status events).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

@@ -19,5 +19,5 @@ architecture changes, and it is better to learn that in a day than after a month
 
 **Progress (2026-10-18):** v1 tickets are GitHub issues under spec issue #1. Done: #2 Daemon↔Client, #3 Client shell,
 #4 Soloist playback, #5 setup & health, #6 auto-update, #18 designs, #19 layouts, #20 config, #7 Catalogue session, #8 Home, #9 Library, #10 search, #11 album/artist pages,
-#12 queue, #13 devices, #14 lyrics, #15 AudioTap, #16 black hole, #21 MPRIS, #22 like/follow, #24 seek precision.
-In progress: #23 local data (last v1 ticket). See `docs/HANDOFF.md`.
+#12 queue, #13 devices, #14 lyrics, #15 AudioTap, #16 black hole, #17 idle, #21 MPRIS, #22 like/follow, #23 local data,
+#24 seek precision. **All v1 tickets are closed**; next is the owner's test round and the bugs it finds. See `docs/HANDOFF.md`.

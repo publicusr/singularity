@@ -1,7 +1,7 @@
 # pty harness
 
 Drives the real `singularity` binary in a pseudo-terminal and screenshots it (pyte + PIL), with its own `singularityd`
-on a short test socket (`$XDG_RUNTIME_DIR/sgl-<pid>.sock`) and scratch config/state dirs under the output folder. It kills only what it started.
+on a short test socket (`$XDG_RUNTIME_DIR/sgl-<pid>.sock`) and scratch config/state/data dirs under the output folder. It kills only what it started.
 
 ```sh
 cd tools/pty
@@ -12,7 +12,7 @@ venv/bin/python shot.py <scenario> out-<scenario>   # writes PNGs + text dumps
 ```
 
 Scenarios: `cells`, `pixel` (seek), `home-cells`, `home-pixels`, `library`, `queue`, `lyrics`, `artist`, `search`,
-`like` (#22: ♥, `l`, unlike from a menu, Follow), `mpris` (#21: real `playerctl` on a private D-Bus), `config` (#20: live keys.toml/config.toml edits), `designs` (#18: every design via the picker, Cockpit's palettes), `layouts` (#19: swap, drag, save, restart), `idle-pixels`/`idle-cells` (#17: the takeover via the palette, a key wakes it), `audio`, `well-cells`, `well-pixels`, `well-hover` (counts black-hole frames while the mouse moves). The pty reports
+`like` (#22: ♥, `l`, unlike from a menu, Follow), `mpris` (#21: real `playerctl` on a private D-Bus), `config` (#20: live keys.toml/config.toml edits), `designs` (#18: every design via the picker, Cockpit's palettes), `layouts` (#19: swap, drag, save, restart), `idle-pixels`/`idle-cells` (#17: the takeover via the palette, a key wakes it), `listening` (#23: seeded scratch log in Cockpit, a live play, backup, export, delete), `audio`, `well-cells`, `well-pixels`, `well-hover` (counts black-hole frames while the mouse moves). The pty reports
 10×20 px cells, so pixel-mouse and pixel-tier paths run; kitty APCs (static and animated) are decoded and composited
 under the text, as kitty does with z=-1.
 

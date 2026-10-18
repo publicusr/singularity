@@ -239,3 +239,20 @@ flowchart LR
   wake, the well's own image comes back, and the waking Space doesn't pause.
 - **Owner answers** (2026-10-18): keep the 10 fps slowdown when the terminal is unfocused; keep the black hole on the
   low-power adapter (iGPU) and add a `gpu = "low-power" | "high-performance"` setting in #20.
+- **Round (#23 local data)** (2026-10-18), owner said yes to all five: a Play is ≥30 s (or half a shorter track),
+  logged when the track changes or stops, Connect devices included and named; nightly backup = Liked Songs + owned
+  playlists in full, followed ones by name + link, ~1 request/s; keep 14 nightlies + the first of each month for a
+  year; export = one JSON file (log + latest backup) to Downloads, delete asks twice; Cockpit's Pane = 26-week heatmap
+  of minutes per day + "N h this year · top: Artist · streak N days".
+- **#23 Listening log and library backups ✅** (2026-10-18): `daemon/src/store.rs` (LocalStore: SQLite via rusqlite
+  0.40 bundled, `plays` with a local `day` column, `Recorder` (wall-clock playing time, pauses don't count),
+  `summary` (local days via `localtime_r`, no time-zone crate), backups `backups/library-YYYY-MM-DD.json` with
+  retention, export, delete + VACUUM; files 0600, `backups/` 0700), `backup.rs` (one `CatCmd::Query` at a time, 1 s
+  apart, so browsing isn't held up; owned = `ownerV2.data.username` equals the session's; a playlist whose
+  `revisionId` is unchanged is copied from last night's backup, not fetched; checked at start and hourly, due after
+  24 h). Protocol (additive): `GetListening`, `ExportLocalData`, `DeleteLocalData`, `Event::Listening`, broadcast
+  after each logged play and after a delete. `SINGULARITY_DATA=<dir>|off`; a fake-Engine Daemon keeps no log unless
+  asked. Client: Cockpit's listening Pane (week columns, Monday on top; short Panes stack two days per cell in
+  half-blocks), palette Export / Delete (a second run within 10 s confirms). The fake Catalogue answers raw queries in
+  Spotify's shapes. pty `listening`: seeded scratch log, a 31 s play shows up live, backup taken in 10 s (paced),
+  export 0600 with the backup inside, delete empties the Pane and removes the backups.

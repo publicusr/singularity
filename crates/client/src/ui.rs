@@ -25,7 +25,7 @@ fn slot_info(slot: &str) -> (&'static str, &'static str) {
         "hole" => ("black hole", ""),
         "nowplaying" => ("Now playing", ""),
         "levels" => ("levels", ""),
-        "listening" => ("listening", ""),
+        "listening" => ("listening · 26 weeks", ""),
         "rain" => ("rain", ""),
         "scope" => ("osc", ""),
         "top" => ("top", ""),
@@ -307,7 +307,7 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             "hole" => crate::visual::well::draw_plain(f.buffer_mut(), *rect, inner, app, th),
             "nowplaying" => crate::widgets::nowplaying(f.buffer_mut(), inner, app, th),
             "levels" => crate::widgets::levels(f.buffer_mut(), inner, app, th),
-            "listening" => crate::widgets::listening(f.buffer_mut(), inner, th),
+            "listening" => crate::widgets::listening(f.buffer_mut(), inner, app, th),
             "rain" => crate::widgets::rain(f.buffer_mut(), inner, app, th),
             "scope" => crate::widgets::scope(f.buffer_mut(), inner, app, th),
             "top" => crate::widgets::top(f.buffer_mut(), inner, app, th),
@@ -1156,6 +1156,38 @@ mod tests {
         let out = String::from_utf8(out).unwrap();
         // (the CPU renderer caps the resolution; the terminal scales it into the cells)
         assert!(out.contains("a=T,f=32,o=z,i=2,") && out.contains(&format!("p=1,c={},r={},C=1,z=-1", well.width - 4, well.height - 2)), "{}", &out[..out.len().min(200)]);
+    }
+
+    #[test]
+    fn cockpits_listening_pane_shows_the_log_as_weeks() {
+        let mut app = App::new(None);
+        app.set_design(crate::design::by_id("cockpit").unwrap());
+        assert!(render(&mut app, 160, 48).contains("the listening log comes from singularityd"));
+        let mut minutes = vec![0; singularity_proto::LISTENING_DAYS];
+        let n = minutes.len();
+        (minutes[n - 1], minutes[n - 2], minutes[n - 8]) = (60, 30, 15);
+        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 1.75, top_artist: Some("Nova Drift".into()), streak_days: 2, plays: 9 });
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("listening · 26 weeks") && s.contains("1.8 h this year · top: Nova Drift · streak 2 days"), "{s}");
+        // this week is the last column, Monday on top, two days a cell (Cockpit's Pane is short): Wednesday over
+        // Thursday (today, the brightest) in the second row; a week ago too; Friday on hasn't come
+        let r = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).slots.into_iter().find(|(s, _)| s == "listening").unwrap().1;
+        let (x0, y0) = (r.x + 2, r.y + 1);
+        let last = ((r.width - 2) / 2).min(26) - 1;
+        let buf = {
+            let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
+            t.draw(|f| draw(f, &mut app)).unwrap();
+            t.backend().buffer().clone()
+        };
+        let cell = |c: u16, row: u16| &buf[(x0 + c * 2, y0 + row)];
+        let th = &app.theme;
+        let quiet = th.bg.lerp(th.dim, 0.3).color();
+        let brightest = th.ramp.last().unwrap().color();
+        assert_eq!((cell(last, 1).symbol(), cell(last, 1).bg), ("▀", brightest), "today");
+        assert_ne!(cell(last, 1).fg, quiet, "yesterday");
+        assert_eq!((cell(last, 0).fg, cell(last, 0).bg), (quiet, quiet), "Monday, Tuesday: nothing");
+        assert_ne!(cell(last - 1, 1).bg, quiet, "a week ago");
+        assert_eq!(cell(last, 2).symbol(), " ", "Friday and Saturday are still to come");
     }
 
     #[test]

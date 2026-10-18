@@ -49,11 +49,19 @@ async fn main() -> anyhow::Result<()> {
         None if fake => None,
         None => Some(singularityd::mpris::Options { address: None, notify: notify.clone() }),
     };
+    // the listening log and library backups under $XDG_DATA_HOME/singularity (SINGULARITY_DATA=<dir> elsewhere, =off
+    // none). A fake Engine keeps none unless asked, so test Daemons never write into the owner's log.
+    let store = match std::env::var("SINGULARITY_DATA").ok().filter(|v| !v.is_empty()) {
+        Some(v) if v == "off" => None,
+        Some(dir) => Some(std::path::PathBuf::from(dir)),
+        None if fake => None,
+        None => Some(singularityd::store::Store::default_dir()),
+    };
     // config.toml: what the Daemon uses of it now, and again whenever it's saved
     tokio::spawn(follow_config(notify));
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = tokio::select! {
-        r = singularityd::serve_with(listener, engine, catalogue, tap, mpris) => r.map(Some),
+        r = singularityd::serve_with(listener, engine, catalogue, tap, singularityd::Extras { mpris, store }) => r.map(Some),
         _ = tokio::signal::ctrl_c() => Ok(None),
         _ = term.recv() => Ok(None),
     };

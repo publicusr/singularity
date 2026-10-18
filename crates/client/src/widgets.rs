@@ -97,11 +97,57 @@ pub fn levels(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     }
 }
 
-/// Cockpit's listening Pane: the heatmap of the listening log arrives with #23.
-pub fn listening(buf: &mut Buffer, r: Rect, th: &Theme) {
-    let m = "the listening log arrives with #23";
-    let w = m.chars().count() as u16;
-    text(buf, r.x + r.width.saturating_sub(w) / 2, r.y + r.height / 2, r.width, m, th.s(th.dim));
+/// Cockpit's listening Pane: minutes per day from the local listening log (#23), a column per week (Monday on top,
+/// this week on the right), and a line of totals under it. Short Panes stack two days per cell (half-blocks).
+pub fn listening(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
+    if r.width < 4 || r.height < 2 {
+        return;
+    }
+    let sum = app.listening.as_ref();
+    let weeks = (r.width / 2).min(26) as i64;
+    let today_wd = sum.map(|s| s.today_weekday as i64).unwrap_or(6);
+    let minutes = sum.map(|s| s.minutes.as_slice()).unwrap_or(&[]);
+    let max = minutes.iter().copied().max().unwrap_or(0).max(1) as f32;
+    // a day's colour: None later this week, the quiet colour for a day without listening, else the ramp
+    let quiet = th.bg.lerp(th.dim, 0.3);
+    let day = |c: i64, d: i64| -> Option<Rgb> {
+        let back = (weeks - 1 - c) * 7 + today_wd - d;
+        if back < 0 || d > 6 {
+            return None;
+        }
+        let m = usize::try_from(minutes.len() as i64 - 1 - back).ok().and_then(|i| minutes.get(i)).copied().unwrap_or(0);
+        Some(if m == 0 { quiet } else { ramp(th, 0.15 + 0.85 * (m as f32 / max).sqrt()) })
+    };
+    let half = r.height < 8;
+    let rows = if half { 4.min(r.height - 1) } else { 7 };
+    for c in 0..weeks {
+        let x = r.x + 1 + c as u16 * 2;
+        for row in 0..rows as i64 {
+            let y = r.y + row as u16;
+            if half {
+                let (top, bottom) = (day(c, row * 2), day(c, row * 2 + 1));
+                if let Some(cell) = buf.cell_mut((x, y))
+                    && (top.is_some() || bottom.is_some())
+                {
+                    cell.set_char('▀').set_fg(top.unwrap_or(th.bg).color()).set_bg(bottom.unwrap_or(th.bg).color());
+                }
+            } else if let Some(col) = day(c, row) {
+                text(buf, x, y, 1, "■", th.s(col));
+            }
+        }
+    }
+    let line = match sum {
+        None => "the listening log comes from singularityd".to_string(),
+        Some(s) if s.plays == 0 => "nothing logged yet · a track counts after 30 s".into(),
+        Some(s) => {
+            let h = if s.hours_this_year < 10.0 { format!("{:.1}", s.hours_this_year) } else { format!("{:.0}", s.hours_this_year) };
+            let mut parts = vec![format!("{h} h this year")];
+            parts.extend(s.top_artist.as_ref().map(|a| format!("top: {a}")));
+            parts.push(format!("streak {} day{}", s.streak_days, if s.streak_days == 1 { "" } else { "s" }));
+            parts.join(" · ")
+        }
+    };
+    text(buf, r.x + 1, r.y + rows + (r.height > 8) as u16, r.width.saturating_sub(2), &line, th.s(th.dim));
 }
 
 // ── rain (Terminal) ───────────────────────────────────────────────────

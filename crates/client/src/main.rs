@@ -177,6 +177,7 @@ fn apply(app: &mut App, ev: ConnEvent) {
         }
         ConnEvent::Msg(DaemonMsg::Event(Event::Notice { message })) => app.say(message),
         ConnEvent::Msg(DaemonMsg::Event(Event::Saved { entries })) => app.saved_event(entries),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Listening(s))) => app.listening = Some(s),
         ConnEvent::Msg(_) => {}
     }
 }

@@ -53,6 +53,8 @@ pub enum CatCmd {
     CheckSaved(Vec<String>),
     /// the Engine restarted (a Soloist update): start the context again where it was, on our device
     Resume(crate::engine::Resume),
+    /// one raw private-API query, answered on `reply` (the library backup, one request at a time)
+    Query { op: String, vars: Value, reply: tokio::sync::oneshot::Sender<anyhow::Result<Value>> },
 }
 
 #[derive(Debug, Clone)]
@@ -157,6 +159,9 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
                 }
             }
             CatCmd::CheckSaved(uris) => st.check_saved(uris).await,
+            CatCmd::Query { op, vars, reply } => {
+                let _ = reply.send(st.query(&op, vars).await);
+            }
             CatCmd::Search(q) => {
                 // while typing, only the newest search matters: skip any already superseded
                 let mut q = q;
@@ -215,6 +220,10 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                     v
                 }
                 CatCmd::Remote(_) => vec![],
+                CatCmd::Query { op, vars, reply } => {
+                    let _ = reply.send(fake_query(&op, &vars, &home));
+                    vec![]
+                }
                 // anything with "fail" in its URI fails, so the Client's rollback can be seen
                 CatCmd::SetSaved { uri, saved: want } => {
                     let ok = !uri.contains("fail");
@@ -314,6 +323,50 @@ fn fake_library(home: &HomeFeed) -> Library {
         items.push(singularity_proto::LibraryItem { uri: c.uri.clone(), name: c.name.clone(), subtitle: c.subtitle.clone(), kind: c.kind.clone(), image_url: c.image_url.clone(), depth: 0 });
     }
     Library { items }
+}
+
+/// Raw query answers in Spotify's shapes, built from the fake library and tracks (the backup reads these). The fake
+/// account ("fake") owns every other playlist.
+fn fake_query(op: &str, vars: &Value, home: &HomeFeed) -> anyhow::Result<Value> {
+    let offset = vars["offset"].as_u64().unwrap_or(0) as u32;
+    let names = |a: &[String]| a.iter().map(|n| json!({ "profile": { "name": n } })).collect::<Vec<_>>();
+    match op {
+        "libraryV3" => {
+            let items: Vec<Value> = fake_library(home)
+                .items
+                .iter()
+                .filter(|i| i.kind == "playlist" && vars["folderUri"].is_null())
+                .enumerate()
+                .map(|(n, i)| {
+                    let owner = if n % 2 == 0 { "fake" } else { "someone" };
+                    json!({ "item": { "data": { "__typename": "Playlist", "uri": i.uri, "name": i.name, "revisionId": "fake",
+                        "ownerV2": { "data": { "name": owner, "username": owner } } } } })
+                })
+                .collect();
+            Ok(json!({ "data": { "me": { "libraryV3": { "totalCount": items.len(), "items": items } } } }))
+        }
+        "fetchLibraryTracks" | "fetchPlaylist" => {
+            let uri = vars["uri"].as_str().unwrap_or(library::LIKED);
+            let page = fake_tracks(uri).into_iter().find_map(|e| match e {
+                CatEvent::Tracks(p) if p.offset == offset => Some(p),
+                _ => None,
+            });
+            let (total, rows) = page.map(|p| (p.total, p.tracks)).unwrap_or_default();
+            let items: Vec<Value> = rows
+                .iter()
+                .map(|t| json!({ "itemV2": { "data": { "__typename": "Track", "uri": t.uri, "name": t.name, "artists": { "items": names(&t.artists) },
+                    "albumOfTrack": { "name": t.album } } }, "addedAt": { "isoString": t.added_at } }))
+                .collect();
+            Ok(if op == "fetchPlaylist" {
+                json!({ "data": { "playlistV2": { "content": { "totalCount": total, "items": items } } } })
+            } else {
+                // Liked Songs' shape: {track: {_uri, data}}
+                let items: Vec<Value> = items.into_iter().map(|i| json!({ "track": { "_uri": i["itemV2"]["data"]["uri"], "data": i["itemV2"]["data"] }, "addedAt": i["addedAt"] })).collect();
+                json!({ "data": { "me": { "library": { "tracks": { "totalCount": total, "items": items } } } } })
+            })
+        }
+        _ => anyhow::bail!("the fake Catalogue doesn't answer {op}"),
+    }
 }
 
 /// Invented tracks in pages of 100: 250 for Liked Songs, 40 elsewhere.

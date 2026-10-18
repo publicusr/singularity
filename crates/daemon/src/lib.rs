@@ -1,6 +1,7 @@
 //! `singularityd`: owns playback (Engine), later the Catalogue session, the audio tap and local data.
 //! Clients talk to it over the protocol in `singularity-proto` (ADR-0003).
 
+pub mod backup;
 pub mod catalogue;
 pub mod connect;
 pub mod engine;
@@ -11,6 +12,7 @@ pub mod mpris;
 pub mod queries;
 pub mod secrets;
 pub mod soloist;
+pub mod store;
 pub mod tap;
 pub mod update;
 
@@ -49,6 +51,8 @@ pub struct Hub {
     pub spectrum_wake: tokio::sync::Notify,
     /// a Client asked this Daemon to make way for a newer one
     pub shutdown: tokio::sync::Notify,
+    /// the listening log and library backups (LocalStore); None: off (tests, fake Daemons)
+    pub store: Option<Arc<std::sync::Mutex<store::Store>>>,
 }
 
 /// What `serve` ended with.
@@ -78,13 +82,30 @@ pub fn bind(path: &Path) -> std::io::Result<UnixListener> {
     UnixListener::bind(path)
 }
 
-/// Run the Daemon on `listener` with `engine` until the process ends.
-pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: Option<CatalogueHandle>, tap: Option<tap::TapSource>) -> anyhow::Result<Served> {
-    serve_with(listener, engine, catalogue, tap, None).await
+/// What a Daemon runs beyond playback and the Catalogue.
+#[derive(Default)]
+pub struct Extras {
+    /// MPRIS (and notifications) on a D-Bus
+    pub mpris: Option<mpris::Options>,
+    /// the LocalStore's directory: the listening log and nightly library backups
+    pub store: Option<PathBuf>,
 }
 
-/// `serve`, plus MPRIS (and notifications) on a D-Bus when `mpris` is given.
-pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalogue: Option<CatalogueHandle>, tap: Option<tap::TapSource>, mpris: Option<mpris::Options>) -> anyhow::Result<Served> {
+/// Run the Daemon on `listener` with `engine` until the process ends.
+pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: Option<CatalogueHandle>, tap: Option<tap::TapSource>) -> anyhow::Result<Served> {
+    serve_with(listener, engine, catalogue, tap, Extras::default()).await
+}
+
+/// `serve`, plus the `extras` asked for.
+pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalogue: Option<CatalogueHandle>, tap: Option<tap::TapSource>, extras: Extras) -> anyhow::Result<Served> {
+    let store = match extras.store.as_deref().map(store::Store::open) {
+        Some(Ok(s)) => Some(Arc::new(std::sync::Mutex::new(s))),
+        Some(Err(e)) => {
+            tracing::warn!("the listening log is unavailable: {e}");
+            None
+        }
+        None => None,
+    };
     let (events, _) = broadcast::channel(256);
     let (commands, command_rx) = mpsc::channel(64);
     let (cat_tx, cat_rx) = match catalogue {
@@ -111,7 +132,12 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
         spectrum_listeners: Default::default(),
         spectrum_wake: Default::default(),
         shutdown: Default::default(),
+        store,
     });
+    if hub.store.is_some() {
+        tokio::spawn(log_plays(hub.clone()));
+        tokio::spawn(backup::run(hub.clone()));
+    }
     if let Some(source) = tap {
         tokio::spawn(tap::run(hub.clone(), source));
     }
@@ -119,7 +145,7 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
     if let Some(rx) = cat_rx {
         tokio::spawn(run_catalogue(rx, hub.clone()));
     }
-    if let Some(opts) = mpris {
+    if let Some(opts) = extras.mpris {
         tokio::spawn(mpris::run(hub.clone(), opts));
     }
     loop {
@@ -193,6 +219,72 @@ async fn run_engine(engine: Box<dyn Engine>, hub: Arc<Hub>, mut commands: mpsc::
                 let _ = engine_tx.send(cmd).await;
             }
         }
+    }
+}
+
+/// The listening log: plays as the Clients see them (this computer's Engine, or the Connect device being followed).
+async fn log_plays(hub: Arc<Hub>) {
+    let Some(store) = hub.store.clone() else { return };
+    let mut events = hub.events.subscribe();
+    let mut rec = store::Recorder::default();
+    loop {
+        let state = match events.recv().await {
+            Ok(Event::Playback(s)) => s,
+            Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(_) => return,
+        };
+        let device = device_name(&hub).await;
+        let now = proto::now_ms();
+        if let Some(play) = rec.observe(&state, &device, now) {
+            let summary = {
+                let s = store.lock().expect("store lock");
+                if let Err(e) = s.record(&play) {
+                    tracing::warn!("couldn't log a play: {e}");
+                }
+                s.summary(now)
+            };
+            if let Ok(summary) = summary {
+                let _ = hub.events.send(Event::Listening(summary));
+            }
+        }
+    }
+}
+
+/// Where playback is happening, for the listening log.
+async fn device_name(hub: &Hub) -> String {
+    if hub.remote.lock().await.is_some()
+        && let Some(d) = hub.devices.lock().await.iter().flatten().find(|d| d.active && !d.is_engine)
+    {
+        return d.name.clone();
+    }
+    match hub.engine_status.lock().await.clone() {
+        Some(proto::EngineStatus::Ready { device_name, .. }) => device_name,
+        _ => "this computer".into(),
+    }
+}
+
+/// Answer a LocalStore command (`GetListening`, `ExportLocalData`, `DeleteLocalData`).
+async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>) {
+    let Some(store) = hub.store.clone() else {
+        let _ = out.send(DaemonMsg::Event(Event::Error { message: "the listening log is off in this Daemon".into() })).await;
+        return;
+    };
+    let now = proto::now_ms();
+    let (reply, everyone) = {
+        let s = store.lock().expect("store lock");
+        match cmd {
+            Command::GetListening => (s.summary(now).map(Event::Listening), None),
+            Command::ExportLocalData => (s.export(&store::downloads_dir(), now).map(|p| Event::Notice { message: format!("Listening data exported to {}", p.display()) }), None),
+            _ => match s.delete_all() {
+                Ok(()) => (Ok(Event::Notice { message: "Deleted the listening log and every library backup".into() }), s.summary(now).ok().map(Event::Listening)),
+                Err(e) => (Err(e), None),
+            },
+        }
+    };
+    let ev = reply.unwrap_or_else(|e| Event::Error { message: format!("Local data: {e}") });
+    let _ = out.send(DaemonMsg::Event(ev)).await;
+    if let Some(ev) = everyone {
+        let _ = hub.events.send(ev);
     }
 }
 
@@ -415,6 +507,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                     h.engine_expires_in_days = expires;
                     let _ = out_tx.send(DaemonMsg::Event(Event::Health(h))).await;
                 }
+                ClientMsg::Command(cmd @ (Command::GetListening | Command::ExportLocalData | Command::DeleteLocalData)) => local_data(&hub, cmd, &out_tx).await,
                 ClientMsg::Command(Command::GetState) => {
                     let s = hub.playback.lock().await.clone();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;

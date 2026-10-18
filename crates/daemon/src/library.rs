@@ -100,6 +100,39 @@ pub fn parse_library(v: &Value, depth: u8) -> LibraryPage {
     page
 }
 
+/// A playlist as the library lists it, for the backup: who owns it and its revision (unchanged → reuse last night's).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaylistEntry {
+    pub uri: String,
+    pub name: String,
+    pub owner: String,
+    pub owner_username: Option<String>,
+    pub revision: Option<String>,
+}
+
+/// One `libraryV3` page for the backup: its playlists, its folders (to open next), and the level's total.
+pub fn parse_backup_page(v: &Value) -> (Vec<PlaylistEntry>, Vec<String>, u32, usize) {
+    let lib = &v["data"]["me"]["libraryV3"];
+    let items = lib["items"].as_array().cloned().unwrap_or_default();
+    let (mut playlists, mut folders) = (vec![], vec![]);
+    for it in &items {
+        let d = &it["item"]["data"];
+        let Some(uri) = d["uri"].as_str().or_else(|| it["item"]["_uri"].as_str()) else { continue };
+        match d["__typename"].as_str().unwrap_or("") {
+            "Playlist" => playlists.push(PlaylistEntry {
+                uri: uri.into(),
+                name: d["name"].as_str().unwrap_or_default().into(),
+                owner: d["ownerV2"]["data"]["name"].as_str().unwrap_or_default().into(),
+                owner_username: d["ownerV2"]["data"]["username"].as_str().map(String::from),
+                revision: d["revisionId"].as_str().map(String::from),
+            }),
+            t if t.contains("Folder") => folders.push(uri.to_string()),
+            _ => {}
+        }
+    }
+    (playlists, folders, lib["totalCount"].as_u64().unwrap_or(0) as u32, items.len())
+}
+
 /// A `getTrack` answer → an Item (for queue entries Soloist sent without metadata).
 pub fn parse_track(v: &Value) -> Option<singularity_proto::Item> {
     let t = &v["data"]["trackUnion"];
@@ -346,6 +379,15 @@ mod tests {
         assert_eq!(p.items[2].uri, "spotify:user:someone:folder:f00");
         assert_eq!(p.total, 5);
         assert!(p.items[3].image_url.as_deref().unwrap().ends_with("300"));
+    }
+
+    #[test]
+    fn backup_pages_list_playlists_with_owner_and_revision() {
+        let (pl, folders, total, n) = parse_backup_page(&fixture("library.json"));
+        assert_eq!(pl.len(), 1);
+        assert_eq!((pl[0].owner.as_str(), pl[0].owner_username.as_deref(), pl[0].revision.as_deref()), ("Nova Drift", Some("nova"), Some("r")));
+        assert_eq!(folders, ["spotify:user:someone:folder:f00"]);
+        assert_eq!((total, n), (5, 6));
     }
 
     #[test]

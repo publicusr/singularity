@@ -67,6 +67,25 @@ artist. One toggle covers all four ("like", "save", "follow" are its wordings pe
 Spotify's answer, rolling back if Spotify refuses.
 _Avoid_: favourite, bookmarked, starred
 
+**Play**:
+One entry in the listening log: a track heard for at least 30 s (or half of it, if shorter), logged when the track
+changes or playback stops, with where it played (this computer or the Connect device Singularity followed).
+_Avoid_: scrobble, stream, listen
+
+**Listening log**:
+The private, local record of Plays (SQLite in the LocalStore). Never uploaded; exportable and deletable from the palette.
+_Avoid_: history (Spotify's own "recently played" is something else), stats
+
+**Library backup**:
+The nightly JSON copy of Liked Songs and every playlist the account owns (followed playlists by name and link only),
+kept in the LocalStore: the last 14 days plus the first of each month for a year.
+_Avoid_: export (that's the one-file copy the owner asks for), snapshot
+
+**LocalStore**:
+The Daemon's private data under `$XDG_DATA_HOME/singularity/`: the listening log and the library backups. Owner-only
+files, no network.
+_Avoid_: database, cache (caches can be thrown away; this can't)
+
 **Widget**:
 Any self-contained thing that can occupy a Pane: a visual, lyrics, album art, queue, stats.
 _Avoid_: module, applet, panel

@@ -3,7 +3,7 @@
 usage: venv/bin/python shot.py <scenario> <outdir>
 Starts its own singularityd (--fake-engine --no-catalogue) on a short test socket and kills only that.
 """
-import base64, fcntl, os, pty, re, select, shutil, struct, subprocess, sys, termios, time, zlib
+import json, base64, fcntl, os, pty, re, select, shutil, struct, subprocess, sys, termios, time, zlib
 import pyte
 from PIL import Image, ImageDraw, ImageFont
 
@@ -322,6 +322,60 @@ def idle(t, out):
     t.send(b"q", 0.5)
 
 
+def seed_listening(data):
+    """An invented listening history (26 weeks, fake tracks) in a scratch listening.db, in the Daemon's schema."""
+    import random, sqlite3
+    os.makedirs(data, exist_ok=True)
+    db = sqlite3.connect(f"{data}/listening.db")
+    db.executescript("""CREATE TABLE IF NOT EXISTS plays (id INTEGER PRIMARY KEY, started_ms INTEGER NOT NULL,
+        day INTEGER NOT NULL, track_uri TEXT NOT NULL, name TEXT NOT NULL, artists TEXT NOT NULL, album TEXT,
+        context_uri TEXT, duration_ms INTEGER NOT NULL, played_ms INTEGER NOT NULL, device TEXT NOT NULL);""")
+    rnd = random.Random(7)
+    now = time.time()
+    off = time.localtime(now).tm_gmtoff
+    for back in range(1, 175):
+        if rnd.random() < 0.3:
+            continue
+        t = now - back * 86400
+        day = int((t + off) // 86400)
+        for _ in range(rnd.randint(1, 4 + (175 - back) // 20)):
+            a = rnd.choice(["Nova Drift", "Mira Vale", "Lumen Fields"])
+            db.execute("INSERT INTO plays (started_ms, day, track_uri, name, artists, duration_ms, played_ms, device) VALUES (?,?,?,?,?,?,?,?)",
+                       (int(t * 1000), day, "spotify:track:fake1", "Fake Track", f'["{a}"]', 200000, rnd.randint(60, 200) * 1000, "here"))
+    db.commit()
+    db.close()
+
+
+def listening(t, out, env):
+    """#23: Cockpit's listening Pane from a seeded log; a 31 s play is logged live; a backup is taken; export; delete."""
+    data = env["SINGULARITY_DATA"]
+    t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
+    for _ in range(3):
+        t.send(b"\x1b[B", 0.4)  # down to Cockpit
+    t.send(b"\r", 1.0)
+    t.shot(f"{out}/0-cockpit.png")
+    before = t.text()
+    t.send(b" ", 31.5)  # play 31 s: one play
+    t.send(b"n", 1.5)   # next: the play is logged, the Pane follows
+    t.shot(f"{out}/1-after-a-play.png")
+    print("pane changed after a play:", before != t.text())
+    print("backups:", sorted(os.listdir(f"{data}/backups")) if os.path.isdir(f"{data}/backups") else "none")
+    t.send(b" ", 0.4)  # pause
+    t.send(b"\x0b", 0.3); t.send(b"export listening", 0.3); t.send(b"\r", 1.0)
+    t.shot(f"{out}/2-exported.png")
+    dl = env["XDG_DOWNLOAD_DIR"]
+    for f in os.listdir(dl):
+        st = os.stat(f"{dl}/{f}")
+        doc = json.load(open(f"{dl}/{f}"))
+        print(f"export {f}: mode {oct(st.st_mode & 0o777)}, {len(doc['plays'])} plays, backup liked {len((doc['library_backup'] or {}).get('liked', []))}, owned {len((doc['library_backup'] or {}).get('playlists', []))}, followed {len((doc['library_backup'] or {}).get('followed', []))}")
+    print("modes: db", oct(os.stat(f"{data}/listening.db").st_mode & 0o777), "backups dir", oct(os.stat(f"{data}/backups").st_mode & 0o777) if os.path.isdir(f"{data}/backups") else "-")
+    for _ in range(2):
+        t.send(b"\x0b", 0.3); t.send(b"delete listening", 0.3); t.send(b"\r", 0.8)
+        t.shot(f"{out}/3-delete-{_}.png")
+    print("after delete: backups", os.path.isdir(f"{data}/backups"), "| pane:", [l for l in t.screen.display if "streak" in l or "nothing logged" in l][:1])
+    t.send(b"q", 0.5)
+
+
 def designs(t, out):
     """#18: each design through the picker (live preview), a track playing; Cockpit's palettes with t."""
     t.pump(1.0)
@@ -386,7 +440,8 @@ def main():
     sock = f"{os.environ['XDG_RUNTIME_DIR']}/sgl-{os.getpid()}.sock"
     env = dict(os.environ, SINGULARITY_SOCKET=sock, TERM="xterm-256color", COLORTERM="truecolor",
                # scratch config and state: test runs never write the owner's files
-               XDG_CONFIG_HOME=f"{os.path.abspath(out)}/config", XDG_STATE_HOME=f"{os.path.abspath(out)}/state")
+               XDG_CONFIG_HOME=f"{os.path.abspath(out)}/config", XDG_STATE_HOME=f"{os.path.abspath(out)}/state",
+               XDG_DATA_HOME=f"{os.path.abspath(out)}/data")
     for k in ("KITTY_WINDOW_ID", "TERM_PROGRAM", "GHOSTTY_RESOURCES_DIR", "TMUX"):
         env.pop(k, None)
     if scenario == "pixel":
@@ -396,11 +451,17 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
+    if scenario == "listening":
+        env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
+        env["XDG_DOWNLOAD_DIR"] = f"{os.path.abspath(out)}/downloads"
+        env["SINGULARITY_BACKUP_CHECK_SECS"] = "2"
+        os.makedirs(env["XDG_DOWNLOAD_DIR"], exist_ok=True)
+        seed_listening(env["SINGULARITY_DATA"])
     bus = None
     if scenario == "mpris":
         bus, addr = private_bus(out)
@@ -420,6 +481,8 @@ def main():
             return mpris(t, out, env)
         if scenario.startswith("idle"):
             return idle(t, out)
+        if scenario == "listening":
+            return listening(t, out, env)
         if scenario == "config":
             return config(t, out, env)
         if scenario == "designs":

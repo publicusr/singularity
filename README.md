@@ -31,6 +31,9 @@ it by itself ("Updating singularityd…"; music pauses for a second while Solois
   comes back in Ctrl+K → Design.
 - **Idle**: after 3 minutes without input the black hole drifts over the screen; any key wakes it (and does nothing
   else). Shift+I or `[idle]` in config.toml switches it off or changes the delay.
+- **Listening log** (private, local): every track you hear for 30 s is logged in `~/.local/share/singularity/`, and
+  Liked Songs and your own playlists are backed up there nightly. Cockpit's listening Pane shows it; Ctrl+K → "Export
+  listening data" / "Delete listening data". Nothing is uploaded.
 - Media keys, KDE's media widget and `playerctl` control the Daemon (MPRIS); Soloist updates itself before its build
   expires.
 - `singularityd --fake-engine` runs a pretend player for UI work; `--no-catalogue` skips Spotify browsing;

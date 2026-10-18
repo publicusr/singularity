@@ -91,7 +91,9 @@
         "ownerV2": {
          "data": {
           "__typename": "User",
-          "name": "Nova Drift"
+          "name": "Nova Drift",
+          "uri": "spotify:user:nova",
+          "username": "nova"
          }
         },
         "images": {

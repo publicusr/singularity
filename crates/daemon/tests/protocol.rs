@@ -295,3 +295,55 @@ async fn saving_settles_on_spotifys_answer_and_failures_carry_the_old_value() {
     assert!(err.is_some(), "the failure is told");
     assert_eq!(flags, vec![flag("spotify:track:fail", false)], "the old value comes back for the rollback");
 }
+
+#[tokio::test]
+async fn the_listening_log_sums_up_exports_and_deletes_through_the_protocol() {
+    use singularity_proto::{Command, Item};
+    use singularityd::store::{Play, Store};
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let now = proto::now_ms();
+    {
+        let s = Store::open(&data).unwrap();
+        for (i, back) in [0u64, 0, 1].into_iter().enumerate() {
+            let item = Item { uri: format!("spotify:track:{i}"), name: "T".into(), artists: vec!["Nova Drift".into()], duration_ms: 600_000, ..Default::default() };
+            s.record(&Play { started_ms: now - back * 86_400_000, item, context_uri: None, played_ms: 120_000, device: "here".into() }).unwrap();
+        }
+    }
+    // the export lands in the Downloads folder (only this test reads XDG_DOWNLOAD_DIR)
+    let downloads = dir.path().join("dl");
+    unsafe { std::env::set_var("XDG_DOWNLOAD_DIR", &downloads) };
+    let path = dir.path().join("ld.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    let extras = singularityd::Extras { store: Some(data.clone()), ..Default::default() };
+    tokio::spawn(singularityd::serve_with(listener, Box::new(NoEngine { reason: "test".into() }), None, None, extras));
+    let mut a = connect(&path).await;
+    async fn next(s: &mut UnixStream, want: fn(&Event) -> bool) -> Event {
+        loop {
+            if let DaemonMsg::Event(e) = proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap()
+                && want(&e)
+            {
+                return e;
+            }
+        }
+    }
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::GetListening)).await.unwrap();
+    let Event::Listening(s) = next(&mut a, |e| matches!(e, Event::Listening(_))).await else { unreachable!() };
+    assert_eq!((s.plays, s.streak_days, s.top_artist.as_deref()), (3, 2, Some("Nova Drift")));
+    assert_eq!(s.minutes[s.minutes.len() - 2..], [2, 4]);
+
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::ExportLocalData)).await.unwrap();
+    let Event::Notice { message } = next(&mut a, |e| matches!(e, Event::Notice { .. } | Event::Error { .. })).await else { panic!("export failed") };
+    let file = std::fs::read_dir(&downloads).unwrap().next().unwrap().unwrap().path();
+    assert!(message.contains(&file.display().to_string()), "{message}");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(doc["plays"].as_array().unwrap().len(), 3);
+
+    // deleting tells every Client: the Pane empties
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::DeleteLocalData)).await.unwrap();
+    let Event::Listening(s) = next(&mut a, |e| matches!(e, Event::Listening(_))).await else { unreachable!() };
+    assert_eq!((s.plays, s.minutes.iter().sum::<u32>()), (0, 0));
+    assert_eq!(Store::open(&data).unwrap().summary(now).unwrap().plays, 0, "gone from disk");
+}

@@ -65,6 +65,8 @@ pub enum Action {
     Devices,
     ClearQueue,
     Health,
+    ExportListening,
+    DeleteListening,
     Setup,
     FocusNext,
     ResetLayout,
@@ -74,7 +76,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 42] = [
+    pub const ALL: [Action; 44] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -111,6 +113,8 @@ impl Action {
         Action::Devices,
         Action::ClearQueue,
         Action::Health,
+        Action::ExportListening,
+        Action::DeleteListening,
         Action::Setup,
         Action::FocusNext,
         Action::ResetLayout,
@@ -156,6 +160,8 @@ impl Action {
             Action::ClearQueue => "Clear the queue",
             Action::Devices => "Devices: play on another speaker or phone",
             Action::Health => "Health check (Engine, login, audio, stream quality)",
+            Action::ExportListening => "Export listening data (log + latest library backup, to Downloads)",
+            Action::DeleteListening => "Delete listening data (the log and every library backup)…",
             Action::Setup => "Setup: key, pairing, login, audio check",
             Action::FocusNext => "Focus next pane",
             Action::ResetLayout => "Reset layout",
@@ -203,6 +209,8 @@ impl Action {
             Action::Devices => "devices",
             Action::ClearQueue => "clear_queue",
             Action::Health => "health",
+            Action::ExportListening => "export_listening",
+            Action::DeleteListening => "delete_listening",
             Action::Setup => "setup",
             Action::FocusNext => "focus_next",
             Action::ResetLayout => "reset_layout",
@@ -392,6 +400,9 @@ pub struct App {
     pub meters: Meters,
     pub stream: Option<singularity_proto::StreamInfo>,
     pub health: Option<singularity_proto::Health>,
+    /// the local listening log, summed up (#23)
+    pub listening: Option<singularity_proto::ListeningSummary>,
+    confirm_delete: Option<Instant>,
     pub health_open: bool,
     health_asked: Option<Instant>,
     pub setup: crate::setup::Setup,
@@ -484,6 +495,8 @@ impl App {
             meters: Meters::default(),
             stream: None,
             health: None,
+            listening: None,
+            confirm_delete: None,
             health_open: false,
             health_asked: None,
             setup: Default::default(),
@@ -667,6 +680,7 @@ impl App {
     pub fn on_connected(&mut self) {
         self.spectrum_on = false;
         self.want_spectrum();
+        self.send(Command::GetListening);
     }
 
     /// Spectrum frames flow only while a Widget that moves with the music is on screen (the Daemon's tap idles
@@ -753,6 +767,16 @@ impl App {
                     self.say("Queue cleared");
                 } else {
                     self.say("Nothing queued");
+                }
+            }
+            Action::ExportListening => self.send(Command::ExportLocalData),
+            Action::DeleteListening => {
+                // a second time within 10 s confirms
+                if self.confirm_delete.take().is_some_and(|t| t.elapsed() < Duration::from_secs(10)) {
+                    self.send(Command::DeleteLocalData);
+                } else {
+                    self.confirm_delete = Some(Instant::now());
+                    self.say("Run “Delete listening data” again within 10 s to delete the log and every backup");
                 }
             }
             Action::Health => {
@@ -2109,5 +2133,18 @@ mod tests {
         again.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
         idled(&mut again);
         assert!(!again.config.idle.enabled && again.idle_secs().is_none());
+    }
+
+    #[test]
+    fn deleting_listening_data_takes_a_second_go() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut app = App::new(Some(tx));
+        app.link = Link::Connected { version: "t".into() };
+        app.run(Action::DeleteListening);
+        assert!(rx.try_recv().is_err() && app.toast.as_ref().is_some_and(|(t, _)| t.contains("again")));
+        app.run(Action::DeleteListening);
+        assert!(matches!(rx.try_recv(), Ok(Command::DeleteLocalData)));
+        app.run(Action::ExportListening);
+        assert!(matches!(rx.try_recv(), Ok(Command::ExportLocalData)));
     }
 }
