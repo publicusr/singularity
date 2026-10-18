@@ -294,4 +294,12 @@ flowchart LR
   hit under it, so a row's artist/album links no longer swallow it. Over a track list or the library it moves the
   highlight one row per notch (Shift: a page), the list follows, and the Pane takes focus so the highlight shows.
   Popups keep the wheel to themselves. Test wheels over an artist link and the library; pty `wheel`.
+- **#27 Home by lines ✅** (2026-10-18): `HomeView.offset` (lines) replaces the first-row index; rows are drawn with an
+  `i32` y and clipped to the Pane (text lines, Card hits, covers). A part-visible cover is the same upload placed with
+  a source crop (kitty `x,y,w,h`; `Kitty::place_cropped`), or its visible half-block rows (`blit_halfblocks_from`).
+  2 lines per wheel notch; keyboard moves keep the selected row whole in view. Search and artist pages share it.
+  The pty harness had two bugs behind the stray `Ga=` text and a misplaced hole: a read ending inside `\x1b_G`
+  went to pyte as text, and an image's position came from a regex over a possibly split cursor move; it now keeps
+  the partial escape and places images at pyte's own cursor, as kitty does. Its compositor honours crops. pty
+  `home-scroll`.
 

@@ -30,21 +30,30 @@ pub fn fit(img: &RgbImage, w: u32, h: u32) -> RgbImage {
 
 /// Cell tier: draw an image of `rect.width` × `rect.height * 2` pixels with '▀' (fg = upper pixel, bg = lower).
 pub fn blit_halfblocks(img: &RgbImage, buf: &mut Buffer, rect: Rect) {
+    blit_halfblocks_from(img, buf, rect, 0);
+}
+
+/// `blit_halfblocks`, starting `skip` cell rows into the image (the part of a cover scrolled off the top).
+pub fn blit_halfblocks_from(img: &RgbImage, buf: &mut Buffer, rect: Rect, skip: u16) {
     let rgb = |x: u32, y: u32| {
         let p = img.get_pixel(x, y).0;
         Color::Rgb(p[0], p[1], p[2])
     };
     for cy in 0..rect.height as u32 {
+        let iy = cy + skip as u32;
         for cx in 0..rect.width as u32 {
-            if cx >= img.width() || cy * 2 + 1 >= img.height() {
+            if cx >= img.width() || iy * 2 + 1 >= img.height() {
                 continue;
             }
             if let Some(cell) = buf.cell_mut((rect.x + cx as u16, rect.y + cy as u16)) {
-                cell.set_char('▀').set_fg(rgb(cx, cy * 2)).set_bg(rgb(cx, cy * 2 + 1));
+                cell.set_char('▀').set_fg(rgb(cx, iy * 2)).set_bg(rgb(cx, iy * 2 + 1));
             }
         }
     }
 }
+
+/// The part of an image to show, in its pixels: x, y, width, height (a cover partly scrolled out of its Pane).
+pub type Crop = [u32; 4];
 
 /// What a pixel-tier image is: the source and the exact pixel size it was rendered at.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -66,10 +75,10 @@ pub struct Kitty {
     next_id: u32,
     frame: u64,
     stored: HashMap<ImageKey, Stored>,
-    /// placements on screen: (image id, placement id) → cell rect
-    placed: HashMap<(u32, u32), Rect>,
+    /// placements on screen: (image id, placement id) → cell rect and source crop
+    placed: HashMap<(u32, u32), (Rect, Option<Crop>)>,
     /// this frame's placements and the images still to transmit
-    queue: Vec<(u32, u32, Rect)>,
+    queue: Vec<(u32, u32, Rect, Option<Crop>)>,
     uploads: Vec<(u32, RgbImage)>,
     /// animated images (Visuals) this frame: a new picture, or None to keep the one on screen
     frames: Vec<(u32, Rect, Option<(u32, u32, std::sync::Arc<Vec<u8>>)>)>,
@@ -100,7 +109,8 @@ impl Kitty {
     }
 
     /// Place the image `key` over `rect` this frame; `render` supplies its pixels if the terminal doesn't have them yet.
-    pub fn place(&mut self, key: ImageKey, rect: Rect, render: impl FnOnce() -> RgbImage) {
+    /// Showing only `crop` of the image, when given (scaled into `rect`).
+    pub fn place_cropped(&mut self, key: ImageKey, rect: Rect, crop: Option<Crop>, render: impl FnOnce() -> RgbImage) {
         let frame = self.frame;
         let id = match self.stored.get_mut(&key) {
             Some(s) => {
@@ -117,7 +127,7 @@ impl Kitty {
         };
         // the same image may be on screen more than once; each copy gets its own placement id
         let pid = 1 + self.queue.iter().filter(|(i, ..)| *i == id).count() as u32;
-        self.queue.push((id, pid, rect));
+        self.queue.push((id, pid, rect, crop));
     }
 
     /// Show a new frame of Visual `id` (< 500) over `rect`: RGBA8, `w`×`h` pixels.
@@ -166,13 +176,14 @@ impl Kitty {
             write!(out, "\x1b_Ga=d,d=I,i={r},q=2\x1b\\")?;
         }
         self.animated = shown;
-        let mut now: HashMap<(u32, u32), Rect> = HashMap::new();
-        for (id, pid, r) in std::mem::take(&mut self.queue) {
-            if self.placed.get(&(id, pid)) != Some(&r) {
+        let mut now: HashMap<(u32, u32), (Rect, Option<Crop>)> = HashMap::new();
+        for (id, pid, r, crop) in std::mem::take(&mut self.queue) {
+            if self.placed.get(&(id, pid)) != Some(&(r, crop)) {
+                let src = crop.map(|[x, y, w, h]| format!("x={x},y={y},w={w},h={h},")).unwrap_or_default();
                 // C=1: don't move the cursor; z=-1: under text, so nothing drawn on top is hidden
-                write!(out, "\x1b[{};{}H\x1b_Ga=p,i={id},p={pid},c={},r={},C=1,z=-1,q=2\x1b\\", r.y + 1, r.x + 1, r.width, r.height)?;
+                write!(out, "\x1b[{};{}H\x1b_Ga=p,i={id},p={pid},{src}c={},r={},C=1,z=-1,q=2\x1b\\", r.y + 1, r.x + 1, r.width, r.height)?;
             }
-            now.insert((id, pid), r);
+            now.insert((id, pid), (r, crop));
         }
         for (id, pid) in self.placed.keys().filter(|k| !now.contains_key(k)) {
             write!(out, "\x1b_Ga=d,d=i,i={id},p={pid},q=2\x1b\\")?;
@@ -322,7 +333,7 @@ mod tests {
         let mut k = Kitty::new(false);
         let r = Rect::new(2, 3, 4, 2);
         let mut renders = 0;
-        k.place(key("a"), r, || {
+        k.place_cropped(key("a"), r, None, || {
             renders += 1;
             RgbImage::new(20, 20)
         });
@@ -330,10 +341,10 @@ mod tests {
         assert!(first.contains("a=t,f=24,o=z,i=1000,s=20,v=20") && first.contains("a=p,i=1000,p=1,c=4,r=2"));
         assert!(first.contains("\x1b[4;3H"), "placed at the rect's cell (1-based)");
         // same place next frame: nothing to say
-        k.place(key("a"), r, || unreachable!());
+        k.place_cropped(key("a"), r, None, || unreachable!());
         assert_eq!(flush(&mut k), "");
         // moved: re-placed, not re-sent
-        k.place(key("a"), Rect::new(2, 9, 4, 2), || unreachable!());
+        k.place_cropped(key("a"), Rect::new(2, 9, 4, 2), None, || unreachable!());
         let moved = flush(&mut k);
         assert!(moved.contains("a=p,i=1000,p=1") && !moved.contains("a=t"));
         // gone: placement deleted, image kept for later
@@ -362,8 +373,8 @@ mod tests {
     #[test]
     fn the_same_image_twice_gets_two_placements() {
         let mut k = Kitty::new(false);
-        k.place(key("a"), Rect::new(0, 0, 2, 1), || RgbImage::new(20, 20));
-        k.place(key("a"), Rect::new(5, 0, 2, 1), || unreachable!());
+        k.place_cropped(key("a"), Rect::new(0, 0, 2, 1), None, || RgbImage::new(20, 20));
+        k.place_cropped(key("a"), Rect::new(5, 0, 2, 1), None, || unreachable!());
         let s = flush(&mut k);
         assert!(s.contains("i=1000,p=1,") && s.contains("i=1000,p=2,"));
     }
@@ -372,7 +383,7 @@ mod tests {
     fn evicts_least_recently_used_images_off_screen() {
         let mut k = Kitty::new(false);
         for i in 0..MAX_STORED + 5 {
-            k.place(key(&i.to_string()), Rect::new(0, 0, 1, 1), || RgbImage::new(1, 1));
+            k.place_cropped(key(&i.to_string()), Rect::new(0, 0, 1, 1), None, || RgbImage::new(1, 1));
             flush(&mut k);
         }
         assert_eq!(k.stored.len(), MAX_STORED);

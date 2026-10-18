@@ -1,6 +1,7 @@
 //! The Home view (#8): the shortcuts grid, Shelves of cover-art Cards, and the feed tail as a grid.
 //!
-//! Home scrolls by whole rows and each Shelf sideways by whole Cards, so a cover is never cut at the Pane edge.
+//! Home scrolls by lines (rows cut off at the top or bottom are drawn clipped, covers included) and each Shelf sideways
+//! by whole Cards.
 //! The layout is a pure function of the feed and the Pane size ([`rows`]); the last frame's rows drive the input.
 
 use crate::app::{App, Hit};
@@ -10,7 +11,7 @@ use crate::ui::text;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
-use singularity_proto::{Card, HomeFeed};
+use singularity_proto::HomeFeed;
 use std::collections::HashMap;
 
 /// A Card by position in the feed: Shelf index, Card index.
@@ -116,13 +117,15 @@ pub fn rows(feed: &HomeFeed, width: u16, height: u16, aspect: f64) -> (Vec<Row>,
 /// Scroll and selection state, plus the last frame's layout for input.
 #[derive(Default)]
 pub struct HomeView {
-    /// first visible row
-    pub top: usize,
+    /// lines scrolled off the top
+    pub offset: u16,
+    /// the Pane's height last frame
+    pub height: u16,
     /// first visible Card of each scrolled Shelf
     pub scroll: HashMap<usize, usize>,
     pub sel: Option<CardRef>,
     pub rows: Vec<Row>,
-    /// rows that fit in the Pane last frame
+    /// rows at least partly in view last frame
     pub visible: usize,
 }
 
@@ -137,9 +140,17 @@ impl HomeView {
         self.rows.iter().enumerate().find_map(|(r, row)| row.cards.iter().position(|c| *c == s).map(|c| (r, c)))
     }
 
-    pub fn scroll_rows(&mut self, delta: i32) {
-        let max = self.rows.len().saturating_sub(self.visible.max(1));
-        self.top = (self.top as i32 + delta).clamp(0, max as i32) as usize;
+    /// Where row `i` starts, in lines from the top of the content.
+    fn row_y(&self, i: usize) -> u16 {
+        self.rows.iter().take(i).map(|r| r.height).sum()
+    }
+
+    fn max_offset(&self) -> u16 {
+        self.row_y(self.rows.len()).saturating_sub(self.height.max(1))
+    }
+
+    pub fn scroll_lines(&mut self, delta: i32) {
+        self.offset = (self.offset as i32 + delta).clamp(0, self.max_offset() as i32) as u16;
     }
 
     pub fn scroll_shelf(&mut self, row: usize, delta: i32) {
@@ -159,7 +170,9 @@ impl HomeView {
             return;
         }
         let Some((r, c)) = self.sel_pos() else {
-            self.sel = Some(self.rows[self.top.min(self.rows.len() - 1)].cards[0]);
+            // the first row that starts in view
+            let first = (0..self.rows.len()).find(|&i| self.row_y(i) >= self.offset).unwrap_or(self.rows.len() - 1);
+            self.sel = Some(self.rows[first].cards[0]);
             return;
         };
         let (mut r, mut c) = (r as i32, c as i32);
@@ -184,11 +197,14 @@ impl HomeView {
     /// Scroll so the selected Card is in view.
     pub fn reveal(&mut self) {
         let Some((r, c)) = self.sel_pos() else { return };
-        let vis = self.visible.max(1);
-        if r < self.top {
-            self.top = r;
-        } else if r >= self.top + vis {
-            self.top = r + 1 - vis;
+        // the whole row in view (its trailing gap may hang off)
+        let (top, h) = (self.row_y(r), self.rows[r].height);
+        let content = if self.rows[r].kind == RowKind::Shortcuts { TILE_H } else { h.saturating_sub(1) };
+        let height = self.height.max(1);
+        if top < self.offset {
+            self.offset = top;
+        } else if top + content > self.offset + height {
+            self.offset = (top + content).saturating_sub(height).min(top);
         }
         let row = &self.rows[r];
         if row.kind == RowKind::Shelf {
@@ -204,7 +220,7 @@ impl HomeView {
 }
 
 /// Shorten to `w` columns with an ellipsis.
-fn clip(s: &str, w: u16) -> String {
+fn clip_text(s: &str, w: u16) -> String {
     let w = w as usize;
     if s.chars().count() <= w {
         return s.to_string();
@@ -229,31 +245,46 @@ pub fn draw_feed(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, feed: Hom
     let (rows, m) = rows(&feed, r.width, r.height, aspect);
     view.rows = rows;
     let focused = app.focus == "home";
-    let top = view.top.min(view.rows.len().saturating_sub(1));
-    view.top = top;
+    view.height = r.height;
+    view.offset = view.offset.min(view.max_offset());
     let x0 = r.x + 1;
-    let mut y = r.y;
+    let (top, bottom) = (r.y as i32, r.bottom() as i32);
+    let on = |y: i32| y >= top && y < bottom;
+    // a rect from line `y` down `h` lines, cut to the Pane
+    let clip = |x: u16, y: i32, w: u16, h: u16| {
+        let (y0, y1) = (y.max(top), (y + h as i32).min(bottom));
+        (y1 > y0).then(|| Rect::new(x, y0 as u16, w, (y1 - y0) as u16))
+    };
+    let mut y = top - view.offset as i32;
     let mut shown = 0;
-    for ri in top..view.rows.len() {
+    for ri in 0..view.rows.len() {
         let row = view.rows[ri].clone();
-        // the trailing gap may hang off the bottom; the content may not
-        if y + row.height - 1 > r.bottom() {
+        let (ry, h) = (y, row.height as i32);
+        y += h;
+        if ry + h <= top {
+            continue;
+        }
+        if ry >= bottom {
             break;
         }
         shown += 1;
+        let mut cy = ry;
         if let Some(t) = &row.title {
-            text(buf, x0, y, r.width.saturating_sub(10), &clip(t, r.width.saturating_sub(10)), th.title());
-            if row.kind == RowKind::Shelf && row.cards.len() > row.per_view {
-                let first = view.first(row.cards[0].shelf);
-                let (lx, rx) = (r.right().saturating_sub(6), r.right().saturating_sub(3));
-                let can_l = first > 0;
-                let can_r = first + row.per_view < row.cards.len();
-                text(buf, lx, y, 2, "‹", th.s(if can_l { th.fg } else { th.border }));
-                text(buf, rx, y, 2, "›", th.s(if can_r { th.fg } else { th.border }));
-                app.hit(Rect::new(lx.saturating_sub(1), y, 3, 1), Hit::ShelfScroll(ri, -1));
-                app.hit(Rect::new(rx.saturating_sub(1), y, 3, 1), Hit::ShelfScroll(ri, 1));
+            if on(cy) {
+                let ty = cy as u16;
+                text(buf, x0, ty, r.width.saturating_sub(10), &clip_text(t, r.width.saturating_sub(10)), th.title());
+                if row.kind == RowKind::Shelf && row.cards.len() > row.per_view {
+                    let first = view.first(row.cards[0].shelf);
+                    let (lx, rx) = (r.right().saturating_sub(6), r.right().saturating_sub(3));
+                    let can_l = first > 0;
+                    let can_r = first + row.per_view < row.cards.len();
+                    text(buf, lx, ty, 2, "‹", th.s(if can_l { th.fg } else { th.border }));
+                    text(buf, rx, ty, 2, "›", th.s(if can_r { th.fg } else { th.border }));
+                    app.hit(Rect::new(lx.saturating_sub(1), ty, 3, 1), Hit::ShelfScroll(ri, -1));
+                    app.hit(Rect::new(rx.saturating_sub(1), ty, 3, 1), Hit::ShelfScroll(ri, 1));
+                }
             }
-            y += 1;
+            cy += 1;
         }
         let first = view.row_first(ri);
         for (i, cref) in row.cards.iter().skip(first).take(row.per_view).enumerate() {
@@ -265,55 +296,80 @@ pub fn draw_feed(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, feed: Hom
                 RowKind::Feed if !feed.shelves[cref.shelf].title.is_empty() => feed.shelves[cref.shelf].title.as_str(),
                 _ => card.subtitle.as_str(),
             };
+            let glyph = if card.kind == "artist" { "◍" } else { "♪" };
+            let url = card.image_url.clone().unwrap_or_default();
             if row.kind == RowKind::Shortcuts {
                 let x = x0 + i as u16 * (m.tile_w + 1);
-                let cover = Rect::new(x, y, m.tile_cover_w.min(m.tile_w), TILE_H);
-                let tw = m.tile_w.saturating_sub(cover.width + 1);
-                if selected {
-                    text(buf, cover.right(), y, tw + 1, &" ".repeat(tw as usize + 1), th.base().bg(th.selection.color()));
-                    text(buf, cover.right(), y + 1, tw + 1, &" ".repeat(tw as usize + 1), th.base().bg(th.selection.color()));
-                }
-                draw_cover(buf, cover, card, app, th);
+                let cw = m.tile_cover_w.min(m.tile_w);
+                let tw = m.tile_w.saturating_sub(cw + 1);
                 let bg = if selected { th.selection.color() } else { th.bg.color() };
-                text(buf, cover.right() + 1, y, tw, &clip(&card.name, tw), name_st.bg(bg));
-                text(buf, cover.right() + 1, y + 1, tw, &clip(sub, tw), th.s(th.dim).bg(bg));
-                app.hit(Rect::new(x, y, m.tile_w, TILE_H), Hit::Card(*cref));
+                for (dy, line, st) in [(0, clip_text(&card.name, tw), name_st), (1, clip_text(sub, tw), th.s(th.dim))] {
+                    if on(cy + dy) {
+                        let ly = (cy + dy) as u16;
+                        if selected {
+                            text(buf, x + cw, ly, tw + 1, &" ".repeat(tw as usize + 1), th.base().bg(bg));
+                        }
+                        text(buf, x + cw + 1, ly, tw, &line, st.bg(bg));
+                    }
+                }
+                cover_at(buf, x, cy, cw, TILE_H, r, &url, glyph, app, th);
+                if let Some(hr) = clip(x, cy, m.tile_w, TILE_H) {
+                    app.hit(hr, Hit::Card(*cref));
+                }
             } else {
                 let x = x0 + i as u16 * (m.card_w + CARD_GAP);
-                let cover = Rect::new(x, y, m.card_w, m.cover_h);
-                draw_cover(buf, cover, card, app, th);
-                let ty = y + m.cover_h;
+                cover_at(buf, x, cy, m.card_w, m.cover_h, r, &url, glyph, app, th);
+                let ty = cy + m.cover_h as i32;
                 let mark = if selected { "▸ " } else { "" };
-                text(buf, x, ty, m.card_w, &clip(&format!("{mark}{}", card.name), m.card_w), name_st);
-                text(buf, x, ty + 1, m.card_w, &clip(sub, m.card_w), th.s(th.dim));
-                app.hit(Rect::new(x, y, m.card_w, m.cover_h + 2), Hit::Card(*cref));
+                if on(ty) {
+                    text(buf, x, ty as u16, m.card_w, &clip_text(&format!("{mark}{}", card.name), m.card_w), name_st);
+                }
+                if on(ty + 1) {
+                    text(buf, x, ty as u16 + 1, m.card_w, &clip_text(sub, m.card_w), th.s(th.dim));
+                }
+                if let Some(hr) = clip(x, cy, m.card_w, m.cover_h + 2) {
+                    app.hit(hr, Hit::Card(*cref));
+                }
             }
         }
-        y += row.height - u16::from(row.title.is_some());
     }
     view.visible = shown.max(1);
     // more above / below
-    if top > 0 {
+    if view.offset > 0 {
         text(buf, r.right().saturating_sub(1), r.y, 1, "▴", th.s(th.dim));
     }
-    if top + shown < view.rows.len() {
+    if view.offset < view.max_offset() {
         text(buf, r.right().saturating_sub(1), r.bottom().saturating_sub(1), 1, "▾", th.s(th.dim));
     }
     (feed, view)
 }
 
-fn draw_cover(buf: &mut Buffer, r: Rect, card: &Card, app: &mut App, th: &Theme) {
-    cover(buf, r, card.image_url.as_deref().unwrap_or(""), if card.kind == "artist" { "◍" } else { "♪" }, app, th);
-}
-
 /// A cover in the best tier available: kitty pixels, else half-blocks; a quiet placeholder (`glyph`) while it loads.
 pub fn cover(buf: &mut Buffer, r: Rect, url: &str, glyph: &str, app: &mut App, th: &Theme) {
+    cover_at(buf, r.x, r.y as i32, r.width, r.height, r, url, glyph, app, th);
+}
+
+/// `cover` for a `w`×`h` cover whose top line is `y` (maybe outside the Pane), drawn only where it's inside `pane`.
+#[allow(clippy::too_many_arguments)]
+pub fn cover_at(buf: &mut Buffer, x: u16, y: i32, w: u16, h: u16, pane: Rect, url: &str, glyph: &str, app: &mut App, th: &Theme) {
+    let (y0, y1) = (y.max(pane.y as i32), (y + h as i32).min(pane.bottom() as i32));
+    if y1 <= y0 || w == 0 {
+        return;
+    }
+    let r = Rect::new(x, y0 as u16, w, (y1 - y0) as u16);
+    // cover lines scrolled off the top
+    let skip = (y0 - y) as u16;
     if let Some((cw, ch)) = app.pixel_tier_for(r) {
         if let Some(src) = app.covers.get(url) {
-            let (pw, ph) = ((r.width as f64 * cw).round() as u32, (r.height as f64 * ch).round() as u32);
+            let (pw, ph) = ((w as f64 * cw).round() as u32, (h as f64 * ch).round() as u32);
             let key = ImageKey { source: url.to_string(), w: pw, h: ph };
+            // only the part in view: the same upload serves every scroll position
+            let crop = (r.height < h).then(|| {
+                let top = (skip as f64 * ch).round() as u32;
+                [0, top, pw, ((r.height as f64 * ch).round() as u32).min(ph - top)]
+            });
             if let Some(k) = app.kitty.as_mut() {
-                k.place(key, r, || gfx::fit(&src, pw, ph));
+                k.place_cropped(key, r, crop, || gfx::fit(&src, pw, ph));
             }
             // blank cells under the image (it sits below text, so nothing may be drawn here)
             for yy in r.top()..r.bottom() {
@@ -321,8 +377,8 @@ pub fn cover(buf: &mut Buffer, r: Rect, url: &str, glyph: &str, app: &mut App, t
             }
             return;
         }
-    } else if let Some(img) = app.covers.scaled(url, r.width as u32, r.height as u32 * 2) {
-        gfx::blit_halfblocks(&img, buf, r);
+    } else if let Some(img) = app.covers.scaled(url, w as u32, h as u32 * 2) {
+        gfx::blit_halfblocks_from(&img, buf, r, skip);
         return;
     }
     for yy in r.top()..r.bottom() {
@@ -334,7 +390,7 @@ pub fn cover(buf: &mut Buffer, r: Rect, url: &str, glyph: &str, app: &mut App, t
 #[cfg(test)]
 mod tests {
     use super::*;
-    use singularity_proto::Shelf;
+    use singularity_proto::{Card, Shelf};
 
     fn feed() -> HomeFeed {
         let card = |n: usize| Card { uri: format!("spotify:playlist:{n}"), name: format!("Mix {n}"), subtitle: String::new(), image_url: None, kind: "playlist".into() };
@@ -376,12 +432,14 @@ mod tests {
     fn navigation_moves_by_card_and_row_and_reveals() {
         let mut v = HomeView::default();
         (v.rows, _) = rows(&feed(), 110, 40, 2.0);
-        v.visible = 2;
+        // room for one Shelf, not for the shortcuts above it as well
+        v.height = v.rows[2].height + 1;
         v.move_sel(0, 0);
         assert_eq!(v.sel, Some(CardRef { shelf: 0, card: 0 }));
         v.move_sel(0, 2); // down into the first Shelf
         assert_eq!(v.sel, Some(CardRef { shelf: 1, card: 0 }));
-        assert_eq!(v.top, 1, "scrolled so the row is visible");
+        let (top, h) = (v.row_y(2), v.rows[2].height);
+        assert!(v.offset <= top && top + h - 1 <= v.offset + v.height, "scrolled so the whole row is in view");
         let per = v.rows[2].per_view;
         for _ in 0..per {
             v.move_sel(1, 0);
@@ -390,15 +448,17 @@ mod tests {
         assert_eq!(v.first(1), 1, "the Shelf scrolled sideways by one Card");
         v.move_sel(0, 1); // the next row is shorter: clamp to its last Card
         assert_eq!(v.sel, Some(CardRef { shelf: 2, card: 2 }));
-        v.scroll_rows(100);
-        assert_eq!(v.top, v.rows.len() - 2);
+        v.scroll_lines(1000);
+        assert_eq!(v.offset, v.row_y(v.rows.len()) - v.height, "no further than the end");
+        v.scroll_lines(-3);
+        assert_eq!(v.offset, v.row_y(v.rows.len()) - v.height - 3, "by lines");
         v.scroll_shelf(2, 100);
         assert_eq!(v.first(1), 10 - per);
     }
 
     #[test]
     fn clip_adds_an_ellipsis() {
-        assert_eq!(clip("Daily Mix 1", 20), "Daily Mix 1");
-        assert_eq!(clip("Daily Mix 1", 6), "Daily…");
+        assert_eq!(clip_text("Daily Mix 1", 20), "Daily Mix 1");
+        assert_eq!(clip_text("Daily Mix 1", 6), "Daily…");
     }
 }

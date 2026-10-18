@@ -894,9 +894,9 @@ mod tests {
     /// Wheel Home down until the Shelf's first Card is on screen.
     fn scroll_to(app: &mut App, shelf: usize) -> Rect {
         let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
-        for _ in 0..40 {
+        for _ in 0..400 {
             render(app, 200, 64);
-            if let Some(r) = try_card_rect(app, shelf, 0) {
+            if let Some(r) = try_card_rect(app, shelf, 0).filter(|r| r.height > 2) {
                 return r;
             }
             mouse(app, MouseEventKind::ScrollDown, home.x as f64 + 3.5, home.y + 2, false);
@@ -919,10 +919,11 @@ mod tests {
     }
 
     #[test]
-    fn home_scrolls_by_rows_to_the_feed_tail() {
+    fn home_scrolls_by_lines_to_the_feed_tail() {
         let (mut app, _rx) = home_app();
         render(&mut app, 200, 64);
         scroll_to(&mut app, 30);
+        app.feed_view().scroll_lines(1000);
         let s = render(&mut app, 200, 64);
         assert!(s.contains("Feed pick 20"), "the feed tail is reachable:\n{s}");
         assert!(s.contains('♪'), "covers still loading show a placeholder");
@@ -1012,6 +1013,29 @@ mod tests {
         app.kitty.as_mut().unwrap().flush(&mut out).unwrap();
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("a=d,d=i") && !out.contains("a=t,"), "hidden placements removed, nothing re-sent");
+    }
+
+    #[test]
+    fn part_visible_rows_are_drawn_cropped_in_both_tiers() {
+        // cell tier: scrolled 3 lines into the first Shelf, its covers' lower rows still show
+        let (mut app, _rx) = home_app();
+        render(&mut app, 200, 64);
+        let first_shelf = app.home_view.rows.iter().position(|r| r.kind == crate::home::RowKind::Shelf).unwrap();
+        let shelf_y: u16 = app.home_view.rows.iter().take(first_shelf).map(|r| r.height).sum();
+        app.home_view.offset = shelf_y + 3;
+        render(&mut app, 200, 64);
+        let r = card_rect(&app, 1, 0);
+        let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        assert_eq!(r.y, home.y + 1, "the Card is clipped at the Pane's top, not dropped");
+        // pixel tier: the same cover placed with a crop of its lower part
+        app.kitty = Some(crate::gfx::Kitty::new(false));
+        app.cell_px = Some((10.0, 20.0));
+        render(&mut app, 200, 64);
+        let mut out = vec![];
+        app.kitty.as_mut().unwrap().flush(&mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        // the Shelf's title line plus 3 cover lines are above: 2 cover lines (40 px) cut off the top
+        assert!(out.contains(",x=0,y=40,"), "a cropped placement: {}", &out[..out.len().min(300)]);
     }
 
     // ── Library (#9) ──

@@ -42,42 +42,40 @@ class Term:
                 self.feed(data)
 
     def feed(self, data):
-        # pull kitty graphics APCs out before pyte sees them (it would print their payload)
+        # pull kitty graphics APCs out before pyte sees them (it would print their payload); each image goes where
+        # pyte's cursor is when its APC arrives, as in kitty
         data = self.pending + data
         self.pending = b""
-        out = bytearray()
         i = 0
         while i < len(data):
             j = data.find(b"\x1b_G", i)
             if j < 0:
-                out += data[i:]
-                break
+                # a read can end inside "\x1b_G": keep that tail for the next one, or pyte prints the APC as text
+                tail = next((n for n in (2, 1) if data.endswith(b"\x1b_G"[:n])), 0)
+                self.stream.feed(data[i:len(data) - tail])
+                self.pending = data[len(data) - tail:]
+                return
             k = data.find(b"\x1b\\", j)
             if k < 0:
-                out += data[i:j]
+                self.stream.feed(data[i:j])
                 self.pending = data[j:]
-                break
-            # a placement's position: the cursor move right before it
-            pre = data[i:j]
-            out += pre
-            m = re.findall(rb"\x1b\[(\d+);(\d+)H", pre)
-            if m:
-                self.cup = (int(m[-1][0]) - 1, int(m[-1][1]) - 1)
-            self.apc(data[j + 3:k].decode(), bytes(out))
+                return
+            self.stream.feed(data[i:j])
+            self.cup = (self.screen.cursor.y, self.screen.cursor.x)
+            self.apc(data[j + 3:k].decode(), b"")
             i = k + 2
-        self.stream.feed(bytes(out))
 
     def apc(self, body, before):
         ctrl, _, payload = body.partition(";")
         kv = dict(p.split("=", 1) for p in ctrl.split(",") if "=" in p)
-        self.apc_log.append(kv.get("a", "") + ":" + ",".join(f"{k}={v}" for k, v in kv.items() if k in "ipcrz"))
+        self.apc_log.append(kv.get("a", "") + ":" + ",".join(f"{k}={v}" for k, v in kv.items() if k in "ipcrzxywh"))
         a = kv.get("a")
         if a in ("t", "T") or (a is None and self.upload):
             if a in ("t", "T"):
                 self.upload = (int(kv["i"]), int(kv["s"]), int(kv["v"]), [], kv.get("o") == "z", kv.get("f", "24"))
                 if a == "T":
                     row, col = self.cup
-                    self.placed[(int(kv["i"]), int(kv.get("p", "1")))] = (col, row, int(kv["c"]), int(kv["r"]))
+                    self.placed[(int(kv["i"]), int(kv.get("p", "1")))] = (col, row, int(kv["c"]), int(kv["r"]), None)
             self.upload[3].append(payload)
             if kv.get("m", "0") == "0":
                 iid, w, h, chunks, z, f = self.upload
@@ -88,7 +86,9 @@ class Term:
                 self.upload = None
         elif a == "p":
             row, col = self.cup
-            self.placed[(int(kv["i"]), int(kv["p"]))] = (col, row, int(kv["c"]), int(kv["r"]))
+            # x,y,w,h: only that part of the image (a cover partly scrolled out of its Pane)
+            crop = tuple(int(kv[k]) for k in "xywh") if all(k in kv for k in "xywh") else None
+            self.placed[(int(kv["i"]), int(kv["p"]))] = (col, row, int(kv["c"]), int(kv["r"]), crop)
         elif a == "d":
             if kv.get("d") == "i":
                 self.placed.pop((int(kv["i"]), int(kv["p"])), None)
@@ -134,9 +134,13 @@ class Term:
                     pass
                 if c.data.strip():
                     cells.append((x, y, c.data, fg))
-        for (iid, _), (cx, cy, c, r) in self.placed.items():
+        for (iid, _), (cx, cy, c, r, crop) in self.placed.items():
             if iid in self.images:
-                img.paste(self.images[iid].resize((c * CW, r * CH)), (cx * CW, cy * CH))
+                src = self.images[iid]
+                if crop:
+                    x, y, w, h = crop
+                    src = src.crop((x, y, x + w, y + h))
+                img.paste(src.resize((c * CW, r * CH)), (cx * CW, cy * CH))
         for x, y, ch, fg in cells:
             font = BRAILLE if 0x2800 <= ord(ch[0]) <= 0x28FF else FONT
             try:
@@ -203,6 +207,18 @@ def library(t, out):
     t.send(b"\x1b", 0.3)
     t.send(b"\x1b", 0.5)  # clear filter, then back to Home
     t.shot(f"{out}/4-back-home.png")
+    t.send(b"q", 0.5)
+
+
+def home_scroll(t, out):
+    """#27: Home by lines: rows cut at the top and bottom keep the visible part of their covers."""
+    t.pump(1.5)
+    x, y = t.find("Made For You") or t.find("Daily Mix 1")
+    for n in range(1, 4):
+        mouse(t, 65, x, y + 2, wait=0.3)  # one notch: 2 lines
+        t.shot(f"{out}/{n}-scrolled-{2 * n}-lines.png")
+    crops = [l for l in t.apc_log if l.startswith("p:") and "y=" in l]
+    print(f"cropped placements: {len(crops)}; e.g. {crops[:1]}")
     t.send(b"q", 0.5)
 
 
@@ -474,10 +490,10 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
     if scenario == "listening":
         env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
@@ -494,6 +510,8 @@ def main():
         time.sleep(0.4)
         t = Term(env)
         t.pump(1.5)
+        if scenario == "home-scroll":
+            return home_scroll(t, out)
         if scenario.startswith("home"):
             return home(t, out)
         if scenario == "library":

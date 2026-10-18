@@ -1951,7 +1951,7 @@ impl App {
                     // Shift+wheel scrolls the Shelf under the pointer sideways
                     match self.home_row_at(m.column, m.row) {
                         Some(row) if coarse => self.feed_view().scroll_shelf(row, -sign as i32),
-                        _ => self.feed_view().scroll_rows(-sign as i32),
+                        _ => self.feed_view().scroll_lines(-sign as i32 * 2),
                     }
                     return;
                 }
