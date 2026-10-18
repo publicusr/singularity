@@ -74,6 +74,8 @@ pub enum Command {
     PlayFrom { context_uri: String, index: u32, track_uri: Option<String> },
     /// Store the Soloist API key (keyring, else an owner-only file) and (re)start the Engine with it.
     SetSoloistKey { key: String },
+    /// Fetch an artist page; arrives as `Event::Artist`.
+    GetArtist { uri: String },
     /// Fetch lyrics for a track (Spotify's, else LRCLIB's); arrives as `Event::Lyrics`.
     GetLyrics { uri: String },
     /// Ask for a health report; arrives as `Event::Health`.
@@ -113,6 +115,8 @@ pub enum Event {
     Tracks(TrackPage),
     /// What the Engine is streaming right now (from Soloist's verbose log).
     Stream(StreamInfo),
+    /// An artist page (answer to `GetArtist`).
+    Artist(ArtistPage),
     /// Lyrics for a track (answer to `GetLyrics`); `lines` is empty when there are none.
     Lyrics(Lyrics),
     /// Answer to `GetHealth`.
@@ -172,6 +176,11 @@ pub struct Item {
     pub cover_url: Option<String>,
     pub duration_ms: u64,
     pub explicit: bool,
+    /// the artists' URIs, parallel to `artists` (for links)
+    #[serde(default)]
+    pub artist_uris: Vec<String>,
+    #[serde(default)]
+    pub album_uri: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -255,6 +264,9 @@ pub struct TrackPage {
     pub offset: u32,
     pub total: u32,
     pub tracks: Vec<TrackRow>,
+    /// only on the first page
+    #[serde(default)]
+    pub header: Option<ListHeader>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -267,6 +279,39 @@ pub struct TrackRow {
     pub added_at: Option<String>,
     pub duration_ms: u64,
     pub playable: bool,
+    /// the artists' URIs, parallel to `artists` (for links)
+    #[serde(default)]
+    pub artist_uris: Vec<String>,
+    #[serde(default)]
+    pub album_uri: Option<String>,
+}
+
+/// What a track list is, shown above it (sent with the first page).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ListHeader {
+    /// "Album · 2023 · Fixture Records", "Playlist · Nova Drift · 1 234 likes"
+    pub subtitle: String,
+    /// the album's artists (for links)
+    pub artists: Vec<Link>,
+    pub cover_url: Option<String>,
+}
+
+/// A name that opens something.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Link {
+    pub name: String,
+    pub uri: String,
+}
+
+/// An artist page: header, popular tracks, and Shelves of releases and related artists.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ArtistPage {
+    pub uri: String,
+    pub name: String,
+    pub monthly_listeners: Option<u64>,
+    pub image_url: Option<String>,
+    pub top_tracks: Vec<TrackRow>,
+    pub shelves: Vec<Shelf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

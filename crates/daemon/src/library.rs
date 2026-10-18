@@ -4,7 +4,7 @@
 //! `fetchPlaylist` and `getAlbum`.
 
 use serde_json::{Value, json};
-use singularity_proto::{LibraryItem, TrackRow};
+use singularity_proto::{ArtistPage, Card, LibraryItem, Link, ListHeader, Shelf, TrackRow};
 
 /// Liked Songs as the Client names it; the Daemon swaps in `spotify:user:<name>:collection` to play it.
 pub const LIKED: &str = "spotify:collection";
@@ -46,6 +46,27 @@ fn names(items: &Value) -> Vec<String> {
     items.as_array().into_iter().flatten().filter_map(|a| a["profile"]["name"].as_str().map(String::from)).collect()
 }
 
+fn uris(items: &Value) -> Vec<String> {
+    items.as_array().into_iter().flatten().filter_map(|a| a["uri"].as_str().map(String::from)).collect()
+}
+
+fn links(items: &Value) -> Vec<Link> {
+    items.as_array().into_iter().flatten().filter_map(|a| Some(Link { name: a["profile"]["name"].as_str()?.into(), uri: a["uri"].as_str()?.into() })).collect()
+}
+
+/// "1 234 567": thousands grouped by thin-ish spaces, as the desktop app shows them.
+pub fn grouped(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// One `libraryV3` page: its items and the total count (folders' contents are fetched separately).
 pub struct LibraryPage {
     pub items: Vec<LibraryItem>,
@@ -85,7 +106,11 @@ pub fn parse_track(v: &Value) -> Option<singularity_proto::Item> {
     let uri = t["uri"].as_str()?.to_string();
     let mut artists = names(&t["firstArtist"]["items"]);
     artists.extend(names(&t["otherArtists"]["items"]));
+    let mut artist_uris = uris(&t["firstArtist"]["items"]);
+    artist_uris.extend(uris(&t["otherArtists"]["items"]));
     Some(singularity_proto::Item {
+        artist_uris,
+        album_uri: t["albumOfTrack"]["uri"].as_str().map(String::from),
         uri,
         name: t["name"].as_str().unwrap_or_default().to_string(),
         artists,
@@ -114,6 +139,7 @@ pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
         _ => return (vec![], 0),
     };
     let album_name = v["data"]["albumUnion"]["name"].as_str().unwrap_or_default();
+    let album_uri = v["data"]["albumUnion"]["uri"].as_str();
     let rows = items
         .as_array()
         .into_iter()
@@ -132,6 +158,8 @@ pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
             }
             let ms = d["trackDuration"]["totalMilliseconds"].as_u64().or_else(|| d["duration"]["totalMilliseconds"].as_u64()).unwrap_or(0);
             Some(TrackRow {
+                artist_uris: uris(&d["artists"]["items"]),
+                album_uri: d["albumOfTrack"]["uri"].as_str().or(album_uri).map(String::from),
                 uri,
                 name: d["name"].as_str().unwrap_or_default().to_string(),
                 artists: names(&d["artists"]["items"]),
@@ -143,6 +171,103 @@ pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
         })
         .collect();
     (rows, total.unwrap_or(0) as u32)
+}
+
+/// What a list is (album: artists, year, label; playlist: owner, likes), from its first page.
+pub fn parse_header(uri: &str, v: &Value) -> Option<ListHeader> {
+    match uri.split(':').nth(1)? {
+        "album" => {
+            let a = &v["data"]["albumUnion"];
+            let kind = match a["type"].as_str().unwrap_or("ALBUM") {
+                "SINGLE" => "Single",
+                "EP" => "EP",
+                "COMPILATION" => "Compilation",
+                _ => "Album",
+            };
+            let year = a["date"]["isoString"].as_str().and_then(|d| d.get(..4)).map(String::from).or_else(|| a["date"]["year"].as_i64().map(|y| y.to_string())).unwrap_or_default();
+            let mut parts = vec![kind.to_string()];
+            parts.extend([year, a["label"].as_str().unwrap_or("").to_string()].into_iter().filter(|s| !s.is_empty()));
+            Some(ListHeader { subtitle: parts.join(" · "), artists: links(&a["artists"]["items"]), cover_url: image(&a["coverArt"]["sources"]) })
+        }
+        "playlist" => {
+            let p = &v["data"]["playlistV2"];
+            let mut parts = vec!["Playlist".to_string()];
+            if let Some(o) = p["ownerV2"]["data"]["name"].as_str() {
+                parts.push(o.into());
+            }
+            if let Some(f) = p["followers"].as_u64().filter(|f| *f > 0) {
+                parts.push(format!("{} likes", grouped(f)));
+            }
+            Some(ListHeader { subtitle: parts.join(" · "), artists: vec![], cover_url: image(&p["images"]["items"][0]["sources"]) })
+        }
+        _ => None,
+    }
+}
+
+/// A release (album, single…) as a Card: name, "2023 · Single", cover.
+fn release_card(r: &Value) -> Option<Card> {
+    let kind = match r["type"].as_str().unwrap_or("ALBUM") {
+        "SINGLE" => "Single",
+        "EP" => "EP",
+        "COMPILATION" => "Compilation",
+        _ => "Album",
+    };
+    let year = r["date"]["year"].as_i64().map(|y| format!("{y} · ")).unwrap_or_default();
+    Some(Card { uri: r["uri"].as_str()?.into(), name: r["name"].as_str()?.into(), subtitle: format!("{year}{kind}"), image_url: image(&r["coverArt"]["sources"]), kind: "album".into() })
+}
+
+/// `queryArtistOverview` → an artist page.
+pub fn parse_artist(v: &Value) -> Option<ArtistPage> {
+    let a = &v["data"]["artistUnion"];
+    let uri = a["uri"].as_str()?.to_string();
+    let d = &a["discography"];
+    let top_tracks = d["topTracks"]["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|it| {
+            let t = &it["track"];
+            Some(TrackRow {
+                uri: t["uri"].as_str()?.into(),
+                name: t["name"].as_str().unwrap_or_default().into(),
+                artists: names(&t["artists"]["items"]),
+                artist_uris: uris(&t["artists"]["items"]),
+                album: t["albumOfTrack"]["name"].as_str().unwrap_or_default().into(),
+                album_uri: t["albumOfTrack"]["uri"].as_str().map(String::from),
+                added_at: None,
+                duration_ms: t["duration"]["totalMilliseconds"].as_u64().unwrap_or(0),
+                playable: t["playability"]["playable"].as_bool().unwrap_or(true),
+            })
+        })
+        .collect();
+    // albums, singles and appearances come wrapped as {releases: {items: [release]}}
+    let wrapped = |x: &Value| x["items"].as_array().into_iter().flatten().filter_map(|w| release_card(&w["releases"]["items"][0])).collect::<Vec<_>>();
+    let plain = |x: &Value| x["items"].as_array().into_iter().flatten().filter_map(release_card).collect::<Vec<_>>();
+    let related: Vec<Card> = a["relatedContent"]["relatedArtists"]["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| Some(Card { uri: r["uri"].as_str()?.into(), name: r["profile"]["name"].as_str()?.into(), subtitle: "Artist".into(), image_url: image(&r["visuals"]["avatarImage"]["sources"]), kind: "artist".into() }))
+        .collect();
+    let shelves = [
+        ("Popular releases", plain(&d["popularReleasesAlbums"])),
+        ("Albums", wrapped(&d["albums"])),
+        ("Singles and EPs", wrapped(&d["singles"])),
+        ("Appears on", wrapped(&a["relatedContent"]["appearsOn"])),
+        ("Fans also like", related),
+    ]
+    .into_iter()
+    .filter(|(_, c)| !c.is_empty())
+    .map(|(t, cards)| Shelf { title: t.into(), kind: "shelf".into(), cards })
+    .collect();
+    Some(ArtistPage {
+        uri,
+        name: a["profile"]["name"].as_str().unwrap_or_default().into(),
+        monthly_listeners: a["stats"]["monthlyListeners"].as_u64(),
+        image_url: image(&a["visuals"]["avatarImage"]["sources"]),
+        top_tracks,
+        shelves,
+    })
 }
 
 #[cfg(test)]
@@ -193,6 +318,26 @@ mod tests {
             "duration": {"totalMilliseconds": 210000}, "contentRating": {"label": "NONE"}}}});
         let i = parse_track(&v).unwrap();
         assert_eq!((i.name.as_str(), i.artists.len(), i.duration_ms, i.album.as_deref()), ("Perihelion", 2, 210_000, Some("Quiet Orbit")));
+    }
+
+    /// Against real answers saved by `examples/probe.rs --raw` (never committed):
+    /// `SGL_LIVE_ALBUM=… SGL_LIVE_ARTIST=… cargo test -p singularityd live_shapes -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_shapes() {
+        let read = |k: &str| std::env::var(k).ok().map(|p| serde_json::from_str::<Value>(&std::fs::read_to_string(p).unwrap()).unwrap());
+        if let Some(v) = read("SGL_LIVE_ALBUM") {
+            let uri = v["data"]["albumUnion"]["uri"].as_str().unwrap().to_string();
+            let h = parse_header(&uri, &v).unwrap();
+            let (rows, _) = parse_tracks(&uri, &v);
+            println!("album header: {:?} · {} artists · cover {} · rows with artist uris {}/{}", h.subtitle.split(" · ").next(), h.artists.len(), h.cover_url.is_some(), rows.iter().filter(|r| !r.artist_uris.is_empty()).count(), rows.len());
+            assert!(!h.artists.is_empty() && rows.iter().all(|r| r.album_uri.is_some()));
+        }
+        if let Some(v) = read("SGL_LIVE_ARTIST") {
+            let p = parse_artist(&v).unwrap();
+            println!("artist: {} top tracks · shelves {:?} · listeners {}", p.top_tracks.len(), p.shelves.iter().map(|s| (s.title.clone(), s.cards.len())).collect::<Vec<_>>(), p.monthly_listeners.is_some());
+            assert!(!p.top_tracks.is_empty() && !p.shelves.is_empty());
+        }
     }
 
     #[test]

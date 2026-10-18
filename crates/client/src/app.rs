@@ -44,6 +44,8 @@ pub enum Action {
     Logout,
     RefreshHome,
     GoHome,
+    Back,
+    Forward,
     Filter,
     SortTitle,
     SortArtist,
@@ -62,7 +64,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 30] = [
+    pub const ALL: [Action; 32] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -78,6 +80,8 @@ impl Action {
         Action::Logout,
         Action::RefreshHome,
         Action::GoHome,
+        Action::Back,
+        Action::Forward,
         Action::Filter,
         Action::SortTitle,
         Action::SortArtist,
@@ -111,6 +115,8 @@ impl Action {
             Action::Logout => "Log out of Spotify",
             Action::RefreshHome => "Refresh Home",
             Action::GoHome => "Go to Home",
+            Action::Back => "Back",
+            Action::Forward => "Forward",
             Action::Filter => "Filter this track list",
             Action::SortTitle => "Sort list by title",
             Action::SortArtist => "Sort list by artist",
@@ -142,7 +148,9 @@ impl Action {
             Action::Shuffle => "s",
             Action::Repeat => "r",
             Action::Login | Action::Logout | Action::RefreshHome => "",
-            Action::GoHome => "Backspace",
+            Action::GoHome => "",
+            Action::Back => "Alt+← · Backspace",
+            Action::Forward => "Alt+→",
             Action::Filter => "/",
             Action::SortTitle | Action::SortArtist | Action::SortAlbum | Action::SortAdded | Action::SortDuration => "",
             Action::NextLook => "v",
@@ -180,6 +188,12 @@ pub enum Hit {
     QueueRow(usize),
     /// a synced lyric line: where it starts (ms)
     Lyric(u64),
+    /// a name that opens its artist, album or playlist
+    Link(singularity_proto::Link),
+    /// ▶ Play on an artist page
+    PlayArtist,
+    /// a popular track on an artist page
+    TopTrack(usize),
 }
 
 /// Two clicks on the same row within this time play it.
@@ -207,6 +221,16 @@ pub enum Target {
     Row(usize),
     /// a queue entry: its URI and uid, and whether the user queued it
     Queued { uri: String, uid: String, name: String, queued: bool },
+    /// any other track (an artist's popular tracks)
+    Track { uri: String, name: String },
+}
+
+/// What the main Pane shows; back/forward walk these.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Page {
+    Home,
+    List { uri: String, title: String, subtitle: String },
+    Artist { uri: String, name: String },
 }
 
 pub struct Menu {
@@ -270,8 +294,16 @@ pub struct App {
     pub sidebar: Sidebar,
     /// track lists received so far, by URI
     pub lists: HashMap<String, TrackList>,
-    /// the open track list (None: the main Pane shows Home)
+    /// the open track list (None: the main Pane shows Home or an artist)
     pub view: Option<TrackView>,
+    /// the open artist page
+    pub artist: Option<crate::artist::ArtistView>,
+    artist_pages: HashMap<String, singularity_proto::ArtistPage>,
+    /// history: pages to go back and forward to
+    pub back: Vec<Page>,
+    pub forward: Vec<Page>,
+    /// each list's sort, filter and scroll, kept while you browse elsewhere
+    list_views: HashMap<String, TrackView>,
     last_click: Option<(Instant, usize)>,
     pub meters: Meters,
     pub stream: Option<singularity_proto::StreamInfo>,
@@ -325,6 +357,11 @@ impl App {
             sidebar: Sidebar::default(),
             lists: HashMap::new(),
             view: None,
+            artist: None,
+            artist_pages: HashMap::new(),
+            back: vec![],
+            forward: vec![],
+            list_views: HashMap::new(),
             last_click: None,
             meters: Meters::default(),
             stream: None,
@@ -414,10 +451,9 @@ impl App {
             Action::Login => self.send(Command::Login),
             Action::Logout => self.send(Command::Logout),
             Action::RefreshHome => self.send(Command::GetHome),
-            Action::GoHome => {
-                self.view = None;
-                self.focus = "home".into();
-            }
+            Action::GoHome => self.navigate(Page::Home),
+            Action::Back => self.go_back(),
+            Action::Forward => self.go_forward(),
             Action::Filter => match self.view.as_mut() {
                 Some(v) => {
                     v.filtering = true;
@@ -507,6 +543,10 @@ impl App {
         if self.focus == "home" && !shift && self.view.is_none() && self.home_key(k) {
             return;
         }
+        // Esc on an artist page goes back, never quits
+        if self.artist.is_some() && k.code == KeyCode::Esc {
+            return self.run(Action::Back);
+        }
         if self.focus == "library" && !shift && self.side_key(k) {
             return;
         }
@@ -522,14 +562,15 @@ impl App {
             KeyCode::Char(' ') => self.run(Action::TogglePlay),
             KeyCode::Char('n') => self.run(Action::Next),
             KeyCode::Char('b') => self.run(Action::Previous),
-            KeyCode::Left if k.modifiers.contains(KeyModifiers::ALT) => self.run(Action::GoHome),
+            KeyCode::Left if k.modifiers.contains(KeyModifiers::ALT) => self.run(Action::Back),
+            KeyCode::Right if k.modifiers.contains(KeyModifiers::ALT) => self.run(Action::Forward),
             // arrows navigate a focused Pane that has something to navigate; elsewhere they seek
             KeyCode::Right => self.run(Action::SeekForward),
             KeyCode::Left => self.run(Action::SeekBack),
             KeyCode::Char('/') => self.run(Action::Filter),
             KeyCode::Char('v') => self.run(Action::NextLook),
             KeyCode::Char('f') if ctrl => self.run(Action::Filter),
-            KeyCode::Backspace => self.run(Action::GoHome),
+            KeyCode::Backspace => self.run(Action::Back),
             KeyCode::Char('.') => self.run(Action::SeekForwardFine),
             KeyCode::Char(',') => self.run(Action::SeekBackFine),
             KeyCode::Char('+') | KeyCode::Char('=') => self.run(Action::VolumeUp),
@@ -543,10 +584,10 @@ impl App {
 
     /// Keys for the focused Home; returns false for keys it doesn't use.
     fn home_key(&mut self, k: KeyEvent) -> bool {
-        if self.home.as_ref().is_none_or(|h| h.shelves.is_empty()) {
+        if self.active_feed().is_none_or(|h| h.shelves.is_empty()) {
             return false;
         }
-        let v = &mut self.home_view;
+        let v = self.feed_view();
         match k.code {
             KeyCode::Left => v.move_sel(-1, 0),
             KeyCode::Right => v.move_sel(1, 0),
@@ -588,32 +629,134 @@ impl App {
         }
     }
 
-    /// Open something in the main Pane: an album, playlist or Liked Songs shows its track list.
+    /// Open something in the main Pane: an album, playlist or Liked Songs shows its track list, an artist its page.
     pub fn open(&mut self, uri: &str, name: &str, subtitle: &str, kind: &str) {
         // Home's "Liked Songs" shortcut comes as the user's collection URI
         let uri = if kind == "liked" || uri.ends_with(":collection") || uri.contains(":collection:") { crate::tracks::LIKED } else { uri };
-        match kind {
-            "liked" | "playlist" | "album" | "collection" => {}
-            _ if uri == crate::tracks::LIKED => {}
-            "artist" => return self.say("Artist pages arrive with #11"),
+        let kind = if kind.is_empty() { uri.split(':').nth(1).unwrap_or("") } else { kind };
+        let page = match kind {
+            _ if uri == crate::tracks::LIKED => Page::List { uri: uri.into(), title: "Liked Songs".into(), subtitle: subtitle.into() },
+            "playlist" | "album" => Page::List { uri: uri.into(), title: name.into(), subtitle: subtitle.into() },
+            "artist" => Page::Artist { uri: uri.into(), name: name.into() },
             "show" | "episode" => return self.say("Podcasts arrive in v1.x"),
             _ => return,
+        };
+        self.navigate(page);
+    }
+
+    /// A link: its kind is in its URI.
+    pub fn open_link(&mut self, l: &singularity_proto::Link) {
+        self.open(&l.uri, &l.name, "", "");
+    }
+
+    pub fn current_page(&self) -> Page {
+        if let Some(a) = &self.artist {
+            return Page::Artist { uri: a.uri.clone(), name: a.name.clone() };
         }
+        match &self.view {
+            Some(v) => Page::List { uri: v.uri.clone(), title: v.title.clone(), subtitle: v.subtitle.clone() },
+            None => Page::Home,
+        }
+    }
+
+    /// Go to `p`, remembering where we were.
+    pub fn navigate(&mut self, p: Page) {
+        let here = self.current_page();
+        if here != p {
+            self.back.push(here);
+            self.forward.clear();
+        }
+        self.show(p);
+    }
+
+    fn go_back(&mut self) {
+        if let Some(p) = self.back.pop() {
+            self.forward.push(self.current_page());
+            self.show(p);
+        }
+    }
+
+    fn go_forward(&mut self) {
+        if let Some(p) = self.forward.pop() {
+            self.back.push(self.current_page());
+            self.show(p);
+        }
+    }
+
+    /// Put `p` in the main Pane (no history change).
+    fn show(&mut self, p: Page) {
+        // keep the list we leave as it was (sort, filter, scroll)
+        if let Some(v) = self.view.take() {
+            self.list_views.insert(v.uri.clone(), v);
+        }
+        self.artist = None;
         self.focus = "home".into();
-        if self.view.as_ref().is_none_or(|v| v.uri != uri) {
-            let mut v = TrackView::new(uri, name);
-            v.subtitle = subtitle.to_string();
-            self.view = Some(v);
+        match p {
+            Page::Home => {}
+            Page::List { uri, title, subtitle } => {
+                let v = self.list_views.remove(&uri).unwrap_or_else(|| {
+                    let mut v = TrackView::new(&uri, &title);
+                    v.subtitle = subtitle;
+                    v
+                });
+                self.view = Some(v);
+                if self.lists.get(&uri).is_none_or(|l| !l.complete()) {
+                    self.lists.remove(&uri);
+                    self.send(Command::GetTracks { uri });
+                }
+            }
+            Page::Artist { uri, name } => {
+                let mut a = crate::artist::ArtistView::new(&uri, &name);
+                match self.artist_pages.get(&uri) {
+                    Some(p) => a.set_page(p.clone()),
+                    None => self.send(Command::GetArtist { uri }),
+                }
+                self.artist = Some(a);
+            }
         }
-        if self.lists.get(uri).is_none_or(|l| !l.complete()) {
-            self.lists.remove(uri);
-            self.send(Command::GetTracks { uri: uri.to_string() });
+    }
+
+    /// An artist page from the Daemon.
+    pub fn artist_page(&mut self, p: singularity_proto::ArtistPage) {
+        if let Some(a) = self.artist.as_mut().filter(|a| a.uri == p.uri) {
+            a.set_page(p.clone());
         }
+        self.artist_pages.insert(p.uri.clone(), p);
+    }
+
+    /// The Shelves on screen (Home's, or the artist page's) and their view state.
+    fn active_feed(&self) -> Option<&singularity_proto::HomeFeed> {
+        match &self.artist {
+            Some(a) => Some(&a.feed),
+            None => self.home.as_ref(),
+        }
+    }
+
+    pub fn feed_view(&mut self) -> &mut HomeView {
+        match self.artist.as_mut() {
+            Some(a) => &mut a.shelves,
+            None => &mut self.home_view,
+        }
+    }
+
+    fn play_artist(&mut self) {
+        if let Some(a) = &self.artist {
+            let uri = a.uri.clone();
+            self.send(Command::Play { uri: Some(uri) });
+        }
+    }
+
+    /// Popular track `i`: the artist's context from that track.
+    fn play_top(&mut self, i: usize) {
+        let Some(a) = &self.artist else { return };
+        let Some(t) = a.page.as_ref().and_then(|p| p.top_tracks.get(i)) else { return };
+        let cmd = Command::PlayFrom { context_uri: a.uri.clone(), index: i as u32, track_uri: Some(t.uri.clone()) };
+        self.send(cmd);
     }
 
     /// Open a Home Card (clicking never plays it: the list opens, with ▶ Play there).
     fn open_card(&mut self, c: CardRef) {
-        self.home_view.sel = Some(c);
+        self.feed_view().sel = Some(c);
         if let Some(k) = self.card(c).cloned() {
             self.open(&k.uri, &k.name, &k.subtitle, &k.kind);
         }
@@ -704,7 +847,7 @@ impl App {
             }
             // Esc clears the filter, then goes back to Home (it never quits from inside a list)
             KeyCode::Esc if !v.filter.is_empty() => v.set_filter(String::new()),
-            KeyCode::Esc => self.run(Action::GoHome),
+            KeyCode::Esc => self.run(Action::Back),
             _ => return false,
         }
         true
@@ -752,7 +895,7 @@ impl App {
     }
 
     fn card(&self, c: CardRef) -> Option<&singularity_proto::Card> {
-        self.home.as_ref()?.shelves.get(c.shelf)?.cards.get(c.card)
+        self.active_feed()?.shelves.get(c.shelf)?.cards.get(c.card)
     }
 
     fn play_card(&mut self, c: CardRef) {
@@ -776,7 +919,7 @@ impl App {
         }
         items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::Card(c)).map(|r| (r.x + 2, r.y + 1))).unwrap_or((0, 0));
-        self.home_view.sel = Some(c);
+        self.feed_view().sel = Some(c);
         self.menu = Some(Menu { at, target: Target::Card(c), items, selected: 0 });
     }
 
@@ -829,7 +972,7 @@ impl App {
                 let row = self.lists.get(&v.uri)?.rows.get(*order.get(*vi)?)?;
                 Some((row.uri.clone(), row.name.clone(), "track".into()))
             }
-            Target::Queued { uri, name, .. } => Some((uri.clone(), name.clone(), "track".into())),
+            Target::Queued { uri, name, .. } | Target::Track { uri, name } => Some((uri.clone(), name.clone(), "track".into())),
         }
     }
 
@@ -1086,6 +1229,13 @@ impl App {
                         self.focus = "queue".into();
                         self.open_queue_menu(i, at);
                     }
+                    Some(Hit::TopTrack(i)) => {
+                        let t = self.artist.as_ref().and_then(|a| a.page.as_ref()?.top_tracks.get(i).cloned());
+                        if let Some(t) = t {
+                            let items = vec![("Play next".to_string(), MenuAct::PlayNext), ("Add to queue".into(), MenuAct::Queue), ("Copy link".into(), MenuAct::CopyLink)];
+                            self.menu = Some(Menu { at: at.unwrap_or((0, 0)), target: Target::Track { uri: t.uri, name: t.name }, items, selected: 0 });
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1129,7 +1279,22 @@ impl App {
                         self.open_card(c);
                     }
                     Some(Hit::PlayView) => self.play_view(),
-                    Some(Hit::ShelfScroll(row, d)) => self.home_view.scroll_shelf(row, d),
+                    Some(Hit::ShelfScroll(row, d)) => self.feed_view().scroll_shelf(row, d),
+                    Some(Hit::Link(l)) => self.open_link(&l),
+                    Some(Hit::PlayArtist) => self.play_artist(),
+                    Some(Hit::TopTrack(i)) => {
+                        // top tracks share the double-click memory with list rows, kept apart by index
+                        let double = self.last_click.is_some_and(|(t, j)| j == usize::MAX - i && t.elapsed() < DOUBLE_CLICK);
+                        if let Some(a) = self.artist.as_mut() {
+                            a.top_sel = i;
+                        }
+                        if double {
+                            self.last_click = None;
+                            self.play_top(i);
+                        } else {
+                            self.last_click = Some((Instant::now(), usize::MAX - i));
+                        }
+                    }
                     Some(Hit::MenuItem(_)) => {}
                     Some(Hit::Focus(s)) => self.focus = s,
                     Some(Hit::Divider(i)) => {
@@ -1189,7 +1354,7 @@ impl App {
             MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
                 let d = if m.kind == MouseEventKind::ScrollLeft { -1 } else { 1 };
                 if let Some(row) = self.home_row_at(m.column, m.row) {
-                    self.home_view.scroll_shelf(row, d);
+                    self.feed_view().scroll_shelf(row, d);
                 }
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
@@ -1222,8 +1387,8 @@ impl App {
                 if over_home && self.menu.is_none() {
                     // Shift+wheel scrolls the Shelf under the pointer sideways
                     match self.home_row_at(m.column, m.row) {
-                        Some(row) if coarse => self.home_view.scroll_shelf(row, -sign as i32),
-                        _ => self.home_view.scroll_rows(-sign as i32),
+                        Some(row) if coarse => self.feed_view().scroll_shelf(row, -sign as i32),
+                        _ => self.feed_view().scroll_rows(-sign as i32),
                     }
                     return;
                 }
@@ -1253,7 +1418,13 @@ impl App {
     /// The Home row under the pointer: a Card's row, or a Shelf title's ‹ › buttons.
     fn home_row_at(&self, x: u16, y: u16) -> Option<usize> {
         match self.hit_at(x, y)? {
-            Hit::Card(c) => self.home_view.rows.iter().position(|r| r.cards.contains(&c)),
+            Hit::Card(c) => {
+                let rows = match &self.artist {
+                    Some(a) => &a.shelves.rows,
+                    None => &self.home_view.rows,
+                };
+                rows.iter().position(|r| r.cards.contains(&c))
+            }
             Hit::ShelfScroll(row, _) => Some(row),
             _ => None,
         }

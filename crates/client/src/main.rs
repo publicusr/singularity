@@ -1,6 +1,7 @@
 //! `singularity`: the terminal Client.
 
 mod app;
+mod artist;
 mod conn;
 mod covers;
 mod gfx;
@@ -151,6 +152,7 @@ fn apply(app: &mut App, ev: ConnEvent) {
         }
         ConnEvent::Msg(DaemonMsg::Event(Event::Stream(s))) => app.stream = Some(s),
         ConnEvent::Msg(DaemonMsg::Event(Event::Health(h))) => app.health = Some(h),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Artist(p))) => app.artist_page(p),
         ConnEvent::Msg(DaemonMsg::Event(Event::Lyrics(l))) => {
             if app.playback.item.as_ref().is_some_and(|i| i.uri == l.uri) {
                 app.lyrics_scroll = 0;

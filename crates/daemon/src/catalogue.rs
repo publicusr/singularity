@@ -42,6 +42,7 @@ pub enum CatCmd {
     Describe(Vec<String>),
     /// lyrics for a track; `meta` (name, artists, album, duration) helps the LRCLIB fallback
     Lyrics { uri: String, meta: Option<singularity_proto::Item> },
+    Artist(String),
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +55,7 @@ pub enum CatEvent {
     ToEngine(Command),
     Described(Vec<singularity_proto::Item>),
     Lyrics(singularity_proto::Lyrics),
+    Artist(singularity_proto::ArtistPage),
     Error(String),
 }
 
@@ -92,11 +94,12 @@ struct State {
     tracks: HashMap<String, (Instant, Vec<TrackPage>)>,
     described: HashMap<String, singularity_proto::Item>,
     lyrics: HashMap<String, singularity_proto::Lyrics>,
+    artists: HashMap<String, (Instant, singularity_proto::ArtistPage)>,
 }
 
 async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
     let registry = QueryRegistry::new(dirs.queries.clone());
-    let mut st = State { dirs, session: None, registry, ev, remote: None, tracks: HashMap::new(), described: HashMap::new(), lyrics: HashMap::new() };
+    let mut st = State { dirs, session: None, registry, ev, remote: None, tracks: HashMap::new(), described: HashMap::new(), lyrics: HashMap::new(), artists: HashMap::new() };
     // resume a previous login
     if saved_credentials(&st.dirs).is_some() {
         if st.connect(None).await {
@@ -122,6 +125,7 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
             CatCmd::Queue(edit) => st.queue(edit).await,
             CatCmd::Describe(uris) => st.describe(uris).await,
             CatCmd::Lyrics { uri, meta } => st.lyrics(uri, meta).await,
+            CatCmd::Artist(uri) => st.artist(uri).await,
         }
     }
 }
@@ -150,6 +154,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                     QueueEdit::Clear => Command::ClearQueue,
                 })],
                 CatCmd::Lyrics { uri, .. } => vec![CatEvent::Lyrics(fake_lyrics(&uri))],
+                CatCmd::Artist(uri) => vec![CatEvent::Artist(fake_artist(&uri, &home))],
                 CatCmd::Describe(uris) => vec![CatEvent::Described(
                     uris.into_iter().map(|u| singularity_proto::Item { name: format!("Described {}", u.rsplit(':').next().unwrap_or("")), uri: u, artists: vec!["Fake Artist".into()], duration_ms: 180_000, ..Default::default() }).collect(),
                 )],
@@ -160,6 +165,28 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
         }
     });
     (cmd_tx, ev_rx)
+}
+
+/// An invented artist page: top tracks, and the Home feed's first Shelves as releases.
+fn fake_artist(uri: &str, home: &HomeFeed) -> singularity_proto::ArtistPage {
+    let mut shelves: Vec<Shelf> = home.shelves.iter().filter(|s| s.kind == "shelf").take(3).cloned().collect();
+    for (s, t) in shelves.iter_mut().zip(["Popular releases", "Albums", "Fans also like"]) {
+        s.title = t.into();
+    }
+    let top_tracks = (0..10)
+        .map(|i| singularity_proto::TrackRow {
+            uri: format!("spotify:track:top{i}"),
+            name: format!("Hit {}", i + 1),
+            artists: vec!["Nova Drift".into()],
+            artist_uris: vec![uri.into()],
+            album: "Greatest Orbits".into(),
+            album_uri: Some("spotify:album:fake1".into()),
+            added_at: None,
+            duration_ms: 200_000 + i * 3_000,
+            playable: true,
+        })
+        .collect();
+    singularity_proto::ArtistPage { uri: uri.into(), name: "Nova Drift".into(), monthly_listeners: Some(1_234_567), image_url: None, top_tracks, shelves }
 }
 
 /// Invented synced lyrics, one line every 4 s, for UI work.
@@ -201,9 +228,16 @@ fn fake_tracks(uri: &str) -> Vec<CatEvent> {
                     added_at: Some(format!("2025-{:02}-{:02}T12:00:00Z", 1 + (i % 12), 1 + (i * 3) % 28)),
                     duration_ms: 120_000 + (i as u64 * 7919) % 240_000,
                     playable: i % 17 != 16,
+                    artist_uris: vec![format!("spotify:artist:fake{}", i as usize % artists.len())],
+                    album_uri: Some(format!("spotify:album:fake{}", (i * 7) % 13 + 1)),
                 })
                 .collect();
-            CatEvent::Tracks(TrackPage { uri: uri.into(), offset, total, tracks })
+            let header = (offset == 0 && uri.contains(":album:")).then(|| singularity_proto::ListHeader {
+                subtitle: "Album · 2024 · Fake Records".into(),
+                artists: vec![singularity_proto::Link { name: "Nova Drift".into(), uri: "spotify:artist:fake0".into() }],
+                cover_url: None,
+            });
+            CatEvent::Tracks(TrackPage { uri: uri.into(), offset, total, tracks, header })
         })
         .collect()
 }
@@ -408,7 +442,8 @@ impl State {
                 "getAlbum" => library::ALBUM_PAGE,
                 _ => library::TRACK_PAGE,
             };
-            let page = TrackPage { uri: uri.clone(), offset, total, tracks };
+            let header = if offset == 0 { library::parse_header(&uri, &v) } else { None };
+            let page = TrackPage { uri: uri.clone(), offset, total, tracks, header };
             let _ = self.ev.send(CatEvent::Tracks(page.clone())).await;
             pages.push(page);
             offset += page_len;
@@ -476,6 +511,29 @@ impl State {
         }
         if !out.is_empty() {
             let _ = self.ev.send(CatEvent::Described(out)).await;
+        }
+    }
+
+    async fn artist(&mut self, uri: String) {
+        if let Some((at, p)) = self.artists.get(&uri)
+            && at.elapsed() < TRACKS_TTL
+        {
+            let _ = self.ev.send(CatEvent::Artist(p.clone())).await;
+            return;
+        }
+        match self.query("queryArtistOverview", json!({ "uri": uri, "locale": "", "includePrerelease": true })).await {
+            Ok(v) => match library::parse_artist(&v) {
+                Some(p) => {
+                    self.artists.insert(uri, (Instant::now(), p.clone()));
+                    let _ = self.ev.send(CatEvent::Artist(p)).await;
+                }
+                None => {
+                    let _ = self.ev.send(CatEvent::Error("Spotify answered, but the artist page had an unexpected shape".into())).await;
+                }
+            },
+            Err(e) => {
+                let _ = self.ev.send(CatEvent::Error(format!("Artist page unavailable: {e}"))).await;
+            }
         }
     }
 

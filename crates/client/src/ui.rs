@@ -167,8 +167,9 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
     for (slot, rect) in &computed.slots {
         let (title, todo) = slot_info(slot);
         // the main Pane is titled after what it shows
-        let title = match (slot.as_str(), &app.view) {
-            ("home", Some(v)) => v.title.clone(),
+        let title = match (slot.as_str(), &app.view, &app.artist) {
+            ("home", _, Some(a)) => a.name.clone(),
+            ("home", Some(v), _) => v.title.clone(),
             _ => title.to_string(),
         };
         let focused = *slot == app.focus;
@@ -211,6 +212,10 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             crate::meters::loudness(f.buffer_mut(), inner, &app.meters, th);
             continue;
         }
+        if slot == "home" && app.artist.is_some() {
+            crate::artist::draw(f.buffer_mut(), inner, app, th);
+            continue;
+        }
         if slot == "home" && app.view.is_some() {
             crate::tracks::draw(f.buffer_mut(), inner, app, th);
             continue;
@@ -251,6 +256,26 @@ fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     let tw = (r.width / 4).max(16);
     text(buf, r.x + 1, y, tw, &title, th.s(th.fg).add_modifier(Modifier::BOLD));
     text(buf, r.x + 1, y + 1, tw, &artists, th.s(th.dim));
+    // the title opens its album, each artist their page
+    if let Some(i) = &pb.item {
+        if let Some(au) = &i.album_uri {
+            let w = (i.name.chars().count() as u16).min(tw);
+            app.hit(Rect::new(r.x + 1, y, w, 1), Hit::Link(singularity_proto::Link { name: i.album.clone().unwrap_or_default(), uri: au.clone() }));
+        }
+        let mut ax = r.x + 1;
+        for (k, (name, uri)) in i.artists.iter().zip(&i.artist_uris).enumerate() {
+            if k > 0 {
+                ax += 2;
+            }
+            let w = (name.chars().count() as u16).min((r.x + 1 + tw).saturating_sub(ax));
+            if w == 0 {
+                break;
+            }
+            app.hit(Rect::new(ax, y + 1, w, 1), Hit::Link(singularity_proto::Link { name: name.clone(), uri: uri.clone() }));
+            ax += w;
+        }
+    }
+    let buf = f.buffer_mut();
 
     let mid_w = (r.width / 2).max(30).min(r.width.saturating_sub(4));
     let mx = r.x + (r.width - mid_w) / 2;
@@ -436,13 +461,14 @@ fn login(f: &mut Frame, r: Rect, th: &Theme, url: &str, code: &str) {
     text(buf, inner.x + 2, inner.y + 6, inner.width.saturating_sub(4), "Singularity never sees your password.  Esc hides this.", th.s(th.dim));
 }
 
-const HELP_ROWS: [(&str, &str); 8] = [
+const HELP_ROWS: [(&str, &str); 9] = [
     ("Mouse", "click anything · drag pane borders · drag seek/volume · scroll"),
     ("Ctrl+K  :", "command palette: find any action by typing"),
     ("Space", "play / pause"),
     ("⇧← ⇧→", "seek 5 s    , .  seek 1 s    n / b  next / previous"),
     ("+ -", "volume           s / r   shuffle / repeat"),
     ("↑↓←→ ⏎", "move through Home, play · right-click or Menu key: more"),
+    ("Alt+← →", "back / forward (Esc and Backspace go back too)"),
     ("Tab", "focus the next pane"),
     ("q / Esc", "quit the Client (music keeps playing)"),
 ];
@@ -822,9 +848,10 @@ mod tests {
                 added_at: Some("2025-01-01T00:00:00Z".into()),
                 duration_ms: 180_000 + i as u64,
                 playable: true,
+                ..Default::default()
             })
             .collect();
-        singularity_proto::TrackPage { uri: "spotify:collection".into(), offset, total, tracks }
+        singularity_proto::TrackPage { uri: "spotify:collection".into(), offset, total, tracks, header: None }
     }
 
     fn side_rect(app: &App, row: usize) -> Rect {
@@ -1072,5 +1099,65 @@ mod tests {
         // none: a calm empty state
         app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), ..Default::default() });
         assert!(render(&mut app, 160, 48).contains("no lyrics for this one"));
+    }
+
+    // ── Album & artist pages, history (#11) ──
+
+    fn fake_artist() -> singularity_proto::ArtistPage {
+        use singularity_proto::{Card, Shelf, TrackRow};
+        let top = (0..10).map(|i| TrackRow { uri: format!("spotify:track:hit{i}"), name: format!("Hit {i}"), artists: vec!["Nova Drift".into()], album: "Orbits".into(), album_uri: Some("spotify:album:orbits".into()), duration_ms: 200_000, playable: true, ..Default::default() }).collect();
+        let card = |n: &str| Card { uri: format!("spotify:album:{n}"), name: n.into(), subtitle: "2024 · Album".into(), image_url: None, kind: "album".into() };
+        singularity_proto::ArtistPage { uri: "spotify:artist:nova".into(), name: "Nova Drift".into(), monthly_listeners: Some(1_234_567), image_url: None, top_tracks: top, shelves: vec![Shelf { title: "Albums".into(), kind: "shelf".into(), cards: vec![card("orbits"), card("drift")] }] }
+    }
+
+    #[test]
+    fn names_are_links_and_history_walks_back_and_forth() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = library_app();
+        render(&mut app, 160, 48);
+        let r = side_rect(&app, 1);
+        click(&mut app, r.x + 3, r.y);
+        sent(&mut rx);
+        let mut p = page(0, 10, 10);
+        for (i, t) in p.tracks.iter_mut().enumerate() {
+            t.artist_uris = vec![format!("spotify:artist:a{i}")];
+            t.album_uri = Some("spotify:album:orbits".into());
+        }
+        p.tracks[0].artist_uris = vec!["spotify:artist:nova".into()];
+        app.track_page(p);
+        render(&mut app, 200, 48);
+        // sort the list, so we can see it's remembered later
+        app.run(Action::SortTitle);
+        let s = render(&mut app, 200, 48);
+        assert!(s.contains("Title ↑"));
+        // click an artist's name in a row: their page opens
+        let link = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Link(l) if l.uri == "spotify:artist:nova").then_some(*r)).unwrap();
+        click(&mut app, link.x, link.y);
+        assert_eq!(sent(&mut rx), vec![Command::GetArtist { uri: "spotify:artist:nova".into() }]);
+        app.artist_page(fake_artist());
+        let s = render(&mut app, 200, 48);
+        assert!(s.contains("Nova Drift") && s.contains("1 234 567 monthly listeners") && s.contains("Popular") && s.contains("Hit 0") && s.contains("Albums"), "{s}");
+        // a release opens its track list
+        let card = card_rect_any(&app);
+        click(&mut app, card.x + 2, card.y + 1);
+        assert_eq!(sent(&mut rx), vec![Command::GetTracks { uri: "spotify:album:orbits".into() }]);
+        // back: the artist (from cache), back again: Liked Songs, still sorted
+        app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert!(app.artist.is_some() && sent(&mut rx).is_empty(), "no refetch");
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.view.as_ref().map(|v| (v.uri.as_str(), v.sort.is_some())), Some(("spotify:collection", true)));
+        // forward again
+        app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert!(app.artist.is_some());
+        // double-click a popular track: the artist's context from there
+        render(&mut app, 200, 48);
+        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopTrack(2)).then_some(*r)).unwrap();
+        click(&mut app, row.x + 6, row.y);
+        click(&mut app, row.x + 6, row.y);
+        assert_eq!(sent(&mut rx), vec![Command::PlayFrom { context_uri: "spotify:artist:nova".into(), index: 2, track_uri: Some("spotify:track:hit2".into()) }]);
+    }
+
+    fn card_rect_any(app: &App) -> Rect {
+        app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Card(_)).then_some(*r)).unwrap()
     }
 }

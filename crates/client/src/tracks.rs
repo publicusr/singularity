@@ -41,6 +41,7 @@ impl Col {
 pub struct TrackList {
     pub total: u32,
     pub rows: Vec<TrackRow>,
+    pub header: Option<singularity_proto::ListHeader>,
 }
 
 impl TrackList {
@@ -51,6 +52,9 @@ impl TrackList {
     /// Add a page; pages may repeat (a cache replay) and are placed by offset.
     pub fn add(&mut self, p: &TrackPage) {
         self.total = p.total;
+        if p.header.is_some() {
+            self.header = p.header.clone();
+        }
         let at = p.offset as usize;
         if at > self.rows.len() {
             return; // a gap: ignore until the missing page arrives
@@ -172,6 +176,19 @@ fn columns(w: u16) -> [(u16, u16); 6] {
     out
 }
 
+/// "1 234 567"
+pub fn grouped(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn clip(s: &str, w: u16) -> String {
     let w = w.saturating_sub(1) as usize; // one cell of gutter
     if s.chars().count() <= w {
@@ -212,7 +229,25 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let play = " ▶ Play ";
     text(buf, x0, r.y + 1, 8, play, th.chip(th.accent));
     hits.push((Rect::new(x0, r.y + 1, 8, 1), Hit::PlayView));
-    text(buf, x0 + 9, r.y + 1, w.saturating_sub(10), &clip(&view.subtitle, w.saturating_sub(10)), th.s(th.dim));
+    // what it is (album: by its artists, year, label), with the artists as links
+    let mut sx = x0 + 9;
+    let end = x0 + w;
+    if let Some(h) = &list.header {
+        for (i, a) in h.artists.iter().enumerate() {
+            let label = if i == 0 { a.name.clone() } else { format!(", {}", a.name) };
+            let lw = (label.chars().count() as u16).min(end.saturating_sub(sx));
+            text(buf, sx, r.y + 1, lw, &label, th.s(th.fg));
+            let skip = if i == 0 { 0 } else { 2 };
+            hits.push((Rect::new(sx + skip, r.y + 1, lw.saturating_sub(skip), 1), Hit::Link(a.clone())));
+            sx += lw;
+        }
+        if !h.artists.is_empty() {
+            text(buf, sx, r.y + 1, 3, " · ", th.s(th.border));
+            sx += 3;
+        }
+    }
+    let sub = list.header.as_ref().map(|h| h.subtitle.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| view.subtitle.clone());
+    text(buf, sx, r.y + 1, end.saturating_sub(sx), &clip(&sub, end.saturating_sub(sx)), th.s(th.dim));
     let flabel = if view.filtering {
         format!("filter: {}▏", view.filter)
     } else if !view.filter.is_empty() {
@@ -255,6 +290,8 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let selected = vi == view.sel;
         let now = playing.as_deref() == Some(row.uri.as_str());
         let bg = if selected && focused { th.selection.color() } else { th.bg.color() };
+        // the row first, so the links inside it win
+        hits.push((Rect::new(x0, y, w, 1), Hit::Track(vi)));
         let fg = if !row.playable { th.border } else if now { th.accent } else { th.fg };
         text(buf, x0, y, w, &" ".repeat(w as usize), th.base().bg(bg));
         let num = if now { "  ♪".to_string() } else { format!("{:>3}", ri + 1) };
@@ -262,15 +299,32 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let title_st = th.s(fg).bg(bg).add_modifier(if selected { Modifier::BOLD } else { Modifier::empty() });
         text(buf, x0 + cols[1].0, y, cols[1].1, &clip(&row.name, cols[1].1), title_st);
         text(buf, x0 + cols[2].0, y, cols[2].1, &clip(&row.artists.join(", "), cols[2].1), th.s(if row.playable { th.dim } else { th.border }).bg(bg));
+        // each artist name, and the album, opens its page
+        let mut ax = x0 + cols[2].0;
+        let aend = x0 + cols[2].0 + cols[2].1.saturating_sub(1);
+        for (i, (name, uri)) in row.artists.iter().zip(&row.artist_uris).enumerate() {
+            if i > 0 {
+                ax += 2;
+            }
+            let nw = (name.chars().count() as u16).min(aend.saturating_sub(ax));
+            if nw == 0 {
+                break;
+            }
+            hits.push((Rect::new(ax, y, nw, 1), Hit::Link(singularity_proto::Link { name: name.clone(), uri: uri.clone() })));
+            ax += nw;
+        }
         if cols[3].1 > 0 {
             text(buf, x0 + cols[3].0, y, cols[3].1, &clip(&row.album, cols[3].1), th.s(if row.playable { th.dim } else { th.border }).bg(bg));
+            if let Some(au) = &row.album_uri {
+                let aw = (row.album.chars().count() as u16).min(cols[3].1.saturating_sub(1));
+                hits.push((Rect::new(x0 + cols[3].0, y, aw, 1), Hit::Link(singularity_proto::Link { name: row.album.clone(), uri: au.clone() })));
+            }
         }
         if cols[4].1 > 0 {
             let added = row.added_at.as_deref().map(|d| d.get(..10).unwrap_or(d)).unwrap_or("");
             text(buf, x0 + cols[4].0, y, cols[4].1, added, th.s(th.dim).bg(bg));
         }
         text(buf, x0 + cols[5].0, y, cols[5].1, &format!("{:>5}", fmt_dur(row.duration_ms)), th.s(th.dim).bg(bg));
-        hits.push((Rect::new(x0, y, w, 1), Hit::Track(vi)));
     }
     if order.is_empty() && list.complete() && list.total > 0 {
         text(buf, x0, body.y + 1, w, "no tracks match the filter", th.s(th.dim));
@@ -286,7 +340,7 @@ mod tests {
     use super::*;
 
     fn row(i: u32, name: &str, artist: &str, ms: u64) -> TrackRow {
-        TrackRow { uri: format!("spotify:track:{i}"), name: name.into(), artists: vec![artist.into()], album: format!("Album {i}"), added_at: Some(format!("2025-01-{:02}", 10 - i)), duration_ms: ms, playable: true }
+        TrackRow { uri: format!("spotify:track:{i}"), name: name.into(), artists: vec![artist.into()], album: format!("Album {i}"), added_at: Some(format!("2025-01-{:02}", 10 - i)), duration_ms: ms, playable: true, ..Default::default() }
     }
 
     fn rows() -> Vec<TrackRow> {
@@ -321,7 +375,7 @@ mod tests {
     #[test]
     fn pages_fill_in_by_offset_and_replays_are_harmless() {
         let mut l = TrackList::default();
-        let page = |offset: u32, n: u32| TrackPage { uri: "u".into(), offset, total: 5, tracks: (offset..offset + n).map(|i| row(i, "x", "y", 1)).collect() };
+        let page = |offset: u32, n: u32| TrackPage { uri: "u".into(), offset, total: 5, tracks: (offset..offset + n).map(|i| row(i, "x", "y", 1)).collect(), header: None };
         l.add(&page(0, 3));
         assert!(!l.complete());
         l.add(&page(3, 2));

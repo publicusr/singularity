@@ -153,3 +153,9 @@ flowchart LR
   LRCLIB as fallback (artist, title, album, duration only), cached per track including "none". Widget: current line
   lit and held ~40 % down, `[mm:ss]` stamps like a log (the Pane is `tail -f lyrics.log`), click a line to seek, unsynced
   lyrics scroll, calm empty state, credit line. Lyrics are only asked for while a lyrics Pane is on screen.
+- **#11 Album & artist pages** (2026-10-18): artist pages from `queryArtistOverview` (▶ Play, monthly listeners,
+  Popular with play-from-here in the artist's context, Shelves: popular releases, albums, singles and EPs, appears on,
+  fans also like, drawn by Home's Card renderer); album pages are track lists with a header (artists as links, year,
+  label). History: back/forward stacks of pages (Alt+←/→, Esc/Backspace back), each list keeps its sort and scroll.
+  Every artist and album name is a link (track rows, the player bar, list headers, popular tracks). Mouse back/forward
+  buttons aren't possible yet: crossterm drops SGR buttons 8/9 (would need our own input parser).

@@ -204,19 +204,28 @@ fn clip(s: &str, w: u16) -> String {
     out
 }
 
+/// Home's own feed.
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let Some(feed) = app.home.take() else { return };
+    let view = std::mem::take(&mut app.home_view);
+    let (feed, view) = draw_feed(buf, r, app, th, feed, view);
+    app.home = Some(feed);
+    app.home_view = view;
+}
+
+/// Shelves of Cards (Home, or an artist page's releases): drawn with `view`'s scroll and selection; both handed back.
+pub fn draw_feed(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, feed: HomeFeed, mut view: HomeView) -> (HomeFeed, HomeView) {
     let aspect = app.cell_px.map(|(w, h)| h / w).unwrap_or(2.0);
     let (rows, m) = rows(&feed, r.width, r.height, aspect);
-    app.home_view.rows = rows;
+    view.rows = rows;
     let focused = app.focus == "home";
-    let top = app.home_view.top.min(app.home_view.rows.len().saturating_sub(1));
-    app.home_view.top = top;
+    let top = view.top.min(view.rows.len().saturating_sub(1));
+    view.top = top;
     let x0 = r.x + 1;
     let mut y = r.y;
     let mut shown = 0;
-    for ri in top..app.home_view.rows.len() {
-        let row = app.home_view.rows[ri].clone();
+    for ri in top..view.rows.len() {
+        let row = view.rows[ri].clone();
         // the trailing gap may hang off the bottom; the content may not
         if y + row.height - 1 > r.bottom() {
             break;
@@ -225,7 +234,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         if let Some(t) = &row.title {
             text(buf, x0, y, r.width.saturating_sub(10), &clip(t, r.width.saturating_sub(10)), th.title());
             if row.kind == RowKind::Shelf && row.cards.len() > row.per_view {
-                let first = app.home_view.first(row.cards[0].shelf);
+                let first = view.first(row.cards[0].shelf);
                 let (lx, rx) = (r.right().saturating_sub(6), r.right().saturating_sub(3));
                 let can_l = first > 0;
                 let can_r = first + row.per_view < row.cards.len();
@@ -236,10 +245,10 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             }
             y += 1;
         }
-        let first = app.home_view.row_first(ri);
+        let first = view.row_first(ri);
         for (i, cref) in row.cards.iter().skip(first).take(row.per_view).enumerate() {
             let card = &feed.shelves[cref.shelf].cards[cref.card];
-            let selected = focused && app.home_view.sel == Some(*cref);
+            let selected = focused && view.sel == Some(*cref);
             let name_st = if selected { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.fg).add_modifier(Modifier::BOLD) };
             // the feed tail's Cards are labelled with their section ("Because you liked …")
             let sub = match row.kind {
@@ -272,15 +281,15 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         }
         y += row.height - u16::from(row.title.is_some());
     }
-    app.home_view.visible = shown.max(1);
+    view.visible = shown.max(1);
     // more above / below
     if top > 0 {
         text(buf, r.right().saturating_sub(1), r.y, 1, "▴", th.s(th.dim));
     }
-    if top + shown < app.home_view.rows.len() {
+    if top + shown < view.rows.len() {
         text(buf, r.right().saturating_sub(1), r.bottom().saturating_sub(1), 1, "▾", th.s(th.dim));
     }
-    app.home = Some(feed);
+    (feed, view)
 }
 
 /// A cover in the best tier available: kitty pixels, else half-blocks; a quiet placeholder while it loads.
