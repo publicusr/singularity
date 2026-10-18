@@ -11,6 +11,7 @@ mod lyrics;
 mod meters;
 mod queue;
 mod scrub;
+mod search;
 mod setup;
 mod sidebar;
 mod term;
@@ -35,6 +36,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let (cmd_tx, mut conn_rx) = conn::spawn();
     let mut app = App::new(Some(cmd_tx));
+    app.recent = search::load_recent();
     app.covers = covers::Covers::spawn(cache_dir().join("covers"));
     app.cell_px = term::cell_px();
     app.hole.allow_gpu = true;
@@ -153,6 +155,11 @@ fn apply(app: &mut App, ev: ConnEvent) {
         ConnEvent::Msg(DaemonMsg::Event(Event::Stream(s))) => app.stream = Some(s),
         ConnEvent::Msg(DaemonMsg::Event(Event::Health(h))) => app.health = Some(h),
         ConnEvent::Msg(DaemonMsg::Event(Event::Artist(p))) => app.artist_page(p),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Search(r))) => {
+            if let Some(s) = app.search.as_mut() {
+                s.set_results(r);
+            }
+        }
         ConnEvent::Msg(DaemonMsg::Event(Event::Lyrics(l))) => {
             if app.playback.item.as_ref().is_some_and(|i| i.uri == l.uri) {
                 app.lyrics_scroll = 0;

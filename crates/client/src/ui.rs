@@ -168,6 +168,7 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         let (title, todo) = slot_info(slot);
         // the main Pane is titled after what it shows
         let title = match (slot.as_str(), &app.view, &app.artist) {
+            ("home", _, _) if app.search.is_some() => "search".to_string(),
             ("home", _, Some(a)) => a.name.clone(),
             ("home", Some(v), _) => v.title.clone(),
             _ => title.to_string(),
@@ -210,6 +211,10 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         }
         if slot == "loudness" {
             crate::meters::loudness(f.buffer_mut(), inner, &app.meters, th);
+            continue;
+        }
+        if slot == "home" && app.search.is_some() {
+            crate::search::draw(f.buffer_mut(), inner, app, th);
             continue;
         }
         if slot == "home" && app.artist.is_some() {
@@ -865,7 +870,7 @@ mod tests {
         for part in ["⌂ Home", "♥ Liked Songs", "▸ Moods", "≡ Night Drive", "◎ Quiet Orbit"] {
             assert!(s.contains(part), "missing {part:?}\n{s}");
         }
-        let moods = side_rect(&app, 2);
+        let moods = side_rect(&app, 3);
         let line = s.lines().nth(moods.y as usize + 1).unwrap();
         assert!(line.find('≡').unwrap() > s.lines().nth(moods.y as usize).unwrap().find('▸').unwrap(), "the playlist sits inside the folder");
     }
@@ -875,7 +880,7 @@ mod tests {
         use singularity_proto::Command;
         let (mut app, mut rx) = library_app();
         render(&mut app, 160, 48);
-        let r = side_rect(&app, 1);
+        let r = side_rect(&app, 2);
         click(&mut app, r.x + 3, r.y);
         assert_eq!(sent(&mut rx), vec![Command::GetTracks { uri: "spotify:collection".into() }]);
         app.track_page(page(0, 100, 3000));
@@ -899,7 +904,7 @@ mod tests {
         use singularity_proto::Command;
         let (mut app, mut rx) = library_app();
         render(&mut app, 160, 48);
-        let r = side_rect(&app, 1);
+        let r = side_rect(&app, 2);
         click(&mut app, r.x + 3, r.y);
         sent(&mut rx);
         app.track_page(page(0, 50, 50));
@@ -1062,7 +1067,7 @@ mod tests {
         use singularity_proto::Command;
         let (mut app, mut rx) = library_app();
         render(&mut app, 160, 48);
-        let r = side_rect(&app, 1);
+        let r = side_rect(&app, 2);
         click(&mut app, r.x + 3, r.y);
         sent(&mut rx);
         app.track_page(page(0, 10, 10));
@@ -1115,7 +1120,7 @@ mod tests {
         use singularity_proto::Command;
         let (mut app, mut rx) = library_app();
         render(&mut app, 160, 48);
-        let r = side_rect(&app, 1);
+        let r = side_rect(&app, 2);
         click(&mut app, r.x + 3, r.y);
         sent(&mut rx);
         let mut p = page(0, 10, 10);
@@ -1159,5 +1164,49 @@ mod tests {
 
     fn card_rect_any(app: &App) -> Rect {
         app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Card(_)).then_some(*r)).unwrap()
+    }
+
+    // ── Search (#10) ──
+
+    #[test]
+    fn search_while_typing_with_chips_and_recents() {
+        use singularity_proto::{Card, Command, SearchResults, TrackRow};
+        let (mut app, mut rx) = playing_app(1);
+        app.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        assert!(app.search.is_some());
+        for c in "nova".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            app.tick();
+        }
+        assert!(sent(&mut rx).is_empty(), "nothing while typing");
+        std::thread::sleep(crate::search::DEBOUNCE + std::time::Duration::from_millis(20));
+        app.tick();
+        assert_eq!(sent(&mut rx), vec![Command::Search { query: "nova".into() }]);
+        let card = |n: &str, k: &str| Card { uri: format!("spotify:{k}:{n}"), name: n.into(), subtitle: k.into(), image_url: None, kind: k.into() };
+        let tracks = (0..8).map(|i| TrackRow { uri: format!("spotify:track:n{i}"), name: format!("Nova song {i}"), artists: vec!["Nova Drift".into()], artist_uris: vec!["spotify:artist:nova".into()], duration_ms: 200_000, playable: true, ..Default::default() }).collect();
+        app.search.as_mut().unwrap().set_results(SearchResults { query: "nova".into(), top: vec![card("Nova Drift", "artist")], tracks, artists: vec![card("Nova Drift", "artist")], albums: vec![card("Event Horizon", "album")], playlists: vec![], podcasts: vec![] });
+        let s = render(&mut app, 200, 64);
+        assert!(s.contains("Songs") && s.contains("Nova song 4") && !s.contains("Nova song 5"), "All shows five songs:\n{s}");
+        assert!(s.contains("Top results") && s.contains("Albums"));
+        // the Songs chip by keyboard: all eight
+        app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(render(&mut app, 200, 64).contains("Nova song 7"));
+        // Albums chip by mouse; opening one remembers the search
+        let chip = app.hits.iter().find_map(|(r, h)| (*h == Hit::Chip(3)).then_some(*r)).unwrap();
+        click(&mut app, chip.x + 1, chip.y);
+        render(&mut app, 200, 64);
+        let c = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Card(_)).then_some(*r)).unwrap();
+        click(&mut app, c.x + 2, c.y + 1);
+        assert_eq!(sent(&mut rx), vec![Command::GetTracks { uri: "spotify:album:Event Horizon".into() }]);
+        assert_eq!(app.recent, ["nova"]);
+        // back to the search, results and chip intact
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.search.as_ref().map(|s| (s.query.as_str(), s.chip)), Some(("nova", 3)));
+        // an empty query lists recent searches
+        for _ in 0..4 {
+            app.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        let s = render(&mut app, 200, 64);
+        assert!(s.contains("Recent searches") && s.contains("  nova"), "{s}");
     }
 }

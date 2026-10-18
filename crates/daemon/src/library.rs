@@ -216,6 +216,55 @@ fn release_card(r: &Value) -> Option<Card> {
     Some(Card { uri: r["uri"].as_str()?.into(), name: r["name"].as_str()?.into(), subtitle: format!("{year}{kind}"), image_url: image(&r["coverArt"]["sources"]), kind: "album".into() })
 }
 
+pub fn search_vars(query: &str) -> Value {
+    json!({
+        "searchTerm": query, "offset": 0, "limit": 20, "numberOfTopResults": 5,
+        "includeAudiobooks": false, "includeArtistHasConcertsField": false, "includePreReleases": true,
+        "includeLocalConcertsField": false, "includeAuthors": false,
+    })
+}
+
+/// A search hit (`{data: …}` or `{item: {data: …}}`) as a Card, using the Home parser's shapes.
+fn hit_card(it: &Value) -> Option<Card> {
+    let d = if it["data"].is_object() { &it["data"] } else { &it["item"]["data"] };
+    crate::catalogue::card(d)
+}
+
+/// `searchDesktop` → results by type.
+pub fn parse_search(query: &str, v: &Value) -> singularity_proto::SearchResults {
+    let s = &v["data"]["searchV2"];
+    let cards = |k: &str, items: &str| s[k][items].as_array().into_iter().flatten().filter_map(hit_card).collect::<Vec<_>>();
+    let tracks = s["tracksV2"]["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|it| {
+            let t = &it["item"]["data"];
+            (t["__typename"] == "Track").then_some(())?;
+            Some(TrackRow {
+                uri: t["uri"].as_str()?.into(),
+                name: t["name"].as_str().unwrap_or_default().into(),
+                artists: names(&t["artists"]["items"]),
+                artist_uris: uris(&t["artists"]["items"]),
+                album: t["albumOfTrack"]["name"].as_str().unwrap_or_default().into(),
+                album_uri: t["albumOfTrack"]["uri"].as_str().map(String::from),
+                added_at: None,
+                duration_ms: t["duration"]["totalMilliseconds"].as_u64().unwrap_or(0),
+                playable: t["playability"]["playable"].as_bool().unwrap_or(true),
+            })
+        })
+        .collect();
+    singularity_proto::SearchResults {
+        query: query.into(),
+        top: cards("topResultsV2", "itemsV2"),
+        tracks,
+        artists: cards("artists", "items"),
+        albums: cards("albumsV2", "items"),
+        playlists: cards("playlists", "items"),
+        podcasts: cards("podcasts", "items"),
+    }
+}
+
 /// `queryArtistOverview` → an artist page.
 pub fn parse_artist(v: &Value) -> Option<ArtistPage> {
     let a = &v["data"]["artistUnion"];
@@ -332,6 +381,11 @@ mod tests {
             let (rows, _) = parse_tracks(&uri, &v);
             println!("album header: {:?} · {} artists · cover {} · rows with artist uris {}/{}", h.subtitle.split(" · ").next(), h.artists.len(), h.cover_url.is_some(), rows.iter().filter(|r| !r.artist_uris.is_empty()).count(), rows.len());
             assert!(!h.artists.is_empty() && rows.iter().all(|r| r.album_uri.is_some()));
+        }
+        if let Some(v) = read("SGL_LIVE_SEARCH") {
+            let r = parse_search("q", &v);
+            println!("search: top {} · tracks {} · artists {} · albums {} · playlists {} · podcasts {}", r.top.len(), r.tracks.len(), r.artists.len(), r.albums.len(), r.playlists.len(), r.podcasts.len());
+            assert!(!r.tracks.is_empty() && !r.artists.is_empty() && !r.top.is_empty());
         }
         if let Some(v) = read("SGL_LIVE_ARTIST") {
             let p = parse_artist(&v).unwrap();

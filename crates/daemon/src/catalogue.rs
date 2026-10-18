@@ -43,6 +43,7 @@ pub enum CatCmd {
     /// lyrics for a track; `meta` (name, artists, album, duration) helps the LRCLIB fallback
     Lyrics { uri: String, meta: Option<singularity_proto::Item> },
     Artist(String),
+    Search(String),
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +57,7 @@ pub enum CatEvent {
     Described(Vec<singularity_proto::Item>),
     Lyrics(singularity_proto::Lyrics),
     Artist(singularity_proto::ArtistPage),
+    Search(singularity_proto::SearchResults),
     Error(String),
 }
 
@@ -95,11 +97,12 @@ struct State {
     described: HashMap<String, singularity_proto::Item>,
     lyrics: HashMap<String, singularity_proto::Lyrics>,
     artists: HashMap<String, (Instant, singularity_proto::ArtistPage)>,
+    searches: HashMap<String, (Instant, singularity_proto::SearchResults)>,
 }
 
 async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
     let registry = QueryRegistry::new(dirs.queries.clone());
-    let mut st = State { dirs, session: None, registry, ev, remote: None, tracks: HashMap::new(), described: HashMap::new(), lyrics: HashMap::new(), artists: HashMap::new() };
+    let mut st = State { dirs, session: None, registry, ev, remote: None, tracks: HashMap::new(), described: HashMap::new(), lyrics: HashMap::new(), artists: HashMap::new(), searches: HashMap::new() };
     // resume a previous login
     if saved_credentials(&st.dirs).is_some() {
         if st.connect(None).await {
@@ -126,6 +129,21 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
             CatCmd::Describe(uris) => st.describe(uris).await,
             CatCmd::Lyrics { uri, meta } => st.lyrics(uri, meta).await,
             CatCmd::Artist(uri) => st.artist(uri).await,
+            CatCmd::Search(q) => {
+                // while typing, only the newest search matters: skip any already superseded
+                let mut q = q;
+                let mut later = vec![];
+                while let Ok(c) = cmds.try_recv() {
+                    match c {
+                        CatCmd::Search(n) => q = n,
+                        other => later.push(other),
+                    }
+                }
+                st.search(q).await;
+                for c in later {
+                    let _ = self_tx.send(c).await;
+                }
+            }
         }
     }
 }
@@ -155,6 +173,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 })],
                 CatCmd::Lyrics { uri, .. } => vec![CatEvent::Lyrics(fake_lyrics(&uri))],
                 CatCmd::Artist(uri) => vec![CatEvent::Artist(fake_artist(&uri, &home))],
+                CatCmd::Search(q) => vec![CatEvent::Search(fake_search(&q, &home))],
                 CatCmd::Describe(uris) => vec![CatEvent::Described(
                     uris.into_iter().map(|u| singularity_proto::Item { name: format!("Described {}", u.rsplit(':').next().unwrap_or("")), uri: u, artists: vec!["Fake Artist".into()], duration_ms: 180_000, ..Default::default() }).collect(),
                 )],
@@ -165,6 +184,17 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
         }
     });
     (cmd_tx, ev_rx)
+}
+
+/// Invented results: the Home feed's Cards whose names contain the query, and matching fake tracks.
+fn fake_search(q: &str, home: &HomeFeed) -> singularity_proto::SearchResults {
+    let ql = q.to_lowercase();
+    let all: Vec<Card> = home.shelves.iter().flat_map(|s| s.cards.clone()).filter(|c| c.name.to_lowercase().contains(&ql) || c.subtitle.to_lowercase().contains(&ql)).collect();
+    let of = |k: &str| all.iter().filter(|c| c.kind == k).cloned().collect::<Vec<_>>();
+    let tracks = (0..8)
+        .map(|i| singularity_proto::TrackRow { uri: format!("spotify:track:s{i}"), name: format!("{q} song {}", i + 1), artists: vec!["Nova Drift".into()], album: "Search Results".into(), duration_ms: 190_000, playable: true, ..Default::default() })
+        .collect();
+    singularity_proto::SearchResults { query: q.into(), top: all.iter().take(3).cloned().collect(), tracks, artists: of("artist"), albums: of("album"), playlists: of("playlist"), podcasts: vec![] }
 }
 
 /// An invented artist page: top tracks, and the Home feed's first Shelves as releases.
@@ -514,6 +544,28 @@ impl State {
         }
     }
 
+    async fn search(&mut self, query: String) {
+        let key = query.trim().to_lowercase();
+        if let Some((at, r)) = self.searches.get(&key)
+            && at.elapsed() < Duration::from_secs(300)
+        {
+            let mut r = r.clone();
+            r.query = query;
+            let _ = self.ev.send(CatEvent::Search(r)).await;
+            return;
+        }
+        match self.query("searchDesktop", library::search_vars(query.trim())).await {
+            Ok(v) => {
+                let r = library::parse_search(&query, &v);
+                self.searches.insert(key, (Instant::now(), r.clone()));
+                let _ = self.ev.send(CatEvent::Search(r)).await;
+            }
+            Err(e) => {
+                let _ = self.ev.send(CatEvent::Error(format!("Search unavailable: {e}"))).await;
+            }
+        }
+    }
+
     async fn artist(&mut self, uri: String) {
         if let Some((at, p)) = self.artists.get(&uri)
             && at.elapsed() < TRACKS_TTL
@@ -638,7 +690,8 @@ fn plain(html: &str) -> String {
     out.replace("&amp;", "&").replace("&quot;", "\"").replace("&#x27;", "'").replace("&#39;", "'").trim().to_string()
 }
 
-fn card(d: &Value) -> Option<Card> {
+/// A Pathfinder entity (Album, Playlist, Artist, Episode, Podcast) as a Card.
+pub fn card(d: &Value) -> Option<Card> {
     let uri = d["uri"].as_str()?.to_string();
     let (kind, name, subtitle, image) = match d["__typename"].as_str()? {
         "Album" => (
@@ -656,6 +709,12 @@ fn card(d: &Value) -> Option<Card> {
         "Artist" => ("artist", d["profile"]["name"].as_str()?.to_string(), "Artist".into(), first_url(&d["visuals"]["avatarImage"]["sources"])),
         "Episode" | "PodcastEpisode" => ("episode", d["name"].as_str()?.to_string(), d["podcastV2"]["data"]["name"].as_str().unwrap_or_default().to_string(), first_url(&d["coverArt"]["sources"])),
         "Podcast" => ("show", d["name"].as_str()?.to_string(), d["publisher"]["name"].as_str().unwrap_or_default().to_string(), first_url(&d["coverArt"]["sources"])),
+        "Track" => (
+            "track",
+            d["name"].as_str()?.to_string(),
+            d["artists"]["items"].as_array().map(|a| a.iter().filter_map(|x| x["profile"]["name"].as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default(),
+            first_url(&d["albumOfTrack"]["coverArt"]["sources"]),
+        ),
         _ => return None,
     };
     Some(Card { uri, name, subtitle, image_url: image, kind: kind.into() })

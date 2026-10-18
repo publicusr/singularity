@@ -74,6 +74,8 @@ pub enum Command {
     PlayFrom { context_uri: String, index: u32, track_uri: Option<String> },
     /// Store the Soloist API key (keyring, else an owner-only file) and (re)start the Engine with it.
     SetSoloistKey { key: String },
+    /// Search everything; arrives as `Event::Search`.
+    Search { query: String },
     /// Fetch an artist page; arrives as `Event::Artist`.
     GetArtist { uri: String },
     /// Fetch lyrics for a track (Spotify's, else LRCLIB's); arrives as `Event::Lyrics`.
@@ -115,6 +117,8 @@ pub enum Event {
     Tracks(TrackPage),
     /// What the Engine is streaming right now (from Soloist's verbose log).
     Stream(StreamInfo),
+    /// Search results (answer to `Search`).
+    Search(SearchResults),
     /// An artist page (answer to `GetArtist`).
     Artist(ArtistPage),
     /// Lyrics for a track (answer to `GetLyrics`); `lines` is empty when there are none.
@@ -301,6 +305,19 @@ pub struct ListHeader {
 pub struct Link {
     pub name: String,
     pub uri: String,
+}
+
+/// What a search found, by type (each list in Spotify's relevance order).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SearchResults {
+    pub query: String,
+    /// the best matches across types
+    pub top: Vec<Card>,
+    pub tracks: Vec<TrackRow>,
+    pub artists: Vec<Card>,
+    pub albums: Vec<Card>,
+    pub playlists: Vec<Card>,
+    pub podcasts: Vec<Card>,
 }
 
 /// An artist page: header, popular tracks, and Shelves of releases and related artists.

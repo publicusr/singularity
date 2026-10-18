@@ -206,6 +206,9 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                 *hub.library.lock().await = Some(l.clone());
                 let _ = hub.events.send(Event::Library(l));
             }
+            CatEvent::Search(r) => {
+                let _ = hub.events.send(Event::Search(r));
+            }
             CatEvent::Artist(p) => {
                 let _ = hub.events.send(Event::Artist(p));
             }
@@ -344,7 +347,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                     let s = hub.playback.lock().await.clone();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;
                 }
-                ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. } | Command::PlayNext { .. } | Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::GetArtist { .. })) => match &hub.catalogue {
+                ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. } | Command::PlayNext { .. } | Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::GetArtist { .. } | Command::Search { .. })) => match &hub.catalogue {
                     Some(tx) => {
                         let c = match cmd {
                             Command::Login => CatCmd::Login,
@@ -356,6 +359,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                             Command::RemoveFromQueue { uri, uid } => CatCmd::Queue(connect::QueueEdit::Remove { uri, uid }),
                             Command::ClearQueue => CatCmd::Queue(connect::QueueEdit::Clear),
                             Command::GetArtist { uri } => CatCmd::Artist(uri),
+                            Command::Search { query } => CatCmd::Search(query),
                             _ => CatCmd::Home,
                         };
                         let _ = tx.send(c).await;

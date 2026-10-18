@@ -43,9 +43,12 @@ fn glyph(kind: &str) -> &'static str {
     }
 }
 
-/// Rows: Home first, then the library. Returns how many rows there are.
+/// Rows above the library: Home, Search.
+pub const FIXED: usize = 2;
+
+/// Rows: Home and Search first, then the library. Returns how many rows there are.
 pub fn len(app: &App) -> usize {
-    1 + app.library.as_ref().map(|l| l.items.len()).unwrap_or(0)
+    FIXED + app.library.as_ref().map(|l| l.items.len()).unwrap_or(0)
 }
 
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
@@ -55,13 +58,15 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     side.top = side.top.min(n.saturating_sub(side.visible));
     let focused = app.focus == "library";
     let open = app.view.as_ref().map(|v| v.uri.clone());
+    let page = app.current_page();
     let mut hits = vec![];
     for row in side.top..n.min(side.top + side.visible) {
         let y = r.y + (row - side.top) as u16;
         let (g, name, sub, depth, current) = match row {
-            0 => ("⌂", "Home".to_string(), String::new(), 0u16, open.is_none()),
+            0 => ("⌂", "Home".to_string(), String::new(), 0u16, page == crate::app::Page::Home),
+            1 => ("⌕", "Search".to_string(), String::new(), 0u16, page == crate::app::Page::Search),
             i => {
-                let it = &app.library.as_ref().expect("row exists").items[i - 1];
+                let it = &app.library.as_ref().expect("row exists").items[i - FIXED];
                 (glyph(&it.kind), it.name.clone(), it.subtitle.clone(), it.depth as u16, open.as_deref() == Some(it.uri.as_str()))
             }
         };

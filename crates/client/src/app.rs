@@ -46,6 +46,7 @@ pub enum Action {
     GoHome,
     Back,
     Forward,
+    Search,
     Filter,
     SortTitle,
     SortArtist,
@@ -64,7 +65,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 32] = [
+    pub const ALL: [Action; 33] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -82,6 +83,7 @@ impl Action {
         Action::GoHome,
         Action::Back,
         Action::Forward,
+        Action::Search,
         Action::Filter,
         Action::SortTitle,
         Action::SortArtist,
@@ -117,6 +119,7 @@ impl Action {
             Action::GoHome => "Go to Home",
             Action::Back => "Back",
             Action::Forward => "Forward",
+            Action::Search => "Search",
             Action::Filter => "Filter this track list",
             Action::SortTitle => "Sort list by title",
             Action::SortArtist => "Sort list by artist",
@@ -151,6 +154,7 @@ impl Action {
             Action::GoHome => "",
             Action::Back => "Alt+← · Backspace",
             Action::Forward => "Alt+→",
+            Action::Search => "Ctrl+L",
             Action::Filter => "/",
             Action::SortTitle | Action::SortArtist | Action::SortAlbum | Action::SortAdded | Action::SortDuration => "",
             Action::NextLook => "v",
@@ -184,6 +188,12 @@ pub enum Hit {
     Well,
     /// ▶ Play on the open track list
     PlayView,
+    /// a search filter chip
+    Chip(usize),
+    /// a recent search
+    Recent(usize),
+    /// a song in the search results
+    SearchTrack(usize),
     /// a queue entry, by index in `playback.queue`
     QueueRow(usize),
     /// a synced lyric line: where it starts (ms)
@@ -231,6 +241,7 @@ pub enum Page {
     Home,
     List { uri: String, title: String, subtitle: String },
     Artist { uri: String, name: String },
+    Search,
 }
 
 pub struct Menu {
@@ -298,6 +309,10 @@ pub struct App {
     pub view: Option<TrackView>,
     /// the open artist page
     pub artist: Option<crate::artist::ArtistView>,
+    /// the search page (kept while you browse its results, so back returns to them)
+    pub search: Option<crate::search::SearchView>,
+    search_kept: Option<crate::search::SearchView>,
+    pub recent: Vec<String>,
     artist_pages: HashMap<String, singularity_proto::ArtistPage>,
     /// history: pages to go back and forward to
     pub back: Vec<Page>,
@@ -358,6 +373,9 @@ impl App {
             lists: HashMap::new(),
             view: None,
             artist: None,
+            search: None,
+            search_kept: None,
+            recent: vec![],
             artist_pages: HashMap::new(),
             back: vec![],
             forward: vec![],
@@ -453,6 +471,7 @@ impl App {
             Action::RefreshHome => self.send(Command::GetHome),
             Action::GoHome => self.navigate(Page::Home),
             Action::Back => self.go_back(),
+            Action::Search => self.navigate(Page::Search),
             Action::Forward => self.go_forward(),
             Action::Filter => match self.view.as_mut() {
                 Some(v) => {
@@ -537,14 +556,20 @@ impl App {
         if self.view.as_ref().is_some_and(|v| v.filtering) {
             return self.filter_key(k);
         }
+        if ctrl && k.code == KeyCode::Char('l') {
+            return self.run(Action::Search);
+        }
+        if self.focus == "home" && self.search.is_some() && self.search_key(k) {
+            return;
+        }
         if self.focus == "home" && !shift && self.view.is_some() && self.tracks_key(k) {
             return;
         }
         if self.focus == "home" && !shift && self.view.is_none() && self.home_key(k) {
             return;
         }
-        // Esc on an artist page goes back, never quits
-        if self.artist.is_some() && k.code == KeyCode::Esc {
+        // Esc on an artist or search page goes back, never quits
+        if (self.artist.is_some() || self.search.is_some()) && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
             return self.run(Action::Back);
         }
         if self.focus == "library" && !shift && self.side_key(k) {
@@ -616,13 +641,15 @@ impl App {
         self.lists.entry(p.uri.clone()).or_default().add(&p);
     }
 
-    /// Open sidebar row `row` (0 = Home).
+    /// Open sidebar row `row` (0 = Home, 1 = Search, then the library).
     fn open_side(&mut self, row: usize) {
         self.sidebar.sel = row;
-        if row == 0 {
-            return self.run(Action::GoHome);
+        match row {
+            0 => return self.run(Action::GoHome),
+            1 => return self.run(Action::Search),
+            _ => {}
         }
-        let Some(it) = self.library.as_ref().and_then(|l| l.items.get(row - 1)).cloned() else { return };
+        let Some(it) = self.library.as_ref().and_then(|l| l.items.get(row - crate::sidebar::FIXED)).cloned() else { return };
         match it.kind.as_str() {
             "folder" => self.say("Folders are listed with their playlists indented below"),
             _ => self.open(&it.uri, &it.name, &it.subtitle, &it.kind),
@@ -650,6 +677,9 @@ impl App {
     }
 
     pub fn current_page(&self) -> Page {
+        if self.search.is_some() {
+            return Page::Search;
+        }
         if let Some(a) = &self.artist {
             return Page::Artist { uri: a.uri.clone(), name: a.name.clone() };
         }
@@ -690,9 +720,13 @@ impl App {
             self.list_views.insert(v.uri.clone(), v);
         }
         self.artist = None;
+        if let Some(s) = self.search.take() {
+            self.search_kept = Some(s);
+        }
         self.focus = "home".into();
         match p {
             Page::Home => {}
+            Page::Search => self.search = Some(self.search_kept.take().unwrap_or_default()),
             Page::List { uri, title, subtitle } => {
                 let v = self.list_views.remove(&uri).unwrap_or_else(|| {
                     let mut v = TrackView::new(&uri, &title);
@@ -726,6 +760,9 @@ impl App {
 
     /// The Shelves on screen (Home's, or the artist page's) and their view state.
     fn active_feed(&self) -> Option<&singularity_proto::HomeFeed> {
+        if let Some(s) = &self.search {
+            return Some(&s.feed);
+        }
         match &self.artist {
             Some(a) => Some(&a.feed),
             None => self.home.as_ref(),
@@ -733,10 +770,81 @@ impl App {
     }
 
     pub fn feed_view(&mut self) -> &mut HomeView {
+        if let Some(s) = self.search.as_mut() {
+            return &mut s.shelves;
+        }
         match self.artist.as_mut() {
             Some(a) => &mut a.shelves,
             None => &mut self.home_view,
         }
+    }
+
+    /// Keys on the search page: typing goes to the query; arrows move through songs, then the Shelves.
+    fn search_key(&mut self, k: KeyEvent) -> bool {
+        let Some(s) = self.search.as_mut() else { return false };
+        let songs = s.songs();
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL) || k.modifiers.contains(KeyModifiers::ALT);
+        match k.code {
+            KeyCode::Char(c) if !ctrl => {
+                s.query.push(c);
+                s.typed();
+            }
+            KeyCode::Backspace => {
+                if s.query.pop().is_none() {
+                    return false; // empty: Backspace means back
+                }
+                s.typed();
+                if s.query.trim().is_empty() {
+                    s.results = None;
+                }
+            }
+            KeyCode::Esc if !s.query.is_empty() => {
+                s.query.clear();
+                s.results = None;
+                s.typed();
+            }
+            KeyCode::Tab => {
+                let c = s.chip + 1;
+                s.set_chip(c);
+            }
+            KeyCode::BackTab => {
+                let c = s.chip + crate::search::CHIPS.len() - 1;
+                s.set_chip(c);
+            }
+            KeyCode::Down if s.query.trim().is_empty() => s.recent_sel = (s.recent_sel + 1).min(self.recent.len().saturating_sub(1)),
+            KeyCode::Up if s.query.trim().is_empty() => s.recent_sel = s.recent_sel.saturating_sub(1),
+            KeyCode::Enter if s.query.trim().is_empty() => {
+                if let Some(q) = self.recent.get(s.recent_sel).cloned() {
+                    s.query = q;
+                    s.typed();
+                }
+            }
+            KeyCode::Down if s.track_sel.is_none_or(|i| i + 1 < songs) && songs > 0 && s.shelves.sel.is_none() => s.track_sel = Some(s.track_sel.map_or(0, |i| i + 1)),
+            KeyCode::Down if s.track_sel.is_some() => {
+                // past the last song: into the Shelves
+                s.track_sel = None;
+                s.shelves.move_sel(0, 0);
+            }
+            KeyCode::Up if s.track_sel.is_some_and(|i| i > 0) => s.track_sel = s.track_sel.map(|i| i - 1),
+            KeyCode::Enter if s.track_sel.is_some() => {
+                let i = s.track_sel.unwrap_or(0);
+                self.play_search_track(i);
+            }
+            _ => {
+                // the Shelves take arrows and Enter like Home's
+                return self.home_key(k);
+            }
+        }
+        true
+    }
+
+    fn play_search_track(&mut self, i: usize) {
+        let Some(s) = self.search.as_ref() else { return };
+        let Some(t) = s.results.as_ref().and_then(|r| r.tracks.get(i)) else { return };
+        let (uri, q) = (t.uri.clone(), s.query.clone());
+        crate::search::remember(&mut self.recent, &q);
+        crate::search::save_recent(&self.recent);
+        self.send(Command::Play { uri: Some(uri) });
     }
 
     fn play_artist(&mut self) {
@@ -757,7 +865,16 @@ impl App {
     /// Open a Home Card (clicking never plays it: the list opens, with ▶ Play there).
     fn open_card(&mut self, c: CardRef) {
         self.feed_view().sel = Some(c);
+        // opening a result is what makes a search worth remembering
+        if let Some(q) = self.search.as_ref().map(|s| s.query.clone()) {
+            crate::search::remember(&mut self.recent, &q);
+            crate::search::save_recent(&self.recent);
+        }
         if let Some(k) = self.card(c).cloned() {
+            // a track has no page: it plays
+            if k.kind == "track" {
+                return self.send(Command::Play { uri: Some(k.uri) });
+            }
             self.open(&k.uri, &k.name, &k.subtitle, &k.kind);
         }
     }
@@ -1145,6 +1262,10 @@ impl App {
         let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
         self.last_tick = Instant::now();
         self.hole.advance(dt, self.meters.frame.as_ref());
+        // search while typing, once typing pauses
+        if let Some(q) = self.search.as_mut().and_then(|s| s.due()) {
+            self.send(Command::Search { query: q });
+        }
         // lyrics follow the track, if a lyrics Pane is on screen
         if let Some(uri) = self.playback.item.as_ref().map(|i| i.uri.clone()).filter(|u| !u.is_empty())
             && self.lyrics_asked.as_deref() != Some(uri.as_str())
@@ -1229,6 +1350,13 @@ impl App {
                         self.focus = "queue".into();
                         self.open_queue_menu(i, at);
                     }
+                    Some(Hit::SearchTrack(i)) => {
+                        let t = self.search.as_ref().and_then(|s| s.results.as_ref()?.tracks.get(i).cloned());
+                        if let Some(t) = t {
+                            let items = vec![("Play next".to_string(), MenuAct::PlayNext), ("Add to queue".into(), MenuAct::Queue), ("Copy link".into(), MenuAct::CopyLink)];
+                            self.menu = Some(Menu { at: at.unwrap_or((0, 0)), target: Target::Track { uri: t.uri, name: t.name }, items, selected: 0 });
+                        }
+                    }
                     Some(Hit::TopTrack(i)) => {
                         let t = self.artist.as_ref().and_then(|a| a.page.as_ref()?.top_tracks.get(i).cloned());
                         if let Some(t) = t {
@@ -1281,6 +1409,30 @@ impl App {
                     Some(Hit::PlayView) => self.play_view(),
                     Some(Hit::ShelfScroll(row, d)) => self.feed_view().scroll_shelf(row, d),
                     Some(Hit::Link(l)) => self.open_link(&l),
+                    Some(Hit::Chip(i)) => {
+                        if let Some(s) = self.search.as_mut() {
+                            s.set_chip(i);
+                        }
+                    }
+                    Some(Hit::Recent(i)) => {
+                        let q = self.recent.get(i).cloned();
+                        if let (Some(s), Some(q)) = (self.search.as_mut(), q) {
+                            s.query = q;
+                            s.typed();
+                        }
+                    }
+                    Some(Hit::SearchTrack(i)) => {
+                        let double = self.last_click.is_some_and(|(t, j)| j == usize::MAX / 2 - i && t.elapsed() < DOUBLE_CLICK);
+                        if let Some(s) = self.search.as_mut() {
+                            s.track_sel = Some(i);
+                        }
+                        if double {
+                            self.last_click = None;
+                            self.play_search_track(i);
+                        } else {
+                            self.last_click = Some((Instant::now(), usize::MAX / 2 - i));
+                        }
+                    }
                     Some(Hit::PlayArtist) => self.play_artist(),
                     Some(Hit::TopTrack(i)) => {
                         // top tracks share the double-click memory with list rows, kept apart by index
@@ -1419,9 +1571,10 @@ impl App {
     fn home_row_at(&self, x: u16, y: u16) -> Option<usize> {
         match self.hit_at(x, y)? {
             Hit::Card(c) => {
-                let rows = match &self.artist {
-                    Some(a) => &a.shelves.rows,
-                    None => &self.home_view.rows,
+                let rows = match (&self.search, &self.artist) {
+                    (Some(s), _) => &s.shelves.rows,
+                    (_, Some(a)) => &a.shelves.rows,
+                    _ => &self.home_view.rows,
                 };
                 rows.iter().position(|r| r.cards.contains(&c))
             }

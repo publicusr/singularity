@@ -28,6 +28,8 @@ pub enum RowKind {
     Shelf,
     /// one line of the feed tail grid
     Feed,
+    /// one line of a titled grid (e.g. one type of search results)
+    Grid,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -92,6 +94,14 @@ pub fn rows(feed: &HomeFeed, width: u16, height: u16, aspect: f64) -> (Vec<Row>,
                 }
             }
             "feed" => feed_cards.extend(refs),
+            "grid" => {
+                let all: Vec<CardRef> = refs.collect();
+                for (i, chunk) in all.chunks(per_view).enumerate() {
+                    let title = (i == 0).then(|| s.title.clone());
+                    let height = card_row_h + u16::from(title.is_some());
+                    out.push(Row { kind: RowKind::Grid, title, cards: chunk.to_vec(), per_view, height });
+                }
+            }
             _ => out.push(Row { kind: RowKind::Shelf, title: Some(s.title.clone()), cards: refs.collect(), per_view, height: 1 + card_row_h }),
         }
     }

@@ -159,3 +159,8 @@ flowchart LR
   label). History: back/forward stacks of pages (Alt+←/→, Esc/Backspace back), each list keeps its sort and scroll.
   Every artist and album name is a link (track rows, the player bar, list headers, popular tracks). Mouse back/forward
   buttons aren't possible yet: crossterm drops SGR buttons 8/9 (would need our own input parser).
+- **#10 Search** (2026-10-18): `searchDesktop` (variables verified live), cached 5 min; superseded searches are skipped in
+  the Daemon and the Client debounces (≥ 2 characters, 300 ms quiet), so typing never storms. Search page (sidebar row,
+  palette, Ctrl+L): chips All · Songs · Artists · Albums · Playlists · Podcasts (click or Tab), songs as a playable list
+  (double-click, right-click menu, artist links), other types as Card Shelves (or a grid under their chip), track Cards
+  play. Recent searches: remembered when a result is used, kept owner-only in `~/.local/state/singularity/`.
