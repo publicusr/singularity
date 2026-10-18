@@ -50,11 +50,11 @@ folder. Later: `idle-pixels`/`idle-cells` (#17), `listening` (#23, seeds a scrat
 Daemon never listens to the owner's Soloist), `SINGULARITY_DBUS=<address>|off` (MPRIS bus; fake-Engine Daemons stay
 off the session bus unless asked), plus the older `SINGULARITY_CPU`, `SINGULARITY_PIXEL`, `SINGULARITY_PIXEL_MOUSE`,
 `SINGULARITY_NO_KEYRING`, `SINGULARITY_SOCKET`. #23: `SINGULARITY_DATA=<dir>|off` (LocalStore; fake-Engine Daemons
-keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, and `XDG_DOWNLOAD_DIR` decides where exports go. `SINGULARITY_NOTIFY` is gone (now `notifications.track_change`).
+keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SHUTDOWN` (#25 tests), and `XDG_DOWNLOAD_DIR` decides where exports go. `SINGULARITY_NOTIFY` is gone (now `notifications.track_change`).
 
 ## Then
 
-- Test round 1 tickets, in order: #25 stale Daemon, #26 wheel/highlight, #27 Home by lines, #28 back/forward,
+- Test round 1 tickets, in order: ~~#25 stale Daemon~~ ✅, #26 wheel/highlight, #27 Home by lines, #28 back/forward,
   #29 meters, #30 lyrics wrap, #31 wide terminals, #32 queue drag, #33 Theme tint. Genius parked.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
 - v1.x (spec "Out of Scope"): playlist editing, stats widgets (the listening log is ready for them), Settings screen,

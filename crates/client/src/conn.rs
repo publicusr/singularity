@@ -41,6 +41,8 @@ async fn run(mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>
                 continue;
             }
         };
+        // who's on the other end, in case it has to be stopped
+        let peer = stream.peer_cred().ok().and_then(|c| c.pid());
         let (mut rd, mut wr) = stream.into_split();
         let hello = ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: format!("singularity {}", env!("CARGO_PKG_VERSION")) };
         if proto::write_msg(&mut wr, &hello).await.is_err() {
@@ -54,12 +56,13 @@ async fn run(mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>
                     let _ = ev_tx.send(ConnEvent::Updating).await;
                     let _ = proto::write_msg(&mut wr, &ClientMsg::Command(Command::Shutdown)).await;
                     drop((rd, wr));
-                    // wait for the old one to let go of the socket, then start the new one
-                    for _ in 0..50 {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        if UnixStream::connect(&path).await.is_err() {
-                            break;
-                        }
+                    // wait for the old one to let go of the socket, then start the new one; a Daemon too old to know
+                    // `Shutdown` is stopped (only the process on the other end of the socket, and only a singularityd)
+                    if !let_go(&path, 50).await
+                        && let Some(pid) = peer
+                    {
+                        stop_daemon(pid).await;
+                        let_go(&path, 30).await;
                     }
                     started_daemon = false;
                     continue;
@@ -103,6 +106,38 @@ async fn run(mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>
     }
 }
 
+/// Wait up to `tries` × 100 ms for nothing to answer on `path`; true once nothing does.
+async fn let_go(path: &std::path::Path, tries: u32) -> bool {
+    for _ in 0..tries {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if UnixStream::connect(path).await.is_err() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Is process `pid` a `singularityd` (its binary may have been replaced on disk: "singularityd (deleted)")?
+fn is_daemon(pid: i32) -> bool {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().starts_with("singularityd"))).unwrap_or(false)
+}
+
+/// SIGTERM the Daemon `pid`, SIGKILL if it's still there 2 s later. Anything that isn't a singularityd is left alone.
+async fn stop_daemon(pid: i32) {
+    if pid <= 1 || !is_daemon(pid) {
+        return;
+    }
+    // SAFETY: kill only sends a signal
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if !is_daemon(pid) {
+            return;
+        }
+    }
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+}
+
 /// The `singularityd` next to this binary, if there is one.
 fn daemon_binary() -> Option<std::path::PathBuf> {
     std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("singularityd"))).filter(|p| p.exists())
@@ -134,4 +169,28 @@ fn start_daemon() {
     // own process group: closing the terminal must not take the Daemon (and the music) with it
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let _ = cmd.spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn only_a_singularityd_is_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        // a stand-in Daemon that ignores everything but signals: `sleep`, under the Daemon's name
+        let fake = dir.path().join("singularityd");
+        std::fs::copy("/bin/sleep", &fake).unwrap();
+        let mut d = std::process::Command::new(&fake).arg("60").spawn().unwrap();
+        let mut other = std::process::Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        // its binary replaced on disk, as after a rebuild
+        std::fs::remove_file(&fake).unwrap();
+        assert!(is_daemon(d.id() as i32) && !is_daemon(other.id() as i32));
+        stop_daemon(other.id() as i32).await;
+        assert!(other.try_wait().unwrap().is_none(), "not a singularityd: left alone");
+        stop_daemon(d.id() as i32).await;
+        assert!(d.wait().unwrap().code().is_none(), "stopped by a signal");
+        other.kill().unwrap();
+        other.wait().unwrap();
+    }
 }

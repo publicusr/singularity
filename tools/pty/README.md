@@ -21,6 +21,9 @@ under the text, as kitty does with z=-1.
 - `update_test.py out-update` (#6): a real Daemon runs an expiring stand-in Soloist (`fake_soloist.py`: WebSocket
   protocol, `--version`, the lifetime line) from scratch dirs; a fake CDN then offers a newer build, which must be
   staged while a track plays and taken over at the next track. No key, keyring, audio tap or D-Bus of the owner's.
+- `stale_test.py out-stale` (#25): a Daemon that ignores `Shutdown` (`SINGULARITY_IGNORE_SHUTDOWN=1`, playing a build
+  from before the replace logic) meets a newer Client, which stops it and starts its own (scratch dirs, no keyring,
+  tap, D-Bus or LocalStore, a dead CDN).
 - `ws.py '<json>' [secs]`: talk to Soloist's WebSocket directly (`WS=addr:port` overrides the port file). Only for
   deliberate, quiet live tests on the owner's player; restore volume afterwards.
 

@@ -486,7 +486,9 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                 ClientMsg::Ping { id } => {
                     let _ = out_tx.send(DaemonMsg::Pong { id }).await;
                 }
-                ClientMsg::Command(Command::Shutdown) => hub.shutdown.notify_one(),
+                // (SINGULARITY_IGNORE_SHUTDOWN: tests play a Daemon too old to know `Shutdown`)
+                ClientMsg::Command(Command::Shutdown) if std::env::var_os("SINGULARITY_IGNORE_SHUTDOWN").is_none() => hub.shutdown.notify_one(),
+                ClientMsg::Command(Command::Shutdown) => {}
                 ClientMsg::Command(Command::GetLyrics { uri }) => match &hub.catalogue {
                     Some(c) => {
                         // what we know about the track helps the fallback search
