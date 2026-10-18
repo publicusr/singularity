@@ -263,7 +263,7 @@ async fn device_name(hub: &Hub) -> String {
     }
 }
 
-/// Answer a LocalStore command (`GetListening`, `ExportLocalData`, `DeleteLocalData`).
+/// Answer a LocalStore command (`GetListening`, `GetStats`, `ExportLocalData`, `DeleteLocalData`).
 async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>) {
     let Some(store) = hub.store.clone() else {
         let _ = out.send(DaemonMsg::Event(Event::Error { message: "the listening log is off in this Daemon".into() })).await;
@@ -274,6 +274,7 @@ async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>) {
         let s = store.lock().expect("store lock");
         match cmd {
             Command::GetListening => (s.summary(now).map(Event::Listening), None),
+            Command::GetStats { period } => (s.stats(period, now).map(Event::Stats), None),
             Command::ExportLocalData => (s.export(&store::downloads_dir(), now).map(|p| Event::Notice { message: format!("Listening data exported to {}", p.display()) }), None),
             _ => match s.delete_all() {
                 Ok(()) => (Ok(Event::Notice { message: "Deleted the listening log and every library backup".into() }), s.summary(now).ok().map(Event::Listening)),
@@ -514,7 +515,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                     h.engine_expires_in_days = expires;
                     let _ = out_tx.send(DaemonMsg::Event(Event::Health(h))).await;
                 }
-                ClientMsg::Command(cmd @ (Command::GetListening | Command::ExportLocalData | Command::DeleteLocalData)) => local_data(&hub, cmd, &out_tx).await,
+                ClientMsg::Command(cmd @ (Command::GetListening | Command::GetStats { .. } | Command::ExportLocalData | Command::DeleteLocalData)) => local_data(&hub, cmd, &out_tx).await,
                 ClientMsg::Command(Command::GetState) => {
                     let s = hub.playback.lock().await.clone();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;

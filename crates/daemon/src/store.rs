@@ -5,7 +5,7 @@
 
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
-use singularity_proto::{Item, LISTENING_DAYS, ListeningSummary, PlayStatus, PlaybackState};
+use singularity_proto::{Item, LISTENING_DAYS, ListeningSummary, PlayStatus, PlaybackState, Stats, StatsPeriod, StatsRow};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -54,9 +54,9 @@ impl Store {
                 played_ms INTEGER NOT NULL,
                 device TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS plays_day ON plays(day);
-            PRAGMA user_version = 1;",
+            CREATE INDEX IF NOT EXISTS plays_day ON plays(day);",
         )?;
+        migrate(&db)?;
         Ok(Store { dir: dir.to_path_buf(), db })
     }
 
@@ -68,8 +68,8 @@ impl Store {
 
     pub fn record(&self, p: &Play) -> anyhow::Result<()> {
         self.db.execute(
-            "INSERT INTO plays (started_ms, day, track_uri, name, artists, album, context_uri, duration_ms, played_ms, device)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO plays (started_ms, day, track_uri, name, artists, album, context_uri, duration_ms, played_ms, device, album_uri, artist_uris)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 p.started_ms as i64,
                 local_day(p.started_ms),
@@ -80,7 +80,9 @@ impl Store {
                 p.context_uri,
                 p.item.duration_ms as i64,
                 p.played_ms as i64,
-                p.device
+                p.device,
+                p.item.album_uri,
+                (!p.item.artist_uris.is_empty()).then(|| serde_json::to_string(&p.item.artist_uris)).transpose()?
             ],
         )?;
         Ok(())
@@ -120,8 +122,70 @@ impl Store {
         })
     }
 
+    /// A live "Wrapped" for `period` (local calendar, weeks from Monday), as of `now_ms`. Every artist on a track gets
+    /// its minutes; rankings go by minutes, then plays, then name.
+    pub fn stats(&self, period: StatsPeriod, now_ms: u64) -> anyhow::Result<Stats> {
+        const TOP: i64 = 50;
+        let today = local_day(now_ms);
+        let first_logged: Option<i64> = self.db.query_row("SELECT MIN(day) FROM plays", [], |r| r.get(0))?;
+        let from = period_start(period, today, first_logged.unwrap_or(today));
+        let range = params![from, today];
+        let mins = |ms: i64| ((ms + 30_000) / 60_000) as u32;
+        let (ms, plays): (i64, i64) = self.db.query_row("SELECT COALESCE(SUM(played_ms), 0), COUNT(*) FROM plays WHERE day BETWEEN ?1 AND ?2", range, |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let mut by_hour = vec![0i64; 24];
+        let mut q = self.db.prepare("SELECT started_ms, played_ms FROM plays WHERE day BETWEEN ?1 AND ?2")?;
+        for r in q.query_map(range, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
+            let (start, played) = r?;
+            by_hour[local_hour(start as u64) as usize] += played;
+        }
+        let mut q = self.db.prepare("SELECT DISTINCT day FROM plays WHERE day <= ?1 ORDER BY day DESC")?;
+        let all_days: Vec<i64> = q.query_map([today], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        let in_period: Vec<i64> = all_days.iter().rev().copied().filter(|d| *d >= from).collect();
+        let row = |r: &rusqlite::Row| -> rusqlite::Result<StatsRow> {
+            Ok(StatsRow {
+                name: r.get(0)?,
+                uri: r.get(1)?,
+                track_uri: r.get(2)?,
+                subtitle: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                minutes: mins(r.get(4)?),
+                plays: r.get::<_, i64>(5)? as u32,
+                all_time_plays: r.get::<_, i64>(6)? as u32,
+            })
+        };
+        let top = |sql: &str| -> anyhow::Result<Vec<StatsRow>> {
+            let mut q = self.db.prepare(sql)?;
+            Ok(q.query_map(params![from, today, TOP], row)?.collect::<Result<_, _>>()?)
+        };
+        let top_artists = top(
+            "SELECT a.value, MAX(json_extract(p.artist_uris, '$[' || a.key || ']')), MAX(p.track_uri), NULL, SUM(p.played_ms) AS ms, COUNT(*) AS n, 0
+             FROM plays p, json_each(p.artists) a WHERE p.day BETWEEN ?1 AND ?2 GROUP BY a.value ORDER BY ms DESC, n DESC, 1 LIMIT ?3",
+        )?;
+        let top_tracks = top(
+            "SELECT MAX(p.name), p.track_uri, p.track_uri, json_extract(MAX(p.artists), '$[0]'), SUM(p.played_ms) AS ms, COUNT(*) AS n,
+                    (SELECT COUNT(*) FROM plays q WHERE q.track_uri = p.track_uri)
+             FROM plays p WHERE p.day BETWEEN ?1 AND ?2 GROUP BY p.track_uri ORDER BY ms DESC, n DESC, 1 LIMIT ?3",
+        )?;
+        let top_albums = top(
+            "SELECT p.album, MAX(p.album_uri), MAX(p.track_uri), json_extract(p.artists, '$[0]') AS artist, SUM(p.played_ms) AS ms, COUNT(*) AS n, 0
+             FROM plays p WHERE p.day BETWEEN ?1 AND ?2 AND COALESCE(p.album, '') != '' GROUP BY p.album, artist ORDER BY ms DESC, n DESC, 1 LIMIT ?3",
+        )?;
+        Ok(Stats {
+            period,
+            from_day: from,
+            to_day: today,
+            minutes: mins(ms),
+            plays: plays as u32,
+            streak_days: streak(&all_days, today),
+            longest_streak_days: longest_run(&in_period),
+            by_hour: by_hour.into_iter().map(mins).collect(),
+            top_artists,
+            top_tracks,
+            top_albums,
+        })
+    }
+
     fn plays_json(&self) -> anyhow::Result<Vec<Value>> {
-        let mut q = self.db.prepare("SELECT started_ms, track_uri, name, artists, album, context_uri, duration_ms, played_ms, device FROM plays ORDER BY started_ms")?;
+        let mut q = self.db.prepare("SELECT started_ms, track_uri, name, artists, album, context_uri, duration_ms, played_ms, device, album_uri, artist_uris FROM plays ORDER BY started_ms")?;
         let rows = q.query_map([], |r| {
             Ok(json!({
                 "started_ms": r.get::<_, i64>(0)?,
@@ -133,6 +197,8 @@ impl Store {
                 "duration_ms": r.get::<_, i64>(6)?,
                 "played_ms": r.get::<_, i64>(7)?,
                 "device": r.get::<_, String>(8)?,
+                "album_uri": r.get::<_, Option<String>>(9)?,
+                "artist_uris": r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
             }))
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -343,6 +409,52 @@ fn parse_date(s: &str) -> Option<i64> {
     Some(days_from_civil(y, m, d))
 }
 
+/// The log's schema: 1 (#23); 2 adds album and artist links and an index for per-track counts (#35). Each step runs
+/// once, in place, keeping every row.
+fn migrate(db: &Connection) -> rusqlite::Result<()> {
+    let v: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if v < 2 {
+        db.execute_batch(
+            "BEGIN;
+             ALTER TABLE plays ADD COLUMN album_uri TEXT;
+             ALTER TABLE plays ADD COLUMN artist_uris TEXT;
+             CREATE INDEX IF NOT EXISTS plays_track ON plays(track_uri);
+             PRAGMA user_version = 2;
+             COMMIT;",
+        )?;
+    }
+    Ok(())
+}
+
+/// The first local day of `period` around `today` (all time: the first day in the log).
+pub fn period_start(period: StatsPeriod, today: i64, first_logged: i64) -> i64 {
+    let (y, m, _) = civil(today);
+    match period {
+        StatsPeriod::Week => today - weekday(today) as i64,
+        StatsPeriod::Month => days_from_civil(y, m, 1),
+        StatsPeriod::Year => days_from_civil(y, 1, 1),
+        StatsPeriod::All => first_logged.min(today),
+    }
+}
+
+/// The local hour (0–23) of a Unix-ms instant.
+pub fn local_hour(ms: u64) -> u8 {
+    let secs = (ms / 1000) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: localtime_r only writes the tm we pass
+    if unsafe { libc::localtime_r(&secs, &mut tm) }.is_null() { 0 } else { tm.tm_hour as u8 }
+}
+
+/// The longest run of consecutive days. `days`: oldest first, distinct.
+fn longest_run(days: &[i64]) -> u32 {
+    let (mut best, mut run) = (0u32, 0u32);
+    for (i, d) in days.iter().enumerate() {
+        run = if i > 0 && *d == days[i - 1] + 1 { run + 1 } else { 1 };
+        best = best.max(run);
+    }
+    best
+}
+
 /// Days in a row with listening, ending today, or yesterday when nothing has played yet today. `days`: newest first.
 fn streak(days: &[i64], today: i64) -> u32 {
     let Some(&first) = days.first().filter(|d| **d >= today - 1) else { return 0 };
@@ -438,6 +550,100 @@ mod tests {
         }
         assert!(!keep.contains(&days_from_civil(2025, 10, 1)), "a year ago is gone");
         assert_eq!(keep.len(), 14 + 12, "two weeks, and the 1st of November 2025 … October 2026");
+    }
+
+    /// Local noon of local day `d` (any zone within ±11 h of UTC).
+    fn noon(d: i64) -> u64 {
+        (d * 86_400_000 + 12 * 3_600_000) as u64
+    }
+
+    fn play(store: &Store, at: u64, track: &str, artists: &[&str], album: &str, mins: u64) {
+        let it = Item {
+            uri: format!("spotify:track:{track}"),
+            name: format!("Song {track}"),
+            artists: artists.iter().map(|a| a.to_string()).collect(),
+            artist_uris: artists.iter().map(|a| format!("spotify:artist:{}", a.replace(' ', ""))).collect(),
+            album: Some(album.into()),
+            album_uri: Some(format!("spotify:album:{}", album.replace(' ', ""))),
+            duration_ms: 3_600_000,
+            ..Default::default()
+        };
+        store.record(&Play { started_ms: at, item: it, context_uri: None, played_ms: mins * 60_000, device: "here".into() }).unwrap();
+    }
+
+    #[test]
+    fn stats_rank_by_minutes_in_calendar_periods() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        // a Wednesday: the week started two days ago
+        let today = days_from_civil(2026, 10, 14);
+        assert_eq!(weekday(today), 2);
+        let now = noon(today);
+        play(&store, noon(today), "a", &["Nova Drift"], "Orbits", 10);
+        play(&store, noon(today - 1), "a", &["Nova Drift"], "Orbits", 10);
+        // a duet: both artists get its minutes
+        play(&store, noon(today - 2), "b", &["Mira Vale", "Nova Drift"], "Duets", 25);
+        // last Sunday: the month and year, not the week
+        play(&store, noon(today - 3), "c", &["Glass Harbour"], "Tides", 60);
+        // last year
+        play(&store, noon(days_from_civil(2025, 12, 31)), "c", &["Glass Harbour"], "Tides", 40);
+
+        let w = store.stats(StatsPeriod::Week, now).unwrap();
+        assert_eq!((w.from_day, w.to_day, w.minutes, w.plays), (today - 2, today, 45, 3));
+        let names = |r: &[StatsRow]| r.iter().map(|x| x.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&w.top_artists), ["Nova Drift", "Mira Vale"], "45 min vs 25");
+        assert_eq!(w.top_artists[0].plays, 3);
+        assert_eq!(w.top_artists[0].uri.as_deref(), Some("spotify:artist:NovaDrift"));
+        assert_eq!(names(&w.top_tracks), ["Song b", "Song a"], "25 min beats 20");
+        assert_eq!((w.top_tracks[1].plays, w.top_tracks[1].subtitle.as_str()), (2, "Nova Drift"));
+        assert_eq!(names(&w.top_albums), ["Duets", "Orbits"]);
+        assert_eq!(w.top_albums[0].uri.as_deref(), Some("spotify:album:Duets"));
+        assert_eq!(w.by_hour.len(), 24);
+        assert_eq!(w.by_hour.iter().sum::<u32>(), 45);
+        assert_eq!((w.streak_days, w.longest_streak_days), (4, 3));
+
+        let m = store.stats(StatsPeriod::Month, now).unwrap();
+        assert_eq!((m.from_day, m.top_artists[0].name.as_str()), (days_from_civil(2026, 10, 1), "Glass Harbour"));
+        let y = store.stats(StatsPeriod::Year, now).unwrap();
+        assert_eq!(y.minutes, 105);
+        let all = store.stats(StatsPeriod::All, now).unwrap();
+        assert_eq!((all.minutes, all.from_day), (145, days_from_civil(2025, 12, 31)));
+        let c = all.top_tracks.iter().find(|t| t.track_uri == "spotify:track:c").unwrap();
+        assert_eq!((c.plays, c.all_time_plays), (2, 2));
+        assert_eq!(y.top_tracks.iter().find(|t| t.track_uri == "spotify:track:c").unwrap().all_time_plays, 2, "played N times counts the whole log");
+
+        // an empty log: zeros, no rows
+        let empty = Store::open(&dir.path().join("e")).unwrap().stats(StatsPeriod::Week, now).unwrap();
+        assert_eq!((empty.minutes, empty.top_tracks.len(), empty.from_day), (0, 0, today - 2));
+    }
+
+    #[test]
+    fn an_old_log_migrates_in_place_and_keeps_every_row() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            // schema 1, as #23 wrote it
+            let db = Connection::open(dir.path().join(DB)).unwrap();
+            db.execute_batch(
+                "CREATE TABLE plays (id INTEGER PRIMARY KEY, started_ms INTEGER NOT NULL, day INTEGER NOT NULL, track_uri TEXT NOT NULL,
+                   name TEXT NOT NULL, artists TEXT NOT NULL, album TEXT, context_uri TEXT, duration_ms INTEGER NOT NULL,
+                   played_ms INTEGER NOT NULL, device TEXT NOT NULL);
+                 CREATE INDEX plays_day ON plays(day);
+                 PRAGMA user_version = 1;
+                 INSERT INTO plays VALUES (1, 1792000000000, 20740, 'spotify:track:old', 'Old', '[\"Nova Drift\"]', 'Orbits', NULL, 200000, 120000, 'here');",
+            )
+            .unwrap();
+        }
+        let store = Store::open(dir.path()).unwrap();
+        let v: i64 = store.db.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 2);
+        let all = store.stats(StatsPeriod::All, 1_792_000_000_000).unwrap();
+        assert_eq!(all.plays, 1);
+        // no links in old rows: the track is there to find them through
+        assert_eq!((all.top_artists[0].uri.clone(), all.top_artists[0].track_uri.as_str()), (None, "spotify:track:old"));
+        assert_eq!(all.top_albums[0].uri, None);
+        // opening again doesn't migrate twice
+        drop(store);
+        assert!(Store::open(dir.path()).is_ok());
     }
 
     #[test]

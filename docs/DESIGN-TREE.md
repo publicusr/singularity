@@ -61,6 +61,7 @@ so it cannot be settled by talking)
 | D39 | Stats ranking | D31 | settled | By minutes (play counts alongside); calendar periods (week from Monday, month, year, all time). |
 | D40 | Playlist covers | D32 | settled | In batch 3: a path or an image dropped on the terminal, previewed, cropped square, ≤ 256 KB JPEG, uploaded the web player's way. |
 | D41 | Podcast extras | D35 | settled | Audiobooks in batch 6 if Soloist plays chapters (checked first, else dropped and reported); video podcasts as audio; downloads never. Demos as in-app Widgets (D36); spec for all of v1.x now, tickets per batch. |
+| D42 | Album song into "Next in queue" | #32 | settled | Allowed one way (batch 2 polish): dropped among the queued songs it becomes a queued song there and leaves the album run; queued songs never go into the context. |
 
 ```mermaid
 flowchart LR
@@ -400,3 +401,17 @@ flowchart LR
   and tickets per batch. Spec: `SPEC.md` "v1.x" (stories 68–86). #32 closed: the owner confirms drags work while
   paused; the earlier failures were a just-started Daemon (Soloist not yet the active Connect device), which now says
   "press play once".
+- **v1.x confirmed** (2026-10-18): D42 yes; the owner confirms the plan ("start building"): batch 1 (#35 → #36 → #37),
+  then the Visual demos, then batch 2.
+- **#35 Stats in the Daemon ✅** (2026-10-18): `Command::GetStats { period }` → `Event::Stats` (`Stats`, `StatsRow`,
+  `StatsPeriod`; additive). `Store::stats`: calendar periods in local time (`period_start`: week from Monday, month,
+  year, all time = from the first logged day), minutes and plays, the current streak and the longest run in the
+  period, minutes per local hour (`local_hour`), top 50 artists (every artist on a track gets its minutes, via
+  `json_each`), tracks (with all-time play counts) and albums (grouped by album and first artist), ranked by minutes,
+  then plays, then name. The log is schema 2 (`migrate`: `album_uri`, `artist_uris`, index on `track_uri`; the old
+  code re-set `user_version = 1` on every open, so versioning starts working now); Soloist's and Connect's items
+  already carry the links, older rows keep NULL and carry a `track_uri` to find them through. Freshness: rather than
+  the Daemon remembering who asked, a Client asks again after `Event::Listening` (sent after every logged Play).
+  Tests: rankings, duet credit, week/month/year/all boundaries, streaks, empty log; a schema-1 file migrates keeping
+  its row; protocol round trip; `tests/stats_tz.rs` (own binary, `TZ=Europe/Warsaw`): plays on either side of the
+  2026-10-25 change land in the right week and hour.

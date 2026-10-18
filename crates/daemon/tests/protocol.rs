@@ -337,6 +337,11 @@ async fn the_listening_log_sums_up_exports_and_deletes_through_the_protocol() {
     assert_eq!((s.plays, s.streak_days, s.top_artist.as_deref()), (3, 2, Some("Nova Drift")));
     assert_eq!(s.minutes[s.minutes.len() - 2..], [2, 4]);
 
+    // stats for a period (#35)
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::GetStats { period: singularity_proto::StatsPeriod::All })).await.unwrap();
+    let Event::Stats(st) = next(&mut a, |e| matches!(e, Event::Stats(_))).await else { unreachable!() };
+    assert_eq!((st.period, st.plays, st.minutes, st.top_artists[0].name.as_str(), st.top_tracks.len()), (singularity_proto::StatsPeriod::All, 3, 6, "Nova Drift", 3));
+
     proto::write_msg(&mut a, &ClientMsg::Command(Command::ExportLocalData)).await.unwrap();
     let Event::Notice { message } = next(&mut a, |e| matches!(e, Event::Notice { .. } | Event::Error { .. })).await else { panic!("export failed") };
     let file = std::fs::read_dir(&downloads).unwrap().next().unwrap().unwrap().path();

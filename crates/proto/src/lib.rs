@@ -99,6 +99,9 @@ pub enum Command {
     Spectrum { on: bool },
     /// The listening log, summed up; arrives as `Event::Listening` (also sent after every logged play).
     GetListening,
+    /// Stats for a calendar period from the listening log; arrives as `Event::Stats`. (Ask again after an
+    /// `Event::Listening`: that's when a new Play was logged.)
+    GetStats { period: StatsPeriod },
     /// Write the listening log and the latest library backup to one JSON file in the Downloads folder (`Notice`).
     ExportLocalData,
     /// Delete the listening log and every library backup (the Client confirms first).
@@ -155,6 +158,8 @@ pub enum Event {
     Error { message: String },
     /// The listening log, summed up (answer to `GetListening`, and after every logged play).
     Listening(ListeningSummary),
+    /// Stats for one period (answer to `GetStats`).
+    Stats(Stats),
     #[serde(other)]
     Unknown,
 }
@@ -428,6 +433,65 @@ pub struct ListeningSummary {
     pub streak_days: u32,
     /// plays in the whole log
     pub plays: u64,
+}
+
+/// A calendar period in local time (weeks start on Monday), for stats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatsPeriod {
+    #[default]
+    Week,
+    Month,
+    Year,
+    All,
+}
+
+impl StatsPeriod {
+    pub const ALL: [StatsPeriod; 4] = [StatsPeriod::Week, StatsPeriod::Month, StatsPeriod::Year, StatsPeriod::All];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            StatsPeriod::Week => "This week",
+            StatsPeriod::Month => "This month",
+            StatsPeriod::Year => "This year",
+            StatsPeriod::All => "All time",
+        }
+    }
+}
+
+/// The listening log for one period: a live "Wrapped". Rankings go by minutes, then plays.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Stats {
+    pub period: StatsPeriod,
+    /// the local days covered, as days since 1970-01-01 (the first is the period's start, the last today)
+    pub from_day: i64,
+    pub to_day: i64,
+    pub minutes: u32,
+    pub plays: u32,
+    /// days in a row with a Play, up to today (or yesterday), and the longest run in the period
+    pub streak_days: u32,
+    pub longest_streak_days: u32,
+    /// minutes listened per local hour of the day (24)
+    pub by_hour: Vec<u32>,
+    pub top_artists: Vec<StatsRow>,
+    pub top_tracks: Vec<StatsRow>,
+    pub top_albums: Vec<StatsRow>,
+}
+
+/// One ranked artist, track or album.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct StatsRow {
+    pub name: String,
+    /// its own link, when the log has it (plays before 2026-10-18 lack album and artist links)
+    pub uri: Option<String>,
+    /// a track of it, to find the link through when `uri` is missing (and what a track row plays)
+    pub track_uri: String,
+    /// the artist, for tracks and albums
+    pub subtitle: String,
+    pub minutes: u32,
+    pub plays: u32,
+    /// tracks: plays in the whole log ("played N times")
+    pub all_time_plays: u32,
 }
 
 /// How many days `ListeningSummary::minutes` covers: 26 weeks.
