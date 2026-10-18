@@ -108,7 +108,8 @@ A new Client replaces an outdated Daemon by itself (and, since #25, stops one th
 
 ## Waiting on the owner
 
-- **The waveform (#46):** the owner "doesn't know what or where it is". It is the player bar's seek bar: heard stretches
+- **The waveform (#46):** fixed in session 5 (it was saturating into a flat bar; see the round log); asked the owner
+  whether it now reads as a waveform and whether to make it taller. Earlier: the owner "doesn't know what or where it is". It is the player bar's seek bar: heard stretches
   turn into eighth-block bars (scaled per track), the rest stays a line; a song heard through shows whole next time.
   Next session: explain it in one line, ask whether they see it, and offer to make it more visible (two rows tall, or
   a Widget) in grilling format.

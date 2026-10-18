@@ -554,3 +554,8 @@ flowchart LR
   seek bar and only shows where a song has been heard while Singularity plays it; check next session whether it reads
   as a waveform on real music (a 1-row eighth-block bar may look like a thick line) and whether to make it more visible
   (taller, or show it in a Widget), with the owner.
+- **#46 follow-up: the waveform was a flat bar** (2026-10-18, fifth session): the owner's four cached waveforms were
+  all full blocks: each slot kept the *loudest* auto-gained level, and the gain lifts some frame to the top in every
+  ~1 s stretch. Slots now average `out_level` (no gain, fixed 60 dB scale), a cell averages its slots, and the bar
+  scales from the 5th percentile to the loudest. Cache moved to `waves2/` (the old files hold the saturated data).
+  Test: steady swings with a quieter bridge and a silent tail. Visibility (taller bar, Widget) put to the owner.
