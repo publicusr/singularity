@@ -9,7 +9,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - **Phase 0 (planning) ✅, Phase 1 (spikes) ✅.** ADRs 0001–0004.
 - **Phase 2/3 (v1 build) ✅ (pending the owner's test round).** Spec issue **#1**, tickets on GitHub
   (`publicusr/singularity`, label `ready-for-agent`). **All v1 tickets are closed (#2–#24).**
-- Tests: **220 passing** (`cargo test`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
+- Tests: **219 passing** (`cargo test`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
   live answers). Clippy: only minor style warnings, all in older code (setup.rs, connect.rs, probe example) or
   harmless (`type_complexity` on theme tables, `needless_range_loop` in a test).
 - **Owner test round 1 is in** (2026-10-18): 9 points, findings and proposals in the DESIGN-TREE round log ("Owner
