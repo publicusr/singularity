@@ -432,7 +432,7 @@ flowchart LR
 - **#37 Stats Widgets ✅** (2026-10-18): two side-group Widgets in `stats.rs`. **today**: minutes today ("under a
   minute today" once something played), plays today (`ListeningSummary.plays_today`, additive), the streak, and a
   7-day sparkline with weekday initials when there's room; a click opens Stats. **top this week**: the week's top 5
-  artists or tracks (`App::top_week_tracks`; the title "top artists · this week ⇄" is the switch), rows as on the
+  artists or tracks (`App::top_week_tracks`; the title "top artists · week ⇄" is the switch), rows as on the
   Stats page (artist opens, track plays on a second click, right-click menu). Data: `want_widget_data()` (replacing the
   layout-change calls to `want_spectrum`) asks for the week's stats when the Widget is on screen, and
   `refresh_stats` asks again after every `Event::Listening`. `row()` subtracts saturating (tiny Panes). Tests: both
@@ -450,3 +450,9 @@ flowchart LR
   Engine tracks have fixture covers now (pty screenshots show real pictures); a Daemon without a log no longer toasts
   on questions (only on export/delete). Tests: every demo stays inside its area from 12×3 to 160×30; the font's
   glyphs; pty `demos` (pixel tier) swaps each in while a song plays.
+- **Owner report: stuck Slots** (2026-10-18): cycling a narrow Pane onto a long title ("listening · 26 weeks",
+  "starfield · demo") hid its ◂ ▸ (they showed only when the Pane was 12 wider than the title), so the Slot could
+  only leave with `v`. Now every swappable Pane keeps its ◂ ▸ and a long title is shortened with "…"; "top this week"
+  is titled "top artists · week ⇄". Test walks every swappable Pane of every Design through its whole cycle at 80×24
+  and 140×40; pty `arrows` does the owner's walk (bottom-left Pane, spectrum Pane) by clicking ▸. Owner likes rain
+  and the starfield demo. Asked: where ◂ ▸ belong (the main Pane's back/forward sit left, Widget swaps right).

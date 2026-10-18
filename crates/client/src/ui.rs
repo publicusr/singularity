@@ -287,8 +287,8 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             ("home", _, Some(a)) => a.name.clone(),
             ("home", Some(v), _) => v.title.clone(),
             // its title is the switch between artists and tracks
-            ("topweek", _, _) if app.top_week_tracks => "top tracks · this week ⇄".to_string(),
-            ("topweek", _, _) => "top artists · this week ⇄".to_string(),
+            ("topweek", _, _) if app.top_week_tracks => "top tracks · week ⇄".to_string(),
+            ("topweek", _, _) => "top artists · week ⇄".to_string(),
             _ => title.to_string(),
         };
         let number = if th.numbered { superscript(i + 1) } else { String::new() };
@@ -307,6 +307,11 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             swaps.push((Rect::new(x.saturating_sub(1), rect.y, 2, 1), Hit::History(-1)));
             swaps.push((Rect::new(x + 2, rect.y, 2, 1), Hit::History(1)));
         }
+        // a Slot that can show other Widgets always keeps its ◂ ▸ (7 cells at the right): a long title gives way
+        let can_swap = !crate::layouts::options(slot).is_empty() && slot != "well";
+        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+        let room = (rect.width as usize).saturating_sub(2 + used + if can_swap { 8 } else { 0 });
+        let title = if title.chars().count() + 1 > room && room > 1 { title.chars().take(room - 2).collect::<String>() + "…" } else { title };
         spans.push(Span::styled(format!("{title} "), title_st));
         if slot == "topweek" {
             let tw = spans.iter().map(|s| s.content.chars().count()).sum::<usize>() as u16;
@@ -322,7 +327,7 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         // the Pane's own hit first, so the things inside it win
         app.hit(*rect, Hit::Focus(slot.clone()));
         // a Slot that can show other Widgets says so: ◂ ▸ in its title swap them (so does v)
-        let swappable = !crate::layouts::options(slot).is_empty() && rect.width > title.chars().count() as u16 + 12;
+        let swappable = can_swap && rect.width >= 12;
         if slot == "well" {
             // the well draws its own (sagging) frame
             crate::visual::well::draw(f.buffer_mut(), *rect, app, th);
@@ -1681,7 +1686,7 @@ mod tests {
                     }
                     assert_eq!(app.layout.slot_names()[at], want, "{}: Slot {at}", crate::design::DESIGNS[d].id);
                     let s = render(&mut app, 160, 48);
-                    let title = if want == "today" { "today" } else { "this week" };
+                    let title = if want == "today" { "today" } else { "top artists" };
                     assert!(s.contains(title), "{}: {want} in Slot {at}\n{s}", crate::design::DESIGNS[d].id);
                 }
                 app.set_design(d);
@@ -1730,11 +1735,11 @@ mod tests {
         }
         app.stats.insert(StatsPeriod::Week, seeded_stats(StatsPeriod::Week));
         let s = render(&mut app, 160, 48);
-        assert!(s.contains("top artists · this week") && s.contains("Nova Drift"), "{s}");
+        assert!(s.contains("top artists") && s.contains("Nova Drift"), "{s}");
         let toggle = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeekToggle).then_some(*r)).unwrap();
         click(&mut app, toggle.x + 3, toggle.y);
         let s = render(&mut app, 160, 48);
-        assert!(s.contains("top tracks · this week") && s.contains("Track number 0"), "{s}");
+        assert!(s.contains("top tracks") && s.contains("Track number 0"), "{s}");
         sent(&mut rx);
         // a track plays on a second click
         let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeek(1)).then_some(*r)).unwrap();
@@ -1749,6 +1754,30 @@ mod tests {
         let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeek(0)).then_some(*r)).unwrap();
         click(&mut app, r.x + 4, r.y);
         assert_eq!(app.artist.as_ref().map(|a| a.uri.as_str()), Some("spotify:artist:0"));
+    }
+
+    #[test]
+    fn every_swappable_pane_keeps_its_arrows_whatever_it_shows() {
+        // the owner's case: cycling a narrow Pane onto a long title ("listening · 26 weeks", "starfield · demo") hid
+        // the ◂ ▸ and left the Slot stuck there
+        for d in 0..crate::design::DESIGNS.len() {
+            let mut app = App::new(None);
+            app.set_design(d);
+            for (w, h) in [(80u16, 24u16), (140, 40)] {
+                let slots: Vec<(String, Rect)> = app.layout.compute_shaped(Rect::new(0, 1, w, h - 5), 2.0).slots.into_iter().filter(|(s, _)| !crate::layouts::options(s).is_empty() && s != "well").collect();
+                for (k, (_, rect)) in slots.iter().enumerate() {
+                    // walk this Slot through its whole cycle; the arrows are there every step
+                    for _ in 0..14 {
+                        render(&mut app, w, h);
+                        let now = app.layout.compute_shaped(Rect::new(0, 1, w, h - 5), 2.0).slots.into_iter().filter(|(s, _)| !crate::layouts::options(s).is_empty() && s != "well").nth(k).unwrap().0;
+                        if rect.width >= 12 {
+                            assert!(app.hits.iter().any(|(r, h)| *h == Hit::Swap(now.clone(), 1) && r.y == rect.y), "{} {w}x{h}: no ▸ on {now}", crate::design::DESIGNS[d].id);
+                        }
+                        app.swap_widget(&now, 1);
+                    }
+                }
+            }
+        }
     }
 
     // ── Visual demos (D36) ──

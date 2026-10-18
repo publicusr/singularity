@@ -457,6 +457,27 @@ def swap_in(t, out, title_now, want):
         mouse(t, 0, sx, y); mouse(t, 0, sx, y, release=True, wait=0.4)
 
 
+def arrows(t, out):
+    """The owner's report: cycling a narrow Pane onto a long title hid its ◂ ▸. Walk two Panes through every Widget."""
+    t.pump(1.0)
+    for start in ("stream", "fft"):
+        x, y = t.find(start)
+        seen = []
+        for _ in range(12):
+            row = t.screen.display[y]
+            # the Pane's own title row, from its left corner to its right corner
+            seg = row[x - 2:]
+            name = seg.split("─")[0].split("◂")[0].strip()
+            seen.append(name + (" ◂▸" if "◂ ▸" in seg[:len(seg)] else " (no arrows!)"))
+            sx = row.find("▸", x)
+            if sx < 0:
+                break
+            mouse(t, 0, sx, y); mouse(t, 0, sx, y, release=True, wait=0.4)
+        print(start, "→", " | ".join(seen))
+    t.shot(f"{out}/0-after.png")
+    t.send(b"q", 0.5)
+
+
 def demos(t, out):
     """D36: each Visual demo swapped into a Pane while a song plays (pixel tier, so the glow has a cover)."""
     t.pump(1.0)
@@ -488,7 +509,7 @@ def stats_widgets(t, out):
     swap_to = lambda now, want: swap_in(t, out, now, want)
     t.pump(1.0)
     swap_to("tail -f lyrics.log", "today")
-    swap_to("today", "this week")  # the same Slot on to "top this week"…
+    swap_to("today", "top artists")  # the same Slot on to "top this week"…
     swap_to("queue", "today")      # …and "today" into the queue's Slot
     t.pump(1.0)
     t.shot(f"{out}/0-widgets.png")
@@ -608,7 +629,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "demos"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "demos", "arrows"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "demos") else "0"
@@ -651,6 +672,8 @@ def main():
             return stats_widgets(t, out)
         if scenario == "demos":
             return demos(t, out)
+        if scenario == "arrows":
+            return arrows(t, out)
         if scenario == "wheel":
             return wheel(t, out)
         if scenario == "history":
