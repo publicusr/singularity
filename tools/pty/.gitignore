@@ -1,0 +1,6 @@
+venv/
+xdgcache/
+fresh/
+out-*/
+*.png
+__pycache__/

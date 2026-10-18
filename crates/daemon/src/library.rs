@@ -216,6 +216,15 @@ fn release_card(r: &Value) -> Option<Card> {
     Some(Card { uri: r["uri"].as_str()?.into(), name: r["name"].as_str()?.into(), subtitle: format!("{year}{kind}"), image_url: image(&r["coverArt"]["sources"]), kind: "album".into() })
 }
 
+/// `areEntitiesInLibrary` → one flag per URI asked about (in order).
+pub fn parse_saved(uris: &[String], v: &Value) -> Vec<singularity_proto::SavedFlag> {
+    let lookup = v["data"]["lookup"].as_array().cloned().unwrap_or_default();
+    uris.iter()
+        .zip(lookup.iter().map(|l| l["data"]["saved"].as_bool().unwrap_or(false)).chain(std::iter::repeat(false)))
+        .map(|(u, saved)| singularity_proto::SavedFlag { uri: u.clone(), saved })
+        .collect()
+}
+
 pub fn search_vars(query: &str) -> Value {
     json!({
         "searchTerm": query, "offset": 0, "limit": 20, "numberOfTopResults": 5,

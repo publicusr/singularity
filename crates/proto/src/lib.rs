@@ -74,6 +74,10 @@ pub enum Command {
     PlayFrom { context_uri: String, index: u32, track_uri: Option<String> },
     /// Store the Soloist API key (keyring, else an owner-only file) and (re)start the Engine with it.
     SetSoloistKey { key: String },
+    /// Like or unlike a track; save/unsave an album; follow/unfollow an artist or playlist. Answered by `Event::Saved`.
+    SetSaved { uri: String, saved: bool },
+    /// Ask whether these are in the library (liked, saved, followed); answered by `Event::Saved`.
+    CheckSaved { uris: Vec<String> },
     /// List Spotify Connect devices; arrives as `Event::Devices` (and again whenever they change).
     GetDevices,
     /// Move playback to another Connect device.
@@ -121,6 +125,9 @@ pub enum Event {
     Tracks(TrackPage),
     /// What the Engine is streaming right now (from Soloist's verbose log).
     Stream(StreamInfo),
+    /// Whether things are in the library, as Spotify says (after `SetSaved` this is the truth to settle on: on a
+    /// failure it carries the old value back).
+    Saved { entries: Vec<SavedFlag> },
     /// The account's Connect devices. (A struct variant: the tagged encoding can't hold a bare list.)
     Devices { devices: Vec<Device> },
     /// Search results (answer to `Search`).
@@ -311,6 +318,12 @@ pub struct ListHeader {
 pub struct Link {
     pub name: String,
     pub uri: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SavedFlag {
+    pub uri: String,
+    pub saved: bool,
 }
 
 /// A Spotify Connect device.

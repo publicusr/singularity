@@ -17,5 +17,7 @@ usable, not just infrastructure.
 Phase 1 comes before any UI work on purpose. If the Soloist or catalogue spike fails, the whole
 architecture changes, and it is better to learn that in a day than after a month of UI.
 
-**Progress (2026-10-17):** v1 tickets are GitHub issues #2–#24 under spec issue #1. Done: #2 Daemon↔Client, #3 Client shell,
-#4 Soloist playback, #7 Catalogue session, #24 seek precision, #8 Home, #9 Library, #15 AudioTap, #16 black hole, #5 setup & health, #12 queue, #14 lyrics, #11 album/artist pages, #10 search, #13 devices. Next: #6 auto-update, #22 like/follow, #21 MPRIS. See `docs/HANDOFF.md`.
+**Progress (2026-10-18):** v1 tickets are GitHub issues under spec issue #1. Done: #2 Daemon↔Client, #3 Client shell,
+#4 Soloist playback, #5 setup & health, #7 Catalogue session, #8 Home, #9 Library, #10 search, #11 album/artist pages,
+#12 queue, #13 devices, #14 lyrics, #15 AudioTap, #16 black hole, #24 seek precision. In progress: #22 like/follow.
+Next: #21 MPRIS, #6 auto-update, #20 config, #18 designs, #19 layouts, #17 idle, #23 local data. See `docs/HANDOFF.md`.

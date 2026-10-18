@@ -171,3 +171,7 @@ flowchart LR
   and `initially_paused`; verified live both ways (owner's desktop app ↔ Singularity, paused). Fixed on the way: after
   any Connect failure the remote was dropped, and the dealer can't start twice on one session, so Connect features died
   until the next login. Device picker: `d`, the palette, or the player bar's ⧉ label. D17 answered (above).
+- **#22 Like/follow — in progress** (2026-10-18): Daemon side done (uncommitted work committed as WIP): `SetSaved {uri,
+  saved}` → `addToLibrary`/`removeFromLibrary` (`libraryItemUris`), `CheckSaved {uris}` → `areEntitiesInLibrary`
+  (`lookup[].data.saved`, verified live read-only), `Event::Saved` carries the truth (the old value on failure, for
+  rollback); the fake Catalogue fails any URI containing "fail". Client side not started.

@@ -49,6 +49,8 @@ pub enum CatCmd {
     Transfer(String),
     /// a transport command for the device that's playing (not our Engine)
     Remote(Command),
+    SetSaved { uri: String, saved: bool },
+    CheckSaved(Vec<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +68,7 @@ pub enum CatEvent {
     Devices(Vec<singularity_proto::Device>),
     /// another device's playback (None: our Engine is the active device again)
     Remote(Option<singularity_proto::PlaybackState>),
+    Saved(Vec<singularity_proto::SavedFlag>),
     Error(String),
 }
 
@@ -144,6 +147,13 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
             CatCmd::Devices => st.devices().await,
             CatCmd::Transfer(id) => st.transfer(id).await,
             CatCmd::Remote(cmd) => st.remote_command(cmd).await,
+            CatCmd::SetSaved { uri, saved } => {
+                // the library changed: the sidebar and Liked Songs follow (Liked Songs from its next open)
+                if st.set_saved(uri.clone(), saved).await && !uri.starts_with("spotify:track:") {
+                    let _ = self_tx.send(CatCmd::Library).await;
+                }
+            }
+            CatCmd::CheckSaved(uris) => st.check_saved(uris).await,
             CatCmd::Search(q) => {
                 // while typing, only the newest search matters: skip any already superseded
                 let mut q = q;
@@ -192,6 +202,16 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 CatCmd::Devices => vec![CatEvent::Devices(fake_devices(None))],
                 CatCmd::Transfer(id) => vec![CatEvent::Devices(fake_devices(Some(&id)))],
                 CatCmd::Remote(_) => vec![],
+                // anything with "fail" in its URI fails, so the Client's rollback can be seen
+                CatCmd::SetSaved { uri, saved } => {
+                    let ok = !uri.contains("fail");
+                    let mut ev = vec![CatEvent::Saved(vec![singularity_proto::SavedFlag { saved: if ok { saved } else { !saved }, uri }])];
+                    if !ok {
+                        ev.insert(0, CatEvent::Error("Couldn't save it (fake failure)".into()));
+                    }
+                    ev
+                }
+                CatCmd::CheckSaved(uris) => vec![CatEvent::Saved(uris.into_iter().map(|uri| singularity_proto::SavedFlag { saved: uri.ends_with('1'), uri }).collect())],
                 CatCmd::Describe(uris) => vec![CatEvent::Described(
                     uris.into_iter().map(|u| singularity_proto::Item { name: format!("Described {}", u.rsplit(':').next().unwrap_or("")), uri: u, artists: vec!["Fake Artist".into()], duration_ms: 180_000, ..Default::default() }).collect(),
                 )],
@@ -544,6 +564,43 @@ impl State {
         let remote = self.remote.as_mut().expect("just started");
         let to = remote.device_id(crate::soloist::DEVICE_NAME).await?;
         Ok((session, remote, to))
+    }
+
+    /// Add to or remove from the library. Returns whether it worked; either way the Daemon hears the truth.
+    async fn set_saved(&mut self, uri: String, saved: bool) -> bool {
+        let op = if saved { "addToLibrary" } else { "removeFromLibrary" };
+        let result = self.query(op, json!({ "libraryItemUris": [uri], "interactionId": null })).await;
+        let ok = match &result {
+            Ok(v) => v.get("errors").is_none(),
+            Err(_) => false,
+        };
+        if ok {
+            // Liked Songs changed: its cached pages are stale now
+            if uri.starts_with("spotify:track:") {
+                self.tracks.remove(library::LIKED);
+            }
+        } else {
+            let why = result.err().map(|e| e.to_string()).unwrap_or_else(|| "Spotify refused it".into());
+            let _ = self.ev.send(CatEvent::Error(format!("Couldn't {} it: {why}", if saved { "save" } else { "remove" }))).await;
+        }
+        // on failure this carries the old value back, so the Client rolls back
+        let _ = self.ev.send(CatEvent::Saved(vec![singularity_proto::SavedFlag { uri, saved: if ok { saved } else { !saved } }])).await;
+        ok
+    }
+
+    async fn check_saved(&mut self, uris: Vec<String>) {
+        for chunk in uris.chunks(50) {
+            match self.query("areEntitiesInLibrary", json!({ "uris": chunk })).await {
+                Ok(v) => {
+                    let flags = library::parse_saved(chunk, &v);
+                    let _ = self.ev.send(CatEvent::Saved(flags)).await;
+                }
+                Err(e) => {
+                    tracing::debug!("areEntitiesInLibrary: {e}");
+                    return;
+                }
+            }
+        }
     }
 
     async fn devices(&mut self) {
