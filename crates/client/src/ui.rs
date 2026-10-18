@@ -61,7 +61,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let overlays = [
         login_r,
         app.palette.is_some().then(|| palette_rect(area, app)),
-        app.help.then(|| help_rect(area)),
+        app.help.then(|| help_rect(area, help_rows(&app.keymap).len())),
         crate::setup::wanted(app).then(|| crate::setup::rect(area)),
         app.health_open.then(|| crate::setup::health_rect(area)),
         app.devices_open.then(|| devices_rect(area, app)),
@@ -72,7 +72,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     top_bar(f, top, app, &th);
     panes(f, body, app, &th);
     player_bar(f, player, app, &th);
-    hint_bar(f.buffer_mut(), hints, &th);
+    hint_bar(f.buffer_mut(), hints, &th, &app.keymap);
     if let (Some(r), Some(CatalogueStatus::LoginPending { url, code })) = (login_r, app.catalogue.clone()) {
         login(f, r, &th, &url, &code);
     }
@@ -83,7 +83,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         palette(f, area, app, &th);
     }
     if app.help {
-        help(f, area, &th);
+        help(f, area, &th, &app.keymap);
     }
     if app.devices_open {
         devices(f.buffer_mut(), area, app, &th);
@@ -421,19 +421,30 @@ fn fmt_ms(ms: u64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-const HINTS: [(&str, &str); 7] = [("␣", "play/pause"), ("⇧←→", "seek"), ("n/b", "next/prev"), ("Tab", "focus"), ("^K", "palette"), ("?", "help"), ("q", "quit")];
 
 /// Shows as many hints as fit; when space runs out, the least important go first
 /// (play/pause, palette, help and quit always stay).
-fn hint_bar(buf: &mut Buffer, r: Rect, th: &Theme) {
-    const DROP_ORDER: [&str; 3] = ["n/b", "Tab", "⇧←→"];
-    let width = |hs: &[(&str, &str)]| hs.iter().map(|(k, d)| k.chars().count() as u16 + d.chars().count() as u16 + 5).sum::<u16>() + 1;
-    let mut hints: Vec<(&str, &str)> = HINTS.to_vec();
+fn hint_bar(buf: &mut Buffer, r: Rect, th: &Theme, m: &crate::keymap::Keymap) {
+    use Action as A;
+    const DROP_ORDER: [&str; 3] = ["next/prev", "focus", "seek"];
+    let space = |k: String| if k == "Space" { "␣".to_string() } else { k };
+    let all = [
+        (space(m.label(A::TogglePlay)), "play/pause"),
+        (m.pair(A::SeekBack, A::SeekForward), "seek"),
+        (m.pair(A::Next, A::Previous), "next/prev"),
+        (m.label(A::FocusNext), "focus"),
+        (m.label(A::Palette), "palette"),
+        (m.label(A::Help), "help"),
+        (m.label(A::Quit), "quit"),
+    ];
+    // an action without a key has no hint
+    let mut hints: Vec<(String, &str)> = all.into_iter().filter(|(k, _)| !k.is_empty()).collect();
+    let width = |hs: &[(String, &str)]| hs.iter().map(|(k, d)| k.chars().count() as u16 + d.chars().count() as u16 + 5).sum::<u16>() + 1;
     for drop in DROP_ORDER {
         if width(&hints) <= r.width {
             break;
         }
-        hints.retain(|(k, _)| *k != drop);
+        hints.retain(|(_, d)| *d != drop);
     }
     let mut x = r.x + 1;
     for (k, d) in hints {
@@ -443,6 +454,7 @@ fn hint_bar(buf: &mut Buffer, r: Rect, th: &Theme) {
             break;
         }
         text(buf, x, r.y, kw, &format!(" {k} "), th.chip(th.dim));
+        let d: &str = d;
         text(buf, x + kw, r.y, dw, &format!(" {d}"), th.s(th.dim));
         x += kw + dw;
     }
@@ -494,8 +506,8 @@ fn palette(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
         let buf = f.buffer_mut();
         text(buf, inner.x, y, inner.width, &" ".repeat(inner.width as usize), st);
         text(buf, inner.x + 2, y, inner.width.saturating_sub(12), a.label(), st);
-        let k = a.key();
-        text(buf, inner.right().saturating_sub(k.chars().count() as u16 + 2), y, 10, k, th.s(th.dim));
+        let k = app.keymap.label(*a);
+        text(buf, inner.right().saturating_sub(k.chars().count() as u16 + 2), y, 10, &k, th.s(th.dim));
         app.hit(row, Hit::PaletteItem(i));
     }
 }
@@ -529,26 +541,31 @@ fn login(f: &mut Frame, r: Rect, th: &Theme, url: &str, code: &str) {
     text(buf, inner.x + 2, inner.y + 6, inner.width.saturating_sub(4), "Singularity never sees your password.  Esc hides this.", th.s(th.dim));
 }
 
-const HELP_ROWS: [(&str, &str); 10] = [
-    ("Mouse", "click anything · drag pane borders · drag seek/volume · scroll"),
-    ("Ctrl+K  :", "command palette: find any action by typing"),
-    ("Space", "play / pause"),
-    ("⇧← ⇧→", "seek 5 s    , .  seek 1 s    n / b  next / previous"),
-    ("+ -", "volume           s / r   shuffle / repeat"),
-    ("l", "like / unlike what's playing (or click its ♡)"),
-    ("↑↓←→ ⏎", "move through Home, play · right-click or Menu key: more"),
-    ("Alt+← →", "back / forward (Esc and Backspace go back too)"),
-    ("Tab", "focus the next pane"),
-    ("q / Esc", "quit the Client (music keeps playing)"),
-];
-
-fn help_rect(area: Rect) -> Rect {
-    centered(area, 76, HELP_ROWS.len() as u16 + 4)
+/// The help screen, from the keymap in use.
+fn help_rows(m: &crate::keymap::Keymap) -> Vec<(String, String)> {
+    use Action as A;
+    vec![
+        ("Mouse".into(), "click anything · drag pane borders · drag seek/volume · scroll".into()),
+        (m.label(A::Palette), "command palette: find any action by typing".into()),
+        (m.label(A::TogglePlay), "play / pause".into()),
+        (m.pair(A::SeekBack, A::SeekForward), format!("seek 5 s    {}  seek 1 s    {}  next / previous", m.pair(A::SeekBackFine, A::SeekForwardFine), m.pair(A::Next, A::Previous))),
+        (m.pair(A::VolumeUp, A::VolumeDown), format!("volume           {}   shuffle / repeat", m.pair(A::Shuffle, A::Repeat))),
+        (m.label(A::Like), "like / unlike what's playing (or click its ♡)".into()),
+        (m.nav_label().into(), "move through Home, play · right-click or Menu key: more".into()),
+        (m.pair(A::Back, A::Forward), "back / forward (Esc and Backspace go back too)".into()),
+        (m.label(A::FocusNext), "focus the next pane".into()),
+        (m.label(A::Quit), "quit the Client (music keeps playing)".into()),
+        ("keys.toml".into(), format!("{} keys · change them in ~/.config/singularity/keys.toml", m.preset)),
+    ]
 }
 
-fn help(f: &mut Frame, area: Rect, th: &Theme) {
-    let rows = HELP_ROWS;
-    let r = help_rect(area);
+fn help_rect(area: Rect, rows: usize) -> Rect {
+    centered(area, 80, rows as u16 + 4)
+}
+
+fn help(f: &mut Frame, area: Rect, th: &Theme, m: &crate::keymap::Keymap) {
+    let rows = help_rows(m);
+    let r = help_rect(area, rows.len());
     f.render_widget(Clear, r);
     let block = overlay_block(th, "You only need these");
     let inner = block.inner(r);

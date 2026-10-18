@@ -22,7 +22,11 @@ it by itself ("Updating singularityd…"; music pauses for a second while Solois
 - **Browsing**: Ctrl+K → "Log in to Spotify" (approve the code at spotify.com/pair). Home, the library sidebar and
   track lists appear once logged in.
 - Keys worth knowing: Space play/pause, Shift+←/→ seek, Ctrl+K palette, Ctrl+L search, `d` devices, `v` Disk look,
-  Alt+←/→ back/forward, `?` help. Everything is clickable too.
+  Alt+←/→ back/forward, `l` like, `?` help. Everything is clickable too.
+- **Settings**: `~/.config/singularity/config.toml` and `keys.toml` (written with comments on first start; saves
+  apply at once). `preset = "vim"` in keys.toml adds h/j/k/l movement.
+- Media keys, KDE's media widget and `playerctl` control the Daemon (MPRIS); Soloist updates itself before its build
+  expires.
 - `singularityd --fake-engine` runs a pretend player for UI work; `--no-catalogue` skips Spotify browsing;
   `--fake-catalogue crates/client/tests/fixtures/home.json` serves a recorded (anonymised) Home feed.
 - Music keeps playing when you quit the Client; `systemctl --user` unit in `packaging/systemd/`.

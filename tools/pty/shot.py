@@ -279,11 +279,38 @@ def mpris(t, out, env):
     t.send(b"q", 0.5)
 
 
+def config(t, out, env):
+    """#20: the files are written on first run; edits apply live; the palette's toggle edits config.toml."""
+    cdir = f"{env['XDG_CONFIG_HOME']}/singularity"
+    t.pump(1.0)
+    t.send(b"?", 0.5)
+    t.shot(f"{out}/0-help-standard.png")
+    t.send(b"\x1b", 0.3)
+    keys = open(f"{cdir}/keys.toml").read()
+    with open(f"{cdir}/keys.toml", "w") as f:
+        f.write(keys.replace('preset = "standard"', 'preset = "vim"').replace('# like = "f"', 'like = "f"\nshuffle = "f"'))
+    t.pump(2.0)
+    t.shot(f"{out}/1-conflict-toast.png")
+    t.send(b"?", 0.5)
+    t.shot(f"{out}/2-help-vim.png")
+    t.send(b"\x1b", 0.3)
+    x, y = t.find("♥ Liked Songs")
+    mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
+    t.send(b"jjj", 0.4)
+    t.shot(f"{out}/3-vim-j.png")
+    t.send(b"\x0b", 0.3); t.send(b"notif", 0.3); t.send(b"\r", 0.8)
+    t.shot(f"{out}/4-notifications-on.png")
+    print(open(f"{cdir}/config.toml").read())
+    t.send(b"\x1b", 0.3); t.send(b"\x1b", 0.3); t.send(b"q", 0.5)
+
+
 def main():
     scenario, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
     sock = f"{os.environ['XDG_RUNTIME_DIR']}/sgl-{os.getpid()}.sock"
-    env = dict(os.environ, SINGULARITY_SOCKET=sock, TERM="xterm-256color", COLORTERM="truecolor")
+    env = dict(os.environ, SINGULARITY_SOCKET=sock, TERM="xterm-256color", COLORTERM="truecolor",
+               # scratch config and state: test runs never write the owner's files
+               XDG_CONFIG_HOME=f"{os.path.abspath(out)}/config", XDG_STATE_HOME=f"{os.path.abspath(out)}/state")
     for k in ("KITTY_WINDOW_ID", "TERM_PROGRAM", "GHOSTTY_RESOURCES_DIR", "TMUX"):
         env.pop(k, None)
     if scenario == "pixel":
@@ -291,7 +318,7 @@ def main():
     cat = ["--no-catalogue"]
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario == "home-pixels" else "0"
@@ -313,6 +340,8 @@ def main():
             return like(t, out)
         if scenario == "mpris":
             return mpris(t, out, env)
+        if scenario == "config":
+            return config(t, out, env)
         if scenario == "artist":
             t.pump(1.0)
             x, y = t.find("♥ Liked Songs")

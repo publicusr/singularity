@@ -6,6 +6,7 @@ mod conn;
 mod covers;
 mod gfx;
 mod home;
+mod keymap;
 mod layout;
 mod lyrics;
 mod meters;
@@ -41,12 +42,13 @@ async fn main() -> anyhow::Result<()> {
     app.covers = covers::Covers::spawn(cache_dir().join("covers"));
     app.cell_px = term::cell_px();
     app.hole.allow_gpu = true;
+    app.load_config();
     if term::kitty_graphics_supported() && app.cell_px.is_some() {
         app.kitty = Some(gfx::Kitty::new(term::kitty_shm()));
     }
     let mut tui = ratatui::init();
     execute!(stdout(), EnableMouseCapture, EnableFocusChange, EnableBracketedPaste)?;
-    // unfocused, the whole Client (and so the Visuals) runs at 10 fps instead of 30
+    // unfocused, the whole Client (and so the Visuals) runs slower: `visuals.unfocused_fps` (10) instead of 30
     let mut focused = true;
     let mut last_draw = std::time::Instant::now();
     // pixel-precise pointer where the terminal supports it (#24)
@@ -77,7 +79,8 @@ async fn main() -> anyhow::Result<()> {
             out.write_all(b"\x1b[?2026l")?;
             out.flush()?;
             drop(out);
-            if event::poll(Duration::from_millis(if focused { 33 } else { 100 }))? {
+            let fps = if focused { 30 } else { app.config.visuals.unfocused_fps.clamp(1, 30) as u64 };
+            if event::poll(Duration::from_millis(1000 / fps))? {
                 loop {
                     match event::read()? {
                         TermEvent::Key(k) if k.kind != KeyEventKind::Release => app.key(k),

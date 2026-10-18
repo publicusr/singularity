@@ -20,8 +20,8 @@ const NO_TRACK: &str = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
 pub struct Options {
     /// a D-Bus address (tests use a private bus); `None` is the session bus
     pub address: Option<String>,
-    /// a desktop notification on each new track
-    pub notify: bool,
+    /// a desktop notification on each new track (`notifications.track_change`, changed live)
+    pub notify: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Serve MPRIS until the Daemon stops. Without a bus (a headless box, a container) the Daemon carries on without it.
@@ -42,15 +42,13 @@ async fn serve(hub: Arc<Hub>, opts: Options) -> zbus::Result<()> {
     let conn = builder.name(BUS_NAME)?.serve_at(PATH, Root)?.serve_at(PATH, Player { hub: hub.clone(), state })?.build().await?;
     tracing::info!("MPRIS: {BUS_NAME}");
     let player = conn.object_server().interface::<_, Player>(PATH).await?;
-    let mut notifier = opts.notify.then(|| Notifier { conn: conn.clone(), last_uri: None, id: 0 });
+    let mut notifier = Notifier { conn: conn.clone(), last_uri: None, id: 0, on: opts.notify.clone() };
     loop {
         match events.recv().await {
             Ok(Event::Playback(new)) => {
                 let old = std::mem::replace(&mut player.get_mut().await.state, new.clone());
                 announce(&player, &old, &new).await;
-                if let Some(n) = notifier.as_mut() {
-                    n.track(&new).await;
-                }
+                notifier.track(&new).await;
             }
             Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
             Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
@@ -365,6 +363,7 @@ struct Notifier {
     last_uri: Option<String>,
     /// the notification to replace (0: none yet)
     id: u32,
+    on: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[zbus::proxy(interface = "org.freedesktop.Notifications", default_service = "org.freedesktop.Notifications", default_path = "/org/freedesktop/Notifications")]
@@ -382,6 +381,9 @@ impl Notifier {
         }
         let first = self.last_uri.is_none();
         self.last_uri = Some(i.uri.clone());
+        if !self.on.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         if first && s.position_at(singularity_proto::now_ms()) > 5000 {
             return; // the Daemon just started into a playing track: not news
         }

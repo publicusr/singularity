@@ -42,14 +42,15 @@ async fn main() -> anyhow::Result<()> {
     // MPRIS on the session bus (SINGULARITY_DBUS=<address> picks another bus, =off none). A fake Engine stays off the
     // session bus unless asked, so test Daemons never show up in the desktop's media controls.
     let fake = args.iter().any(|a| a == "--fake-engine");
+    let notify = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mpris = match std::env::var("SINGULARITY_DBUS").ok().filter(|v| !v.is_empty()) {
         Some(v) if v == "off" => None,
-        Some(address) => Some(singularityd::mpris::Options { address: Some(address), notify: false }),
+        Some(address) => Some(singularityd::mpris::Options { address: Some(address), notify: notify.clone() }),
         None if fake => None,
-        None => Some(singularityd::mpris::Options::default()),
-    }
-    // desktop notifications on track change: opt-in until config files land (#20)
-    .map(|o| singularityd::mpris::Options { notify: std::env::var("SINGULARITY_NOTIFY").is_ok_and(|v| v == "1"), ..o });
+        None => Some(singularityd::mpris::Options { address: None, notify: notify.clone() }),
+    };
+    // config.toml: what the Daemon uses of it now, and again whenever it's saved
+    tokio::spawn(follow_config(notify));
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = tokio::select! {
         r = singularityd::serve_with(listener, engine, catalogue, tap, mpris) => r.map(Some),
@@ -63,4 +64,22 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(75); // EX_TEMPFAIL
     }
     result.map(|_| ())
+}
+
+/// Apply `config.toml` (desktop notifications) and re-read it whenever it's saved.
+async fn follow_config(notify: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    let path = singularity_config::config_path();
+    let mut watched = singularity_config::Watched::new(path.clone());
+    let mut first = true;
+    loop {
+        if first || watched.changed() {
+            first = false;
+            let r = singularity_config::load_config(&path);
+            for p in &r.problems {
+                tracing::warn!("{p}");
+            }
+            notify.store(r.value.notifications.track_change, std::sync::atomic::Ordering::Relaxed);
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
 }

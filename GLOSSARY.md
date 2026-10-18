@@ -42,6 +42,11 @@ _Avoid_: remote API, Connect client
 
 ### Interface
 
+**Keymap**:
+Which keys do which actions: a preset ("standard", or "vim" which adds h/j/k/l movement) plus the user's own
+bindings from `keys.toml`.
+_Avoid_: shortcuts file, bindings (for the whole map)
+
 **Shelf**:
 One titled horizontal row on the Home page ("Made For You", "Recently played").
 _Avoid_: section, row, carousel

@@ -1,0 +1,14 @@
+[package]
+name = "singularity-config"
+description = "Singularity's config files: schema versions, migrations, comment-preserving edits, hot reload"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+toml_edit = { version = "0.25", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"

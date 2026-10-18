@@ -33,14 +33,15 @@ pub struct Gpu {
 }
 
 impl Gpu {
-    pub fn new() -> Option<Gpu> {
+    /// `high_performance`: the dedicated card; else the built-in graphics (wgpu's low-power choice).
+    pub fn new(high_performance: bool) -> Option<Gpu> {
         if std::env::var("SINGULARITY_CPU").is_ok_and(|v| v != "0") {
             return None;
         }
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
         desc.backends = wgpu::Backends::PRIMARY;
         let instance = wgpu::Instance::new(desc);
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::LowPower, ..Default::default() })).ok()?;
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: if high_performance { wgpu::PowerPreference::HighPerformance } else { wgpu::PowerPreference::LowPower }, ..Default::default() })).ok()?;
         let name = adapter.get_info().name;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("blackhole"), source: wgpu::ShaderSource::Wgsl(include_str!("blackhole.wgsl").into()) });

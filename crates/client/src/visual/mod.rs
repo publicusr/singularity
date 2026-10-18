@@ -22,6 +22,8 @@ pub struct BlackHole {
     /// None until the first frame; `Some(None)` = no usable GPU (or not allowed)
     gpu: Option<Option<gpu::Gpu>>,
     pub allow_gpu: bool,
+    /// the dedicated card rather than the built-in graphics (`visuals.gpu`)
+    pub high_performance: bool,
     pub look: usize,
     t: f32,
     beat: f32,
@@ -32,7 +34,7 @@ pub struct BlackHole {
 
 impl Default for BlackHole {
     fn default() -> Self {
-        BlackHole { gpu: None, allow_gpu: false, look: 0, t: 0.0, beat: 0.0, bass: 0.0, last: None }
+        BlackHole { gpu: None, allow_gpu: false, high_performance: false, look: 0, t: 0.0, beat: 0.0, bass: 0.0, last: None }
     }
 }
 
@@ -60,6 +62,12 @@ impl BlackHole {
     }
 
     /// Which renderer is in use, once known.
+    /// Use the other graphics chip from the next frame on.
+    pub fn set_high_performance(&mut self, on: bool) {
+        self.high_performance = on;
+        self.gpu = None;
+    }
+
     pub fn backend(&self) -> Option<String> {
         match &self.gpu {
             Some(Some(g)) => Some(format!("GPU: {}", g.adapter)),
@@ -91,7 +99,7 @@ impl BlackHole {
 
     fn gpu_ready(&mut self) -> bool {
         if self.gpu.is_none() {
-            self.gpu = Some(if self.allow_gpu { gpu::Gpu::new() } else { None });
+            self.gpu = Some(if self.allow_gpu { gpu::Gpu::new(self.high_performance) } else { None });
         }
         matches!(self.gpu, Some(Some(_)))
     }
@@ -129,7 +137,7 @@ mod tests {
     /// GPU and CPU trace the same model: their images agree within tolerance (skipped without a GPU).
     #[test]
     fn gpu_matches_cpu_within_tolerance() {
-        let Some(mut gpu) = gpu::Gpu::new() else {
+        let Some(mut gpu) = gpu::Gpu::new(false) else {
             eprintln!("no GPU adapter: skipping the GPU/CPU comparison");
             return;
         };

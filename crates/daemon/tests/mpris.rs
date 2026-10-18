@@ -104,7 +104,7 @@ async fn playerctl_style_control_and_track_notifications() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("m.sock");
     let listener = singularityd::bind(&path).unwrap();
-    let opts = singularityd::mpris::Options { address: Some(bus.address.clone()), notify: true };
+    let opts = singularityd::mpris::Options { address: Some(bus.address.clone()), notify: std::sync::Arc::new(true.into()) };
     tokio::spawn(singularityd::serve_with(listener, Box::new(FakeEngine), None, None, Some(opts)));
     let mut s = UnixStream::connect(&path).await.unwrap();
     proto::write_msg(&mut s, &ClientMsg::Hello { protocol: proto::PROTOCOL_VERSION, client: "test".into() }).await.unwrap();

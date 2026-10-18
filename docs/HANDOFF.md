@@ -8,12 +8,12 @@ in `docs/DESIGN-TREE.md` (round log at the bottom); verified facts about Spotify
 
 - **Phase 0 (planning) ✅, Phase 1 (spikes) ✅.** ADRs 0001–0004 (0004 updated: both tracers kept, measurements).
 - **Phase 2/3 (v1 build) 🔄.** Spec issue **#1**, tickets on GitHub (`publicusr/singularity`, label `ready-for-agent`).
-  **Closed: #2, #3, #4, #5, #6, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16, #21, #22, #24.**
-  **Open: #17, #18, #19, #20, #23.**
+  **Closed: #2, #3, #4, #5, #6, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16, #20, #21, #22, #24.**
+  **Open: #17, #18, #19, #23.**
 - The owner tested after #8/#16 and reported two bugs, both fixed (commit `f79a3e2`): the black hole
   flickered (now double-buffered kitty frames at a steady 30 fps, redraws capped at 60/s) and clicking an album played it
   (Cards now open their track list, ▶ Play there). Everything else since then **hasn't been tested by the owner yet**.
-- Tests: **130 passing** (`cargo test`), + ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
+- Tests: **144 passing** (`cargo test`), + ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
   live answers). Clippy: only minor pre-existing style warnings.
 
 ## What exists in `crates/`
@@ -54,7 +54,7 @@ row (would need `CheckSaved` for whole playlists; only Liked Songs is known for 
 `daemon/src/mpris.rs`; see the DESIGN-TREE round log. Tests: `daemon/tests/mpris.rs` starts its own `dbus-daemon`
 (no service activation) and plays playerctl's part; pty scenario `mpris` runs real `playerctl` on a private bus.
 **Never test MPRIS on the owner's session bus**: a fake Daemon would show up in their media widget. Notifications
-are opt-in (`SINGULARITY_NOTIFY=1` in the environment of whatever starts the Daemon) until #20 gives them a setting.
+are `notifications.track_change` in config.toml (off by default; palette: "Track-change notifications on / off").
 Not verified by me: KDE's media widget itself (needs the real bus); the owner checks it after rebuilding.
 
 ## #6 Soloist auto-update (done 2026-10-18)
@@ -67,13 +67,20 @@ The restart-into-the-new-build path is proven only against the stand-in: the rea
 machine when Spotify publishes the next build (watch `soloist.log` / the Daemon log for "restarting Soloist").
 
 Test knobs (env): `SINGULARITY_SOLOIST_CDN`, `SINGULARITY_SOLOIST_CHECK_SECS`, `SINGULARITY_TAP=off` (a test Daemon
-never listens to the owner's Soloist), `SINGULARITY_DBUS=<address>|off`, `SINGULARITY_NOTIFY=1`.
+never listens to the owner's Soloist), `SINGULARITY_DBUS=<address>|off`.
+
+## #20 config files (done 2026-10-18)
+
+`crates/config` (load/parse/migrate/set/Watched, DEFAULT_CONFIG/DEFAULT_KEYS), `client/src/keymap.rs` (Chord,
+presets, overrides), App: `load_config`, `poll_config` (in `tick`), `typing()`; Daemon: `follow_config` in main.rs.
+New settings go into `Config` + `DEFAULT_CONFIG` (a new key with a serde default needs no migration; a rename or a
+changed meaning needs a migration in `CONFIG_MIGRATIONS` and a schema bump). The owner's real files appear on their
+next start of the new build.
 
 ## Next (suggested order)
 
-1. **#20** config files (TOML, schema version, migrations, hot reload), then **#18** designs/palettes/theme files and
-   **#19** slots/drag/saved layouts (they build on #20). #20 also gets `gpu = "low-power" | "high-performance"`
-   (owner, 2026-10-18; commented on the issue).
+1. **#18** designs/palettes/theme files (themes in `~/.config/singularity/themes/`, the `design` setting goes in
+   config.toml), then **#19** slots/drag/saved layouts.
 2. **#17** idle takeover (reuse `visual::BlackHole`, the prototype's `lens_cells`), **#23** listening log + backups.
 3. Gap left on #11 (commented on the issue): mouse back/forward buttons. crossterm drops SGR buttons 8/9; needs our
    own small input layer (we already do SGR-Pixels in `client/src/term.rs`).

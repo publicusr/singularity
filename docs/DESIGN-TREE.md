@@ -201,5 +201,16 @@ flowchart LR
   health check shows version, build date and days left ("updates itself"), and warns only under 3 days. Verified in a
   pty with a stand-in Soloist (`tools/pty/fake_soloist.py`) and a fake CDN: v2 staged while v1 played, taken over at
   the next track, playback continued.
+- **#20 Config files** (2026-10-18): new crate `singularity-config` (toml_edit 0.25), used by Daemon and Client.
+  `~/.config/singularity/config.toml` and `keys.toml` are written with comments on first run; `schema = 1` with a
+  migration chain that edits the document in place (`rename` keeps a key's spot and comments; a v1→v2 test proves it
+  byte for byte); app edits go through `set` (comments and layout stay); saves are noticed by mtime+size once a second
+  and apply live in both processes; bad values fall back to defaults and are reported (toast / Daemon log), never fatal.
+  Settings so far: `notifications.track_change` (replaces `SINGULARITY_NOTIFY`; palette toggle writes the file),
+  `visuals.gpu` (low-power default, high-performance switches adapter on the next frame), `visuals.unfocused_fps` (10).
+  Keys: actions have ids (`like`, `play_pause`, …); `preset = "standard" | "vim"` (vim: h/j/k/l, g/G, Ctrl+D/U move;
+  like moves to `f`); a user binding replaces that action's keys and takes them from others; a key bound twice is
+  reported and the first (by name) keeps it; unknown actions/keys are reported. Movement aliases are off while typing.
+  Help screen, hint bar and palette show the keymap in use. The pty harness now gives every run scratch config/state.
 - **Owner answers** (2026-10-18): keep the 10 fps slowdown when the terminal is unfocused; keep the black hole on the
   low-power adapter (iGPU) and add a `gpu = "low-power" | "high-performance"` setting in #20.

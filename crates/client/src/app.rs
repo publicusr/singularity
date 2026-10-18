@@ -41,6 +41,7 @@ pub enum Action {
     Shuffle,
     Repeat,
     Like,
+    ToggleNotifications,
     Login,
     Logout,
     RefreshHome,
@@ -67,7 +68,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 35] = [
+    pub const ALL: [Action; 36] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -80,6 +81,7 @@ impl Action {
         Action::Shuffle,
         Action::Repeat,
         Action::Like,
+        Action::ToggleNotifications,
         Action::Login,
         Action::Logout,
         Action::RefreshHome,
@@ -118,6 +120,7 @@ impl Action {
             Action::Shuffle => "Toggle shuffle",
             Action::Repeat => "Cycle repeat (off → all → one)",
             Action::Like => "Like / unlike the current track",
+            Action::ToggleNotifications => "Track-change notifications on / off",
             Action::Login => "Log in to Spotify",
             Action::Logout => "Log out of Spotify",
             Action::RefreshHome => "Refresh Home",
@@ -143,36 +146,50 @@ impl Action {
             Action::Quit => "Quit (music keeps playing)",
         }
     }
-    pub fn key(self) -> &'static str {
+    /// The name `keys.toml` uses.
+    pub fn id(self) -> &'static str {
         match self {
-            Action::TogglePlay => "Space",
-            Action::Next => "n",
-            Action::Previous => "b",
-            Action::SeekForward => "Shift+→",
-            Action::SeekBack => "Shift+←",
-            Action::SeekForwardFine => ".",
-            Action::SeekBackFine => ",",
-            Action::VolumeUp => "+",
-            Action::VolumeDown => "-",
-            Action::Shuffle => "s",
-            Action::Repeat => "r",
-            Action::Like => "l",
-            Action::Login | Action::Logout | Action::RefreshHome => "",
-            Action::GoHome => "",
-            Action::Back => "Alt+← · Backspace",
-            Action::Forward => "Alt+→",
-            Action::Search => "Ctrl+L",
-            Action::Filter => "/",
-            Action::SortTitle | Action::SortArtist | Action::SortAlbum | Action::SortAdded | Action::SortDuration => "",
-            Action::NextLook => "v",
-            Action::Devices => "d",
-            Action::Health | Action::Setup | Action::ClearQueue => "",
-            Action::FocusNext => "Tab",
-            Action::ResetLayout => "",
-            Action::Palette => "Ctrl+K",
-            Action::Help => "?",
-            Action::Quit => "q",
+            Action::TogglePlay => "play_pause",
+            Action::Next => "next",
+            Action::Previous => "previous",
+            Action::SeekForward => "seek_forward",
+            Action::SeekBack => "seek_back",
+            Action::SeekForwardFine => "seek_forward_fine",
+            Action::SeekBackFine => "seek_back_fine",
+            Action::VolumeUp => "volume_up",
+            Action::VolumeDown => "volume_down",
+            Action::Shuffle => "shuffle",
+            Action::Repeat => "repeat",
+            Action::Like => "like",
+            Action::ToggleNotifications => "notifications",
+            Action::Login => "login",
+            Action::Logout => "logout",
+            Action::RefreshHome => "refresh_home",
+            Action::GoHome => "home",
+            Action::Back => "back",
+            Action::Forward => "forward",
+            Action::Search => "search",
+            Action::Filter => "filter",
+            Action::SortTitle => "sort_title",
+            Action::SortArtist => "sort_artist",
+            Action::SortAlbum => "sort_album",
+            Action::SortAdded => "sort_added",
+            Action::SortDuration => "sort_duration",
+            Action::NextLook => "next_look",
+            Action::Devices => "devices",
+            Action::ClearQueue => "clear_queue",
+            Action::Health => "health",
+            Action::Setup => "setup",
+            Action::FocusNext => "focus_next",
+            Action::ResetLayout => "reset_layout",
+            Action::Palette => "palette",
+            Action::Help => "help",
+            Action::Quit => "quit",
         }
+    }
+
+    pub fn from_id(id: &str) -> Option<Action> {
+        Action::ALL.into_iter().find(|a| a.id() == id)
     }
 }
 
@@ -281,6 +298,13 @@ pub struct Palette {
     pub selected: usize,
 }
 
+/// The config files being watched for saves.
+struct ConfigFiles {
+    config: singularity_config::Watched,
+    keys: singularity_config::Watched,
+    polled: Instant,
+}
+
 pub struct App {
     pub theme: Theme,
     pub layout: Node,
@@ -355,6 +379,10 @@ pub struct App {
     pub(crate) saved: crate::saved::Saved,
     /// a saved playlist's Saved button was clicked once: a second click soon after removes it
     confirm_remove: Option<(String, Instant)>,
+    /// `config.toml` and `keys.toml` (#20), and the files they came from (None in tests)
+    pub config: singularity_config::Config,
+    pub keymap: crate::keymap::Keymap,
+    config_files: Option<ConfigFiles>,
     last_tick: Instant,
     told_backend: bool,
     commands: Option<mpsc::Sender<Command>>,
@@ -419,10 +447,85 @@ impl App {
             hole_at: None,
             saved: Default::default(),
             confirm_remove: None,
+            config: Default::default(),
+            keymap: Default::default(),
+            config_files: None,
             last_tick: Instant::now(),
             told_backend: false,
             commands,
         }
+    }
+
+    // ── config & keys ─────────────────────────────────────────────────
+
+    /// Read `config.toml` and `keys.toml` (written with comments if missing) and keep watching them.
+    pub fn load_config(&mut self) {
+        self.load_config_from(singularity_config::config_path(), singularity_config::keys_path());
+    }
+
+    pub fn load_config_from(&mut self, cp: std::path::PathBuf, kp: std::path::PathBuf) {
+        let c = singularity_config::load_config(&cp);
+        let k = singularity_config::load_keys(&kp);
+        self.config_files = Some(ConfigFiles { config: singularity_config::Watched::new(cp), keys: singularity_config::Watched::new(kp), polled: Instant::now() });
+        self.apply_config(c);
+        self.apply_keys(k);
+    }
+
+    /// A config as read: applied live, its problems shown.
+    pub fn apply_config(&mut self, r: singularity_config::Read<singularity_config::Config>) {
+        let high = r.value.visuals.gpu == singularity_config::GpuPower::HighPerformance;
+        if high != self.hole.high_performance {
+            // the next frame picks the adapter again, and says which
+            self.hole.set_high_performance(high);
+            self.told_backend = false;
+        }
+        self.config = r.value;
+        if !r.problems.is_empty() {
+            self.say(r.problems.join(" · "));
+        }
+    }
+
+    pub fn apply_keys(&mut self, r: singularity_config::Read<singularity_config::Keys>) {
+        let mut problems = r.problems;
+        self.keymap = crate::keymap::Keymap::from_keys(&r.value);
+        problems.append(&mut self.keymap.problems.clone());
+        if !problems.is_empty() {
+            self.say(problems.join(" · "));
+        }
+    }
+
+    /// Saved files apply at once (checked about once a second).
+    fn poll_config(&mut self) {
+        let Some(f) = self.config_files.as_mut().filter(|f| f.polled.elapsed() >= Duration::from_secs(1)) else { return };
+        f.polled = Instant::now();
+        let (config, keys) = (f.config.changed(), f.keys.changed());
+        let (cp, kp) = (f.config.path.clone(), f.keys.path.clone());
+        if config {
+            self.apply_config(singularity_config::load_config(&cp));
+        }
+        if keys {
+            self.apply_keys(singularity_config::load_keys(&kp));
+        }
+    }
+
+    /// Flip track-change notifications, in `config.toml` (the Daemon picks it up from there).
+    fn toggle_notifications(&mut self) {
+        let on = !self.config.notifications.track_change;
+        if let Some(f) = &self.config_files
+            && let Err(e) = singularity_config::set(&f.config.path, singularity_config::DEFAULT_CONFIG, "notifications.track_change", on.into())
+        {
+            return self.say(format!("Couldn't change config.toml: {e}"));
+        }
+        self.config.notifications.track_change = on;
+        self.say(if on { "Track notifications on" } else { "Track notifications off" });
+    }
+
+    /// Typing goes to a text field, so letters aren't shortcuts.
+    fn typing(&self) -> bool {
+        self.palette.is_some()
+            || (crate::setup::wanted(self) && crate::setup::step(self) == crate::setup::Step::Key)
+            || self.view.as_ref().is_some_and(|v| v.filtering)
+            || (self.search.is_some() && self.focus == "home")
     }
 
     // ── frame bookkeeping ─────────────────────────────────────────────
@@ -493,6 +596,7 @@ impl App {
                 self.send(Command::SetRepeat { mode });
             }
             Action::Like => self.toggle_current(),
+            Action::ToggleNotifications => self.toggle_notifications(),
             Action::Login => self.send(Command::Login),
             Action::Logout => self.send(Command::Logout),
             Action::RefreshHome => self.send(Command::GetHome),
@@ -567,6 +671,11 @@ impl App {
             self.quit = true;
             return;
         }
+        // the vim preset's movement keys (j is ↓), unless typing
+        let k = match self.keymap.nav(k) {
+            Some(code) if !self.typing() => KeyEvent::new(code, KeyModifiers::NONE),
+            _ => k,
+        };
         if self.palette.is_some() {
             return self.palette_key(k);
         }
@@ -603,8 +712,11 @@ impl App {
         if self.view.as_ref().is_some_and(|v| v.filtering) {
             return self.filter_key(k);
         }
-        if ctrl && k.code == KeyCode::Char('l') {
-            return self.run(Action::Search);
+        // shortcuts with Ctrl or Alt work everywhere (a Pane's own keys are plain)
+        if k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && let Some(a) = self.keymap.action(k)
+        {
+            return self.run(a);
         }
         if self.focus == "home" && self.search.is_some() && self.search_key(k) {
             return;
@@ -625,34 +737,13 @@ impl App {
         if self.focus == "queue" && !shift && self.queue_key(k) {
             return;
         }
-        match k.code {
-            KeyCode::Char('k') if ctrl => self.run(Action::Palette),
-            KeyCode::Char(':') => self.run(Action::Palette),
-            KeyCode::Char('?') => self.run(Action::Help),
-            KeyCode::Esc if matches!(self.catalogue, Some(CatalogueStatus::LoginPending { .. })) => self.login_hidden = true,
-            KeyCode::Char('q') | KeyCode::Esc => self.run(Action::Quit),
-            KeyCode::Char(' ') => self.run(Action::TogglePlay),
-            KeyCode::Char('n') => self.run(Action::Next),
-            KeyCode::Char('b') => self.run(Action::Previous),
-            KeyCode::Left if k.modifiers.contains(KeyModifiers::ALT) => self.run(Action::Back),
-            KeyCode::Right if k.modifiers.contains(KeyModifiers::ALT) => self.run(Action::Forward),
-            // arrows navigate a focused Pane that has something to navigate; elsewhere they seek
-            KeyCode::Right => self.run(Action::SeekForward),
-            KeyCode::Left => self.run(Action::SeekBack),
-            KeyCode::Char('/') => self.run(Action::Filter),
-            KeyCode::Char('v') => self.run(Action::NextLook),
-            KeyCode::Char('d') => self.run(Action::Devices),
-            KeyCode::Char('f') if ctrl => self.run(Action::Filter),
-            KeyCode::Backspace => self.run(Action::Back),
-            KeyCode::Char('.') => self.run(Action::SeekForwardFine),
-            KeyCode::Char(',') => self.run(Action::SeekBackFine),
-            KeyCode::Char('+') | KeyCode::Char('=') => self.run(Action::VolumeUp),
-            KeyCode::Char('-') => self.run(Action::VolumeDown),
-            KeyCode::Char('s') => self.run(Action::Shuffle),
-            KeyCode::Char('r') => self.run(Action::Repeat),
-            KeyCode::Char('l') => self.run(Action::Like),
-            KeyCode::Tab => self.run(Action::FocusNext),
-            _ => {}
+        if k.code == KeyCode::Esc && matches!(self.catalogue, Some(CatalogueStatus::LoginPending { .. })) {
+            self.login_hidden = true;
+            return;
+        }
+        // the keymap (keys.toml); arrows a focused Pane didn't use fall through to here and seek
+        if let Some(a) = self.keymap.action(k) {
+            self.run(a);
         }
     }
 
@@ -1350,6 +1441,7 @@ impl App {
 
     /// Called every frame: sends nudges once they've settled.
     pub fn tick(&mut self) {
+        self.poll_config();
         let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
         self.last_tick = Instant::now();
         self.hole.advance(dt, self.meters.frame.as_ref());
@@ -1704,4 +1796,87 @@ fn capitalise(s: &str) -> String {
 fn fuzzy(hay: &str, q: &str) -> bool {
     let mut it = hay.chars();
     q.chars().filter(|c| !c.is_whitespace()).all(|c| it.any(|h| h == c))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn press(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        app.key(KeyEvent::new(code, mods));
+    }
+
+    fn with_files() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(None);
+        app.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
+        (app, dir)
+    }
+
+    /// Saves land within a second; tests don't wait for it.
+    fn saved(app: &mut App) {
+        if let Some(f) = app.config_files.as_mut() {
+            f.polled = Instant::now() - Duration::from_secs(2);
+        }
+        app.tick();
+    }
+
+    #[test]
+    fn first_run_writes_both_files_with_their_comments() {
+        let (app, dir) = with_files();
+        let c = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        let k = std::fs::read_to_string(dir.path().join("keys.toml")).unwrap();
+        assert!(c.contains("# which graphics chip") && k.contains("preset = \"standard\""));
+        assert_eq!(app.keymap.preset, "standard");
+    }
+
+    #[test]
+    fn keys_toml_applies_live_and_reports_conflicts() {
+        let (mut app, dir) = with_files();
+        app.playback.item = Some(singularity_proto::Item { uri: "spotify:track:a".into(), name: "A".into(), ..Default::default() });
+        let keys = dir.path().join("keys.toml");
+        let text = std::fs::read_to_string(&keys).unwrap().replace("# like = \"f\"", "like = \"f\"\nshuffle = \"f\"");
+        std::fs::write(&keys, text).unwrap();
+        saved(&mut app);
+        assert!(app.toast.as_ref().is_some_and(|(t, _)| t.contains("f is bound to both like and shuffle")), "{:?}", app.toast);
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+        assert_eq!(app.is_saved("spotify:track:a"), Some(true), "f likes now");
+        press(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+        assert_eq!(app.is_saved("spotify:track:a"), Some(true), "l no longer does");
+    }
+
+    #[test]
+    fn the_vim_preset_moves_lists_but_not_while_typing() {
+        let (mut app, dir) = with_files();
+        std::fs::write(dir.path().join("keys.toml"), "schema = 1\npreset = \"vim\"\n").unwrap();
+        saved(&mut app);
+        assert_eq!(app.keymap.preset, "vim");
+        app.view = Some(TrackView::new("spotify:collection", "Liked Songs"));
+        let rows = (0..5).map(|i| singularity_proto::TrackRow { uri: format!("spotify:track:{i}"), name: format!("Song {i}"), playable: true, ..Default::default() }).collect();
+        app.track_page(singularity_proto::TrackPage { uri: "spotify:collection".into(), offset: 0, total: 5, tracks: rows, header: None });
+        press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.view.as_ref().unwrap().sel, 2);
+        press(&mut app, KeyCode::Char('G'), KeyModifiers::SHIFT);
+        assert_eq!(app.view.as_ref().unwrap().sel, 4);
+        // in the filter, j is a letter
+        press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.view.as_ref().unwrap().filter, "j");
+    }
+
+    #[test]
+    fn the_notifications_toggle_edits_config_toml_and_keeps_its_comments() {
+        let (mut app, dir) = with_files();
+        let path = dir.path().join("config.toml");
+        let before = std::fs::read_to_string(&path).unwrap();
+        app.run(Action::ToggleNotifications);
+        assert!(app.config.notifications.track_change);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after, before.replace("track_change = false", "track_change = true"));
+        // the GPU setting, edited by hand, applies on the next frame
+        std::fs::write(&path, after.replace("gpu = \"low-power\"", "gpu = \"high-performance\"")).unwrap();
+        saved(&mut app);
+        assert!(app.hole.high_performance);
+    }
 }
