@@ -77,7 +77,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
   ~~#29 meters~~ ✅, ~~#30 lyrics wrap~~ ✅, ~~#31 wide terminals~~ ✅, #32 queue drag (owner: works while playing; open for the paused case), ~~#33 Theme tint~~ ✅. **Round 1 is done.** #32 works while playing (owner); drags while paused now explain themselves, the real cause is open (see the round log). Genius dropped.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
 - **v1.x is planned** (DESIGN-TREE D29–D41, SPEC.md "v1.x", spec issue #34). Batch 1 (stats) ✅: #35, #36, #37. Visual demos judged (round 2): starfield,
-  marquee, glow kept and finished (#44). Owner test round 2 fixed (#38–#44). **Next: batch 2**
+  marquee, glow kept and finished (#44). Owner test round 2 fixed (#38–#44). **Batch 2 tickets: #46 waveform seek bar, #47 mini-player, #48 mouse back/forward, #49 ♥ on every row, #50 album song into the queue.** Next: batch 2
   (waveform seek bar, mini-player, mouse back/forward, ♥ on every row, album song into "Next in queue" (D42)).
 - Gap left on #11: mouse back/forward buttons (crossterm drops SGR buttons 8/9; needs our own small input layer next
   to the SGR-Pixels code in `client/src/term.rs`).
