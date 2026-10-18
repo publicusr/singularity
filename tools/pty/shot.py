@@ -206,6 +206,29 @@ def library(t, out):
     t.send(b"q", 0.5)
 
 
+def wheel(t, out):
+    """#26: the wheel moves the highlight over a track list (also over artist/album names) and in the library."""
+    t.pump(1.0)
+    x, y = t.find("♥ Liked Songs")
+    mouse(t, 0, x + 2, y)
+    mouse(t, 0, x + 2, y, release=True, wait=0.8)
+    ax, ay = t.find("Nova Drift")  # an artist link in the first row
+    for _ in range(6):
+        mouse(t, 65, ax + 1, ay, wait=0.05)  # wheel down
+    t.pump(0.4)
+    t.shot(f"{out}/0-wheel-over-artist.png")
+    for _ in range(40):
+        mouse(t, 65, ax + 1, ay + 5, wait=0.02)
+    t.pump(0.4)
+    t.shot(f"{out}/1-wheel-past-the-fold.png")
+    lx, ly = t.find("Daily Mix 1")
+    for _ in range(4):
+        mouse(t, 65, lx, ly, wait=0.05)
+    t.pump(0.4)
+    t.shot(f"{out}/2-library.png")
+    t.send(b"q", 0.5)
+
+
 def like(t, out):
     """#22: the ♥ in the player bar, `l`, unliking from a row's menu, Follow on an artist page."""
     t.pump(1.0)
@@ -451,7 +474,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs") else "0"
@@ -483,6 +506,8 @@ def main():
             return idle(t, out)
         if scenario == "listening":
             return listening(t, out, env)
+        if scenario == "wheel":
+            return wheel(t, out)
         if scenario == "config":
             return config(t, out, env)
         if scenario == "designs":

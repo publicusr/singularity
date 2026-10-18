@@ -1159,6 +1159,53 @@ mod tests {
     }
 
     #[test]
+    fn the_wheel_moves_the_highlight_anywhere_over_a_list_and_the_library() {
+        let mut app = App::new(None);
+        app.view = Some(crate::tracks::TrackView::new("spotify:playlist:p", "P"));
+        let rows = (0..80)
+            .map(|i| singularity_proto::TrackRow {
+                uri: format!("spotify:track:{i}"),
+                name: format!("Song {i}"),
+                artists: vec!["Nova Drift".into()],
+                artist_uris: vec!["spotify:artist:n".into()],
+                album: "Album".into(),
+                album_uri: Some("spotify:album:a".into()),
+                playable: true,
+                ..Default::default()
+            })
+            .collect();
+        app.track_page(singularity_proto::TrackPage { uri: "spotify:playlist:p".into(), offset: 0, total: 80, tracks: rows, header: None });
+        app.library = Some(singularity_proto::Library {
+            items: (0..60).map(|i| singularity_proto::LibraryItem { uri: format!("spotify:playlist:{i}"), name: format!("List {i}"), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0 }).collect(),
+        });
+        render(&mut app, 160, 48);
+        // over an artist link, where the wheel used to do nothing
+        let link = app.hits.iter().find(|(_, h)| matches!(h, Hit::Link(l) if l.uri == "spotify:artist:n")).unwrap().0;
+        for _ in 0..3 {
+            mouse(&mut app, MouseEventKind::ScrollDown, link.x as f64 + 0.5, link.y, false);
+        }
+        assert_eq!(app.view.as_ref().unwrap().sel, 3);
+        mouse(&mut app, MouseEventKind::ScrollUp, link.x as f64 + 0.5, link.y, false);
+        assert_eq!(app.view.as_ref().unwrap().sel, 2);
+        // Shift: a page; the list follows the highlight
+        let vis = app.view.as_ref().unwrap().visible;
+        for _ in 0..3 {
+            app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: link.x, row: link.y, modifiers: KeyModifiers::SHIFT }, link.x as f64 + 0.5, false);
+        }
+        let v = app.view.as_ref().unwrap();
+        assert_eq!(v.sel, 2 + 3 * vis);
+        assert!(v.sel >= v.top && v.sel < v.top + v.visible, "the highlight stays in view");
+        // the library sidebar
+        let lib = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).slots.into_iter().find(|(s, _)| s == "library").unwrap().1;
+        for _ in 0..50 {
+            mouse(&mut app, MouseEventKind::ScrollDown, lib.x as f64 + 3.5, lib.y + 3, false);
+        }
+        render(&mut app, 160, 48);
+        assert_eq!(app.sidebar.sel, 50);
+        assert!(app.sidebar.sel >= app.sidebar.top && app.sidebar.sel < app.sidebar.top + app.sidebar.visible);
+    }
+
+    #[test]
     fn cockpits_listening_pane_shows_the_log_as_weeks() {
         let mut app = App::new(None);
         app.set_design(crate::design::by_id("cockpit").unwrap());

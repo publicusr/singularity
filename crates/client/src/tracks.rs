@@ -155,11 +155,6 @@ impl TrackView {
         self.reveal();
     }
 
-    pub fn scroll(&mut self, delta: i64, len: usize) {
-        let max = len.saturating_sub(self.visible.max(1));
-        self.top = (self.top as i64 + delta).clamp(0, max as i64) as usize;
-    }
-
     pub fn reveal(&mut self) {
         let vis = self.visible.max(1);
         if self.sel < self.top {

@@ -290,4 +290,8 @@ flowchart LR
   it to make way; if it still answers 5 s later and `/proc/<pid>/exe` is a `singularityd` (also "(deleted)" after a
   rebuild), SIGTERM, SIGKILL after 2 s, then it starts its own. Daemon test knob `SINGULARITY_IGNORE_SHUTDOWN`.
   Unit test (a renamed `sleep` is stopped, a plain one isn't); pty `stale_test.py`: replaced 5.2 s after connecting.
+- **#26 Wheel moves the highlight ✅** (2026-10-18): the wheel goes by the Pane under the pointer (`pane_at`), not the
+  hit under it, so a row's artist/album links no longer swallow it. Over a track list or the library it moves the
+  highlight one row per notch (Shift: a page), the list follows, and the Pane takes focus so the highlight shows.
+  Popups keep the wheel to themselves. Test wheels over an artist link and the library; pty `wheel`.
 

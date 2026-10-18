@@ -26,10 +26,6 @@ impl Sidebar {
         }
     }
 
-    pub fn scroll(&mut self, delta: i64, len: usize) {
-        let max = len.saturating_sub(self.visible.max(1));
-        self.top = (self.top as i64 + delta).clamp(0, max as i64) as usize;
-    }
 }
 
 fn glyph(kind: &str) -> &'static str {

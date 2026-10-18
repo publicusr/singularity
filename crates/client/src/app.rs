@@ -666,6 +666,14 @@ impl App {
         self.hits.push((r, h));
     }
 
+    /// The Pane (Slot name) under a point.
+    fn pane_at(&self, x: u16, y: u16) -> Option<String> {
+        self.hits.iter().rev().find_map(|(r, h)| match h {
+            Hit::Focus(s) if x >= r.x && x < r.right() && y >= r.y && y < r.bottom() => Some(s.clone()),
+            _ => None,
+        })
+    }
+
     fn hit_at(&self, x: u16, y: u16) -> Option<Hit> {
         self.hits.iter().rev().find(|(r, _)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom()).map(|(_, h)| h.clone())
     }
@@ -1907,12 +1915,26 @@ impl App {
                 let up = matches!(m.kind, MouseEventKind::ScrollUp);
                 let sign = if up { 1 } else { -1 };
                 let hit = self.hit_at(m.column, m.row);
-                let over_list = matches!(&hit, Some(Hit::Track(_) | Hit::SortCol(_))) || (self.view.is_some() && matches!(&hit, Some(Hit::Focus(s)) if s == "home"));
-                if over_list {
+                let popup = self.menu.is_some() || self.palette.is_some() || self.picker.is_some();
+                // the Pane under the pointer, whatever's in it (a row's artist and album names are links of their own)
+                let pane = if popup { None } else { self.pane_at(m.column, m.row) };
+                // track lists and the library: the wheel moves the highlight (Shift: a page) and the list follows it
+                // (wheeling a list focuses its Pane, as a click does, so its highlight shows)
+                if pane.as_deref() == Some("home") && self.view.is_some() {
+                    self.focus = "home".into();
                     let len = self.view_order().len();
                     if let Some(v) = self.view.as_mut() {
-                        v.scroll(-sign * 3, len);
+                        let step = if coarse { v.visible.max(1) as i64 } else { 1 };
+                        v.sel = (v.sel as i64 - sign * step).clamp(0, len.saturating_sub(1) as i64) as usize;
+                        v.reveal();
                     }
+                    return;
+                }
+                if pane.as_deref() == Some("library") {
+                    self.focus = "library".into();
+                    let n = crate::sidebar::len(self);
+                    let step = if coarse { self.sidebar.visible.max(1) as i64 } else { 1 };
+                    self.sidebar.move_sel(-sign * step, n);
                     return;
                 }
                 if matches!(&hit, Some(Hit::Focus(s)) if s == "lyrics") && self.lyrics.as_ref().is_some_and(|l| !l.synced) {
@@ -1922,11 +1944,6 @@ impl App {
                 if matches!(&hit, Some(Hit::QueueRow(_))) || matches!(&hit, Some(Hit::Focus(s)) if s == "queue") {
                     let lines = crate::queue::lines(self).len();
                     self.queue_view.scroll(-sign * 3, lines);
-                    return;
-                }
-                if matches!(&hit, Some(Hit::Side(_))) || matches!(&hit, Some(Hit::Focus(s)) if s == "library") {
-                    let n = crate::sidebar::len(self);
-                    self.sidebar.scroll(-sign * 3, n);
                     return;
                 }
                 let over_home = matches!(&hit, Some(Hit::Card(_) | Hit::ShelfScroll(..))) || matches!(&hit, Some(Hit::Focus(s)) if s == "home");
