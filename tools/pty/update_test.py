@@ -89,7 +89,7 @@ try:
     t = shot.Term(env)
     t.pump(2.0)
     # play the first track of Liked Songs
-    x, y = t.find("♥ Liked Songs")
+    x, y = t.find("♥  Liked Songs")
     shot.mouse(t, 0, x + 2, y); shot.mouse(t, 0, x + 2, y, release=True, wait=0.8)
     rx, ry = t.find("Fake Track 001")
     for _ in range(2):

@@ -1286,12 +1286,31 @@ mod tests {
     fn sidebar_lists_the_library_with_folders_indented() {
         let (mut app, _rx) = library_app();
         let s = render(&mut app, 160, 48);
-        for part in ["⌂ Home", "♥ Liked Songs", "▸ Moods", "≡ Night Drive", "◎ Quiet Orbit"] {
+        for part in ["⌂  Home", "♥  Liked Songs", "▸  Moods", "≡  Night Drive", "◎  Quiet Orbit"] {
             assert!(s.contains(part), "missing {part:?}\n{s}");
         }
         let moods = side_rect(&app, 3);
         let line = s.lines().nth(moods.y as usize + 1).unwrap();
         assert!(line.find('≡').unwrap() > s.lines().nth(moods.y as usize).unwrap().find('▸').unwrap(), "the playlist sits inside the folder");
+    }
+
+    #[test]
+    fn sidebar_rows_show_a_miniature_cover_once_it_has_arrived() {
+        let (mut app, _rx) = library_app();
+        let url = "https://i.scdn.co/image/night";
+        app.library.as_mut().unwrap().items[2].image_url = Some(url.into());
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("≡  Night Drive"), "the glyph while the cover loads\n{s}");
+        app.covers.insert(url, image::RgbImage::from_pixel(64, 64, image::Rgb([200, 40, 90])));
+        let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
+        t.draw(|f| draw(f, &mut app)).unwrap();
+        let row = side_rect(&app, 4);
+        let buf = t.backend().buffer().clone();
+        let x = (row.x..row.right()).find(|&x| buf[(x, row.y)].symbol() == "▀").expect("a half-block cover");
+        assert_eq!(buf[(x, row.y)].fg, ratatui::style::Color::Rgb(200, 40, 90));
+        assert_eq!(buf[(x + 1, row.y)].symbol(), "▀", "two cells wide");
+        let line: String = (row.x..row.right()).map(|x| buf[(x, row.y)].symbol().to_string()).collect();
+        assert!(line.contains("▀▀ Night Drive") && !line.contains('≡'), "{line}");
     }
 
     #[test]

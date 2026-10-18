@@ -12,7 +12,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
   #50 album song into the queue; #48 mouse buttons dropped, D45) · ~~3 playlist editing~~ ✅ (#51–#56, owner-tested up to #55) · **4 Settings screen (next)** ·
   5 album-adaptive theme + more Visuals · 6 podcasts and audiobooks · 7 free tiling (trial) · 8 macOS.
   Visual demos judged: starfield, marquee, glow kept and finished (#44, `ambient.rs`).
-- Tests: **238 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
+- Tests: **239 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
 - **No open bugs.** The waveform seek bar (#46) was removed again at the owner's call (D46).
 - Rule since round 2 (D43): every built-in Design keeps Home, library, queue and lyrics (a test enforces it).
 
@@ -59,7 +59,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `790241a` | #54 ✅ | Remove from this playlist (menu, Delete key), by row uid; MPRIS seek test no longer flaky |
 | `7d5ae96` | #55 ✅ | Drag rows of your own playlist (preview), Alt+↑↓; moves anchored to a neighbour's uid |
 | `9ea047f` | fix | Add to playlist picker: the wheel moves its highlight (owner) |
-| (last) | #56 ✅ | Change cover… / Remove cover (`client/src/cover.rs`): drop or type a path, square ≤ 256 KB JPEG preview, upload |
+| `08d3734` | #56 ✅ | Change cover… / Remove cover (`client/src/cover.rs`): drop or type a path, square ≤ 256 KB JPEG preview, upload |
+| (last) | owner | Library sidebar: a miniature cover on every row that has one (`sidebar.rs`) |
 
 ## What exists in `crates/`
 
@@ -85,7 +86,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 ## Then
 
 - **Batch 3: playlist editing ✅** (#51–#56). The owner tested #51–#55 ("looks good"; one fix: the picker's wheel);
-  #56 covers is waiting for their test. Every write path has a mode in `examples/playlist_probe.rs` (scratch playlist,
+  After #56 they asked to see covers in the TUI: library miniatures added; both wait for their test. Every write path has a mode in `examples/playlist_probe.rs` (scratch playlist,
   reverted): `--create-delete`, `--details`, `--add`, `--remove`, `--move`, `--cover <jpg>`.
 - **Next: batch 4, the Settings screen**: write its tickets under #34 first (SPEC v1.x stories, DESIGN-TREE), then
   build one at a time as before.

@@ -58,12 +58,13 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let mut hits = vec![];
     for row in side.top..n.min(side.top + side.visible) {
         let y = r.y + (row - side.top) as u16;
-        let (g, name, sub, depth, current) = match row {
-            0 => ("⌂", "Home".to_string(), String::new(), 0u16, page == crate::app::Page::Home),
-            1 => ("⌕", "Search".to_string(), String::new(), 0u16, page == crate::app::Page::Search),
+        let (g, name, sub, depth, current, art) = match row {
+            0 => ("⌂", "Home".to_string(), String::new(), 0u16, page == crate::app::Page::Home, None),
+            1 => ("⌕", "Search".to_string(), String::new(), 0u16, page == crate::app::Page::Search, None),
             i => {
                 let it = &app.library.as_ref().expect("row exists").items[i - FIXED];
-                (glyph(&it.kind), it.name.clone(), it.subtitle.clone(), it.depth as u16, open.as_deref() == Some(it.uri.as_str()))
+                let art = it.image_url.clone().filter(|_| it.kind != "folder");
+                (glyph(&it.kind), it.name.clone(), it.subtitle.clone(), it.depth as u16, open.as_deref() == Some(it.uri.as_str()), art)
             }
         };
         let selected = focused && row == side.sel;
@@ -71,13 +72,17 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         text(buf, r.x, y, r.width, &" ".repeat(r.width as usize), th.base().bg(bg));
         let x = r.x + 1 + depth * 2;
         let st = if current { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.fg) };
-        text(buf, x, y, 2, g, th.s(if current { th.accent } else { th.dim }).bg(bg));
-        let w = r.right().saturating_sub(x + 2);
+        // a miniature of the cover where there is one and it has arrived (two cells: about square), else the glyph
+        match art.filter(|u| app.covers.get(u).is_some()) {
+            Some(url) => crate::home::cover(buf, Rect::new(x, y, 2.min(r.right().saturating_sub(x)), 1), &url, g, app, th),
+            None => text(buf, x, y, 2, g, th.s(if current { th.accent } else { th.dim }).bg(bg)),
+        }
+        let w = r.right().saturating_sub(x + 3);
         let name_w = name.chars().count() as u16;
-        text(buf, x + 2, y, w, &name, st.bg(bg));
+        text(buf, x + 3, y, w, &name, st.bg(bg));
         // the subtitle fills whatever room the name leaves
         if name_w + 3 < w && !sub.is_empty() {
-            text(buf, x + 3 + name_w, y, w - name_w - 1, &sub, th.s(th.border).bg(bg));
+            text(buf, x + 4 + name_w, y, w - name_w - 1, &sub, th.s(th.border).bg(bg));
         }
         hits.push((Rect::new(r.x, y, r.width, 1), Hit::Side(row)));
     }

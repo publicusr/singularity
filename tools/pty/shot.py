@@ -191,7 +191,7 @@ def home(t, out):
 
 def library(t, out):
     t.pump(1.0)
-    x, y = t.find("♥ Liked Songs")
+    x, y = t.find("♥  Liked Songs")
     mouse(t, 0, x + 2, y)
     mouse(t, 0, x + 2, y, release=True, wait=0.8)
     t.shot(f"{out}/0-liked.png")
@@ -232,7 +232,7 @@ def home_scroll(t, out):
 def history(t, out):
     """#28/#43: ← → at the right of the main Pane's title: open a list, back to Home, forward again."""
     t.pump(1.0)
-    x, y = t.find("♥ Liked Songs")
+    x, y = t.find("♥  Liked Songs")
     mouse(t, 0, x + 2, y)
     mouse(t, 0, x + 2, y, release=True, wait=0.8)
     t.shot(f"{out}/0-list.png")
@@ -271,7 +271,7 @@ def meters(t, out):
 def wheel(t, out):
     """#26: the wheel moves the highlight over a track list (also over artist/album names) and in the library."""
     t.pump(1.0)
-    x, y = t.find("♥ Liked Songs")
+    x, y = t.find("♥  Liked Songs")
     mouse(t, 0, x + 2, y)
     mouse(t, 0, x + 2, y, release=True, wait=0.8)
     ax, ay = t.find("Nova Drift")  # an artist link in the first row
@@ -294,7 +294,7 @@ def wheel(t, out):
 def like(t, out):
     """#22: the ♥ in the player bar, `l`, unliking from a row's menu, Follow on an artist page."""
     t.pump(1.0)
-    x, y = t.find("♥ Liked Songs")
+    x, y = t.find("♥  Liked Songs")
     mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
     rx, ry = t.find("Fake Track 001")
     for _ in range(2):
@@ -379,7 +379,7 @@ def config(t, out, env):
     t.send(b"?", 0.5)
     t.shot(f"{out}/2-help-vim.png")
     t.send(b"\x1b", 0.3)
-    x, y = t.find("♥ Liked Songs")
+    x, y = t.find("♥  Liked Songs")
     mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
     t.send(b"jjj", 0.4)
     t.shot(f"{out}/3-vim-j.png")
@@ -501,7 +501,7 @@ def queue_lift(t, out):
     """#50: play from Liked Songs (the fake Engine adds the list's next songs as "Next from"), queue one song, then
     drag a "Next from" song up onto it: it becomes queued there."""
     t.pump(1.0)
-    x, y = t.find("♥ Liked Songs")
+    x, y = t.find("♥  Liked Songs")
     mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
     rx, ry = t.find("Fake Track 002")
     for _ in range(2):  # double-click plays from here
@@ -603,7 +603,7 @@ def playlist_add(t, out):
         mx, my = t.find("Add to playlist")
         mouse(t, 0, mx + 1, my); mouse(t, 0, mx + 1, my, release=True, wait=0.4)
 
-    x, y = t.find("♥ Liked Songs")
+    x, y = t.find("♥  Liked Songs")
     mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=1.0)
     add_from_first_row()
     t.shot(f"{out}/0-picker.png")
@@ -698,6 +698,7 @@ def playlist_cover(t, out):
     t.pump(1.0)
     x, y = t.find("Fake Mixtape")
     mouse(t, 0, x + 1, y); mouse(t, 0, x + 1, y, release=True, wait=1.0)
+    t.shot(f"{out}/0-sidebar.png")
     mouse(t, 2, x + 1, y, wait=0.4)
     mx, my = t.find("Change cover")
     mouse(t, 0, mx + 1, my); mouse(t, 0, mx + 1, my, release=True, wait=0.4)
@@ -708,11 +709,11 @@ def playlist_cover(t, out):
     print("preview:", [l.strip()[-50:] for l in t.screen.display if "KB JPEG" in l or "No file" in l or "Not a picture" in l][:1])
     t.send(b"\r", 1.0)
     t.shot(f"{out}/2-uploaded.png")
-    print("upload:", [l.strip()[-50:] for l in t.screen.display if "Uploading" in l or "Couldn't" in l][:1])
+    print("upload:", [l.strip()[-50:] for l in t.screen.display if "Uploading" in l or "Cover changed" in l or "Couldn't" in l][:1])
     mouse(t, 2, x + 1, y, wait=0.4)
     mx, my = t.find("Remove cover")
     mouse(t, 0, mx + 1, my); mouse(t, 0, mx + 1, my, release=True, wait=0.8)
-    print("remove:", [l.strip()[-50:] for l in t.screen.display if "Putting back" in l or "Couldn't" in l][:1])
+    print("remove:", [l.strip()[-50:] for l in t.screen.display if "Putting back" in l or "Cover changed" in l or "Couldn't" in l][:1])
     t.send(b"q", 0.5)
 
 
@@ -740,7 +741,7 @@ def arrows(t, out):
 def ambient(t, out):
     """#44: starfield, marquee and glow swapped in while a song plays (pixel tier, so the glow has a cover)."""
     t.pump(1.0)
-    x, y = t.find("♥ Liked Songs")
+    x, y = t.find("♥  Liked Songs")
     mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
     for row in (3, 5, 7):
         rx, ry = t.find(f"Fake Track 00{row}")
@@ -968,7 +969,7 @@ def main():
             return layouts(t, out, env)
         if scenario == "artist":
             t.pump(1.0)
-            x, y = t.find("♥ Liked Songs")
+            x, y = t.find("♥  Liked Songs")
             mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
             ax, ay = t.find("Nova Drift")
             mouse(t, 0, ax + 1, ay); mouse(t, 0, ax + 1, ay, release=True, wait=0.8)
@@ -995,7 +996,7 @@ def main():
             return
         if scenario == "queue":
             t.pump(1.0)
-            x, y = t.find("♥ Liked Songs")
+            x, y = t.find("♥  Liked Songs")
             mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
             for row in (3, 5, 7):
                 rx, ry = t.find(f"Fake Track 00{row}")

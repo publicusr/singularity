@@ -627,3 +627,7 @@ flowchart LR
   changes `{values:{picture}}`; removal `noValue:[LIST_PICTURE]`. Live check (`playlist_probe --cover`): token in
   ~2.5 s, a 28-char picture id, the new cover URL at once on both the page and the library (`image-cdn-fa`), removal
   back to none; scratch deleted. Batch 3 done.
+- **Library miniatures** (owner, 2026-10-19: "I can make the cover, but I can't see it inside the tui"): every sidebar
+  row with a cover (playlists, albums, artists, Liked Songs has none) shows it two cells wide (about square) where the
+  glyph was; the glyph stays until the cover has arrived, and for folders. Pixel tier in kitty, half-blocks elsewhere
+  (a 2×2 swatch). Names moved one cell right so rows line up. Covers are fetched only for rows in view.
