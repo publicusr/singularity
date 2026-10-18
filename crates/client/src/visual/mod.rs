@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn audio_brightens_gently() {
         let mut bh = BlackHole::default();
-        let loud = SpectrumFrame { bands: vec![255; 64], level: 255, vu: [255, 255], beat: true };
+        let loud = SpectrumFrame { bands: vec![255; 64], level: 255, vu: [255, 255], beat: true, ..Default::default() };
         bh.advance(1.0 / 30.0, Some(&loud));
         assert!(bh.bass < 0.25, "one loud frame doesn't flash the hole: {}", bh.bass);
         for _ in 0..60 {

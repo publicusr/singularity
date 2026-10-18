@@ -443,8 +443,9 @@ pub struct Health {
     pub engine_build: Option<String>,
 }
 
-/// What the AudioTap heard in the last ~33 ms. Levels are relative to the track's own recent loudness
-/// (automatic gain), so they look the same at any volume. All values 0–255.
+/// What the AudioTap heard in the last ~33 ms. `bands`, `level` and `vu` are relative to the track's own recent
+/// loudness (automatic gain), so Visuals look the same at any volume; the `out_*` meters follow the volume.
+/// All values 0–255.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SpectrumFrame {
     /// log-spaced bands, 35 Hz → 16 kHz, smoothed (fast rise, slow fall)
@@ -455,6 +456,14 @@ pub struct SpectrumFrame {
     pub vu: [u8; 2],
     /// an onset (beat) starts in this frame
     pub beat: bool,
+    /// the real output level, without the automatic gain (so it follows the volume): loudness, left/right peaks,
+    /// and bass / mid / treble, each on a fixed 60 dB scale ending at full scale
+    #[serde(default)]
+    pub out_level: u8,
+    #[serde(default)]
+    pub out_vu: [u8; 2],
+    #[serde(default)]
+    pub out_bands: [u8; 3],
 }
 
 /// Where the Daemon listens: `$XDG_RUNTIME_DIR/singularity/daemon.sock` (falls back to /tmp/singularity-$UID).

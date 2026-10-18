@@ -398,7 +398,7 @@ mod tests {
         let mut app = App::new(None);
         for d in 0..DESIGNS.len() {
             app.set_design(d);
-            app.meters.push(singularity_proto::SpectrumFrame { bands: vec![120; 64], level: 150, vu: [150, 150], beat: false });
+            app.meters.push(singularity_proto::SpectrumFrame { bands: vec![120; 64], level: 150, vu: [150, 150], beat: false, out_level: 150, out_vu: [150, 150], out_bands: [120; 3] });
             let s = screen(&render(&mut app));
             for (slot, _) in app.layout.compute(Rect::new(0, 1, 160, 43)).slots {
                 let usual = match slot.as_str() {
@@ -425,7 +425,7 @@ mod tests {
     fn a_palette_switch_recolours_everything() {
         let mut app = App::new(None);
         app.set_design(crate::design::by_id("cockpit").unwrap());
-        app.meters.push(singularity_proto::SpectrumFrame { bands: vec![200; 64], level: 200, vu: [200, 200], beat: false });
+        app.meters.push(singularity_proto::SpectrumFrame { bands: vec![200; 64], level: 200, vu: [200, 200], beat: false, out_level: 200, out_vu: [200, 200], out_bands: [200; 3] });
         let btop = tokens(&app.theme);
         let before = render(&mut app);
         let used = (0..48).flat_map(|y| (0..160).map(move |x| (x, y))).filter(|&(x, y)| btop.contains(&before[(x, y)].fg)).count();

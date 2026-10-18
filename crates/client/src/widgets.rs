@@ -25,12 +25,9 @@ fn ramp(th: &Theme, t: f32) -> Rgb {
     r[i].lerp(r[(i + 1).min(r.len() - 1)], f)
 }
 
-/// bass, mid and treble (0..=1) from the spectrum bands.
+/// bass, mid and treble (0..=1) at the real output level (they follow the volume).
 fn bands3(app: &App) -> [f32; 3] {
-    let Some(f) = app.meters.frame.as_ref().filter(|f| !f.bands.is_empty()) else { return [0.0; 3] };
-    let n = f.bands.len();
-    let avg = |a: usize, b: usize| f.bands[a..b.max(a + 1).min(n)].iter().map(|v| *v as f32).sum::<f32>() / (b.max(a + 1).min(n) - a) as f32 / 255.0;
-    [avg(0, n / 6), avg(n / 6, n / 2), avg(n / 2, n)]
+    app.meters.frame.as_ref().map(|f| f.out_bands.map(|v| v as f32 / 255.0)).unwrap_or([0.0; 3])
 }
 
 // ── Now playing (Classic+) ────────────────────────────────────────────
@@ -74,7 +71,7 @@ pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 
 /// Left/right peak meters, then bass, mid and treble.
 pub fn levels(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
-    let vu = app.meters.frame.as_ref().map(|f| f.vu).unwrap_or([0, 0]);
+    let vu = app.meters.frame.as_ref().map(|f| f.out_vu).unwrap_or([0, 0]);
     let bar = |buf: &mut Buffer, y: u16, label: &str, v: f32| {
         if y >= r.bottom() {
             return;
@@ -342,7 +339,7 @@ mod tests {
     fn the_widgets_draw_inside_their_rect() {
         let th = Theme::singularity();
         let mut app = App::new(None);
-        app.meters.push(singularity_proto::SpectrumFrame { bands: (0..64).map(|i| (i * 4) as u8).collect(), level: 200, vu: [200, 120], beat: true });
+        app.meters.push(singularity_proto::SpectrumFrame { bands: (0..64).map(|i| (i * 4) as u8).collect(), level: 200, vu: [200, 120], beat: true, out_level: 200, out_vu: [200, 120], out_bands: [60, 120, 200] });
         app.playback.item = Some(singularity_proto::Item { name: "Song".into(), artists: vec!["Artist".into()], ..Default::default() });
         let area = Rect::new(0, 0, 60, 30);
         let inner = Rect::new(5, 5, 40, 20);

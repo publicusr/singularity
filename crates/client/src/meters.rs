@@ -1,5 +1,6 @@
 //! Audio Widgets (#15), drawn from the Daemon's spectrum frames: a cava-style spectrum, a loudness history and VU
-//! meters. Colours come from the theme's ramp, which never tops out in white; motion is smoothed in the Daemon.
+//! meters. Colours come from the theme's ramp, which never tops out in white; motion is smoothed in the Daemon. The
+//! loudness history and VU meters show the real output level (`out_*`), so they follow the volume (#29).
 
 use crate::theme::{Rgb, Theme};
 use crate::ui::text;
@@ -21,7 +22,7 @@ pub struct Meters {
 
 impl Meters {
     pub fn push(&mut self, f: SpectrumFrame) {
-        self.acc.0 += f.level as u32;
+        self.acc.0 += f.out_level as u32;
         self.acc.1 += 1;
         if self.acc.1 == 3 {
             self.history.push_back((self.acc.0 / 3) as u8);
@@ -93,7 +94,7 @@ pub fn loudness(buf: &mut Buffer, r: Rect, m: &Meters, th: &Theme) {
     if r.width < 4 || r.height == 0 {
         return;
     }
-    let vu = m.frame.as_ref().map(|f| f.vu).unwrap_or([0, 0]);
+    let vu = m.frame.as_ref().map(|f| f.out_vu).unwrap_or([0, 0]);
     let mut y = r.y;
     if r.height >= 4 {
         for (label, v) in [("L", vu[0]), ("R", vu[1])] {
@@ -128,7 +129,7 @@ mod tests {
     use super::*;
 
     fn frame(level: u8, band: u8) -> SpectrumFrame {
-        SpectrumFrame { bands: vec![band; 64], level, vu: [200, 100], beat: false }
+        SpectrumFrame { bands: vec![band; 64], level, vu: [200, 100], beat: false, out_level: level, out_vu: [200, 100], out_bands: [band; 3] }
     }
 
     #[test]

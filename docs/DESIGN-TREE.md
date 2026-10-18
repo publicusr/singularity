@@ -305,4 +305,11 @@ flowchart LR
 - **#28 Back / forward arrows ✅** (2026-10-18): the main Pane's title starts with ◂ ▸ whenever there's history
   (`Hit::History(±1)` → `go_back` / `go_forward`); the one with nowhere to go is dimmed. Title built from spans
   (number, arrows, name). Test clicks ◂ then ▸; pty `history`.
+- **#29 Meters follow the volume ✅** (2026-10-18): `SpectrumFrame` gained `out_level`, `out_vu`, `out_bands`
+  (bass / mid / treble): the real output level, no automatic gain, on a fixed 60 dB scale (bands against a
+  full-scale sine's −12 dB). The loudness Pane (VU + history) and the levels widget read them; the spectrum, the
+  black hole, rain and the setup's "audio heard" check keep the gained values. Additive (`serde(default)`). The fake
+  Engine's synthetic audio is now post-volume (square law) and resets the gain on volume changes, like the real
+  capture. Test: 20 dB quieter = a third of the scale lower on every output meter, the gained level unchanged.
+  pty `meters` (Cockpit at full volume and at 10 %).
 

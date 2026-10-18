@@ -4,8 +4,9 @@
 //!   without a process binary; the official desktop app has one, so it's never picked up), or a synthetic groove for
 //!   `--fake-engine` and tests.
 //! - *Analysis* ([`Analyzer`]): 2048-point FFT every 1470 samples (30 Hz), 64 log-spaced bands, onset detection on
-//!   bass flux, and automatic gain. The tap is post-volume, so levels are measured against the track's own recent
-//!   loudness: the same music looks the same at volume 20 and 100.
+//!   bass flux, and automatic gain. The tap is post-volume, so the bands (for Visuals) are measured against the
+//!   track's own recent loudness: the same music looks the same at volume 20 and 100. The `out_*` meters (#29) are
+//!   the real output level instead, on a fixed scale, so they follow the volume.
 //! - The tap runs only while at least one Client listens; frames stop once the audio has been silent for a second.
 
 use rustfft::{Fft, FftPlanner, num_complex::Complex};
@@ -22,6 +23,10 @@ const DT: f32 = HOP as f32 / RATE;
 const RANGE_DB: f32 = 48.0;
 /// below this the input counts as silence (paused, between tracks)
 const GATE_DB: f32 = -75.0;
+/// the output meters' scale: this many dB below full scale up to full scale
+const OUT_RANGE_DB: f32 = 60.0;
+/// a full-scale sine's band magnitude in `frame` (Hann window, /N): bands are shown against it
+const BAND_FULL_DB: f32 = -12.0;
 
 pub struct Analyzer {
     fft: Arc<dyn Fft<f32>>,
@@ -36,6 +41,9 @@ pub struct Analyzer {
     env_db: Option<f32>,
     level: f32,
     vu: [f32; 2],
+    out_level: f32,
+    out_vu: [f32; 2],
+    out_bands: [f32; 3],
     flux_avg: f32,
     cooldown: f32,
     quiet_frames: u32,
@@ -62,6 +70,9 @@ impl Analyzer {
             env_db: None,
             level: 0.0,
             vu: [0.0; 2],
+            out_level: 0.0,
+            out_vu: [0.0; 2],
+            out_bands: [0.0; 3],
             flux_avg: 0.05,
             cooldown: 0.0,
             quiet_frames: u32::MAX,
@@ -138,6 +149,18 @@ impl Analyzer {
             let p = if silent { 0.0 } else { rel(20.0 * (self.peak[c] + 1e-12).log10() + 3.0, env + 4.0) };
             self.vu[c] = if p > self.vu[c] { p } else { (self.vu[c] - DT * 1.2).max(p) };
         }
+        // the real output level: no gain, a fixed scale
+        let out = |d: f32| if silent { 0.0 } else { ((d + OUT_RANGE_DB) / OUT_RANGE_DB).clamp(0.0, 1.0) };
+        self.out_level = self.out_level * 0.7 + out(20.0 * (rms + 1e-12).log10()) * 0.3;
+        for c in 0..2 {
+            let p = out(20.0 * (self.peak[c] + 1e-12).log10());
+            self.out_vu[c] = if p > self.out_vu[c] { p } else { (self.out_vu[c] - DT * 1.2).max(p) };
+        }
+        for (g, (a, b)) in [(0, BANDS / 6), (BANDS / 6, BANDS / 2), (BANDS / 2, BANDS)].into_iter().enumerate() {
+            let mean = db[a..b].iter().sum::<f32>() / (b - a) as f32;
+            let v = out(mean - BAND_FULL_DB);
+            self.out_bands[g] = if v > self.out_bands[g] { self.out_bands[g] * 0.4 + v * 0.6 } else { self.out_bands[g] * fall };
+        }
         self.peak = [0.0; 2];
         // onsets: positive spectral flux in the bass, against its own running average
         let flux: f32 = (0..10).map(|b| (raw[b] - self.prev_raw[b]).max(0.0)).sum::<f32>() / 10.0;
@@ -151,8 +174,16 @@ impl Analyzer {
         self.flux_avg = self.flux_avg * 0.95 + flux * 0.05;
 
         let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-        let frame = SpectrumFrame { bands: self.bands.iter().map(|v| q(*v)).collect(), level: q(self.level), vu: [q(self.vu[0]), q(self.vu[1])], beat };
-        let quiet = frame.bands.iter().all(|b| *b == 0) && frame.level == 0 && frame.vu == [0, 0];
+        let frame = SpectrumFrame {
+            bands: self.bands.iter().map(|v| q(*v)).collect(),
+            level: q(self.level),
+            vu: [q(self.vu[0]), q(self.vu[1])],
+            beat,
+            out_level: q(self.out_level),
+            out_vu: [q(self.out_vu[0]), q(self.out_vu[1])],
+            out_bands: self.out_bands.map(q),
+        };
+        let quiet = frame.bands.iter().all(|b| *b == 0) && frame.level == 0 && frame.vu == [0, 0] && frame.out_vu == [0, 0] && frame.out_bands == [0; 3];
         if quiet {
             self.quiet_frames = self.quiet_frames.saturating_add(1);
             // one zero frame tells Clients to clear; after that, silence costs nothing
@@ -241,7 +272,13 @@ pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
                 while listening(&hub) {
                     tick.tick().await;
                     let pb = hub.playback.lock().await.clone();
-                    let samples = if pb.status == singularity_proto::PlayStatus::Playing { synth(t, HOP) } else { vec![0.0; HOP * 2] };
+                    if volume.is_some_and(|v| v != pb.volume) {
+                        an.reset_gain();
+                    }
+                    volume = Some(pb.volume);
+                    // after the volume, as Soloist's stream is (a square-law curve)
+                    let gain = (pb.volume as f32 / 100.0).powi(2);
+                    let samples = if pb.status == singularity_proto::PlayStatus::Playing { synth(t, HOP).into_iter().map(|x| x * gain).collect() } else { vec![0.0; HOP * 2] };
                     t += HOP as u64;
                     for f in an.push(&samples) {
                         let _ = hub.spectrum.send(f);
@@ -340,6 +377,26 @@ mod tests {
         let la: f32 = fa.iter().skip(30).map(|f| f.level as f32).sum::<f32>() / (fa.len() - 30) as f32;
         let lb: f32 = fb.iter().skip(30).map(|f| f.level as f32).sum::<f32>() / (fb.len() - 30) as f32;
         assert!((la - lb).abs() < 10.0 && la > 40.0, "levels {la:.0} vs {lb:.0}");
+    }
+
+    #[test]
+    fn the_output_meters_follow_the_volume() {
+        let music = synth(0, (RATE * 4.0) as usize);
+        let mean = |fs: &[SpectrumFrame], f: fn(&SpectrumFrame) -> f32| fs.iter().skip(30).map(f).sum::<f32>() / (fs.len() - 30) as f32;
+        let at = |gain: f32| {
+            let s: Vec<f32> = music.iter().map(|x| x * gain).collect();
+            let fs = run(&mut Analyzer::new(), &s);
+            (mean(&fs, |f| f.out_level as f32), mean(&fs, |f| f.out_vu[0] as f32), mean(&fs, |f| f.out_bands[1] as f32), mean(&fs, |f| f.level as f32))
+        };
+        let (full, tenth, hundredth) = (at(1.0), at(0.1), at(0.01));
+        // 20 dB quieter is a third of the 60 dB scale lower (255 / 3 = 85), on every output meter
+        for (a, b, name) in [(full.0, tenth.0, "level"), (full.1, tenth.1, "vu"), (full.2, tenth.2, "mid")] {
+            assert!((a - b - 85.0).abs() < 12.0, "{name}: {a:.0} at full, {b:.0} at -20 dB");
+        }
+        assert!(full.1 > 200.0, "full scale peaks near the top: {:.0}", full.1);
+        assert!(hundredth.1 < 90.0, "-40 dB: low: {:.0}", hundredth.1);
+        // while the gained loudness (Visuals) stays put
+        assert!((full.3 - hundredth.3).abs() < 12.0, "gained level {:.0} vs {:.0}", full.3, hundredth.3);
     }
 
     #[test]

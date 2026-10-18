@@ -1182,7 +1182,7 @@ mod tests {
         let mut app = App::new(None);
         for i in 0..60u32 {
             let bands = (0..64).map(|b| ((b * 4 + i as usize) % 255) as u8).collect();
-            app.meters.push(singularity_proto::SpectrumFrame { bands, level: 180, vu: [220, 200], beat: i % 15 == 0 });
+            app.meters.push(singularity_proto::SpectrumFrame { bands, level: 180, vu: [220, 200], beat: i % 15 == 0, out_level: 180, out_vu: [220, 200], out_bands: [200; 3] });
         }
         let s = render(&mut app, 160, 48);
         let slots = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).slots;
@@ -1192,6 +1192,12 @@ mod tests {
         let loud = region(pane("loudness"));
         assert!(loud.starts_with("L ▬") && loud.contains('█'), "{loud}");
         assert!(!s.contains("arrives with #15"));
+        // the loudness Pane follows the real output level, not the gained one
+        app.meters = Default::default();
+        app.meters.push(singularity_proto::SpectrumFrame { bands: vec![200; 64], level: 230, vu: [230, 230], out_vu: [20, 20], ..Default::default() });
+        let s = render(&mut app, 160, 48);
+        let loud = s.lines().nth(pane("loudness").y as usize + 1).unwrap().chars().skip(pane("loudness").x as usize + 1).take(pane("loudness").width as usize - 2).collect::<String>();
+        assert!(loud.matches('▬').count() <= 3, "a quiet output shows a short meter: {loud}");
     }
 
     #[test]

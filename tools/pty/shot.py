@@ -242,6 +242,25 @@ def history(t, out):
     t.send(b"q", 0.5)
 
 
+def meters(t, out):
+    """#29: the loudness and levels meters follow the volume (the fake Engine's audio is post-volume, like Soloist's)."""
+    t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
+    for _ in range(3):
+        t.send(b"\x1b[B", 0.3)  # Cockpit: loudness and levels side by side
+    t.send(b"\r", 0.8)
+    t.send(b" ", 3.0)
+    t.shot(f"{out}/0-volume-full.png")
+    vx, vy = t.find("vol")
+    for _ in range(110):
+        mouse(t, 65, vx + 8, vy, wait=0.01)  # wheel down on the volume bar: -1 % each, to 0
+    for _ in range(10):
+        mouse(t, 64, vx + 8, vy, wait=0.01)  # and up to 10 %
+    t.pump(3.0)
+    t.shot(f"{out}/1-volume-10.png")
+    t.send(b" ", 0.4)
+    t.send(b"q", 0.5)
+
+
 def wheel(t, out):
     """#26: the wheel moves the highlight over a track list (also over artist/album names) and in the library."""
     t.pump(1.0)
@@ -510,7 +529,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll") else "0"
@@ -548,6 +567,8 @@ def main():
             return wheel(t, out)
         if scenario == "history":
             return history(t, out)
+        if scenario == "meters":
+            return meters(t, out)
         if scenario == "config":
             return config(t, out, env)
         if scenario == "designs":
