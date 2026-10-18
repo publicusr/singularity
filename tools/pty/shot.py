@@ -442,6 +442,38 @@ def stats(t, out):
     t.send(b"q", 0.5)
 
 
+def stats_widgets(t, out):
+    """#37: "today" and "top this week" swapped into the side Slots; a 31 s play is logged and both update."""
+    def swap_to(title_now, want):
+        """Click the ▸ in the title row of the Pane titled `title_now` until `want` shows there."""
+        at = t.find(title_now)
+        if not at:
+            t.shot(f"{out}/missing.png")
+            raise SystemExit(f"no {title_now!r} on screen")
+        x, y = at
+        for _ in range(10):
+            row = t.screen.display[y]
+            if want in row[x - 2:]:
+                return
+            sx = row.find("▸", x)
+            mouse(t, 0, sx, y); mouse(t, 0, sx, y, release=True, wait=0.4)
+    t.pump(1.0)
+    swap_to("tail -f lyrics.log", "today")
+    swap_to("today", "this week")  # the same Slot on to "top this week"…
+    swap_to("queue", "today")      # …and "today" into the queue's Slot
+    t.pump(1.0)
+    t.shot(f"{out}/0-widgets.png")
+    before = [l for l in t.screen.display if "today" in l or "plays" in l]
+    t.send(b" ", 31.5)  # play 31 s: one Play
+    t.send(b"n", 2.0)   # next: the Play is logged
+    t.shot(f"{out}/1-after-a-play.png")
+    after = [l for l in t.screen.display if "today" in l or "plays" in l]
+    print("today changed after a play:", before != after)
+    print("today:", [l.strip()[:150] for l in after][:3])
+    t.send(b" ", 0.4)
+    t.send(b"q", 0.5)
+
+
 def listening(t, out, env):
     """#23: Cockpit's listening Pane from a seeded log; a 31 s play is logged live; a backup is taken; export; delete."""
     data = env["SINGULARITY_DATA"]
@@ -547,7 +579,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll") else "0"
@@ -558,7 +590,7 @@ def main():
         env["SINGULARITY_BACKUP_CHECK_SECS"] = "2"
         os.makedirs(env["XDG_DOWNLOAD_DIR"], exist_ok=True)
         seed_listening(env["SINGULARITY_DATA"])
-    if scenario == "stats":
+    if scenario in ("stats", "stats-widgets"):
         env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
         seed_listening(env["SINGULARITY_DATA"])
     bus = None
@@ -586,6 +618,8 @@ def main():
             return listening(t, out, env)
         if scenario == "stats":
             return stats(t, out)
+        if scenario == "stats-widgets":
+            return stats_widgets(t, out)
         if scenario == "wheel":
             return wheel(t, out)
         if scenario == "history":

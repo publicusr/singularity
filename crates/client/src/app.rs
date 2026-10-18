@@ -279,6 +279,10 @@ pub enum Hit {
     StatsPeriod(singularity_proto::StatsPeriod),
     /// a ranked row on the Stats page, by its place in `stats::entries`
     StatsRow(usize),
+    /// a row of the "top this week" Widget
+    TopWeek(usize),
+    /// the "top this week" Widget's title: artists ⇄ tracks
+    TopWeekToggle,
 }
 
 /// Two clicks on the same row within this time play it.
@@ -405,6 +409,8 @@ pub struct App {
     stats_period: singularity_proto::StatsPeriod,
     /// the Daemon's latest answer per period
     pub stats: std::collections::HashMap<singularity_proto::StatsPeriod, singularity_proto::Stats>,
+    /// the "top this week" Widget shows tracks (else artists)
+    pub top_week_tracks: bool,
     pub recent: Vec<String>,
     pub devices: Vec<singularity_proto::Device>,
     pub devices_open: bool,
@@ -508,6 +514,7 @@ impl App {
             stats_view: None,
             stats_period: Default::default(),
             stats: Default::default(),
+            top_week_tracks: false,
             recent: vec![],
             devices: vec![],
             devices_open: false,
@@ -713,8 +720,22 @@ impl App {
     /// After (re)connecting: ask for spectrum frames if an audio Widget is on screen.
     pub fn on_connected(&mut self) {
         self.spectrum_on = false;
-        self.want_spectrum();
+        self.want_widget_data();
         self.send(Command::GetListening);
+    }
+
+    /// What the Widgets on screen need from the Daemon: spectrum frames, this week's stats. Called on connect and
+    /// whenever the layout changes.
+    pub fn want_widget_data(&mut self) {
+        self.want_spectrum();
+        if !self.stats.contains_key(&singularity_proto::StatsPeriod::Week) && self.on_screen("topweek") {
+            self.send(Command::GetStats { period: singularity_proto::StatsPeriod::Week });
+        }
+    }
+
+    /// Whether some Pane of the layout shows `slot`.
+    fn on_screen(&self, slot: &str) -> bool {
+        self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| s == slot)
     }
 
     /// Spectrum frames flow only while a Widget that moves with the music is on screen (the Daemon's tap idles
@@ -960,11 +981,38 @@ impl App {
 
     // ── Stats page (#36) ───────────────────────────────────────────
 
-    /// Ask the Daemon again for the stats on screen (after a Play was logged).
+    /// Ask the Daemon again for the stats on screen (after a Play was logged): the page's period, and the week for
+    /// the "top this week" Widget.
     pub fn refresh_stats(&mut self) {
-        if let Some(v) = &self.stats_view {
-            let period = v.period;
+        use singularity_proto::StatsPeriod;
+        let page = self.stats_view.as_ref().map(|v| v.period);
+        if let Some(period) = page {
             self.send(Command::GetStats { period });
+        }
+        if page != Some(StatsPeriod::Week) && self.on_screen("topweek") {
+            self.send(Command::GetStats { period: StatsPeriod::Week });
+        }
+    }
+
+    /// A click on a "top this week" row: an artist opens, a track plays on a second click.
+    fn top_week_click(&mut self, i: usize) {
+        use singularity_proto::StatsPeriod;
+        let tracks = self.top_week_tracks;
+        let Some(s) = self.stats.get(&StatsPeriod::Week) else { return };
+        let Some(row) = (if tracks { s.top_tracks.get(i) } else { s.top_artists.get(i) }).cloned() else { return };
+        if !tracks {
+            match row.uri {
+                Some(uri) => self.open(&uri, &row.name, "", "artist"),
+                None => self.say("Finding its link (it was logged before links were kept); try again in a moment"),
+            }
+            return;
+        }
+        let key = usize::MAX / 4 - i;
+        if self.last_click.is_some_and(|(t, j)| j == key && t.elapsed() < DOUBLE_CLICK) {
+            self.last_click = None;
+            self.send(Command::Play { uri: Some(row.track_uri) });
+        } else {
+            self.last_click = Some((Instant::now(), key));
         }
     }
 
@@ -1889,6 +1937,11 @@ impl App {
                         }
                         self.stats_menu(i, at);
                     }
+                    Some(Hit::TopWeek(i)) if self.top_week_tracks => {
+                        if let Some(t) = self.stats.get(&singularity_proto::StatsPeriod::Week).and_then(|s| s.top_tracks.get(i)).cloned() {
+                            self.open_track_menu(t.track_uri, t.name, at);
+                        }
+                    }
                     Some(Hit::SearchTrack(i)) => {
                         let t = self.search.as_ref().and_then(|s| s.results.as_ref()?.tracks.get(i).cloned());
                         if let Some(t) = t {
@@ -1937,6 +1990,8 @@ impl App {
                         self.focus = "home".into();
                         self.stats_set_period(p);
                     }
+                    Some(Hit::TopWeek(i)) => self.top_week_click(i),
+                    Some(Hit::TopWeekToggle) => self.top_week_tracks = !self.top_week_tracks,
                     Some(Hit::StatsRow(i)) => {
                         self.focus = "home".into();
                         if let Some(v) = self.stats_view.as_mut() {

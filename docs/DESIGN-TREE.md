@@ -429,3 +429,13 @@ flowchart LR
   period at 80×24 / 140×40 / 256×68 with nothing over the Pane's border and the summary in view, artist opens and Back
   returns (asking again), Enter plays, tab click, refresh, unlinked row, empty log wraps. pty `stats` at the three
   sizes: a schema-1 seeded log migrates, gets its links from the fake Catalogue, and the top artist opens.
+- **#37 Stats Widgets ✅** (2026-10-18): two side-group Widgets in `stats.rs`. **today**: minutes today ("under a
+  minute today" once something played), plays today (`ListeningSummary.plays_today`, additive), the streak, and a
+  7-day sparkline with weekday initials when there's room; a click opens Stats. **top this week**: the week's top 5
+  artists or tracks (`App::top_week_tracks`; the title "top artists · this week ⇄" is the switch), rows as on the
+  Stats page (artist opens, track plays on a second click, right-click menu). Data: `want_widget_data()` (replacing the
+  layout-change calls to `want_spectrum`) asks for the week's stats when the Widget is on screen, and
+  `refresh_stats` asks again after every `Event::Listening`. `row()` subtracts saturating (tiny Panes). Tests: both
+  swap into every side Slot of every Design and render; Pane minimums 12×3 up to 60×12 draw nothing outside; the
+  switch, a track's second click, an artist opening; the week asked for on swap and on refresh. pty `stats-widgets`:
+  both swapped in with the Panes' ▸, a 31 s play is logged and both update.

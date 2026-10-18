@@ -29,6 +29,8 @@ fn slot_info(slot: &str) -> (&'static str, &'static str) {
         "rain" => ("rain", ""),
         "scope" => ("osc", ""),
         "top" => ("top", ""),
+        "today" => ("today", ""),
+        "topweek" => ("top this week", ""),
         _ => ("?", ""),
     }
 }
@@ -280,6 +282,9 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             ("home", _, _) if app.stats_view.is_some() => "stats".to_string(),
             ("home", _, Some(a)) => a.name.clone(),
             ("home", Some(v), _) => v.title.clone(),
+            // its title is the switch between artists and tracks
+            ("topweek", _, _) if app.top_week_tracks => "top tracks · this week ⇄".to_string(),
+            ("topweek", _, _) => "top artists · this week ⇄".to_string(),
             _ => title.to_string(),
         };
         let number = if th.numbered { superscript(i + 1) } else { String::new() };
@@ -299,6 +304,10 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             swaps.push((Rect::new(x + 2, rect.y, 2, 1), Hit::History(1)));
         }
         spans.push(Span::styled(format!("{title} "), title_st));
+        if slot == "topweek" {
+            let tw = spans.iter().map(|s| s.content.chars().count()).sum::<usize>() as u16;
+            swaps.push((Rect::new(rect.x + 1, rect.y, tw.min(rect.width.saturating_sub(2)), 1), Hit::TopWeekToggle));
+        }
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(th.borders)
@@ -335,9 +344,14 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             "rain" => crate::widgets::rain(f.buffer_mut(), inner, app, th),
             "scope" => crate::widgets::scope(f.buffer_mut(), inner, app, th),
             "top" => crate::widgets::top(f.buffer_mut(), inner, app, th),
+            "today" => {
+                crate::stats::today(f.buffer_mut(), inner, app, th);
+                app.hit(inner, Hit::Action(Action::Stats));
+            }
+            "topweek" => crate::stats::top_week(f.buffer_mut(), inner, app, th),
             _ => {}
         }
-        if matches!(slot.as_str(), "hole" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top") {
+        if matches!(slot.as_str(), "hole" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top" | "today" | "topweek") {
             continue;
         }
         if slot == "library" {
@@ -1312,7 +1326,7 @@ mod tests {
         let mut minutes = vec![0; singularity_proto::LISTENING_DAYS];
         let n = minutes.len();
         (minutes[n - 1], minutes[n - 2], minutes[n - 8]) = (60, 30, 15);
-        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 1.75, top_artist: Some("Nova Drift".into()), streak_days: 2, plays: 9 });
+        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 1.75, top_artist: Some("Nova Drift".into()), streak_days: 2, plays: 9, plays_today: 3 });
         let s = render(&mut app, 160, 48);
         assert!(s.contains("listening · 26 weeks") && s.contains("1.8 h this year · top: Nova Drift · streak 2 days"), "{s}");
         // this week is the last column, Monday on top, two days a cell (Cockpit's Pane is short): Wednesday over
@@ -1630,6 +1644,103 @@ mod tests {
         let home = app.layout.compute_shaped(Rect::new(0, 1, 140, 40 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
         let pane: String = s.lines().map(|l| l.chars().skip(home.x as usize).take(home.width as usize).collect::<String>()).collect::<Vec<_>>().join("\n");
         assert!(!pane.contains('…'), "nothing cut: {pane}");
+    }
+
+    // ── Stats Widgets (#37) ──
+
+    #[test]
+    fn stats_widgets_swap_into_every_side_slot_and_fit_their_minimums() {
+        use singularity_proto::{Command, ListeningSummary, StatsPeriod};
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let mut app = App::new(Some(tx));
+        app.link = Link::Connected { version: "test".into() };
+        let mut minutes = vec![0u32; singularity_proto::LISTENING_DAYS];
+        let n = minutes.len();
+        minutes[n - 3..].copy_from_slice(&[30, 0, 42]);
+        app.listening = Some(ListeningSummary { minutes, today_weekday: 2, streak_days: 1, plays_today: 9, ..Default::default() });
+        // every side Slot of every design can show both (a Slot is followed by its place in the layout)
+        for d in 0..crate::design::DESIGNS.len() {
+            app.set_design(d);
+            let sides: Vec<usize> = app.layout.slot_names().iter().enumerate().filter(|(_, s)| crate::layouts::options(s).contains(&"today")).map(|(i, _)| i).collect();
+            for at in sides {
+                for want in ["today", "topweek"] {
+                    for _ in 0..12 {
+                        let now = app.layout.slot_names()[at].clone();
+                        if now == want {
+                            break;
+                        }
+                        app.swap_widget(&now, 1);
+                    }
+                    assert_eq!(app.layout.slot_names()[at], want, "{}: Slot {at}", crate::design::DESIGNS[d].id);
+                    let s = render(&mut app, 160, 48);
+                    let title = if want == "today" { "today" } else { "this week" };
+                    assert!(s.contains(title), "{}: {want} in Slot {at}\n{s}", crate::design::DESIGNS[d].id);
+                }
+                app.set_design(d);
+            }
+        }
+        // swapping "top this week" in asks for the week's stats
+        app.set_design(0);
+        sent_all(&mut rx);
+        while !app.layout.slot_names().contains(&"topweek".to_string()) {
+            let s = app.layout.slot_names().into_iter().find(|s| crate::layouts::options(s).contains(&"topweek")).unwrap();
+            app.swap_widget(&s, 1);
+        }
+        assert!(sent_all(&mut rx).contains(&Command::GetStats { period: StatsPeriod::Week }));
+        // and again after a logged Play
+        app.refresh_stats();
+        assert_eq!(sent_all(&mut rx), vec![Command::GetStats { period: StatsPeriod::Week }]);
+
+        // the smallest Panes: nothing spills, nothing panics
+        app.stats.insert(StatsPeriod::Week, seeded_stats(StatsPeriod::Week));
+        for (w, h) in [(12u16, 3u16), (14, 4), (20, 6), (30, 10), (60, 12)] {
+            let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, w + 4, h + 2));
+            let th = app.theme.clone();
+            crate::stats::today(&mut buf, Rect::new(1, 1, w, h), &app, &th);
+            crate::stats::top_week(&mut buf, Rect::new(1, 1, w, h), &mut app, &th);
+            for y in 0..h + 2 {
+                for x in [0, w + 1, w + 2, w + 3] {
+                    assert_eq!(buf[(x, y)].symbol(), " ", "{w}x{h}: drawn outside at ({x},{y})");
+                }
+            }
+        }
+        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 30, 8));
+        let th = app.theme.clone();
+        crate::stats::today(&mut buf, Rect::new(0, 0, 30, 8), &app, &th);
+        let rows: Vec<String> = (0..8).map(|y| (0..30).map(|x| buf[(x, y)].symbol().to_string()).collect()).collect();
+        assert!(rows[0].contains("42 min today") && rows[1].contains("9 plays") && rows[2].contains("1-day streak"), "{rows:#?}");
+        assert!(rows[5].contains('M') || rows[5].contains('W'), "weekday initials under the week: {rows:#?}");
+    }
+
+    #[test]
+    fn top_this_week_switches_between_artists_and_tracks() {
+        use singularity_proto::{Command, StatsPeriod};
+        let (mut app, mut rx) = playing_app(200_000);
+        while !app.layout.slot_names().contains(&"topweek".to_string()) {
+            let s = app.layout.slot_names().into_iter().find(|s| crate::layouts::options(s).contains(&"topweek")).unwrap();
+            app.swap_widget(&s, 1);
+        }
+        app.stats.insert(StatsPeriod::Week, seeded_stats(StatsPeriod::Week));
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("top artists · this week") && s.contains("Nova Drift"), "{s}");
+        let toggle = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeekToggle).then_some(*r)).unwrap();
+        click(&mut app, toggle.x + 3, toggle.y);
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("top tracks · this week") && s.contains("Track number 0"), "{s}");
+        sent(&mut rx);
+        // a track plays on a second click
+        let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeek(1)).then_some(*r)).unwrap();
+        click(&mut app, r.x + 4, r.y);
+        assert!(sent(&mut rx).is_empty());
+        click(&mut app, r.x + 4, r.y);
+        assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:track:t1".into()) }]);
+        // back to artists: a click opens one
+        let toggle = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeekToggle).then_some(*r)).unwrap();
+        click(&mut app, toggle.x + 3, toggle.y);
+        render(&mut app, 160, 48);
+        let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeek(0)).then_some(*r)).unwrap();
+        click(&mut app, r.x + 4, r.y);
+        assert_eq!(app.artist.as_ref().map(|a| a.uri.as_str()), Some("spotify:artist:0"));
     }
 
     // ── Lyrics (#14) ──

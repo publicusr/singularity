@@ -112,6 +112,7 @@ impl Store {
         let mut q = self.db.prepare("SELECT DISTINCT day FROM plays WHERE day <= ?1 ORDER BY day DESC")?;
         let days: Vec<i64> = q.query_map([today], |r| r.get(0))?.collect::<Result<_, _>>()?;
         let plays: i64 = self.db.query_row("SELECT COUNT(*) FROM plays", [], |r| r.get(0))?;
+        let plays_today: i64 = self.db.query_row("SELECT COUNT(*) FROM plays WHERE day = ?1", [today], |r| r.get(0))?;
         Ok(ListeningSummary {
             minutes,
             today_weekday: weekday(today),
@@ -119,6 +120,7 @@ impl Store {
             top_artist,
             streak_days: streak(&days, today),
             plays: plays as u64,
+            plays_today: plays_today as u32,
         })
     }
 
@@ -688,7 +690,7 @@ mod tests {
         let s = store.summary(now).unwrap();
         assert_eq!(s.minutes.len(), LISTENING_DAYS);
         assert_eq!(&s.minutes[LISTENING_DAYS - 4..], &[5, 0, 30, 30]);
-        assert_eq!((s.top_artist.as_deref(), s.streak_days, s.plays), (Some("Nova Drift"), 2, 4));
+        assert_eq!((s.top_artist.as_deref(), s.streak_days, s.plays, s.plays_today), (Some("Nova Drift"), 2, 4, 1));
         assert!((s.hours_this_year - 65.0 / 60.0).abs() < 1e-4);
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir.path().join(DB)), 0o600);

@@ -62,7 +62,7 @@ impl App {
         self.hole.look = DESIGNS[d].look;
         self.focus = "home".into();
         self.theme = theme::builtin(DESIGNS[d].themes[0]).expect("built in");
-        self.want_spectrum();
+        self.want_widget_data();
     }
 
     /// Use theme `id` (built-in or the user's); false if there's no such theme.
@@ -204,7 +204,7 @@ impl App {
         self.layout = s.tree.clone();
         self.layout_name = Some(s.id.clone());
         self.focus = "home".into();
-        self.want_spectrum();
+        self.want_widget_data();
     }
 
     pub fn reload_layouts(&mut self) {
@@ -257,7 +257,7 @@ impl App {
         if self.focus == slot {
             self.focus = to.into();
         }
-        self.want_spectrum();
+        self.want_widget_data();
         true
     }
 
@@ -299,7 +299,7 @@ impl App {
         self.set_theme(&p.before.1);
         self.layout = p.before.2;
         self.layout_name = p.before.3;
-        self.want_spectrum();
+        self.want_widget_data();
     }
 
     pub fn picker_key(&mut self, k: KeyEvent) {

@@ -1,6 +1,8 @@
 //! The Stats page (#36): a live "Wrapped" from the local listening log, in the main Pane. Period tabs (←/→ or a
 //! click), minutes / plays / streak, a 24-hour listening clock, and the top artists, tracks and albums. Rows act like
 //! everywhere else: a track plays (double-click / Enter), an artist or album opens its page.
+//! Also the two side Widgets (#37): **today** (minutes, plays, streak, the last 7 days) and **top this week** (top 5
+//! artists or tracks; a click on its title switches).
 
 use crate::app::{App, Hit};
 use crate::theme::Theme;
@@ -299,6 +301,85 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
 }
 
+/// The "today" Widget: minutes and plays today, the streak, and a 7-day sparkline, as many lines as fit.
+pub fn today(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
+    let (x, w) = (r.x + 1, r.width.saturating_sub(2));
+    if r.height == 0 || w < 6 {
+        return;
+    }
+    let Some(sum) = app.listening.as_ref() else {
+        text(buf, x, r.y, w, "counting…", th.s(th.dim));
+        return;
+    };
+    let mins = sum.minutes.last().copied().unwrap_or(0);
+    let headline = if mins == 0 && sum.plays_today > 0 { "under a minute today".to_string() } else { format!("{} today", fmt_minutes(mins)) };
+    let mut lines: Vec<(String, ratatui::style::Style)> = vec![(headline, th.s(th.fg).add_modifier(Modifier::BOLD))];
+    let plays = if sum.plays_today == 1 { "1 play".to_string() } else { format!("{} plays", sum.plays_today) };
+    lines.push((plays, th.s(th.dim)));
+    let streak = match sum.streak_days {
+        0 => "no streak yet".to_string(),
+        1 => "1-day streak".to_string(),
+        n => format!("{n}-day streak"),
+    };
+    lines.push((streak, th.s(if sum.streak_days > 1 { th.accent } else { th.dim })));
+    let mut y = r.y;
+    for (t, st) in lines {
+        if y >= r.bottom() {
+            return;
+        }
+        text(buf, x, y, w, &clip(&t, w as usize), st);
+        y += 1;
+    }
+    // the last 7 days, oldest first, with weekday initials under them when there's a row for them
+    if y + 1 < r.bottom() {
+        y += 1;
+        const EIGHTHS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+        const DAYS: [char; 7] = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+        let week = &sum.minutes[sum.minutes.len().saturating_sub(7)..];
+        let max = week.iter().copied().max().unwrap_or(0).max(1);
+        let cw = (w / 7).clamp(1, 3);
+        for (i, m) in week.iter().enumerate() {
+            let t = *m as f32 / max as f32;
+            let ch = if *m == 0 { '·' } else { EIGHTHS[((t * 8.0).round() as usize).clamp(1, 8)] };
+            let st = th.s(if *m == 0 { th.border } else { th.ramp_at(0.3 + 0.7 * t) });
+            let cx = x + i as u16 * cw;
+            text(buf, cx, y, 1, &ch.to_string(), st);
+            if y + 1 < r.bottom() {
+                let day = (sum.today_weekday as usize + 7 - (week.len() - 1 - i)) % 7;
+                text(buf, cx, y + 1, 1, &DAYS[day].to_string(), th.s(th.border));
+            }
+        }
+    }
+}
+
+/// The "top this week" Widget: the week's top 5 artists or tracks (`tracks`), each a clickable row.
+pub fn top_week(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
+    let (x, w) = (r.x + 1, r.width.saturating_sub(2));
+    if r.height == 0 || w < 6 {
+        return;
+    }
+    let Some(s) = app.stats.get(&StatsPeriod::Week).cloned() else {
+        text(buf, x, r.y, w, "counting…", th.s(th.dim));
+        return;
+    };
+    let rows = if app.top_week_tracks { &s.top_tracks } else { &s.top_artists };
+    if rows.is_empty() {
+        text(buf, x, r.y, w, &clip("nothing yet this week", w as usize), th.s(th.dim));
+        return;
+    }
+    let sec = if app.top_week_tracks { Section::Tracks } else { Section::Artists };
+    let peak = rows[0].minutes.max(1);
+    let mut hits = vec![];
+    for i in 0..rows.len().min(5).min(r.height as usize) {
+        let rect = Rect::new(x, r.y + i as u16, w, 1);
+        row(buf, rect, sec, i, &s, peak, false, th);
+        hits.push((rect, Hit::TopWeek(i)));
+    }
+    for (rect, h) in hits {
+        app.hit(rect, h);
+    }
+}
+
 /// One ranked row: rank, name (and artist), then minutes, a bar and plays as room allows.
 #[allow(clippy::too_many_arguments)]
 fn row(buf: &mut Buffer, r: Rect, sec: Section, i: usize, s: &Stats, peak: u32, selected: bool, th: &Theme) {
@@ -330,7 +411,7 @@ fn row(buf: &mut Buffer, r: Rect, sec: Section, i: usize, s: &Stats, peak: u32, 
         let sub = clip(&format!(" · {}", it.subtitle), left_w - name.width());
         text(buf, r.x + 3 + name.width() as u16, r.y, (left_w - name.width()) as u16, &sub, th.s(th.dim).bg(bg));
     }
-    let mut rx = r.right() - right_w as u16;
+    let mut rx = r.right().saturating_sub(right_w as u16).max(r.x);
     let mw = mins.width() as u16;
     text(buf, rx, r.y, mw, &mins, th.s(th.dim).bg(bg));
     rx += mw + 1;

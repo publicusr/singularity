@@ -22,3 +22,6 @@ architecture changes, and it is better to learn that in a day than after a month
 #12 queue, #13 devices, #14 lyrics, #15 AudioTap, #16 black hole, #17 idle, #21 MPRIS, #22 like/follow, #23 local data,
 #24 seek precision. **All v1 tickets are closed**; the owner's test round 1 came back (2026-10-18): bugs and ideas in the DESIGN-TREE round log, tickets #25–#33.
 Done from round 1: #25 stale Daemon, #26 wheel, #27 Home by lines, #28 back/forward, #29 meters, #30 lyrics wrap, #31 wide terminals, #33 Theme tint; #32 queue drag built (live check pending). See `docs/HANDOFF.md`.
+
+**v1.x (2026-10-18):** planned in DESIGN-TREE D29–D42, SPEC.md "v1.x", spec issue #34. Batch 1 (stats) done:
+#35 Daemon stats, #36 Stats page, #37 Widgets. Next: the Visual demos, then batch 2.

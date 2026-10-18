@@ -433,6 +433,9 @@ pub struct ListeningSummary {
     pub streak_days: u32,
     /// plays in the whole log
     pub plays: u64,
+    /// plays today
+    #[serde(default)]
+    pub plays_today: u32,
 }
 
 /// A calendar period in local time (weeks start on Monday), for stats.
