@@ -14,6 +14,7 @@ mod layouts;
 mod looks;
 mod lyrics;
 mod meters;
+mod mini;
 mod queue;
 mod scrub;
 mod saved;

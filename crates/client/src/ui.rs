@@ -63,8 +63,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.hole.set_tint(tint.as_ref().map(|t| t.stops4()));
     app.art_tint = tint;
     fill(f.buffer_mut(), area, &th);
-    if area.width < 20 || area.height < 8 {
-        text(f.buffer_mut(), area.x, area.y, area.width, "◉ terminal too small", th.s(th.dim));
+    // too small for any layout: just a player (#47)
+    if crate::mini::wanted(area) {
+        app.overlays.clear();
+        crate::mini::draw(f.buffer_mut(), area, app, &th);
+        if let Some((msg, _)) = app.toast.clone()
+            && area.height > 2
+        {
+            text(f.buffer_mut(), area.x, area.bottom() - 1, area.width, &format!(" {msg}"), th.s(th.accent));
+        }
         return;
     }
     let [top, body, player, hints] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(3), Constraint::Length(1)]).areas(area);
@@ -801,6 +808,30 @@ mod tests {
                 assert!(s.contains("home") && s.contains("gravity well"), "{w}x{h}");
             }
         }
+    }
+
+    #[test]
+    fn a_tiny_terminal_is_a_mini_player() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = playing_app(200_000);
+        app.playback.item.as_mut().unwrap().artists = vec!["Nova Drift".into()];
+        for (w, h) in [(20u16, 1u16), (40, 2), (60, 5), (49, 13), (120, 13)] {
+            let s = render(&mut app, w, h);
+            assert!(s.contains("Song"), "{w}x{h}: the title\n{s}");
+            assert!(!s.contains("SINGULARITY") && !s.contains("too small"), "{w}x{h}: no layout");
+            assert!(s.lines().all(|l| l.chars().count() <= w as usize));
+            if w >= 24 {
+                let play = app.hits.iter().find_map(|(r, h)| (*h == Hit::Action(Action::TogglePlay)).then_some(*r)).unwrap_or_else(|| panic!("{w}x{h}: no ▶"));
+                sent(&mut rx);
+                click(&mut app, play.x + 1, play.y);
+                assert_eq!(sent(&mut rx), vec![Command::TogglePlay], "{w}x{h}");
+            }
+            if h >= 2 {
+                assert!(app.hits.iter().any(|(_, h)| matches!(h, Hit::Bar(Bar::Seek, _))), "{w}x{h}: a progress bar to seek with");
+            }
+        }
+        // big enough again: the full layout comes back
+        assert!(render(&mut app, 80, 24).contains("SINGULARITY"));
     }
 
     #[test]

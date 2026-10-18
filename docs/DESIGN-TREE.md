@@ -537,3 +537,9 @@ flowchart LR
   95 % is kept as a 200-byte file under `~/.cache/singularity/waves/` (FNV hash of the URI; at most 2000, oldest go)
   and shows whole from the start next time. Seeking unchanged. Tests: filling, max per slot, keep/load round trip,
   partly heard not kept, pruning; the bar shows loud/quiet stretches and a plain line where unheard. pty `waveform`.
+- **#47 Mini-player ✅** (2026-10-18): `client/src/mini.rs`; below 50 columns or 14 rows the layout gives way to a
+  player (was "terminal too small" under 20×8). One row: |◀ ❚❚ ▶|, title — artist, time; two rows: title + ♥ over
+  controls, progress (seekable) and time; more: a centred block (title + ♥, artist, progress with both times,
+  controls). Keys work as usual; toasts show on the bottom row. Test at 20×1, 40×2, 60×5, 49×13, 120×13 (title, nothing
+  spilling, ▶ sends TogglePlay, a seek bar from two rows) and back to the full layout at 80×24. pty `mini`
+  (`PTY_COLS`/`PTY_ROWS`).

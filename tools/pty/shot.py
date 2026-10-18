@@ -538,6 +538,16 @@ def waveform(t, out):
     t.send(b"q", 0.5)
 
 
+def mini(t, out):
+    """#47: a tiny terminal is a mini-player; play, then show it."""
+    t.pump(1.0)
+    t.send(b" ", 2.5)
+    t.shot(f"{out}/0-mini.png")
+    print("\n".join(l.rstrip() for l in t.screen.display))
+    t.send(b" ", 0.3)
+    t.send(b"q", 0.5)
+
+
 def arrows(t, out):
     """The owner's report: cycling a narrow Pane onto a long title hid its ◂ ▸. Walk two Panes through every Widget."""
     t.pump(1.0)
@@ -707,7 +717,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "waveform"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "waveform", "mini"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "ambient", "popup") else "0"
@@ -764,6 +774,8 @@ def main():
             return queue_lift(t, out)
         if scenario == "waveform":
             return waveform(t, out)
+        if scenario == "mini":
+            return mini(t, out)
         if scenario == "wheel":
             return wheel(t, out)
         if scenario == "history":
