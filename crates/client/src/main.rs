@@ -4,6 +4,7 @@ mod app;
 mod artist;
 mod conn;
 mod covers;
+mod demos;
 mod design;
 mod gfx;
 mod home;

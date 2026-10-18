@@ -31,6 +31,10 @@ fn slot_info(slot: &str) -> (&'static str, &'static str) {
         "top" => ("top", ""),
         "today" => ("today", ""),
         "topweek" => ("top this week", ""),
+        "starfield" => ("starfield · demo", ""),
+        "river" => ("up next · demo", ""),
+        "marquee" => ("marquee · demo", ""),
+        "glow" => ("glow · demo", ""),
         _ => ("?", ""),
     }
 }
@@ -349,9 +353,13 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
                 app.hit(inner, Hit::Action(Action::Stats));
             }
             "topweek" => crate::stats::top_week(f.buffer_mut(), inner, app, th),
+            "starfield" => crate::demos::starfield(f.buffer_mut(), inner, app, th),
+            "river" => crate::demos::river(f.buffer_mut(), inner, app, th),
+            "marquee" => crate::demos::marquee(f.buffer_mut(), inner, app, th),
+            "glow" => crate::demos::glow(f.buffer_mut(), inner, app, th),
             _ => {}
         }
-        if matches!(slot.as_str(), "hole" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top" | "today" | "topweek") {
+        if matches!(slot.as_str(), "hole" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top" | "today" | "topweek" | "starfield" | "river" | "marquee" | "glow") {
             continue;
         }
         if slot == "library" {
@@ -1741,6 +1749,45 @@ mod tests {
         let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeek(0)).then_some(*r)).unwrap();
         click(&mut app, r.x + 4, r.y);
         assert_eq!(app.artist.as_ref().map(|a| a.uri.as_str()), Some("spotify:artist:0"));
+    }
+
+    // ── Visual demos (D36) ──
+
+    #[test]
+    fn every_demo_stays_inside_its_pane_at_any_size() {
+        use singularity_proto::{Item, QueueEntry};
+        let (mut app, _rx) = playing_app(200_000);
+        app.playback.item.as_mut().unwrap().name = "Łódź à la carte, vol. 2!".into();
+        app.playback.queue = (0..6).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:q{i}"), name: format!("Song {i}"), duration_ms: 150_000 + i * 30_000, ..Default::default() }, source: if i < 2 { "queue" } else { "context" }.into(), uid: String::new() }).collect();
+        app.covers.insert("https://i.scdn.co/image/c", image::RgbImage::from_pixel(64, 64, image::Rgb([200, 60, 40])));
+        app.playback.item.as_mut().unwrap().cover_url = Some("https://i.scdn.co/image/c".into());
+        let th = app.theme.clone();
+        type Draw = fn(&mut ratatui::buffer::Buffer, Rect, &mut App, &crate::theme::Theme);
+        let demos: [(&str, Draw); 4] = [("starfield", crate::demos::starfield), ("river", crate::demos::river), ("marquee", crate::demos::marquee), ("glow", crate::demos::glow)];
+        for (name, draw) in demos {
+            for (w, h) in [(12u16, 3u16), (20, 5), (40, 8), (80, 14), (160, 30)] {
+                let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, w + 2, h + 2));
+                for _ in 0..3 {
+                    draw(&mut buf, Rect::new(1, 1, w, h), &mut app, &th);
+                }
+                for y in 0..h + 2 {
+                    for x in 0..w + 2 {
+                        if x == 0 || y == 0 || x == w + 1 || y == h + 1 {
+                            assert_eq!(buf[(x, y)].symbol(), " ", "{name} {w}x{h}: drew outside at ({x},{y})");
+                        }
+                    }
+                }
+            }
+        }
+        // the marquee spells the title in big pixels (accents fall back), the river names what's next
+        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 160, 10));
+        crate::demos::marquee(&mut buf, Rect::new(0, 0, 160, 10), &mut app, &th);
+        let s: String = (0..10).map(|y| (0..160).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect();
+        assert!(s.contains('█') || s.contains('▀'), "{s}");
+        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 160, 5));
+        crate::demos::river(&mut buf, Rect::new(0, 0, 160, 5), &mut app, &th);
+        let s: String = (0..5).map(|y| (0..160).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect();
+        assert!(s.contains("Song 0") && s.contains("now") && s.contains("+5m"), "{s}");
     }
 
     // ── Lyrics (#14) ──

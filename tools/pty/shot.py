@@ -442,21 +442,50 @@ def stats(t, out):
     t.send(b"q", 0.5)
 
 
+def swap_in(t, out, title_now, want):
+    """Click the ▸ in the title row of the Pane titled `title_now` until `want` shows there."""
+    at = t.find(title_now)
+    if not at:
+        t.shot(f"{out}/missing.png")
+        raise SystemExit(f"no {title_now!r} on screen")
+    x, y = at
+    for _ in range(14):
+        row = t.screen.display[y]
+        if want in row[x - 2:]:
+            return
+        sx = row.find("▸", x)
+        mouse(t, 0, sx, y); mouse(t, 0, sx, y, release=True, wait=0.4)
+
+
+def demos(t, out):
+    """D36: each Visual demo swapped into a Pane while a song plays (pixel tier, so the glow has a cover)."""
+    t.pump(1.0)
+    x, y = t.find("♥ Liked Songs")
+    mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
+    for row in (3, 5, 7):
+        rx, ry = t.find(f"Fake Track 00{row}")
+        mouse(t, 2, rx + 2, ry, wait=0.3)
+        t.send(b"\x1b[B", 0.1); t.send(b"\r", 0.6)  # Play next
+    t.send(b" ", 1.0)
+    swap_in(t, out, "fft", "starfield")
+    t.pump(1.5)
+    t.shot(f"{out}/0-starfield.png")
+    swap_in(t, out, "tail -f lyrics.log", "marquee")
+    t.pump(1.0)
+    t.shot(f"{out}/1-marquee.png")
+    swap_in(t, out, "marquee", "glow")
+    t.pump(1.5)
+    t.shot(f"{out}/2-glow.png")
+    swap_in(t, out, "glow", "up next")
+    t.pump(1.0)
+    t.shot(f"{out}/3-up-next.png")
+    t.send(b" ", 0.3)
+    t.send(b"q", 0.5)
+
+
 def stats_widgets(t, out):
     """#37: "today" and "top this week" swapped into the side Slots; a 31 s play is logged and both update."""
-    def swap_to(title_now, want):
-        """Click the ▸ in the title row of the Pane titled `title_now` until `want` shows there."""
-        at = t.find(title_now)
-        if not at:
-            t.shot(f"{out}/missing.png")
-            raise SystemExit(f"no {title_now!r} on screen")
-        x, y = at
-        for _ in range(10):
-            row = t.screen.display[y]
-            if want in row[x - 2:]:
-                return
-            sx = row.find("▸", x)
-            mouse(t, 0, sx, y); mouse(t, 0, sx, y, release=True, wait=0.4)
+    swap_to = lambda now, want: swap_in(t, out, now, want)
     t.pump(1.0)
     swap_to("tail -f lyrics.log", "today")
     swap_to("today", "this week")  # the same Slot on to "top this week"…
@@ -579,10 +608,10 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "demos"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "demos") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
     if scenario == "listening":
         env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
@@ -620,6 +649,8 @@ def main():
             return stats(t, out)
         if scenario == "stats-widgets":
             return stats_widgets(t, out)
+        if scenario == "demos":
+            return demos(t, out)
         if scenario == "wheel":
             return wheel(t, out)
         if scenario == "history":

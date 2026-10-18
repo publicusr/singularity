@@ -59,7 +59,7 @@ impl Engine for FakeEngine {
         let (ev_tx, ev_rx) = mpsc::channel(64);
         tokio::spawn(async move {
             let mut tracks: Vec<Item> = (1..=3)
-                .map(|i| Item { uri: format!("spotify:track:fake{i}"), name: format!("Track {i}"), artists: vec!["Fake Artist".into()], duration_ms: 200_000, ..Default::default() })
+                .map(|i| Item { uri: format!("spotify:track:fake{i}"), name: format!("Track {i}"), artists: vec!["Fake Artist".into()], duration_ms: 200_000, cover_url: Some(fixture_cover(i)), ..Default::default() })
                 .collect();
             let mut idx = 0usize;
             let mut st = PlaybackState { volume: 50, ..Default::default() };
@@ -146,6 +146,13 @@ fn pick(tracks: &mut Vec<singularity_proto::Item>, uri: &str, index: Option<u32>
         return i;
     }
     let name = index.map(|i| format!("Fake Track {:03}", i + 1)).unwrap_or_else(|| uri.rsplit(':').next().unwrap_or(uri).to_string());
-    tracks.push(singularity_proto::Item { uri: uri.into(), name, artists: vec!["Fake Artist".into()], duration_ms: 200_000, ..Default::default() });
+    let cover_url = Some(fixture_cover(index.unwrap_or(tracks.len() as u32) as usize));
+    tracks.push(singularity_proto::Item { uri: uri.into(), name, artists: vec!["Fake Artist".into()], duration_ms: 200_000, cover_url, ..Default::default() });
     tracks.len() - 1
+}
+
+/// A cover for a fake track: the recorded Home feed's covers (the pty harness keeps them cached), so screenshots
+/// show real pictures in Now playing and the demos.
+fn fixture_cover(i: usize) -> String {
+    format!("https://i.scdn.co/image/fixture{:03}", i % 30)
 }

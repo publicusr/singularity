@@ -456,6 +456,8 @@ pub struct App {
     pub picker: Option<crate::looks::Picker>,
     /// state of the Widgets other designs bring (rain, scope, top)
     pub widgets: crate::widgets::State,
+    /// the Visual demos' own state (D36)
+    pub demos: crate::demos::State,
     /// the saved layout on screen (its file name), the ones there are, and the name being typed for a new one (#19)
     pub layout_name: Option<String>,
     pub saved_layouts: Vec<crate::layouts::Saved>,
@@ -549,6 +551,7 @@ impl App {
             theme_dir: None,
             picker: None,
             widgets: Default::default(),
+            demos: Default::default(),
             layout_name: None,
             saved_layouts: vec![],
             naming: None,
@@ -741,7 +744,7 @@ impl App {
     /// Spectrum frames flow only while a Widget that moves with the music is on screen (the Daemon's tap idles
     /// otherwise); called on connect and whenever the layout changes.
     pub fn want_spectrum(&mut self) {
-        const AUDIO: [&str; 8] = ["fft", "loudness", "levels", "rain", "scope", "nowplaying", "well", "hole"];
+        const AUDIO: [&str; 10] = ["fft", "loudness", "levels", "rain", "scope", "nowplaying", "well", "hole", "starfield", "glow"];
         let on = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| AUDIO.contains(&s.as_str()));
         if on != self.spectrum_on && matches!(self.link, Link::Connected { .. }) {
             self.spectrum_on = on;

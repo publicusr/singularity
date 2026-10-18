@@ -55,7 +55,7 @@ so it cannot be settled by talking)
 | D33 | Settings screen | D21 | settled | Built from config.toml (comments as descriptions), clickable, written through the comment-keeping editor; a read-only keymap tab; rebinding later. |
 | D34 | Polish | D13 | settled | Mouse back/forward buttons (own input layer); ♥ on every track row (batched CheckSaved). |
 | D35 | Podcasts scope | D14 | settled | Show pages + episodes, play/resume, played marks, saved shows in the sidebar, search. Audiobooks / video / downloads: feasibility looked up. |
-| D36 | More Visuals | D8 | prototype | Demos to react to: warp starfield, up-next river, big now-playing marquee, album-art glow. |
+| D36 | More Visuals | D8 | prototype | Demos built (2026-10-18, `client/src/demos.rs`), waiting on the owner's verdict: starfield (audio Slots), up next, marquee, glow (side Slots), each "· demo" in its title. Kept ones get tickets, the rest are deleted. |
 | D37 | Free tiling | D18 | settled | Build it (batch 7), remove it if the owner doesn't like it. |
 | D38 | macOS | D10, D25 | settled | Last; started when the owner has the Mac ready. |
 | D39 | Stats ranking | D31 | settled | By minutes (play counts alongside); calendar periods (week from Monday, month, year, all time). |
@@ -439,3 +439,14 @@ flowchart LR
   swap into every side Slot of every Design and render; Pane minimums 12×3 up to 60×12 draw nothing outside; the
   switch, a track's second click, an artist opening; the week asked for on swap and on refresh. pty `stats-widgets`:
   both swapped in with the Panes' ▸, a 31 s play is logged and both update.
+- **Visual demos built** (2026-10-18, D36): `client/src/demos.rs`, in the Slot cycles (`v` / ◂ ▸), titled "… · demo".
+  **starfield** (audio group): 3-D stars toward the viewer, speed eased toward 0.15 + energy + a beat kick (no
+  strobing), streaks back to the last position when a star moves more than a cell, round in pixels (cell aspect).
+  **up next** (side): the queue as a band, each song as long as it lasts over the next ≤ 30 min (queued / context /
+  autoplay coloured apart, neighbours shaded apart), names under, a "now · +5m · +10m" axis. **marquee** (side): the
+  title in a 3×5 pixel font in half-blocks (accents fall back to plain letters), centred or scrolling at 8 columns/s,
+  the artist under it. **glow** (side): the cover in the middle, its average colour (saturated ×1.6, tinted when the
+  Theme tints) bleeding out to black, breathing with the bass. Starfield and glow ask for spectrum frames. Also: fake
+  Engine tracks have fixture covers now (pty screenshots show real pictures); a Daemon without a log no longer toasts
+  on questions (only on export/delete). Tests: every demo stays inside its area from 12×3 to 160×30; the font's
+  glyphs; pty `demos` (pixel tier) swaps each in while a song plays.

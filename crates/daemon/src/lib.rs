@@ -266,7 +266,10 @@ async fn device_name(hub: &Hub) -> String {
 /// Answer a LocalStore command (`GetListening`, `GetStats`, `ExportLocalData`, `DeleteLocalData`).
 async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>) {
     let Some(store) = hub.store.clone() else {
-        let _ = out.send(DaemonMsg::Event(Event::Error { message: "the listening log is off in this Daemon".into() })).await;
+        // questions go unanswered (Widgets keep waiting quietly); asking to export or delete is told
+        if matches!(cmd, Command::ExportLocalData | Command::DeleteLocalData) {
+            let _ = out.send(DaemonMsg::Event(Event::Error { message: "the listening log is off in this Daemon".into() })).await;
+        }
         return;
     };
     let now = proto::now_ms();
