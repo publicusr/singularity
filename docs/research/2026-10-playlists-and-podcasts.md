@@ -30,3 +30,26 @@ images under 256 KB anyway (re-encode, square crop).
   15 h in the US/UK markets). Whether Soloist plays `spotify:chapter:` URIs is unverified.
 - Video podcasts: their audio is the episode; video in a terminal is out (spec: Canvas/video out of scope).
 - Downloads: impossible (DRM; DESIGN-TREE "Known impossibilities").
+
+## Re-verified 2026-10-18 (web-player.0079e2e5, desktop bundle + 158 chunks)
+
+All playlist routes above are still there. Details read from the bundle:
+
+- `addToPlaylist`, `removeFromPlaylist`, `moveItemsInPlaylist` are mutations sharing one persisted hash. Variables:
+  add `{playlistUri, playlistItemUris, newPosition, interactionId:null}`; move `{playlistUri, uids, newPosition}`;
+  remove `{playlistUri, uids}`. `newPosition = {moveType, fromUid}`, `moveType` one of `TOP_OF_PLAYLIST`,
+  `BOTTOM_OF_PLAYLIST`, `BEFORE_UID`, `AFTER_UID` (`fromUid` null for top/bottom).
+- `editablePlaylists` (query): `{offset, limit, textFilter, folderUri, uris:[the items to add], features}` →
+  `{items:[{item, pinned, curates}], totalCount}`.
+- Create: `POST /playlist` (spclient), body a *delta* (not list changes):
+  `{ops:[{kind:UPDATE_LIST_ATTRIBUTES, updateListAttributes:{newAttributes:{values:{name, formatAttributes:[],
+  pictureSize:[]}, noValue:[]}}}], info:{source:{client:WEBPLAYER}}}` → `{uri}`; then the rootlist `add`.
+- Rootlist changes `POST /user/{username}/rootlist/changes` with list changes `{deltas:[delta], wantResultingRevisions:
+  false, wantSyncResult:false, nonces:[]}`: add `ADD {addFirst | addBeforeItem…, items:[{uri, attributes:{timestamp}}]}`;
+  delete `REM {itemsAsKey:true, items:[{uri}]}` (no base revision needed for either).
+- Details: `POST /playlist/{id}/changes`, `UPDATE_LIST_ATTRIBUTES {newAttributes:{values:{name?, description?,
+  picture?}, noValue:[LIST_DESCRIPTION=2 | LIST_PICTURE=3]}}`. Op kinds: ADD 2, REM 3, MOV 4, UPDATE_LIST_ATTRIBUTES 6.
+- Cover: `POST https://image-upload.spotify.com/v4/playlist` (no global headers, `Content-Type: image/jpeg`) →
+  `{uploadToken}`; `POST /playlist/{id}/register-image {uploadToken}` → `{picture}` (bytes); then details above.
+- Our librespot fork (`spotatui-librespot-core` 0.8.6) already has `post_playlist_changes` and
+  `post_rootlist_changes` (protobuf `ListChanges`, sent once, no retry).
