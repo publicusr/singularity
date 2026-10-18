@@ -3,7 +3,7 @@
 usage: venv/bin/python shot.py <scenario> <outdir>
 Starts its own singularityd (--fake-engine --no-catalogue) on a short test socket and kills only that.
 """
-import base64, fcntl, os, pty, re, select, struct, subprocess, sys, termios, time, zlib
+import base64, fcntl, os, pty, re, select, shutil, struct, subprocess, sys, termios, time, zlib
 import pyte
 from PIL import Image, ImageDraw, ImageFont
 
@@ -237,6 +237,48 @@ def like(t, out):
     t.send(b"q", 0.5)
 
 
+def private_bus(out):
+    """A private D-Bus without service activation, so playerctl and the Daemon never touch the desktop's bus."""
+    conf = f"{out}/bus.conf"
+    # socket paths must be short: under $XDG_RUNTIME_DIR, removed with the bus
+    sockdir = f"{os.environ['XDG_RUNTIME_DIR']}/sgl-bus-{os.getpid()}"
+    os.makedirs(sockdir, mode=0o700, exist_ok=True)
+    with open(conf, "w") as f:
+        f.write(f"""<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig><type>session</type><listen>unix:dir={sockdir}</listen><auth>EXTERNAL</auth>
+<policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy></busconfig>""")
+    bus = subprocess.Popen(["dbus-daemon", f"--config-file={conf}", "--nofork", "--print-address=1"], stdout=subprocess.PIPE, text=True)
+    return bus, bus.stdout.readline().strip()
+
+
+def mpris(t, out, env):
+    """#21: playerctl drives the Daemon; the Client shows each change."""
+    def ctl(*args):
+        r = subprocess.run(["playerctl", "-p", "singularity", *args], env=env, capture_output=True, text=True, timeout=5)
+        line = f"$ playerctl {' '.join(args)}\n{r.stdout}{r.stderr}"
+        print(line.rstrip())
+        with open(f"{out}/playerctl.log", "a") as f:
+            f.write(line)
+        return r.stdout.strip()
+    t.pump(1.0)
+    t.send(b" ", 1.0)
+    ctl("status")
+    ctl("metadata")
+    ctl("play-pause"); t.pump(0.6)
+    t.shot(f"{out}/0-paused-by-playerctl.png")
+    ctl("status")
+    ctl("position", "60"); t.pump(0.6)
+    ctl("volume", "0.3"); t.pump(0.6)
+    ctl("loop", "Track"); t.pump(0.6)
+    t.shot(f"{out}/1-seek-volume-loop.png")
+    ctl("next"); t.pump(0.6)
+    ctl("play-pause"); t.pump(0.6)
+    ctl("metadata", "--format", "{{status}}: {{title}} {{duration(position)}}/{{duration(mpris:length)}} vol {{volume}} loop {{loop}}")
+    t.shot(f"{out}/2-next-playing.png")
+    t.send(b" ", 0.4)
+    t.send(b"q", 0.5)
+
+
 def main():
     scenario, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
@@ -254,6 +296,10 @@ def main():
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario == "home-pixels" else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
+    bus = None
+    if scenario == "mpris":
+        bus, addr = private_bus(out)
+        env["SINGULARITY_DBUS"] = env["DBUS_SESSION_BUS_ADDRESS"] = addr
     d = subprocess.Popen([f"{BIN}/singularityd", "--fake-engine", *cat], env=env, stdout=subprocess.DEVNULL, stderr=open(f"{out}/daemon.log", "w"))
     try:
         time.sleep(0.4)
@@ -265,6 +311,8 @@ def main():
             return library(t, out)
         if scenario == "like":
             return like(t, out)
+        if scenario == "mpris":
+            return mpris(t, out, env)
         if scenario == "artist":
             t.pump(1.0)
             x, y = t.find("♥ Liked Songs")
@@ -373,6 +421,10 @@ def main():
     finally:
         d.terminate()
         d.wait(3)
+        if bus:
+            bus.terminate()
+            bus.wait(3)
+            shutil.rmtree(f"{os.environ['XDG_RUNTIME_DIR']}/sgl-bus-{os.getpid()}", ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -8,12 +8,12 @@ in `docs/DESIGN-TREE.md` (round log at the bottom); verified facts about Spotify
 
 - **Phase 0 (planning) ✅, Phase 1 (spikes) ✅.** ADRs 0001–0004 (0004 updated: both tracers kept, measurements).
 - **Phase 2/3 (v1 build) 🔄.** Spec issue **#1**, tickets on GitHub (`publicusr/singularity`, label `ready-for-agent`).
-  **Closed: #2, #3, #4, #5, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16, #22, #24.**
-  **Open: #6, #17, #18, #19, #20, #21, #23.**
+  **Closed: #2, #3, #4, #5, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16, #21, #22, #24.**
+  **Open: #6, #17, #18, #19, #20, #23.**
 - The owner tested after #8/#16 and reported two bugs, both fixed (commit `f79a3e2`): the black hole
   flickered (now double-buffered kitty frames at a steady 30 fps, redraws capped at 60/s) and clicking an album played it
   (Cards now open their track list, ▶ Play there). Everything else since then **hasn't been tested by the owner yet**.
-- Tests: **118 passing** (`cargo test`), + ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
+- Tests: **124 passing** (`cargo test`), + ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
   live answers). Clippy: only minor pre-existing style warnings.
 
 ## What exists in `crates/`
@@ -49,21 +49,29 @@ playing track (on change), every opened list/artist page, and a menu's target wh
 saved set (its fake tracks start liked; "fail" URIs fail). pty scenario: `like`. Not done: hearts on every track-list
 row (would need `CheckSaved` for whole playlists; only Liked Songs is known for free).
 
+## #21 MPRIS (done 2026-10-18)
+
+`daemon/src/mpris.rs`; see the DESIGN-TREE round log. Tests: `daemon/tests/mpris.rs` starts its own `dbus-daemon`
+(no service activation) and plays playerctl's part; pty scenario `mpris` runs real `playerctl` on a private bus.
+**Never test MPRIS on the owner's session bus**: a fake Daemon would show up in their media widget. Notifications
+are opt-in (`SINGULARITY_NOTIFY=1` in the environment of whatever starts the Daemon) until #20 gives them a setting.
+Not verified by me: KDE's media widget itself (needs the real bus); the owner checks it after rebuilding.
+
 ## Next (suggested order)
 
-1. **#21** MPRIS + notifications (media keys, KDE widget, playerctl): `zbus` in the Daemon.
-2. **#6** Soloist auto-update before the 90-day expiry (lifetime is already parsed; needs a fake-CDN seam test).
-3. **#20** config files (TOML, schema version, migrations, hot reload), then **#18** designs/palettes/theme files and
+1. **#6** Soloist auto-update before the 90-day expiry (lifetime is already parsed; needs a fake-CDN seam test).
+2. **#20** config files (TOML, schema version, migrations, hot reload), then **#18** designs/palettes/theme files and
    **#19** slots/drag/saved layouts (they build on #20). #20 also gets `gpu = "low-power" | "high-performance"`
    (owner, 2026-10-18; commented on the issue).
-4. **#17** idle takeover (reuse `visual::BlackHole`, the prototype's `lens_cells`), **#23** listening log + backups.
-5. Gap left on #11 (commented on the issue): mouse back/forward buttons. crossterm drops SGR buttons 8/9; needs our
+3. **#17** idle takeover (reuse `visual::BlackHole`, the prototype's `lens_cells`), **#23** listening log + backups.
+4. Gap left on #11 (commented on the issue): mouse back/forward buttons. crossterm drops SGR buttons 8/9; needs our
    own small input layer (we already do SGR-Pixels in `client/src/term.rs`).
 
 ## Waiting on the owner
 
 - To test everything since the flicker fix: setup wizard/health (`Ctrl+K → Health check`), queue, lyrics, artist and
-  album pages + history, search (`Ctrl+L`), devices (`d`), like/follow (♡ in the player bar, `l`, menus, Follow).
+  album pages + history, search (`Ctrl+L`), devices (`d`), like/follow (♡ in the player bar, `l`, menus, Follow), media keys / KDE media widget / playerctl
+  (after `cargo build --release`, the Client replaces the running Daemon).
 - Answered 2026-10-18: keep the 10 fps slowdown when the terminal is unfocused; keep the black hole on the iGPU by
   default and add a `gpu = "low-power" | "high-performance"` setting in #20 (commented on the issue).
 - D17 answered "phone only for now" (Soloist has a remote-quality feature flag, no setter found).
@@ -91,7 +99,7 @@ row (would need `CheckSaved` for whole playlists; only Liked Songs is known for 
 > ticket from the GitHub issues (`gh issue list -R publicusr/singularity --label ready-for-agent --state open`), following
 > Matt Pocock's flow (spec → tickets → implement), with the project's vocabulary.
 >
-> Work the frontier in this order: **#21** MPRIS + notifications, **#6** Soloist auto-update, **#20**
+> Work the frontier in this order: **#6** Soloist auto-update, **#20**
 > config files, **#18** designs/themes, **#19** layouts, **#17** idle takeover, **#23** listening log + backups. For each
 > ticket: implement with tests at the seams named in the spec, run `cargo test`, verify the real binaries with the pty
 > harness in `tools/pty/` (screenshots), commit with `Closes #N` plus the co-author line, push, and keep `docs/` current

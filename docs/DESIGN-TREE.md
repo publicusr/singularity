@@ -180,5 +180,15 @@ flowchart LR
   artist pages. Removing a saved playlist takes a second click (it may be your own). Liked Songs is patched in place
   (a like lands on top, an unlike leaves, a rollback restores the row where it was; counts follow) and seeds what's
   liked. The playing track and every opened page re-ask, so changes from other devices show.
+- **#21 MPRIS + notifications** (2026-10-18): `daemon/src/mpris.rs` (zbus 5.19; 6.0 was two days old) owns
+  `org.mpris.MediaPlayer2.singularity` and follows `Hub::playback`, so it also shows another device's playback; its
+  methods go through the same transport routing as Clients (`lib.rs: transport`). Player: play/pause/stop (= pause),
+  next/previous, Seek (past the end = next) and SetPosition (ignored for a stale track id), OpenUri (`spotify:` URIs and
+  open.spotify.com links), Volume, Shuffle, LoopStatus; Metadata with track id, length, title, artists, album,
+  `mpris:artUrl` (the cover URL) and `xesam:url`; Seeked on jumps (> 1.5 s off the extrapolated position).
+  Notifications (`org.freedesktop.Notifications`, each replacing the last, transient, cover as a cached file) are
+  opt-in with `SINGULARITY_NOTIFY=1` until config files (#20). `SINGULARITY_DBUS=<address>|off` picks the bus; a fake
+  Engine stays off the session bus unless asked. Soloist has no D-Bus connection, so there's no second player. Verified
+  with real `playerctl` on a private bus (pty scenario `mpris`).
 - **Owner answers** (2026-10-18): keep the 10 fps slowdown when the terminal is unfocused; keep the black hole on the
   low-power adapter (iGPU) and add a `gpu = "low-power" | "high-performance"` setting in #20.

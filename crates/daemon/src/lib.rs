@@ -7,6 +7,7 @@ pub mod engine;
 pub mod health;
 pub mod library;
 pub mod lyrics;
+pub mod mpris;
 pub mod queries;
 pub mod secrets;
 pub mod soloist;
@@ -78,6 +79,11 @@ pub fn bind(path: &Path) -> std::io::Result<UnixListener> {
 
 /// Run the Daemon on `listener` with `engine` until the process ends.
 pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: Option<CatalogueHandle>, tap: Option<tap::TapSource>) -> anyhow::Result<Served> {
+    serve_with(listener, engine, catalogue, tap, None).await
+}
+
+/// `serve`, plus MPRIS (and notifications) on a D-Bus when `mpris` is given.
+pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalogue: Option<CatalogueHandle>, tap: Option<tap::TapSource>, mpris: Option<mpris::Options>) -> anyhow::Result<Served> {
     let (events, _) = broadcast::channel(256);
     let (commands, command_rx) = mpsc::channel(64);
     let (cat_tx, cat_rx) = match catalogue {
@@ -111,6 +117,9 @@ pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: O
     tokio::spawn(run_engine(engine, hub.clone(), command_rx));
     if let Some(rx) = cat_rx {
         tokio::spawn(run_catalogue(rx, hub.clone()));
+    }
+    if let Some(opts) = mpris {
+        tokio::spawn(mpris::run(hub.clone(), opts));
     }
     loop {
         let stream = tokio::select! {
@@ -424,23 +433,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                         let _ = out_tx.send(DaemonMsg::Event(Event::Error { message: "the Catalogue is disabled in this Daemon".into() })).await;
                     }
                 },
-                ClientMsg::Command(cmd) => {
-                    // while another device plays, the transport goes to it over Connect
-                    let remote = hub.remote.lock().await.clone();
-                    match (remote, &hub.catalogue) {
-                        (Some(r), Some(c)) if is_transport(&cmd) => {
-                            let cmd = match cmd {
-                                Command::TogglePlay if r.status == proto::PlayStatus::Playing => Command::Pause,
-                                Command::TogglePlay => Command::Play { uri: None },
-                                other => other,
-                            };
-                            let _ = c.send(CatCmd::Remote(cmd)).await;
-                        }
-                        _ => {
-                            let _ = hub.commands.send(cmd).await;
-                        }
-                    }
-                }
+                ClientMsg::Command(cmd) => transport(&hub, cmd).await,
                 ClientMsg::Hello { .. } | ClientMsg::Unknown => {}
             }
         }
@@ -454,6 +447,24 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     forwarder.abort();
     writer.abort();
     result
+}
+
+/// A command for the player: to the Engine, or over Connect while another device plays.
+pub(crate) async fn transport(hub: &Hub, cmd: Command) {
+    let remote = hub.remote.lock().await.clone();
+    match (remote, &hub.catalogue) {
+        (Some(r), Some(c)) if is_transport(&cmd) => {
+            let cmd = match cmd {
+                Command::TogglePlay if r.status == proto::PlayStatus::Playing => Command::Pause,
+                Command::TogglePlay => Command::Play { uri: None },
+                other => other,
+            };
+            let _ = c.send(CatCmd::Remote(cmd)).await;
+        }
+        _ => {
+            let _ = hub.commands.send(cmd).await;
+        }
+    }
 }
 
 /// Commands that drive whichever device is playing.

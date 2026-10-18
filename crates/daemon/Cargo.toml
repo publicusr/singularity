@@ -25,6 +25,8 @@ protobuf = "3.7"
 rustfft = "6"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
 regex = "1"
+# MPRIS and desktop notifications (5.x: 6.0 is days old)
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 tempfile = "3"

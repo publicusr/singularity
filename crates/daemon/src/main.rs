@@ -37,9 +37,20 @@ async fn main() -> anyhow::Result<()> {
     };
     // the AudioTap listens to Soloist's own stream; the fake Engine "plays" a synthetic groove
     let tap = if args.iter().any(|a| a == "--fake-engine") { singularityd::tap::TapSource::Synthetic } else { singularityd::tap::TapSource::PipeWire };
+    // MPRIS on the session bus (SINGULARITY_DBUS=<address> picks another bus, =off none). A fake Engine stays off the
+    // session bus unless asked, so test Daemons never show up in the desktop's media controls.
+    let fake = args.iter().any(|a| a == "--fake-engine");
+    let mpris = match std::env::var("SINGULARITY_DBUS").ok().filter(|v| !v.is_empty()) {
+        Some(v) if v == "off" => None,
+        Some(address) => Some(singularityd::mpris::Options { address: Some(address), notify: false }),
+        None if fake => None,
+        None => Some(singularityd::mpris::Options::default()),
+    }
+    // desktop notifications on track change: opt-in until config files land (#20)
+    .map(|o| singularityd::mpris::Options { notify: std::env::var("SINGULARITY_NOTIFY").is_ok_and(|v| v == "1"), ..o });
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = tokio::select! {
-        r = singularityd::serve(listener, engine, catalogue, Some(tap)) => r.map(Some),
+        r = singularityd::serve_with(listener, engine, catalogue, Some(tap), mpris) => r.map(Some),
         _ = tokio::signal::ctrl_c() => Ok(None),
         _ = term.recv() => Ok(None),
     };
