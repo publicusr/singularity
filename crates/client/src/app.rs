@@ -717,7 +717,23 @@ impl App {
     /// The pixel tier's cell size, if `r` can be drawn with it this frame.
     pub fn pixel_tier_for(&self, r: Rect) -> Option<(f64, f64)> {
         let px = self.cell_px?;
-        (self.kitty.is_some() && !self.overlays.iter().any(|o| o.intersects(r))).then_some(px)
+        // under cell backgrounds (kitty), a popup simply covers an image; elsewhere the image steps down to cells
+        let k = self.kitty.as_ref()?;
+        (k.below_backgrounds || !self.overlays.iter().any(|o| o.intersects(r))).then_some(px)
+    }
+
+    /// Clear the cells an image is placed under: blank, and with the terminal's default background when images sit
+    /// under backgrounds (else the cells would hide it).
+    pub fn under_image(&self, buf: &mut ratatui::buffer::Buffer, r: Rect, th: &crate::theme::Theme) {
+        let below = self.kitty.as_ref().is_some_and(|k| k.below_backgrounds);
+        let st = if below { th.s(th.fg).bg(ratatui::style::Color::Reset) } else { th.base() };
+        for y in r.top()..r.bottom() {
+            for x in r.left()..r.right() {
+                if let Some(c) = buf.cell_mut((x, y)) {
+                    c.set_char(' ').set_style(st);
+                }
+            }
+        }
     }
 
     /// After (re)connecting: ask for spectrum frames if an audio Widget is on screen.
@@ -2159,6 +2175,29 @@ impl App {
                         let step = if coarse { v.visible.max(1) as i64 } else { 1 };
                         v.sel = (v.sel as i64 - sign * step).clamp(0, len.saturating_sub(1) as i64) as usize;
                         v.reveal();
+                    }
+                    return;
+                }
+                // artist and search pages: songs on top, Shelves below. Over a song row (or its name links) the wheel
+                // moves the highlight; anywhere else on the page it scrolls the Shelves (#38)
+                if pane.as_deref() == Some("home") && (self.artist.is_some() || self.search.is_some()) && self.menu.is_none() {
+                    self.focus = "home".into();
+                    let song_row = |h: &Hit| matches!(h, Hit::TopTrack(_) | Hit::SearchTrack(_));
+                    let on_song = self.hits.iter().any(|(r, h)| song_row(h) && r.y == m.row && m.column >= r.x && m.column < r.right());
+                    if on_song {
+                        let d = -sign * if coarse { 5 } else { 1 };
+                        if let Some(a) = self.artist.as_mut() {
+                            let n = a.page.as_ref().map(|p| p.top_tracks.len()).unwrap_or(0);
+                            a.top_sel = (a.top_sel as i64 + d).clamp(0, n.saturating_sub(1) as i64) as usize;
+                        } else if let Some(s) = self.search.as_mut() {
+                            let n = s.results.as_ref().map(|r| r.tracks.len()).unwrap_or(0);
+                            s.track_sel = Some((s.track_sel.unwrap_or(0) as i64 + d).clamp(0, n.saturating_sub(1) as i64) as usize);
+                        }
+                    } else {
+                        match self.home_row_at(m.column, m.row) {
+                            Some(row) if coarse => self.feed_view().scroll_shelf(row, -sign as i32),
+                            _ => self.feed_view().scroll_lines(-sign as i32 * 2),
+                        }
                     }
                     return;
                 }

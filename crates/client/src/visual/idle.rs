@@ -77,10 +77,12 @@ pub fn draw(buf: &mut Buffer, body: Rect, app: &mut App, th: &Theme) {
     if let Some((cw, ch)) = app.pixel_tier_for(r) {
         let (w, h) = app.hole.render_size((r.width as f64 * cw) as usize, (r.height as f64 * ch) as usize);
         let (px, fresh) = app.hole.free_frame(w, h, rh, center);
-        if let Some(k) = app.kitty.as_mut()
-            && (fresh || !k.keep(FREE_ID, r))
-        {
-            k.frame(FREE_ID, r, w as u32, h as u32, px);
+        if let Some(k) = app.kitty.as_mut() {
+            // it drifts under the whole UI, which has backgrounds everywhere: it stays over them, under the text
+            k.keep_over_backgrounds(FREE_ID);
+            if fresh || !k.keep(FREE_ID, r) {
+                k.frame(FREE_ID, r, w as u32, h as u32, px);
+            }
         }
     } else {
         // half-blocks where the disk is lit; elsewhere the lensed UI stays readable

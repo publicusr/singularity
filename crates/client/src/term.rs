@@ -22,6 +22,14 @@ pub fn kitty_graphics_supported() -> bool {
     }
 }
 
+/// Images can sit under cell backgrounds (kitty itself; `SINGULARITY_BELOW_BG=1|0` decides for tests).
+pub fn below_backgrounds() -> bool {
+    match std::env::var("SINGULARITY_BELOW_BG") {
+        Ok(v) => v == "1",
+        Err(_) => std::env::var("KITTY_WINDOW_ID").is_ok() || std::env::var("TERM").is_ok_and(|t| t == "xterm-kitty"),
+    }
+}
+
 /// Pixels can go through shared memory: kitty itself, on this machine.
 pub fn kitty_shm() -> bool {
     std::env::var("KITTY_WINDOW_ID").is_ok() && std::env::var("SSH_CONNECTION").is_err() && std::env::var("SINGULARITY_NO_SHM").is_err()

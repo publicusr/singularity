@@ -38,8 +38,9 @@ pub enum Node {
 pub const MIN_W: u16 = 12;
 pub const MIN_H: u16 = 3;
 
-/// The gravity well's widest shape, width over height in pixels (16:10); a little wider is let be.
-pub const WELL_ASPECT: f64 = 1.6;
+/// The gravity well's widest shape, width over height in pixels (4:3, owner round 2; was 16:10); a little wider is let
+/// be. Dragging the divider can still make it narrower.
+pub const WELL_ASPECT: f64 = 4.0 / 3.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Divider {
@@ -161,7 +162,7 @@ impl Node {
         let Some(well) = out.slots.iter().find(|(s, _)| s == "well").map(|(_, r)| *r) else { return out };
         // the inner picture, inside the frame
         let want = ((well.height.saturating_sub(2)) as f64 * cell_aspect * WELL_ASPECT).round() as u16 + 2;
-        if well.width <= want + want / 10 {
+        if well.width <= want + want / 20 {
             return out;
         }
         let Some(path) = self.path_of("well") else { return out };
@@ -329,7 +330,7 @@ mod tests {
             let get = |c: &Computed, s: &str| c.slots.iter().find(|(n, _)| n == s).unwrap().1;
             let well = get(&shaped, "well");
             let shape = (well.width - 2) as f64 / ((well.height - 2) as f64 * aspect);
-            assert!(shape <= WELL_ASPECT * 1.1 + 0.05, "{w}x{h}: {well:?} is {shape:.2}");
+            assert!(shape <= WELL_ASPECT * 1.05 + 0.05, "{w}x{h}: {well:?} is {shape:.2}");
             let freed = get(&plain, "well").width - well.width;
             assert_eq!(get(&shaped, "home").width, get(&plain, "home").width + freed, "{w}x{h}: the middle takes it");
             assert_eq!(get(&shaped, "library").width, get(&plain, "library").width);

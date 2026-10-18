@@ -779,7 +779,7 @@ mod tests {
     fn clicking_a_pane_focuses_it() {
         let mut app = App::new(None);
         render(&mut app, 160, 48);
-        let well = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).slots.into_iter().find(|(s, _)| s == "well").unwrap().1;
+        let well = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "well").unwrap().1;
         click(&mut app, well.x + 5, well.y + 3);
         assert_eq!(app.focus, "well");
     }
@@ -948,7 +948,7 @@ mod tests {
 
     /// Wheel Home down until the Shelf's first Card is on screen.
     fn scroll_to(app: &mut App, shelf: usize) -> Rect {
-        let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
         for _ in 0..400 {
             render(app, 200, 64);
             if let Some(r) = try_card_rect(app, shelf, 0).filter(|r| r.height > 2) {
@@ -969,7 +969,7 @@ mod tests {
         assert!(s.contains('▀'), "covers drawn as half-blocks in the cell tier");
         assert!(s.contains('›'), "long Shelves can scroll sideways");
         // never a Card cut in half at the bottom
-        let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
         assert!(app.hits.iter().all(|(r, h)| !matches!(h, Hit::Card(_)) || r.bottom() < home.bottom()));
     }
 
@@ -1112,6 +1112,39 @@ mod tests {
     }
 
     #[test]
+    fn in_kitty_popups_cover_images_instead_of_turning_them_into_blocks() {
+        let (mut app, _rx) = home_app();
+        let mut k = crate::gfx::Kitty::new(false);
+        k.below_backgrounds = true;
+        app.kitty = Some(k);
+        app.cell_px = Some((10.0, 20.0));
+        let flush = |app: &mut App| {
+            let mut out = vec![];
+            app.kitty.as_mut().unwrap().flush(&mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        render(&mut app, 200, 64);
+        let first = flush(&mut app);
+        assert!(first.contains("a=p,") && first.contains("z=-1073741825"), "placed under cell backgrounds");
+        assert!(!first.contains(",z=-1,"));
+        // the cells under a cover let it show: the terminal's default background
+        let card = card_rect(&app, 1, 0);
+        let mut t = Terminal::new(TestBackend::new(200, 64)).unwrap();
+        t.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(t.backend().buffer()[(card.x + 1, card.y + 1)].bg, ratatui::style::Color::Reset);
+        // the palette opens over Home: no half-blocks, nothing removed or re-sent; the palette's cells hide them
+        app.run(Action::Palette);
+        let s = render(&mut app, 200, 64);
+        assert!(!s.contains('▀'), "no step-down to half-blocks");
+        let out = flush(&mut app);
+        assert!(!out.contains("a=d,d=i") && !out.contains("a=t,"), "{out}");
+        let mut t = Terminal::new(TestBackend::new(200, 64)).unwrap();
+        t.draw(|f| draw(f, &mut app)).unwrap();
+        let pal = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::PaletteItem(0)).then_some(*r)).unwrap();
+        assert_ne!(t.backend().buffer()[(pal.x + 2, pal.y)].bg, ratatui::style::Color::Reset, "the palette has a background of its own");
+    }
+
+    #[test]
     fn part_visible_rows_are_drawn_cropped_in_both_tiers() {
         // cell tier: scrolled 3 lines into the first Shelf, its covers' lower rows still show
         let (mut app, _rx) = home_app();
@@ -1121,7 +1154,7 @@ mod tests {
         app.home_view.offset = shelf_y + 3;
         render(&mut app, 200, 64);
         let r = card_rect(&app, 1, 0);
-        let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
         assert_eq!(r.y, home.y + 1, "the Card is clipped at the Pane's top, not dropped");
         // pixel tier: the same cover placed with a crop of its lower part
         app.kitty = Some(crate::gfx::Kitty::new(false));
@@ -1248,7 +1281,7 @@ mod tests {
             app.meters.push(singularity_proto::SpectrumFrame { bands, level: 180, vu: [220, 200], beat: i % 15 == 0, out_level: 180, out_vu: [220, 200], out_bands: [200; 3] });
         }
         let s = render(&mut app, 160, 48);
-        let slots = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).slots;
+        let slots = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).slots;
         let pane = |name: &str| slots.iter().find(|(s, _)| s == name).unwrap().1;
         let region = |r: Rect| s.lines().skip(r.y as usize + 1).take(r.height as usize - 2).map(|l| l.chars().skip(r.x as usize + 1).take(r.width as usize - 2).collect::<String>()).collect::<Vec<_>>().join("\n");
         assert!(region(pane("fft")).contains('█'), "{}", region(pane("fft")));
@@ -1270,7 +1303,7 @@ mod tests {
         assert!(s.contains("gravity well") && s.contains("◂ Inferno ▸"));
         app.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert!(render(&mut app, 160, 48).contains("◂ Gargantua ▸"));
-        let well = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).slots.into_iter().find(|(s, _)| s == "well").unwrap().1;
+        let well = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "well").unwrap().1;
         click(&mut app, well.x + well.width / 2, well.y + well.height / 2);
         assert!(render(&mut app, 160, 48).contains("◂ M87* ▸") && app.focus == "well");
         // pixel tier: one animated frame per draw, covering the well's inside
@@ -1322,7 +1355,7 @@ mod tests {
         assert_eq!(v.sel, 2 + 3 * vis);
         assert!(v.sel >= v.top && v.sel < v.top + v.visible, "the highlight stays in view");
         // the library sidebar
-        let lib = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).slots.into_iter().find(|(s, _)| s == "library").unwrap().1;
+        let lib = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "library").unwrap().1;
         for _ in 0..50 {
             mouse(&mut app, MouseEventKind::ScrollDown, lib.x as f64 + 3.5, lib.y + 3, false);
         }
@@ -1344,7 +1377,7 @@ mod tests {
         assert!(s.contains("listening · 26 weeks") && s.contains("1.8 h this year · top: Nova Drift · streak 2 days"), "{s}");
         // this week is the last column, Monday on top, two days a cell (Cockpit's Pane is short): Wednesday over
         // Thursday (today, the brightest) in the second row; a week ago too; Friday on hasn't come
-        let r = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).slots.into_iter().find(|(s, _)| s == "listening").unwrap().1;
+        let r = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "listening").unwrap().1;
         let (x0, y0) = (r.x + 2, r.y + 1);
         let last = ((r.width - 2) / 2).min(26) - 1;
         let buf = {
@@ -1778,6 +1811,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_wheel_scrolls_an_artist_page_wherever_the_pointer_is() {
+        let (mut app, _rx) = playing_app(200_000);
+        let mut page = fake_artist();
+        let more = page.shelves[0].clone();
+        page.shelves.extend((0..6).map(|i| singularity_proto::Shelf { title: format!("Shelf {i}"), ..more.clone() }));
+        app.open("spotify:artist:nova", "Nova Drift", "", "artist");
+        app.artist_page(page);
+        render(&mut app, 200, 48);
+        let wheel = |app: &mut App, x: u16, y: u16| mouse(app, MouseEventKind::ScrollDown, x as f64 + 0.5, y, false);
+        // over a popular track's album name (a link of its own): the highlight moves
+        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopTrack(2)).then_some(*r)).unwrap();
+        let link = app.hits.iter().find_map(|(r, h)| (matches!(h, Hit::Link(_)) && r.y == row.y).then_some(*r)).expect("a name link on the row");
+        wheel(&mut app, link.x + 1, link.y);
+        assert_eq!(app.artist.as_ref().unwrap().top_sel, 1);
+        // below the songs, over the Shelves (Cards or not): the page scrolls by lines
+        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 48 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        wheel(&mut app, home.right() - 3, home.bottom() - 3);
+        render(&mut app, 200, 48);
+        assert!(app.artist.as_ref().unwrap().shelves.offset > 0, "the Shelves scrolled");
     }
 
     // ── Visual demos (D36) ──

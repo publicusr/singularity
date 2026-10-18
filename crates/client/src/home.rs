@@ -373,9 +373,7 @@ pub fn cover_at(buf: &mut Buffer, x: u16, y: i32, w: u16, h: u16, pane: Rect, ur
                 k.place_cropped(key, r, crop, || crate::covers::fit_tinted(&src, pw, ph, tint.as_ref()));
             }
             // blank cells under the image (it sits below text, so nothing may be drawn here)
-            for yy in r.top()..r.bottom() {
-                text(buf, r.x, yy, r.width, &" ".repeat(r.width as usize), th.base());
-            }
+            app.under_image(buf, r, th);
             return;
         }
     } else if let Some(img) = app.covers.scaled(url, w as u32, h as u32 * 2, tint.as_ref()) {

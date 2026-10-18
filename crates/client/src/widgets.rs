@@ -160,6 +160,8 @@ struct Rain {
     width: u16,
     last: Option<Instant>,
     t: f32,
+    /// how much the music speeds it up now, eased (no jumps on beats)
+    boost: f32,
 }
 
 const GLYPHS: &str = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789Z:.=*+<>";
@@ -173,14 +175,17 @@ pub fn rain(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     s.t += dt;
     if s.width != r.width {
         s.width = r.width;
-        s.cols = (0..r.width as i32).map(|i| (-(hash(i, 1) * r.height as f32 * 2.0), 6.0 + hash(i, 2) * 14.0, 4 + (hash(i, 3) * 18.0) as u16)).collect();
+        s.cols = (0..r.width as i32).map(|i| (-(hash(i, 1) * r.height as f32 * 2.0), 3.0 + hash(i, 2) * 6.0, 4 + (hash(i, 3) * 18.0) as u16)).collect();
     }
-    let boost = 1.0 + energy * 2.5 + if beat { 1.5 } else { 0.0 };
+    // calm: loud passages ease it up to about twice as fast, a beat nudges it; it settles back over a second or two
+    let target = 1.0 + energy * 1.0 + if beat { 0.3 } else { 0.0 };
+    s.boost = if s.boost == 0.0 { 1.0 } else { s.boost + (target - s.boost) * (dt * 1.5).min(1.0) };
+    let boost = s.boost;
     for (i, c) in s.cols.iter_mut().enumerate() {
         c.0 += c.1 * dt * boost;
         if c.0 - c.2 as f32 > r.height as f32 {
             let k = (i as i32).wrapping_add((c.0 * 977.0) as i32);
-            *c = (-(hash(k, 4) * 10.0), 6.0 + hash(k, 5) * 14.0, 4 + (hash(k, 6) * 18.0) as u16);
+            *c = (-(hash(k, 4) * 10.0), 3.0 + hash(k, 5) * 6.0, 4 + (hash(k, 6) * 18.0) as u16);
         }
     }
     let glyphs: Vec<char> = GLYPHS.chars().collect();
@@ -321,6 +326,23 @@ pub fn top(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn rain_eases_with_the_music_instead_of_jumping() {
+        let mut app = crate::app::App::new(None);
+        let th = app.theme.clone();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
+        let loud = singularity_proto::SpectrumFrame { bands: vec![255; 64], level: 255, vu: [255, 255], beat: true, ..Default::default() };
+        rain(&mut buf, Rect::new(0, 0, 40, 20), &mut app, &th);
+        for _ in 0..3 {
+            app.meters.push(loud.clone());
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            rain(&mut buf, Rect::new(0, 0, 40, 20), &mut app, &th);
+        }
+        let b = app.widgets.rain.boost;
+        assert!(b > 1.0 && b < 1.35, "a loud beat eases it up, a little at a time: {b}");
+        assert!(app.widgets.rain.cols.iter().all(|c| c.1 <= 9.0), "slow columns");
+    }
     use super::*;
 
     #[test]

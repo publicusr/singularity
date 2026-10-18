@@ -465,3 +465,13 @@ flowchart LR
   image a popup overlapped stepped down; the owner runs kitty 0.47.1, which can place images under backgrounds); every
   Design keeps Home, library, queue, lyrics (D43, #42); arrows standardised (D44, #43); demos: starfield, marquee, glow
   kept, up next dropped, and `top` read as a stats Widget (#44). Swap arrows no longer vanish (owner confirms).
+- **#38–#41** (2026-10-18): **#38** over an artist or search page the wheel goes by the Pane, not the hit: over a
+  song row (or its name links) it moves that list's highlight, anywhere else it scrolls the Shelves by lines (Shift:
+  sideways). **#39** rain: base fall halved (3–9 rows/s), the music eases a boost up to about ×2 and back over a second
+  or two (a beat adds +0.3 to the target, no jumps). **#40** the well's cap is 4:3 (5 % slack); at 256×68 it is ~70
+  columns (95 before #31). Tests now find Panes with `compute_shaped`, as the screen does. **#41** in kitty
+  (`term::below_backgrounds`: `KITTY_WINDOW_ID` or `TERM=xterm-kitty`; `SINGULARITY_BELOW_BG=1|0`), images go under cell
+  backgrounds (z = -1073741825) and the cells under them get the default background (`App::under_image`), so popups
+  hide what they overlap and nothing steps down to half-blocks; the idle takeover's hole stays at z=-1
+  (`Kitty::keep_over_backgrounds`). Other terminals keep the old step-down. The pty compositor layers as kitty does
+  (default background, under-background images, cell backgrounds, z=-1 images, text); pty `popup`.

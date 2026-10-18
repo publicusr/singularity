@@ -82,6 +82,8 @@ fn render(buf: &mut Buffer, inner: Rect, app: &mut App) -> bool {
             {
                 k.frame(HOLE_ID, inner, w as u32, h as u32, px);
             }
+            let th = app.theme.clone();
+            app.under_image(buf, inner, &th);
         } else {
             let (w, h) = (inner.width as usize, inner.height as usize * 2);
             let (px, _) = app.hole.frame(w, h);

@@ -85,7 +85,15 @@ pub struct Kitty {
     /// per Visual: which of its two image ids is on screen, and where
     animated: HashMap<u32, (u32, Rect)>,
     shm_pending: Vec<(std::time::Instant, std::ffi::CString)>,
+    /// place images under cell backgrounds (kitty does this; the cells under them need the default background)
+    pub below_backgrounds: bool,
+    /// Visuals that must stay over backgrounds (the idle takeover shows through the whole UI)
+    over_backgrounds: std::collections::HashSet<u32>,
 }
+
+/// kitty's layer under cell backgrounds: an image there shows only through cells with the default background, so
+/// whatever is drawn over it with a background of its own (a popup) hides it (#41).
+const BELOW_BACKGROUNDS: i32 = -1_073_741_825;
 
 /// Images kept in the terminal before the least recently used are freed.
 const MAX_STORED: usize = 300;
@@ -105,7 +113,20 @@ impl Kitty {
             frames: vec![],
             animated: HashMap::new(),
             shm_pending: vec![],
+            below_backgrounds: false,
+            over_backgrounds: Default::default(),
         }
+    }
+
+    /// Keep Visual `id` over cell backgrounds, under text (as everything was before #41).
+    pub fn keep_over_backgrounds(&mut self, id: u32) {
+        self.over_backgrounds.insert(id);
+    }
+
+    /// The z-index for image `id` (an animated Visual's two ids map back to its own).
+    fn z(&self, id: u32) -> i32 {
+        let visual = if id < FIRST_ID { id / 2 } else { id };
+        if self.below_backgrounds && !self.over_backgrounds.contains(&visual) { BELOW_BACKGROUNDS } else { -1 }
     }
 
     /// Place the image `key` over `rect` this frame; `render` supplies its pixels if the terminal doesn't have them yet.
@@ -180,8 +201,8 @@ impl Kitty {
         for (id, pid, r, crop) in std::mem::take(&mut self.queue) {
             if self.placed.get(&(id, pid)) != Some(&(r, crop)) {
                 let src = crop.map(|[x, y, w, h]| format!("x={x},y={y},w={w},h={h},")).unwrap_or_default();
-                // C=1: don't move the cursor; z=-1: under text, so nothing drawn on top is hidden
-                write!(out, "\x1b[{};{}H\x1b_Ga=p,i={id},p={pid},{src}c={},r={},C=1,z=-1,q=2\x1b\\", r.y + 1, r.x + 1, r.width, r.height)?;
+                // C=1: don't move the cursor; z: under text (and, in kitty, under cell backgrounds)
+                write!(out, "\x1b[{};{}H\x1b_Ga=p,i={id},p={pid},{src}c={},r={},C=1,z={},q=2\x1b\\", r.y + 1, r.x + 1, r.width, r.height, self.z(id))?;
             }
             now.insert((id, pid), (r, crop));
         }
@@ -229,7 +250,7 @@ impl Kitty {
         let (action, placement) = match place {
             Some(r) => {
                 write!(out, "\x1b[{};{}H", r.y + 1, r.x + 1)?;
-                ("T", format!(",p=1,c={},r={},C=1,z=-1", r.width, r.height))
+                ("T", format!(",p=1,c={},r={},C=1,z={}", r.width, r.height, self.z(id)))
             }
             None => ("t", String::new()),
         };

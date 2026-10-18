@@ -50,7 +50,9 @@ async fn main() -> anyhow::Result<()> {
     app.hole.allow_gpu = true;
     app.load_config();
     if term::kitty_graphics_supported() && app.cell_px.is_some() {
-        app.kitty = Some(gfx::Kitty::new(term::kitty_shm()));
+        let mut k = gfx::Kitty::new(term::kitty_shm());
+        k.below_backgrounds = term::below_backgrounds();
+        app.kitty = Some(k);
     }
     let mut tui = ratatui::init();
     execute!(stdout(), EnableMouseCapture, EnableFocusChange, EnableBracketedPaste)?;

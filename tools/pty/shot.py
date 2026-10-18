@@ -75,7 +75,7 @@ class Term:
                 self.upload = (int(kv["i"]), int(kv["s"]), int(kv["v"]), [], kv.get("o") == "z", kv.get("f", "24"))
                 if a == "T":
                     row, col = self.cup
-                    self.placed[(int(kv["i"]), int(kv.get("p", "1")))] = (col, row, int(kv["c"]), int(kv["r"]), None)
+                    self.placed[(int(kv["i"]), int(kv.get("p", "1")))] = (col, row, int(kv["c"]), int(kv["r"]), None, int(kv.get("z", "0")))
             self.upload[3].append(payload)
             if kv.get("m", "0") == "0":
                 iid, w, h, chunks, z, f = self.upload
@@ -88,7 +88,7 @@ class Term:
             row, col = self.cup
             # x,y,w,h: only that part of the image (a cover partly scrolled out of its Pane)
             crop = tuple(int(kv[k]) for k in "xywh") if all(k in kv for k in "xywh") else None
-            self.placed[(int(kv["i"]), int(kv["p"]))] = (col, row, int(kv["c"]), int(kv["r"]), crop)
+            self.placed[(int(kv["i"]), int(kv["p"]))] = (col, row, int(kv["c"]), int(kv["r"]), crop, int(kv.get("z", "0")))
         elif a == "d":
             if kv.get("d") == "i":
                 self.placed.pop((int(kv["i"]), int(kv["p"])), None)
@@ -113,8 +113,18 @@ class Term:
         return None
 
     def shot(self, path):
-        # like kitty with z=-1: backgrounds, then images, then text on top
+        # as kitty layers them: the default background, images under cell backgrounds (z < -1073741824), cells with
+        # their own background, images over backgrounds (z=-1), then text
         img = Image.new("RGB", (COLS * CW, ROWS * CH), "black")
+        def paste(below):
+            for (iid, _), (cx, cy, c, r, crop, z) in self.placed.items():
+                if iid in self.images and (z < -1073741824) == below:
+                    src = self.images[iid]
+                    if crop:
+                        x, y, w, h = crop
+                        src = src.crop((x, y, x + w, y + h))
+                    img.paste(src.resize((c * CW, r * CH)), (cx * CW, cy * CH))
+        paste(True)
         d = ImageDraw.Draw(img)
         def col(v, dflt):
             if v == "default":
@@ -128,19 +138,15 @@ class Term:
                 fg, bg = col(c.fg, "#d6d6d6"), col(c.bg, "#000000")
                 if c.reverse:
                     fg, bg = bg, fg
-                try:
-                    d.rectangle([x * CW, y * CH, (x + 1) * CW - 1, (y + 1) * CH - 1], fill=bg)
-                except ValueError:
-                    pass
+                # a cell with the default background lets images under it show
+                if c.bg != "default" or c.reverse:
+                    try:
+                        d.rectangle([x * CW, y * CH, (x + 1) * CW - 1, (y + 1) * CH - 1], fill=bg)
+                    except ValueError:
+                        pass
                 if c.data.strip():
                     cells.append((x, y, c.data, fg))
-        for (iid, _), (cx, cy, c, r, crop) in self.placed.items():
-            if iid in self.images:
-                src = self.images[iid]
-                if crop:
-                    x, y, w, h = crop
-                    src = src.crop((x, y, x + w, y + h))
-                img.paste(src.resize((c * CW, r * CH)), (cx * CW, cy * CH))
+        paste(False)
         for x, y, ch, fg in cells:
             font = BRAILLE if 0x2800 <= ord(ch[0]) <= 0x28FF else FONT
             try:
@@ -457,6 +463,18 @@ def swap_in(t, out, title_now, want):
         mouse(t, 0, sx, y); mouse(t, 0, sx, y, release=True, wait=0.4)
 
 
+def popup(t, out):
+    """#41: in kitty, images sit under cell backgrounds, so the palette covers them; nothing turns into half-blocks."""
+    t.pump(1.5)
+    t.shot(f"{out}/0-home.png")
+    t.send(b"\x0b", 1.0)  # Ctrl+K
+    t.shot(f"{out}/1-palette.png")
+    print("half-blocks with the palette open:", sum(l.count("▀") for l in t.screen.display))
+    print("placements:", sorted(set(l.split("z=")[1].split(",")[0] for l in t.apc_log if "z=" in l)))
+    t.send(b"\x1b", 0.5)
+    t.send(b"q", 0.5)
+
+
 def arrows(t, out):
     """The owner's report: cycling a narrow Pane onto a long title hid its ◂ ▸. Walk two Panes through every Widget."""
     t.pump(1.0)
@@ -629,10 +647,12 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "demos", "arrows"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "demos", "arrows", "popup"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "demos") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "demos", "popup") else "0"
+        # kitty's layer under cell backgrounds (#41); the harness composites it as kitty does
+        env["SINGULARITY_BELOW_BG"] = "1" if scenario in ("popup", "demos") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
     if scenario == "listening":
         env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
@@ -674,6 +694,8 @@ def main():
             return demos(t, out)
         if scenario == "arrows":
             return arrows(t, out)
+        if scenario == "popup":
+            return popup(t, out)
         if scenario == "wheel":
             return wheel(t, out)
         if scenario == "history":
