@@ -38,6 +38,9 @@ pub enum Node {
 pub const MIN_W: u16 = 12;
 pub const MIN_H: u16 = 3;
 
+/// The gravity well's widest shape, width over height in pixels (16:10); a little wider is let be.
+pub const WELL_ASPECT: f64 = 1.6;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Divider {
     /// path of child indices from the root to the split node (0 = a, 1 = b)
@@ -147,11 +150,54 @@ impl Node {
 
     pub fn compute(&self, area: Rect) -> Computed {
         let mut out = Computed::default();
-        self.compute_into(area, &mut Vec::new(), &mut out);
+        self.compute_into(area, &mut Vec::new(), None, &mut out);
         out
     }
 
-    fn compute_into(&self, area: Rect, path: &mut Vec<u8>, out: &mut Computed) {
+    /// `compute`, but a gravity well wider than `WELL_ASPECT` (cells are `cell_aspect` times taller than wide) gives
+    /// its extra width to its neighbour across the nearest side-by-side split (in Singularity, the middle column).
+    pub fn compute_shaped(&self, area: Rect, cell_aspect: f64) -> Computed {
+        let out = self.compute(area);
+        let Some(well) = out.slots.iter().find(|(s, _)| s == "well").map(|(_, r)| *r) else { return out };
+        // the inner picture, inside the frame
+        let want = ((well.height.saturating_sub(2)) as f64 * cell_aspect * WELL_ASPECT).round() as u16 + 2;
+        if well.width <= want + want / 10 {
+            return out;
+        }
+        let Some(path) = self.path_of("well") else { return out };
+        let split = (0..path.len()).rev().find(|&k| matches!(self.at_path(&path[..k]), Some(Node::Split { axis: Axis::Horizontal, .. })));
+        let Some(k) = split else { return out };
+        let extra = (well.width - want) as i32;
+        // the well on the right: its split's first side grows; on the left: shrinks
+        let delta = if path[k] == 1 { extra } else { -extra };
+        let mut shaped = Computed::default();
+        self.compute_into(area, &mut Vec::new(), Some((&path[..k], delta)), &mut shaped);
+        shaped
+    }
+
+    /// Where Slot `name` is: child indices from the root (0 = a, 1 = b).
+    fn path_of(&self, name: &str) -> Option<Vec<u8>> {
+        match self {
+            Node::Slot(s) => (s == name).then(Vec::new),
+            Node::Split { a, b, .. } => [a, b].into_iter().enumerate().find_map(|(i, c)| {
+                let mut p = c.path_of(name)?;
+                p.insert(0, i as u8);
+                Some(p)
+            }),
+        }
+    }
+
+    fn at_path(&self, path: &[u8]) -> Option<&Node> {
+        match (path.split_first(), self) {
+            (None, n) => Some(n),
+            (Some((0, rest)), Node::Split { a, .. }) => a.at_path(rest),
+            (Some((_, rest)), Node::Split { b, .. }) => b.at_path(rest),
+            _ => None,
+        }
+    }
+
+    /// `nudge`: the split at this path moves its boundary by that many cells (minimums still hold).
+    fn compute_into(&self, area: Rect, path: &mut Vec<u8>, nudge: Option<(&[u8], i32)>, out: &mut Computed) {
         match self {
             Node::Slot(name) => out.slots.push((name.clone(), area)),
             Node::Split { axis, first, a, b } => {
@@ -167,6 +213,10 @@ impl Node {
                 };
                 // keep both sides at least as big as their own Panes need when there is room; otherwise share the
                 // room in proportion to those needs
+                let want = match nudge {
+                    Some((at, by)) if at == path.as_slice() => (want as i32 + by).clamp(0, total as i32) as u16,
+                    _ => want,
+                };
                 let n = if total >= min_a + min_b { want.clamp(min_a, total - min_b) } else { (total as u32 * min_a as u32 / (min_a + min_b).max(1) as u32) as u16 };
                 let (ra, rb, grip) = match axis {
                     Axis::Horizontal => (
@@ -182,10 +232,10 @@ impl Node {
                 };
                 out.dividers.push(Divider { path: path.clone(), axis: *axis, area, grip });
                 path.push(0);
-                a.compute_into(ra, path, out);
+                a.compute_into(ra, path, nudge, out);
                 path.pop();
                 path.push(1);
-                b.compute_into(rb, path, out);
+                b.compute_into(rb, path, nudge, out);
                 path.pop();
             }
         }
@@ -268,6 +318,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_wide_well_keeps_its_shape_and_the_middle_gets_the_width() {
+        let n = Node::singularity();
+        for (w, h, aspect) in [(256u16, 68u16, 2.0), (256, 68, 2.2), (400, 60, 2.0), (140, 40, 2.0)] {
+            let area = Rect::new(0, 0, w, h);
+            let (plain, shaped) = (n.compute(area), n.compute_shaped(area, aspect));
+            let get = |c: &Computed, s: &str| c.slots.iter().find(|(n, _)| n == s).unwrap().1;
+            let well = get(&shaped, "well");
+            let shape = (well.width - 2) as f64 / ((well.height - 2) as f64 * aspect);
+            assert!(shape <= WELL_ASPECT * 1.1 + 0.05, "{w}x{h}: {well:?} is {shape:.2}");
+            let freed = get(&plain, "well").width - well.width;
+            assert_eq!(get(&shaped, "home").width, get(&plain, "home").width + freed, "{w}x{h}: the middle takes it");
+            assert_eq!(get(&shaped, "library").width, get(&plain, "library").width);
+            let cells: u32 = shaped.slots.iter().map(|(_, r)| r.width as u32 * r.height as u32).sum();
+            assert_eq!(cells, w as u32 * h as u32);
+        }
+        // already well-shaped: nothing moves
+        let area = Rect::new(0, 0, 120, 40);
+        assert_eq!(n.compute_shaped(area, 2.0), n.compute(area));
+        // no well, no change
+        assert_eq!(Node::classic().compute_shaped(Rect::new(0, 0, 300, 60), 2.0), Node::classic().compute(Rect::new(0, 0, 300, 60)));
     }
 
     #[test]

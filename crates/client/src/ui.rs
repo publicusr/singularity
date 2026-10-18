@@ -264,7 +264,7 @@ fn superscript(n: usize) -> String {
 }
 
 fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
-    let computed = app.layout.compute(body);
+    let computed = app.layout.compute_shaped(body, app.cell_px.map(|(w, h)| h / w).unwrap_or(2.0));
     // the ◂ ▸ swaps sit on a border a divider's grip may cover: registered after the grips, so they win
     let mut swaps: Vec<(Rect, Hit)> = vec![];
     for (i, (slot, rect)) in computed.slots.iter().enumerate() {

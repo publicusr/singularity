@@ -171,6 +171,10 @@ impl TrackView {
     }
 }
 
+/// Widest a title column gets; artist and album columns stop at `NAME_MAX`.
+const TITLE_MAX: u16 = 60;
+const NAME_MAX: u16 = 40;
+
 /// Column x-offsets and widths for a list `w` cells wide: (#, title, artist, album, added, time); 0 = hidden.
 fn columns(w: u16) -> [(u16, u16); 6] {
     let num = 5;
@@ -178,6 +182,8 @@ fn columns(w: u16) -> [(u16, u16); 6] {
     let added = if w >= 110 { 12 } else { 0 };
     let rest = w.saturating_sub(num + time + added + 2);
     let (title, artist, album) = if w >= 80 { (rest * 4 / 10, rest * 3 / 10, rest - rest * 4 / 10 - rest * 3 / 10) } else { (rest * 6 / 10, rest - rest * 6 / 10, 0) };
+    // on wide Panes the columns stop growing, so the date and time stay near the names they belong to
+    let (title, artist, album) = (title.min(TITLE_MAX), artist.min(NAME_MAX), album.min(NAME_MAX));
     let mut x = 0;
     let mut out = [(0, 0); 6];
     for (i, cw) in [num, title, artist, album, added, time].into_iter().enumerate() {
@@ -358,6 +364,18 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn columns_stop_growing_on_wide_panes() {
+        for w in [60u16, 80, 120, 200, 400] {
+            let c = columns(w);
+            assert!(c[1].1 <= TITLE_MAX && c[2].1 <= NAME_MAX && c[3].1 <= NAME_MAX, "{w}: {c:?}");
+            assert!(c[5].0 + c[5].1 <= w, "{w}: nothing past the Pane");
+        }
+        // the date and time follow the names instead of the far edge
+        let c = columns(400);
+        assert_eq!(c[4].0, 5 + TITLE_MAX + 2 * NAME_MAX);
+    }
 
     fn row(i: u32, name: &str, artist: &str, ms: u64) -> TrackRow {
         TrackRow { uri: format!("spotify:track:{i}"), name: name.into(), artists: vec![artist.into()], album: format!("Album {i}"), added_at: Some(format!("2025-01-{:02}", 10 - i)), duration_ms: ms, playable: true, ..Default::default() }

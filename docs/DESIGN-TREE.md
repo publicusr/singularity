@@ -324,3 +324,14 @@ flowchart LR
   characters; every line of a 30-line song at Pane widths 20–60: the current line's rows are contiguous, in view and
   join to the whole line; unsynced scroll stops at the end. pty `lyrics` at 140×40 and 96×34 (the fake lyrics gained
   a long line).
+- **#31 Wide terminals ✅** (2026-10-18): `Node::compute_shaped(area, cell_aspect)` (used to draw; `compute` stays
+  for "is this Slot on screen" checks): a gravity well more than 10 % wider than 16:10 in pixels (the terminal's real
+  cell size, else 1:2) gives the extra width to its neighbour across the nearest side-by-side split, so in
+  Singularity the middle column grows (256×68: well 95 → 83 columns, ~1.56:1; Home shows 7 Cards a row instead of 5).
+  Dragging that divider still works; past the cap it stops. Track-list columns stop growing (title 60, artist and
+  album 40), so Added and Time stay next to the names. The owner's "cut off" right column and hint row: the
+  screenshot's terminal grid runs past the captured area (the status text and the Panes' right borders end exactly at
+  the image's edge, the hint row is just below it); the pty at 256×68 draws both whole, so not ours. The `Ga=` text
+  was the harness (fixed in #27). Tests: shapes at 256×68 / 400×60 with cell aspects 2.0 and 2.2, the middle takes
+  exactly what the well gives, no change at 120×40 or without a well; column caps at widths 60–400. pty `library` and
+  `home-pixels` at 256×68 and 140×40.
