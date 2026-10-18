@@ -87,29 +87,32 @@ impl Node {
         Node::split(Horizontal, Cells(28), Node::slot("library"), Node::split(Horizontal, Ratio(0.54), mid, right))
     }
 
-    /// Classic+: the desktop app's shape. Library | Home | Now playing.
+    /// Classic+: the desktop app's shape. Library | Home over the queue | Now playing over lyrics.
     pub fn classic() -> Node {
         use Axis::*;
         use Size::*;
-        Node::split(Horizontal, Cells(30), Node::slot("library"), Node::split(Horizontal, Last(40), Node::slot("home"), Node::slot("nowplaying")))
+        let mid = Node::split(Vertical, Ratio(0.66), Node::slot("home"), Node::slot("queue"));
+        let right = Node::split(Vertical, Ratio(0.55), Node::slot("nowplaying"), Node::slot("lyrics"));
+        Node::split(Horizontal, Cells(30), Node::slot("library"), Node::split(Horizontal, Last(40), mid, right))
     }
 
-    /// Cockpit: instruments on top (spectrum, stream; loudness, levels, listening), browsing below.
+    /// Cockpit: instruments on top (spectrum, stream; loudness, levels, listening), browsing below (Home | queue over
+    /// lyrics | library).
     pub fn cockpit() -> Node {
         use Axis::*;
         use Size::*;
         let r1 = Node::split(Horizontal, Ratio(0.66), Node::slot("fft"), Node::slot("stream"));
         let r2 = Node::split(Horizontal, Ratio(0.3), Node::slot("loudness"), Node::split(Horizontal, Ratio(0.36), Node::slot("levels"), Node::slot("listening")));
-        let r3 = Node::split(Horizontal, Ratio(0.62), Node::slot("home"), Node::split(Vertical, Ratio(0.5), Node::slot("queue"), Node::slot("library")));
+        let r3 = Node::split(Horizontal, Ratio(0.52), Node::slot("home"), Node::split(Horizontal, Ratio(0.55), Node::split(Vertical, Ratio(0.5), Node::slot("queue"), Node::slot("lyrics")), Node::slot("library")));
         Node::split(Vertical, Ratio(0.36), r1, Node::split(Vertical, Ratio(0.3), r2, r3))
     }
 
-    /// Terminal: tree | home over rain + lyrics log | scope, top, fft.
+    /// Terminal: tree | home over rain + lyrics log | scope, the queue, fft (`top` is a swap away).
     pub fn terminal() -> Node {
         use Axis::*;
         use Size::*;
         let mid = Node::split(Vertical, Ratio(0.58), Node::slot("home"), Node::split(Horizontal, Ratio(0.5), Node::slot("rain"), Node::slot("lyrics")));
-        let right = Node::split(Vertical, Ratio(0.35), Node::slot("scope"), Node::split(Vertical, Ratio(0.45), Node::slot("top"), Node::slot("fft")));
+        let right = Node::split(Vertical, Ratio(0.35), Node::slot("scope"), Node::split(Vertical, Ratio(0.45), Node::slot("queue"), Node::slot("fft")));
         Node::split(Horizontal, Cells(30), Node::slot("library"), Node::split(Horizontal, Last(36), mid, right))
     }
 
@@ -317,6 +320,17 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn every_design_has_home_the_library_the_queue_and_lyrics() {
+        // owner rule (D43): the rest is each Design's own
+        for (name, d) in [("singularity", Node::singularity()), ("event-horizon", Node::event_horizon()), ("classic", Node::classic()), ("cockpit", Node::cockpit()), ("terminal", Node::terminal())] {
+            let slots = d.slot_names();
+            for must in ["home", "library", "queue", "lyrics"] {
+                assert!(slots.iter().any(|s| s == must), "{name} has no {must}: {slots:?}");
             }
         }
     }
