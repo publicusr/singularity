@@ -497,6 +497,36 @@ def stalls(t, out):
     t.send(b"q", 0.5)
 
 
+def queue_lift(t, out):
+    """#50: play from Liked Songs (the fake Engine adds the list's next songs as "Next from"), queue one song, then
+    drag a "Next from" song up onto it: it becomes queued there."""
+    t.pump(1.0)
+    x, y = t.find("♥ Liked Songs")
+    mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
+    rx, ry = t.find("Fake Track 002")
+    for _ in range(2):  # double-click plays from here
+        mouse(t, 0, rx + 2, ry, wait=0.03); mouse(t, 0, rx + 2, ry, release=True, wait=0.05)
+    t.pump(1.5)
+    rx, ry = t.find("Fake Track 007")
+    mouse(t, 2, rx + 2, ry, wait=0.3)
+    t.send(b"\x1b[B", 0.1); t.send(b"\r", 1.2)  # Play next
+    t.shot(f"{out}/0-before.png")
+    src, dst = t.find("Described ctx4 ·"), t.find("Described fake6 ·")
+    if not src or not dst:
+        print("rows:", [l.strip()[30:100] for l in t.screen.display if "Described" in l or "Next" in l])
+        raise SystemExit("missing rows")
+    mouse(t, 0, src[0] + 2, src[1])
+    mouse(t, 32, src[0] + 2, src[1] - 1, wait=0.15)
+    mouse(t, 32, dst[0] + 2, dst[1], wait=0.3)
+    t.shot(f"{out}/1-dragging.png")
+    mouse(t, 0, dst[0] + 2, dst[1], release=True, wait=1.2)
+    t.shot(f"{out}/2-dropped.png")
+    hx, hy = t.find("Next in queue")
+    print("queue after the drop:", [t.screen.display[k][hx:hx + 30].strip() for k in range(hy, hy + 7)])
+    t.send(b" ", 0.3)
+    t.send(b"q", 0.5)
+
+
 def arrows(t, out):
     """The owner's report: cycling a narrow Pane onto a long title hid its ◂ ▸. Walk two Panes through every Widget."""
     t.pump(1.0)
@@ -666,7 +696,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "ambient", "popup") else "0"
@@ -719,6 +749,8 @@ def main():
             return popup(t, out)
         if scenario == "stalls":
             return stalls(t, out)
+        if scenario == "queue-lift":
+            return queue_lift(t, out)
         if scenario == "wheel":
             return wheel(t, out)
         if scenario == "history":

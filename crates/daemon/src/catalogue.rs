@@ -207,7 +207,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                     QueueEdit::PlayNext(uri) => Command::PlayNext { uri },
                     QueueEdit::Remove { uri, uid } => Command::RemoveFromQueue { uri, uid },
                     QueueEdit::Clear => Command::ClearQueue,
-                    QueueEdit::Move { uri, uid, to } => Command::MoveInQueue { uri, uid, to },
+                    QueueEdit::Move { uri, uid, to, into_queue } => Command::MoveInQueue { uri, uid, to, into_queue },
                 })],
                 CatCmd::Lyrics { uri, .. } => vec![CatEvent::Lyrics(fake_lyrics(&uri))],
                 CatCmd::Artist(uri) => vec![CatEvent::Artist(fake_artist(&uri, &home))],

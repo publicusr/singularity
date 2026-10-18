@@ -248,8 +248,9 @@ pub enum QueueEdit {
     PlayNext(String),
     Remove { uri: String, uid: Option<String> },
     Clear,
-    /// to place `to` among the tracks of its own kind (queued, or the context's)
-    Move { uri: String, uid: Option<String>, to: usize },
+    /// to place `to` among the tracks of its own kind (queued, or the context's); `into_queue`: a context track
+    /// becomes a queued one at place `to` among the queued (#50)
+    Move { uri: String, uid: Option<String>, to: usize, into_queue: bool },
 }
 
 /// Apply `edit` to the player's `next_tracks` (as sent back in `set_queue`). False if there was nothing to change.
@@ -267,7 +268,16 @@ pub fn edit_queue(next: &mut Vec<serde_json::Value>, edit: &QueueEdit) -> bool {
             }
             None => false,
         },
-        QueueEdit::Move { uri, uid, to } => {
+        QueueEdit::Move { uri, uid, to, into_queue: true } => {
+            let Some(i) = find(next, "context", uri, uid.as_deref()) else { return false };
+            next.remove(i);
+            let places: Vec<usize> = (0..next.len()).filter(|&k| queued(&next[k])).collect();
+            let at = places.get(*to).copied().unwrap_or_else(|| places.last().map_or(0, |&k| k + 1));
+            // as Spotify's own queued entries look (its uid is Spotify's to give)
+            next.insert(at, json!({ "uri": uri, "uid": "", "metadata": { "is_queued": "true" }, "provider": "queue" }));
+            true
+        }
+        QueueEdit::Move { uri, uid, to, into_queue: false } => {
             let Some(i) = find_queued(next, uri, uid.as_deref()).or_else(|| find(next, "context", uri, uid.as_deref())) else { return false };
             let track = next.remove(i);
             let kind = track["provider"].clone();
@@ -387,7 +397,7 @@ mod tests {
         assert_eq!((n[0]["uri"].as_str(), n[0]["provider"].as_str()), (Some("spotify:track:z"), Some("queue")));
         let mut m = q();
         m.insert(2, json!({"uri": "spotify:track:b", "uid": "u5", "provider": "queue"}));
-        let mv = |uri: &str, uid: &str, to| QueueEdit::Move { uri: uri.into(), uid: Some(uid.into()), to };
+        let mv = |uri: &str, uid: &str, to| QueueEdit::Move { uri: uri.into(), uid: Some(uid.into()), to, into_queue: false };
         assert!(edit_queue(&mut m, &mv("spotify:track:b", "u5", 0)));
         let uids = |m: &[serde_json::Value]| m.iter().map(|t| t["uid"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
         assert_eq!(uids(&m), ["u5", "u1", "u2", "u3", "u4"]);
@@ -399,6 +409,12 @@ mod tests {
         assert!(edit_queue(&mut m, &mv("spotify:track:e", "u6", 0)));
         assert_eq!(uids(&m), ["u1", "u2", "u5", "u6", "u3", "u4"], "it stays after the queued tracks");
         assert!(!edit_queue(&mut m, &mv("spotify:track:d", "u4", 0)), "autoplay doesn't move");
+        // a context track up into the queue (#50): it leaves the context and is queued at that place
+        let up = QueueEdit::Move { uri: "spotify:track:c".into(), uid: Some("u3".into()), to: 1, into_queue: true };
+        assert!(edit_queue(&mut m, &up));
+        assert_eq!(m[1]["uri"], "spotify:track:c");
+        assert_eq!((m[1]["provider"].as_str(), m.iter().filter(|t| t["uri"] == "spotify:track:c").count()), (Some("queue"), 1));
+        assert_eq!(m.iter().filter(|t| t["provider"] == "context").count(), 1, "one context track left");
         assert!(edit_queue(&mut n, &QueueEdit::Clear));
         assert!(n.iter().all(|t| t["provider"] != "queue") && n.len() == 2, "context and autoplay stay");
     }

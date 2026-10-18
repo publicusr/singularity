@@ -219,9 +219,9 @@ async fn queue_edits_and_bare_entries_get_names() {
     assert_eq!(q.iter().map(|e| e.item.uri.as_str()).collect::<Vec<_>>(), ["spotify:track:x2", "spotify:track:x1"]);
     assert_eq!(q[0].item.name, "Described x2");
     // move the second to the front, and back
-    proto::write_msg(&mut a, &cmd(Command::MoveInQueue { uri: "spotify:track:x1".into(), uid: Some(q[1].uid.clone()), to: 0 })).await.unwrap();
+    proto::write_msg(&mut a, &cmd(Command::MoveInQueue { uri: "spotify:track:x1".into(), uid: Some(q[1].uid.clone()), to: 0, into_queue: false })).await.unwrap();
     queue_where(&mut a, |q| q.first().is_some_and(|e| e.item.uri == "spotify:track:x1")).await;
-    proto::write_msg(&mut a, &cmd(Command::MoveInQueue { uri: "spotify:track:x1".into(), uid: Some(q[1].uid.clone()), to: 5 })).await.unwrap();
+    proto::write_msg(&mut a, &cmd(Command::MoveInQueue { uri: "spotify:track:x1".into(), uid: Some(q[1].uid.clone()), to: 5, into_queue: false })).await.unwrap();
     let q = queue_where(&mut a, |q| q.first().is_some_and(|e| e.item.uri == "spotify:track:x2")).await;
     proto::write_msg(&mut a, &cmd(Command::RemoveFromQueue { uri: "spotify:track:x2".into(), uid: Some(q[0].uid.clone()) })).await.unwrap();
     let q = queue_where(&mut a, |q| q.len() == 1).await;

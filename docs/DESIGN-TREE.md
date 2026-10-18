@@ -512,3 +512,13 @@ flowchart LR
   for lossless right now: 44 kB/s, about 205 needed; is something else using it?". Tests: the real lines from the
   owner's episode; App test (one stall: quiet; repeated: one toast; Pane rows; healthy: no warning). Fake Engine knob
   `SINGULARITY_FAKE_STALLS=1`; pty `stalls`.
+- **#50 Album song into "Next in queue" ✅** (2026-10-18, D42): the drag model is now (from, to, into_queue) over a
+  `preview` of the queue (the moved song shown in place, under the right heading); `target` maps the pointer through
+  the queue's real lines, headings included: a context song onto a queued row takes that place in the queue, onto the
+  "Next from" heading goes last of the queued, onto a context row stays in the context; queued songs stay queued.
+  `MoveInQueue.into_queue` (additive) → `QueueEdit::Move { into_queue }`: the context entry is removed and a queued
+  one (`{uri, uid:"", is_queued, provider:"queue"}`) inserted at that place. Fake Engine: lifts too, and a PlayFrom now
+  adds the list's next four songs as context entries. Tests: preview and sections, the Connect edit, the App drag
+  (onto a queued row, onto the heading, queued never into the context). pty `queue-lift`. Live check: probe
+  `--lift-context` (snapshot → lift → read back → restore) skipped, the owner's queue had no queued song (it then
+  would play next); Spotify's context run also holds `spotify:delimiter` markers, which the probe skips.

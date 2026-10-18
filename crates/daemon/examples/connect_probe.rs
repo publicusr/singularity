@@ -121,6 +121,65 @@ async fn main() -> anyhow::Result<()> {
         let _ = session.spclient().delete_connect_state_request().await;
         return Ok(());
     }
+    if args.get(1).map(String::as_str) == Some("--lift-context") {
+        // #50: lift the 3rd upcoming context song into the queue (after the last queued one), read it back, then put
+        // the whole snapshot back. Only with a queued song already there, so nothing new plays next.
+        let to = cluster.device.iter().find(|(_, d)| d.name == "Singularity").map(|(id, _)| id.clone()).expect("Soloist");
+        let as_json = |t: &librespot_protocol::player::ProvidedTrack| serde_json::json!({"uri": t.uri, "uid": t.uid, "metadata": t.metadata, "provider": t.provider});
+        let snapshot: Vec<serde_json::Value> = ps.next_tracks.iter().map(as_json).collect();
+        let prev: Vec<serde_json::Value> = ps.prev_tracks.iter().map(as_json).collect();
+        let queued = snapshot.iter().filter(|t| t["provider"] == "queue").count();
+        if queued == 0 {
+            println!("no queued songs: skipped (the lifted song would play next)");
+            let _ = session.spclient().delete_connect_state_request().await;
+            return Ok(());
+        }
+        // real tracks only (Spotify puts "spotify:delimiter" markers in the context's run)
+        let ctx: Vec<usize> = snapshot.iter().enumerate().filter(|(_, t)| t["provider"] == "context" && t["uri"].as_str().is_some_and(|u| u.starts_with("spotify:track:"))).map(|(i, _)| i).collect();
+        let c = ctx[2];
+        let uri = snapshot[c]["uri"].as_str().unwrap().to_string();
+        let mut next = snapshot.clone();
+        let edit = singularityd::connect::QueueEdit::Move { uri: uri.clone(), uid: snapshot[c]["uid"].as_str().map(String::from), to: queued, into_queue: true };
+        println!("edit applies: {}", singularityd::connect::edit_queue(&mut next, &edit));
+        let cmd = serde_json::json!({"endpoint": "set_queue", "next_tracks": next, "prev_tracks": prev, "queue_revision": ps.queue_revision});
+        println!("lift: {:?}", session.spclient().send_player_command(&to, cmd).await.map(|b| String::from_utf8_lossy(&b).len()));
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let read = || {
+            let mut req = PutStateRequest::new();
+            req.member_type = MemberType::CONNECT_STATE.into();
+            req.put_state_reason = PutStateReason::NEW_DEVICE.into();
+            let mut info = DeviceInfo::new();
+            info.name = "Singularity remote".into();
+            info.device_id = session.device_id().to_string();
+            let mut caps = Capabilities::new();
+            caps.hidden = true;
+            caps.is_observable = true;
+            info.capabilities = Some(caps).into();
+            let mut dev = Device::new();
+            dev.device_info = Some(info).into();
+            req.device = Some(dev).into();
+            req
+        };
+        let after = Cluster::parse_from_bytes(&session.spclient().put_connect_state_request(&read()).await?)?;
+        let n = &after.player_state.next_tracks;
+        let at = n.iter().position(|t| t.uri == uri);
+        println!(
+            "after: lifted song at {:?} as {:?}; queued now {}, context copies of it {}",
+            at,
+            at.map(|i| n[i].provider.clone()),
+            n.iter().filter(|t| t.provider == "queue").count(),
+            n.iter().filter(|t| t.provider == "context" && t.uri == uri).count()
+        );
+        // put the snapshot back as it was
+        let cmd = serde_json::json!({"endpoint": "set_queue", "next_tracks": snapshot, "prev_tracks": after.player_state.prev_tracks.iter().map(as_json).collect::<Vec<_>>(), "queue_revision": after.player_state.queue_revision});
+        println!("restore: {:?}", session.spclient().send_player_command(&to, cmd).await.map(|b| String::from_utf8_lossy(&b).len()));
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let fin = Cluster::parse_from_bytes(&session.spclient().put_connect_state_request(&read()).await?)?;
+        let f = &fin.player_state.next_tracks;
+        println!("restored: queued {} (was {}), song back in the context at {:?} (was {c})", f.iter().filter(|t| t.provider == "queue").count(), queued, f.iter().position(|t| t.uri == uri && t.provider == "context"));
+        let _ = session.spclient().delete_connect_state_request().await;
+        return Ok(());
+    }
     if args.get(1).map(String::as_str) == Some("--remove-queued") {
         // remove one user-queued track (by URI, first match): send the rest back with the current revision
         let uri = args.get(2).expect("uri");

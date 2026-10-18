@@ -122,6 +122,10 @@ impl Engine for FakeEngine {
                         st.position_ms = 0;
                         st.context_uri = Some(context_uri);
                         st.status = PlayStatus::Playing;
+                        // the next few songs of the list, as "Next from …" entries (bare: the Catalogue names them), so the
+                        // queue Widget has a context to drag from (#50)
+                        st.queue.retain(|q| q.source == "queue");
+                        st.queue.extend((1..=4).map(|k| singularity_proto::QueueEntry { item: Item { uri: format!("spotify:track:ctx{}", index + k), ..Default::default() }, source: "context".into(), uid: format!("c{now}{k}") }));
                     }
                     // a queue, so the queue Widget has something to show; entries come bare, like Soloist's sometimes do
                     Command::AddToQueue { ref uri } | Command::PlayNext { ref uri } => {
@@ -138,7 +142,14 @@ impl Engine for FakeEngine {
                         }
                     }
                     Command::ClearQueue => st.queue.retain(|q| q.source != "queue"),
-                    Command::MoveInQueue { uri, uid, to } => {
+                    Command::MoveInQueue { uri, uid, to, into_queue: true } => {
+                        let Some(i) = st.queue.iter().position(|q| q.source == "context" && (uid.as_deref() == Some(q.uid.as_str()) || q.item.uri == uri)) else { continue };
+                        let mut e = st.queue.remove(i);
+                        e.source = "queue".into();
+                        let queued = st.queue.iter().take_while(|q| q.source == "queue").count();
+                        st.queue.insert(to.min(queued), e);
+                    }
+                    Command::MoveInQueue { uri, uid, to, into_queue: false } => {
                         let Some(i) = st.queue.iter().position(|q| q.source != "autoplay" && (uid.as_deref() == Some(q.uid.as_str()) || q.item.uri == uri)) else { continue };
                         let e = st.queue.remove(i);
                         // its own kind's run: the queued ones come first, then the context's

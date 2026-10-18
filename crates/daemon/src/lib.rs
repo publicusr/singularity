@@ -563,7 +563,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                             Command::PlayNext { uri } => CatCmd::Queue(connect::QueueEdit::PlayNext(uri)),
                             Command::RemoveFromQueue { uri, uid } => CatCmd::Queue(connect::QueueEdit::Remove { uri, uid }),
                             Command::ClearQueue => CatCmd::Queue(connect::QueueEdit::Clear),
-                            Command::MoveInQueue { uri, uid, to } => CatCmd::Queue(connect::QueueEdit::Move { uri, uid, to }),
+                            Command::MoveInQueue { uri, uid, to, into_queue } => CatCmd::Queue(connect::QueueEdit::Move { uri, uid, to, into_queue }),
                             Command::GetArtist { uri } => CatCmd::Artist(uri),
                             Command::Search { query } => CatCmd::Search(query),
                             Command::GetDevices => CatCmd::Devices,

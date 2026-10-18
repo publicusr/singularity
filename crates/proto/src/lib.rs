@@ -61,7 +61,14 @@ pub enum Command {
     ClearQueue,
     /// Move a track the user queued, or one coming up from the context, to place `to` among the tracks of its own
     /// kind (0 = first of them). Autoplay tracks don't move.
-    MoveInQueue { uri: String, uid: Option<String>, to: usize },
+    /// `into_queue`: a context song goes up into the user's queue, at place `to` among the queued songs (#50).
+    MoveInQueue {
+        uri: String,
+        uid: Option<String>,
+        to: usize,
+        #[serde(default)]
+        into_queue: bool,
+    },
     /// Ask for a full snapshot (sent automatically after `Welcome`).
     GetState,
     /// Start the Spotify login (device-code flow); progress arrives as `Event::Catalogue`.

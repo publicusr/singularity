@@ -48,7 +48,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `08ba7a2` | #43 ✅ | All arrows at the right of a Pane's title; back/forward as ← → (D44) |
 | `e2232c4` | #44 ✅ | Ambient Widgets (`client/src/ambient.rs`): starfield, marquee, glow; up next dropped; round 2 done |
 | `522c2ba` | #41 follow-up | Popups opaque over under-background images in kitty (#010101) |
-| (last) | #45 ✅ | Stream Pane shows download speed and stalls; one toast when the connection is too slow |
+| `dc59c0c` | #45 ✅ | Stream Pane shows download speed and stalls; one toast when the connection is too slow |
+| (last) | #50 ✅ | Drag an album song up into "Next in queue" (preview, `into_queue`) |
 
 ## What exists in `crates/`
 
@@ -87,7 +88,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 
 `singularity` and `singularityd` are installed in `~/.cargo/bin` (on the owner's PATH) with
 `cargo install --locked --path crates/daemon` and `--path crates/client`. Reinstall both after each closed ticket so the
-owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #45.
+owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #50.
 
 ## Local state on the owner's machine (not in git)
 
