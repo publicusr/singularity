@@ -269,6 +269,8 @@ pub enum Hit {
     PickerItem(usize),
     /// a Pane's ◂ ▸: the Slot's Widget, and which way to swap it
     Swap(String, i32),
+    /// the main Pane's ◂ ▸: back / forward through the pages seen
+    History(i32),
 }
 
 /// Two clicks on the same row within this time play it.
@@ -1850,6 +1852,8 @@ impl App {
                     Some(Hit::Swap(slot, d)) => {
                         self.swap_widget(&slot, d);
                     }
+                    Some(Hit::History(d)) if d < 0 => self.go_back(),
+                    Some(Hit::History(_)) => self.go_forward(),
                     Some(Hit::Focus(s)) => self.focus = s,
                     Some(Hit::Divider(i)) => {
                         if let Some(d) = self.dividers.get(i) {

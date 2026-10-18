@@ -302,4 +302,7 @@ flowchart LR
   went to pyte as text, and an image's position came from a regex over a possibly split cursor move; it now keeps
   the partial escape and places images at pyte's own cursor, as kitty does. Its compositor honours crops. pty
   `home-scroll`.
+- **#28 Back / forward arrows ✅** (2026-10-18): the main Pane's title starts with ◂ ▸ whenever there's history
+  (`Hit::History(±1)` → `go_back` / `go_forward`); the one with nowhere to go is dimmed. Title built from spans
+  (number, arrows, name). Test clicks ◂ then ▸; pty `history`.
 

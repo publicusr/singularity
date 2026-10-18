@@ -222,6 +222,26 @@ def home_scroll(t, out):
     t.send(b"q", 0.5)
 
 
+def history(t, out):
+    """#28: ◂ ▸ in the main Pane's title: open a list, back to Home, forward again."""
+    t.pump(1.0)
+    x, y = t.find("♥ Liked Songs")
+    mouse(t, 0, x + 2, y)
+    mouse(t, 0, x + 2, y, release=True, wait=0.8)
+    t.shot(f"{out}/0-list.png")
+    bx, by = t.find("◂ ▸ Liked Songs")
+    mouse(t, 0, bx, by)
+    mouse(t, 0, bx, by, release=True, wait=0.6)
+    t.shot(f"{out}/1-back.png")
+    print("back on Home:", t.find("Made For You") is not None)
+    fx, fy = t.find("◂ ▸ home")
+    mouse(t, 0, fx + 2, fy)
+    mouse(t, 0, fx + 2, fy, release=True, wait=0.6)
+    t.shot(f"{out}/2-forward.png")
+    print("forward to the list:", t.find("250 songs") is not None)
+    t.send(b"q", 0.5)
+
+
 def wheel(t, out):
     """#26: the wheel moves the highlight over a track list (also over artist/album names) and in the library."""
     t.pump(1.0)
@@ -490,7 +510,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll") else "0"
@@ -526,6 +546,8 @@ def main():
             return listening(t, out, env)
         if scenario == "wheel":
             return wheel(t, out)
+        if scenario == "history":
+            return history(t, out)
         if scenario == "config":
             return config(t, out, env)
         if scenario == "designs":

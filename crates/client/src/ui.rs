@@ -277,13 +277,28 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             ("home", Some(v), _) => v.title.clone(),
             _ => title.to_string(),
         };
-        let title = if th.numbered { format!("{}{title}", superscript(i + 1)) } else { title };
+        let number = if th.numbered { superscript(i + 1) } else { String::new() };
         let focused = *slot == app.focus;
+        let title_st = if focused { th.title() } else { th.s(th.accent) };
+        let mut spans = vec![Span::styled(format!(" {number}"), title_st)];
+        // the main Pane: ◂ ▸ through the pages seen, while there are any (dim when there's nowhere to go that way)
+        let history = slot == "home" && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20;
+        if history {
+            let x = rect.x + 2 + number.chars().count() as u16;
+            let on = |b: bool| th.s(if b { th.fg } else { th.border });
+            spans.push(Span::styled("◂", on(!app.back.is_empty())));
+            spans.push(Span::styled(" ", title_st));
+            spans.push(Span::styled("▸", on(!app.forward.is_empty())));
+            spans.push(Span::styled(" ", title_st));
+            swaps.push((Rect::new(x.saturating_sub(1), rect.y, 2, 1), Hit::History(-1)));
+            swaps.push((Rect::new(x + 2, rect.y, 2, 1), Hit::History(1)));
+        }
+        spans.push(Span::styled(format!("{title} "), title_st));
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(th.borders)
             .border_style(th.s(if focused { th.border_focus } else { th.pane_border(i) }))
-            .title(Span::styled(format!(" {title} "), if focused { th.title() } else { th.s(th.accent) }))
+            .title(ratatui::text::Line::from(spans))
             .style(th.base());
         let inner = block.inner(*rect);
         // the Pane's own hit first, so the things inside it win
@@ -929,6 +944,24 @@ mod tests {
         assert!(s.contains('♪'), "covers still loading show a placeholder");
         assert!(s.contains("Because you"), "feed Cards carry their section title");
         assert!(!s.contains("Liked Songs"));
+    }
+
+    #[test]
+    fn the_main_panes_arrows_go_back_and_forward() {
+        let (mut app, _rx) = home_app();
+        render(&mut app, 200, 64);
+        assert!(!app.hits.iter().any(|(_, h)| matches!(h, Hit::History(_))), "no history yet: no arrows");
+        let r = card_rect(&app, 1, 0);
+        click(&mut app, r.x + 2, r.y + 1);
+        render(&mut app, 200, 64);
+        let back = app.hits.iter().find_map(|(r, h)| (*h == Hit::History(-1)).then_some(*r)).expect("◂ shown with history");
+        assert!(app.view.is_some());
+        click(&mut app, back.x + 1, back.y);
+        assert!(app.view.is_none() && app.forward.len() == 1, "back on Home");
+        render(&mut app, 200, 64);
+        let fwd = app.hits.iter().find_map(|(r, h)| (*h == Hit::History(1)).then_some(*r)).expect("▸ shown");
+        click(&mut app, fwd.x, fwd.y);
+        assert!(app.view.as_ref().is_some_and(|v| v.uri == "spotify:playlist:mfy1"), "forward again");
     }
 
     #[test]
