@@ -1651,6 +1651,43 @@ mod tests {
         assert!(sent(&mut rx).is_empty());
     }
 
+    #[test]
+    fn every_row_has_a_heart_asked_about_in_batches() {
+        use singularity_proto::{Command, SavedFlag, TrackPage, TrackRow};
+        let (mut app, mut rx) = playing_app(200_000);
+        app.open("spotify:playlist:big", "Big", "", "playlist");
+        let rows: Vec<TrackRow> = (0..500).map(|i| TrackRow { uri: format!("spotify:track:r{i}"), name: format!("Row {i}"), artists: vec!["A".into()], duration_ms: 180_000, playable: true, ..Default::default() }).collect();
+        app.track_page(TrackPage { uri: "spotify:playlist:big".into(), offset: 0, total: 500, tracks: rows, header: None });
+        sent_all(&mut rx);
+        let checks = |rx: &mut tokio::sync::mpsc::Receiver<Command>| sent_all(rx).into_iter().filter_map(|c| if let Command::CheckSaved { uris } = c { Some(uris) } else { None }).collect::<Vec<_>>();
+        render(&mut app, 160, 48);
+        let first = checks(&mut rx);
+        assert_eq!(first.len(), 1, "one batch for the rows in view and ahead");
+        assert_eq!(first[0].len(), 50);
+        assert_eq!(first[0][0], "spotify:track:r0");
+        // scrolling within that window asks nothing; past it, one more batch
+        for _ in 0..10 {
+            app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+            render(&mut app, 160, 48);
+        }
+        assert!(checks(&mut rx).is_empty());
+        for _ in 0..60 {
+            app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+            render(&mut app, 160, 48);
+        }
+        let more = checks(&mut rx);
+        assert!(!more.is_empty() && more.iter().all(|b| b.len() <= 50) && more.len() <= 2, "{} batches", more.len());
+        // Spotify's answer shows; a click on a ♥ toggles it
+        app.saved_event(vec![SavedFlag { uri: "spotify:track:r68".into(), saved: true }, SavedFlag { uri: "spotify:track:r69".into(), saved: false }]);
+        let s = render(&mut app, 160, 48);
+        let line = |s: &str, name: &str| s.lines().find(|l| l.contains(name)).unwrap().to_string();
+        assert!(line(&s, "Row 68 ").contains('♥') && line(&s, "Row 69 ").contains('♡'), "{s}");
+        let h = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Save(l) if l.uri == "spotify:track:r69").then_some(*r)).unwrap();
+        click(&mut app, h.x, h.y);
+        assert!(sent_all(&mut rx).contains(&Command::SetSaved { uri: "spotify:track:r69".into(), saved: true }));
+        assert!(line(&render(&mut app, 160, 48), "Row 69 ").contains('♥'), "shown at once");
+    }
+
     // ── Stats page (#36) ──
 
     fn seeded_stats(period: singularity_proto::StatsPeriod) -> singularity_proto::Stats {

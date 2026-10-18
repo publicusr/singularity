@@ -75,6 +75,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         y += 1;
         let focused = app.focus == "home";
         let playing = app.playback.item.as_ref().map(|i| i.uri.clone());
+        app.want_saved(page.top_tracks.iter().take(n).map(|t| t.uri.as_str()), n);
         for (i, t) in page.top_tracks.iter().take(n).enumerate() {
             let selected = focused && i == v.top_sel;
             let bg = if selected { th.selection.color() } else { th.bg.color() };
@@ -84,11 +85,14 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             text(buf, x, y, 4, &num, th.s(if now { th.accent } else { th.dim }).bg(bg));
             let tw = (w.saturating_sub(12)) * 6 / 10;
             text(buf, x + 5, y, tw, &clip(&t.name, tw.saturating_sub(1)), th.s(if now { th.accent } else { th.fg }).bg(bg));
-            let aw = w.saturating_sub(12 + tw);
+            let aw = w.saturating_sub(14 + tw);
             text(buf, x + 5 + tw, y, aw, &clip(&t.album, aw.saturating_sub(1)), th.s(th.dim).bg(bg));
             let d = t.duration_ms / 1000;
-            text(buf, x + w - 6, y, 6, &format!("{:>2}:{:02}", d / 60, d % 60), th.s(th.dim).bg(bg));
+            text(buf, x + w - 8, y, 6, &format!("{:>2}:{:02}", d / 60, d % 60), th.s(th.dim).bg(bg));
             app.hit(Rect::new(x, y, w, 1), Hit::TopTrack(i));
+            let liked = app.is_saved(&t.uri);
+            let (hr, h) = crate::saved::heart(buf, x + w - 1, y, &t.uri, &t.name, liked, bg, th);
+            app.hit(hr, h);
             if let Some(au) = &t.album_uri {
                 app.hit(Rect::new(x + 5 + tw, y, (t.album.chars().count() as u16).min(aw), 1), Hit::Link(singularity_proto::Link { name: t.album.clone(), uri: au.clone() }));
             }

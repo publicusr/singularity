@@ -188,6 +188,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             text(buf, x, y, w, "Songs", th.s(th.accent).add_modifier(Modifier::BOLD));
             y += 1;
             let playing = app.playback.item.as_ref().map(|i| i.uri.clone());
+            app.want_saved(res.tracks.iter().take(n).map(|t| t.uri.as_str()), n);
             for (i, t) in res.tracks.iter().take(n).enumerate() {
                 if y >= r.bottom() {
                     break;
@@ -199,7 +200,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                 hits.push((Rect::new(x, y, w, 1), Hit::SearchTrack(i)));
                 let nw = w.saturating_sub(8) / 2;
                 text(buf, x + 1, y, nw, &clip(&t.name, nw.saturating_sub(1)), th.s(if now { th.accent } else { th.fg }).bg(bg));
-                let aw = w.saturating_sub(8 + nw);
+                let aw = w.saturating_sub(10 + nw);
                 text(buf, x + 1 + nw, y, aw, &clip(&t.artists.join(", "), aw.saturating_sub(1)), th.s(th.dim).bg(bg));
                 // the artists open their pages
                 let mut ax = x + 1 + nw;
@@ -215,7 +216,8 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                     ax += lw;
                 }
                 let d = t.duration_ms / 1000;
-                text(buf, x + w - 6, y, 6, &format!("{:>2}:{:02}", d / 60, d % 60), th.s(th.dim).bg(bg));
+                text(buf, x + w - 8, y, 6, &format!("{:>2}:{:02}", d / 60, d % 60), th.s(th.dim).bg(bg));
+                hits.push(crate::saved::heart(buf, x + w - 1, y, &t.uri, &t.name, app.is_saved(&t.uri), bg, th));
                 y += 1;
             }
             y += 1;

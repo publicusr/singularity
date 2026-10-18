@@ -50,6 +50,18 @@ pub fn savable(uri: &str) -> bool {
     matches!(kind(uri), "track" | "album" | "playlist" | "artist") && uri != LIKED
 }
 
+/// A track row's ♥ at (x, y): filled when liked, outlined when not, blank until Spotify has said (#49). Returns its
+/// click target.
+pub fn heart(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, uri: &str, name: &str, liked: Option<bool>, bg: ratatui::style::Color, th: &crate::theme::Theme) -> (ratatui::layout::Rect, crate::app::Hit) {
+    let (ch, col) = match liked {
+        Some(true) => ("♥", th.accent),
+        Some(false) => ("♡", th.border),
+        None => (" ", th.border),
+    };
+    crate::ui::text(buf, x, y, 1, ch, th.s(col).bg(bg));
+    (ratatui::layout::Rect::new(x, y, 1, 1), crate::app::Hit::Save(singularity_proto::Link { name: name.into(), uri: uri.into() }))
+}
+
 /// `YYYY-MM-DD` for a Unix time (a new Liked Songs row's "added" date).
 fn iso_date(unix_s: u64) -> String {
     // civil-from-days (Howard Hinnant)
@@ -76,6 +88,17 @@ impl App {
         let uris: Vec<String> = uris.into_iter().filter(|u| savable(u) && self.saved.asked.insert(u.clone())).collect();
         if !uris.is_empty() && matches!(self.link, crate::app::Link::Connected { .. }) {
             self.send(Command::CheckSaved { uris });
+        }
+    }
+
+    /// Rows from the first one in view onwards (`visible` of them on screen): once a row on screen hasn't been asked
+    /// about, ask about the next 50 in one go, so scrolling a long list sends a batch about once a screenful rather
+    /// than one per row (#49).
+    pub fn want_saved<'a>(&mut self, rows: impl Iterator<Item = &'a str>, visible: usize) {
+        let rows: Vec<&str> = rows.take(50).collect();
+        if rows.iter().take(visible).any(|u| savable(u) && !self.saved.asked.contains(*u)) {
+            let batch: Vec<String> = rows.into_iter().filter(|u| savable(u) && !self.saved.asked.contains(*u)).map(String::from).collect();
+            self.check_saved(batch);
         }
     }
 

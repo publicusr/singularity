@@ -522,3 +522,11 @@ flowchart LR
   (onto a queued row, onto the heading, queued never into the context). pty `queue-lift`. Live check: probe
   `--lift-context` (snapshot → lift → read back → restore) skipped, the owner's queue had no queued song (it then
   would play next); Spotify's context run also holds `spotify:delimiter` markers, which the probe skips.
+- **#49 ♥ on every track row ✅** (2026-10-18): `saved::heart` draws ♥ (liked, accent) / ♡ (not, dim) / blank (not yet
+  known) and returns a `Hit::Save` (the existing optimistic toggle with rollback). Track lists get a 2-cell column at
+  the end of the row (after the time, so the sortable headers keep their columns); search songs and artist popular
+  tracks get one too; Liked Songs' rows are known liked. `App::want_saved(rows from the first in view, visible)`: once a
+  row on screen hasn't been asked about, the next 50 go in one `CheckSaved` (the Daemon already queries 50 a time), so
+  scrolling sends about one batch a screenful (the first try sent one per new row: 55 batches over 70 rows, caught by
+  the test). Test: a 500-row playlist, one batch of 50 on open, none within the window, ≤ 2 past it; an answer shows
+  ♥/♡; a click sends SetSaved and shows at once. pty `like`.

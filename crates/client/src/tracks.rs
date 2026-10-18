@@ -175,18 +175,19 @@ impl TrackView {
 const TITLE_MAX: u16 = 60;
 const NAME_MAX: u16 = 40;
 
-/// Column x-offsets and widths for a list `w` cells wide: (#, title, artist, album, added, time); 0 = hidden.
-fn columns(w: u16) -> [(u16, u16); 6] {
+/// Column x-offsets and widths for a list `w` cells wide: (#, title, artist, album, added, time, ♥); 0 = hidden.
+fn columns(w: u16) -> [(u16, u16); 7] {
     let num = 5;
     let time = 6;
+    let heart = 2;
     let added = if w >= 110 { 12 } else { 0 };
-    let rest = w.saturating_sub(num + time + added + 2);
+    let rest = w.saturating_sub(num + time + heart + added + 2);
     let (title, artist, album) = if w >= 80 { (rest * 4 / 10, rest * 3 / 10, rest - rest * 4 / 10 - rest * 3 / 10) } else { (rest * 6 / 10, rest - rest * 6 / 10, 0) };
     // on wide Panes the columns stop growing, so the date and time stay near the names they belong to
     let (title, artist, album) = (title.min(TITLE_MAX), artist.min(NAME_MAX), album.min(NAME_MAX));
     let mut x = 0;
-    let mut out = [(0, 0); 6];
-    for (i, cw) in [num, title, artist, album, added, time].into_iter().enumerate() {
+    let mut out = [(0, 0); 7];
+    for (i, cw) in [num, title, artist, album, added, time, heart].into_iter().enumerate() {
         out[i] = (x, cw);
         x += cw;
     }
@@ -351,12 +352,19 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             text(buf, x0 + cols[4].0, y, cols[4].1, added, th.s(th.dim).bg(bg));
         }
         text(buf, x0 + cols[5].0, y, cols[5].1, &format!("{:>5}", fmt_dur(row.duration_ms)), th.s(th.dim).bg(bg));
+        let liked = if view.uri == LIKED { Some(true) } else { app.is_saved(&row.uri) };
+        hits.push(crate::saved::heart(buf, x0 + cols[6].0 + 1, y, &row.uri, &row.name, liked, bg, th));
     }
+    // the ♥s in view (and the next rows) are asked about in one batch
+    let ahead: Vec<String> = order.iter().skip(view.top).take(50).map(|&ri| list.rows[ri].uri.clone()).collect();
     if order.is_empty() && list.complete() && list.total > 0 {
         text(buf, x0, body.y + 1, w, "no tracks match the filter", th.s(th.dim));
     }
     for (r, h) in hits {
         app.hit(r, h);
+    }
+    if view.uri != LIKED {
+        app.want_saved(ahead.iter().map(String::as_str), view.visible);
     }
     app.view = Some(view);
 }
@@ -370,7 +378,7 @@ mod tests {
         for w in [60u16, 80, 120, 200, 400] {
             let c = columns(w);
             assert!(c[1].1 <= TITLE_MAX && c[2].1 <= NAME_MAX && c[3].1 <= NAME_MAX, "{w}: {c:?}");
-            assert!(c[5].0 + c[5].1 <= w, "{w}: nothing past the Pane");
+            assert!(c[6].0 + c[6].1 <= w, "{w}: nothing past the Pane");
         }
         // the date and time follow the names instead of the far edge
         let c = columns(400);
