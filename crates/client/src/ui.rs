@@ -1438,7 +1438,7 @@ mod tests {
         app.tick();
         assert!(sent(&mut rx).is_empty());
         let lines = (0..20).map(|i| LyricLine { start_ms: i * 5_000, text: format!("line {i}") }).collect();
-        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "Musixmatch".into() });
+        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "Musixmatch".into(), ..Default::default() });
         app.playback.position_ms = 31_000; // line 6 plays
         app.playback.timestamp_ms = singularity_proto::now_ms();
         let s = render(&mut app, 160, 48);
@@ -1446,9 +1446,67 @@ mod tests {
         let l9 = app.hits.iter().find_map(|(r, h)| (*h == Hit::Lyric(45_000)).then_some(*r)).unwrap();
         click(&mut app, l9.x + 10, l9.y);
         assert_eq!(sent(&mut rx), vec![Command::Seek { position_ms: 45_000 }]);
-        // none: a calm empty state
+        // none: a calm empty state that says why
         app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), ..Default::default() });
         assert!(render(&mut app, 160, 48).contains("no lyrics for this one"));
+        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), missing: "no lyrics on Spotify or LRCLIB".into(), ..Default::default() });
+        assert!(render(&mut app, 160, 48).contains("no lyrics on Spotify or LRCLIB"));
+    }
+
+    /// The lyrics Pane alone, `w` columns wide: its rows as text.
+    fn lyrics_pane(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, w, h));
+        app.hits.clear();
+        let th = app.theme.clone();
+        crate::lyrics::draw(&mut buf, Rect::new(0, 0, w, h), app, &th);
+        (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string()).collect()
+    }
+
+    #[test]
+    fn long_lyric_lines_wrap_and_the_current_one_stays_whole() {
+        use singularity_proto::{LyricLine, Lyrics};
+        let (mut app, _rx) = playing_app(400_000);
+        app.playback.item.as_mut().unwrap().uri = "spotify:track:s".into();
+        let long = "and the long ones fold over onto the next row when the Pane is narrow";
+        let lines = (0..30).map(|i| LyricLine { start_ms: i * 5_000, text: if i % 3 == 1 { format!("{i} {long}") } else { format!("line {i}") } }).collect();
+        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
+        let at = |app: &mut App, ms: u64| {
+            app.playback.position_ms = ms;
+            app.playback.timestamp_ms = singularity_proto::now_ms();
+        };
+        for w in [20u16, 26, 34, 60] {
+            for line in 0..30u64 {
+                at(&mut app, line * 5_000 + 100);
+                let rows = lyrics_pane(&mut app, w, 12);
+                // the current line's rows are all in view and, joined, are the whole line: nothing cut
+                let mut ys: Vec<u16> = app.hits.iter().filter(|(_, h)| *h == Hit::Lyric(line * 5_000)).map(|(r, _)| r.y).collect();
+                ys.sort();
+                // text starts after the stamp column when there is one
+                let col = if w >= 32 { 9 } else { 1 };
+                let joined = ys.iter().map(|&y| rows[y as usize].chars().skip(col).collect::<String>().trim().to_string()).collect::<Vec<_>>().join(" ");
+                let whole = if line % 3 == 1 { format!("{line} {long}") } else { format!("line {line}") };
+                assert_eq!(joined, whole, "{w} at line {line}: {rows:#?}");
+                assert!(ys.windows(2).all(|p| p[1] == p[0] + 1) && ys.last() < Some(&11), "{w} at line {line}: {rows:#?}");
+            }
+        }
+        // the timestamp only on a line's first row, continuations indented
+        at(&mut app, 5_100);
+        let rows = lyrics_pane(&mut app, 40, 12);
+        let i = rows.iter().position(|r| r.contains("[00:05] 1 and")).unwrap();
+        assert!(rows[i + 1].starts_with(&" ".repeat(11)) && !rows[i + 1].contains('['), "{rows:#?}");
+    }
+
+    #[test]
+    fn unsynced_lyrics_scroll_by_rows_and_stop_at_the_end() {
+        use singularity_proto::{LyricLine, Lyrics};
+        let (mut app, _rx) = playing_app(400_000);
+        app.playback.item.as_mut().unwrap().uri = "spotify:track:s".into();
+        let lines = (0..10).map(|i| LyricLine { start_ms: 0, text: format!("line {i} with words enough to wrap") }).collect();
+        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: false, lines, source: "LRCLIB".into(), ..Default::default() });
+        app.lyrics_scroll = 1_000;
+        let rows = lyrics_pane(&mut app, 20, 8);
+        assert!(rows[6].contains("wrap") && rows[7].trim() == "LRCLIB · unsynced", "the last row of the last line ends the view: {rows:#?}");
+        assert!(app.lyrics_scroll < 1_000, "clamped, so the wheel turns back at once");
     }
 
     // ── Album & artist pages, history (#11) ──

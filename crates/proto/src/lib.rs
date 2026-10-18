@@ -400,6 +400,9 @@ pub struct Lyrics {
     pub lines: Vec<LyricLine>,
     /// where they came from, for the credit line ("Musixmatch", "LRCLIB")
     pub source: String,
+    /// why there are none, when `lines` is empty ("no lyrics on Spotify or LRCLIB")
+    #[serde(default)]
+    pub missing: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

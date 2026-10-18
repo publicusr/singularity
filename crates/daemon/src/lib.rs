@@ -497,7 +497,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                         let _ = c.send(CatCmd::Lyrics { uri, meta }).await;
                     }
                     None => {
-                        let _ = out_tx.send(DaemonMsg::Event(Event::Lyrics(proto::Lyrics { uri, ..Default::default() }))).await;
+                        let _ = out_tx.send(DaemonMsg::Event(Event::Lyrics(proto::Lyrics { uri, missing: "no lyrics: the Daemon runs without the Catalogue".into(), ..Default::default() }))).await;
                     }
                 },
                 ClientMsg::Command(Command::GetHealth) => {

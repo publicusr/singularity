@@ -304,9 +304,9 @@ fn fake_artist(uri: &str, home: &HomeFeed) -> singularity_proto::ArtistPage {
 
 /// Invented synced lyrics, one line every 4 s, for UI work.
 fn fake_lyrics(uri: &str) -> singularity_proto::Lyrics {
-    let words = ["Light bends where the music falls", "Every line a slow orbit", "We drift past the photon sphere", "", "Nothing escapes the chorus", "Hold on to the event horizon"];
+    let words = ["Light bends where the music falls", "Every line a slow orbit, and the long ones fold over onto the next row when the Pane is narrow", "We drift past the photon sphere", "", "Nothing escapes the chorus", "Hold on to the event horizon"];
     let lines = (0..48).map(|i| singularity_proto::LyricLine { start_ms: 2_000 + i * 4_000, text: words[i as usize % words.len()].into() }).collect();
-    singularity_proto::Lyrics { uri: uri.into(), synced: true, lines, source: "fake".into() }
+    singularity_proto::Lyrics { uri: uri.into(), synced: true, lines, source: "fake".into(), ..Default::default() }
 }
 
 /// The fake library: Liked Songs plus the Home feed's shortcuts and first Shelf.
@@ -842,19 +842,31 @@ impl State {
         }
     }
 
-    /// Spotify's lyrics, else LRCLIB's; remembered either way (also "none"), so a track is asked about once.
+    /// Spotify's lyrics, else LRCLIB's. Remembered when found or when both said "none", so a track is asked about once;
+    /// a lookup that couldn't reach a source is asked again next time.
     async fn lyrics(&mut self, uri: String, meta: Option<singularity_proto::Item>) {
+        use crate::lyrics::Outcome;
         if let Some(l) = self.lyrics.get(&uri) {
             let _ = self.ev.send(CatEvent::Lyrics(l.clone())).await;
             return;
         }
         let mut found = None;
-        if let (Some(session), Ok(id)) = (self.session().await, librespot_core::SpotifyId::from_base62(uri.rsplit(':').next().unwrap_or(""))) {
-            match session.spclient().get_lyrics(&id).await {
-                Ok(bytes) => found = serde_json::from_slice(&bytes).ok().and_then(|v| crate::lyrics::parse_spotify(&uri, &v)),
-                Err(e) => tracing::debug!("Spotify lyrics for {uri}: {e}"),
-            }
-        }
+        let spotify = match (self.session().await, librespot_core::SpotifyId::from_base62(uri.rsplit(':').next().unwrap_or(""))) {
+            (Some(session), Ok(id)) => match session.spclient().get_lyrics(&id).await {
+                Ok(bytes) => {
+                    found = serde_json::from_slice(&bytes).ok().and_then(|v| crate::lyrics::parse_spotify(&uri, &v));
+                    if found.is_some() { Outcome::Found } else { Outcome::Nothing }
+                }
+                Err(e) if e.kind == librespot_core::error::ErrorKind::NotFound => Outcome::Nothing,
+                Err(e) => {
+                    tracing::info!("lyrics for {uri}: Spotify failed: {e}");
+                    Outcome::Failed
+                }
+            },
+            (None, _) => Outcome::Failed,
+            (_, Err(_)) => Outcome::Nothing,
+        };
+        let mut lrclib = Outcome::Nothing;
         if found.is_none() {
             let meta = match meta.filter(|m| !m.name.is_empty()) {
                 Some(m) => Some(m),
@@ -863,12 +875,33 @@ impl State {
                     self.described.get(&uri).cloned()
                 }
             };
-            if let Some(m) = meta {
-                found = crate::lyrics::lrclib(&uri, &m.artists.first().cloned().unwrap_or_default(), &m.name, m.album.as_deref(), m.duration_ms).await;
-            }
+            lrclib = match meta {
+                Some(m) => match crate::lyrics::lrclib(&uri, &m.artists.first().cloned().unwrap_or_default(), &m.name, m.album.as_deref(), m.duration_ms).await {
+                    Ok(Some(l)) => {
+                        found = Some(l);
+                        Outcome::Found
+                    }
+                    Ok(None) => Outcome::Nothing,
+                    Err(e) => {
+                        tracing::info!("lyrics for {uri}: LRCLIB failed: {e}");
+                        Outcome::Failed
+                    }
+                },
+                // without a name and artist there's nothing to look up
+                None => Outcome::Failed,
+            };
         }
-        let l = found.unwrap_or_else(|| singularity_proto::Lyrics { uri: uri.clone(), ..Default::default() });
-        self.lyrics.insert(uri, l.clone());
+        tracing::info!("lyrics for {uri}: Spotify {spotify:?}, LRCLIB {}", if spotify == Outcome::Found { "not asked".to_string() } else { format!("{lrclib:?}") });
+        let (l, keep) = match found {
+            Some(l) => (l, true),
+            None => {
+                let (missing, keep) = crate::lyrics::missing(spotify, lrclib);
+                (singularity_proto::Lyrics { uri: uri.clone(), missing, ..Default::default() }, keep)
+            }
+        };
+        if keep {
+            self.lyrics.insert(uri, l.clone());
+        }
         let _ = self.ev.send(CatEvent::Lyrics(l)).await;
     }
 

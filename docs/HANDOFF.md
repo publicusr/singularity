@@ -1,4 +1,4 @@
-# Session handoff (2026-10-18, third session)
+# Session handoff (2026-10-18, fourth session)
 
 Read this first in a new session, then `CLAUDE.md`, `docs/SPEC.md` and `GLOSSARY.md`. Decisions and their history are
 in `docs/DESIGN-TREE.md` (round log at the bottom: one entry per ticket, with the details); verified facts about
@@ -9,14 +9,14 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - **Phase 0 (planning) ✅, Phase 1 (spikes) ✅.** ADRs 0001–0004.
 - **Phase 2/3 (v1 build) ✅ (pending the owner's test round).** Spec issue **#1**, tickets on GitHub
   (`publicusr/singularity`, label `ready-for-agent`). **All v1 tickets are closed (#2–#24).**
-- Tests: **179 passing** (`cargo test`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
+- Tests: **188 passing** (`cargo test`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
   live answers). Clippy: only minor style warnings, all in older code (setup.rs, connect.rs, probe example) or
   harmless (`type_complexity` on theme tables, `needless_range_loop` in a test).
 - **Owner test round 1 is in** (2026-10-18): 9 points, findings and proposals in the DESIGN-TREE round log ("Owner
   test round 1"). Answered; tickets **#25–#33** written (`ready-for-agent`), built in that order. Genius (opt-in lyrics fallback) is parked
   pending one more answer.
-  Their Daemon was a stale 00:08 build that ignores `Shutdown` (see the round log): restart it before trusting tests.
-- The owner last tested after #8/#16 (until round 1 above). **Nothing since then has been tested by the owner** (see "Waiting on the owner").
+  Their Daemon was a stale 00:08 build that ignored `Shutdown`; since #25 a new Client stops such a Daemon by itself.
+- The owner's round 1 covered the build of 2026-10-18 ~02:00 (up to #23). **#25 onwards is untested by the owner.**
 
 ### Recent commits (all pushed to `main`)
 
@@ -29,7 +29,13 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `e470db1` | #18 ✅ | Five designs, palette variants, theme files (`design.rs`, `theme.rs`, `looks.rs`, `widgets.rs`) |
 | `043f960` | #19 ✅ | Slots, resize limits, saved layouts (`layouts.rs`) |
 | `ea77ac1` | #17 ✅ | Idle takeover (`visual/idle.rs`), App tests, pty `idle-pixels`/`idle-cells` |
-| (last) | #23 ✅ | Listening log + library backups (`daemon/src/store.rs`, `backup.rs`), Cockpit's listening Pane |
+| `0cabec8` | #23 ✅ | Listening log + library backups (`daemon/src/store.rs`, `backup.rs`), Cockpit's listening Pane |
+| `f02e909` | #25 ✅ | A Daemon that ignores `Shutdown` is stopped (`SO_PEERCRED` pid, SIGTERM/SIGKILL) |
+| `502b637` | #26 ✅ | The wheel moves the highlight in track lists and the library |
+| `736e385` | #27 ✅ | Home scrolls by lines, part-visible rows (cropped kitty placements) |
+| `137497b` | #28 ✅ | ◂ ▸ back/forward in the main Pane's title |
+| `db94e22` | #29 ✅ | Loudness and levels follow the real output level (`out_level`, `out_vu`, `out_bands`) |
+| (last) | #30 ✅ | Lyrics wrap; `Lyrics.missing` says why there are none; lookups logged at info |
 
 ## What exists in `crates/`
 
@@ -55,7 +61,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 ## Then
 
 - Test round 1 tickets, in order: ~~#25 stale Daemon~~ ✅, ~~#26 wheel/highlight~~ ✅, ~~#27 Home by lines~~ ✅, ~~#28 back/forward~~ ✅,
-  ~~#29 meters~~ ✅, #30 lyrics wrap, #31 wide terminals, #32 queue drag, #33 Theme tint. Genius parked.
+  ~~#29 meters~~ ✅, ~~#30 lyrics wrap~~ ✅, **#31 wide terminals (next)**, #32 queue drag, #33 Theme tint. Genius parked.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
 - v1.x (spec "Out of Scope"): playlist editing, stats widgets (the listening log is ready for them), Settings screen,
   more Visuals, free-tiling, podcasts, macOS Engine. Turn into tickets with the owner before building.
@@ -67,8 +73,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 
 `singularity` and `singularityd` are installed in `~/.cargo/bin` (on the owner's PATH) with
 `cargo install --locked --path crates/daemon` and `--path crates/client`. Reinstall both after each closed ticket so the
-owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #17 (reinstalled after
-#23 too, see the last commit).
+owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #30.
 
 ## Local state on the owner's machine (not in git)
 
@@ -79,12 +84,13 @@ query cache, `notify-cover.jpg`), recent searches in `~/.local/state/singularity
 `~/.config/singularity/{config.toml, keys.toml, themes/_example.toml, layouts/}` appear. From #23: the owner's real
 listening log `~/.local/share/singularity/listening.db` and `backups/` (personal data: never read it into the repo or
 fixtures).
-The owner's running Daemon is still an older release build; the Client replaces it after `cargo build --release`.
+A new Client replaces an outdated Daemon by itself (and, since #25, stops one that ignores `Shutdown`).
 
 ## Waiting on the owner
 
-- To test (nothing since the flicker fix has been tested): setup/health, queue, lyrics, artist/album pages + history,
-  search, devices; and this session's: like/follow (♡ in the player bar, `l`, menus, Follow, Save), media keys / KDE's
+- To test from round 1's fixes: Daemon replacement (#25), wheel (#26), Home by lines (#27), ◂ ▸ (#28), meters at low
+  volume (#29), lyrics at half width and a track without lyrics (#30; the Daemon log has a `lyrics for …` line per
+  lookup). Not yet reported on: setup/health, queue, artist/album pages, search, devices, and from the earlier session: like/follow (♡ in the player bar, `l`, menus, Follow, Save), media keys / KDE's
   media widget / `playerctl` (KDE widget not verified by me: it needs the real bus), designs (Ctrl+K → Design / Theme,
   `t`), Slots (`v`, ◂ ▸), "Save layout as…", keys.toml / config.toml live edits, vim preset.
 - Answered this session: keep the 10 fps unfocused slowdown (now `visuals.unfocused_fps`); keep the black hole on the

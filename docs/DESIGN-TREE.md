@@ -312,4 +312,15 @@ flowchart LR
   Engine's synthetic audio is now post-volume (square law) and resets the gain on volume changes, like the real
   capture. Test: 20 dB quieter = a third of the scale lower on every output meter, the gained level unchanged.
   pty `meters` (Cockpit at full volume and at 10 %).
-
+- **#30 Lyrics wrap; say why there are none ✅** (2026-10-18): long lines wrap by words (`lyrics::wrap`, display
+  widths via `unicode-width`, a word wider than the Pane is broken); continuation rows are indented 2, the timestamp
+  only on the first row; a synced line's rows are all click targets. The current line is held ~40 % down, moved up
+  just enough that its last row stays in view (its first row wins in a Pane shorter than the line). Unsynced lyrics
+  scroll by rows and stop at the end (the scroll is clamped, so the wheel turns back at once). The credit shortens to
+  fit ("LRCLIB · unsynced"). `Lyrics.missing` (additive) says why there are none: "no lyrics on Spotify or LRCLIB",
+  "an instrumental, says LRCLIB", or which source couldn't be asked; the Daemon logs every lookup at info
+  (`lyrics for <uri>: Spotify Nothing, LRCLIB Found`), tells Spotify's 404 (`ErrorKind::NotFound`) from a failure, and
+  remembers only definite answers, so a failed lookup is retried at the next ask. Tests: wrap widths 3–40 and wide
+  characters; every line of a 30-line song at Pane widths 20–60: the current line's rows are contiguous, in view and
+  join to the whole line; unsynced scroll stops at the end. pty `lyrics` at 140×40 and 96×34 (the fake lyrics gained
+  a long line).

@@ -25,3 +25,4 @@ wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "1"
 rayon = "1"
+unicode-width = "0.2"

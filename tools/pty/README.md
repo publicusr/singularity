@@ -11,7 +11,7 @@ venv/bin/python seed_covers.py ../../crates/client/tests/fixtures/home.json xdgc
 venv/bin/python shot.py <scenario> out-<scenario>   # writes PNGs + text dumps (PTY_COLS/PTY_ROWS: size, default 140×40)
 ```
 
-Scenarios: `cells`, `pixel` (seek), `home-cells`, `home-pixels`, `library`, `queue`, `lyrics`, `artist`, `search`,
+Scenarios: `cells`, `pixel` (seek), `home-cells`, `home-pixels`, `library`, `queue`, `lyrics` (#30: try `PTY_COLS=96 PTY_ROWS=34` for wrapped lines), `artist`, `search`,
 `like` (#22: ♥, `l`, unlike from a menu, Follow), `mpris` (#21: real `playerctl` on a private D-Bus), `config` (#20: live keys.toml/config.toml edits), `designs` (#18: every design via the picker, Cockpit's palettes), `layouts` (#19: swap, drag, save, restart), `idle-pixels`/`idle-cells` (#17: the takeover via the palette, a key wakes it), `meters` (#29: Cockpit at full volume and at 10 %), `history` (#28: ◂ ▸ in the main Pane), `home-scroll` (#27: Home by lines, cropped covers), `wheel` (#26: the wheel over a list's links and the library), `listening` (#23: seeded scratch log in Cockpit, a live play, backup, export, delete), `audio`, `well-cells`, `well-pixels`, `well-hover` (counts black-hole frames while the mouse moves). The pty reports
 10×20 px cells, so pixel-mouse and pixel-tier paths run; kitty APCs (static and animated) are decoded and composited
 under the text, as kitty does with z=-1, at pyte's cursor when the APC arrives, cropped by `x,y,w,h`.

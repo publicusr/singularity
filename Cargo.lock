@@ -3577,6 +3577,7 @@ dependencies = [
  "singularity-proto",
  "tempfile",
  "tokio",
+ "unicode-width",
  "wgpu",
 ]
 

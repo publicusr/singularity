@@ -14,7 +14,7 @@ pub fn parse_spotify(uri: &str, v: &Value) -> Option<Lyrics> {
         .map(|x| LyricLine { start_ms: x["startTimeMs"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0), text: x["words"].as_str().unwrap_or_default().trim().to_string() })
         .collect();
     let source = l["providerDisplayName"].as_str().filter(|s| !s.is_empty()).unwrap_or("Spotify").to_string();
-    (!lines.is_empty()).then(|| Lyrics { uri: uri.into(), synced, lines, source })
+    (!lines.is_empty()).then(|| Lyrics { uri: uri.into(), synced, lines, source, ..Default::default() })
 }
 
 /// LRC (`[mm:ss.xx] words`, several stamps per line allowed) → lines in time order.
@@ -39,38 +39,63 @@ pub fn parse_lrc(text: &str) -> Vec<LyricLine> {
     out
 }
 
-/// LRCLIB's answer → lyrics, synced if it has them.
+/// LRCLIB's answer → lyrics, synced if it has them (an instrumental: no lines, and it says so).
 pub fn parse_lrclib(uri: &str, v: &Value) -> Option<Lyrics> {
     if v["instrumental"].as_bool() == Some(true) {
-        return None;
+        return Some(Lyrics { uri: uri.into(), source: "LRCLIB".into(), missing: "an instrumental, says LRCLIB".into(), ..Default::default() });
     }
     if let Some(s) = v["syncedLyrics"].as_str().filter(|s| !s.trim().is_empty()) {
         let lines = parse_lrc(s);
         if !lines.is_empty() {
-            return Some(Lyrics { uri: uri.into(), synced: true, lines, source: "LRCLIB".into() });
+            return Some(Lyrics { uri: uri.into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
         }
     }
     let plain = v["plainLyrics"].as_str()?;
     let lines: Vec<LyricLine> = plain.lines().map(|t| LyricLine { start_ms: 0, text: t.trim().to_string() }).collect();
-    (!lines.is_empty()).then(|| Lyrics { uri: uri.into(), synced: false, lines, source: "LRCLIB".into() })
+    (!lines.is_empty()).then(|| Lyrics { uri: uri.into(), synced: false, lines, source: "LRCLIB".into(), ..Default::default() })
 }
 
-/// Ask LRCLIB (one request, no retry loop).
-pub async fn lrclib(uri: &str, artist: &str, title: &str, album: Option<&str>, duration_ms: u64) -> Option<Lyrics> {
+/// Ask LRCLIB (one request, no retry loop): `Ok(None)` when it has nothing, `Err` when it couldn't be asked.
+pub async fn lrclib(uri: &str, artist: &str, title: &str, album: Option<&str>, duration_ms: u64) -> Result<Option<Lyrics>, String> {
     let http = reqwest::Client::builder()
         .user_agent(concat!("Singularity/", env!("CARGO_PKG_VERSION"), " (https://github.com/publicusr/singularity)"))
         .timeout(std::time::Duration::from_secs(10))
         .build()
-        .ok()?;
+        .map_err(|e| e.to_string())?;
     let mut q = vec![("artist_name", artist.to_string()), ("track_name", title.to_string()), ("duration", (duration_ms / 1000).to_string())];
     if let Some(a) = album {
         q.push(("album_name", a.to_string()));
     }
-    let resp = http.get("https://lrclib.net/api/get").query(&q).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
+    let resp = http.get("https://lrclib.net/api/get").query(&q).send().await.map_err(|e| e.to_string())?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
     }
-    parse_lrclib(uri, &serde_json::from_slice(&resp.bytes().await.ok()?).ok()?)
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let v: Value = serde_json::from_slice(&resp.bytes().await.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    Ok(parse_lrclib(uri, &v))
+}
+
+/// How one source answered.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Outcome {
+    Found,
+    /// it answered: nothing for this track
+    Nothing,
+    /// it couldn't be asked (offline, an error, no session)
+    Failed,
+}
+
+/// What the Pane says when neither source has lines, and whether that's worth remembering (only if both answered).
+pub fn missing(spotify: Outcome, lrclib: Outcome) -> (String, bool) {
+    use Outcome::*;
+    match (spotify, lrclib) {
+        (Failed, Failed) => ("couldn't reach Spotify or LRCLIB for lyrics".into(), false),
+        (Failed, _) => ("no lyrics on LRCLIB; Spotify couldn't be asked".into(), false),
+        (_, Failed) => ("no lyrics on Spotify; LRCLIB couldn't be asked".into(), false),
+        _ => ("no lyrics on Spotify or LRCLIB".into(), true),
+    }
 }
 
 #[cfg(test)]
@@ -101,6 +126,16 @@ mod tests {
         assert!(parse_lrclib("u", &v).unwrap().synced);
         let v = serde_json::json!({"syncedLyrics": null, "plainLyrics": "a\nb"});
         assert!(!parse_lrclib("u", &v).unwrap().synced);
-        assert!(parse_lrclib("u", &serde_json::json!({"instrumental": true})).is_none());
+        let i = parse_lrclib("u", &serde_json::json!({"instrumental": true})).unwrap();
+        assert!(i.lines.is_empty() && i.missing.contains("instrumental"));
+    }
+
+    #[test]
+    fn missing_says_which_source_failed_and_only_definite_answers_are_kept() {
+        use Outcome::*;
+        assert_eq!(missing(Nothing, Nothing), ("no lyrics on Spotify or LRCLIB".into(), true));
+        let (why, keep) = missing(Failed, Nothing);
+        assert!(why.contains("Spotify couldn't be asked") && !keep);
+        assert!(!missing(Nothing, Failed).1 && !missing(Failed, Failed).1);
     }
 }
