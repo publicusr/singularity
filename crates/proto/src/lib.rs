@@ -74,6 +74,10 @@ pub enum Command {
     PlayFrom { context_uri: String, index: u32, track_uri: Option<String> },
     /// Store the Soloist API key (keyring, else an owner-only file) and (re)start the Engine with it.
     SetSoloistKey { key: String },
+    /// List Spotify Connect devices; arrives as `Event::Devices` (and again whenever they change).
+    GetDevices,
+    /// Move playback to another Connect device.
+    Transfer { device_id: String },
     /// Search everything; arrives as `Event::Search`.
     Search { query: String },
     /// Fetch an artist page; arrives as `Event::Artist`.
@@ -117,6 +121,8 @@ pub enum Event {
     Tracks(TrackPage),
     /// What the Engine is streaming right now (from Soloist's verbose log).
     Stream(StreamInfo),
+    /// The account's Connect devices. (A struct variant: the tagged encoding can't hold a bare list.)
+    Devices { devices: Vec<Device> },
     /// Search results (answer to `Search`).
     Search(SearchResults),
     /// An artist page (answer to `GetArtist`).
@@ -307,6 +313,21 @@ pub struct Link {
     pub uri: String,
 }
 
+/// A Spotify Connect device.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Device {
+    pub id: String,
+    pub name: String,
+    /// `computer`, `smartphone`, `speaker`, `tv`, `tablet`, …
+    pub kind: String,
+    /// playing (or paused) on this one right now
+    pub active: bool,
+    /// 0–100, when it has a volume
+    pub volume: Option<u8>,
+    /// this is Singularity's own Engine
+    pub is_engine: bool,
+}
+
 /// What a search found, by type (each list in Spotify's relevance order).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SearchResults {
@@ -476,5 +497,13 @@ mod tests {
         assert_eq!(s.position_at(60_000), 12_000);
         let paused = PlaybackState { speed: 0.0, ..s };
         assert_eq!(paused.position_at(60_000), 10_000);
+    }
+
+    #[test]
+    fn list_carrying_events_encode() {
+        // internally tagged enums can't hold a bare sequence; this caught Devices once
+        let e = Event::Devices { devices: vec![Device::default()] };
+        let back: Event = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
+        assert_eq!(back, e);
     }
 }

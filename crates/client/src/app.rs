@@ -54,6 +54,7 @@ pub enum Action {
     SortAdded,
     SortDuration,
     NextLook,
+    Devices,
     ClearQueue,
     Health,
     Setup,
@@ -65,7 +66,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 33] = [
+    pub const ALL: [Action; 34] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -91,6 +92,7 @@ impl Action {
         Action::SortAdded,
         Action::SortDuration,
         Action::NextLook,
+        Action::Devices,
         Action::ClearQueue,
         Action::Health,
         Action::Setup,
@@ -128,6 +130,7 @@ impl Action {
             Action::SortDuration => "Sort list by duration",
             Action::NextLook => "Black hole: next Disk look",
             Action::ClearQueue => "Clear the queue",
+            Action::Devices => "Devices: play on another speaker or phone",
             Action::Health => "Health check (Engine, login, audio, stream quality)",
             Action::Setup => "Setup: key, pairing, login, audio check",
             Action::FocusNext => "Focus next pane",
@@ -158,6 +161,7 @@ impl Action {
             Action::Filter => "/",
             Action::SortTitle | Action::SortArtist | Action::SortAlbum | Action::SortAdded | Action::SortDuration => "",
             Action::NextLook => "v",
+            Action::Devices => "d",
             Action::Health | Action::Setup | Action::ClearQueue => "",
             Action::FocusNext => "Tab",
             Action::ResetLayout => "",
@@ -190,6 +194,8 @@ pub enum Hit {
     PlayView,
     /// a search filter chip
     Chip(usize),
+    /// a device in the picker
+    DeviceRow(usize),
     /// a recent search
     Recent(usize),
     /// a song in the search results
@@ -313,6 +319,9 @@ pub struct App {
     pub search: Option<crate::search::SearchView>,
     search_kept: Option<crate::search::SearchView>,
     pub recent: Vec<String>,
+    pub devices: Vec<singularity_proto::Device>,
+    pub devices_open: bool,
+    pub devices_sel: usize,
     artist_pages: HashMap<String, singularity_proto::ArtistPage>,
     /// history: pages to go back and forward to
     pub back: Vec<Page>,
@@ -376,6 +385,9 @@ impl App {
             search: None,
             search_kept: None,
             recent: vec![],
+            devices: vec![],
+            devices_open: false,
+            devices_sel: 0,
             artist_pages: HashMap::new(),
             back: vec![],
             forward: vec![],
@@ -485,6 +497,13 @@ impl App {
             Action::SortAlbum => self.sort(Col::Album),
             Action::SortAdded => self.sort(Col::Added),
             Action::SortDuration => self.sort(Col::Duration),
+            Action::Devices => {
+                self.devices_open = true;
+                self.devices_sel = self.devices.iter().position(|d| d.active).unwrap_or(0);
+                if matches!(self.link, Link::Connected { .. }) {
+                    self.send(Command::GetDevices);
+                }
+            }
             Action::ClearQueue => {
                 if self.playback.queue.iter().any(|q| q.source == "queue") {
                     self.send(Command::ClearQueue);
@@ -538,6 +557,19 @@ impl App {
         }
         if crate::setup::wanted(self) {
             return self.wizard_key(k);
+        }
+        if self.devices_open {
+            match k.code {
+                KeyCode::Up => self.devices_sel = self.devices_sel.saturating_sub(1),
+                KeyCode::Down => self.devices_sel = (self.devices_sel + 1).min(self.devices.len().saturating_sub(1)),
+                KeyCode::Enter => {
+                    let i = self.devices_sel;
+                    self.transfer_to(i);
+                }
+                KeyCode::Esc | KeyCode::Char('d') | KeyCode::Char('q') => self.devices_open = false,
+                _ => {}
+            }
+            return;
         }
         if self.health_open {
             if matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
@@ -594,6 +626,7 @@ impl App {
             KeyCode::Left => self.run(Action::SeekBack),
             KeyCode::Char('/') => self.run(Action::Filter),
             KeyCode::Char('v') => self.run(Action::NextLook),
+            KeyCode::Char('d') => self.run(Action::Devices),
             KeyCode::Char('f') if ctrl => self.run(Action::Filter),
             KeyCode::Backspace => self.run(Action::Back),
             KeyCode::Char('.') => self.run(Action::SeekForwardFine),
@@ -836,6 +869,22 @@ impl App {
             }
         }
         true
+    }
+
+    /// Move playback to device `i` of the list (and close the picker).
+    fn transfer_to(&mut self, i: usize) {
+        self.devices_open = false;
+        let Some(d) = self.devices.get(i).cloned() else { return };
+        if d.active {
+            return self.say(format!("Already playing on {}", d.name));
+        }
+        self.send(Command::Transfer { device_id: d.id });
+        self.say(format!("Moving playback to {}", d.name));
+    }
+
+    /// The device that's playing, when it isn't Singularity's own.
+    pub fn remote_device(&self) -> Option<&singularity_proto::Device> {
+        self.devices.iter().find(|d| d.active && !d.is_engine)
     }
 
     fn play_search_track(&mut self, i: usize) {
@@ -1372,6 +1421,10 @@ impl App {
                     self.help = false;
                     return;
                 }
+                if self.devices_open && !matches!(self.hit_at(m.column, m.row), Some(Hit::DeviceRow(_))) {
+                    self.devices_open = false;
+                    return;
+                }
                 match self.hit_at(m.column, m.row) {
                     Some(Hit::Side(row)) => {
                         self.focus = "library".into();
@@ -1409,6 +1462,7 @@ impl App {
                     Some(Hit::PlayView) => self.play_view(),
                     Some(Hit::ShelfScroll(row, d)) => self.feed_view().scroll_shelf(row, d),
                     Some(Hit::Link(l)) => self.open_link(&l),
+                    Some(Hit::DeviceRow(i)) => self.transfer_to(i),
                     Some(Hit::Chip(i)) => {
                         if let Some(s) = self.search.as_mut() {
                             s.set_chip(i);

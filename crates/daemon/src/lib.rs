@@ -31,6 +31,10 @@ pub struct Hub {
     pub home: Mutex<Option<proto::HomeFeed>>,
     pub library: Mutex<Option<proto::Library>>,
     pub stream: Mutex<Option<proto::StreamInfo>>,
+    /// what the Engine reports, and another device's playback while that one is active (then it's what Clients see)
+    pub engine_playback: Mutex<PlaybackState>,
+    pub remote: Mutex<Option<PlaybackState>>,
+    pub devices: Mutex<Option<Vec<proto::Device>>>,
     /// track metadata the Catalogue filled in, for queue entries Soloist sent bare; and what's being asked for
     pub described: Mutex<std::collections::HashMap<String, proto::Item>>,
     pub describing: Mutex<std::collections::HashSet<String>>,
@@ -88,6 +92,9 @@ pub async fn serve(listener: UnixListener, engine: Box<dyn Engine>, catalogue: O
         home: Mutex::new(None),
         library: Mutex::new(None),
         stream: Mutex::new(None),
+        engine_playback: Mutex::new(PlaybackState::default()),
+        remote: Mutex::new(None),
+        devices: Mutex::new(None),
         described: Default::default(),
         describing: Default::default(),
         events,
@@ -135,8 +142,12 @@ async fn run_engine(engine: Box<dyn Engine>, hub: Arc<Hub>, mut commands: mpsc::
                     {
                         let _ = c.send(CatCmd::Describe(missing)).await;
                     }
-                    *hub.playback.lock().await = state.clone();
-                    let _ = hub.events.send(Event::Playback(state));
+                    *hub.engine_playback.lock().await = state.clone();
+                    // while another device plays, Clients follow that one
+                    if hub.remote.lock().await.is_none() {
+                        *hub.playback.lock().await = state.clone();
+                        let _ = hub.events.send(Event::Playback(state));
+                    }
                 }
                 Some(EngineEvent::Status(status)) => {
                     *hub.engine_status.lock().await = Some(status.clone());
@@ -166,10 +177,11 @@ async fn fill_queue(hub: &Hub, state: &mut PlaybackState) -> Vec<String> {
     let described = hub.described.lock().await;
     let mut asking = hub.describing.lock().await;
     let mut missing = vec![];
-    for q in state.queue.iter_mut().filter(|q| q.item.name.is_empty() && q.item.uri.starts_with("spotify:track:")) {
-        match described.get(&q.item.uri) {
-            Some(i) => q.item = i.clone(),
-            None if asking.insert(q.item.uri.clone()) => missing.push(q.item.uri.clone()),
+    let bare = |i: &proto::Item| (i.name.is_empty() || i.artists.is_empty()) && i.uri.starts_with("spotify:track:");
+    for item in state.item.iter_mut().chain(state.queue.iter_mut().map(|q| &mut q.item)).filter(|i| bare(i)) {
+        match described.get(&item.uri) {
+            Some(i) => *item = i.clone(),
+            None if asking.insert(item.uri.clone()) => missing.push(item.uri.clone()),
             None => {}
         }
     }
@@ -191,6 +203,36 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                 // show them at once
                 let mut state = hub.playback.lock().await.clone();
                 fill_queue(&hub, &mut state).await;
+                *hub.playback.lock().await = state.clone();
+                if let Some(r) = hub.remote.lock().await.as_mut() {
+                    *r = state.clone();
+                }
+                let _ = hub.events.send(Event::Playback(state));
+            }
+            CatEvent::Devices(d) => {
+                *hub.devices.lock().await = Some(d.clone());
+                let _ = hub.events.send(Event::Devices { devices: d });
+            }
+            CatEvent::Remote(r) => {
+                let state = match r {
+                    Some(mut s) => {
+                        let missing = fill_queue(&hub, &mut s).await;
+                        if !missing.is_empty()
+                            && let Some(c) = &hub.catalogue
+                        {
+                            let _ = c.send(CatCmd::Describe(missing)).await;
+                        }
+                        *hub.remote.lock().await = Some(s.clone());
+                        s
+                    }
+                    None => {
+                        let was_remote = hub.remote.lock().await.take().is_some();
+                        if !was_remote {
+                            continue;
+                        }
+                        hub.engine_playback.lock().await.clone()
+                    }
+                };
                 *hub.playback.lock().await = state.clone();
                 let _ = hub.events.send(Event::Playback(state));
             }
@@ -260,6 +302,9 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     }
     if let Some(l) = hub.library.lock().await.clone() {
         proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Library(l))).await?;
+    }
+    if let Some(d) = hub.devices.lock().await.clone() {
+        proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Devices { devices: d })).await?;
     }
     if let Some(s) = hub.stream.lock().await.clone() {
         proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Stream(s))).await?;
@@ -347,7 +392,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                     let s = hub.playback.lock().await.clone();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;
                 }
-                ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. } | Command::PlayNext { .. } | Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::GetArtist { .. } | Command::Search { .. })) => match &hub.catalogue {
+                ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. } | Command::PlayNext { .. } | Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::GetArtist { .. } | Command::Search { .. } | Command::GetDevices | Command::Transfer { .. })) => match &hub.catalogue {
                     Some(tx) => {
                         let c = match cmd {
                             Command::Login => CatCmd::Login,
@@ -360,6 +405,8 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                             Command::ClearQueue => CatCmd::Queue(connect::QueueEdit::Clear),
                             Command::GetArtist { uri } => CatCmd::Artist(uri),
                             Command::Search { query } => CatCmd::Search(query),
+                            Command::GetDevices => CatCmd::Devices,
+                            Command::Transfer { device_id } => CatCmd::Transfer(device_id),
                             _ => CatCmd::Home,
                         };
                         let _ = tx.send(c).await;
@@ -373,7 +420,21 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                     }
                 },
                 ClientMsg::Command(cmd) => {
-                    let _ = hub.commands.send(cmd).await;
+                    // while another device plays, the transport goes to it over Connect
+                    let remote = hub.remote.lock().await.clone();
+                    match (remote, &hub.catalogue) {
+                        (Some(r), Some(c)) if is_transport(&cmd) => {
+                            let cmd = match cmd {
+                                Command::TogglePlay if r.status == proto::PlayStatus::Playing => Command::Pause,
+                                Command::TogglePlay => Command::Play { uri: None },
+                                other => other,
+                            };
+                            let _ = c.send(CatCmd::Remote(cmd)).await;
+                        }
+                        _ => {
+                            let _ = hub.commands.send(cmd).await;
+                        }
+                    }
                 }
                 ClientMsg::Hello { .. } | ClientMsg::Unknown => {}
             }
@@ -388,6 +449,14 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     forwarder.abort();
     writer.abort();
     result
+}
+
+/// Commands that drive whichever device is playing.
+fn is_transport(c: &Command) -> bool {
+    matches!(
+        c,
+        Command::Play { .. } | Command::Pause | Command::TogglePlay | Command::Next | Command::Previous | Command::Seek { .. } | Command::SetVolume { .. } | Command::SetShuffle { .. } | Command::SetRepeat { .. }
+    )
 }
 
 /// Default socket location (see `singularity_proto::socket_path`).

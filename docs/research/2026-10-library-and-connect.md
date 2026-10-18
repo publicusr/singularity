@@ -40,3 +40,15 @@ Soloist's `add_to_queue` appends. Everything else is a Connect `set_queue` comma
 edit the list, send it back: `{endpoint: "set_queue", next_tracks, prev_tracks, queue_revision}`. User-queued entries
 have `provider: "queue"`; a new entry `{uri, uid: "", metadata: {is_queued: "true"}, provider: "queue"}` inserted at the
 front plays next (Spotify assigns its uid). `getTrack {uri}` → `data.trackUnion` fills names for bare queue entries.
+
+## Devices and transfer (verified live, 2026-10-18)
+
+- Cluster pushes: dealer URI `hm://connect-state/v1/cluster`, protobuf `ClusterUpdate` (`Message::from_raw`); our
+  hidden controller (`is_observable`) receives them.
+- `POST /connect-state/v1/connect/transfer/from/<playing>/to/<target>` answered **500** from this session, with or without
+  JSON headers and the connection id. Moving playback with `play` on the target (`context`, `options.skip_to.track_uri`,
+  `seek_to`, `initially_paused`) works, and the previous device goes inactive by itself.
+- Remote transport: `pause`, `resume`, `skip_next`, `skip_prev`, `seek_to {value}`, `set_shuffling_context {value}`,
+  `set_options {repeating_track, repeating_context}`, volume via `connect/volume` (0–65535). A `pause` on an already
+  paused player answers 403.
+- Quality (D17): Soloist has `supports_remote_audio_quality_control` as a Connect feature flag; no setter found.

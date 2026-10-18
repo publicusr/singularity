@@ -64,6 +64,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.help.then(|| help_rect(area)),
         crate::setup::wanted(app).then(|| crate::setup::rect(area)),
         app.health_open.then(|| crate::setup::health_rect(area)),
+        app.devices_open.then(|| devices_rect(area, app)),
         app.menu.as_ref().map(|m| menu_rect(area, m)),
         app.toast.as_ref().map(|(msg, _)| toast_rect(area, msg)),
     ];
@@ -84,6 +85,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.help {
         help(f, area, &th);
     }
+    if app.devices_open {
+        devices(f.buffer_mut(), area, app, &th);
+    }
     if app.health_open {
         crate::setup::draw_health(f.buffer_mut(), crate::setup::health_rect(area), app, &th);
     }
@@ -94,6 +98,42 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         let r = toast_rect(area, &msg);
         text(f.buffer_mut(), r.x, r.y, r.width, &format!("  {msg}  "), th.chip(th.accent));
     }
+}
+
+fn devices_rect(area: Rect, app: &App) -> Rect {
+    centered(area, 56, app.devices.len().max(1) as u16 + 5)
+}
+
+/// The device picker: where music plays. Click (or Enter) moves it there.
+fn devices(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
+    let r = devices_rect(area, app);
+    let inner = popup(buf, r, th, "Play on");
+    if app.devices.is_empty() {
+        text(buf, inner.x + 2, inner.y + 1, inner.width.saturating_sub(4), "looking for devices…", th.s(th.dim));
+        return;
+    }
+    let list = app.devices.clone();
+    for (i, d) in list.iter().enumerate() {
+        let y = inner.y + 1 + i as u16;
+        let sel = i == app.devices_sel;
+        let st = if d.active { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.fg) };
+        let bg = if sel { th.selection.color() } else { th.bg.color() };
+        text(buf, inner.x, y, inner.width, &" ".repeat(inner.width as usize), th.base().bg(bg));
+        let icon = match d.kind.as_str() {
+            "smartphone" | "tablet" => "▯",
+            "computer" => "▭",
+            "tv" => "▢",
+            _ => "◉",
+        };
+        text(buf, inner.x + 2, y, 2, icon, th.s(th.dim).bg(bg));
+        let name = if d.is_engine { format!("{} (this one)", d.name) } else { d.name.clone() };
+        text(buf, inner.x + 4, y, inner.width.saturating_sub(18), &name, st.bg(bg));
+        let tag = if d.active { "♪ playing".to_string() } else { d.volume.map(|v| format!("vol {v}")).unwrap_or_default() };
+        let tw = tag.chars().count() as u16;
+        text(buf, inner.right().saturating_sub(tw + 2), y, tw, &tag, th.s(if d.active { th.accent } else { th.dim }).bg(bg));
+        app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::DeviceRow(i));
+    }
+    text(buf, inner.x + 2, inner.bottom().saturating_sub(1), inner.width.saturating_sub(4), "Enter or click: play there · Esc: close", th.s(th.dim));
 }
 
 fn toast_rect(area: Rect, msg: &str) -> Rect {
@@ -255,6 +295,20 @@ fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     let now = pb.item.as_ref().map(|i| format!("{} — {}", i.name, i.artists.join(", "))).unwrap_or_else(|| "nothing playing".into());
     text(buf, r.x + 1, r.y, r.width, "singularity:~$ ", th.title());
     text(buf, r.x + 16, r.y, r.width.saturating_sub(17), &format!("now-playing --follow  # {now}"), th.s(th.fg));
+    // which device plays: a click opens the picker
+    let device = match app.remote_device() {
+        Some(d) => format!(" ⧉ playing on {} ", d.name),
+        None if app.devices.len() > 1 => " ⧉ devices ".to_string(),
+        None => String::new(),
+    };
+    if !device.is_empty() {
+        let dw = device.chars().count() as u16;
+        let dx = r.right().saturating_sub(dw + 1);
+        let st = if app.remote_device().is_some() { th.chip(th.accent2) } else { th.s(th.dim) };
+        text(buf, dx, r.y, dw, &device, st);
+        app.hit(Rect::new(dx, r.y, dw, 1), Hit::Action(Action::Devices));
+    }
+    let buf = f.buffer_mut();
 
     let y = r.y + 1;
     let (title, artists) = pb.item.as_ref().map(|i| (i.name.clone(), i.artists.join(", "))).unwrap_or_default();
@@ -1208,5 +1262,28 @@ mod tests {
         }
         let s = render(&mut app, 200, 64);
         assert!(s.contains("Recent searches") && s.contains("  nova"), "{s}");
+    }
+
+    // ── Devices (#13) ──
+
+    #[test]
+    fn device_picker_moves_playback_and_the_bar_says_where() {
+        use singularity_proto::{Command, Device};
+        let (mut app, mut rx) = playing_app(1);
+        let dev = |id: &str, name: &str, active: bool, engine: bool| Device { id: id.into(), name: name.into(), kind: "speaker".into(), active, volume: Some(50), is_engine: engine };
+        app.devices = vec![dev("solo", "Singularity", true, true), dev("phone", "Pixel", false, false)];
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("⧉ devices"));
+        app.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert_eq!(sent(&mut rx), vec![Command::GetDevices]);
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("Play on") && s.contains("Singularity (this one)") && s.contains("♪ playing"), "{s}");
+        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::DeviceRow(1)).then_some(*r)).unwrap();
+        click(&mut app, row.x + 3, row.y);
+        assert_eq!(sent(&mut rx), vec![Command::Transfer { device_id: "phone".into() }]);
+        assert!(!app.devices_open);
+        // now the phone plays: the bar says so
+        app.devices = vec![dev("solo", "Singularity", false, true), dev("phone", "Pixel", true, false)];
+        assert!(render(&mut app, 160, 48).contains("⧉ playing on Pixel"));
     }
 }

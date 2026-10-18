@@ -242,3 +242,26 @@ async fn lyrics_round_trip() {
         }
     }
 }
+
+#[tokio::test]
+async fn devices_and_transfer() {
+    use singularity_proto::{Command, HomeFeed};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dv.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
+    let mut a = connect(&path).await;
+    async fn devices(s: &mut UnixStream) -> Vec<singularity_proto::Device> {
+        loop {
+            if let DaemonMsg::Event(Event::Devices { devices }) = proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap() {
+                return devices;
+            }
+        }
+    }
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::GetDevices)).await.unwrap();
+    let d = devices(&mut a).await;
+    assert!(d.iter().any(|d| d.is_engine && d.active));
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::Transfer { device_id: "phone".into() })).await.unwrap();
+    let d = devices(&mut a).await;
+    assert!(d.iter().any(|d| d.id == "phone" && d.active));
+}

@@ -6,6 +6,7 @@
 //! Rules: metadata only, no crawling, back off on errors, never retry in a loop.
 
 use crate::queries::QueryRegistry;
+use futures_util::StreamExt;
 use librespot_core::{authentication::Credentials, cache::Cache, config::SessionConfig, error::ErrorKind, session::Session};
 use librespot_oauth::DeviceAuthClientBuilder;
 use serde_json::{Value, json};
@@ -44,6 +45,10 @@ pub enum CatCmd {
     Lyrics { uri: String, meta: Option<singularity_proto::Item> },
     Artist(String),
     Search(String),
+    Devices,
+    Transfer(String),
+    /// a transport command for the device that's playing (not our Engine)
+    Remote(Command),
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +63,9 @@ pub enum CatEvent {
     Lyrics(singularity_proto::Lyrics),
     Artist(singularity_proto::ArtistPage),
     Search(singularity_proto::SearchResults),
+    Devices(Vec<singularity_proto::Device>),
+    /// another device's playback (None: our Engine is the active device again)
+    Remote(Option<singularity_proto::PlaybackState>),
     Error(String),
 }
 
@@ -98,16 +106,19 @@ struct State {
     lyrics: HashMap<String, singularity_proto::Lyrics>,
     artists: HashMap<String, (Instant, singularity_proto::ArtistPage)>,
     searches: HashMap<String, (Instant, singularity_proto::SearchResults)>,
+    /// the latest Connect cluster, kept fresh by the dealer
+    cluster: std::sync::Arc<std::sync::Mutex<Option<librespot_protocol::connect::Cluster>>>,
 }
 
 async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
     let registry = QueryRegistry::new(dirs.queries.clone());
-    let mut st = State { dirs, session: None, registry, ev, remote: None, tracks: HashMap::new(), described: HashMap::new(), lyrics: HashMap::new(), artists: HashMap::new(), searches: HashMap::new() };
+    let mut st = State { dirs, session: None, registry, ev, remote: None, tracks: HashMap::new(), described: HashMap::new(), lyrics: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default() };
     // resume a previous login
     if saved_credentials(&st.dirs).is_some() {
         if st.connect(None).await {
             let _ = self_tx.send(CatCmd::Home).await;
             let _ = self_tx.send(CatCmd::Library).await;
+            let _ = self_tx.send(CatCmd::Devices).await;
         }
     } else {
         st.status(CatalogueStatus::LoggedOut).await;
@@ -118,6 +129,7 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
                 if st.login().await {
                     let _ = self_tx.send(CatCmd::Home).await;
                     let _ = self_tx.send(CatCmd::Library).await;
+                    let _ = self_tx.send(CatCmd::Devices).await;
                 }
             }
             CatCmd::Logout => st.logout().await,
@@ -129,6 +141,9 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
             CatCmd::Describe(uris) => st.describe(uris).await,
             CatCmd::Lyrics { uri, meta } => st.lyrics(uri, meta).await,
             CatCmd::Artist(uri) => st.artist(uri).await,
+            CatCmd::Devices => st.devices().await,
+            CatCmd::Transfer(id) => st.transfer(id).await,
+            CatCmd::Remote(cmd) => st.remote_command(cmd).await,
             CatCmd::Search(q) => {
                 // while typing, only the newest search matters: skip any already superseded
                 let mut q = q;
@@ -174,6 +189,9 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 CatCmd::Lyrics { uri, .. } => vec![CatEvent::Lyrics(fake_lyrics(&uri))],
                 CatCmd::Artist(uri) => vec![CatEvent::Artist(fake_artist(&uri, &home))],
                 CatCmd::Search(q) => vec![CatEvent::Search(fake_search(&q, &home))],
+                CatCmd::Devices => vec![CatEvent::Devices(fake_devices(None))],
+                CatCmd::Transfer(id) => vec![CatEvent::Devices(fake_devices(Some(&id)))],
+                CatCmd::Remote(_) => vec![],
                 CatCmd::Describe(uris) => vec![CatEvent::Described(
                     uris.into_iter().map(|u| singularity_proto::Item { name: format!("Described {}", u.rsplit(':').next().unwrap_or("")), uri: u, artists: vec!["Fake Artist".into()], duration_ms: 180_000, ..Default::default() }).collect(),
                 )],
@@ -184,6 +202,25 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
         }
     });
     (cmd_tx, ev_rx)
+}
+
+fn remote_cluster(c: &std::sync::Mutex<Option<librespot_protocol::connect::Cluster>>) -> anyhow::Result<librespot_protocol::connect::Cluster> {
+    c.lock().expect("cluster lock").clone().ok_or_else(|| anyhow::anyhow!("no Connect state yet"))
+}
+
+/// Tell the Daemon what a cluster says: the devices, and whether another device is the one playing.
+async fn emit_cluster(ev: &mpsc::Sender<CatEvent>, c: &librespot_protocol::connect::Cluster) {
+    let _ = ev.send(CatEvent::Devices(crate::connect::devices(c, crate::soloist::DEVICE_NAME))).await;
+    let _ = ev.send(CatEvent::Remote(crate::connect::remote_playback(c, crate::soloist::DEVICE_NAME, singularity_proto::now_ms()))).await;
+}
+
+/// The Engine, a phone and a speaker; `active` moves when transferred to.
+fn fake_devices(active: Option<&str>) -> Vec<singularity_proto::Device> {
+    let active = active.unwrap_or("engine");
+    [("engine", "Singularity", "speaker"), ("phone", "Pixel", "smartphone"), ("kitchen", "Kitchen", "speaker")]
+        .into_iter()
+        .map(|(id, name, kind)| singularity_proto::Device { id: id.into(), name: name.into(), kind: kind.into(), active: id == active, volume: Some(60), is_engine: id == "engine" })
+        .collect()
 }
 
 /// Invented results: the Home feed's Cards whose names contain the query, and matching fake tracks.
@@ -382,6 +419,7 @@ impl State {
         if self.session.as_ref().is_some_and(|s| s.is_invalid()) {
             tracing::info!("catalogue session ended; reconnecting");
             self.session = None;
+            // a new session needs a new dealer, so a new remote
             self.remote = None;
             self.connect(None).await;
         }
@@ -488,11 +526,64 @@ impl State {
     async fn remote(&mut self) -> anyhow::Result<(Session, &mut ConnectRemote, String)> {
         let session = self.session().await.ok_or_else(|| anyhow::anyhow!("not logged in to Spotify"))?;
         if self.remote.is_none() {
-            self.remote = Some(ConnectRemote::start(session.clone()).await?);
+            let (remote, cluster, mut updates) = ConnectRemote::start(session.clone()).await?;
+            self.remote = Some(remote);
+            *self.cluster.lock().expect("cluster lock") = Some(cluster.clone());
+            emit_cluster(&self.ev, &cluster).await;
+            // the dealer pushes every change; keep the latest and tell the Daemon
+            let (latest, ev) = (self.cluster.clone(), self.ev.clone());
+            tokio::spawn(async move {
+                while let Some(u) = updates.next().await {
+                    let Ok(u) = u else { continue };
+                    let Some(c) = u.cluster.into_option() else { continue };
+                    *latest.lock().expect("cluster lock") = Some(c.clone());
+                    emit_cluster(&ev, &c).await;
+                }
+            });
         }
         let remote = self.remote.as_mut().expect("just started");
         let to = remote.device_id(crate::soloist::DEVICE_NAME).await?;
         Ok((session, remote, to))
+    }
+
+    async fn devices(&mut self) {
+        if let Err(e) = self.remote().await {
+            tracing::debug!("Connect devices: {e}");
+            return;
+        }
+        let c = self.cluster.lock().expect("cluster lock").clone();
+        if let Some(c) = c {
+            emit_cluster(&self.ev, &c).await;
+        }
+    }
+
+    async fn transfer(&mut self, to: String) {
+        let cluster = self.cluster.clone();
+        let result = async {
+            let (_, remote, _) = self.remote().await?;
+            remote.transfer(&remote_cluster(&cluster)?, &to).await
+        }
+        .await;
+        if let Err(e) = result {
+            if let Some(r) = self.remote.as_mut() {
+                r.forget_ids();
+            }
+            let _ = self.ev.send(CatEvent::Error(format!("Couldn't move playback: {e}"))).await;
+        }
+    }
+
+    /// Our transport buttons, for the device that's playing.
+    async fn remote_command(&mut self, cmd: Command) {
+        let active = self.cluster.lock().expect("cluster lock").as_ref().map(|c| c.active_device_id.clone()).filter(|a| !a.is_empty());
+        let result = async {
+            let to = active.ok_or_else(|| anyhow::anyhow!("no device is playing"))?;
+            let (_, remote, _) = self.remote().await?;
+            remote.control(&to, &cmd).await
+        }
+        .await;
+        if let Err(e) = result {
+            let _ = self.ev.send(CatEvent::Error(format!("Couldn't control the other device: {e}"))).await;
+        }
     }
 
     /// Queue edits Soloist can't make (play next, remove, clear) go through Connect.
@@ -504,7 +595,9 @@ impl State {
         .await;
         if let Err(e) = result {
             tracing::warn!("queue edit via Connect failed: {e}");
-            self.remote = None;
+            if let Some(r) = self.remote.as_mut() {
+                r.forget_ids();
+            }
             match edit {
                 // Soloist can at least append it
                 QueueEdit::PlayNext(uri) => {
@@ -630,7 +723,9 @@ impl State {
         .await;
         if let Err(e) = result {
             tracing::warn!("play from track {index} of {context_uri} via Connect failed: {e}");
-            self.remote = None;
+            if let Some(r) = self.remote.as_mut() {
+                r.forget_ids();
+            }
             let _ = self.ev.send(CatEvent::ToEngine(Command::PlayFrom { context_uri, index, track_uri })).await;
         }
     }

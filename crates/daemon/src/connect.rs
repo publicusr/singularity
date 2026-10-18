@@ -12,6 +12,9 @@ use protobuf::Message;
 use serde_json::json;
 use std::time::Duration;
 
+/// Cluster updates as they're pushed (devices appearing, playback moving between them).
+pub type ClusterStream = librespot_core::dealer::manager::BoxedStreamResult<librespot_protocol::connect::ClusterUpdate>;
+
 pub struct ConnectRemote {
     session: Session,
     /// device ids looked up so far, by name
@@ -19,17 +22,18 @@ pub struct ConnectRemote {
 }
 
 impl ConnectRemote {
-    /// Open the dealer connection and register the hidden controller.
-    pub async fn start(session: Session) -> anyhow::Result<ConnectRemote> {
+    /// Open the dealer connection and register the hidden controller. The stream carries every cluster change.
+    pub async fn start(session: Session) -> anyhow::Result<(ConnectRemote, Cluster, ClusterStream)> {
         let mut conn = session.dealer().listen_for("hm://pusher/v1/connections/", |m| {
             m.headers.get("Spotify-Connection-Id").cloned().ok_or_else(|| librespot_core::Error::internal("no Spotify-Connection-Id"))
         })?;
+        let updates: ClusterStream = session.dealer().listen_for("hm://connect-state/v1/cluster", librespot_core::dealer::protocol::Message::from_raw::<librespot_protocol::connect::ClusterUpdate>)?;
         session.dealer().start().await?;
         let id = tokio::time::timeout(Duration::from_secs(10), conn.next()).await?.ok_or_else(|| anyhow::anyhow!("dealer closed"))??;
         session.set_connection_id(&id);
         let remote = ConnectRemote { session, ids: Default::default() };
-        remote.devices().await?;
-        Ok(remote)
+        let cluster = remote.devices().await?;
+        Ok((remote, cluster, updates))
     }
 
     /// Announce the hidden controller; the answer is the account's Connect cluster.
@@ -63,6 +67,72 @@ impl ConnectRemote {
         Ok(id)
     }
 
+    /// Forget looked-up device ids (after a failure: a device may have re-registered under a new one).
+    pub fn forget_ids(&mut self) {
+        self.ids.clear();
+    }
+
+    /// Move playback to `to`: start the same context there, at the same track and position, paused if it was.
+    /// (Connect's `transfer` endpoint answers 500 to this session; `play` with `skip_to` is proven, and only one
+    /// device plays at a time, so the old one stops by itself.)
+    pub async fn transfer(&self, cluster: &Cluster, to: &str) -> anyhow::Result<()> {
+        let ps = cluster.player_state.as_ref().ok_or_else(|| anyhow::anyhow!("nothing is playing"))?;
+        let track = ps.track.as_ref().filter(|t| !t.uri.is_empty()).ok_or_else(|| anyhow::anyhow!("nothing is playing"))?;
+        let context = if ps.context_uri.is_empty() { track.uri.clone() } else { ps.context_uri.clone() };
+        let mut pos = ps.position_as_of_timestamp.max(0) as u64;
+        if ps.is_playing && !ps.is_paused && ps.timestamp > 0 {
+            pos += singularity_proto::now_ms().saturating_sub(ps.timestamp as u64);
+        }
+        let mut skip = json!({ "track_uri": track.uri });
+        if !track.uid.is_empty() {
+            skip["track_uid"] = json!(track.uid);
+        }
+        let cmd = json!({
+            "endpoint": "play",
+            "context": { "uri": context, "url": format!("context://{context}"), "metadata": {} },
+            "play_origin": { "feature_identifier": "singularity", "feature_version": crate::VERSION },
+            "options": {
+                "skip_to": skip,
+                "seek_to": pos,
+                "initially_paused": ps.is_paused || !ps.is_playing,
+                "license": "premium",
+                "player_options_override": {},
+            },
+        });
+        self.session.spclient().send_player_command(to, cmd).await?;
+        Ok(())
+    }
+
+    /// Drive another device's player: what our transport buttons mean over Connect.
+    pub async fn control(&self, to: &str, cmd: &singularity_proto::Command) -> anyhow::Result<()> {
+        use singularity_proto::{Command as C, RepeatMode};
+        let sp = self.session.spclient();
+        let body = match cmd {
+            C::SetVolume { percent } => {
+                sp.set_remote_volume(to, (*percent as u32 * 65535 / 100) as u16).await?;
+                return Ok(());
+            }
+            C::Play { uri: Some(u) } => json!({ "endpoint": "play", "context": { "uri": u, "url": format!("context://{u}"), "metadata": {} }, "options": { "license": "premium" } }),
+            C::Play { uri: None } => json!({ "endpoint": "resume" }),
+            C::Pause => json!({ "endpoint": "pause" }),
+            C::Next => json!({ "endpoint": "skip_next" }),
+            C::Previous => json!({ "endpoint": "skip_prev" }),
+            C::Seek { position_ms } => json!({ "endpoint": "seek_to", "value": position_ms }),
+            C::SetShuffle { enabled } => json!({ "endpoint": "set_shuffling_context", "value": enabled }),
+            C::SetRepeat { mode } => match mode {
+                RepeatMode::Track => json!({ "endpoint": "set_options", "repeating_track": true, "repeating_context": false }),
+                RepeatMode::Context => json!({ "endpoint": "set_options", "repeating_track": false, "repeating_context": true }),
+                RepeatMode::Off => json!({ "endpoint": "set_options", "repeating_track": false, "repeating_context": false }),
+            },
+            C::PlayFrom { context_uri, index, track_uri } => {
+                return self.play_from(to, context_uri, *index, track_uri.as_deref()).await;
+            }
+            other => anyhow::bail!("{other:?} can't be sent to another device"),
+        };
+        sp.send_player_command(to, body).await?;
+        Ok(())
+    }
+
     /// Start `context` at its `index`-th track on device `to`.
     pub async fn play_from(&self, to: &str, context: &str, index: u32, track_uri: Option<&str>) -> anyhow::Result<()> {
         let mut skip = json!({ "track_index": index });
@@ -78,6 +148,89 @@ impl ConnectRemote {
         self.session.spclient().send_player_command(to, cmd).await?;
         Ok(())
     }
+}
+
+fn device_kind(t: librespot_protocol::devices::DeviceType) -> &'static str {
+    use librespot_protocol::devices::DeviceType as T;
+    match t {
+        T::COMPUTER => "computer",
+        T::SMARTPHONE => "smartphone",
+        T::TABLET => "tablet",
+        T::SPEAKER => "speaker",
+        T::TV => "tv",
+        T::AVR | T::STB | T::AUDIO_DONGLE => "speaker",
+        T::GAME_CONSOLE => "console",
+        T::CAST_VIDEO | T::CAST_AUDIO => "cast",
+        T::AUTOMOBILE => "car",
+        T::SMARTWATCH => "watch",
+        _ => "device",
+    }
+}
+
+/// The cluster's devices, active first, then by name; hidden ones (like our controller) left out.
+pub fn devices(cluster: &Cluster, engine_name: &str) -> Vec<singularity_proto::Device> {
+    let mut out: Vec<singularity_proto::Device> = cluster
+        .device
+        .iter()
+        .filter(|(_, d)| !d.capabilities.hidden)
+        .map(|(id, d)| singularity_proto::Device {
+            id: id.clone(),
+            name: d.name.clone(),
+            kind: device_kind(d.device_type.enum_value_or_default()).into(),
+            active: *id == cluster.active_device_id,
+            volume: (!d.capabilities.disable_volume).then(|| (d.volume as u64 * 100 / 65535) as u8),
+            is_engine: d.name == engine_name,
+        })
+        .collect();
+    out.sort_by(|a, b| b.active.cmp(&a.active).then(a.name.cmp(&b.name)));
+    out
+}
+
+/// When another device is playing: its playback, as ours is shown. None when it's our Engine (or nothing).
+pub fn remote_playback(cluster: &Cluster, engine_name: &str, now_ms: u64) -> Option<singularity_proto::PlaybackState> {
+    use singularity_proto::{Item, PlayStatus, PlaybackState, RepeatMode};
+    let active = cluster.device.get(&cluster.active_device_id)?;
+    if active.name == engine_name {
+        return None;
+    }
+    let ps = cluster.player_state.as_ref()?;
+    let t = ps.track.as_ref()?;
+    let md = |k: &str| t.metadata.get(k).cloned().filter(|v| !v.is_empty());
+    let status = if !ps.is_playing { PlayStatus::Idle } else if ps.is_paused { PlayStatus::Paused } else if ps.is_buffering { PlayStatus::Buffering } else { PlayStatus::Playing };
+    let opts = ps.options.as_ref();
+    let repeat = match opts {
+        Some(o) if o.repeating_track => RepeatMode::Track,
+        Some(o) if o.repeating_context => RepeatMode::Context,
+        _ => RepeatMode::Off,
+    };
+    // the position is anchored at the cluster's timestamp; move it to now if it's playing
+    let mut pos = ps.position_as_of_timestamp.max(0) as u64;
+    if status == PlayStatus::Playing && ps.timestamp > 0 {
+        pos += now_ms.saturating_sub(ps.timestamp as u64);
+    }
+    Some(PlaybackState {
+        status,
+        item: Some(Item {
+            uri: t.uri.clone(),
+            name: md("title").unwrap_or_default(),
+            artists: vec![], // filled in from the Catalogue (the cluster carries only the artist's URI)
+            album: md("album_title"),
+            cover_url: md("image_large_url").or_else(|| md("image_url")),
+            duration_ms: ps.duration.max(0) as u64,
+            explicit: false,
+            artist_uris: md("artist_uri").into_iter().collect(),
+            album_uri: md("album_uri"),
+        }),
+        context_uri: Some(ps.context_uri.clone()).filter(|c| !c.is_empty()),
+        context_name: ps.context_metadata.get("context_description").cloned(),
+        position_ms: pos,
+        timestamp_ms: now_ms,
+        speed: if status == PlayStatus::Playing { 1.0 } else { 0.0 },
+        volume: (active.volume as u64 * 100 / 65535) as u8,
+        shuffle: opts.is_some_and(|o| o.shuffling_context),
+        repeat,
+        queue: vec![],
+    })
 }
 
 /// One change to what plays next. Only user-queued tracks (`provider == "queue"`) can be removed.
@@ -139,6 +292,52 @@ mod tests {
             json!({"uri": "spotify:track:c", "uid": "u3", "provider": "context"}),
             json!({"uri": "spotify:track:d", "uid": "u4", "provider": "autoplay"}),
         ]
+    }
+
+    fn cluster() -> Cluster {
+        use librespot_protocol::connect::{Capabilities, DeviceInfo};
+        let dev = |name: &str, hidden: bool, vol: u32| {
+            let mut d = DeviceInfo::new();
+            d.name = name.into();
+            d.volume = vol;
+            let mut c = Capabilities::new();
+            c.hidden = hidden;
+            d.capabilities = Some(c).into();
+            d
+        };
+        let mut c = Cluster::new();
+        c.device.insert("phone".into(), dev("Pixel", false, 65535));
+        c.device.insert("solo".into(), dev("Singularity", false, 32767));
+        c.device.insert("me".into(), dev("Singularity remote", true, 0));
+        c.active_device_id = "phone".into();
+        let mut ps = librespot_protocol::player::PlayerState::new();
+        ps.is_playing = true;
+        ps.position_as_of_timestamp = 10_000;
+        ps.timestamp = 1_000_000;
+        ps.duration = 200_000;
+        let mut t = librespot_protocol::player::ProvidedTrack::new();
+        t.uri = "spotify:track:x".into();
+        t.metadata.insert("title".into(), "On the phone".into());
+        t.metadata.insert("artist_uri".into(), "spotify:artist:a".into());
+        ps.track = Some(t).into();
+        c.player_state = Some(ps).into();
+        c
+    }
+
+    #[test]
+    fn devices_and_remote_playback_from_the_cluster() {
+        let c = cluster();
+        let d = devices(&c, "Singularity");
+        assert_eq!(d.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Pixel", "Singularity"], "active first, hidden left out");
+        assert!(d[0].active && !d[1].active && d[1].is_engine);
+        assert_eq!(d[1].volume, Some(49));
+        let p = remote_playback(&c, "Singularity", 1_005_000).unwrap();
+        assert_eq!(p.item.as_ref().unwrap().name, "On the phone");
+        assert_eq!(p.position_ms, 15_000, "moved to now");
+        assert_eq!(p.status, singularity_proto::PlayStatus::Playing);
+        let mut ours = c.clone();
+        ours.active_device_id = "solo".into();
+        assert!(remote_playback(&ours, "Singularity", 0).is_none(), "our own Engine reports for itself");
     }
 
     #[test]
