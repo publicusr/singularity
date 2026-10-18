@@ -242,7 +242,17 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 }
                 CatCmd::CheckSaved(uris) => vec![CatEvent::Saved(uris.into_iter().map(|uri| singularity_proto::SavedFlag { saved: saved.get(&uri).copied().unwrap_or_else(|| fake_saved(&uri)), uri }).collect())],
                 CatCmd::Describe(uris) => vec![CatEvent::Described(
-                    uris.into_iter().map(|u| singularity_proto::Item { name: format!("Described {}", u.rsplit(':').next().unwrap_or("")), uri: u, artists: vec!["Fake Artist".into()], duration_ms: 180_000, ..Default::default() }).collect(),
+                    uris.into_iter()
+                        .map(|u| singularity_proto::Item {
+                            name: format!("Described {}", u.rsplit(':').next().unwrap_or("")),
+                            uri: u,
+                            artists: vec!["Fake Artist".into()],
+                            artist_uris: vec!["spotify:artist:fakeartist".into()],
+                            album_uri: Some("spotify:album:fake1".into()),
+                            duration_ms: 180_000,
+                            ..Default::default()
+                        })
+                        .collect(),
                 )],
             };
             for ev in evs {

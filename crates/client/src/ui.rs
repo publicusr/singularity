@@ -277,6 +277,7 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         // the main Pane is titled after what it shows
         let title = match (slot.as_str(), &app.view, &app.artist) {
             ("home", _, _) if app.search.is_some() => "search".to_string(),
+            ("home", _, _) if app.stats_view.is_some() => "stats".to_string(),
             ("home", _, Some(a)) => a.name.clone(),
             ("home", Some(v), _) => v.title.clone(),
             _ => title.to_string(),
@@ -326,7 +327,11 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             "hole" => crate::visual::well::draw_plain(f.buffer_mut(), *rect, inner, app, th),
             "nowplaying" => crate::widgets::nowplaying(f.buffer_mut(), inner, app, th),
             "levels" => crate::widgets::levels(f.buffer_mut(), inner, app, th),
-            "listening" => crate::widgets::listening(f.buffer_mut(), inner, app, th),
+            "listening" => {
+                crate::widgets::listening(f.buffer_mut(), inner, app, th);
+                // a click opens the whole story
+                app.hit(inner, Hit::Action(Action::Stats));
+            }
             "rain" => crate::widgets::rain(f.buffer_mut(), inner, app, th),
             "scope" => crate::widgets::scope(f.buffer_mut(), inner, app, th),
             "top" => crate::widgets::top(f.buffer_mut(), inner, app, th),
@@ -361,6 +366,10 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         }
         if slot == "home" && app.search.is_some() {
             crate::search::draw(f.buffer_mut(), inner, app, th);
+            continue;
+        }
+        if slot == "home" && app.stats_view.is_some() {
+            crate::stats::draw(f.buffer_mut(), inner, app, th);
             continue;
         }
         if slot == "home" && app.artist.is_some() {
@@ -1498,6 +1507,129 @@ mod tests {
         mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), top);
         mouse(&mut app, MouseEventKind::Up(MouseButton::Left), top);
         assert!(sent(&mut rx).is_empty());
+    }
+
+    // ── Stats page (#36) ──
+
+    fn seeded_stats(period: singularity_proto::StatsPeriod) -> singularity_proto::Stats {
+        use singularity_proto::StatsRow;
+        let row = |kind: &str, i: usize, name: &str, sub: &str| StatsRow {
+            name: name.into(),
+            uri: Some(format!("spotify:{kind}:{i}")),
+            track_uri: format!("spotify:track:t{i}"),
+            subtitle: sub.into(),
+            minutes: 300 - i as u32 * 25,
+            plays: 40 - i as u32 * 3,
+            all_time_plays: 90,
+        };
+        let artists = ["Nova Drift", "Mira Vale", "Glass Harbour With A Name Long Enough To Need Clipping", "Saffron Echo"];
+        singularity_proto::Stats {
+            period,
+            from_day: 20738,
+            to_day: 20744,
+            minutes: 1234,
+            plays: 321,
+            streak_days: 5,
+            longest_streak_days: 9,
+            by_hour: (0..24).map(|h| (h * 7 % 24) as u32 * 10).collect(),
+            top_artists: artists.iter().enumerate().map(|(i, a)| row("artist", i, a, "")).collect(),
+            top_tracks: (0..12).map(|i| row("track", i, &format!("Track number {i} with a rather long title"), artists[i % 4])).collect(),
+            top_albums: (0..3).map(|i| row("album", i, &format!("Album {i}"), artists[i])).collect(),
+        }
+    }
+
+    fn stats_app() -> (App, tokio::sync::mpsc::Receiver<singularity_proto::Command>) {
+        use singularity_proto::{Command, StatsPeriod};
+        let (mut app, mut rx) = playing_app(200_000);
+        app.run(Action::Stats);
+        assert_eq!(sent(&mut rx), vec![Command::GetStats { period: StatsPeriod::Week }]);
+        for p in StatsPeriod::ALL {
+            app.stats.insert(p, seeded_stats(p));
+        }
+        (app, rx)
+    }
+
+    #[test]
+    fn the_stats_page_fits_every_size_without_spilling() {
+        use singularity_proto::StatsPeriod;
+        let (mut app, _rx) = stats_app();
+        for (w, h) in [(80u16, 24u16), (140, 40), (256, 68)] {
+            for (i, _) in StatsPeriod::ALL.iter().enumerate() {
+                if i > 0 {
+                    app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+                }
+                let s = render(&mut app, w, h);
+                let home = app.layout.compute_shaped(Rect::new(0, 1, w, h - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+                assert!(s.contains("stats"), "{w}x{h}: titled");
+                assert!(s.contains("This week") || (s.contains("Week") && s.contains("All")), "{w}x{h}: every tab: {s}");
+                assert!(s.contains("plays"), "{w}x{h}: the summary is in view");
+                assert!(s.contains("Nova Drift"), "{w}x{h}: the top artist\n{s}");
+                // nothing written over the Pane's right border
+                let lines: Vec<&str> = s.lines().collect();
+                for y in home.y + 1..home.bottom() - 1 {
+                    let c = lines[y as usize].chars().nth((home.right() - 1) as usize).unwrap();
+                    assert!(!c.is_alphanumeric(), "{w}x{h}: text over the border at row {y}: {:?}", lines[y as usize]);
+                }
+            }
+            // back to the first tab for the next size; ← stops there and doesn't seek
+            for _ in 0..5 {
+                app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+            }
+            assert_eq!(app.stats_view.as_ref().unwrap().period, StatsPeriod::Week);
+        }
+        let s = render(&mut app, 256, 68);
+        assert!(s.contains("Top artists") && s.contains("Top tracks") && s.contains("Top albums"));
+        assert!(s.contains("20 h 34 min · 321 plays · 5-day streak"), "{s}");
+        assert!(s.contains("12 – 18 Oct 2026"));
+    }
+
+    #[test]
+    fn stats_rows_open_artists_and_play_tracks() {
+        use singularity_proto::{Command, StatsPeriod};
+        let (mut app, mut rx) = stats_app();
+        render(&mut app, 140, 40);
+        // a click on the top artist opens its page, and Back comes back to Stats
+        let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::StatsRow(0)).then_some(*r)).unwrap();
+        click(&mut app, r.x + 4, r.y);
+        assert_eq!(app.artist.as_ref().map(|a| a.uri.as_str()), Some("spotify:artist:0"));
+        sent(&mut rx);
+        app.run(Action::Back);
+        assert!(app.stats_view.is_some());
+        assert_eq!(sent(&mut rx), vec![Command::GetStats { period: StatsPeriod::Week }], "asked again on return");
+        // Enter on the first track plays it (rows: 4 artists, then tracks)
+        render(&mut app, 140, 40);
+        for _ in 0..4 {
+            app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:track:t0".into()) }]);
+        // a tab click asks for that period; a logged Play refreshes what's shown
+        render(&mut app, 140, 40);
+        let tab = app.hits.iter().find_map(|(r, h)| (*h == Hit::StatsPeriod(StatsPeriod::Year)).then_some(*r)).unwrap();
+        click(&mut app, tab.x + 1, tab.y);
+        assert_eq!(sent(&mut rx), vec![Command::GetStats { period: StatsPeriod::Year }]);
+        app.refresh_stats();
+        assert_eq!(sent(&mut rx), vec![Command::GetStats { period: StatsPeriod::Year }]);
+        // a row without a link says so instead of doing nothing
+        app.stats.get_mut(&StatsPeriod::Year).unwrap().top_artists[0].uri = None;
+        render(&mut app, 140, 40);
+        let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::StatsRow(0)).then_some(*r)).unwrap();
+        click(&mut app, r.x + 4, r.y);
+        assert!(app.toast.as_ref().is_some_and(|(m, _)| m.contains("Finding its link")));
+    }
+
+    #[test]
+    fn an_empty_log_says_it_fills_as_you_listen() {
+        let (mut app, _rx) = playing_app(200_000);
+        app.run(Action::Stats);
+        assert!(render(&mut app, 140, 40).contains("counting…"));
+        app.stats.insert(Default::default(), singularity_proto::Stats { by_hour: vec![0; 24], ..Default::default() });
+        let s = render(&mut app, 140, 40);
+        // it wraps rather than being cut
+        assert!(s.contains("nothing logged yet in this period") && s.contains("half a short track)"), "{s}");
+        let home = app.layout.compute_shaped(Rect::new(0, 1, 140, 40 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        let pane: String = s.lines().map(|l| l.chars().skip(home.x as usize).take(home.width as usize).collect::<String>()).collect::<Vec<_>>().join("\n");
+        assert!(!pane.contains('…'), "nothing cut: {pane}");
     }
 
     // ── Lyrics (#14) ──

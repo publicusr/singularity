@@ -78,6 +78,17 @@ impl Theme {
     pub fn chip(&self, c: Rgb) -> Style {
         Style::default().fg(self.bg.color()).bg(c.color()).add_modifier(Modifier::BOLD)
     }
+    /// The ramp's colour at `t` in 0..=1 (the accent if a theme somehow has no ramp).
+    pub fn ramp_at(&self, t: f32) -> Rgb {
+        let r = &self.ramp;
+        if r.is_empty() {
+            return self.accent;
+        }
+        let x = t.clamp(0.0, 1.0) * (r.len() - 1) as f32;
+        let (i, f) = (x.floor() as usize, x.fract());
+        r[i].lerp(r[(i + 1).min(r.len() - 1)], f)
+    }
+
     /// The border colour of the `i`-th Pane.
     pub fn pane_border(&self, i: usize) -> Rgb {
         if self.boxes.is_empty() { self.border } else { self.boxes[i % self.boxes.len()] }

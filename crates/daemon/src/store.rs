@@ -184,6 +184,26 @@ impl Store {
         })
     }
 
+    /// Tracks whose plays lack album or artist links (logged before #35), at most `n`: to look up and `backfill`.
+    pub fn unlinked_tracks(&self, n: usize) -> anyhow::Result<Vec<String>> {
+        let mut q = self.db.prepare("SELECT DISTINCT track_uri FROM plays WHERE (album_uri IS NULL OR artist_uris IS NULL) AND track_uri LIKE 'spotify:track:%' LIMIT ?1")?;
+        Ok(q.query_map([n as i64], |r| r.get(0))?.collect::<Result<_, _>>()?)
+    }
+
+    /// Give older plays the links of their tracks, as the Catalogue described them. Returns how many plays changed.
+    pub fn backfill(&self, items: &[Item]) -> anyhow::Result<usize> {
+        let mut changed = 0;
+        for i in items.iter().filter(|i| i.album_uri.is_some() || !i.artist_uris.is_empty()) {
+            let artists = (!i.artist_uris.is_empty()).then(|| serde_json::to_string(&i.artist_uris)).transpose()?;
+            changed += self.db.execute(
+                "UPDATE plays SET album_uri = COALESCE(album_uri, ?1), artist_uris = COALESCE(artist_uris, ?2)
+                 WHERE track_uri = ?3 AND (album_uri IS NULL OR artist_uris IS NULL)",
+                params![i.album_uri, artists, i.uri],
+            )?;
+        }
+        Ok(changed)
+    }
+
     fn plays_json(&self) -> anyhow::Result<Vec<Value>> {
         let mut q = self.db.prepare("SELECT started_ms, track_uri, name, artists, album, context_uri, duration_ms, played_ms, device, album_uri, artist_uris FROM plays ORDER BY started_ms")?;
         let rows = q.query_map([], |r| {
@@ -641,6 +661,14 @@ mod tests {
         // no links in old rows: the track is there to find them through
         assert_eq!((all.top_artists[0].uri.clone(), all.top_artists[0].track_uri.as_str()), (None, "spotify:track:old"));
         assert_eq!(all.top_albums[0].uri, None);
+        // the Catalogue's description fills the links in, once
+        assert_eq!(store.unlinked_tracks(20).unwrap(), ["spotify:track:old"]);
+        let described = Item { uri: "spotify:track:old".into(), artist_uris: vec!["spotify:artist:nova".into()], album_uri: Some("spotify:album:orbits".into()), ..Default::default() };
+        assert_eq!(store.backfill(std::slice::from_ref(&described)).unwrap(), 1);
+        assert_eq!(store.backfill(&[described]).unwrap(), 0);
+        let all = store.stats(StatsPeriod::All, 1_792_000_000_000).unwrap();
+        assert_eq!((all.top_artists[0].uri.as_deref(), all.top_albums[0].uri.as_deref()), (Some("spotify:artist:nova"), Some("spotify:album:orbits")));
+        assert!(store.unlinked_tracks(20).unwrap().is_empty());
         // opening again doesn't migrate twice
         drop(store);
         assert!(Store::open(dir.path()).is_ok());

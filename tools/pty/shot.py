@@ -418,10 +418,28 @@ def seed_listening(data):
         day = int((t + off) // 86400)
         for _ in range(rnd.randint(1, 4 + (175 - back) // 20)):
             a = rnd.choice(["Nova Drift", "Mira Vale", "Lumen Fields"])
-            db.execute("INSERT INTO plays (started_ms, day, track_uri, name, artists, duration_ms, played_ms, device) VALUES (?,?,?,?,?,?,?,?)",
-                       (int(t * 1000), day, "spotify:track:fake1", "Fake Track", f'["{a}"]', 200000, rnd.randint(60, 200) * 1000, "here"))
+            n = rnd.randint(1, 12)
+            # schema 1 (as #23 wrote it): no links; the Daemon migrates and fills them in from the Catalogue (#35)
+            db.execute("INSERT INTO plays (started_ms, day, track_uri, name, artists, album, duration_ms, played_ms, device) VALUES (?,?,?,?,?,?,?,?,?)",
+                       (int(t * 1000) + _ * 240_000, day, f"spotify:track:fake{n}", f"Fake Track {n:03}", f'["{a}"]', f"{a} · Album {n % 3 + 1}", 200000, rnd.randint(60, 200) * 1000, "here"))
     db.commit()
     db.close()
+
+
+def stats(t, out):
+    """#36: the Stats page from a seeded log: tabs, sizes, and a top artist opening once its link was filled in."""
+    t.send(b"\x0b", 0.3); t.send(b"stats", 0.3); t.send(b"\r", 1.5)
+    t.shot(f"{out}/0-week.png")
+    t.send(b"\x1b[C", 1.0); t.send(b"\x1b[C", 1.0)  # → → This year
+    t.shot(f"{out}/1-year.png")
+    t.send(b"\x1b[C", 2.5)  # All time; the links arrive meanwhile
+    t.shot(f"{out}/2-all.png")
+    t.send(b"\r", 1.5)  # the first row: the top artist
+    t.shot(f"{out}/3-opened.png")
+    print("opened:", [l.strip() for l in t.screen.display if "Nova Drift" in l or "Mira Vale" in l or "Lumen Fields" in l][:1])
+    t.send(b"\x1b", 1.0)  # back to Stats
+    print("back on stats:", any("Week" in l and "Month" in l for l in t.screen.display))
+    t.send(b"q", 0.5)
 
 
 def listening(t, out, env):
@@ -529,7 +547,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll") else "0"
@@ -539,6 +557,9 @@ def main():
         env["XDG_DOWNLOAD_DIR"] = f"{os.path.abspath(out)}/downloads"
         env["SINGULARITY_BACKUP_CHECK_SECS"] = "2"
         os.makedirs(env["XDG_DOWNLOAD_DIR"], exist_ok=True)
+        seed_listening(env["SINGULARITY_DATA"])
+    if scenario == "stats":
+        env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
         seed_listening(env["SINGULARITY_DATA"])
     bus = None
     if scenario == "mpris":
@@ -563,6 +584,8 @@ def main():
             return idle(t, out)
         if scenario == "listening":
             return listening(t, out, env)
+        if scenario == "stats":
+            return stats(t, out)
         if scenario == "wheel":
             return wheel(t, out)
         if scenario == "history":

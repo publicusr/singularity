@@ -37,15 +37,7 @@ impl Meters {
 
 /// The ramp colour at `t` in 0..=1.
 fn ramp(th: &Theme, t: f32) -> Rgb {
-    let r = &th.ramp;
-    if r.is_empty() {
-        return th.accent;
-    }
-    let x = t.clamp(0.0, 1.0) * (r.len() - 1) as f32;
-    let (i, f) = (x.floor() as usize, x.fract());
-    let (a, b) = (r[i], r[(i + 1).min(r.len() - 1)]);
-    let mix = |p: u8, q: u8| (p as f32 + (q as f32 - p as f32) * f).round() as u8;
-    Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+    th.ramp_at(t)
 }
 
 /// A column `h` rows tall filled to `v` (0..=1) from the bottom, in eighths.

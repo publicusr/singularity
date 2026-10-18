@@ -274,7 +274,16 @@ async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>) {
         let s = store.lock().expect("store lock");
         match cmd {
             Command::GetListening => (s.summary(now).map(Event::Listening), None),
-            Command::GetStats { period } => (s.stats(period, now).map(Event::Stats), None),
+            Command::GetStats { period } => {
+                // plays logged before links were kept get them from the Catalogue, a few at a time (see Described)
+                if let Some(c) = &hub.catalogue
+                    && let Ok(uris) = s.unlinked_tracks(20)
+                    && !uris.is_empty()
+                {
+                    let _ = c.try_send(CatCmd::Describe(uris));
+                }
+                (s.stats(period, now).map(Event::Stats), None)
+            }
             Command::ExportLocalData => (s.export(&store::downloads_dir(), now).map(|p| Event::Notice { message: format!("Listening data exported to {}", p.display()) }), None),
             _ => match s.delete_all() {
                 Ok(()) => (Ok(Event::Notice { message: "Deleted the listening log and every library backup".into() }), s.summary(now).ok().map(Event::Listening)),
@@ -309,6 +318,16 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
     while let Some(ev) = events.recv().await {
         match ev {
             CatEvent::Described(items) => {
+                // old plays of these tracks get their links; Clients showing stats then ask again
+                if let Some(store) = hub.store.clone() {
+                    let summary = {
+                        let s = store.lock().expect("store lock");
+                        s.backfill(&items).ok().filter(|n| *n > 0).and_then(|_| s.summary(proto::now_ms()).ok())
+                    };
+                    if let Some(summary) = summary {
+                        let _ = hub.events.send(Event::Listening(summary));
+                    }
+                }
                 {
                     let mut d = hub.described.lock().await;
                     let mut asking = hub.describing.lock().await;

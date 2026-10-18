@@ -457,6 +457,16 @@ impl StatsPeriod {
             StatsPeriod::All => "All time",
         }
     }
+
+    /// The label when space is short.
+    pub fn short(self) -> &'static str {
+        match self {
+            StatsPeriod::Week => "Week",
+            StatsPeriod::Month => "Month",
+            StatsPeriod::Year => "Year",
+            StatsPeriod::All => "All",
+        }
+    }
 }
 
 /// The listening log for one period: a live "Wrapped". Rankings go by minutes, then plays.

@@ -65,6 +65,7 @@ pub enum Action {
     Devices,
     ClearQueue,
     Health,
+    Stats,
     ExportListening,
     DeleteListening,
     Setup,
@@ -76,7 +77,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 44] = [
+    pub const ALL: [Action; 45] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -113,6 +114,7 @@ impl Action {
         Action::Devices,
         Action::ClearQueue,
         Action::Health,
+        Action::Stats,
         Action::ExportListening,
         Action::DeleteListening,
         Action::Setup,
@@ -160,6 +162,7 @@ impl Action {
             Action::ClearQueue => "Clear the queue",
             Action::Devices => "Devices: play on another speaker or phone",
             Action::Health => "Health check (Engine, login, audio, stream quality)",
+            Action::Stats => "Stats: your listening, a live Wrapped (top artists, tracks, albums)",
             Action::ExportListening => "Export listening data (log + latest library backup, to Downloads)",
             Action::DeleteListening => "Delete listening data (the log and every library backup)…",
             Action::Setup => "Setup: key, pairing, login, audio check",
@@ -209,6 +212,7 @@ impl Action {
             Action::Devices => "devices",
             Action::ClearQueue => "clear_queue",
             Action::Health => "health",
+            Action::Stats => "stats",
             Action::ExportListening => "export_listening",
             Action::DeleteListening => "delete_listening",
             Action::Setup => "setup",
@@ -271,6 +275,10 @@ pub enum Hit {
     Swap(String, i32),
     /// the main Pane's ◂ ▸: back / forward through the pages seen
     History(i32),
+    /// a period tab on the Stats page
+    StatsPeriod(singularity_proto::StatsPeriod),
+    /// a ranked row on the Stats page, by its place in `stats::entries`
+    StatsRow(usize),
 }
 
 /// Two clicks on the same row within this time play it.
@@ -311,6 +319,7 @@ pub enum Page {
     List { uri: String, title: String, subtitle: String },
     Artist { uri: String, name: String },
     Search,
+    Stats,
 }
 
 pub struct Menu {
@@ -390,6 +399,12 @@ pub struct App {
     /// the search page (kept while you browse its results, so back returns to them)
     pub search: Option<crate::search::SearchView>,
     search_kept: Option<crate::search::SearchView>,
+    /// the Stats page, while it's open (#36)
+    pub stats_view: Option<crate::stats::StatsView>,
+    /// the period the Stats page last showed
+    stats_period: singularity_proto::StatsPeriod,
+    /// the Daemon's latest answer per period
+    pub stats: std::collections::HashMap<singularity_proto::StatsPeriod, singularity_proto::Stats>,
     pub recent: Vec<String>,
     pub devices: Vec<singularity_proto::Device>,
     pub devices_open: bool,
@@ -490,6 +505,9 @@ impl App {
             artist: None,
             search: None,
             search_kept: None,
+            stats_view: None,
+            stats_period: Default::default(),
+            stats: Default::default(),
             recent: vec![],
             devices: vec![],
             devices_open: false,
@@ -757,6 +775,7 @@ impl App {
             Action::GoHome => self.navigate(Page::Home),
             Action::Back => self.go_back(),
             Action::Search => self.navigate(Page::Search),
+            Action::Stats => self.navigate(Page::Stats),
             Action::Forward => self.go_forward(),
             Action::Filter => match self.view.as_mut() {
                 Some(v) => {
@@ -910,6 +929,9 @@ impl App {
         if self.focus == "home" && self.search.is_some() && self.search_key(k) {
             return;
         }
+        if self.focus == "home" && !shift && self.stats_view.is_some() && self.stats_key(k) {
+            return;
+        }
         if self.focus == "home" && !shift && self.view.is_some() && self.tracks_key(k) {
             return;
         }
@@ -917,7 +939,7 @@ impl App {
             return;
         }
         // Esc on an artist or search page goes back, never quits
-        if (self.artist.is_some() || self.search.is_some()) && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
+        if (self.artist.is_some() || self.search.is_some() || self.stats_view.is_some()) && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
             return self.run(Action::Back);
         }
         if self.focus == "library" && !shift && self.side_key(k) {
@@ -933,6 +955,92 @@ impl App {
         // the keymap (keys.toml); arrows a focused Pane didn't use fall through to here and seek
         if let Some(a) = self.keymap.action(k) {
             self.run(a);
+        }
+    }
+
+    // ── Stats page (#36) ───────────────────────────────────────────
+
+    /// Ask the Daemon again for the stats on screen (after a Play was logged).
+    pub fn refresh_stats(&mut self) {
+        if let Some(v) = &self.stats_view {
+            let period = v.period;
+            self.send(Command::GetStats { period });
+        }
+    }
+
+    fn stats_set_period(&mut self, p: singularity_proto::StatsPeriod) {
+        self.stats_period = p;
+        if let Some(v) = self.stats_view.as_mut() {
+            *v = crate::stats::StatsView { period: p, ..Default::default() };
+        }
+        self.send(Command::GetStats { period: p });
+    }
+
+    /// The selected row of the Stats page: its section and the row itself.
+    fn stats_entry(&self, i: usize) -> Option<(crate::stats::Section, singularity_proto::StatsRow)> {
+        let s = self.stats.get(&self.stats_view.as_ref()?.period)?;
+        let (sec, k) = *crate::stats::entries(s).get(i)?;
+        Some((sec, sec.rows(s)[k].clone()))
+    }
+
+    /// Enter or a click on a Stats row: a track plays, an artist or album opens.
+    fn stats_act(&mut self, i: usize) {
+        use crate::stats::Section;
+        let Some((sec, row)) = self.stats_entry(i) else { return };
+        match (sec, row.uri) {
+            (Section::Tracks, _) => self.send(Command::Play { uri: Some(row.track_uri) }),
+            (Section::Artists, Some(uri)) => self.open(&uri, &row.name, "", "artist"),
+            (Section::Albums, Some(uri)) => self.open(&uri, &row.name, &row.subtitle, "album"),
+            // logged before links were kept: the Daemon is looking them up
+            (_, None) => {
+                self.say("Finding its link (it was logged before links were kept); try again in a moment");
+                self.refresh_stats();
+            }
+        }
+    }
+
+    fn stats_key(&mut self, k: KeyEvent) -> bool {
+        use singularity_proto::StatsPeriod;
+        let Some(v) = self.stats_view.clone() else { return false };
+        let n = self.stats.get(&v.period).map(|s| crate::stats::entries(s).len()).unwrap_or(0);
+        let at = StatsPeriod::ALL.iter().position(|p| *p == v.period).unwrap_or(0);
+        let step = |d: i64| (v.sel as i64 + d).clamp(0, n.saturating_sub(1) as i64) as usize;
+        let sel = match k.code {
+            // ←/→ walk the tabs (and stop at the ends rather than seeking)
+            KeyCode::Left | KeyCode::Right => {
+                let to = if k.code == KeyCode::Left { at.checked_sub(1) } else { Some(at + 1).filter(|i| *i < StatsPeriod::ALL.len()) };
+                if let Some(to) = to {
+                    self.stats_set_period(StatsPeriod::ALL[to]);
+                }
+                return true;
+            }
+            KeyCode::Up => step(-1),
+            KeyCode::Down => step(1),
+            KeyCode::PageUp => step(-(v.visible.max(1) as i64)),
+            KeyCode::PageDown => step(v.visible.max(1) as i64),
+            KeyCode::Home => 0,
+            KeyCode::End => n.saturating_sub(1),
+            KeyCode::Enter => {
+                self.stats_act(v.sel);
+                return true;
+            }
+            KeyCode::Menu | KeyCode::F(10) => {
+                self.stats_menu(v.sel, None);
+                return true;
+            }
+            _ => return false,
+        };
+        if let Some(v) = self.stats_view.as_mut() {
+            v.sel = sel;
+        }
+        true
+    }
+
+    /// The usual track menu, for a track row.
+    fn stats_menu(&mut self, i: usize, at: Option<(u16, u16)>) {
+        if let Some((crate::stats::Section::Tracks, row)) = self.stats_entry(i) {
+            let at = at.or_else(|| self.hit_rect(&Hit::StatsRow(i)).map(|r| (r.x + 4, r.y + 1)));
+            self.open_track_menu(row.track_uri, row.name, at);
         }
     }
 
@@ -1015,6 +1123,9 @@ impl App {
         if let Some(a) = &self.artist {
             return Page::Artist { uri: a.uri.clone(), name: a.name.clone() };
         }
+        if self.stats_view.is_some() {
+            return Page::Stats;
+        }
         match &self.view {
             Some(v) => Page::List { uri: v.uri.clone(), title: v.title.clone(), subtitle: v.subtitle.clone() },
             None => Page::Home,
@@ -1052,6 +1163,7 @@ impl App {
             self.list_views.insert(v.uri.clone(), v);
         }
         self.artist = None;
+        self.stats_view = None;
         if let Some(s) = self.search.take() {
             self.search_kept = Some(s);
         }
@@ -1059,6 +1171,10 @@ impl App {
         match p {
             Page::Home => {}
             Page::Search => self.search = Some(self.search_kept.take().unwrap_or_default()),
+            Page::Stats => {
+                self.stats_view = Some(crate::stats::StatsView { period: self.stats_period, ..Default::default() });
+                self.send(Command::GetStats { period: self.stats_period });
+            }
             Page::List { uri, title, subtitle } => {
                 let v = self.list_views.remove(&uri).unwrap_or_else(|| {
                     let mut v = TrackView::new(&uri, &title);
@@ -1766,6 +1882,13 @@ impl App {
                         self.focus = "queue".into();
                         self.open_queue_menu(i, at);
                     }
+                    Some(Hit::StatsRow(i)) => {
+                        self.focus = "home".into();
+                        if let Some(v) = self.stats_view.as_mut() {
+                            v.sel = i;
+                        }
+                        self.stats_menu(i, at);
+                    }
                     Some(Hit::SearchTrack(i)) => {
                         let t = self.search.as_ref().and_then(|s| s.results.as_ref()?.tracks.get(i).cloned());
                         if let Some(t) = t {
@@ -1810,6 +1933,25 @@ impl App {
                         }
                     }
                     Some(Hit::SortCol(c)) => self.sort(c),
+                    Some(Hit::StatsPeriod(p)) => {
+                        self.focus = "home".into();
+                        self.stats_set_period(p);
+                    }
+                    Some(Hit::StatsRow(i)) => {
+                        self.focus = "home".into();
+                        if let Some(v) = self.stats_view.as_mut() {
+                            v.sel = i;
+                        }
+                        // an artist or album opens at once (like a link); a track plays on a second click
+                        let track = matches!(self.stats_entry(i), Some((crate::stats::Section::Tracks, _)));
+                        let double = self.last_click.is_some_and(|(t, j)| j == usize::MAX / 3 - i && t.elapsed() < DOUBLE_CLICK);
+                        if !track || double {
+                            self.last_click = None;
+                            self.stats_act(i);
+                        } else {
+                            self.last_click = Some((Instant::now(), usize::MAX / 3 - i));
+                        }
+                    }
                     Some(Hit::QueueRow(i)) => {
                         self.focus = "queue".into();
                         self.queue_view.sel = i;
@@ -1959,6 +2101,15 @@ impl App {
                         let step = if coarse { v.visible.max(1) as i64 } else { 1 };
                         v.sel = (v.sel as i64 - sign * step).clamp(0, len.saturating_sub(1) as i64) as usize;
                         v.reveal();
+                    }
+                    return;
+                }
+                if pane.as_deref() == Some("home") && self.stats_view.is_some() {
+                    self.focus = "home".into();
+                    let n = self.stats_view.as_ref().and_then(|v| self.stats.get(&v.period)).map(|s| crate::stats::entries(s).len()).unwrap_or(0);
+                    if let Some(v) = self.stats_view.as_mut() {
+                        let step = if coarse { v.visible.max(1) as i64 } else { 1 };
+                        v.sel = (v.sel as i64 - sign * step).clamp(0, n.saturating_sub(1) as i64) as usize;
                     }
                     return;
                 }

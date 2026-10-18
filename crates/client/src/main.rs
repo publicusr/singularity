@@ -19,6 +19,7 @@ mod saved;
 mod search;
 mod setup;
 mod sidebar;
+mod stats;
 mod term;
 mod theme;
 mod tracks;
@@ -177,7 +178,14 @@ fn apply(app: &mut App, ev: ConnEvent) {
         }
         ConnEvent::Msg(DaemonMsg::Event(Event::Notice { message })) => app.say(message),
         ConnEvent::Msg(DaemonMsg::Event(Event::Saved { entries })) => app.saved_event(entries),
-        ConnEvent::Msg(DaemonMsg::Event(Event::Listening(s))) => app.listening = Some(s),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Listening(s))) => {
+            app.listening = Some(s);
+            // a Play was logged (or old plays got their links): stats on screen ask again
+            app.refresh_stats();
+        }
+        ConnEvent::Msg(DaemonMsg::Event(Event::Stats(s))) => {
+            app.stats.insert(s.period, s);
+        }
         ConnEvent::Msg(_) => {}
     }
 }

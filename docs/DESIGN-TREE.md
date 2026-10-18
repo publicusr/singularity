@@ -415,3 +415,17 @@ flowchart LR
   Tests: rankings, duet credit, week/month/year/all boundaries, streaks, empty log; a schema-1 file migrates keeping
   its row; protocol round trip; `tests/stats_tz.rs` (own binary, `TZ=Europe/Warsaw`): plays on either side of the
   2026-10-25 change land in the right week and hour.
+- **#36 Stats page ✅** (2026-10-18): `client/src/stats.rs`, `Page::Stats` (in history; Ctrl+K → Stats, or a click on
+  the listening Widget). Period tabs (long labels, short, or short without padding, whichever fits; ←/→ always walk
+  them and never seek), the date range when there's room, a summary (minutes · plays · streak, longest in the
+  period), a 24-hour clock in eighth-blocks on the Theme's ramp (left out below 16 rows, so the summary and lists fit),
+  and the top 10 artists / tracks / albums: side by side from 108 columns, stacked below. Rows show minutes, a bar
+  and plays as room allows ("N× (M ever)" for tracks outside All time); text lines wrap (`lyrics::wrap`) rather than
+  being cut. A click on an artist or album opens it, a track plays on Enter or a double-click, right-click gives the
+  track menu, the wheel moves the highlight. The Client asks again after `Event::Listening`. Old plays' links:
+  answering `GetStats` makes the Daemon describe up to 20 unlinked tracks (`Store::unlinked_tracks`, cached
+  `getTrack`, one at a time) and `backfill` their plays, then broadcast `Listening`, so the page refreshes with
+  links; a row still without one says "Finding its link". `Theme::ramp_at` replaces two private copies. Tests: every
+  period at 80×24 / 140×40 / 256×68 with nothing over the Pane's border and the summary in view, artist opens and Back
+  returns (asking again), Enter plays, tab click, refresh, unlinked row, empty log wraps. pty `stats` at the three
+  sizes: a schema-1 seeded log migrates, gets its links from the fake Catalogue, and the top artist opens.

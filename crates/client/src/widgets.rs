@@ -19,10 +19,7 @@ pub struct State {
 }
 
 fn ramp(th: &Theme, t: f32) -> Rgb {
-    let r = &th.ramp;
-    let x = t.clamp(0.0, 1.0) * (r.len().max(1) - 1) as f32;
-    let (i, f) = (x.floor() as usize, x.fract());
-    r[i].lerp(r[(i + 1).min(r.len() - 1)], f)
+    th.ramp_at(t)
 }
 
 /// bass, mid and treble (0..=1) at the real output level (they follow the volume).
