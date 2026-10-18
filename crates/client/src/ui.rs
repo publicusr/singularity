@@ -2,7 +2,7 @@
 
 use crate::app::{Action, App, Hit, Link, Menu};
 use crate::scrub::{self, Bar};
-use crate::theme::Theme;
+use crate::theme::{Rgb, Theme};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -131,6 +131,28 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.config.ui.transparent {
         transparent(f.buffer_mut(), area, &th);
+    }
+    if app.kitty.as_ref().is_some_and(|k| k.below_backgrounds) {
+        opaque_overlays(f.buffer_mut(), &app.overlays.clone(), &th);
+    }
+}
+
+/// kitty treats a cell whose background *equals* its own default (pure black, usually) as default, and lets an image
+/// under backgrounds show through it. Popups must hide what's under them, so their black becomes a black kitty can't
+/// mistake for its own (#41 follow-up: the owner saw covers through Ctrl+K).
+fn opaque_overlays(buf: &mut Buffer, overlays: &[Rect], th: &Theme) {
+    let black = th.bg.color();
+    let nudged = Rgb(th.bg.0.saturating_add(1), th.bg.1.saturating_add(1), th.bg.2.saturating_add(1)).color();
+    for r in overlays {
+        for y in r.top()..r.bottom() {
+            for x in r.left()..r.right() {
+                if let Some(c) = buf.cell_mut((x, y))
+                    && (c.bg == black || c.bg == ratatui::style::Color::Reset)
+                {
+                    c.set_bg(nudged);
+                }
+            }
+        }
     }
 }
 
@@ -1145,7 +1167,9 @@ mod tests {
         let mut t = Terminal::new(TestBackend::new(200, 64)).unwrap();
         t.draw(|f| draw(f, &mut app)).unwrap();
         let pal = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::PaletteItem(0)).then_some(*r)).unwrap();
-        assert_ne!(t.backend().buffer()[(pal.x + 2, pal.y)].bg, ratatui::style::Color::Reset, "the palette has a background of its own");
+        // …and not one kitty takes for its default: pure black (its usual background) would let the covers through
+        let bg = t.backend().buffer()[(pal.x + 2, pal.y + 1)].bg;
+        assert!(bg != ratatui::style::Color::Reset && bg != app.theme.bg.color(), "{bg:?}");
     }
 
     #[test]

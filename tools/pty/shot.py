@@ -138,8 +138,9 @@ class Term:
                 fg, bg = col(c.fg, "#d6d6d6"), col(c.bg, "#000000")
                 if c.reverse:
                     fg, bg = bg, fg
-                # a cell with the default background lets images under it show
-                if c.bg != "default" or c.reverse:
+                # a cell with the default background lets images under it show; kitty decides by colour, so an
+                # explicit black (its own default here) counts as default too
+                if (c.bg != "default" and c.bg.lower() != "000000") or c.reverse:
                     try:
                         d.rectangle([x * CW, y * CH, (x + 1) * CW - 1, (y + 1) * CH - 1], fill=bg)
                     except ValueError:

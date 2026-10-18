@@ -491,3 +491,15 @@ flowchart LR
   15–20 s, its download sampled 224 → 122 → 70 → 59 → 50 → 44 kB/s (lossless needs ~175–205). The machine sent
   ~1.5 MB/s: Stremio's streaming server (`node …/stremio/server.js`, a background service, 1 GB sent) saturating the
   uplink. Owner told to quit it (not killed by me). Owner said yes to surfacing this in-app: #45.
+- **#41 follow-up: covers through Ctrl+K** (2026-10-18): the owner saw Home's covers through the palette. kitty
+  decides "default background" by colour: the popups' pure black equals its own default, so images under backgrounds
+  showed through them. A pass at the end of each frame (`opaque_overlays`, kitty layer only) turns black/default
+  backgrounds inside every popup into #010101. The pty compositor now judges by colour too (explicit #000000 counts as
+  default), so the bleed would have shown in screenshots. Test asserts the palette's background is neither default
+  nor the Theme's black.
+- **Owner report: rain and fft "lag for a second"** (2026-10-18): not the Client. Soloist's log at 17:08:48–54: the
+  next track was prepared with a thin buffer (still cautious after the slow-connection episode, "downgrade bandwidth
+  factor 2"), so the song change had ~1 s of silence; the audio Widgets froze/eased and caught up. GPU readback
+  measured 4–5 ms at worst over 540 frames (no spikes). If it happens mid-song without the music stopping, the next
+  step is a non-blocking GPU readback (the UI waits on `PollType::wait_indefinitely` today). #45 will make such stalls
+  visible in the stream Pane.
