@@ -13,7 +13,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
   live answers). Clippy: only minor style warnings, all in older code (setup.rs, connect.rs, probe example) or
   harmless (`type_complexity` on theme tables, `needless_range_loop` in a test).
 - **Owner test round 1 is in** (2026-10-18): 9 points, findings and proposals in the DESIGN-TREE round log ("Owner
-  test round 1"). Questions are with the owner; build nothing from it until they answer, then write tickets #25+.
+  test round 1"). Answered; tickets **#25–#33** written (`ready-for-agent`), built in that order. Genius (opt-in lyrics fallback) is parked
+  pending one more answer.
   Their Daemon was a stale 00:08 build that ignores `Shutdown` (see the round log): restart it before trusting tests.
 - The owner last tested after #8/#16 (until round 1 above). **Nothing since then has been tested by the owner** (see "Waiting on the owner").
 
@@ -53,8 +54,9 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, and `XDG_DOWNLOAD_DIR`
 
 ## Then
 
-- The owner's test round 1: once answered, tickets in this order: stale-Daemon fix, wheel/highlight (1, 6), Home
-  partial rows (2), back arrow (3), meters (4), lyrics check (5), fullscreen (9), queue drag (8), tint (7), Genius.
+- Test round 1 tickets, in order: #25 stale Daemon, #26 wheel/highlight, #27 Home by lines, #28 back/forward,
+  #29 meters, #30 lyrics wrap, #31 wide terminals, #32 queue drag, #33 Theme tint. Genius parked.
+- The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
 - v1.x (spec "Out of Scope"): playlist editing, stats widgets (the listening log is ready for them), Settings screen,
   more Visuals, free-tiling, podcasts, macOS Engine. Turn into tickets with the owner before building.
 - Gap left on #11: mouse back/forward buttons (crossterm drops SGR buttons 8/9; needs our own small input layer next

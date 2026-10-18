@@ -3,3 +3,4 @@ target/
 *.ppm
 .env
 *.key
+docs/screenshots/

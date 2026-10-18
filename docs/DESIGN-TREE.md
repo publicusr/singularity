@@ -279,4 +279,11 @@ flowchart LR
     the queue is mostly empty. The hole renders round here; the owner sees it stretched (cell size? screenshot asked).
     Proposal: the well keeps a ~16:10 shape on wide terminals and the middle gets the width; track-list columns capped.
   - Also seen at 256×68: a kitty escape printed as text (`Ga=…`) in a track row once; harness or real, to check.
+- **Owner answers, round 1** (2026-10-18): yes to 1–4 and 6–9 (queue drag limited to own songs "for now, may change
+  after testing"). On 5: after the Daemon restart lyrics work and sync "works very well"; new bug: at half-monitor
+  width long lines are cut off (wrap them). Genius parked: it has no timings, so it could only scroll at the song's
+  pace; asked whether to keep it. Owner's fullscreen screenshot: the hole is round, the Pane is very wide (fixed by
+  #31); the right column and the bottom hint row looked cut off (checked in #31). Owner screenshots stay out of git
+  (`docs/screenshots/` ignored: personal data). Tickets: #25 stale Daemon, #26 wheel/highlight, #27 Home lines,
+  #28 back/forward, #29 meters, #30 lyrics wrap, #31 wide terminals, #32 queue drag, #33 Theme tint.
 
