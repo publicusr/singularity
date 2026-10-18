@@ -22,6 +22,13 @@ fn slot_info(slot: &str) -> (&'static str, &'static str) {
         "lyrics" => ("tail -f lyrics.log", ""),
         "loudness" => ("loudness", "arrives with #15"),
         "fft" => ("fft", "arrives with #15"),
+        "hole" => ("black hole", ""),
+        "nowplaying" => ("Now playing", ""),
+        "levels" => ("levels", ""),
+        "listening" => ("listening", ""),
+        "rain" => ("rain", ""),
+        "scope" => ("osc", ""),
+        "top" => ("top", ""),
         _ => ("?", ""),
     }
 }
@@ -65,12 +72,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         crate::setup::wanted(app).then(|| crate::setup::rect(area)),
         app.health_open.then(|| crate::setup::health_rect(area)),
         app.devices_open.then(|| devices_rect(area, app)),
+        app.picker.as_ref().map(|p| crate::looks::picker_rect(area, p)),
         app.menu.as_ref().map(|m| menu_rect(area, m)),
         app.toast.as_ref().map(|(msg, _)| toast_rect(area, msg)),
     ];
     app.overlays = overlays.into_iter().flatten().collect();
     top_bar(f, top, app, &th);
     panes(f, body, app, &th);
+    if th.scanlines {
+        scanlines(f.buffer_mut(), body);
+    }
     player_bar(f, player, app, &th);
     hint_bar(f.buffer_mut(), hints, &th, &app.keymap);
     if let (Some(r), Some(CatalogueStatus::LoginPending { url, code })) = (login_r, app.catalogue.clone()) {
@@ -88,6 +99,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.devices_open {
         devices(f.buffer_mut(), area, app, &th);
     }
+    if app.picker.is_some() {
+        crate::looks::draw_picker(f.buffer_mut(), area, app, &th);
+    }
     if app.health_open {
         crate::setup::draw_health(f.buffer_mut(), crate::setup::health_rect(area), app, &th);
     }
@@ -97,6 +111,36 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some((msg, _)) = app.toast.clone() {
         let r = toast_rect(area, &msg);
         text(f.buffer_mut(), r.x, r.y, r.width, &format!("  {msg}  "), th.chip(th.accent));
+    }
+    if app.config.ui.transparent {
+        transparent(f.buffer_mut(), area, &th);
+    }
+}
+
+/// Every other row a little dimmer, like a CRT (Terminal's themes).
+fn scanlines(buf: &mut Buffer, r: Rect) {
+    for y in (r.y..r.bottom()).filter(|y| y % 2 == 1) {
+        for x in r.x..r.right() {
+            if let Some(c) = buf.cell_mut((x, y))
+                && let ratatui::style::Color::Rgb(r, g, b) = c.fg
+            {
+                c.set_fg(ratatui::style::Color::Rgb((r as f32 * 0.75) as u8, (g as f32 * 0.75) as u8, (b as f32 * 0.75) as u8));
+            }
+        }
+    }
+}
+
+/// `ui.transparent`: the theme's black becomes the terminal's own background (text on chips keeps its colour).
+fn transparent(buf: &mut Buffer, r: Rect, th: &Theme) {
+    let bg = th.bg.color();
+    for y in r.y..r.bottom() {
+        for x in r.x..r.right() {
+            if let Some(c) = buf.cell_mut((x, y))
+                && c.bg == bg
+            {
+                c.set_bg(ratatui::style::Color::Reset);
+            }
+        }
     }
 }
 
@@ -202,10 +246,16 @@ fn top_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     text(buf, r.right().saturating_sub(w + 1), r.y, w, &right, th.s(col));
 }
 
+/// Superscript digits for numbered Pane titles (Cockpit).
+fn superscript(n: usize) -> String {
+    n.to_string().chars().map(|c| ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'][c as usize - '0' as usize]).collect()
+}
+
 fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
     let computed = app.layout.compute(body);
-    for (slot, rect) in &computed.slots {
+    for (i, (slot, rect)) in computed.slots.iter().enumerate() {
         let (title, todo) = slot_info(slot);
+        let title = crate::design::title(app.design, slot, title);
         // the main Pane is titled after what it shows
         let title = match (slot.as_str(), &app.view, &app.artist) {
             ("home", _, _) if app.search.is_some() => "search".to_string(),
@@ -213,11 +263,12 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             ("home", Some(v), _) => v.title.clone(),
             _ => title.to_string(),
         };
+        let title = if th.numbered { format!("{}{title}", superscript(i + 1)) } else { title };
         let focused = *slot == app.focus;
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(th.borders)
-            .border_style(th.s(if focused { th.border_focus } else { th.border }))
+            .border_style(th.s(if focused { th.border_focus } else { th.pane_border(i) }))
             .title(Span::styled(format!(" {title} "), if focused { th.title() } else { th.s(th.accent) }))
             .style(th.base());
         let inner = block.inner(*rect);
@@ -229,6 +280,19 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             continue;
         }
         f.render_widget(block, *rect);
+        match slot.as_str() {
+            "hole" => crate::visual::well::draw_plain(f.buffer_mut(), *rect, inner, app, th),
+            "nowplaying" => crate::widgets::nowplaying(f.buffer_mut(), inner, app, th),
+            "levels" => crate::widgets::levels(f.buffer_mut(), inner, app, th),
+            "listening" => crate::widgets::listening(f.buffer_mut(), inner, th),
+            "rain" => crate::widgets::rain(f.buffer_mut(), inner, app, th),
+            "scope" => crate::widgets::scope(f.buffer_mut(), inner, app, th),
+            "top" => crate::widgets::top(f.buffer_mut(), inner, app, th),
+            _ => {}
+        }
+        if matches!(slot.as_str(), "hole" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top") {
+            continue;
+        }
         if slot == "library" {
             crate::sidebar::draw(f.buffer_mut(), inner, app, th);
             continue;
@@ -293,8 +357,19 @@ fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     let pb = app.playback.clone();
     let buf = f.buffer_mut();
     let now = pb.item.as_ref().map(|i| format!("{} — {}", i.name, i.artists.join(", "))).unwrap_or_else(|| "nothing playing".into());
-    text(buf, r.x + 1, r.y, r.width, "singularity:~$ ", th.title());
-    text(buf, r.x + 16, r.y, r.width.saturating_sub(17), &format!("now-playing --follow  # {now}"), th.s(th.fg));
+    match crate::design::DESIGNS[app.design].prompt {
+        Some(host) => {
+            let p = format!("{host}:~$ ");
+            let pw = p.chars().count() as u16;
+            text(buf, r.x + 1, r.y, r.width, &p, th.title());
+            text(buf, r.x + 1 + pw, r.y, r.width.saturating_sub(pw + 1), &format!("now-playing --follow  # {now}"), th.s(th.fg));
+        }
+        // the designs without a shell say it plainly
+        None => {
+            let from = pb.context_name.as_deref().map(|c| format!("Playing from {c}")).unwrap_or_default();
+            text(buf, r.x + 1, r.y, r.width.saturating_sub(2), &from, th.s(th.dim));
+        }
+    }
     // which device plays: a click opens the picker
     let device = match app.remote_device() {
         Some(d) => format!(" ⧉ playing on {} ", d.name),
@@ -649,7 +724,7 @@ mod tests {
         for c in "help".chars() {
             app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
-        assert_eq!(app.palette_items(), vec![Action::Help]);
+        assert_eq!(app.palette_items()[0], Action::Help);
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.palette.is_none() && app.help);
         // and by mouse

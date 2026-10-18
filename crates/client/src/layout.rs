@@ -13,12 +13,13 @@ pub enum Axis {
     Vertical,
 }
 
-/// Size of the *first* child of a split.
+/// How a split divides its area: the *first* child's size, or the *last* child's (`Last`: a fixed right/bottom column).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Size {
     Cells(u16),
     Ratio(f32),
+    Last(u16),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -68,6 +69,41 @@ impl Node {
         Node::split(Horizontal, Cells(30), left, Node::split(Horizontal, Ratio(0.58), mid, right))
     }
 
+    /// Event Horizon: library | home + up next | the black hole (no well: it owns its quadrant) + lyrics.
+    pub fn event_horizon() -> Node {
+        use Axis::*;
+        use Size::*;
+        let mid = Node::split(Vertical, Ratio(0.62), Node::slot("home"), Node::slot("queue"));
+        let right = Node::split(Vertical, Ratio(0.64), Node::slot("hole"), Node::slot("lyrics"));
+        Node::split(Horizontal, Cells(28), Node::slot("library"), Node::split(Horizontal, Ratio(0.54), mid, right))
+    }
+
+    /// Classic+: the desktop app's shape. Library | Home | Now playing.
+    pub fn classic() -> Node {
+        use Axis::*;
+        use Size::*;
+        Node::split(Horizontal, Cells(30), Node::slot("library"), Node::split(Horizontal, Last(40), Node::slot("home"), Node::slot("nowplaying")))
+    }
+
+    /// Cockpit: instruments on top (spectrum, stream; loudness, levels, listening), browsing below.
+    pub fn cockpit() -> Node {
+        use Axis::*;
+        use Size::*;
+        let r1 = Node::split(Horizontal, Ratio(0.66), Node::slot("fft"), Node::slot("stream"));
+        let r2 = Node::split(Horizontal, Ratio(0.3), Node::slot("loudness"), Node::split(Horizontal, Ratio(0.36), Node::slot("levels"), Node::slot("listening")));
+        let r3 = Node::split(Horizontal, Ratio(0.62), Node::slot("home"), Node::split(Vertical, Ratio(0.5), Node::slot("queue"), Node::slot("library")));
+        Node::split(Vertical, Ratio(0.36), r1, Node::split(Vertical, Ratio(0.3), r2, r3))
+    }
+
+    /// Terminal: tree | home over rain + lyrics log | scope, top, fft.
+    pub fn terminal() -> Node {
+        use Axis::*;
+        use Size::*;
+        let mid = Node::split(Vertical, Ratio(0.58), Node::slot("home"), Node::split(Horizontal, Ratio(0.5), Node::slot("rain"), Node::slot("lyrics")));
+        let right = Node::split(Vertical, Ratio(0.35), Node::slot("scope"), Node::split(Vertical, Ratio(0.45), Node::slot("top"), Node::slot("fft")));
+        Node::split(Horizontal, Cells(30), Node::slot("library"), Node::split(Horizontal, Last(36), mid, right))
+    }
+
     pub fn compute(&self, area: Rect) -> Computed {
         let mut out = Computed::default();
         self.compute_into(area, &mut Vec::new(), &mut out);
@@ -89,6 +125,7 @@ impl Node {
                 let want = match first {
                     Size::Cells(c) => *c,
                     Size::Ratio(r) => (total as f32 * r.clamp(0.05, 0.95)).round() as u16,
+                    Size::Last(c) => total.saturating_sub(*c),
                 };
                 // keep both children at least `min` when there is room; otherwise split evenly
                 let n = if total >= min * 2 { want.clamp(min, total - min) } else { total / 2 };
@@ -139,6 +176,7 @@ impl Node {
             *first = match first {
                 Size::Cells(_) => Size::Cells(n),
                 Size::Ratio(_) => Size::Ratio(n as f32 / total as f32),
+                Size::Last(_) => Size::Last(total - n),
             };
         }
     }
@@ -150,9 +188,10 @@ mod tests {
 
     #[test]
     fn slots_tile_the_area_exactly() {
-        for (w, h) in [(80, 24), (120, 40), (300, 80), (40, 10)] {
+        let designs = [Node::singularity(), Node::event_horizon(), Node::classic(), Node::cockpit(), Node::terminal()];
+        for ((w, h), d) in [(80, 24), (120, 40), (300, 80), (40, 10)].into_iter().flat_map(|s| designs.iter().map(move |d| (s, d))) {
             let area = Rect::new(0, 0, w, h);
-            let c = Node::singularity().compute(area);
+            let c = d.compute(area);
             let cells: u32 = c.slots.iter().map(|(_, r)| r.width as u32 * r.height as u32).sum();
             assert_eq!(cells, w as u32 * h as u32, "{w}x{h}");
             for (i, (_, a)) in c.slots.iter().enumerate() {

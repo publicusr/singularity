@@ -302,9 +302,12 @@ pub fn draw_feed(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, feed: Hom
     (feed, view)
 }
 
-/// A cover in the best tier available: kitty pixels, else half-blocks; a quiet placeholder while it loads.
 fn draw_cover(buf: &mut Buffer, r: Rect, card: &Card, app: &mut App, th: &Theme) {
-    let url = card.image_url.as_deref().unwrap_or("");
+    cover(buf, r, card.image_url.as_deref().unwrap_or(""), if card.kind == "artist" { "◍" } else { "♪" }, app, th);
+}
+
+/// A cover in the best tier available: kitty pixels, else half-blocks; a quiet placeholder (`glyph`) while it loads.
+pub fn cover(buf: &mut Buffer, r: Rect, url: &str, glyph: &str, app: &mut App, th: &Theme) {
     if let Some((cw, ch)) = app.pixel_tier_for(r) {
         if let Some(src) = app.covers.get(url) {
             let (pw, ph) = ((r.width as f64 * cw).round() as u32, (r.height as f64 * ch).round() as u32);
@@ -325,7 +328,6 @@ fn draw_cover(buf: &mut Buffer, r: Rect, card: &Card, app: &mut App, th: &Theme)
     for yy in r.top()..r.bottom() {
         text(buf, r.x, yy, r.width, &" ".repeat(r.width as usize), th.base().bg(th.selection.color()));
     }
-    let glyph = if card.kind == "artist" { "◍" } else { "♪" };
     text(buf, r.x + r.width / 2, r.y + r.height / 2, 1, glyph, th.s(th.border).bg(th.selection.color()));
 }
 

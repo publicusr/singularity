@@ -29,6 +29,32 @@ pub fn draw(buf: &mut Buffer, outer: Rect, app: &mut App, th: &Theme) {
     }
     let inner = Rect::new(outer.x + 2, outer.y + 1, outer.width.saturating_sub(4), outer.height.saturating_sub(2));
     app.hit(outer, Hit::Well);
+    if render(buf, inner, app) {
+        app.hole_at = Some(Hole { well: outer, cx: inner.x as f32 + inner.width as f32 / 2.0, cy: inner.y as f32 + inner.height as f32 / 2.0 });
+    }
+    let focused = app.focus == "well";
+    warped_frame(buf, outer, 0.5 + app.hole.bass() * 0.9, if focused { [th.border_focus, th.accent] } else { [th.border, th.dim] });
+    text(buf, outer.x + 2, outer.y, 14, " gravity well ", if focused { th.title() } else { th.s(th.accent) });
+    look_label(buf, outer, app, th);
+}
+
+/// The black hole on its own (Event Horizon's): a plain Pane, no well, nothing bends. `inner` is inside the frame.
+pub fn draw_plain(buf: &mut Buffer, outer: Rect, inner: Rect, app: &mut App, th: &Theme) {
+    app.hit(outer, Hit::Well);
+    render(buf, inner, app);
+    look_label(buf, outer, app, th);
+}
+
+fn look_label(buf: &mut Buffer, outer: Rect, app: &App, th: &Theme) {
+    let label = format!(" ◂ {} ▸ ", app.hole.look().name);
+    let w = label.chars().count() as u16;
+    if outer.width > w + 18 {
+        text(buf, outer.right() - w - 2, outer.y, w, &label, th.s(th.dim));
+    }
+}
+
+/// The hole's picture over `inner`, pixels or half-blocks. False if there's no room for it.
+fn render(buf: &mut Buffer, inner: Rect, app: &mut App) -> bool {
     if inner.width >= 4 && inner.height >= 3 {
         if let Some((cw, ch)) = app.pixel_tier_for(inner) {
             let (w, h) = app.hole.render_size((inner.width as f64 * cw) as usize, (inner.height as f64 * ch) as usize);
@@ -47,16 +73,9 @@ pub fn draw(buf: &mut Buffer, outer: Rect, app: &mut App, th: &Theme) {
             });
             crate::gfx::blit_halfblocks(&img, buf, inner);
         }
-        app.hole_at = Some(Hole { well: outer, cx: inner.x as f32 + inner.width as f32 / 2.0, cy: inner.y as f32 + inner.height as f32 / 2.0 });
+        return true;
     }
-    let focused = app.focus == "well";
-    warped_frame(buf, outer, 0.5 + app.hole.bass() * 0.9, if focused { [th.border_focus, th.accent] } else { [th.border, th.dim] });
-    text(buf, outer.x + 2, outer.y, 14, " gravity well ", if focused { th.title() } else { th.s(th.accent) });
-    let label = format!(" ◂ {} ▸ ", app.hole.look().name);
-    let w = label.chars().count() as u16;
-    if outer.width > w + 18 {
-        text(buf, outer.right() - w - 2, outer.y, w, &label, th.s(th.dim));
-    }
+    false
 }
 
 fn mix(a: Rgb, b: Rgb, t: f32) -> Color {

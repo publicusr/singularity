@@ -102,16 +102,22 @@ A rectangular region of the screen that holds exactly one Widget or view.
 _Avoid_: window, panel, split
 
 **Layout preset**:
-A named arrangement of Panes and the Widgets in them ("Classic", "LARP", "Cockpit").
+A named arrangement of Panes and the Widgets in them; each Design has one.
 _Avoid_: profile, workspace, scene
+
+**Design**:
+A Layout preset shipped together with the Themes made for it: Singularity (default), Event Horizon, Classic+, Cockpit,
+Terminal. Picking a Design sets the layout, its own Theme and its Disk look; its Palette variants are a `t` away.
+_Avoid_: skin, mode, look (that's the Disk look)
 
 **Design direction**:
 One complete visual identity under evaluation (layout, palette, and Visual choices together).
-It is a prototyping term; the shipped app has Themes and Layout presets instead.
+It is a prototyping term; the shipped app has Designs.
 _Avoid_: mockup, skin
 
 **Theme**:
-A file of named colours that styles the whole UI and the colour ramps of Visuals.
+A set of named colours that styles the whole UI and the colour ramps of Visuals: built in (each Design's Palette
+variants) or a TOML file in `themes/`, which may start from a built-in one.
 _Avoid_: colorscheme, skin, palette
 
 **Render tier**:

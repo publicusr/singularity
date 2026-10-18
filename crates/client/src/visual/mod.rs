@@ -68,6 +68,11 @@ impl BlackHole {
         self.gpu = None;
     }
 
+    /// Seconds of animation so far (other Visuals keep time with the hole).
+    pub fn time(&self) -> f32 {
+        self.t
+    }
+
     pub fn backend(&self) -> Option<String> {
         match &self.gpu {
             Some(Some(g)) => Some(format!("GPU: {}", g.adapter)),

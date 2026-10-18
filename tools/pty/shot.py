@@ -304,6 +304,27 @@ def config(t, out, env):
     t.send(b"\x1b", 0.3); t.send(b"\x1b", 0.3); t.send(b"q", 0.5)
 
 
+def designs(t, out):
+    """#18: each design through the picker (live preview), a track playing; Cockpit's palettes with t."""
+    t.pump(1.0)
+    t.send(b" ", 1.5)  # play: the meters and the Now playing panel have something to show
+    names = ["singularity", "event-horizon", "classic", "cockpit", "terminal"]
+    t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
+    for i, name in enumerate(names):
+        if i:
+            t.send(b"\x1b[B", 1.2)  # ↓ previews the next design
+        t.shot(f"{out}/{i}-{name}.png")
+    t.send(b"\r", 0.5)  # keep Terminal
+    t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.5)
+    t.send(b"\x1b[A", 0.8)  # back up to Cockpit
+    t.send(b"\r", 0.6)
+    for k in range(2):
+        t.send(b"t", 0.8)
+        t.shot(f"{out}/5-cockpit-t{k + 1}.png")
+    t.send(b" ", 0.4)
+    t.send(b"q", 0.5)
+
+
 def main():
     scenario, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
@@ -318,10 +339,10 @@ def main():
     cat = ["--no-catalogue"]
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario == "home-pixels" else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
     bus = None
     if scenario == "mpris":
@@ -342,6 +363,8 @@ def main():
             return mpris(t, out, env)
         if scenario == "config":
             return config(t, out, env)
+        if scenario == "designs":
+            return designs(t, out)
         if scenario == "artist":
             t.pump(1.0)
             x, y = t.find("♥ Liked Songs")

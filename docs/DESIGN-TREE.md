@@ -212,5 +212,14 @@ flowchart LR
   like moves to `f`); a user binding replaces that action's keys and takes them from others; a key bound twice is
   reported and the first (by name) keeps it; unknown actions/keys are reported. Movement aliases are off while typing.
   Help screen, hint bar and palette show the keymap in use. The pty harness now gives every run scratch config/state.
+- **#18 Designs and themes** (2026-10-18): `design.rs` (five Designs: Layout preset, Themes, Disk look, player-bar
+  prompt, Pane titles), `theme.rs` (built-in Themes incl. Cockpit's 5 and Terminal's 3 variants, theme files with
+  `base` inheritance, per-Pane border colours, numbered titles, scanlines), `looks.rs` (switching, `t`, the pickers
+  with live preview, Esc puts back, Enter keeps in `[ui]` of config.toml; `themes/` re-read when it changes, also while
+  the picker is open; an `_example.toml` is written, files starting with `_` are skipped), `widgets.rs` (Now playing,
+  levels, listening placeholder for #23, rain, scope rebuilt from the bands since the Daemon sends spectra, `top` from
+  /proc). Every Design keeps a `home` Pane (browsing needs one), so Cockpit and Terminal differ slightly from the
+  prototype. `ui.transparent` hands the theme's black to the terminal. Spectrum frames are requested whenever an audio
+  Widget is on screen (re-evaluated on design switches). Layout gained `Size::Last` (fixed right/bottom column).
 - **Owner answers** (2026-10-18): keep the 10 fps slowdown when the terminal is unfocused; keep the black hole on the
   low-power adapter (iGPU) and add a `gpu = "low-power" | "high-performance"` setting in #20.

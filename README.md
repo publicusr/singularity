@@ -25,6 +25,8 @@ it by itself ("Updating singularityd…"; music pauses for a second while Solois
   Alt+←/→ back/forward, `l` like, `?` help. Everything is clickable too.
 - **Settings**: `~/.config/singularity/config.toml` and `keys.toml` (written with comments on first start; saves
   apply at once). `preset = "vim"` in keys.toml adds h/j/k/l movement.
+- **Designs**: Ctrl+K → "Design" (Singularity, Event Horizon, Classic+, Cockpit, Terminal) and "Theme", both with a live
+  preview; `t` cycles a design's palettes. Your own themes go in `~/.config/singularity/themes/` (see `_example.toml`).
 - Media keys, KDE's media widget and `playerctl` control the Daemon (MPRIS); Soloist updates itself before its build
   expires.
 - `singularityd --fake-engine` runs a pretend player for UI work; `--no-catalogue` skips Spotify browsing;

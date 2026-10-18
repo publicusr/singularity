@@ -8,12 +8,12 @@ in `docs/DESIGN-TREE.md` (round log at the bottom); verified facts about Spotify
 
 - **Phase 0 (planning) ✅, Phase 1 (spikes) ✅.** ADRs 0001–0004 (0004 updated: both tracers kept, measurements).
 - **Phase 2/3 (v1 build) 🔄.** Spec issue **#1**, tickets on GitHub (`publicusr/singularity`, label `ready-for-agent`).
-  **Closed: #2, #3, #4, #5, #6, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16, #20, #21, #22, #24.**
-  **Open: #17, #18, #19, #23.**
+  **Closed: #2, #3, #4, #5, #6, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16, #18, #20, #21, #22, #24.**
+  **Open: #17, #19, #23.**
 - The owner tested after #8/#16 and reported two bugs, both fixed (commit `f79a3e2`): the black hole
   flickered (now double-buffered kitty frames at a steady 30 fps, redraws capped at 60/s) and clicking an album played it
   (Cards now open their track list, ▶ Play there). Everything else since then **hasn't been tested by the owner yet**.
-- Tests: **144 passing** (`cargo test`), + ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
+- Tests: **156 passing** (`cargo test`), + ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
   live answers). Clippy: only minor pre-existing style warnings.
 
 ## What exists in `crates/`
@@ -77,10 +77,15 @@ New settings go into `Config` + `DEFAULT_CONFIG` (a new key with a serde default
 changed meaning needs a migration in `CONFIG_MIGRATIONS` and a schema bump). The owner's real files appear on their
 next start of the new build.
 
+## #18 designs and themes (done 2026-10-18)
+
+See the DESIGN-TREE round log. Picking: Ctrl+K → "Design" / "Theme" (live preview), `t` next palette. pty scenario
+`designs`. The listening Pane in Cockpit waits for #23's log. #19 builds on `design::DESIGNS[..].layout` (built-in
+layouts) and `Node` (serde-ready) for saved ones in `layouts/`.
+
 ## Next (suggested order)
 
-1. **#18** designs/palettes/theme files (themes in `~/.config/singularity/themes/`, the `design` setting goes in
-   config.toml), then **#19** slots/drag/saved layouts.
+1. **#19** slots (curated Widgets per Slot, click or `v`), drag-to-resize (exists), "Save layout as…" to `layouts/`.
 2. **#17** idle takeover (reuse `visual::BlackHole`, the prototype's `lens_cells`), **#23** listening log + backups.
 3. Gap left on #11 (commented on the issue): mouse back/forward buttons. crossterm drops SGR buttons 8/9; needs our
    own small input layer (we already do SGR-Pixels in `client/src/term.rs`).

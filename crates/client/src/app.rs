@@ -41,6 +41,9 @@ pub enum Action {
     Shuffle,
     Repeat,
     Like,
+    NextVariant,
+    PickDesign,
+    PickTheme,
     ToggleNotifications,
     Login,
     Logout,
@@ -68,7 +71,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 36] = [
+    pub const ALL: [Action; 39] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -81,6 +84,9 @@ impl Action {
         Action::Shuffle,
         Action::Repeat,
         Action::Like,
+        Action::NextVariant,
+        Action::PickDesign,
+        Action::PickTheme,
         Action::ToggleNotifications,
         Action::Login,
         Action::Logout,
@@ -120,6 +126,9 @@ impl Action {
             Action::Shuffle => "Toggle shuffle",
             Action::Repeat => "Cycle repeat (off → all → one)",
             Action::Like => "Like / unlike the current track",
+            Action::NextVariant => "Next palette (this design's colours, then your themes)",
+            Action::PickDesign => "Design: pick one (layout + colours, live preview)",
+            Action::PickTheme => "Theme: pick colours (live preview)",
             Action::ToggleNotifications => "Track-change notifications on / off",
             Action::Login => "Log in to Spotify",
             Action::Logout => "Log out of Spotify",
@@ -161,6 +170,9 @@ impl Action {
             Action::Shuffle => "shuffle",
             Action::Repeat => "repeat",
             Action::Like => "like",
+            Action::NextVariant => "next_palette",
+            Action::PickDesign => "design",
+            Action::PickTheme => "theme",
             Action::ToggleNotifications => "notifications",
             Action::Login => "login",
             Action::Logout => "logout",
@@ -233,6 +245,8 @@ pub enum Hit {
     TopTrack(usize),
     /// ♥ / Save / Follow: toggles whether this is in the library
     Save(singularity_proto::Link),
+    /// a row of the design or theme picker
+    PickerItem(usize),
 }
 
 /// Two clicks on the same row within this time play it.
@@ -383,6 +397,15 @@ pub struct App {
     pub config: singularity_config::Config,
     pub keymap: crate::keymap::Keymap,
     config_files: Option<ConfigFiles>,
+    /// the design on screen (index into `design::DESIGNS`), the user's themes, the picker (#18)
+    pub design: usize,
+    pub user_themes: Vec<crate::theme::Theme>,
+    pub theme_dir: Option<crate::looks::ThemeDir>,
+    pub picker: Option<crate::looks::Picker>,
+    /// state of the Widgets other designs bring (rain, scope, top)
+    pub widgets: crate::widgets::State,
+    /// whether we asked the Daemon for spectrum frames
+    spectrum_on: bool,
     last_tick: Instant,
     told_backend: bool,
     commands: Option<mpsc::Sender<Command>>,
@@ -450,6 +473,12 @@ impl App {
             config: Default::default(),
             keymap: Default::default(),
             config_files: None,
+            design: 0,
+            user_themes: vec![],
+            theme_dir: None,
+            picker: None,
+            widgets: Default::default(),
+            spectrum_on: false,
             last_tick: Instant::now(),
             told_backend: false,
             commands,
@@ -464,6 +493,10 @@ impl App {
     }
 
     pub fn load_config_from(&mut self, cp: std::path::PathBuf, kp: std::path::PathBuf) {
+        // the user's themes first, so a theme named in config.toml can be found
+        if let Some(dir) = cp.parent() {
+            self.init_theme_dir(dir.join("themes"));
+        }
         let c = singularity_config::load_config(&cp);
         let k = singularity_config::load_keys(&kp);
         self.config_files = Some(ConfigFiles { config: singularity_config::Watched::new(cp), keys: singularity_config::Watched::new(kp), polled: Instant::now() });
@@ -479,10 +512,16 @@ impl App {
             self.hole.set_high_performance(high);
             self.told_backend = false;
         }
+        let ui = r.value.ui.clone();
         self.config = r.value;
+        self.apply_ui(&ui);
         if !r.problems.is_empty() {
             self.say(r.problems.join(" · "));
         }
+    }
+
+    pub fn config_path(&self) -> Option<std::path::PathBuf> {
+        self.config_files.as_ref().map(|f| f.config.path.clone())
     }
 
     pub fn apply_keys(&mut self, r: singularity_config::Read<singularity_config::Keys>) {
@@ -524,6 +563,7 @@ impl App {
     fn typing(&self) -> bool {
         self.palette.is_some()
             || (crate::setup::wanted(self) && crate::setup::step(self) == crate::setup::Step::Key)
+            || self.picker.is_some()
             || self.view.as_ref().is_some_and(|v| v.filtering)
             || (self.search.is_some() && self.focus == "home")
     }
@@ -556,9 +596,18 @@ impl App {
 
     /// After (re)connecting: ask for spectrum frames if an audio Widget is on screen.
     pub fn on_connected(&mut self) {
-        let slots = self.layout.compute(Rect::new(0, 0, 200, 60)).slots;
-        if slots.iter().any(|(s, _)| s == "fft" || s == "loudness") {
-            self.send(Command::Spectrum { on: true });
+        self.spectrum_on = false;
+        self.want_spectrum();
+    }
+
+    /// Spectrum frames flow only while a Widget that moves with the music is on screen (the Daemon's tap idles
+    /// otherwise); called on connect and whenever the layout changes.
+    pub fn want_spectrum(&mut self) {
+        const AUDIO: [&str; 8] = ["fft", "loudness", "levels", "rain", "scope", "nowplaying", "well", "hole"];
+        let on = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| AUDIO.contains(&s.as_str()));
+        if on != self.spectrum_on && matches!(self.link, Link::Connected { .. }) {
+            self.spectrum_on = on;
+            self.send(Command::Spectrum { on });
         }
     }
 
@@ -597,6 +646,9 @@ impl App {
             }
             Action::Like => self.toggle_current(),
             Action::ToggleNotifications => self.toggle_notifications(),
+            Action::NextVariant => self.next_variant(),
+            Action::PickDesign => self.open_picker(crate::looks::PickerKind::Design),
+            Action::PickTheme => self.open_picker(crate::looks::PickerKind::Theme),
             Action::Login => self.send(Command::Login),
             Action::Logout => self.send(Command::Logout),
             Action::RefreshHome => self.send(Command::GetHome),
@@ -660,7 +712,14 @@ impl App {
 
     pub fn palette_items(&self) -> Vec<Action> {
         let q = self.palette.as_ref().map(|p| p.query.to_lowercase()).unwrap_or_default();
-        Action::ALL.into_iter().filter(|a| *a != Action::Palette && fuzzy(&a.label().to_lowercase(), &q)).collect()
+        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && fuzzy(&a.label().to_lowercase(), &q)).collect();
+        // what you typed, as typed: at the start first, then anywhere, then loose matches
+        let q = q.trim();
+        items.sort_by_key(|a| {
+            let l = a.label().to_lowercase();
+            if l.starts_with(q) { 0 } else if l.contains(q) { 1 } else { 2 }
+        });
+        items
     }
 
     // ── keyboard ──────────────────────────────────────────────────────
@@ -678,6 +737,9 @@ impl App {
         };
         if self.palette.is_some() {
             return self.palette_key(k);
+        }
+        if self.picker.is_some() {
+            return self.picker_key(k);
         }
         if crate::setup::wanted(self) {
             return self.wizard_key(k);
@@ -1442,6 +1504,7 @@ impl App {
     /// Called every frame: sends nudges once they've settled.
     pub fn tick(&mut self) {
         self.poll_config();
+        self.poll_themes(false);
         let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
         self.last_tick = Instant::now();
         self.hole.advance(dt, self.meters.frame.as_ref());
@@ -1520,6 +1583,13 @@ impl App {
     pub fn pointer(&mut self, m: MouseEvent, fx: f64, precise: bool) {
         let coarse = m.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT);
         match m.kind {
+            MouseEventKind::Down(MouseButton::Left) if self.picker.is_some() => match self.hit_at(m.column, m.row) {
+                Some(Hit::PickerItem(i)) => {
+                    self.picker_select(i);
+                    self.picker_keep();
+                }
+                _ => self.picker_cancel(),
+            },
             MouseEventKind::Down(MouseButton::Left) if self.menu.is_some() => match self.hit_at(m.column, m.row) {
                 Some(Hit::MenuItem(i)) => self.menu_run(i),
                 // a click elsewhere only closes the menu
@@ -1592,7 +1662,8 @@ impl App {
                     // click a lyric line: jump there
                     Some(Hit::Lyric(ms)) => self.seek_to(ms),
                     Some(Hit::Well) => {
-                        self.focus = "well".into();
+                        let hole = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| s == "hole");
+                        self.focus = if hole { "hole" } else { "well" }.into();
                         self.run(Action::NextLook);
                     }
                     Some(Hit::Card(c)) => {
@@ -1642,7 +1713,7 @@ impl App {
                             self.last_click = Some((Instant::now(), usize::MAX - i));
                         }
                     }
-                    Some(Hit::MenuItem(_)) => {}
+                    Some(Hit::MenuItem(_) | Hit::PickerItem(_)) => {}
                     Some(Hit::Focus(s)) => self.focus = s,
                     Some(Hit::Divider(i)) => {
                         if let Some(d) = self.dividers.get(i) {
@@ -1747,6 +1818,10 @@ impl App {
                     }
                     Some(Hit::Bar(Bar::Seek, _)) => self.nudge_seek(sign * if coarse { 5000 } else { 1000 }),
                     Some(Hit::Bar(Bar::Volume, _)) => self.nudge_volume(sign * if coarse { 5 } else { 1 }),
+                    Some(Hit::PickerItem(_)) => {
+                        let sel = self.picker.as_ref().map(|p| p.sel).unwrap_or(0);
+                        self.picker_select(if up { sel.saturating_sub(1) } else { sel + 1 });
+                    }
                     Some(Hit::PaletteItem(_)) => {
                         let n = self.palette_items().len();
                         if let Some(p) = self.palette.as_mut() {

@@ -10,6 +10,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+pub use toml_edit;
 use toml_edit::{DocumentMut, Item, Value};
 
 /// The config schema this build writes and reads.
@@ -32,8 +33,26 @@ pub fn keys_path() -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub ui: Ui,
     pub notifications: Notifications,
     pub visuals: Visuals,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Ui {
+    /// singularity, event-horizon, classic, cockpit or terminal
+    pub design: String,
+    /// a built-in theme or one from `themes/`; empty: the design's own
+    pub theme: String,
+    /// the terminal's own background instead of black
+    pub transparent: bool,
+}
+
+impl Default for Ui {
+    fn default() -> Self {
+        Ui { design: "singularity".into(), theme: String::new(), transparent: false }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -72,6 +91,14 @@ pub enum GpuPower {
 pub const DEFAULT_CONFIG: &str = r#"# Singularity settings. Changes apply as soon as you save this file.
 # (Don't change `schema`: Singularity uses it to update this file when settings change between versions.)
 schema = 1
+
+[ui]
+# the design: "singularity", "event-horizon", "classic", "cockpit" or "terminal" (Ctrl+K → Design shows them)
+design = "singularity"
+# colours: empty for the design's own, else a built-in theme or a file in themes/ (Ctrl+K → Theme, or t)
+theme = ""
+# let the terminal's own background (and its transparency) show instead of black
+transparent = false
 
 [notifications]
 # a desktop notification when a new track starts
