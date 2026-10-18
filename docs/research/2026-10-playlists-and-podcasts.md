@@ -38,7 +38,8 @@ Live (2026-10-18): a description written as `probe & <b>words</b>` reads back fr
 `addToPlaylist` answers `{data:{addItemsToPlaylist:…}}`; `editablePlaylists` with `textFilter` = the name and
 `uris` = the songs gives each matching playlist's `curates` (true once it has them). `fetchPlaylist` rows carry `uid`,
 distinct per copy of a song; `removeFromPlaylist {playlistUri, uids}` answers `{data:{removeItemsFromPlaylist:…}}`
-and takes only those rows.
+and takes only those rows. `moveItemsInPlaylist {playlistUri, uids, newPosition:{moveType:BEFORE_UID|AFTER_UID,
+fromUid}}` answers `{data:{moveItemsInPlaylist:…}}`; both anchors verified live.
 
 All playlist routes above are still there. Details read from the bundle:
 

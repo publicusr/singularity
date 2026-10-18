@@ -603,3 +603,12 @@ flowchart LR
   (`data.removeItemsFromPlaylist`) → the other copy stayed; scratch deleted. Also: the MPRIS integration test's seek
   check was flaky (Seek is relative and it assumed the pause came within 1 s of play); it now measures from the
   paused position.
+- **#55 Drag to reorder ✅** (2026-10-18): in your own playlist, press a row and drag: once the pointer reaches
+  another row the list previews the new order (the row keeps its old number until it lands); the drop sends one
+  `moveItemsInPlaylist`. Alt+↑↓ moves the selected row one place (the queue never had a keyboard move; this is the
+  first). The move is anchored to the row it lands before (`BEFORE_UID`), or after the one it follows at the end
+  (`AFTER_UID`): never "bottom", so an unloaded tail can't misplace it. Several quick moves of a row settle on the
+  last answer; a refusal puts it back where it started. A sorted or filtered view says "Clear the sort and the
+  filter…" instead; others' playlists don't arm a drag at all (a shaky click in Liked Songs stays quiet). Live check
+  (`playlist_probe --move`): three rows → after the last, then before the first, both read back as expected
+  (~0.16 s, `data.moveItemsInPlaylist`); scratch deleted.

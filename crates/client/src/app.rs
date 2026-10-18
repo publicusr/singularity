@@ -1584,6 +1584,11 @@ impl App {
         let Some(v) = self.view.as_mut() else { return false };
         let page = v.visible.max(1) as i64;
         match k.code {
+            // Alt+↑↓: the selected row moves one place in your own playlist (#55)
+            KeyCode::Up | KeyCode::Down if k.modifiers.contains(KeyModifiers::ALT) => {
+                let (sel, d) = (v.sel, if k.code == KeyCode::Up { -1 } else { 1 });
+                self.nudge_row(sel, d);
+            }
             KeyCode::Up => v.move_sel(-1, len),
             KeyCode::Down => v.move_sel(1, len),
             KeyCode::PageUp => v.move_sel(-page, len),
@@ -2148,6 +2153,8 @@ impl App {
                             self.play_row(vi);
                         } else {
                             self.last_click = Some((Instant::now(), vi));
+                            // a drag from here reorders your own playlist
+                            self.playlists.press = self.rows_removable().then_some(vi);
                         }
                     }
                     Some(Hit::SortCol(c)) => self.sort(c),
@@ -2279,6 +2286,8 @@ impl App {
                     }
                 } else if let Some(d) = self.queue_drag {
                     self.queue_drag = Some(crate::queue::target(self, d, m.row));
+                } else if self.playlists.press.is_some() {
+                    self.drag_row_to(m.row);
                 } else if let Some(Hit::Divider(i)) = self.drag.clone()
                     && let Some(d) = self.dividers.get(i).cloned()
                 {
@@ -2291,6 +2300,7 @@ impl App {
                 if let Some(d) = self.queue_drag.take() {
                     self.drop_queued(d);
                 }
+                self.drop_row();
                 if let Some(s) = self.scrub.take() {
                     match s.bar {
                         Bar::Seek => self.seek_to(s.value),

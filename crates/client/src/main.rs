@@ -160,6 +160,7 @@ fn apply(app: &mut App, ev: ConnEvent) {
         ConnEvent::Msg(DaemonMsg::Event(Event::Library(l))) => app.library = Some(l),
         ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistCreated { uri, name })) => app.playlist_created(&uri, &name),
         ConnEvent::Msg(DaemonMsg::Event(Event::AddedToPlaylist { playlist, name, uris, outcome })) => app.added_to_playlist(&playlist, &name, uris, outcome),
+        ConnEvent::Msg(DaemonMsg::Event(Event::MovedInPlaylist { playlist, uids, ok })) => app.moved_in_playlist(&playlist, &uids, ok),
         ConnEvent::Msg(DaemonMsg::Event(Event::RemovedFromPlaylist { playlist, uids, ok })) => app.removed_from_playlist(&playlist, &uids, ok),
         ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistEdited { uri, name, description, ok })) => app.playlist_edited(&uri, &name, &description, ok),
         ConnEvent::Msg(DaemonMsg::Event(Event::Tracks(p))) => app.track_page(p),

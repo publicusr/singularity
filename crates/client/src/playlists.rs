@@ -3,9 +3,10 @@
 //! Daemon's fresh library if Spotify refused. Edit details (#52): a name and a description, shown everywhere at once
 //! and put back if Spotify refuses. Add to playlist (#53): a picker over your own playlists, filtered as you type,
 //! "New playlist" on top; a playlist that has the song already asks first. Remove (#54): one row, by its uid, gone at
-//! once and put back where it was if Spotify refuses.
+//! once and put back where it was if Spotify refuses. Reorder (#55): drag a row (or Alt+↑↓) in the playlist's own
+//! order; the preview follows the pointer, the drop sends one move anchored to a neighbour's uid.
 
-use crate::app::{App, MenuAct, Naming, Page, Target};
+use crate::app::{App, Hit, MenuAct, Naming, Page, Target};
 use crate::theme::Theme;
 use crate::ui::text;
 use ratatui::buffer::Buffer;
@@ -32,6 +33,13 @@ pub struct Adding {
     pub label: String,
     pub filter: String,
     pub sel: usize,
+}
+
+/// A playlist row being dragged: from and to, as view positions (the view is in the playlist's own order).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowDrag {
+    pub from: usize,
+    pub to: usize,
 }
 
 /// The "Edit details" form.
@@ -64,6 +72,11 @@ pub struct Playlists {
     dup: Option<(String, Vec<String>, Instant)>,
     /// rows taken out before Spotify answered, by (playlist, uid): where they were
     removing: HashMap<(String, String), (usize, singularity_proto::TrackRow)>,
+    /// the row pressed on (a drag from it reorders), and the drag under way
+    pub press: Option<usize>,
+    pub row_drag: Option<RowDrag>,
+    /// rows moved before Spotify answered, by (playlist, uid): where they were, and how many moves are unanswered
+    moving: HashMap<(String, String), (usize, usize)>,
 }
 
 impl App {
@@ -442,6 +455,125 @@ impl App {
     }
 }
 
+impl App {
+    /// Why the open list's rows can't be moved, if they can't.
+    fn unmovable(&self) -> Option<&'static str> {
+        let v = self.view.as_ref()?;
+        if self.own_playlist(&v.uri).is_none() {
+            Some("Only your own playlists can be reordered")
+        } else if v.sort.is_some() || !v.filter.is_empty() {
+            Some("Clear the sort and the filter to reorder: moves follow the playlist's own order")
+        } else {
+            None
+        }
+    }
+
+    /// The pointer moved with the button held after pressing a row: start or follow a drag.
+    pub fn drag_row_to(&mut self, y: u16) {
+        let Some(from) = self.playlists.press else { return };
+        // the row under the pointer (rows are drawn in the preview's order), clamped to the visible ones
+        let rows: Vec<(u16, usize)> = self.hits.iter().filter_map(|(r, h)| if let Hit::Track(k) = h { Some((r.y, *k)) } else { None }).collect();
+        let to = match rows.iter().find(|(ry, _)| *ry == y) {
+            Some((_, k)) => *k,
+            None if rows.first().is_some_and(|(ry, _)| y < *ry) => rows.iter().map(|(_, k)| *k).min().unwrap_or(from),
+            None => rows.iter().map(|(_, k)| *k).max().unwrap_or(from),
+        };
+        // a drag starts once the pointer reaches another row (a shaky click isn't one)
+        if self.playlists.row_drag.is_none() {
+            if to == from {
+                return;
+            }
+            if let Some(why) = self.unmovable() {
+                self.playlists.press = None;
+                return self.say(why);
+            }
+            self.playlists.row_drag = Some(RowDrag { from, to: from });
+        }
+        if let Some(d) = self.playlists.row_drag.as_mut() {
+            d.to = to;
+        }
+        if let Some(v) = self.view.as_mut() {
+            v.sel = to;
+        }
+    }
+
+    /// The button let go: a drag lands.
+    pub fn drop_row(&mut self) {
+        self.playlists.press = None;
+        if let Some(d) = self.playlists.row_drag.take()
+            && d.to != d.from
+        {
+            self.move_row(d.from, d.to);
+        }
+    }
+
+    /// Alt+↑↓ on the selected row.
+    pub fn nudge_row(&mut self, sel: usize, d: i32) {
+        if let Some(why) = self.unmovable() {
+            return self.say(why);
+        }
+        let len = self.view_order().len();
+        let to = sel as i64 + d as i64;
+        if (0..len as i64).contains(&to) {
+            self.move_row(sel, to as usize);
+        }
+    }
+
+    /// Move row `from` to `to` (positions in the playlist's own order): at once here, then one move on Spotify,
+    /// anchored to the row it lands before (or after, at the end).
+    fn move_row(&mut self, from: usize, to: usize) {
+        let Some(playlist) = self.view.as_ref().map(|v| v.uri.clone()) else { return };
+        let Some(list) = self.lists.get_mut(&playlist) else { return };
+        let Some(uid) = list.rows.get(from).and_then(|r| r.uid.clone()) else {
+            return self.say("Spotify didn't say which row this is; open the playlist again");
+        };
+        let row = list.rows.remove(from);
+        list.rows.insert(to.min(list.rows.len()), row);
+        let before = list.rows.get(to + 1).and_then(|r| r.uid.clone());
+        let after = if before.is_none() { to.checked_sub(1).and_then(|i| list.rows.get(i)).and_then(|r| r.uid.clone()) } else { None };
+        self.playlists.moving.entry((playlist.clone(), uid.clone())).or_insert((from, 0)).1 += 1;
+        if let Some(v) = self.view.as_mut() {
+            v.sel = to;
+        }
+        self.send(Command::MoveInPlaylist { playlist, uids: vec![uid], before, after });
+    }
+
+    /// `Event::MovedInPlaylist`: settled; or moved back (ours); another Client's move: fetch the new order.
+    pub fn moved_in_playlist(&mut self, playlist: &str, uids: &[String], ok: bool) {
+        for uid in uids {
+            let key = (playlist.to_string(), uid.clone());
+            // the last answer for a row settles it (a refusal puts it back where the first move took it from)
+            let mine = match self.playlists.moving.get_mut(&key) {
+                Some((_, n)) if *n > 1 && ok => {
+                    *n -= 1;
+                    continue;
+                }
+                Some(_) => self.playlists.moving.remove(&key).map(|(was, _)| was),
+                None => None,
+            };
+            match (mine, ok) {
+                (Some(was), false) => {
+                    if let Some(l) = self.lists.get_mut(playlist)
+                        && let Some(i) = l.rows.iter().position(|r| r.uid.as_deref() == Some(uid.as_str()))
+                    {
+                        let row = l.rows.remove(i);
+                        l.rows.insert(was.min(l.rows.len()), row);
+                    }
+                    self.say("Spotify didn't take the move; it's back where it was");
+                }
+                (None, true) => {
+                    if self.view.as_ref().is_some_and(|v| v.uri == playlist) {
+                        self.send(Command::GetTracks { uri: playlist.into() });
+                    } else {
+                        self.lists.remove(playlist);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 pub fn adding_rect(area: Rect, rows: usize) -> Rect {
     crate::ui::centered(area, 56, (rows as u16 + 4).clamp(7, 18))
 }
@@ -757,5 +889,54 @@ mod tests {
         app.menu = None;
         app.key(ratatui::crossterm::event::KeyEvent::from(KeyCode::Delete));
         assert!(!sent(&mut rx).iter().any(|c| matches!(c, Command::RemoveFromPlaylist { .. })));
+    }
+
+    #[test]
+    fn rows_are_dragged_or_nudged_into_place_and_moved_back_if_refused() {
+        use crate::app::Hit;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use singularity_proto::{TrackPage, TrackRow};
+        let (mut app, mut rx) = app();
+        let row = |n: usize| TrackRow { uri: format!("t{n}"), name: format!("Song {n}"), uid: Some(format!("u{n}")), playable: true, ..Default::default() };
+        app.open("spotify:playlist:mine", "Mine", "", "playlist");
+        app.track_page(TrackPage { uri: "spotify:playlist:mine".into(), offset: 0, total: 5, tracks: (0..5).map(row).collect(), header: None });
+        sent(&mut rx);
+        let draw = |app: &mut App| {
+            let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 40)).unwrap();
+            t.draw(|f| crate::ui::draw(f, app)).unwrap();
+            t.backend().buffer().clone()
+        };
+        let uids = |app: &App| app.lists["spotify:playlist:mine"].rows.iter().map(|r| r.uid.clone().unwrap()).collect::<Vec<_>>();
+        draw(&mut app);
+        let y = |app: &App, k: usize| app.hit_rect(&Hit::Track(k)).unwrap().y;
+        // press row 0, drag down onto row 3: the preview shows it there before the drop
+        app.playlists.press = Some(0);
+        let (y0, y3) = (y(&app, 0), y(&app, 3));
+        app.drag_row_to(y0);
+        assert!(app.playlists.row_drag.is_none(), "a shaky click isn't a drag");
+        app.drag_row_to(y3);
+        let screen = draw(&mut app);
+        let line = |b: &ratatui::buffer::Buffer, yy: u16| (0..b.area.width).map(|x| b[(x, yy)].symbol().to_string()).collect::<String>();
+        assert!(line(&screen, y3).contains("Song 0"), "{}", line(&screen, y3));
+        assert!(sent(&mut rx).is_empty(), "nothing sent while dragging");
+        app.drop_row();
+        assert_eq!(sent(&mut rx), vec![Command::MoveInPlaylist { playlist: "spotify:playlist:mine".into(), uids: vec!["u0".into()], before: Some("u4".into()), after: None }]);
+        assert_eq!(uids(&app), vec!["u1", "u2", "u3", "u0", "u4"]);
+        // Alt+↓ on the last-but-one: to the end, anchored after the last
+        app.focus = "home".into();
+        app.view.as_mut().unwrap().sel = 3;
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        assert_eq!(sent(&mut rx), vec![Command::MoveInPlaylist { playlist: "spotify:playlist:mine".into(), uids: vec!["u0".into()], before: None, after: Some("u4".into()) }]);
+        assert_eq!(uids(&app), vec!["u1", "u2", "u3", "u4", "u0"]);
+        // the first answer only counts down; the refused second puts it back where the first move took it from
+        app.moved_in_playlist("spotify:playlist:mine", &["u0".into()], true);
+        assert!(sent(&mut rx).is_empty(), "no refetch for our own move");
+        app.moved_in_playlist("spotify:playlist:mine", &["u0".into()], false);
+        assert_eq!(uids(&app), vec!["u0", "u1", "u2", "u3", "u4"]);
+        // a sorted view says why instead
+        app.view.as_mut().unwrap().sort = Some((crate::tracks::Col::Title, false));
+        app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert!(app.toast.as_ref().unwrap().0.contains("Clear the sort"));
+        assert!(sent(&mut rx).is_empty());
     }
 }

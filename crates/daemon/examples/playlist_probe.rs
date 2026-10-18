@@ -5,6 +5,7 @@
 //!     cargo run -p singularityd --example playlist_probe -- --details
 //!     cargo run -p singularityd --example playlist_probe -- --add
 //!     cargo run -p singularityd --example playlist_probe -- --remove
+//!     cargo run -p singularityd --example playlist_probe -- --move
 //!
 //! Spotify's "delete" takes the playlist out of the library (as the web player does); the emptied playlist stays
 //! behind on Spotify's side, unlisted.
@@ -43,6 +44,13 @@ async fn read_details(session: &Session, registry: &mut QueryRegistry, uri: &str
     let v = session.spclient().pathfinder_query(op, &hash, vars).await?;
     let name = v["data"]["playlistV2"]["name"].as_str().unwrap_or_default().to_string();
     Ok((name, singularityd::library::parse_header(uri, &v).map(|h| h.description).unwrap_or_default()))
+}
+
+/// The playlist's rows' uids, in order (first page).
+async fn row_uids(session: &Session, registry: &mut QueryRegistry, uri: &str) -> anyhow::Result<Vec<String>> {
+    let (name, vars) = singularityd::library::tracks_query(uri, 0).unwrap();
+    let (rows, _) = singularityd::library::parse_tracks(uri, &op(session, registry, name, vars).await?);
+    Ok(rows.into_iter().filter_map(|r| r.uid).collect())
 }
 
 /// A scratch playlist in the library; its URI.
@@ -151,7 +159,36 @@ async fn main() -> anyhow::Result<()> {
             println!("after delete, in the library: {there}");
             res?;
         }
-        _ => anyhow::bail!("modes: --create-delete, --details, --add, --remove"),
+        "--move" => {
+            let uri = scratch(&session, &root).await?;
+            let uris = vec![TRACK.to_string()];
+            let checked = async {
+                // three rows told apart by uid
+                for _ in 0..3 {
+                    let v = op(&session, &mut registry, "addToPlaylist", playlists::add_vars(&uri, &uris)).await?;
+                    anyhow::ensure!(playlists::graphql_error(&v).is_none(), "add refused");
+                }
+                let u = row_uids(&session, &mut registry, &uri).await?;
+                anyhow::ensure!(u.len() == 3, "expected 3 rows");
+                let t = std::time::Instant::now();
+                let v = op(&session, &mut registry, "moveItemsInPlaylist", playlists::move_vars(&uri, &u[..1], None, Some(&u[2]))).await?;
+                println!("move after the last: errors {:?}, keys {:?} ({:?})", playlists::graphql_error(&v), v["data"].as_object().map(|o| o.keys().collect::<Vec<_>>()), t.elapsed());
+                let mut want = u.clone();
+                playlists::apply_move(&mut want, |x| Some(x.as_str()), &u[..1], None, Some(&u[2]));
+                let got = row_uids(&session, &mut registry, &uri).await?;
+                println!("read back in the expected order: {}", got == want);
+                let v = op(&session, &mut registry, "moveItemsInPlaylist", playlists::move_vars(&uri, &got[2..], Some(&got[0]), None)).await?;
+                playlists::apply_move(&mut want, |x| Some(x.as_str()), &got[2..], Some(&got[0]), None);
+                println!("move before the first: errors {:?}, then as expected: {}", playlists::graphql_error(&v), row_uids(&session, &mut registry, &uri).await? == want);
+                anyhow::Ok(())
+            };
+            let res = checked.await;
+            playlists::post(&session, &root, &playlists::rootlist_remove(&uri)).await?;
+            let (there, _) = listed(&session, &mut registry, &uri).await?;
+            println!("after delete, in the library: {there}");
+            res?;
+        }
+        _ => anyhow::bail!("modes: --create-delete, --details, --add, --remove, --move"),
     }
     Ok(())
 }

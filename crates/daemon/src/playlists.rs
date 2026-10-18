@@ -62,6 +62,29 @@ pub fn remove_vars(playlist: &str, uids: &[String]) -> Value {
     json!({ "playlistUri": playlist, "uids": uids })
 }
 
+/// `moveItemsInPlaylist` (Pathfinder mutation): rows to just before `before`, else just after `after`, else last.
+pub fn move_vars(playlist: &str, uids: &[String], before: Option<&str>, after: Option<&str>) -> Value {
+    let to = match (before, after) {
+        (Some(u), _) => json!({ "moveType": "BEFORE_UID", "fromUid": u }),
+        (None, Some(u)) => json!({ "moveType": "AFTER_UID", "fromUid": u }),
+        (None, None) => json!({ "moveType": "BOTTOM_OF_PLAYLIST", "fromUid": null }),
+    };
+    json!({ "playlistUri": playlist, "uids": uids, "newPosition": to })
+}
+
+/// Rows moved as `move_vars` says (the fake Catalogue, and the Client's own preview).
+pub fn apply_move<T: Clone>(rows: &mut Vec<T>, uid_of: impl Fn(&T) -> Option<&str>, uids: &[String], before: Option<&str>, after: Option<&str>) {
+    let moving: Vec<T> = rows.iter().filter(|r| uid_of(r).is_some_and(|u| uids.iter().any(|x| x == u))).cloned().collect();
+    rows.retain(|r| !uid_of(r).is_some_and(|u| uids.iter().any(|x| x == u)));
+    let at = match (before, after) {
+        (Some(b), _) => rows.iter().position(|r| uid_of(r) == Some(b)),
+        (None, Some(a)) => rows.iter().position(|r| uid_of(r) == Some(a)).map(|i| i + 1),
+        (None, None) => None,
+    }
+    .unwrap_or(rows.len());
+    rows.splice(at..at, moving);
+}
+
 /// `editablePlaylists` (Pathfinder query), filtered by a name, asking whether each already has `uris`.
 pub fn editable_vars(filter: &str, uris: &[String]) -> Value {
     json!({ "offset": 0, "limit": 50, "textFilter": filter, "folderUri": null, "uris": uris })
@@ -136,6 +159,15 @@ mod tests {
         );
         assert_eq!(editable_vars("Mix", &uris)["uris"], json!(["spotify:track:a"]));
         assert_eq!(remove_vars("spotify:playlist:p", &["u1".into()]), json!({"playlistUri":"spotify:playlist:p","uids":["u1"]}));
+        let uids = vec!["u1".to_string()];
+        assert_eq!(move_vars("p", &uids, Some("u5"), None)["newPosition"], json!({"moveType":"BEFORE_UID","fromUid":"u5"}));
+        assert_eq!(move_vars("p", &uids, None, Some("u5"))["newPosition"], json!({"moveType":"AFTER_UID","fromUid":"u5"}));
+        assert_eq!(move_vars("p", &uids, None, None)["newPosition"], json!({"moveType":"BOTTOM_OF_PLAYLIST","fromUid":null}));
+        let mut rows = vec!["a", "b", "c", "d"];
+        apply_move(&mut rows, |r| Some(*r), &["a".into()], Some("d"), None);
+        assert_eq!(rows, vec!["b", "c", "a", "d"]);
+        apply_move(&mut rows, |r| Some(*r), &["b".into()], None, Some("d"));
+        assert_eq!(rows, vec!["c", "a", "d", "b"]);
     }
 
     #[test]

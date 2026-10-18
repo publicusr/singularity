@@ -653,6 +653,33 @@ def playlist_remove(t, out):
     t.send(b"q", 0.5)
 
 
+def playlist_move(t, out):
+    """#55: drag a row of your own playlist to a new place (preview while dragging), Alt+↓, and a sorted view saying why
+    it can't."""
+    t.pump(1.0)
+    x, y = t.find("Fake Mixtape")
+    mouse(t, 0, x + 1, y); mouse(t, 0, x + 1, y, release=True, wait=1.0)
+    order = lambda: [l.split("Fake Track ")[1][:3] for l in t.screen.display if "Fake Track " in l][:6]
+    print("before:", order())
+    src, dst = t.find("Fake Track 001"), t.find("Fake Track 004")
+    mouse(t, 0, src[0] + 2, src[1])
+    mouse(t, 32, src[0] + 2, src[1] + 1, wait=0.15)
+    mouse(t, 32, dst[0] + 2, dst[1], wait=0.3)
+    t.shot(f"{out}/0-dragging.png")
+    print("preview:", order())
+    mouse(t, 0, dst[0] + 2, dst[1], release=True, wait=1.0)
+    t.shot(f"{out}/1-dropped.png")
+    print("dropped:", order())
+    t.send(b"\x1b[1;3B", 0.8)  # Alt+Down: the selected row one place down
+    print("Alt+Down:", order())
+    hx, hy = t.find("Title")
+    mouse(t, 0, hx + 1, hy); mouse(t, 0, hx + 1, hy, release=True, wait=0.4)
+    t.send(b"\x1b[1;3A", 0.5)  # Alt+Up in a sorted view
+    t.shot(f"{out}/2-sorted.png")
+    print("sorted says:", [l.strip()[-60:] for l in t.screen.display if "Clear the sort" in l][:1])
+    t.send(b"q", 0.5)
+
+
 def arrows(t, out):
     """The owner's report: cycling a narrow Pane onto a long title hid its ◂ ▸. Walk two Panes through every Widget."""
     t.pump(1.0)
@@ -822,7 +849,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "ambient", "popup") else "0"
@@ -879,6 +906,8 @@ def main():
             return queue_lift(t, out)
         if scenario == "playlists":
             return playlists(t, out)
+        if scenario == "playlist-move":
+            return playlist_move(t, out)
         if scenario == "playlist-remove":
             return playlist_remove(t, out)
         if scenario == "playlist-add":

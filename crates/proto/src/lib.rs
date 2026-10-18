@@ -138,6 +138,16 @@ pub enum Command {
     },
     /// Take rows (by their uid) out of one of your playlists; answered by `Event::RemovedFromPlaylist`.
     RemoveFromPlaylist { playlist: String, uids: Vec<String> },
+    /// Move rows of one of your playlists (#55): to just before the row `before`, else just after `after`.
+    /// Answered by `Event::MovedInPlaylist`.
+    MoveInPlaylist {
+        playlist: String,
+        uids: Vec<String>,
+        #[serde(default)]
+        before: Option<String>,
+        #[serde(default)]
+        after: Option<String>,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -214,6 +224,8 @@ pub enum Event {
     AddedToPlaylist { playlist: String, name: String, uris: Vec<String>, outcome: AddOutcome },
     /// The answer to `RemoveFromPlaylist`: gone (`ok`), or Spotify refused (the Client that asked puts them back).
     RemovedFromPlaylist { playlist: String, uids: Vec<String>, ok: bool },
+    /// The answer to `MoveInPlaylist` (the Client that asked moves them back if not `ok`).
+    MovedInPlaylist { playlist: String, uids: Vec<String>, ok: bool },
     #[serde(other)]
     Unknown,
 }

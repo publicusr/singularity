@@ -506,3 +506,43 @@ async fn one_row_is_removed_by_its_uid_and_a_refusal_is_told() {
     proto::write_msg(&mut a, &ClientMsg::Command(Command::RemoveFromPlaylist { playlist: mine.clone(), uids: vec!["fail".into()] })).await.unwrap();
     assert!(!answer(&mut a).await);
 }
+
+#[tokio::test]
+async fn a_row_moves_before_another_and_a_refusal_is_told() {
+    use singularity_proto::{Command, HomeFeed};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mv.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
+    let mut a = connect(&path).await;
+    let mine = "spotify:playlist:fakemine".to_string();
+    async fn answer(s: &mut UnixStream) -> bool {
+        loop {
+            if let DaemonMsg::Event(Event::MovedInPlaylist { ok, .. }) = proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap() {
+                return ok;
+            }
+        }
+    }
+    async fn uids(s: &mut UnixStream, uri: &str) -> Vec<String> {
+        proto::write_msg(s, &ClientMsg::Command(Command::GetTracks { uri: uri.into() })).await.unwrap();
+        loop {
+            if let DaemonMsg::Event(Event::Tracks(p)) = proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap() {
+                return p.tracks.into_iter().filter_map(|t| t.uid).collect();
+            }
+        }
+    }
+    let before = uids(&mut a, &mine).await;
+    let mv = |uid: &str, before: Option<&str>, after: Option<&str>| ClientMsg::Command(Command::MoveInPlaylist { playlist: mine.clone(), uids: vec![uid.into()], before: before.map(String::from), after: after.map(String::from) });
+    // the first row to just before the fourth
+    proto::write_msg(&mut a, &mv(&before[0], Some(&before[3]), None)).await.unwrap();
+    assert!(answer(&mut a).await);
+    let after = uids(&mut a, &mine).await;
+    assert_eq!(after[..4], [before[1].clone(), before[2].clone(), before[0].clone(), before[3].clone()]);
+    // after the last
+    let last = after.last().unwrap().clone();
+    proto::write_msg(&mut a, &mv(&after[0], None, Some(&last))).await.unwrap();
+    assert!(answer(&mut a).await);
+    assert_eq!(uids(&mut a, &mine).await.last(), Some(&after[0]));
+    proto::write_msg(&mut a, &mv("fail", None, None)).await.unwrap();
+    assert!(!answer(&mut a).await);
+}

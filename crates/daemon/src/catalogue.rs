@@ -57,6 +57,8 @@ pub enum CatCmd {
     AddToPlaylist { playlist: String, name: String, uris: Vec<String>, anyway: bool },
     /// rows out of one of your playlists, by uid (#54)
     RemoveFromPlaylist { playlist: String, uids: Vec<String> },
+    /// rows of one of your playlists to a new place (#55)
+    MoveInPlaylist { playlist: String, uids: Vec<String>, before: Option<String>, after: Option<String> },
     /// one of your playlists out of the library (#51)
     DeletePlaylist(String),
     /// a new name and description for one of your playlists (#52)
@@ -93,6 +95,8 @@ pub enum CatEvent {
     Added { playlist: String, name: String, uris: Vec<String>, outcome: singularity_proto::AddOutcome },
     /// rows taken out of a playlist, or refused
     Removed { playlist: String, uids: Vec<String>, ok: bool },
+    /// rows moved, or refused
+    Moved { playlist: String, uids: Vec<String>, ok: bool },
     Error(String),
 }
 
@@ -186,6 +190,7 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
             }
             CatCmd::AddToPlaylist { playlist, name, uris, anyway } => st.add_to_playlist(playlist, name, uris, anyway).await,
             CatCmd::RemoveFromPlaylist { playlist, uids } => st.remove_from_playlist(playlist, uids).await,
+            CatCmd::MoveInPlaylist { playlist, uids, before, after } => st.move_in_playlist(playlist, uids, before, after).await,
             CatCmd::DeletePlaylist(uri) => {
                 st.delete_playlist(uri).await;
                 let _ = self_tx.send(CatCmd::Library).await;
@@ -234,6 +239,8 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
         let mut added: HashMap<String, Vec<String>> = HashMap::new();
         // rows taken out of each, by uid
         let mut removed: HashMap<String, Vec<String>> = HashMap::new();
+        // and moved, in order
+        let mut moves: HashMap<String, Vec<(Vec<String>, Option<String>, Option<String>)>> = HashMap::new();
         while let Some(cmd) = cmd_rx.recv().await {
             let evs = match cmd {
                 CatCmd::Home => vec![CatEvent::Home(home.clone())],
@@ -310,6 +317,17 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                     ev.push(CatEvent::Removed { playlist, uids, ok });
                     ev
                 }
+                CatCmd::MoveInPlaylist { playlist, uids, before, after } => {
+                    let ok = lib.items.iter().any(|i| i.uri == playlist && i.own) && !uids.iter().any(|u| u.contains("fail"));
+                    let mut ev = vec![];
+                    if ok {
+                        moves.entry(playlist.clone()).or_default().push((uids.clone(), before, after));
+                    } else {
+                        ev.push(CatEvent::Error("Couldn't move it (fake failure)".into()));
+                    }
+                    ev.push(CatEvent::Moved { playlist, uids, ok });
+                    ev
+                }
                 CatCmd::Tracks(uri) => {
                     let mut pages = fake_tracks(&uri);
                     // what was added comes last (the fake playlists fit one page)
@@ -321,6 +339,11 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                     if let (Some(gone), [CatEvent::Tracks(p)]) = (removed.get(&uri), pages.as_mut_slice()) {
                         p.tracks.retain(|t| t.uid.as_ref().is_none_or(|u| !gone.contains(u)));
                         p.total = p.tracks.len() as u32;
+                    }
+                    if let (Some(ms), [CatEvent::Tracks(p)]) = (moves.get(&uri), pages.as_mut_slice()) {
+                        for (uids, before, after) in ms {
+                            crate::playlists::apply_move(&mut p.tracks, |t| t.uid.as_deref(), uids, before.as_deref(), after.as_deref());
+                        }
                     }
                     pages
                 }
@@ -877,6 +900,27 @@ impl State {
             }
         };
         let _ = self.ev.send(CatEvent::Added { playlist, name, uris, outcome }).await;
+    }
+
+    async fn move_in_playlist(&mut self, playlist: String, uids: Vec<String>, before: Option<String>, after: Option<String>) {
+        let vars = crate::playlists::move_vars(&playlist, &uids, before.as_deref(), after.as_deref());
+        let ok = match self.query("moveItemsInPlaylist", vars).await {
+            Ok(v) => match crate::playlists::graphql_error(&v) {
+                None => true,
+                Some(e) => {
+                    let _ = self.ev.send(CatEvent::Error(format!("Couldn't move it: {e}"))).await;
+                    false
+                }
+            },
+            Err(e) => {
+                let _ = self.ev.send(CatEvent::Error(format!("Couldn't move it: {e}"))).await;
+                false
+            }
+        };
+        if ok {
+            self.tracks.remove(&playlist);
+        }
+        let _ = self.ev.send(CatEvent::Moved { playlist, uids, ok }).await;
     }
 
     async fn remove_from_playlist(&mut self, playlist: String, uids: Vec<String>) {

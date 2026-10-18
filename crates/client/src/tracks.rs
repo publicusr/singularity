@@ -241,7 +241,12 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     // a page has arrived (an empty playlist's says total 0)
     let arrived = app.lists.contains_key(&view.uri);
     let list = app.lists.get(&view.uri).unwrap_or(&empty);
-    let order = view.order(&list.rows);
+    let mut order = view.order(&list.rows);
+    // a row being dragged shows where it would land (#55)
+    if let Some(d) = app.playlists.row_drag.filter(|d| d.from < order.len() && d.to < order.len()) {
+        let x = order.remove(d.from);
+        order.insert(d.to, x);
+    }
     // hit-boxes are registered once the list is no longer borrowed
     let mut hits: Vec<(Rect, Hit)> = vec![];
     let focused = app.focus == "home";
