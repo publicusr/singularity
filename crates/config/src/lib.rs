@@ -47,11 +47,13 @@ pub struct Ui {
     pub theme: String,
     /// the terminal's own background instead of black
     pub transparent: bool,
+    /// a layout saved in `layouts/` (its file name); empty: the design's own
+    pub layout: String,
 }
 
 impl Default for Ui {
     fn default() -> Self {
-        Ui { design: "singularity".into(), theme: String::new(), transparent: false }
+        Ui { design: "singularity".into(), theme: String::new(), transparent: false, layout: String::new() }
     }
 }
 
@@ -99,6 +101,8 @@ design = "singularity"
 theme = ""
 # let the terminal's own background (and its transparency) show instead of black
 transparent = false
+# a layout you saved (Ctrl+K → "Save layout as…"), by file name in layouts/; empty for the design's own
+layout = ""
 
 [notifications]
 # a desktop notification when a new track starts

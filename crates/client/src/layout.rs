@@ -18,8 +18,13 @@ pub enum Axis {
 #[serde(rename_all = "snake_case")]
 pub enum Size {
     Cells(u16),
-    Ratio(f32),
+    Ratio(#[serde(serialize_with = "exact")] f32),
     Last(u16),
+}
+
+/// A ratio written as its shortest decimal (`0.58`, not `0.5799999833`), which reads back to the same f32.
+fn exact<S: serde::Serializer>(r: &f32, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_f64(format!("{r}").parse().unwrap_or(*r as f64))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -104,6 +109,42 @@ impl Node {
         Node::split(Horizontal, Cells(30), Node::slot("library"), Node::split(Horizontal, Last(36), mid, right))
     }
 
+    /// The least room this subtree needs along `axis`: a Slot's minimum, summed along a split's own axis.
+    fn min_len(&self, axis: Axis) -> u16 {
+        match self {
+            Node::Slot(_) => match axis {
+                Axis::Horizontal => MIN_W,
+                Axis::Vertical => MIN_H,
+            },
+            Node::Split { axis: own, a, b, .. } if *own == axis => a.min_len(axis) + b.min_len(axis),
+            Node::Split { a, b, .. } => a.min_len(axis).max(b.min_len(axis)),
+        }
+    }
+
+    /// The Slots' names, in order.
+    pub fn slot_names(&self) -> Vec<String> {
+        match self {
+            Node::Slot(s) => vec![s.clone()],
+            Node::Split { a, b, .. } => {
+                let mut v = a.slot_names();
+                v.extend(b.slot_names());
+                v
+            }
+        }
+    }
+
+    /// Put Widget `to` in the Slot that shows `from`.
+    pub fn swap(&mut self, from: &str, to: &str) -> bool {
+        match self {
+            Node::Slot(s) if s == from => {
+                *s = to.into();
+                true
+            }
+            Node::Slot(_) => false,
+            Node::Split { a, b, .. } => a.swap(from, to) || b.swap(from, to),
+        }
+    }
+
     pub fn compute(&self, area: Rect) -> Computed {
         let mut out = Computed::default();
         self.compute_into(area, &mut Vec::new(), &mut out);
@@ -118,17 +159,15 @@ impl Node {
                     Axis::Horizontal => area.width,
                     Axis::Vertical => area.height,
                 };
-                let min = match axis {
-                    Axis::Horizontal => MIN_W,
-                    Axis::Vertical => MIN_H,
-                };
+                let (min_a, min_b) = (a.min_len(*axis), b.min_len(*axis));
                 let want = match first {
                     Size::Cells(c) => *c,
                     Size::Ratio(r) => (total as f32 * r.clamp(0.05, 0.95)).round() as u16,
                     Size::Last(c) => total.saturating_sub(*c),
                 };
-                // keep both children at least `min` when there is room; otherwise split evenly
-                let n = if total >= min * 2 { want.clamp(min, total - min) } else { total / 2 };
+                // keep both sides at least as big as their own Panes need when there is room; otherwise share the
+                // room in proportion to those needs
+                let n = if total >= min_a + min_b { want.clamp(min_a, total - min_b) } else { (total as u32 * min_a as u32 / (min_a + min_b).max(1) as u32) as u16 };
                 let (ra, rb, grip) = match axis {
                     Axis::Horizontal => (
                         Rect::new(area.x, area.y, n, area.height),
@@ -164,14 +203,16 @@ impl Node {
     /// Move a divider so the boundary sits at mouse column/row `pos`. Keeps the size's kind
     /// (fixed cells stay fixed, ratios stay ratios) so window resizes behave as the preset intended.
     pub fn drag(&mut self, d: &Divider, pos: u16) {
-        let (start, total, min) = match d.axis {
-            Axis::Horizontal => (d.area.x, d.area.width, MIN_W),
-            Axis::Vertical => (d.area.y, d.area.height, MIN_H),
+        let (start, total) = match d.axis {
+            Axis::Horizontal => (d.area.x, d.area.width),
+            Axis::Vertical => (d.area.y, d.area.height),
         };
-        if total < min * 2 {
+        let Some(Node::Split { a, b, .. }) = self.at_path_mut(&d.path) else { return };
+        let (min_a, min_b) = (a.min_len(d.axis), b.min_len(d.axis));
+        if total < min_a + min_b {
             return;
         }
-        let n = pos.saturating_sub(start).clamp(min, total - min);
+        let n = pos.saturating_sub(start).clamp(min_a, total - min_b);
         if let Some(Node::Split { first, .. }) = self.at_path_mut(&d.path) {
             *first = match first {
                 Size::Cells(_) => Size::Cells(n),
@@ -201,6 +242,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn dragging_any_divider_anywhere_never_overlaps_or_vanishes() {
+        for preset in [Node::singularity(), Node::event_horizon(), Node::classic(), Node::cockpit(), Node::terminal()] {
+            for (w, h) in [(80, 24), (160, 48), (300, 90)] {
+                let area = Rect::new(0, 0, w, h);
+                for pos in [0u16, 1, 5, w / 3, w / 2, w - 3, w, u16::MAX] {
+                    let mut n = preset.clone();
+                    for i in 0..n.compute(area).dividers.len() {
+                        let d = n.compute(area).dividers[i].clone();
+                        let p = if d.axis == Axis::Vertical { pos.min(h + 5) } else { pos };
+                        n.drag(&d, p);
+                    }
+                    let c = n.compute(area);
+                    let cells: u32 = c.slots.iter().map(|(_, r)| r.width as u32 * r.height as u32).sum();
+                    assert_eq!(cells, w as u32 * h as u32, "{w}x{h} after dragging to {pos}");
+                    for (i, (sa, a)) in c.slots.iter().enumerate() {
+                        assert!(a.width >= MIN_W.min(w / 4) && a.height >= MIN_H.min(h / 6), "{sa} shrank to {a:?} at {w}x{h} (pos {pos})");
+                        for (_, b) in c.slots.iter().skip(i + 1) {
+                            assert!(a.intersection(*b).is_empty(), "overlap at {w}x{h}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_tree_survives_toml_exactly() {
+        let mut n = Node::singularity();
+        let area = Rect::new(0, 0, 173, 51);
+        let d = n.compute(area).dividers[1].clone();
+        n.drag(&d, 97);
+        let doc = singularity_config::toml_edit::ser::to_document(&n).unwrap();
+        let text = doc.to_string();
+        assert!(!text.contains("99999"), "ratios are written short:\n{text}");
+        let back: Node = singularity_config::toml_edit::de::from_str(&text).unwrap();
+        assert_eq!(back, n);
     }
 
     #[test]

@@ -44,6 +44,7 @@ pub enum Action {
     NextVariant,
     PickDesign,
     PickTheme,
+    SaveLayout,
     ToggleNotifications,
     Login,
     Logout,
@@ -71,7 +72,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 39] = [
+    pub const ALL: [Action; 40] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -87,6 +88,7 @@ impl Action {
         Action::NextVariant,
         Action::PickDesign,
         Action::PickTheme,
+        Action::SaveLayout,
         Action::ToggleNotifications,
         Action::Login,
         Action::Logout,
@@ -129,6 +131,7 @@ impl Action {
             Action::NextVariant => "Next palette (this design's colours, then your themes)",
             Action::PickDesign => "Design: pick one (layout + colours, live preview)",
             Action::PickTheme => "Theme: pick colours (live preview)",
+            Action::SaveLayout => "Save layout as… (comes back in Design)",
             Action::ToggleNotifications => "Track-change notifications on / off",
             Action::Login => "Log in to Spotify",
             Action::Logout => "Log out of Spotify",
@@ -143,7 +146,7 @@ impl Action {
             Action::SortAlbum => "Sort list by album",
             Action::SortAdded => "Sort list by date added",
             Action::SortDuration => "Sort list by duration",
-            Action::NextLook => "Black hole: next Disk look",
+            Action::NextLook => "Swap this Pane's Widget (the black hole: next Disk look)",
             Action::ClearQueue => "Clear the queue",
             Action::Devices => "Devices: play on another speaker or phone",
             Action::Health => "Health check (Engine, login, audio, stream quality)",
@@ -173,6 +176,7 @@ impl Action {
             Action::NextVariant => "next_palette",
             Action::PickDesign => "design",
             Action::PickTheme => "theme",
+            Action::SaveLayout => "save_layout",
             Action::ToggleNotifications => "notifications",
             Action::Login => "login",
             Action::Logout => "logout",
@@ -247,6 +251,8 @@ pub enum Hit {
     Save(singularity_proto::Link),
     /// a row of the design or theme picker
     PickerItem(usize),
+    /// a Pane's ◂ ▸: the Slot's Widget, and which way to swap it
+    Swap(String, i32),
 }
 
 /// Two clicks on the same row within this time play it.
@@ -404,6 +410,11 @@ pub struct App {
     pub picker: Option<crate::looks::Picker>,
     /// state of the Widgets other designs bring (rain, scope, top)
     pub widgets: crate::widgets::State,
+    /// the saved layout on screen (its file name), the ones there are, and the name being typed for a new one (#19)
+    pub layout_name: Option<String>,
+    pub saved_layouts: Vec<crate::layouts::Saved>,
+    pub naming: Option<String>,
+    pub layouts_dir: Option<std::path::PathBuf>,
     /// whether we asked the Daemon for spectrum frames
     spectrum_on: bool,
     last_tick: Instant,
@@ -478,6 +489,10 @@ impl App {
             theme_dir: None,
             picker: None,
             widgets: Default::default(),
+            layout_name: None,
+            saved_layouts: vec![],
+            naming: None,
+            layouts_dir: None,
             spectrum_on: false,
             last_tick: Instant::now(),
             told_backend: false,
@@ -496,6 +511,8 @@ impl App {
         // the user's themes first, so a theme named in config.toml can be found
         if let Some(dir) = cp.parent() {
             self.init_theme_dir(dir.join("themes"));
+            self.layouts_dir = Some(dir.join("layouts"));
+            self.reload_layouts();
         }
         let c = singularity_config::load_config(&cp);
         let k = singularity_config::load_keys(&kp);
@@ -564,6 +581,7 @@ impl App {
         self.palette.is_some()
             || (crate::setup::wanted(self) && crate::setup::step(self) == crate::setup::Step::Key)
             || self.picker.is_some()
+            || self.naming.is_some()
             || self.view.as_ref().is_some_and(|v| v.filtering)
             || (self.search.is_some() && self.focus == "home")
     }
@@ -649,6 +667,7 @@ impl App {
             Action::NextVariant => self.next_variant(),
             Action::PickDesign => self.open_picker(crate::looks::PickerKind::Design),
             Action::PickTheme => self.open_picker(crate::looks::PickerKind::Theme),
+            Action::SaveLayout => self.naming = Some(String::new()),
             Action::Login => self.send(Command::Login),
             Action::Logout => self.send(Command::Logout),
             Action::RefreshHome => self.send(Command::GetHome),
@@ -692,8 +711,11 @@ impl App {
                 self.setup.dismissed = false;
             }
             Action::NextLook => {
-                self.hole.next_look();
-                self.say(format!("Disk look: {}", self.hole.look().name));
+                let focus = self.focus.clone();
+                if !self.swap_widget(&focus, 1) {
+                    self.hole.next_look();
+                    self.say(format!("Disk look: {}", self.hole.look().name));
+                }
             }
             Action::FocusNext => {
                 let slots: Vec<String> = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.into_iter().map(|(s, _)| s).collect();
@@ -701,7 +723,12 @@ impl App {
                 self.focus = slots[i].clone();
             }
             Action::ResetLayout => {
-                self.layout = Node::singularity();
+                let d = self.design;
+                let theme = self.theme.id.clone();
+                self.set_design(d);
+                self.set_theme(&theme);
+                self.layout_name = None;
+                self.save_ui();
                 self.say("Layout reset");
             }
             Action::Palette => self.palette = Some(Palette { query: String::new(), selected: 0 }),
@@ -740,6 +767,9 @@ impl App {
         }
         if self.picker.is_some() {
             return self.picker_key(k);
+        }
+        if self.naming.is_some() {
+            return self.naming_key(k);
         }
         if crate::setup::wanted(self) {
             return self.wizard_key(k);
@@ -1714,6 +1744,9 @@ impl App {
                         }
                     }
                     Some(Hit::MenuItem(_) | Hit::PickerItem(_)) => {}
+                    Some(Hit::Swap(slot, d)) => {
+                        self.swap_widget(&slot, d);
+                    }
                     Some(Hit::Focus(s)) => self.focus = s,
                     Some(Hit::Divider(i)) => {
                         if let Some(d) = self.dividers.get(i) {

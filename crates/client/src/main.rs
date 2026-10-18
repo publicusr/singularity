@@ -9,6 +9,7 @@ mod gfx;
 mod home;
 mod keymap;
 mod layout;
+mod layouts;
 mod looks;
 mod lyrics;
 mod meters;

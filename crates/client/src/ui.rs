@@ -73,6 +73,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.health_open.then(|| crate::setup::health_rect(area)),
         app.devices_open.then(|| devices_rect(area, app)),
         app.picker.as_ref().map(|p| crate::looks::picker_rect(area, p)),
+        app.naming.is_some().then(|| naming_rect(area)),
         app.menu.as_ref().map(|m| menu_rect(area, m)),
         app.toast.as_ref().map(|(msg, _)| toast_rect(area, msg)),
     ];
@@ -101,6 +102,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.picker.is_some() {
         crate::looks::draw_picker(f.buffer_mut(), area, app, &th);
+    }
+    if let Some(name) = app.naming.clone() {
+        let inner = popup(f.buffer_mut(), naming_rect(area), &th, "Save layout as");
+        let buf = f.buffer_mut();
+        text(buf, inner.x + 1, inner.y, inner.width.saturating_sub(2), &format!("› {name}▏"), th.s(th.fg).add_modifier(Modifier::BOLD));
+        text(buf, inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), "Enter save · Esc cancel · it comes back in Ctrl+K → Design", th.s(th.dim));
     }
     if app.health_open {
         crate::setup::draw_health(f.buffer_mut(), crate::setup::health_rect(area), app, &th);
@@ -142,6 +149,10 @@ fn transparent(buf: &mut Buffer, r: Rect, th: &Theme) {
             }
         }
     }
+}
+
+fn naming_rect(area: Rect) -> Rect {
+    centered(area, 64, 4)
 }
 
 fn devices_rect(area: Rect, app: &App) -> Rect {
@@ -253,6 +264,8 @@ fn superscript(n: usize) -> String {
 
 fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
     let computed = app.layout.compute(body);
+    // the ◂ ▸ swaps sit on a border a divider's grip may cover: registered after the grips, so they win
+    let mut swaps: Vec<(Rect, Hit)> = vec![];
     for (i, (slot, rect)) in computed.slots.iter().enumerate() {
         let (title, todo) = slot_info(slot);
         let title = crate::design::title(app.design, slot, title);
@@ -274,12 +287,21 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         let inner = block.inner(*rect);
         // the Pane's own hit first, so the things inside it win
         app.hit(*rect, Hit::Focus(slot.clone()));
+        // a Slot that can show other Widgets says so: ◂ ▸ in its title swap them (so does v)
+        let swappable = !crate::layouts::options(slot).is_empty() && rect.width > title.chars().count() as u16 + 12;
         if slot == "well" {
             // the well draws its own (sagging) frame
             crate::visual::well::draw(f.buffer_mut(), *rect, app, th);
             continue;
         }
         f.render_widget(block, *rect);
+        if swappable {
+            let (x, y) = (rect.right().saturating_sub(7), rect.y);
+            let buf = f.buffer_mut();
+            text(buf, x, y, 5, " ◂ ▸ ", th.s(if focused { th.accent } else { th.dim }));
+            swaps.push((Rect::new(x, y, 2, 1), Hit::Swap(slot.clone(), -1)));
+            swaps.push((Rect::new(x + 2, y, 3, 1), Hit::Swap(slot.clone(), 1)));
+        }
         match slot.as_str() {
             "hole" => crate::visual::well::draw_plain(f.buffer_mut(), *rect, inner, app, th),
             "nowplaying" => crate::widgets::nowplaying(f.buffer_mut(), inner, app, th),
@@ -349,6 +371,9 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
     // dividers last, so their grips win over the Panes underneath
     for (i, d) in computed.dividers.iter().enumerate() {
         app.hit(d.grip, Hit::Divider(i));
+    }
+    for (r, h) in swaps {
+        app.hit(r, h);
     }
     app.dividers = computed.dividers;
 }

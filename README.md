@@ -27,6 +27,8 @@ it by itself ("Updating singularityd…"; music pauses for a second while Solois
   apply at once). `preset = "vim"` in keys.toml adds h/j/k/l movement.
 - **Designs**: Ctrl+K → "Design" (Singularity, Event Horizon, Classic+, Cockpit, Terminal) and "Theme", both with a live
   preview; `t` cycles a design's palettes. Your own themes go in `~/.config/singularity/themes/` (see `_example.toml`).
+- **Layouts**: drag Pane borders; `v` (or a Pane's ◂ ▸) swaps its Widget; Ctrl+K → "Save layout as…" keeps it, and it
+  comes back in Ctrl+K → Design.
 - Media keys, KDE's media widget and `playerctl` control the Daemon (MPRIS); Soloist updates itself before its build
   expires.
 - `singularityd --fake-engine` runs a pretend player for UI work; `--no-catalogue` skips Spotify browsing;

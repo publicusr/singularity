@@ -221,5 +221,13 @@ flowchart LR
   /proc). Every Design keeps a `home` Pane (browsing needs one), so Cockpit and Terminal differ slightly from the
   prototype. `ui.transparent` hands the theme's black to the terminal. Spectrum frames are requested whenever an audio
   Widget is on screen (re-evaluated on design switches). Layout gained `Size::Last` (fixed right/bottom column).
+- **#19 Slots and saved layouts** (2026-10-18): `layouts.rs`. Slots swap within curated groups (audio: spectrum,
+  loudness, levels, scope, rain; side: lyrics, queue, Now playing, stream, top, listening) by `v` on the focused Pane
+  or the ◂ ▸ in its title, skipping Widgets already on screen; Home, the library and the black hole keep their Panes
+  (`v` on the well still cycles Disk looks). Dragging and window resizes clamp by each subtree's own minimum size (a
+  test drags every divider of every Design to extremes at several sizes: no overlap, no Pane under its minimum; found
+  and fixed nested splits shrinking to one row). "Save layout as…" writes `layouts/<name>.toml` (the split tree,
+  ratios written exactly, one split per line as TOML 1.1 inline tables); saved layouts follow the built-in Designs in
+  the picker, the one in use is `ui.layout`, and it comes back identically after a restart (unit test and pty).
 - **Owner answers** (2026-10-18): keep the 10 fps slowdown when the terminal is unfocused; keep the black hole on the
   low-power adapter (iGPU) and add a `gpu = "low-power" | "high-performance"` setting in #20.

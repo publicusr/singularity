@@ -325,6 +325,43 @@ def designs(t, out):
     t.send(b"q", 0.5)
 
 
+def layouts(t, out, env):
+    """#19: swap Widgets (v, ◂ ▸), drag a divider, save the layout, and find it again in a new Client."""
+    t.pump(1.0)
+    t.send(b" ", 1.0)
+    x, y = t.find("fft")
+    mouse(t, 0, x + 1, y + 3); mouse(t, 0, x + 1, y + 3, release=True, wait=0.3)  # focus the fft Pane
+    t.send(b"v", 0.6)  # fft → levels
+    lx, ly = t.find("loudness")
+    row = t.screen.display[ly]
+    sx = row.index("▸", lx)
+    mouse(t, 0, sx, ly); mouse(t, 0, sx, ly, release=True, wait=0.6)  # loudness → next free one
+    # drag the library's right edge 12 columns right
+    gx = t.screen.display[5].index("││") + 1
+    mouse(t, 0, gx, 12); mouse(t, 32, gx + 6, 12); mouse(t, 32, gx + 12, 12); mouse(t, 0, gx + 12, 12, release=True, wait=0.5)
+    t.shot(f"{out}/0-changed.png")
+    t.send(b"\x0b", 0.3); t.send(b"save layout", 0.3); t.send(b"\r", 0.4)
+    t.send(b"Wide library", 0.3)
+    t.shot(f"{out}/1-naming.png")
+    t.send(b"\r", 0.6)
+    t.shot(f"{out}/2-saved.png")
+    before = [l for l in t.screen.display[1:44]]
+    t.send(b" ", 0.3)
+    t.send(b"q", 0.8)
+    t2 = Term(env)
+    t2.pump(2.5)
+    t2.shot(f"{out}/3-new-client.png")
+    after = [l for l in t2.screen.display[1:44]]
+    # compare the Pane frames (titles and borders), not the moving contents
+    # compare where the Pane frames are: box-drawing characters left of the well (its frame sags, the borders near it
+    # bend and the scope draws braille, all moving with the music; contents and toasts move too)
+    frame = lambda ls: [re.sub(r"[^─│┌┐└┘├┤┬┴┼╭╮╯╰]", " ", l[:80]) for l in ls[:33]]
+    print("same layout after restart:", frame(before) == frame(after))
+    t2.send(b"\x0b", 0.3); t2.send(b"design", 0.3); t2.send(b"\r", 0.6)
+    t2.shot(f"{out}/4-picker.png")
+    t2.send(b"\x1b", 0.3); t2.send(b"q", 0.5)
+
+
 def main():
     scenario, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
@@ -339,7 +376,7 @@ def main():
     cat = ["--no-catalogue"]
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs") else "0"
@@ -365,6 +402,8 @@ def main():
             return config(t, out, env)
         if scenario == "designs":
             return designs(t, out)
+        if scenario == "layouts":
+            return layouts(t, out, env)
         if scenario == "artist":
             t.pump(1.0)
             x, y = t.find("♥ Liked Songs")
