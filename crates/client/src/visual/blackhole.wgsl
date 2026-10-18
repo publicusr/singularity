@@ -7,9 +7,9 @@ struct P {
     look0: vec4<f32>,   // temp, incl, roll, inner
     look1: vec4<f32>,   // outer, opac, dopp, beam
     look2: vec4<f32>,   // gain, contr, wind, speed
-    look3: vec4<f32>,   // expo, star, tint mode (0/1), quantize levels (0 = off)
-    tint: vec4<f32>,    // tint rgb, unused
-    ramp0: vec4<f32>,   // pixel-art palette stops (rgb), used when quantizing
+    look3: vec4<f32>,   // expo, star, tint mode (0/1: brightness onto the ramp), quantize levels (0 = off)
+    tint: vec4<f32>,    // unused (keeps the layout)
+    ramp0: vec4<f32>,   // palette stops (rgb): the Theme's tint, or pixel art's when quantizing untinted
     ramp1: vec4<f32>,
     ramp2: vec4<f32>,
     ramp3: vec4<f32>,
@@ -180,10 +180,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let lum = clamp(dot(col, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-    if (p.look3.z > 0.5) {
-        col = mix(p.tint.rgb * lum * 1.15, vec3<f32>(0.92, 1.0, 0.94), max(lum - 0.75, 0.0) * 2.0);
-    }
     let levels = p.look3.w;
+    if (p.look3.z > 0.5 && levels <= 0.5) {
+        col = palette(pow(lum, 0.8));
+    }
     if (levels > 0.5) {
         // pixel art: ordered dither onto a small palette
         let q = floor(clamp(pow(lum, 0.8) * levels + bayer4(gid.xy) - 0.5, 0.0, levels) ) / levels;

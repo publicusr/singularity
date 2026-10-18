@@ -346,3 +346,18 @@ flowchart LR
   command, clamp, context row inert). pty `queue`: three songs queued, the last dragged to the top, the Daemon's
   order comes back as dropped. Not yet: the quiet live check on the owner's account; their Daemon (03:53, #29) predates
   the command, and the next Client start replaces it.
+- **#33 Theme tint ✅** (2026-10-18): `theme::Tint`, a gradient map from brightness (Rec. 709, lifted ^0.8) onto
+  black → the Theme's ramp, so dark stays black and the top is the ramp's (never white). Themes have `tint` (on for
+  Cockpit's five and Terminal's three; theme files can set `tint = true/false`); `ui.tint_art` (default true) turns it
+  off everywhere. Covers: the tinted copy is its own cache entry (kitty upload key and the cell tier's memo are the
+  URL plus the tint's colours), made once per cover and tint; the kitty LRU (300) retires the old ones. The black
+  hole: `Frame.tint` (4 stops) in the shared `finish` (CPU) and the WGSL's tint mode, which reuses the palette
+  uniforms, so the uniform layout is unchanged; pixel-art looks quantise onto the tint's stops. `BlackHole::set_tint`
+  drops the cached frame, so a Theme switch shows at once. Config schema 2: a migration adds `tint_art = true` with
+  its comment at the end of `[ui]` (an untouched old file becomes today's default byte for byte); `keys.toml` keeps
+  its own schema (1). Cost: GPU (the default) no measurable difference (Inferno 16.4 → 14.7 %, Pixel ember 6.6 → 6.7 %
+  of a core at 1280×720, noise); CPU fallback at 420×236: Inferno within noise, M87* ≈ +0.3 ms (≈ 7 %) per frame
+  after replacing a per-pixel `powf` with a table. Tests: tint maths, built-ins that tint, theme-file override,
+  migration, tinted memo, cell-tier cover colour follows a Theme switch and `tint_art = false`, a tinted hole is
+  green-dominant, GPU vs CPU tinted within tolerance (mean |Δ| ≤ 0.05). pty `home-pixels` in Singularity with
+  `terminal-green`, tint on and off.

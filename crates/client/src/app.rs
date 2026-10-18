@@ -411,6 +411,8 @@ pub struct App {
     health_asked: Option<Instant>,
     pub setup: crate::setup::Setup,
     pub hole: BlackHole,
+    /// how covers are coloured this frame: the Theme's tint, or None for real colours
+    pub art_tint: Option<crate::theme::Tint>,
     pub queue_view: crate::queue::QueueView,
     pub lyrics: Option<singularity_proto::Lyrics>,
     /// first line shown of unsynced lyrics
@@ -506,6 +508,7 @@ impl App {
             health_asked: None,
             setup: Default::default(),
             hole: BlackHole::default(),
+            art_tint: None,
             queue_view: Default::default(),
             lyrics: None,
             lyrics_scroll: 0,

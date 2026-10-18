@@ -33,17 +33,28 @@ pub struct BlackHole {
     last: Option<(Instant, (usize, usize), Arc<Vec<u8>>)>,
     /// the same for the hole out of its well (idle takeover)
     free_last: Option<(Instant, (usize, usize), Arc<Vec<u8>>)>,
+    /// the Theme's colours, when it tints (#33)
+    tint: Option<[[f32; 3]; 4]>,
 }
 
 impl Default for BlackHole {
     fn default() -> Self {
-        BlackHole { gpu: None, allow_gpu: false, high_performance: false, look: 0, t: 0.0, beat: 0.0, bass: 0.0, last: None, free_last: None }
+        BlackHole { gpu: None, allow_gpu: false, high_performance: false, look: 0, t: 0.0, beat: 0.0, bass: 0.0, last: None, free_last: None, tint: None }
     }
 }
 
 impl BlackHole {
     pub fn look(&self) -> &'static blackhole::DiskLook {
         &LOOKS[self.look % LOOKS.len()]
+    }
+
+    /// Draw in the Theme's colours (or real ones); a change shows in the next frame, not after the frame interval.
+    pub fn set_tint(&mut self, tint: Option<[[f32; 3]; 4]>) {
+        if tint != self.tint {
+            self.tint = tint;
+            self.last = None;
+            self.free_last = None;
+        }
     }
 
     pub fn next_look(&mut self) {
@@ -140,7 +151,7 @@ impl BlackHole {
         let k = if look.pixel > 0 && w >= look.pixel * 8 { look.pixel } else { 1 };
         let (rw, rh_px) = ((w / k).max(1), (h / k).max(1));
         let (rh, center) = free.unwrap_or((blackhole::fit_rh(rw, rh_px, &look), (0.5, 0.5)));
-        let f = Frame { look, t: self.t, gain: 0.85 + 0.45 * self.bass + 0.25 * self.beat, rh, center };
+        let f = Frame { look, t: self.t, gain: 0.85 + 0.45 * self.bass + 0.25 * self.beat, rh, center, tint: self.tint };
         let small = match self.gpu_ready().then(|| self.gpu.as_mut().and_then(|g| g.as_mut()).and_then(|g| g.render(&f, rw, rh_px))).flatten() {
             Some(px) => px,
             None => blackhole::render_cpu(&f, rw, rh_px),
@@ -172,10 +183,12 @@ mod tests {
             eprintln!("no GPU adapter: skipping the GPU/CPU comparison");
             return;
         };
-        for i in [0usize, 2, 6] {
+        // real colours, and a Theme's tint (#33)
+        let green = crate::theme::builtin("terminal-green").unwrap().art_tint(true).map(|t| t.stops4());
+        for (i, tint) in [0usize, 2, 6].into_iter().flat_map(|i| [(i, None), (i, green)]) {
             let look = LOOKS[i];
             let (w, h) = (128, 64);
-            let f = Frame { look, t: 2.5, gain: 1.1, rh: blackhole::fit_rh(w, h, &look), center: (0.5, 0.5) };
+            let f = Frame { look, t: 2.5, gain: 1.1, rh: blackhole::fit_rh(w, h, &look), center: (0.5, 0.5), tint };
             let g = gpu.render(&f, w, h).expect("GPU frame");
             let c = blackhole::render_cpu(&f, w, h);
             let mean = g.iter().zip(&c).map(|(a, b)| (*a as f32 - *b as f32).abs()).sum::<f32>() / g.len() as f32;
@@ -200,8 +213,11 @@ mod tests {
         let mut bh = BlackHole { allow_gpu: true, ..Default::default() };
         let mut kitty = crate::gfx::Kitty::new(true);
         let rect = ratatui::layout::Rect::new(0, 0, 128, 36);
-        for look in [0usize, 6] {
+        // real colours and a Theme's tint (#33: the tint must not cost anything measurable)
+        let green = crate::theme::builtin("terminal-green").unwrap().art_tint(true).map(|t| t.stops4());
+        for (look, tint) in [0usize, 6].into_iter().flat_map(|l| [(l, None), (l, green)]) {
             bh.look = look;
+            bh.set_tint(tint);
             let (w, h) = bh.render_size(1280, 720);
             let _ = bh.render(w, h); // warm-up (shader compile)
             let (c0, t0) = (cpu_secs(), std::time::Instant::now());
@@ -217,7 +233,7 @@ mod tests {
                 }
             }
             let share = (cpu_secs() - c0) / t0.elapsed().as_secs_f64();
-            println!("{} at {w}×{h}, {}: {:.1}% of a core", bh.look().name, bh.backend().unwrap_or_default(), share * 100.0);
+            println!("{}{} at {w}×{h}, {}: {:.1}% of a core", bh.look().name, if tint.is_some() { " (tinted)" } else { "" }, bh.backend().unwrap_or_default(), share * 100.0);
             assert!(share < 0.20);
         }
     }

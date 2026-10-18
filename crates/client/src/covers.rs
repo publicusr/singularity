@@ -1,6 +1,7 @@
 //! Cover art: fetched lazily (only what's drawn) from Spotify's public image CDN, cached on disk under
 //! `$XDG_CACHE_HOME/singularity/covers` (pruned to [`DISK_BUDGET`]), decoded off the UI thread, kept in memory LRU.
 
+use crate::theme::Tint;
 use image::RgbImage;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,7 +20,7 @@ enum Entry {
 
 pub struct Covers {
     mem: HashMap<String, Entry>,
-    /// scaled copies for the cell tier, which would otherwise be resized every frame
+    /// scaled (and tinted) copies for the cell tier, which would otherwise be redone every frame
     scaled: HashMap<(String, u32, u32), (Arc<RgbImage>, u64)>,
     requests: Option<mpsc::UnboundedSender<String>>,
     done: Option<mpsc::UnboundedReceiver<(String, Option<RgbImage>)>>,
@@ -101,18 +102,35 @@ impl Covers {
         }
     }
 
-    /// The cover cropped and scaled to exactly `w`×`h` pixels (memoised).
-    pub fn scaled(&mut self, url: &str, w: u32, h: u32) -> Option<Arc<RgbImage>> {
-        let key = (url.to_string(), w, h);
+    /// The cover cropped and scaled to exactly `w`×`h` pixels, in the Theme's colours if it tints (memoised).
+    pub fn scaled(&mut self, url: &str, w: u32, h: u32, tint: Option<&Tint>) -> Option<Arc<RgbImage>> {
+        let key = (tinted_key(url, tint), w, h);
         if let Some((img, t)) = self.scaled.get_mut(&key) {
             *t = self.tick;
             return Some(img.clone());
         }
         let src = self.get(url)?;
-        let img = Arc::new(crate::gfx::fit(&src, w, h));
+        let img = Arc::new(fit_tinted(&src, w, h, tint));
         self.scaled.insert(key, (img.clone(), self.tick));
         Some(img)
     }
+}
+
+/// What a cover is called in caches: its URL, plus the tint when there is one (a tinted copy is its own image).
+pub fn tinted_key(url: &str, tint: Option<&Tint>) -> String {
+    match tint {
+        Some(t) => format!("{url}#tint={}", t.key()),
+        None => url.to_string(),
+    }
+}
+
+/// Scale (and crop) to `w`×`h`, then tint.
+pub fn fit_tinted(src: &RgbImage, w: u32, h: u32, tint: Option<&Tint>) -> RgbImage {
+    let mut img = crate::gfx::fit(src, w, h);
+    if let Some(t) = tint {
+        t.apply(&mut img);
+    }
+    img
 }
 
 /// Cache file for a URL: a stable hash of it (FNV-1a), so no URL characters reach the filesystem.
@@ -195,8 +213,12 @@ mod tests {
         let mut c = Covers::offline();
         assert!(c.get("https://i.scdn.co/image/x").is_none());
         c.insert("https://i.scdn.co/image/x", RgbImage::new(300, 300));
-        let a = c.scaled("https://i.scdn.co/image/x", 8, 8).unwrap();
-        let b = c.scaled("https://i.scdn.co/image/x", 8, 8).unwrap();
+        let a = c.scaled("https://i.scdn.co/image/x", 8, 8, None).unwrap();
+        let b = c.scaled("https://i.scdn.co/image/x", 8, 8, None).unwrap();
         assert!(Arc::ptr_eq(&a, &b));
+        // a tinted copy is its own, made once
+        let tint = crate::theme::builtin("terminal-green").unwrap().art_tint(true);
+        let t1 = c.scaled("https://i.scdn.co/image/x", 8, 8, tint.as_ref()).unwrap();
+        assert!(!Arc::ptr_eq(&a, &t1) && Arc::ptr_eq(&t1, &c.scaled("https://i.scdn.co/image/x", 8, 8, tint.as_ref()).unwrap()));
     }
 }

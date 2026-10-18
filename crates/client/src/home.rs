@@ -359,17 +359,18 @@ pub fn cover_at(buf: &mut Buffer, x: u16, y: i32, w: u16, h: u16, pane: Rect, ur
     let r = Rect::new(x, y0 as u16, w, (y1 - y0) as u16);
     // cover lines scrolled off the top
     let skip = (y0 - y) as u16;
+    let tint = app.art_tint.clone();
     if let Some((cw, ch)) = app.pixel_tier_for(r) {
         if let Some(src) = app.covers.get(url) {
             let (pw, ph) = ((w as f64 * cw).round() as u32, (h as f64 * ch).round() as u32);
-            let key = ImageKey { source: url.to_string(), w: pw, h: ph };
+            let key = ImageKey { source: crate::covers::tinted_key(url, tint.as_ref()), w: pw, h: ph };
             // only the part in view: the same upload serves every scroll position
             let crop = (r.height < h).then(|| {
                 let top = (skip as f64 * ch).round() as u32;
                 [0, top, pw, ((r.height as f64 * ch).round() as u32).min(ph - top)]
             });
             if let Some(k) = app.kitty.as_mut() {
-                k.place_cropped(key, r, crop, || gfx::fit(&src, pw, ph));
+                k.place_cropped(key, r, crop, || crate::covers::fit_tinted(&src, pw, ph, tint.as_ref()));
             }
             // blank cells under the image (it sits below text, so nothing may be drawn here)
             for yy in r.top()..r.bottom() {
@@ -377,7 +378,7 @@ pub fn cover_at(buf: &mut Buffer, x: u16, y: i32, w: u16, h: u16, pane: Rect, ur
             }
             return;
         }
-    } else if let Some(img) = app.covers.scaled(url, w as u32, h as u32 * 2) {
+    } else if let Some(img) = app.covers.scaled(url, w as u32, h as u32 * 2, tint.as_ref()) {
         gfx::blit_halfblocks_from(&img, buf, r, skip);
         return;
     }

@@ -53,6 +53,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.begin_frame();
     let area = f.area();
     let th = app.theme.clone();
+    // covers and the hole follow the Theme's tint (a Theme switch, a theme file saved, `ui.tint_art` edited)
+    let tint = th.art_tint(app.config.ui.tint_art);
+    app.hole.set_tint(tint.as_ref().map(|t| t.stops4()));
+    app.art_tint = tint;
     fill(f.buffer_mut(), area, &th);
     if area.width < 20 || area.height < 8 {
         text(f.buffer_mut(), area.x, area.y, area.width, "◉ terminal too small", th.s(th.dim));
@@ -931,6 +935,29 @@ mod tests {
         // never a Card cut in half at the bottom
         let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
         assert!(app.hits.iter().all(|(r, h)| !matches!(h, Hit::Card(_)) || r.bottom() < home.bottom()));
+    }
+
+    #[test]
+    fn switching_theme_retints_covers_at_once() {
+        let (mut app, _rx) = home_app();
+        let card = |app: &mut App| {
+            render(app, 200, 64);
+            let r = card_rect(app, 1, 0);
+            let mut t = Terminal::new(TestBackend::new(200, 64)).unwrap();
+            t.draw(|f| draw(f, app)).unwrap();
+            match t.backend().buffer()[(r.x + r.width / 2, r.y + 2)].fg {
+                ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
+                c => panic!("{c:?}"),
+            }
+        };
+        let real = card(&mut app);
+        assert!(app.art_tint.is_none(), "Singularity keeps real colours");
+        assert!(app.set_theme("terminal-amber"));
+        let amber = card(&mut app);
+        assert!(app.art_tint.is_some() && amber != real && amber.0 >= amber.1 && amber.1 >= amber.2, "amber: {amber:?}");
+        // and back off with `ui.tint_art = false`
+        app.config.ui.tint_art = false;
+        assert_eq!(card(&mut app), real);
     }
 
     #[test]

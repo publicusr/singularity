@@ -91,9 +91,10 @@ impl Gpu {
             look0: [l.temp, l.incl, l.roll, l.inner],
             look1: [l.outer, l.opac, l.dopp, l.beam],
             look2: [l.gain, l.contr, l.wind, l.speed],
-            look3: [l.expo, l.star, 0.0, levels],
+            // tinted: brightness onto the Theme's stops (and pixel art quantises onto them too)
+            look3: [l.expo, l.star, if f.tint.is_some() { 1.0 } else { 0.0 }, levels],
             tint: [0.0; 4],
-            ramp: r.map(|c| [c[0], c[1], c[2], 0.0]),
+            ramp: f.tint.unwrap_or(r).map(|c| [c[0], c[1], c[2], 0.0]),
         };
         self.queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&params));
         self.ensure_target(w, h);

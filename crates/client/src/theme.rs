@@ -56,6 +56,8 @@ pub struct Theme {
     pub numbered: bool,
     /// every other row dimmed, like a CRT (Terminal)
     pub scanlines: bool,
+    /// covers and the black hole drawn in this Theme's colours (`Tint`), unless `ui.tint_art = false`
+    pub tint: bool,
 }
 
 impl Theme {
@@ -79,6 +81,52 @@ impl Theme {
     /// The border colour of the `i`-th Pane.
     pub fn pane_border(&self, i: usize) -> Rgb {
         if self.boxes.is_empty() { self.border } else { self.boxes[i % self.boxes.len()] }
+    }
+
+    /// How covers and the black hole are coloured: the Theme's tint if it has one and `allowed` (`ui.tint_art`).
+    pub fn art_tint(&self, allowed: bool) -> Option<Tint> {
+        (allowed && self.tint).then(|| Tint { stops: std::iter::once(BLACK).chain(self.ramp.iter().copied()).collect() })
+    }
+}
+
+/// A gradient map (#33): an image's brightness laid onto black → the Theme's ramp, so covers and the black hole take
+/// the Theme's colours. Dark stays black (OLED); the brightest parts get the ramp's top, which is never pure white.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tint {
+    stops: Vec<Rgb>,
+}
+
+impl Tint {
+    /// Names this tint in cache keys: a tinted copy is made once per cover and tint.
+    pub fn key(&self) -> String {
+        self.stops.iter().map(|c| format!("{:02x}{:02x}{:02x}", c.0, c.1, c.2)).collect::<Vec<_>>().join("-")
+    }
+
+    /// The colour at `t` (0 = black … 1 = the ramp's top).
+    pub fn at(&self, t: f32) -> Rgb {
+        let s = t.clamp(0.0, 1.0) * (self.stops.len() - 1) as f32;
+        let i = (s as usize).min(self.stops.len() - 2);
+        self.stops[i].lerp(self.stops[i + 1], s - i as f32)
+    }
+
+    /// Recolour an image in place (one table lookup per pixel).
+    pub fn apply(&self, img: &mut image::RgbImage) {
+        // brightness lifted a little (^0.8), as the pixel-art hole does, so mid-tones don't sink into the dark stops
+        let lut: Vec<Rgb> = (0..256).map(|l| self.at((l as f32 / 255.0).powf(0.8))).collect();
+        for p in img.pixels_mut() {
+            let [r, g, b] = p.0;
+            let l = (54 * r as u32 + 183 * g as u32 + 19 * b as u32) >> 8;
+            let c = lut[l as usize];
+            p.0 = [c.0, c.1, c.2];
+        }
+    }
+
+    /// Four evenly spaced stops (0…1 floats), as the black hole's shader takes them.
+    pub fn stops4(&self) -> [[f32; 3]; 4] {
+        [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0].map(|t| {
+            let c = self.at(t);
+            [c.0 as f32 / 255.0, c.1 as f32 / 255.0, c.2 as f32 / 255.0]
+        })
     }
 }
 
@@ -127,6 +175,7 @@ pub fn builtin(id: &str) -> Option<Theme> {
         boxes: vec![],
         numbered: false,
         scanlines: false,
+        tint: false,
     };
     match id {
         "singularity" => Some(plain(id, "Singularity")),
@@ -169,6 +218,7 @@ pub fn builtin(id: &str) -> Option<Theme> {
                     borders: border::ROUNDED,
                     boxes: boxes.iter().map(|c| h(*c)).collect(),
                     numbered: true,
+                    tint: true,
                     ..plain(id, name)
                 });
             }
@@ -184,6 +234,7 @@ pub fn builtin(id: &str) -> Option<Theme> {
                 selection: h(*bord).scale(0.6),
                 ramp: vec![a.scale(0.3), a.scale(0.65), a, h(*fg).lerp(h(0xffffff), 0.3)],
                 scanlines: true,
+                tint: true,
                 ..plain(id, name)
             })
         }
@@ -200,6 +251,8 @@ struct ThemeFile {
     borders: Option<String>,
     numbered: Option<bool>,
     scanlines: Option<bool>,
+    /// covers and the black hole in this theme's colours
+    tint: Option<bool>,
     colors: Colors,
 }
 
@@ -264,6 +317,7 @@ pub fn parse_file(id: &str, text: &str) -> Result<Theme, String> {
     }
     t.numbered = f.numbered.unwrap_or(t.numbered);
     t.scanlines = f.scanlines.unwrap_or(t.scanlines);
+    t.tint = f.tint.unwrap_or(t.tint);
     Ok(t)
 }
 
@@ -294,6 +348,7 @@ pub const EXAMPLE_THEME: &str = r##"# A theme for Singularity. Copy this file to
 name = "Example (rose)"
 base = "singularity"
 borders = "rounded"     # plain, rounded, double or thick
+tint = false            # true: covers and the black hole in this theme's colours (black → ramp)
 
 [colors]
 accent = "#f4a7b9"
@@ -325,6 +380,31 @@ mod tests {
         assert!(t.numbered && t.borders == border::DOUBLE);
         let ex = parse_file("example", EXAMPLE_THEME).unwrap();
         assert_eq!(ex.name, "Example (rose)");
+    }
+
+    #[test]
+    fn tints_map_brightness_onto_the_ramp() {
+        // Cockpit and Terminal tint; Singularity, Event Horizon and Classic+ keep real colours
+        for id in builtin_ids() {
+            assert_eq!(builtin(id).unwrap().art_tint(true).is_some(), id.starts_with("cockpit") || id.starts_with("terminal"), "{id}");
+        }
+        let th = builtin("terminal-green").unwrap();
+        assert!(th.art_tint(false).is_none(), "ui.tint_art = false: real colours");
+        let t = th.art_tint(true).unwrap();
+        assert_eq!(t.at(0.0), BLACK);
+        assert_eq!(t.at(1.0), *th.ramp.last().unwrap());
+        let mut img = image::RgbImage::from_fn(3, 1, |x, _| image::Rgb([[0, 0, 0], [200, 30, 30], [255, 255, 255]][x as usize]));
+        t.apply(&mut img);
+        assert_eq!(img.get_pixel(0, 0).0, [0, 0, 0], "black stays black");
+        let top = th.ramp.last().unwrap();
+        assert_eq!(img.get_pixel(2, 0).0, [top.0, top.1, top.2], "white becomes the ramp's top");
+        let mid = img.get_pixel(1, 0).0;
+        assert!(mid[1] > mid[0] && mid[1] > mid[2], "a red pixel turns green: {mid:?}");
+        assert_eq!(t.stops4()[0], [0.0; 3]);
+        assert_ne!(t.key(), builtin("terminal-amber").unwrap().art_tint(true).unwrap().key());
+        // theme files can switch it either way
+        assert!(parse_file("t", "base = \"singularity\"\ntint = true\n").unwrap().tint);
+        assert!(!parse_file("t", "base = \"cockpit-ice\"\ntint = false\n").unwrap().tint);
     }
 
     #[test]

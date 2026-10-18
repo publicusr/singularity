@@ -13,8 +13,10 @@ use std::time::SystemTime;
 pub use toml_edit;
 use toml_edit::{DocumentMut, Item, Value};
 
-/// The config schema this build writes and reads.
-pub const SCHEMA: i64 = 1;
+/// The `config.toml` schema this build writes and reads.
+pub const CONFIG_SCHEMA: i64 = 2;
+/// The `keys.toml` schema.
+pub const KEYS_SCHEMA: i64 = 1;
 
 /// `$XDG_CONFIG_HOME/singularity` (else `~/.config/singularity`).
 pub fn dir() -> PathBuf {
@@ -64,11 +66,13 @@ pub struct Ui {
     pub transparent: bool,
     /// a layout saved in `layouts/` (its file name); empty: the design's own
     pub layout: String,
+    /// covers and the black hole in the Theme's colours, if the Theme tints
+    pub tint_art: bool,
 }
 
 impl Default for Ui {
     fn default() -> Self {
-        Ui { design: "singularity".into(), theme: String::new(), transparent: false, layout: String::new() }
+        Ui { design: "singularity".into(), theme: String::new(), transparent: false, layout: String::new(), tint_art: true }
     }
 }
 
@@ -107,7 +111,7 @@ pub enum GpuPower {
 /// What a fresh `config.toml` says.
 pub const DEFAULT_CONFIG: &str = r#"# Singularity settings. Changes apply as soon as you save this file.
 # (Don't change `schema`: Singularity uses it to update this file when settings change between versions.)
-schema = 1
+schema = 2
 
 [ui]
 # the design: "singularity", "event-horizon", "classic", "cockpit" or "terminal" (Ctrl+K → Design shows them)
@@ -118,6 +122,8 @@ theme = ""
 transparent = false
 # a layout you saved (Ctrl+K → "Save layout as…"), by file name in layouts/; empty for the design's own
 layout = ""
+# covers and the black hole in the theme's colours, for themes that tint (Cockpit's and Terminal's); false: real colours
+tint_art = true
 
 [notifications]
 # a desktop notification when a new track starts
@@ -155,8 +161,19 @@ preset = "standard"
 /// One migration: edits a document of schema N into schema N + 1 (in place, so comments stay).
 pub type Migration = fn(&mut DocumentMut);
 
-/// `config.toml`'s migrations: entry `i` takes schema `i + 1` to `i + 2`. (None yet: schema 1 is the first.)
-pub const CONFIG_MIGRATIONS: &[Migration] = &[];
+/// `config.toml`'s migrations: entry `i` takes schema `i + 1` to `i + 2`.
+pub const CONFIG_MIGRATIONS: &[Migration] = &[add_tint_art];
+
+/// 1 → 2: `ui.tint_art` (#33) appears at the end of `[ui]`, with its comment, so it can be found.
+fn add_tint_art(doc: &mut DocumentMut) {
+    let Some(ui) = doc.get_mut("ui").and_then(Item::as_table_mut) else { return };
+    if ui.contains_key("tint_art") {
+        return;
+    }
+    let mut key = toml_edit::Key::new("tint_art");
+    key.leaf_decor_mut().set_prefix("# covers and the black hole in the theme's colours, for themes that tint (Cockpit's and Terminal's); false: real colours\n");
+    ui.insert_formatted(&key, toml_edit::value(true));
+}
 
 /// Bring `doc` up to `target` with `migrations`. Returns whether anything changed; a document from a newer
 /// Singularity is left alone (and reported).
@@ -212,7 +229,7 @@ fn one_line(s: &str) -> String {
 
 /// Read `config.toml`, writing the default one first if there's none, and saving a migrated one back.
 pub fn load_config(path: &Path) -> Read<Config> {
-    load(path, "config.toml", DEFAULT_CONFIG, CONFIG_MIGRATIONS, SCHEMA)
+    load(path, "config.toml", DEFAULT_CONFIG, CONFIG_MIGRATIONS, CONFIG_SCHEMA)
 }
 
 /// Read a file the same way (`keys.toml` too).
@@ -318,7 +335,7 @@ impl OneOrMany {
 }
 
 pub fn load_keys(path: &Path) -> Read<Keys> {
-    load(path, "keys.toml", DEFAULT_KEYS, &[], SCHEMA)
+    load(path, "keys.toml", DEFAULT_KEYS, &[], KEYS_SCHEMA)
 }
 
 /// Notices when a file was saved (polled: once a second is plenty for a human editing a file).
@@ -356,9 +373,9 @@ mod tests {
 
     #[test]
     fn the_default_files_parse_to_the_defaults() {
-        let r = parse::<Config>("config.toml", DEFAULT_CONFIG, CONFIG_MIGRATIONS, SCHEMA);
+        let r = parse::<Config>("config.toml", DEFAULT_CONFIG, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert_eq!((r.value, r.problems.len(), r.migrated), (Config::default(), 0, None));
-        let k = parse::<Keys>("keys.toml", DEFAULT_KEYS, &[], SCHEMA);
+        let k = parse::<Keys>("keys.toml", DEFAULT_KEYS, &[], KEYS_SCHEMA);
         assert_eq!((k.value, k.problems.len()), (Keys::default(), 0));
     }
 
@@ -386,14 +403,60 @@ mod tests {
         assert!(again.migrated.is_none());
     }
 
+    /// `config.toml` as schema 1 wrote it.
+    const DEFAULT_CONFIG_V1: &str = r#"# Singularity settings. Changes apply as soon as you save this file.
+# (Don't change `schema`: Singularity uses it to update this file when settings change between versions.)
+schema = 1
+
+[ui]
+# the design: "singularity", "event-horizon", "classic", "cockpit" or "terminal" (Ctrl+K → Design shows them)
+design = "singularity"
+# colours: empty for the design's own, else a built-in theme or a file in themes/ (Ctrl+K → Theme, or t)
+theme = ""
+# let the terminal's own background (and its transparency) show instead of black
+transparent = false
+# a layout you saved (Ctrl+K → "Save layout as…"), by file name in layouts/; empty for the design's own
+layout = ""
+
+[notifications]
+# a desktop notification when a new track starts
+track_change = false
+
+[visuals]
+# which graphics chip draws the black hole: "low-power" (built-in graphics) or "high-performance" (dedicated card)
+gpu = "low-power"
+# frames per second while the terminal isn't focused (1–30; the Visuals keep moving, slower)
+unfocused_fps = 10
+
+[idle]
+# after this many minutes without input the black hole leaves its Pane and drifts over the screen; any key wakes it
+# (Shift+I switches it off and on)
+enabled = true
+minutes = 3
+"#;
+
+    #[test]
+    fn a_schema_1_config_gains_tint_art_with_its_comment() {
+        let r = parse::<Config>("config.toml", DEFAULT_CONFIG_V1, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        assert!(r.problems.is_empty(), "{:?}", r.problems);
+        assert_eq!(r.migrated.as_deref(), Some(DEFAULT_CONFIG), "an untouched old file becomes today's default");
+        // a user's own choices and comments stay; a [ui] without the key gets it, switched on
+        let mine = "schema = 1\n[ui]\ndesign = \"cockpit\" # mine\n";
+        let r = parse::<Config>("config.toml", mine, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        assert!(r.value.ui.tint_art && r.value.ui.design == "cockpit");
+        assert!(r.migrated.unwrap().contains("design = \"cockpit\" # mine\n# covers"));
+        let off = parse::<Config>("config.toml", "schema = 2\n[ui]\ntint_art = false\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        assert!(!off.value.ui.tint_art && off.migrated.is_none());
+    }
+
     #[test]
     fn bad_values_fall_back_and_are_reported_not_fatal() {
-        let r = parse::<Config>("config.toml", "schema = 1\n[visuals]\ngpu = \"quantum\"\n", CONFIG_MIGRATIONS, SCHEMA);
+        let r = parse::<Config>("config.toml", "schema = 1\n[visuals]\ngpu = \"quantum\"\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert_eq!(r.value, Config::default());
         assert!(r.problems[0].contains("quantum"), "{:?}", r.problems);
-        let r = parse::<Config>("config.toml", "this is = = not toml", CONFIG_MIGRATIONS, SCHEMA);
+        let r = parse::<Config>("config.toml", "this is = = not toml", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert_eq!((r.value, r.problems.len()), (Config::default(), 1));
-        let r = parse::<Config>("config.toml", "schema = 9\n", CONFIG_MIGRATIONS, SCHEMA);
+        let r = parse::<Config>("config.toml", "schema = 9\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert!(r.problems[0].contains("newer Singularity"));
     }
 
@@ -433,7 +496,7 @@ mod tests {
 
     #[test]
     fn keys_take_one_key_or_a_list() {
-        let k = parse::<Keys>("keys.toml", "preset = \"vim\"\n[bindings]\nlike = \"f\"\nnext = [\"n\", \"Ctrl+Right\"]\n", &[], SCHEMA).value;
+        let k = parse::<Keys>("keys.toml", "preset = \"vim\"\n[bindings]\nlike = \"f\"\nnext = [\"n\", \"Ctrl+Right\"]\n", &[], KEYS_SCHEMA).value;
         assert_eq!(k.preset, "vim");
         assert_eq!(k.bindings["like"].keys(), vec!["f"]);
         assert_eq!(k.bindings["next"].keys(), vec!["n", "Ctrl+Right"]);

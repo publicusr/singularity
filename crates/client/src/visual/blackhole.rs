@@ -70,6 +70,8 @@ pub struct Frame {
     pub rh: f32,
     /// where the hole sits in the image (0..1, y down); the middle unless it's cut by the screen's edge
     pub center: (f32, f32),
+    /// the Theme's colours (black → ramp, four stops): brightness is mapped onto them (#33); None = real colours
+    pub tint: Option<[[f32; 3]; 4]>,
 }
 
 /// How far the disk and its halo reach, in shadow radii.
@@ -240,20 +242,31 @@ fn trace(f: &Frame, x: usize, y: usize, w: usize, h: usize) -> [f32; 3] {
 
 const BAYER: [f32; 16] = [0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0];
 
-/// The shader's tail: pixel-art quantisation (if `levels` > 0), clamp, pack as RGBA8.
-pub fn finish(col: [f32; 3], x: usize, y: usize, levels: f32) -> [u8; 4] {
+/// `l^0.8` for `l` = 0/255 … 255/255: brightness lifted before tinting, as the shader does.
+static LIFT: std::sync::LazyLock<[f32; 256]> = std::sync::LazyLock::new(|| std::array::from_fn(|i| (i as f32 / 255.0).powf(0.8)));
+
+/// A colour along four stops (`l` 0…1), as the shader's `palette`.
+fn palette(ramp: &[[f32; 3]; 4], l: f32) -> [f32; 3] {
+    let s = l.clamp(0.0, 1.0) * 3.0;
+    let (i, t) = ((s as usize).min(2), s - (s as usize).min(2) as f32);
+    [0, 1, 2].map(|c| ramp[i][c] + (ramp[i + 1][c] - ramp[i][c]) * t)
+}
+
+/// The shader's tail: the Theme's tint (brightness onto its stops), pixel-art quantisation (if `levels` > 0, onto
+/// the tint's stops or the ember palette), clamp, pack as RGBA8.
+pub fn finish(col: [f32; 3], x: usize, y: usize, levels: f32, tint: Option<&[[f32; 3]; 4]>) -> [u8; 4] {
     let mut col = col;
+    let lum = (0.2126 * col[0] + 0.7152 * col[1] + 0.0722 * col[2]).clamp(0.0, 1.0);
+    if let Some(t) = tint
+        && levels <= 0.5
+    {
+        // lum^0.8 from a table: the tint then costs the CPU tracer next to nothing
+        col = palette(t, LIFT[(lum * 255.0 + 0.5) as usize]);
+    }
     if levels > 0.5 {
-        let lum = (0.2126 * col[0] + 0.7152 * col[1] + 0.0722 * col[2]).clamp(0.0, 1.0);
         let d = (BAYER[(y % 4) * 4 + x % 4] + 0.5) / 16.0;
         let q = (lum.powf(0.8) * levels + d - 0.5).clamp(0.0, levels).floor() / levels;
-        col = if q <= 0.0 {
-            [0.0; 3]
-        } else {
-            let s = q.clamp(0.0, 1.0) * 3.0;
-            let (i, t) = ((s as usize).min(2), s - (s as usize).min(2) as f32);
-            [0, 1, 2].map(|c| PIXEL_RAMP[i][c] + (PIXEL_RAMP[i + 1][c] - PIXEL_RAMP[i][c]) * t)
-        };
+        col = if q <= 0.0 { [0.0; 3] } else { palette(tint.unwrap_or(&PIXEL_RAMP), q) };
     }
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
     [q(col[0]), q(col[1]), q(col[2]), 255]
@@ -265,7 +278,7 @@ pub fn render_cpu(f: &Frame, w: usize, h: usize) -> Vec<u8> {
     let mut out = vec![0u8; w * h * 4];
     out.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
         for x in 0..w {
-            row[x * 4..x * 4 + 4].copy_from_slice(&finish(trace(f, x, y, w, h), x, y, levels));
+            row[x * 4..x * 4 + 4].copy_from_slice(&finish(trace(f, x, y, w, h), x, y, levels, f.tint.as_ref()));
         }
     });
     out
@@ -277,7 +290,7 @@ mod tests {
 
     fn frame(look: usize, w: usize, h: usize) -> Frame {
         let look = LOOKS[look];
-        Frame { look, t: 1.0, gain: 1.0, rh: fit_rh(w, h, &look), center: (0.5, 0.5) }
+        Frame { look, t: 1.0, gain: 1.0, rh: fit_rh(w, h, &look), center: (0.5, 0.5), tint: None }
     }
 
     #[test]
@@ -291,6 +304,20 @@ mod tests {
             assert!(px.chunks(4).any(|p| p[0] > 120), "{}: a bright disk", look.name);
             let edge: u32 = (0..w).flat_map(|x| [at(x, 0), at(x, h - 1)]).map(|p| p.iter().map(|c| *c as u32).sum::<u32>()).max().unwrap();
             assert!(edge < 200, "{}: the disk is cut by the edge ({edge})", look.name);
+        }
+    }
+
+    #[test]
+    fn a_tinted_hole_is_in_the_themes_colours() {
+        let green = [[0.0, 0.0, 0.0], [0.1, 0.3, 0.12], [0.2, 1.0, 0.4], [0.6, 1.0, 0.7]];
+        for look in [0usize, 2, 6] {
+            let (w, h) = (64, 32);
+            let px = render_cpu(&Frame { tint: Some(green), ..frame(look, w, h) }, w, h);
+            // every lit pixel is green-dominant, and the shadow stays black
+            for p in px.chunks(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 30) {
+                assert!(p[1] >= p[0] && p[1] >= p[2], "look {look}: {p:?}");
+            }
+            assert!(px.chunks(4).any(|p| p[1] > 150), "look {look}: still bright");
         }
     }
 
