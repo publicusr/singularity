@@ -562,8 +562,23 @@ fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     text(buf, mx, y + 1, 6, &fmt_ms(pos), th.s(if seeking { th.accent } else { th.dim }));
     text(buf, bar.right() + 1, y + 1, 6, &fmt_ms(dur), th.s(th.dim));
     let (full, tip) = scrub::fill(pos, dur, bar.width);
+    // the track's waveform where it's been heard (#46): played in the accent, the rest dim; a plain line elsewhere
+    if let Some(i) = pb.item.as_ref() {
+        app.waveform.follow(&i.uri, i.duration_ms);
+    }
+    const EIGHTHS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+    // each track on its own scale, quietest to loudest heard
+    let (lo, hi) = app.waveform.range().unwrap_or((0, 255));
+    let height = |v: u8| if hi <= lo { 3 } else { ((v - lo) as usize * 7 + (hi - lo) as usize / 2) / (hi - lo) as usize };
     for x in 0..bar.width {
-        let (ch, col) = if x < full { ("━", th.accent) } else if x == full && tip { ("╸", th.accent) } else { ("─", th.border) };
+        let (a, b) = (x as f64 / bar.width as f64, (x + 1) as f64 / bar.width as f64);
+        let played = x < full;
+        let (ch, col) = match app.waveform.level(a, b) {
+            _ if x == full && tip => ("╸", th.accent),
+            Some(v) => (EIGHTHS[height(v).min(7)], if played { th.accent } else { th.dim }),
+            None if played => ("━", th.accent),
+            None => ("─", th.border),
+        };
         text(buf, bar.x + x, bar.y, 1, ch, th.s(col));
     }
     if seeking {
@@ -872,6 +887,25 @@ mod tests {
 
     fn mouse(app: &mut App, kind: MouseEventKind, fx: f64, row: u16, precise: bool) {
         app.pointer(MouseEvent { kind, column: fx as u16, row, modifiers: KeyModifiers::NONE }, fx, precise);
+    }
+
+    #[test]
+    fn the_seek_bar_draws_the_waveform_heard_so_far() {
+        let (mut app, _rx) = playing_app(200_000);
+        app.playback.item.as_mut().unwrap().uri = "spotify:track:w".into();
+        app.waveform.follow("spotify:track:w", 200_000);
+        for ms in (0..100_000).step_by(500) {
+            app.waveform.hear(ms, if ms % 20_000 < 10_000 { 240 } else { 60 });
+        }
+        app.playback.position_ms = 100_000;
+        render(&mut app, 160, 48);
+        let bar = seek_bar(&app);
+        let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
+        t.draw(|f| draw(f, &mut app)).unwrap();
+        let cells: String = (bar.x..bar.right()).map(|x| t.backend().buffer()[(x, bar.y)].symbol().to_string()).collect();
+        let (heard, rest) = cells.split_at(cells.char_indices().nth(bar.width as usize / 2 - 2).unwrap().0);
+        assert!(heard.contains('█') && heard.contains('▁'), "loud and quiet stretches, on the track's own scale: {heard}");
+        assert!(rest.chars().skip(4).all(|c| c == '─'), "not heard yet: a plain line: {rest}");
     }
 
     #[test]

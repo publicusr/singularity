@@ -530,3 +530,10 @@ flowchart LR
   scrolling sends about one batch a screenful (the first try sent one per new row: 55 batches over 70 rows, caught by
   the test). Test: a 500-row playlist, one batch of 50 on open, none within the window, ≤ 2 past it; an answer shows
   ♥/♡; a click sends SetSaved and shows at once. pty `like`.
+- **#46 Waveform seek bar ✅** (2026-10-18): `client/src/waveform.rs`. A track is 200 slots; each spectrum frame while
+  playing records the loudest gained level there (heard silence counts as heard). The seek bar draws heard slots in
+  eighth blocks on the track's own scale (quietest heard ▁ … loudest █: the automatic gain keeps most music near the
+  top), the played part in the accent, the rest dim; unheard stretches stay a line (━ played, ─ not). A track heard to
+  95 % is kept as a 200-byte file under `~/.cache/singularity/waves/` (FNV hash of the URI; at most 2000, oldest go)
+  and shows whole from the start next time. Seeking unchanged. Tests: filling, max per slot, keep/load round trip,
+  partly heard not kept, pruning; the bar shows loud/quiet stretches and a plain line where unheard. pty `waveform`.

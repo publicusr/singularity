@@ -26,6 +26,7 @@ mod theme;
 mod tracks;
 mod ui;
 mod visual;
+mod waveform;
 mod widgets;
 
 use app::{App, Link};
@@ -46,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
     let mut app = App::new(Some(cmd_tx));
     app.recent = search::load_recent();
     app.covers = covers::Covers::spawn(cache_dir().join("covers"));
+    app.waveform = waveform::Waveform::with_cache(cache_dir().join("waves"));
     app.cell_px = term::cell_px();
     app.hole.allow_gpu = true;
     app.load_config();
@@ -161,6 +163,15 @@ fn apply(app: &mut App, ev: ConnEvent) {
             // the setup's audio check passes once real sound comes through
             if f.level > 20 {
                 app.setup.heard = true;
+            }
+            // the seek bar's waveform grows as the track plays (#46)
+            if app.playback.status == singularity_proto::PlayStatus::Playing
+                && let Some(i) = app.playback.item.as_ref()
+            {
+                let (uri, dur) = (i.uri.clone(), i.duration_ms);
+                let pos = app.display_position(singularity_proto::now_ms());
+                app.waveform.follow(&uri, dur);
+                app.waveform.hear(pos, f.level);
             }
             app.meters.push(f);
         }
