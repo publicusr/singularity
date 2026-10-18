@@ -57,6 +57,11 @@ pub fn add_vars(playlist: &str, uris: &[String]) -> Value {
     json!({ "playlistUri": playlist, "playlistItemUris": uris, "newPosition": { "moveType": "BOTTOM_OF_PLAYLIST", "fromUid": null }, "interactionId": null })
 }
 
+/// `removeFromPlaylist` (Pathfinder mutation): these rows, by uid.
+pub fn remove_vars(playlist: &str, uids: &[String]) -> Value {
+    json!({ "playlistUri": playlist, "uids": uids })
+}
+
 /// `editablePlaylists` (Pathfinder query), filtered by a name, asking whether each already has `uris`.
 pub fn editable_vars(filter: &str, uris: &[String]) -> Value {
     json!({ "offset": 0, "limit": 50, "textFilter": filter, "folderUri": null, "uris": uris })
@@ -130,6 +135,7 @@ mod tests {
             json!({"playlistUri":"spotify:playlist:p","playlistItemUris":["spotify:track:a"],"newPosition":{"moveType":"BOTTOM_OF_PLAYLIST","fromUid":null},"interactionId":null})
         );
         assert_eq!(editable_vars("Mix", &uris)["uris"], json!(["spotify:track:a"]));
+        assert_eq!(remove_vars("spotify:playlist:p", &["u1".into()]), json!({"playlistUri":"spotify:playlist:p","uids":["u1"]}));
     }
 
     #[test]

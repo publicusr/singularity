@@ -2,7 +2,8 @@
 //! popup and opened once Spotify answers; a delete asks twice, leaves the sidebar at once and comes back with the
 //! Daemon's fresh library if Spotify refused. Edit details (#52): a name and a description, shown everywhere at once
 //! and put back if Spotify refuses. Add to playlist (#53): a picker over your own playlists, filtered as you type,
-//! "New playlist" on top; a playlist that has the song already asks first.
+//! "New playlist" on top; a playlist that has the song already asks first. Remove (#54): one row, by its uid, gone at
+//! once and put back where it was if Spotify refuses.
 
 use crate::app::{App, MenuAct, Naming, Page, Target};
 use crate::theme::Theme;
@@ -61,6 +62,8 @@ pub struct Playlists {
     asked: Vec<String>,
     /// Spotify said this playlist has these already: picking it again within 10 s adds them anyway
     dup: Option<(String, Vec<String>, Instant)>,
+    /// rows taken out before Spotify answered, by (playlist, uid): where they were
+    removing: HashMap<(String, String), (usize, singularity_proto::TrackRow)>,
 }
 
 impl App {
@@ -392,6 +395,53 @@ impl App {
 }
 
 /// As tall as its rows, up to 18.
+impl App {
+    /// The open list is one of your playlists, so its rows can be removed.
+    pub fn rows_removable(&self) -> bool {
+        self.view.as_ref().is_some_and(|v| self.own_playlist(&v.uri).is_some())
+    }
+
+    /// Take the row at view position `vi` out of the open playlist.
+    pub fn remove_row(&mut self, vi: usize) {
+        let Some(playlist) = self.view.as_ref().map(|v| v.uri.clone()).filter(|u| self.own_playlist(u).is_some()) else {
+            return self.say("Only your own playlists can lose songs");
+        };
+        let order = self.view_order();
+        let Some(row) = order.get(vi).and_then(|&i| self.lists.get(&playlist)?.rows.get(i)).cloned() else { return };
+        let Some(uid) = row.uid.clone() else {
+            return self.say("Spotify didn't say which row this is; open the playlist again");
+        };
+        let Some(taken) = self.lists.get_mut(&playlist).and_then(|l| l.take_uid(&uid)) else { return };
+        self.playlists.removing.insert((playlist.clone(), uid.clone()), taken);
+        let len = self.view_order().len();
+        if let Some(v) = self.view.as_mut() {
+            v.sel = v.sel.min(len.saturating_sub(1));
+        }
+        self.send(Command::RemoveFromPlaylist { playlist, uids: vec![uid] });
+        self.say(format!("Removed {}", row.name));
+    }
+
+    /// `Event::RemovedFromPlaylist`: settled; or put back (ours); another Client's removal leaves here too.
+    pub fn removed_from_playlist(&mut self, playlist: &str, uids: &[String], ok: bool) {
+        for uid in uids {
+            match (self.playlists.removing.remove(&(playlist.to_string(), uid.clone())), ok) {
+                (Some((at, row)), false) => {
+                    self.say(format!("Spotify didn't remove {}; it's back", row.name));
+                    if let Some(l) = self.lists.get_mut(playlist) {
+                        l.put_back(at, row);
+                    }
+                }
+                (None, true) => {
+                    if let Some(l) = self.lists.get_mut(playlist) {
+                        l.take_uid(uid);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 pub fn adding_rect(area: Rect, rows: usize) -> Rect {
     crate::ui::centered(area, 56, (rows as u16 + 4).clamp(7, 18))
 }
@@ -664,5 +714,48 @@ mod tests {
         // albums don't go into playlists
         app.ask_add(vec!["spotify:album:a".into()], "Album");
         assert!(app.playlists.adding.is_none());
+    }
+
+    #[test]
+    fn one_row_is_removed_by_uid_and_put_back_if_refused() {
+        use ratatui::crossterm::event::KeyCode;
+        use singularity_proto::{TrackPage, TrackRow};
+        let (mut app, mut rx) = app();
+        let row = |uri: &str, uid: &str| TrackRow { uri: uri.into(), name: uri.into(), uid: Some(uid.into()), ..Default::default() };
+        // the same song twice
+        let rows = vec![row("a", "u0"), row("dup", "u1"), row("b", "u2"), row("dup", "u3")];
+        app.open("spotify:playlist:mine", "Mine", "", "playlist");
+        app.track_page(TrackPage { uri: "spotify:playlist:mine".into(), offset: 0, total: 4, tracks: rows, header: None });
+        sent(&mut rx);
+        app.open_row_menu(1, None);
+        let labels = menu_labels(&app);
+        let at = labels.iter().position(|l| l == "Remove from this playlist").expect("offered on your own");
+        app.menu_run(at);
+        assert_eq!(sent(&mut rx), vec![Command::RemoveFromPlaylist { playlist: "spotify:playlist:mine".into(), uids: vec!["u1".into()] }]);
+        let uids = |app: &App| app.lists["spotify:playlist:mine"].rows.iter().map(|r| r.uid.clone().unwrap()).collect::<Vec<_>>();
+        assert_eq!(uids(&app), vec!["u0", "u2", "u3"], "one copy goes at once, the other stays");
+        // refused: back where it was
+        app.removed_from_playlist("spotify:playlist:mine", &["u1".into()], false);
+        assert_eq!(uids(&app), vec!["u0", "u1", "u2", "u3"]);
+        assert!(app.toast.as_ref().unwrap().0.contains("it's back"));
+        // the Delete key on the selected row; Spotify agrees
+        app.focus = "home".into();
+        app.view.as_mut().unwrap().sel = 3;
+        app.key(ratatui::crossterm::event::KeyEvent::from(KeyCode::Delete));
+        assert_eq!(sent(&mut rx), vec![Command::RemoveFromPlaylist { playlist: "spotify:playlist:mine".into(), uids: vec!["u3".into()] }]);
+        app.removed_from_playlist("spotify:playlist:mine", &["u3".into()], true);
+        assert_eq!(uids(&app), vec!["u0", "u1", "u2"]);
+        assert_eq!(app.view.as_ref().unwrap().sel, 2, "the selection stays on a row");
+        // another Client's removal leaves here too
+        app.removed_from_playlist("spotify:playlist:mine", &["u0".into()], true);
+        assert_eq!(uids(&app), vec!["u1", "u2"]);
+        // someone else's playlist: not offered, Delete does nothing
+        app.open("spotify:playlist:theirs", "Theirs", "", "playlist");
+        app.track_page(TrackPage { uri: "spotify:playlist:theirs".into(), offset: 0, total: 1, tracks: vec![row("c", "x0")], header: None });
+        app.open_row_menu(0, None);
+        assert!(!menu_labels(&app).iter().any(|l| l.starts_with("Remove")));
+        app.menu = None;
+        app.key(ratatui::crossterm::event::KeyEvent::from(KeyCode::Delete));
+        assert!(!sent(&mut rx).iter().any(|c| matches!(c, Command::RemoveFromPlaylist { .. })));
     }
 }

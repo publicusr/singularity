@@ -4,6 +4,7 @@
 //!     cargo run -p singularityd --example playlist_probe -- --create-delete
 //!     cargo run -p singularityd --example playlist_probe -- --details
 //!     cargo run -p singularityd --example playlist_probe -- --add
+//!     cargo run -p singularityd --example playlist_probe -- --remove
 //!
 //! Spotify's "delete" takes the playlist out of the library (as the web player does); the emptied playlist stays
 //! behind on Spotify's side, unlisted.
@@ -124,7 +125,33 @@ async fn main() -> anyhow::Result<()> {
             println!("after delete, in the library: {there}");
             res?;
         }
-        _ => anyhow::bail!("modes: --create-delete, --details, --add"),
+        "--remove" => {
+            let uri = scratch(&session, &root).await?;
+            let uris = vec![TRACK.to_string()];
+            let checked = async {
+                // the same song twice: removing one row leaves the other
+                for _ in 0..2 {
+                    let v = op(&session, &mut registry, "addToPlaylist", playlists::add_vars(&uri, &uris)).await?;
+                    anyhow::ensure!(playlists::graphql_error(&v).is_none(), "add refused");
+                }
+                let (op_name, vars) = singularityd::library::tracks_query(&uri, 0).unwrap();
+                let (rows, _) = singularityd::library::parse_tracks(&uri, &op(&session, &mut registry, op_name, vars.clone()).await?);
+                let uids: Vec<String> = rows.iter().filter_map(|r| r.uid.clone()).collect();
+                println!("two rows of one song: {}, distinct uids: {}", rows.len() == 2, uids.len() == 2 && uids[0] != uids[1]);
+                let t = std::time::Instant::now();
+                let v = op(&session, &mut registry, "removeFromPlaylist", playlists::remove_vars(&uri, &uids[..1])).await?;
+                println!("removeFromPlaylist: errors {:?}, keys {:?} ({:?})", playlists::graphql_error(&v), v["data"].as_object().map(|o| o.keys().collect::<Vec<_>>()), t.elapsed());
+                let (rows, total) = singularityd::library::parse_tracks(&uri, &op(&session, &mut registry, op_name, vars).await?);
+                println!("read back: total {total}, the other copy stayed {}", rows.len() == 1 && rows[0].uid.as_deref() == uids.get(1).map(String::as_str));
+                anyhow::Ok(())
+            };
+            let res = checked.await;
+            playlists::post(&session, &root, &playlists::rootlist_remove(&uri)).await?;
+            let (there, _) = listed(&session, &mut registry, &uri).await?;
+            println!("after delete, in the library: {there}");
+            res?;
+        }
+        _ => anyhow::bail!("modes: --create-delete, --details, --add, --remove"),
     }
     Ok(())
 }

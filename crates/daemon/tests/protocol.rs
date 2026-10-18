@@ -470,3 +470,39 @@ async fn tracks_are_added_to_a_playlist_and_a_duplicate_asks_first() {
     let (uri, o) = outcome(&mut a).await;
     assert!(uri.contains(":fakenew") && o == AddOutcome::Added);
 }
+
+#[tokio::test]
+async fn one_row_is_removed_by_its_uid_and_a_refusal_is_told() {
+    use singularity_proto::{Command, HomeFeed};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rm.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
+    let mut a = connect(&path).await;
+    let mine = "spotify:playlist:fakemine".to_string();
+    async fn answer(s: &mut UnixStream) -> bool {
+        loop {
+            if let DaemonMsg::Event(Event::RemovedFromPlaylist { ok, .. }) = proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap() {
+                return ok;
+            }
+        }
+    }
+    async fn page(s: &mut UnixStream, uri: &str) -> singularity_proto::TrackPage {
+        proto::write_msg(s, &ClientMsg::Command(Command::GetTracks { uri: uri.into() })).await.unwrap();
+        loop {
+            if let DaemonMsg::Event(Event::Tracks(p)) = proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap() {
+                return p;
+            }
+        }
+    }
+    let before = page(&mut a, &mine).await;
+    assert!(before.tracks.iter().all(|t| t.uid.is_some()), "playlist rows carry uids");
+    let uid = before.tracks[3].uid.clone().unwrap();
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::RemoveFromPlaylist { playlist: mine.clone(), uids: vec![uid.clone()] })).await.unwrap();
+    assert!(answer(&mut a).await);
+    let after = page(&mut a, &mine).await;
+    assert_eq!(after.total, before.total - 1);
+    assert!(!after.tracks.iter().any(|t| t.uid.as_deref() == Some(uid.as_str())));
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::RemoveFromPlaylist { playlist: mine.clone(), uids: vec!["fail".into()] })).await.unwrap();
+    assert!(!answer(&mut a).await);
+}

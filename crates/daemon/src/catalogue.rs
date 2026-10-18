@@ -55,6 +55,8 @@ pub enum CatCmd {
     CreatePlaylist { name: String, uris: Vec<String> },
     /// tracks at the end of one of your playlists, unless it has them already (or `anyway`) (#53)
     AddToPlaylist { playlist: String, name: String, uris: Vec<String>, anyway: bool },
+    /// rows out of one of your playlists, by uid (#54)
+    RemoveFromPlaylist { playlist: String, uids: Vec<String> },
     /// one of your playlists out of the library (#51)
     DeletePlaylist(String),
     /// a new name and description for one of your playlists (#52)
@@ -89,6 +91,8 @@ pub enum CatEvent {
     Edited { uri: String, name: String, description: String, ok: bool },
     /// how adding tracks to a playlist went
     Added { playlist: String, name: String, uris: Vec<String>, outcome: singularity_proto::AddOutcome },
+    /// rows taken out of a playlist, or refused
+    Removed { playlist: String, uids: Vec<String>, ok: bool },
     Error(String),
 }
 
@@ -181,6 +185,7 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
                 let _ = self_tx.send(CatCmd::Library).await;
             }
             CatCmd::AddToPlaylist { playlist, name, uris, anyway } => st.add_to_playlist(playlist, name, uris, anyway).await,
+            CatCmd::RemoveFromPlaylist { playlist, uids } => st.remove_from_playlist(playlist, uids).await,
             CatCmd::DeletePlaylist(uri) => {
                 st.delete_playlist(uri).await;
                 let _ = self_tx.send(CatCmd::Library).await;
@@ -227,6 +232,8 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
         let mut created = 0;
         // tracks added to each fake playlist
         let mut added: HashMap<String, Vec<String>> = HashMap::new();
+        // rows taken out of each, by uid
+        let mut removed: HashMap<String, Vec<String>> = HashMap::new();
         while let Some(cmd) = cmd_rx.recv().await {
             let evs = match cmd {
                 CatCmd::Home => vec![CatEvent::Home(home.clone())],
@@ -291,11 +298,28 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                     ev.push(CatEvent::Library(lib.clone()));
                     ev
                 }
+                // rows of others' playlists, or with "fail" in their uid, are refused
+                CatCmd::RemoveFromPlaylist { playlist, uids } => {
+                    let ok = lib.items.iter().any(|i| i.uri == playlist && i.own) && !uids.iter().any(|u| u.contains("fail"));
+                    let mut ev = vec![];
+                    if ok {
+                        removed.entry(playlist.clone()).or_default().extend(uids.iter().cloned());
+                    } else {
+                        ev.push(CatEvent::Error("Couldn't remove it from the playlist (fake failure)".into()));
+                    }
+                    ev.push(CatEvent::Removed { playlist, uids, ok });
+                    ev
+                }
                 CatCmd::Tracks(uri) => {
                     let mut pages = fake_tracks(&uri);
                     // what was added comes last (the fake playlists fit one page)
                     if let (Some(extra), [CatEvent::Tracks(p)]) = (added.get(&uri), pages.as_mut_slice()) {
-                        p.tracks.extend(extra.iter().map(|u| singularity_proto::TrackRow { uri: u.clone(), name: format!("Added {}", u.rsplit(':').next().unwrap_or("")), playable: true, duration_ms: 180_000, ..Default::default() }));
+                        let n = p.tracks.len();
+                        p.tracks.extend(extra.iter().enumerate().map(|(i, u)| singularity_proto::TrackRow { uri: u.clone(), name: format!("Added {}", u.rsplit(':').next().unwrap_or("")), playable: true, duration_ms: 180_000, uid: Some(format!("fakeuid{}", n + i)), ..Default::default() }));
+                        p.total = p.tracks.len() as u32;
+                    }
+                    if let (Some(gone), [CatEvent::Tracks(p)]) = (removed.get(&uri), pages.as_mut_slice()) {
+                        p.tracks.retain(|t| t.uid.as_ref().is_none_or(|u| !gone.contains(u)));
                         p.total = p.tracks.len() as u32;
                     }
                     pages
@@ -406,6 +430,7 @@ fn fake_artist(uri: &str, home: &HomeFeed) -> singularity_proto::ArtistPage {
             artist_uris: vec![uri.into()],
             album: "Greatest Orbits".into(),
             album_uri: Some("spotify:album:fake1".into()),
+            uid: None,
             added_at: None,
             duration_ms: 200_000 + i * 3_000,
             playable: true,
@@ -511,6 +536,7 @@ fn fake_tracks(uri: &str) -> Vec<CatEvent> {
                     playable: i % 17 != 16,
                     artist_uris: vec![format!("spotify:artist:fake{}", i as usize % artists.len())],
                     album_uri: Some(format!("spotify:album:fake{}", (i * 7) % 13 + 1)),
+                    uid: uri.contains(":playlist:").then(|| format!("fakeuid{i}")),
                 })
                 .collect();
             let header = (offset == 0 && uri.contains(":album:")).then(|| singularity_proto::ListHeader {
@@ -851,6 +877,26 @@ impl State {
             }
         };
         let _ = self.ev.send(CatEvent::Added { playlist, name, uris, outcome }).await;
+    }
+
+    async fn remove_from_playlist(&mut self, playlist: String, uids: Vec<String>) {
+        let ok = match self.query("removeFromPlaylist", crate::playlists::remove_vars(&playlist, &uids)).await {
+            Ok(v) => match crate::playlists::graphql_error(&v) {
+                None => true,
+                Some(e) => {
+                    let _ = self.ev.send(CatEvent::Error(format!("Couldn't remove it from the playlist: {e}"))).await;
+                    false
+                }
+            },
+            Err(e) => {
+                let _ = self.ev.send(CatEvent::Error(format!("Couldn't remove it from the playlist: {e}"))).await;
+                false
+            }
+        };
+        if ok {
+            self.tracks.remove(&playlist);
+        }
+        let _ = self.ev.send(CatEvent::Removed { playlist, uids, ok }).await;
     }
 
     /// True if Spotify took the new details.

@@ -129,8 +129,10 @@ async fn playerctl_style_control_and_track_notifications() {
     // play-pause, seek, volume, loop
     p.play_pause().await.unwrap();
     until("Paused", async || p.playback_status().await.is_ok_and(|s| s == "Paused")).await;
+    // Seek is relative: from wherever the pause left it (that depends on how long start-up took)
+    let at = p.position().await.unwrap();
     p.seek(30_000_000).await.unwrap();
-    until("the seek", async || p.position().await.is_ok_and(|us| (30_000_000..31_000_000).contains(&us))).await;
+    until("the seek", async || p.position().await.is_ok_and(|us| (at + 29_500_000..at + 30_500_000).contains(&us))).await;
     p.set_volume(0.25).await.unwrap();
     until("volume", async || p.volume().await.is_ok_and(|v| (v - 0.25).abs() < 0.01)).await;
     p.set_loop_status("Track").await.unwrap();

@@ -9,10 +9,10 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - **v1 ✅** (spec issue #1, tickets #2–#24). Owner test rounds 1–3 done and fixed (#25–#33, #38–#45).
 - **v1.x in progress** (spec: SPEC.md "v1.x", stories 68–86; decisions DESIGN-TREE D29–D45; spec issue **#34**).
   Batches (D29): ~~1 stats~~ ✅ (#35–#37) · ~~2 unbuilt v1 items + polish~~ ✅ (#46 waveform, later removed (D46), #47 mini-player, #49 ♥ rows,
-  #50 album song into the queue; #48 mouse buttons dropped, D45) · **3 playlist editing (in progress: #51–#53 ✅, next #54–#56)** · 4 Settings screen ·
+  #50 album song into the queue; #48 mouse buttons dropped, D45) · **3 playlist editing (in progress: #51–#54 ✅, next #55–#56)** · 4 Settings screen ·
   5 album-adaptive theme + more Visuals · 6 podcasts and audiobooks · 7 free tiling (trial) · 8 macOS.
   Visual demos judged: starfield, marquee, glow kept and finished (#44, `ambient.rs`).
-- Tests: **228 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
+- Tests: **230 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
 - **No open bugs.** The waveform seek bar (#46) was removed again at the owner's call (D46).
 - Rule since round 2 (D43): every built-in Design keeps Home, library, queue and lyrics (a test enforces it).
 
@@ -55,7 +55,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | (session 5) | D46 | Waveform seek bar removed (owner) |
 | `8a04123` | #51 ✅ | Create/delete own playlists (`daemon/src/playlists.rs`, `client/src/playlists.rs`, `examples/playlist_probe.rs`) |
 | `a856151` | #52 ✅ | Edit details… (name + description) on own playlists; descriptions shown in the list header |
-| (last) | #53 ✅ | Add to playlist… picker (every track menu, Ctrl+K for the playing song); duplicates ask first |
+| `db1a8a3` | #53 ✅ | Add to playlist… picker (every track menu, Ctrl+K for the playing song); duplicates ask first |
+| (last) | #54 ✅ | Remove from this playlist (menu, Delete key), by row uid; MPRIS seek test no longer flaky |
 
 ## What exists in `crates/`
 
@@ -81,7 +82,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 ## Then
 
 - **Batch 3: playlist editing**: tickets #51–#56 written (routes re-verified 2026-10-18, details in the research note's
-  "Re-verified" section). #51–#53 done; next #54 Add to playlist…, #54 remove, #55 reorder, #56
+  "Re-verified" section). #51–#54 done; next #55 Add to playlist…, #54 remove, #55 reorder, #56
   covers. Each live check is a new mode of `examples/playlist_probe.rs` on its own scratch playlist.
   (Original plan:) Write its tickets first (as GitHub issues under #34, label
   `ready-for-agent` + `v1.x`), then build one at a time. Scope (owner): own playlists only; create, rename and

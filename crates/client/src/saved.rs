@@ -235,6 +235,7 @@ impl App {
             playable: true,
             artist_uris: i.artist_uris.clone(),
             album_uri: i.album_uri.clone(),
+            uid: None,
         })
     }
 

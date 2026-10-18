@@ -321,6 +321,7 @@ pub enum MenuAct {
     /// like/unlike, save/remove, follow/unfollow
     Save,
     AddToPlaylist,
+    RemoveFromPlaylist,
     NewPlaylist,
     EditPlaylist,
     DeletePlaylist,
@@ -1532,7 +1533,7 @@ impl App {
     }
 
     /// The view's visible order and the list length.
-    fn view_order(&self) -> Vec<usize> {
+    pub(crate) fn view_order(&self) -> Vec<usize> {
         match (&self.view, self.view.as_ref().and_then(|v| self.lists.get(&v.uri))) {
             (Some(v), Some(l)) => v.order(&l.rows),
             _ => vec![],
@@ -1579,6 +1580,7 @@ impl App {
 
     fn tracks_key(&mut self, k: KeyEvent) -> bool {
         let len = self.view_order().len();
+        let removable = self.rows_removable();
         let Some(v) = self.view.as_mut() else { return false };
         let page = v.visible.max(1) as i64;
         match k.code {
@@ -1595,6 +1597,10 @@ impl App {
             KeyCode::Menu | KeyCode::F(10) => {
                 let sel = v.sel;
                 self.open_row_menu(sel, None);
+            }
+            KeyCode::Delete if removable => {
+                let sel = v.sel;
+                self.remove_row(sel);
             }
             // Esc clears the filter, then goes back to Home (it never quits from inside a list)
             KeyCode::Esc if !v.filter.is_empty() => v.set_filter(String::new()),
@@ -1689,6 +1695,9 @@ impl App {
         }
         let mut items = vec![("Play from here".to_string(), MenuAct::PlayHere), ("Play next".into(), MenuAct::PlayNext), ("Add to queue".into(), MenuAct::Queue)];
         items.push(("Add to playlist…".into(), MenuAct::AddToPlaylist));
+        if self.rows_removable() {
+            items.push(("Remove from this playlist".into(), MenuAct::RemoveFromPlaylist));
+        }
         if let Some((uri, ..)) = self.target_track(&Target::Row(vi)) {
             items.extend(self.save_entry(&uri));
         }
@@ -1814,6 +1823,11 @@ impl App {
             }
             MenuAct::Save => self.toggle_saved(&uri, &name),
             MenuAct::AddToPlaylist => self.ask_add(vec![uri], &name),
+            MenuAct::RemoveFromPlaylist => {
+                if let Target::Row(vi) = m.target {
+                    self.remove_row(vi);
+                }
+            }
             MenuAct::NewPlaylist => self.ask_new_playlist(),
             MenuAct::EditPlaylist => self.edit_details(&uri),
             MenuAct::DeletePlaylist => self.delete_playlist(&uri),

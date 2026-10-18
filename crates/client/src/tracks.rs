@@ -72,6 +72,19 @@ impl TrackList {
         self.total += 1;
     }
 
+    /// Take one row out by its playlist uid (a duplicate stays); where it was and the row.
+    pub fn take_uid(&mut self, uid: &str) -> Option<(usize, TrackRow)> {
+        let i = self.rows.iter().position(|r| r.uid.as_deref() == Some(uid))?;
+        self.total = self.total.saturating_sub(1);
+        Some((i, self.rows.remove(i)))
+    }
+
+    /// Put a row taken out back where it was (duplicates allowed: it's the same row).
+    pub fn put_back(&mut self, at: usize, row: TrackRow) {
+        self.rows.insert(at.min(self.rows.len()), row);
+        self.total += 1;
+    }
+
     /// Take a track out; returns where it was and the row.
     pub fn remove(&mut self, uri: &str) -> Option<(usize, TrackRow)> {
         let i = self.rows.iter().position(|r| r.uri == uri)?;

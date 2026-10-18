@@ -27,4 +27,4 @@ Done from round 1: #25 stale Daemon, #26 wheel, #27 Home by lines, #28 back/forw
 #35 Daemon stats, #36 Stats page, #37 Widgets. Next: the Visual demos, then batch 2.
 Batch 2 done (2026-10-18): #46 waveform seek bar (removed again, D46), #47 mini-player, #49 ♥ on every row, #50 album song into the queue;
 #48 mouse buttons dropped (D45). Also #45 (slow-connection notice) and owner rounds 2–3 (#38–#44). Batch 3,
-playlist editing (D32, D40): tickets #51–#56; #51 create/delete, #52 edit details, #53 Add to playlist… done. Waveform removed again (D46).
+playlist editing (D32, D40): tickets #51–#56; #51 create/delete, #52 edit details, #53 Add to playlist…, #54 remove done. Waveform removed again (D46).

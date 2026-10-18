@@ -136,6 +136,8 @@ pub enum Command {
         #[serde(default)]
         anyway: bool,
     },
+    /// Take rows (by their uid) out of one of your playlists; answered by `Event::RemovedFromPlaylist`.
+    RemoveFromPlaylist { playlist: String, uids: Vec<String> },
     #[serde(other)]
     Unknown,
 }
@@ -210,6 +212,8 @@ pub enum Event {
     PlaylistEdited { uri: String, name: String, description: String, ok: bool },
     /// The answer to `AddToPlaylist` (and to `CreatePlaylist` with tracks).
     AddedToPlaylist { playlist: String, name: String, uris: Vec<String>, outcome: AddOutcome },
+    /// The answer to `RemoveFromPlaylist`: gone (`ok`), or Spotify refused (the Client that asked puts them back).
+    RemovedFromPlaylist { playlist: String, uids: Vec<String>, ok: bool },
     #[serde(other)]
     Unknown,
 }
@@ -370,6 +374,9 @@ pub struct TrackRow {
     pub artist_uris: Vec<String>,
     #[serde(default)]
     pub album_uri: Option<String>,
+    /// a playlist row's own id (a song can be in a playlist twice): what removing and moving name (#54, #55)
+    #[serde(default)]
+    pub uid: Option<String>,
 }
 
 /// What a track list is, shown above it (sent with the first page).

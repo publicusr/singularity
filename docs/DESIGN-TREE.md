@@ -595,3 +595,11 @@ flowchart LR
   `curates` false → added in ~0.14 s (`data.addItemsToPlaylist`, no `errors`) → read back with a row `uid` →
   `curates` true; scratch deleted. Mutations go through `pathfinder_query`, which retries only on a 429 (nothing
   written).
+- **#54 Remove tracks ✅** (2026-10-18): "Remove from this playlist" in a row's menu and the Delete key, only on
+  your own playlists (Liked Songs keeps ♥). `TrackRow.uid` (from `fetchPlaylist`'s `uid`) names the row, so one
+  copy of a song that's in twice goes. Gone at once, put back in place with a toast if Spotify refuses
+  (`Event::RemovedFromPlaylist { ok }`); another Client's removal leaves this one's open list too. Live check
+  (`playlist_probe --remove`): the same song added twice → two rows, distinct uids → one removed in ~0.16 s
+  (`data.removeItemsFromPlaylist`) → the other copy stayed; scratch deleted. Also: the MPRIS integration test's seek
+  check was flaky (Seek is relative and it assumed the pause came within 1 s of play); it now measures from the
+  paused position.

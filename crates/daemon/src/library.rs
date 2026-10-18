@@ -195,6 +195,7 @@ pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
             Some(TrackRow {
                 artist_uris: uris(&d["artists"]["items"]),
                 album_uri: d["albumOfTrack"]["uri"].as_str().or(album_uri).map(String::from),
+                uid: it["uid"].as_str().map(String::from),
                 uri,
                 name: d["name"].as_str().unwrap_or_default().to_string(),
                 artists: names(&d["artists"]["items"]),
@@ -293,6 +294,7 @@ pub fn parse_search(query: &str, v: &Value) -> singularity_proto::SearchResults 
                 artist_uris: uris(&t["artists"]["items"]),
                 album: t["albumOfTrack"]["name"].as_str().unwrap_or_default().into(),
                 album_uri: t["albumOfTrack"]["uri"].as_str().map(String::from),
+                uid: None,
                 added_at: None,
                 duration_ms: t["duration"]["totalMilliseconds"].as_u64().unwrap_or(0),
                 playable: t["playability"]["playable"].as_bool().unwrap_or(true),
@@ -328,6 +330,7 @@ pub fn parse_artist(v: &Value) -> Option<ArtistPage> {
                 artist_uris: uris(&t["artists"]["items"]),
                 album: t["albumOfTrack"]["name"].as_str().unwrap_or_default().into(),
                 album_uri: t["albumOfTrack"]["uri"].as_str().map(String::from),
+                uid: None,
                 added_at: None,
                 duration_ms: t["duration"]["totalMilliseconds"].as_u64().unwrap_or(0),
                 playable: t["playability"]["playable"].as_bool().unwrap_or(true),
