@@ -214,3 +214,59 @@ audio, and looks spectacular.
   and `spikes/catalogue-home/FINDINGS.md` (real Home feed, 31 Shelves in ~1.5 s).
 - Research: `research/2026-10-platform-constraints.md`, `-private-api-risk.md`, `-macos.md`, `-free-tiling.md`.
 - Open: D17 (can Singularity set the device quality itself?) is answered inside the ConnectRemote ticket.
+
+---
+
+# Singularity v1.x: spec
+
+> From the v1.x grilling rounds (2026-10-18, DESIGN-TREE D29–D41). Facts: `research/2026-10-playlists-and-podcasts.md`.
+> Tickets are written per batch, just before it's built (Spotify's private details go stale), under spec issue #34. Order (D29): stats → unbuilt v1 items + polish → playlist editing → Settings screen → album-adaptive theme +
+> Visuals → podcasts and audiobooks → free tiling → macOS.
+
+## User stories
+
+### Stats (batch 1, D31, D39)
+68. As a listener, I want a Stats page (a live "Wrapped"): top artists, tracks and albums for this week, month, year and all time, ranked by minutes with play counts alongside, so that I see what I really listen to.
+69. As a listener, I want minutes listened, my streak, "played N times" and a listening-by-hour clock on that page, so that my habits are visible.
+70. As a listener, I want every row on the Stats page clickable (play the track, open the artist or album), so that stats lead back to music.
+71. As a user, I want small "today" (minutes, tracks, streak) and "top this week" Widgets for the side Slots, so that stats can sit next to the music.
+
+### Unbuilt v1 items and polish (batch 2, D30, D34)
+72. As a listener, I want the seek bar to be the track's waveform, built up from the captured audio (spec story 40).
+73. As a user, I want Singularity to shrink to a mini-player in a tiny split instead of "terminal too small" (story 67).
+74. As a mouse user, I want my mouse's back/forward buttons to go back and forward (story 50).
+75. As a user, I want a ♥ on every track row that shows and toggles whether it's liked.
+
+### Playlist editing (batch 3, D32, D40)
+76. As a user, I want to create, rename, re-describe and delete (asked twice) my own playlists.
+77. As a user, I want "Add to playlist…" on any track, with a searchable picker of my playlists.
+78. As a user, I want to remove tracks from my playlists and drag them into a new order.
+79. As a user, I want to give a playlist my own cover: a file path or an image dropped onto the terminal, previewed, cropped square and shrunk to Spotify's 256 KB JPEG limit before upload.
+
+### Settings (batch 4, D33)
+80. As a user, I want a Settings page built from `config.toml` (its comments as descriptions, clickable values, written back keeping the file's comments), and a read-only keymap tab.
+
+### Looks (batch 5, D30, D36)
+81. As a user, I want an album-adaptive Theme: its colours come from the playing cover (on #33's tinting).
+82. As a user, I want to try demo Visuals in my own layout (warp starfield, up-next river, big now-playing marquee, album-art glow) and keep the ones I like.
+
+### Podcasts and audiobooks (batch 6, D35, D41)
+83. As a listener, I want show pages with episodes, play and resume, played marks, saved shows in the sidebar, and podcasts in search; video podcasts play as audio.
+84. As a listener, I want audiobooks the same way (book pages, chapters, resume, library, search), if Soloist plays chapters (checked first).
+
+### Layout (batch 7, D37) and macOS (batch 8, D38)
+85. As a user, I want a free-tiling edit mode (split, close, swap Panes) on the existing layout tree, as a trial.
+86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready.
+
+## Implementation notes
+
+- **Stats**: aggregates in the Daemon's LocalStore (SQLite over `plays`), sent on request; the log gains album and
+  artist URIs (schema `user_version` 2) so rows link; older plays link through their track. Calendar periods in local
+  time, weeks from Monday; ranked by minutes.
+- **Playlist editing**: Pathfinder `addToPlaylist` / `removeFromPlaylist` / `moveItemsInPlaylist` /
+  `editablePlaylists`; spclient `POST /playlist`, `/playlist/{id}/changes`, `/user/{username}/rootlist/changes`;
+  covers through `image-upload.spotify.com/v4/playlist` + `register-image`. Optimistic, rolled back on refusal (as
+  Saved). Each path gets one quiet live check on the owner's account when built.
+- **Visual demos** are ordinary Widgets marked "demo" in their Slot group's ◂ ▸ cycle; liked ones get tickets,
+  the rest are deleted.
+- Out for good: downloads (DRM), video in the terminal.

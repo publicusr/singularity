@@ -66,8 +66,8 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 - Test round 1 tickets, in order: ~~#25 stale Daemon~~ ✅, ~~#26 wheel/highlight~~ ✅, ~~#27 Home by lines~~ ✅, ~~#28 back/forward~~ ✅,
   ~~#29 meters~~ ✅, ~~#30 lyrics wrap~~ ✅, ~~#31 wide terminals~~ ✅, #32 queue drag (owner: works while playing; open for the paused case), ~~#33 Theme tint~~ ✅. **Round 1 is done.** #32 works while playing (owner); drags while paused now explain themselves, the real cause is open (see the round log). Genius dropped.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
-- v1.x (spec "Out of Scope"): playlist editing, stats widgets (the listening log is ready for them), Settings screen,
-  more Visuals, free-tiling, podcasts, macOS Engine. Turn into tickets with the owner before building.
+- **v1.x is planned** (DESIGN-TREE D29–D41, SPEC.md "v1.x", spec issue #34). Batch 1 (stats): #35 Daemon stats, #36 Stats page, #37
+  Stats Widgets. Later batches get tickets just before they're built.
 - Gap left on #11: mouse back/forward buttons (crossterm drops SGR buttons 8/9; needs our own small input layer next
   to the SGR-Pixels code in `client/src/term.rs`).
 - Not done on #22: hearts on every track-list row (would need `CheckSaved` for whole playlists).
