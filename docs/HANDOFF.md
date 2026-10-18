@@ -1,4 +1,4 @@
-# Session handoff (2026-10-18, fourth session)
+# Session handoff (2026-10-18, end of the fourth session)
 
 Read this first in a new session, then `CLAUDE.md`, `docs/SPEC.md` and `GLOSSARY.md`. Decisions and their history are
 in `docs/DESIGN-TREE.md` (round log at the bottom: one entry per ticket, with the details); verified facts about
@@ -6,16 +6,15 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 
 ## Where things stand
 
-- **Phase 0 (planning) ✅, Phase 1 (spikes) ✅.** ADRs 0001–0004.
-- **Phase 2/3 (v1 build) ✅ (pending the owner's test round).** Spec issue **#1**, tickets on GitHub
-  (`publicusr/singularity`, label `ready-for-agent`). **All v1 tickets are closed (#2–#24).**
-- Tests: **220 passing** (`cargo test`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
-  live answers). Clippy: only minor style warnings, all in older code (setup.rs, connect.rs, probe example) or
-  harmless (`type_complexity` on theme tables, `needless_range_loop` in a test).
-- **Owner test round 1 is in** (2026-10-18): 9 points, findings and proposals in the DESIGN-TREE round log ("Owner
-  test round 1"). Answered; tickets **#25–#33** written (`ready-for-agent`), built in that order. Genius was dropped.
-  Their Daemon was a stale 00:08 build that ignored `Shutdown`; since #25 a new Client stops such a Daemon by itself.
-- The owner's round 1 covered the build of 2026-10-18 ~02:00 (up to #23). **#25 onwards is untested by the owner.**
+- **v1 ✅** (spec issue #1, tickets #2–#24). Owner test rounds 1–3 done and fixed (#25–#33, #38–#45).
+- **v1.x in progress** (spec: SPEC.md "v1.x", stories 68–86; decisions DESIGN-TREE D29–D45; spec issue **#34**).
+  Batches (D29): ~~1 stats~~ ✅ (#35–#37) · ~~2 unbuilt v1 items + polish~~ ✅ (#46 waveform, #47 mini-player, #49 ♥ rows,
+  #50 album song into the queue; #48 mouse buttons dropped, D45) · **3 playlist editing (next)** · 4 Settings screen ·
+  5 album-adaptive theme + more Visuals · 6 podcasts and audiobooks · 7 free tiling (trial) · 8 macOS.
+  Visual demos judged: starfield, marquee, glow kept and finished (#44, `ambient.rs`).
+- Tests: **220 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
+- **No open bugs.** One open question: the owner couldn't find the waveform (#46; see "Waiting on the owner").
+- Rule since round 2 (D43): every built-in Design keeps Home, library, queue and lyrics (a test enforces it).
 
 ### Recent commits (all pushed to `main`)
 
@@ -60,14 +59,14 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 |-------|------------------|
 | `proto` | Versioned length-prefixed JSON protocol. Events that carry a list must be struct variants (`Devices { devices }`, `Saved { entries }`). `Health` has `engine_build` (the Soloist build date). |
 | `config` (`singularity-config`, new) | `config.toml` / `keys.toml` under `~/.config/singularity/`: written with comments on first run, `config.toml` at `CONFIG_SCHEMA` 2 (`keys.toml` at `KEYS_SCHEMA` 1) + migration chain (`CONFIG_MIGRATIONS`: 1→2 adds `ui.tint_art`; `rename` keeps comments), `set` edits one value keeping the file, `Watched` notices saves (mtime+size, polled ~1 s), bad values → defaults + reported problems. Re-exports `toml_edit` (0.25, TOML 1.1). Sections: `[ui]` design/theme/transparent/layout/tint_art, `[notifications]` track_change, `[visuals]` gpu/unfocused_fps, `[idle]` enabled/minutes. |
-| `daemon` (`singularityd`) | Hub + socket; `transport()` routes player commands (Engine, or Connect while another device plays). `soloist.rs` SoloistEngine (+ `keep_current` updater, `quiet_moment`, `Exit::Update`, resume after restart). `update.rs` CDN check/stage/verify/install. `mpris.rs` MPRIS player + notifications. `catalogue.rs` (+ `SetSaved`/`CheckSaved`, `CatCmd::Resume`; the fake Catalogue keeps a saved set). `connect.rs` (`resume` = generalised transfer). `tap.rs`, `lyrics.rs`, `secrets.rs`, `health.rs`, `library.rs`. `main.rs` follows config.toml live (`follow_config`). `store.rs` LocalStore (listening log in SQLite, `Recorder`, summary, backups on disk, export, delete), `backup.rs` (nightly, paced `CatCmd::Query`, revision reuse); `serve_with(…, Extras { mpris, store })`. |
-| `client` (`singularity`) | Everything from before, plus: `saved.rs` (like/follow), `keymap.rs` (standard/vim presets, user bindings), `design.rs` (five Designs), `theme.rs` (built-in Themes + theme files), `looks.rs` (switching, `t`, pickers with live preview, `themes/` watched), `widgets.rs` (Now playing, levels, listening heatmap, rain, scope, top), `layouts.rs` (Slot groups, saved layouts), `visual/idle.rs` (idle takeover). Layout `Size::Last`, subtree minimums. |
+| `daemon` (`singularityd`) | Hub + socket; `transport()` routes player commands (Engine, or Connect while another device plays). `soloist.rs` SoloistEngine (+ `keep_current` updater, `quiet_moment`, `Exit::Update`, resume after restart). `update.rs` CDN check/stage/verify/install. `mpris.rs` MPRIS player + notifications. `catalogue.rs` (+ `SetSaved`/`CheckSaved`, `CatCmd::Resume`; the fake Catalogue keeps a saved set). `connect.rs` (`resume` = generalised transfer). `tap.rs`, `lyrics.rs`, `secrets.rs`, `health.rs`, `library.rs`. `main.rs` follows config.toml live (`follow_config`). `store.rs` LocalStore (listening log in SQLite, `Recorder`, summary, backups on disk, export, delete), `backup.rs` (nightly, paced `CatCmd::Query`, revision reuse); `serve_with(…, Extras { mpris, store })`. Stats: `Store::stats`, log schema 2, `backfill` of old plays' links. `Delivery` (Soloist's download speed + stalls, #45). |
+| `client` (`singularity`) | `app.rs` (state, input, actions, pages + history), `ui.rs` (draw, Pane titles, popups; `opaque_overlays` for kitty), `layout.rs` (split tree, `compute_shaped`: the well ≤ 4:3), `home.rs`, `tracks.rs` (lists, ♥ column), `artist.rs`, `search.rs`, `queue.rs` (drag: `preview`, `target`, `into_queue`), `lyrics.rs` (wrap), `stats.rs` (Stats page + "today"/"top this week" Widgets), `ambient.rs` (starfield, marquee, glow), `waveform.rs` (seek-bar waveform, cache), `mini.rs` (mini-player), `saved.rs` (like/follow, `heart`, `want_saved`), `keymap.rs`, `design.rs`, `theme.rs` (Themes, `Tint`, `ramp_at`), `looks.rs`, `widgets.rs`, `layouts.rs` (Slot groups, saved layouts), `setup.rs` (wizard, health, stream Pane), `gfx.rs` (kitty: images under cell backgrounds in kitty), `visual/` (black hole CPU/GPU, well, idle). |
 
 Dev tools: `cargo run -p singularityd --example probe -- <op> '<vars>' [--raw file]`, `--example connect_probe`.
-**pty harness: `tools/pty/`** (README there; recreate the venv). Scenarios added this session: `like`, `mpris` (real
-`playerctl` on a private D-Bus), `config`, `designs`, `layouts`; plus `update_test.py` (real Daemon + stand-in Soloist
-`fake_soloist.py` + fake CDN). Every run gets scratch `XDG_CONFIG_HOME`/`XDG_STATE_HOME`/`XDG_DATA_HOME` under its output
-folder. Later: `idle-pixels`/`idle-cells` (#17), `listening` (#23, seeds a scratch log).
+**pty harness: `tools/pty/`** (README lists every scenario; recreate the venv). Runs the real binaries against a fake
+Daemon (fake Engine + fake Catalogue), scratch XDG dirs per run, `PTY_COLS`/`PTY_ROWS` for size; its compositor layers
+kitty images as kitty does (under/over cell backgrounds, judged by colour). `connect_probe` modes for quiet live checks:
+`--swap-context`, `--lift-context` (snapshot → change → read back → restore).
 
 **Env knobs:** `SINGULARITY_SOLOIST_CDN`, `SINGULARITY_SOLOIST_CHECK_SECS` (updater), `SINGULARITY_TAP=off` (a test
 Daemon never listens to the owner's Soloist), `SINGULARITY_DBUS=<address>|off` (MPRIS bus; fake-Engine Daemons stay
@@ -77,15 +76,18 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 
 ## Then
 
-- Test round 1 tickets, in order: ~~#25 stale Daemon~~ ✅, ~~#26 wheel/highlight~~ ✅, ~~#27 Home by lines~~ ✅, ~~#28 back/forward~~ ✅,
-  ~~#29 meters~~ ✅, ~~#30 lyrics wrap~~ ✅, ~~#31 wide terminals~~ ✅, #32 queue drag (owner: works while playing; open for the paused case), ~~#33 Theme tint~~ ✅. **Round 1 is done.** #32 works while playing (owner); drags while paused now explain themselves, the real cause is open (see the round log). Genius dropped.
+- **Batch 3: playlist editing** (stories 76–79, D32, D40). Write its tickets first (as GitHub issues under #34, label
+  `ready-for-agent` + `v1.x`), then build one at a time. Scope (owner): own playlists only; create, rename and
+  description, delete (asks twice), "Add to playlist…" from any track menu with a searchable picker, remove tracks,
+  drag to reorder (as the queue), **custom covers** (a path or an image dropped on the terminal, previewed, cropped
+  square, ≤ 256 KB JPEG). No folder management. The private routes are in `docs/research/2026-10-playlists-and-podcasts.md`
+  (Pathfinder `addToPlaylist` / `removeFromPlaylist` / `moveItemsInPlaylist` / `editablePlaylists`; spclient
+  `POST /playlist`, `/playlist/{id}/changes`, `/user/{username}/rootlist/changes`; covers via
+  `image-upload.spotify.com/v4/playlist` + `register-image`). Re-verify against the current web-player bundle (the
+  QueryRegistry caches its operation names in `~/.cache/singularity/pathfinder-queries.json`), and give each write
+  path one quiet, reverted live check on a scratch playlist the session creates (and deletes) itself.
+- Then batches 4–8 in order; each gets tickets just before it's built.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
-- **v1.x is planned** (DESIGN-TREE D29–D41, SPEC.md "v1.x", spec issue #34). Batch 1 (stats) ✅: #35, #36, #37. Visual demos judged (round 2): starfield,
-  marquee, glow kept and finished (#44). Owner test round 2 fixed (#38–#44). **Batch 2 tickets: #46 waveform seek bar, #47 mini-player, #48 mouse back/forward, #49 ♥ on every row, #50 album song into the queue.** Next: batch 2
-  (waveform seek bar, mini-player, mouse back/forward, ♥ on every row, album song into "Next in queue" (D42)).
-- Gap left on #11: mouse back/forward buttons (crossterm drops SGR buttons 8/9; needs our own small input layer next
-  to the SGR-Pixels code in `client/src/term.rs`).
-- Not done on #22: hearts on every track-list row (would need `CheckSaved` for whole playlists).
 
 ## Installed binaries
 
@@ -106,22 +108,16 @@ A new Client replaces an outdated Daemon by itself (and, since #25, stops one th
 
 ## Waiting on the owner
 
-- To test from round 1's fixes: Daemon replacement (#25), wheel (#26), Home by lines (#27), ◂ ▸ (#28), meters at low
-  volume (#29), lyrics at half width and a track without lyrics (#30; the Daemon log has a `lyrics for …` line per
-  lookup), fullscreen (#31: a rounder well, wider middle), dragging queued songs (#32), Cockpit / Terminal themes tinting covers and the hole (#33; `ui.tint_art = false` for real colours). Not yet reported on: setup/health, queue, artist/album pages, search, devices, and from the earlier session: like/follow (♡ in the player bar, `l`, menus, Follow, Save), media keys / KDE's
-  media widget / `playerctl` (KDE widget not verified by me: it needs the real bus), designs (Ctrl+K → Design / Theme,
-  `t`), Slots (`v`, ◂ ▸), "Save layout as…", keys.toml / config.toml live edits, vim preset.
-- Answered this session: keep the 10 fps unfocused slowdown (now `visuals.unfocused_fps`); keep the black hole on the
-  built-in graphics by default, with `visuals.gpu = "high-performance"` for the RX 7900 GRE (done in #20).
-- Answered for #23: all five recommendations (Play = 30 s or half, Connect devices included; backups: owned in full,
-  followed by name, ~1 req/s; keep 14 + monthly for a year; export to Downloads, delete asks twice; 26-week heatmap).
-- My own calls, open to the owner's veto: in Cockpit's short listening Pane two days share a cell (half-blocks), so
-  the weeks read as columns of squares; delete is confirmed by running it again within 10 s (as removing a playlist);
-  track notifications are off by default; the vim preset moves like to `f`;
-  every Design keeps a `home` Pane (Cockpit and Terminal differ a little from the prototype); the auto-written example
-  theme is `_example.toml` (files starting with `_` are skipped).
+- **The waveform (#46):** the owner "doesn't know what or where it is". It is the player bar's seek bar: heard stretches
+  turn into eighth-block bars (scaled per track), the rest stays a line; a song heard through shows whole next time.
+  Next session: explain it in one line, ask whether they see it, and offer to make it more visible (two rows tall, or
+  a Widget) in grilling format.
+- Owner calls still standing (open to veto): Cockpit's listening Pane packs two days per cell when short; delete asks
+  again within 10 s; track notifications off by default; vim preset moves like to `f`; `_example.toml` theme skipped.
 - Soloist's real update path (restart into a new build, resume over Connect) has only run against the stand-in; the
   first real one happens when Spotify publishes a build (Daemon log: "restarting Soloist into the new build").
+- Background noise the owner should know: Stremio's torrent server saturated their uplink once (music stalled);
+  #45 now says so in-app.
 
 ## Working rules (from CLAUDE.md, repeated because they matter)
 
@@ -142,18 +138,21 @@ A new Client replaces an outdated Daemon by itself (and, since #25, stops one th
 ## Prompt for the next session
 
 > You're continuing **Singularity**, a terminal Spotify client in Rust (ratatui) at `~/src/singularity`
-> (GitHub: `publicusr/singularity`, private). Start by reading `docs/HANDOFF.md`, then `CLAUDE.md`, `docs/SPEC.md`,
-> `GLOSSARY.md`, the ADRs in `docs/adr/`, and the end of the round log in `docs/DESIGN-TREE.md`. We're building v1 ticket
-> by ticket from the GitHub issues (`gh issue list -R publicusr/singularity --label ready-for-agent --state open`),
-> following Matt Pocock's flow (spec → tickets → implement), with the project's vocabulary.
+> (GitHub: `publicusr/singularity`, private). Read `docs/HANDOFF.md` first, then `CLAUDE.md`, `docs/SPEC.md` (v1 and
+> the "v1.x" part), `GLOSSARY.md`, the ADRs in `docs/adr/`, and the end of the round log in `docs/DESIGN-TREE.md`.
 >
-> All v1 tickets are closed. The owner is testing the installed build (`singularity` in `~/.cargo/bin`); fix the
-> bugs they report first, one at a time: reproduce in a test or the pty harness in `tools/pty/` (screenshots), fix,
-> `cargo test`, commit, push, reinstall both binaries (`cargo install --locked --path crates/daemon` and
-> `--path crates/client`), and keep `docs/` current (DESIGN-TREE round log, ROADMAP, HANDOFF). For new work (v1.x),
-> write tickets with the owner first. Never commit secrets or personal listening data (the owner's
-> `~/.local/share/singularity/listening.db` and `backups/` included); only kill processes you started; never start a
-> second real Daemon against the owner's Soloist; never test MPRIS on the owner's session bus. When a decision is
-> genuinely the owner's, ask in the grilling format (numbered questions, a ➡️ recommendation each, worded so "yes"
-> accepts). Keep messages to the owner concise; they test
-> the builds themselves and give feedback. If the owner reports bugs, fix those first.
+> v1 is done; v1.x is being built in batches (D29). Batches 1 (stats) and 2 (waveform, mini-player, ♥ rows, album song
+> into the queue) are done and owner-tested. **Next is batch 3, playlist editing**: first write its tickets under spec
+> issue #34 (scope and private API routes in HANDOFF "Then"), re-verify the routes against the current web-player
+> bundle, then build one ticket at a time: code + tests at the spec's seams, `cargo test --workspace`, verify the real
+> binaries in the pty harness (`tools/pty/`, screenshots), commit with `Closes #N`, push, reinstall both binaries
+> (`cargo install --locked --path crates/daemon` and `--path crates/client`), and keep `docs/` current (DESIGN-TREE
+> round log, HANDOFF, ROADMAP, GLOSSARY). Each write to Spotify gets one quiet, reverted live check on a scratch
+> playlist you create and delete yourself.
+>
+> Before that, ask the owner about the waveform (they couldn't find it; see HANDOFF "Waiting on the owner"). If the
+> owner reports bugs, fix those first. Product decisions go to the owner in the grilling format (numbered questions,
+> a ➡️ recommendation each, worded so "yes" accepts); facts you look up yourself. Never commit secrets or personal
+> listening data (`~/.local/share/singularity/listening.db`, `backups/`, `docs/screenshots/`); only kill processes you
+> started; never start a second real Daemon against the owner's Soloist; never test MPRIS on the owner's session bus.
+> Keep messages to the owner short; they test the builds themselves.

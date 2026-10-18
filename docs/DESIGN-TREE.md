@@ -64,6 +64,7 @@ so it cannot be settled by talking)
 | D42 | Album song into "Next in queue" | #32 | settled | Allowed one way (batch 2 polish): dropped among the queued songs it becomes a queued song there and leaves the album run; queued songs never go into the context. |
 | D43 | What every Design keeps | D18 | settled | Owner rule (round 2): every built-in Design has Panes for Home, the library, the queue and lyrics; the rest is its own. |
 | D44 | Where ◂ ▸ go | D6 | settled | All at the right end of a Pane's title; the main Pane's back/forward there too, as ← →. |
+| D45 | Mouse back/forward buttons (#48) | D34 | settled | Dropped (owner): it needed a vendored crossterm or our own input parser; ← → in the main Pane's title do the job. |
 
 ```mermaid
 flowchart LR
@@ -547,3 +548,9 @@ flowchart LR
   (codes 128/129) into a parse error and drops the event, and it reads the tty itself, so nothing can see them
   without (a) a vendored crossterm with a 3-line patch (`[patch.crates-io]`, ~12k lines in the repo, re-applied on
   upgrades) or (b) our own full input parser. Put to the owner with (a) recommended.
+- **Owner test round 3** (2026-10-18): #45 stream Pane works; #50 lifting an album song into the queue works on the
+  real account (the pending live check, done by the owner); ♥ on rows works, checked against the phone; the
+  mini-player works. #48 dropped (D45). Open: the owner couldn't find the waveform (#46): it lives in the player bar's
+  seek bar and only shows where a song has been heard while Singularity plays it; check next session whether it reads
+  as a waveform on real music (a 1-row eighth-block bar may look like a thick line) and whether to make it more visible
+  (taller, or show it in a Widget), with the owner.

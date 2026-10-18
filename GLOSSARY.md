@@ -86,6 +86,19 @@ The Daemon's private data under `$XDG_DATA_HOME/singularity/`: the listening log
 files, no network.
 _Avoid_: database, cache (caches can be thrown away; this can't)
 
+**Stats page**:
+A page in the main Pane that sums up the listening log for a calendar period (this week, month, year, all time): top
+artists, tracks and albums by minutes, minutes and plays, streaks, a 24-hour clock. A live "Wrapped".
+_Avoid_: dashboard, analytics, Wrapped (Spotify's yearly thing)
+
+**Mini-player**:
+What Singularity becomes in a terminal too small for any layout (under 50×14): title, controls and progress only.
+_Avoid_: compact mode, tiny mode
+
+**Waveform**:
+The seek bar's picture of the playing track's loudness over time, built up as it plays and kept once heard through.
+_Avoid_: scrubber, visualiser
+
 **Widget**:
 Any self-contained thing that can occupy a Pane: a visual, lyrics, album art, queue, stats.
 _Avoid_: module, applet, panel
