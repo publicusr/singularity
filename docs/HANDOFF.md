@@ -8,9 +8,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 
 - **Phase 0 (planning) ✅, Phase 1 (spikes) ✅.** ADRs 0001–0004.
 - **Phase 2/3 (v1 build) 🔄.** Spec issue **#1**, tickets on GitHub (`publicusr/singularity`, label `ready-for-agent`).
-  **Closed: #2–#16, #18, #19, #20, #21, #22, #24.**
-  **In progress: #17** idle takeover (WIP commit, see below). **Open: #23** listening log + backups.
-- Tests: **164 passing** (`cargo test`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
+  **Closed: #2–#22, #24.** **Open: #23** listening log + backups (the last v1 ticket).
+- Tests: **168 passing** (`cargo test`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
   live answers). Clippy: only minor style warnings, all in older code (setup.rs, connect.rs, probe example) or
   harmless (`type_complexity` on theme tables, `needless_range_loop` in a test).
 - The owner last tested after #8/#16. **Nothing since then has been tested by the owner** (see "Waiting on the owner").
@@ -25,7 +24,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `395c0ce` | #20 ✅ | Config files and keymap (`crates/config`, `client/src/keymap.rs`) |
 | `e470db1` | #18 ✅ | Five designs, palette variants, theme files (`design.rs`, `theme.rs`, `looks.rs`, `widgets.rs`) |
 | `043f960` | #19 ✅ | Slots, resize limits, saved layouts (`layouts.rs`) |
-| (last) | #17 🔄 | Idle takeover, WIP: code in, App-level tests and pty check still to do |
+| (last) | #17 ✅ | Idle takeover (`visual/idle.rs`), App tests, pty `idle-pixels`/`idle-cells` |
 
 ## What exists in `crates/`
 
@@ -34,7 +33,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `proto` | Versioned length-prefixed JSON protocol. Events that carry a list must be struct variants (`Devices { devices }`, `Saved { entries }`). `Health` has `engine_build` (the Soloist build date). |
 | `config` (`singularity-config`, new) | `config.toml` / `keys.toml` under `~/.config/singularity/`: written with comments on first run, `schema = 1` + migration chain (`CONFIG_MIGRATIONS`, `rename` keeps comments), `set` edits one value keeping the file, `Watched` notices saves (mtime+size, polled ~1 s), bad values → defaults + reported problems. Re-exports `toml_edit` (0.25, TOML 1.1). Sections: `[ui]` design/theme/transparent/layout, `[notifications]` track_change, `[visuals]` gpu/unfocused_fps, `[idle]` enabled/minutes. |
 | `daemon` (`singularityd`) | Hub + socket; `transport()` routes player commands (Engine, or Connect while another device plays). `soloist.rs` SoloistEngine (+ `keep_current` updater, `quiet_moment`, `Exit::Update`, resume after restart). `update.rs` CDN check/stage/verify/install. `mpris.rs` MPRIS player + notifications. `catalogue.rs` (+ `SetSaved`/`CheckSaved`, `CatCmd::Resume`; the fake Catalogue keeps a saved set). `connect.rs` (`resume` = generalised transfer). `tap.rs`, `lyrics.rs`, `secrets.rs`, `health.rs`, `library.rs`. `main.rs` follows config.toml live (`follow_config`). |
-| `client` (`singularity`) | Everything from before, plus: `saved.rs` (like/follow), `keymap.rs` (standard/vim presets, user bindings), `design.rs` (five Designs), `theme.rs` (built-in Themes + theme files), `looks.rs` (switching, `t`, pickers with live preview, `themes/` watched), `widgets.rs` (Now playing, levels, listening placeholder, rain, scope, top), `layouts.rs` (Slot groups, saved layouts), `visual/idle.rs` (#17 WIP). Layout `Size::Last`, subtree minimums. |
+| `client` (`singularity`) | Everything from before, plus: `saved.rs` (like/follow), `keymap.rs` (standard/vim presets, user bindings), `design.rs` (five Designs), `theme.rs` (built-in Themes + theme files), `looks.rs` (switching, `t`, pickers with live preview, `themes/` watched), `widgets.rs` (Now playing, levels, listening placeholder, rain, scope, top), `layouts.rs` (Slot groups, saved layouts), `visual/idle.rs` (idle takeover). Layout `Size::Last`, subtree minimums. |
 
 Dev tools: `cargo run -p singularityd --example probe -- <op> '<vars>' [--raw file]`, `--example connect_probe`.
 **pty harness: `tools/pty/`** (README there; recreate the venv). Scenarios added this session: `like`, `mpris` (real
@@ -46,27 +45,6 @@ Daemon never listens to the owner's Soloist), `SINGULARITY_DBUS=<address>|off` (
 off the session bus unless asked), plus the older `SINGULARITY_CPU`, `SINGULARITY_PIXEL`, `SINGULARITY_PIXEL_MOUSE`,
 `SINGULARITY_NO_KEYRING`, `SINGULARITY_SOCKET`. `SINGULARITY_NOTIFY` is gone (now `notifications.track_change`).
 
-## #17 idle takeover: where it stopped
-
-Done (committed as WIP, builds, all tests pass):
-- `visual/idle.rs`: `place` (break out from the hole's Pane over 4 s, then a Lissajous drift; no hole on screen → from
-  the top-right corner), `draw` (dims the body, `lens_cells` ported from the prototype, then the hole: kitty image
-  id 2 in the pixel tier, half-blocks where the disk is lit otherwise), `empty_well`. Unit tests for both.
-- `BlackHole::free_frame` (any centre, given shadow radius, no stars); `Frame.center` in the CPU tracer and GPU params
-  (the WGSL already had it); `blackhole::reach`.
-- App: `last_input`, `idle_since`, `idle_preview`, `hole_origin` (set by the well and the plain hole each frame);
-  `tick` starts the takeover after `idle.minutes`; `wake()` at the top of `key`, `pointer` and `paste` swallows the
-  waking input; `Action::ToggleIdle` (Shift+I, writes `idle.enabled`), `Action::IdlePreview` (palette). The well shows
-  "· the well is empty ·" while its hole is out. Help lists Shift+I. Config `[idle] enabled = true, minutes = 3`.
-
-To do:
-1. App-level tests (in `app.rs`'s test module, which can set `last_input` back): the waking key/click is not acted on
-   (e.g. `n` sends no `Next`, then a second `n` does); Shift+I writes `idle.enabled = false` and a restarted App
-   doesn't idle; the well reads "the well is empty" while idle.
-2. pty check: a scenario `idle` (palette → "Idle takeover: show it now", screenshots at 0.5 s / 5 s in the pixel tier
-   and the cell tier, then a key wakes it). Check the hole image sits under the lensed text (z=-1) and is removed on wake.
-3. README line, DESIGN-TREE entry → done, ROADMAP, then commit `Closes #17`.
-
 ## Then
 
 - **#23** local listening log + nightly library backups (SQLite under the XDG data dir, owner-only, export/delete; spec
@@ -74,6 +52,12 @@ To do:
 - Gap left on #11: mouse back/forward buttons (crossterm drops SGR buttons 8/9; needs our own small input layer next
   to the SGR-Pixels code in `client/src/term.rs`).
 - Not done on #22: hearts on every track-list row (would need `CheckSaved` for whole playlists).
+
+## Installed binaries
+
+`singularity` and `singularityd` are installed in `~/.cargo/bin` (on the owner's PATH) with
+`cargo install --locked --path crates/daemon` and `--path crates/client`. Reinstall both after each closed ticket so the
+owner tests the latest; the Client finds `singularityd` next to itself.
 
 ## Local state on the owner's machine (not in git)
 

@@ -1159,6 +1159,21 @@ mod tests {
     }
 
     #[test]
+    fn the_well_is_empty_while_its_hole_is_out() {
+        let mut app = App::new(None);
+        assert!(!render(&mut app, 160, 48).contains("the well is empty"));
+        app.run(crate::app::Action::IdlePreview);
+        app.tick();
+        // (at first the hole still sits over its well; once it has drifted off, the message reads)
+        app.idle_for(10.0);
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("· the well is empty ·"), "{s}");
+        app.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.tick();
+        assert!(!render(&mut app, 160, 48).contains("the well is empty"));
+    }
+
+    #[test]
     fn bending_never_moves_text() {
         // every letter on screen sits where it would without the hole
         let mut app = App::new(None);

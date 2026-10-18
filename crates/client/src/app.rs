@@ -611,6 +611,12 @@ impl App {
         self.idle_since.map(|t| t.elapsed().as_secs_f32())
     }
 
+    /// Tests: the hole has been out for `secs`.
+    #[cfg(test)]
+    pub(crate) fn idle_for(&mut self, secs: f32) {
+        self.idle_since = Some(Instant::now() - Duration::from_secs_f32(secs));
+    }
+
     /// Input arrived: the idle clock starts over. True if the UI was idle (that input is then swallowed).
     fn wake(&mut self) -> bool {
         self.last_input = Instant::now();
@@ -2051,5 +2057,57 @@ mod tests {
         std::fs::write(&path, after.replace("gpu = \"low-power\"", "gpu = \"high-performance\"")).unwrap();
         saved(&mut app);
         assert!(app.hole.high_performance);
+    }
+
+    /// The UI's last input was long enough ago for the takeover, and a frame has passed.
+    fn idled(app: &mut App) {
+        app.last_input = Instant::now() - Duration::from_secs_f32(app.config.idle.minutes * 60.0 + 1.0);
+        app.tick();
+    }
+
+    #[test]
+    fn the_key_that_wakes_the_idle_ui_is_not_acted_on() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut app = App::new(Some(tx));
+        app.link = Link::Connected { version: "t".into() };
+        idled(&mut app);
+        assert!(app.idle_secs().is_some(), "idle after idle.minutes");
+        press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(app.idle_secs().is_none() && rx.try_recv().is_err(), "the first n only wakes");
+        press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(matches!(rx.try_recv(), Ok(Command::Next)), "the second n skips");
+        // a click wakes it the same way, and does nothing else
+        idled(&mut app);
+        app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: 3, row: 3, modifiers: KeyModifiers::NONE });
+        assert!(app.idle_secs().is_none() && rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn input_keeps_the_ui_awake_and_the_preview_shows_it_at_once() {
+        let mut app = App::new(None);
+        app.tick();
+        assert!(app.idle_secs().is_none());
+        app.run(Action::IdlePreview);
+        app.tick();
+        assert!(app.idle_secs().is_some(), "the palette's preview doesn't wait");
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        app.tick();
+        assert!(app.idle_secs().is_none(), "and a key ends it");
+    }
+
+    #[test]
+    fn shift_i_turns_the_takeover_off_in_config_toml() {
+        let (mut app, dir) = with_files();
+        press(&mut app, KeyCode::Char('I'), KeyModifiers::SHIFT);
+        assert!(!app.config.idle.enabled);
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(text.contains("enabled = false") && text.contains("# "), "kept its comments:\n{text}");
+        idled(&mut app);
+        assert!(app.idle_secs().is_none());
+        // a restarted App reads it back
+        let mut again = App::new(None);
+        again.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
+        idled(&mut again);
+        assert!(!again.config.idle.enabled && again.idle_secs().is_none());
     }
 }

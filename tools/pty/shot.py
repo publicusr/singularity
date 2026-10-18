@@ -70,7 +70,7 @@ class Term:
     def apc(self, body, before):
         ctrl, _, payload = body.partition(";")
         kv = dict(p.split("=", 1) for p in ctrl.split(",") if "=" in p)
-        self.apc_log.append(kv.get("a", "") + ":" + ",".join(f"{k}={v}" for k, v in kv.items() if k in "ipcr"))
+        self.apc_log.append(kv.get("a", "") + ":" + ",".join(f"{k}={v}" for k, v in kv.items() if k in "ipcrz"))
         a = kv.get("a")
         if a in ("t", "T") or (a is None and self.upload):
             if a in ("t", "T"):
@@ -304,6 +304,24 @@ def config(t, out, env):
     t.send(b"\x1b", 0.3); t.send(b"\x1b", 0.3); t.send(b"q", 0.5)
 
 
+def idle(t, out):
+    """#17: the palette's preview, at 0.5 s (breaking out) and 5 s (drifting); a key wakes it and is swallowed."""
+    t.send(b" ", 1.5)  # play, so the disk and the meters move
+    t.apc_log.clear()
+    t.send(b"\x0b", 0.3); t.send(b"show it now", 0.3); t.send(b"\r", 0.5)
+    t.shot(f"{out}/0-half-second.png")
+    t.pump(4.5)
+    t.shot(f"{out}/1-five-seconds.png")
+    # (Visual id n goes up as 2n / 2n+1, double-buffered: the well is 2/3, the free hole 4/5)
+    free = [l for l in t.apc_log if l.startswith("T:") and l.split("i=")[1].split(",")[0] in ("4", "5")]
+    print("apc kinds:", sorted(set(l.split(":")[0] + ":" + ",".join(p for p in l.split(":", 1)[1].split(",") if p[:1] in "iz") for l in t.apc_log)))
+    print(f"free-hole frames: {len(free)}; first {free[:1]}; well empty: {t.find('the well is empty') is not None}")
+    t.send(b" ", 0.6)  # wakes only: the track keeps playing
+    t.shot(f"{out}/2-awake.png")
+    print(f"after wake: placed {sorted(t.placed)} (no 4/5), well empty: {t.find('the well is empty') is not None}")
+    t.send(b"q", 0.5)
+
+
 def designs(t, out):
     """#18: each design through the picker (live preview), a track playing; Cockpit's palettes with t."""
     t.pump(1.0)
@@ -374,6 +392,8 @@ def main():
     if scenario == "pixel":
         env["SINGULARITY_PIXEL_MOUSE"] = "1"
     cat = ["--no-catalogue"]
+    if scenario.startswith("idle"):
+        env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
     if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts"):
@@ -398,6 +418,8 @@ def main():
             return like(t, out)
         if scenario == "mpris":
             return mpris(t, out, env)
+        if scenario.startswith("idle"):
+            return idle(t, out)
         if scenario == "config":
             return config(t, out, env)
         if scenario == "designs":
