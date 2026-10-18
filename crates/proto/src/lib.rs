@@ -138,6 +138,9 @@ pub enum Command {
     },
     /// Take rows (by their uid) out of one of your playlists; answered by `Event::RemovedFromPlaylist`.
     RemoveFromPlaylist { playlist: String, uids: Vec<String> },
+    /// A new cover for one of your playlists (#56): a square JPEG of at most 256 KB, base64; None puts back Spotify's
+    /// mosaic. Answered by `Event::PlaylistCoverSet` (and a fresh `Event::Library`).
+    SetPlaylistCover { playlist: String, jpeg: Option<String> },
     /// Move rows of one of your playlists (#55): to just before the row `before`, else just after `after`.
     /// Answered by `Event::MovedInPlaylist`.
     MoveInPlaylist {
@@ -224,6 +227,8 @@ pub enum Event {
     AddedToPlaylist { playlist: String, name: String, uris: Vec<String>, outcome: AddOutcome },
     /// The answer to `RemoveFromPlaylist`: gone (`ok`), or Spotify refused (the Client that asked puts them back).
     RemovedFromPlaylist { playlist: String, uids: Vec<String>, ok: bool },
+    /// The answer to `SetPlaylistCover`.
+    PlaylistCoverSet { playlist: String, ok: bool },
     /// The answer to `MoveInPlaylist` (the Client that asked moves them back if not `ok`).
     MovedInPlaylist { playlist: String, uids: Vec<String>, ok: bool },
     #[serde(other)]

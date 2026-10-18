@@ -365,6 +365,9 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
             CatEvent::Added { playlist, name, uris, outcome } => {
                 let _ = hub.events.send(Event::AddedToPlaylist { playlist, name, uris, outcome });
             }
+            CatEvent::CoverSet { playlist, ok } => {
+                let _ = hub.events.send(Event::PlaylistCoverSet { playlist, ok });
+            }
             CatEvent::Moved { playlist, uids, ok } => {
                 let _ = hub.events.send(Event::MovedInPlaylist { playlist, uids, ok });
             }
@@ -568,7 +571,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                     let s = hub.playback.lock().await.clone();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;
                 }
-                ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. } | Command::PlayNext { .. } | Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::MoveInQueue { .. } | Command::GetArtist { .. } | Command::Search { .. } | Command::GetDevices | Command::Transfer { .. } | Command::SetSaved { .. } | Command::CheckSaved { .. } | Command::CreatePlaylist { .. } | Command::DeletePlaylist { .. } | Command::EditPlaylist { .. } | Command::AddToPlaylist { .. } | Command::RemoveFromPlaylist { .. } | Command::MoveInPlaylist { .. })) => match &hub.catalogue {
+                ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. } | Command::PlayNext { .. } | Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::MoveInQueue { .. } | Command::GetArtist { .. } | Command::Search { .. } | Command::GetDevices | Command::Transfer { .. } | Command::SetSaved { .. } | Command::CheckSaved { .. } | Command::CreatePlaylist { .. } | Command::DeletePlaylist { .. } | Command::EditPlaylist { .. } | Command::AddToPlaylist { .. } | Command::RemoveFromPlaylist { .. } | Command::MoveInPlaylist { .. } | Command::SetPlaylistCover { .. })) => match &hub.catalogue {
                     Some(tx) => {
                         let c = match cmd {
                             Command::Login => CatCmd::Login,
@@ -590,6 +593,13 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                             Command::AddToPlaylist { playlist, name, uris, anyway } => CatCmd::AddToPlaylist { playlist, name, uris, anyway },
                             Command::RemoveFromPlaylist { playlist, uids } => CatCmd::RemoveFromPlaylist { playlist, uids },
                             Command::MoveInPlaylist { playlist, uids, before, after } => CatCmd::MoveInPlaylist { playlist, uids, before, after },
+                            Command::SetPlaylistCover { playlist, jpeg } => match jpeg.map(|j| crate::playlists::base64_decode(&j)) {
+                                Some(None) => {
+                                    let _ = out_tx.send(DaemonMsg::Event(Event::Error { message: "That cover wasn't readable".into() })).await;
+                                    continue;
+                                }
+                                jpeg => CatCmd::SetCover { playlist, jpeg: jpeg.flatten() },
+                            },
                             Command::DeletePlaylist { uri } => CatCmd::DeletePlaylist(uri),
                             Command::EditPlaylist { uri, name, description } => CatCmd::EditPlaylist { uri, name, description },
                             _ => CatCmd::Home,

@@ -88,7 +88,12 @@ impl App {
     /// Menu entries for a playlist: Edit details and Delete on your own.
     pub fn playlist_entries(&self, uri: &str) -> Vec<(String, MenuAct)> {
         match self.own_playlist(uri) {
-            Some(_) => vec![("Edit details…".into(), MenuAct::EditPlaylist), ("Delete playlist…".into(), MenuAct::DeletePlaylist)],
+            Some(_) => vec![
+                ("Edit details…".into(), MenuAct::EditPlaylist),
+                ("Change cover…".into(), MenuAct::ChangeCover),
+                ("Remove cover".into(), MenuAct::RemoveCover),
+                ("Delete playlist…".into(), MenuAct::DeletePlaylist),
+            ],
             None => vec![],
         }
     }
@@ -166,6 +171,13 @@ impl App {
         match self.this_playlist() {
             Some(uri) => self.delete_playlist(&uri),
             None => self.say("Open or select one of your playlists to delete it"),
+        }
+    }
+
+    pub fn cover_this_playlist(&mut self) {
+        match self.this_playlist() {
+            Some(uri) => self.ask_cover(&uri),
+            None => self.say("Open or select one of your playlists to change its cover"),
         }
     }
 

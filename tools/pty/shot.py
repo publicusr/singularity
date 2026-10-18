@@ -685,6 +685,37 @@ def playlist_move(t, out):
     t.send(b"q", 0.5)
 
 
+def playlist_cover(t, out):
+    """#56: Change cover… on your own playlist: a picture dropped (a pasted file:// path), its square preview, the upload;
+    then Remove cover."""
+    import os
+    from PIL import Image
+    pic = os.path.join(os.path.abspath(out), "my cover.png")
+    w, h = 900, 600
+    im = Image.new("RGB", (w, h))
+    im.putdata([(255, 0, 0) if x < 150 else (x * 255 // w, y * 255 // h, 160) for y in range(h) for x in range(w)])
+    im.save(pic)
+    t.pump(1.0)
+    x, y = t.find("Fake Mixtape")
+    mouse(t, 0, x + 1, y); mouse(t, 0, x + 1, y, release=True, wait=1.0)
+    mouse(t, 2, x + 1, y, wait=0.4)
+    mx, my = t.find("Change cover")
+    mouse(t, 0, mx + 1, my); mouse(t, 0, mx + 1, my, release=True, wait=0.4)
+    t.shot(f"{out}/0-form.png")
+    uri = "file://" + pic.replace(" ", "%20")
+    t.send(b"\x1b[200~" + uri.encode() + b"\x1b[201~", 1.0)  # what a terminal sends for a dropped file
+    t.shot(f"{out}/1-preview.png")
+    print("preview:", [l.strip()[-50:] for l in t.screen.display if "KB JPEG" in l or "No file" in l or "Not a picture" in l][:1])
+    t.send(b"\r", 1.0)
+    t.shot(f"{out}/2-uploaded.png")
+    print("upload:", [l.strip()[-50:] for l in t.screen.display if "Uploading" in l or "Couldn't" in l][:1])
+    mouse(t, 2, x + 1, y, wait=0.4)
+    mx, my = t.find("Remove cover")
+    mouse(t, 0, mx + 1, my); mouse(t, 0, mx + 1, my, release=True, wait=0.8)
+    print("remove:", [l.strip()[-50:] for l in t.screen.display if "Putting back" in l or "Couldn't" in l][:1])
+    t.send(b"q", 0.5)
+
+
 def arrows(t, out):
     """The owner's report: cycling a narrow Pane onto a long title hid its ◂ ▸. Walk two Panes through every Widget."""
     t.pump(1.0)
@@ -854,7 +885,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "ambient", "popup") else "0"
@@ -911,6 +942,8 @@ def main():
             return queue_lift(t, out)
         if scenario == "playlists":
             return playlists(t, out)
+        if scenario == "playlist-cover":
+            return playlist_cover(t, out)
         if scenario == "playlist-move":
             return playlist_move(t, out)
         if scenario == "playlist-remove":

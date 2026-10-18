@@ -546,3 +546,40 @@ async fn a_row_moves_before_another_and_a_refusal_is_told() {
     proto::write_msg(&mut a, &mv("fail", None, None)).await.unwrap();
     assert!(!answer(&mut a).await);
 }
+
+#[tokio::test]
+async fn a_cover_is_set_put_back_and_refused_when_it_isnt_a_jpeg() {
+    use singularity_proto::{Command, HomeFeed};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cv.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
+    let mut a = connect(&path).await;
+    // the answer, and whether an error came first
+    async fn answer(s: &mut UnixStream) -> (bool, bool) {
+        let mut err = false;
+        loop {
+            match proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap() {
+                DaemonMsg::Event(Event::Error { .. }) => err = true,
+                DaemonMsg::Event(Event::PlaylistCoverSet { ok, .. }) => return (ok, err),
+                _ => {}
+            }
+        }
+    }
+    let set = |jpeg: Option<&str>| ClientMsg::Command(Command::SetPlaylistCover { playlist: "spotify:playlist:fakemine".into(), jpeg: jpeg.map(String::from) });
+    // "/9j/" is FF D8 FF: a JPEG's start
+    proto::write_msg(&mut a, &set(Some("/9j/4AAQ"))).await.unwrap();
+    assert_eq!(answer(&mut a).await, (true, false));
+    proto::write_msg(&mut a, &set(None)).await.unwrap();
+    assert_eq!(answer(&mut a).await, (true, false), "the mosaic back");
+    proto::write_msg(&mut a, &set(Some("iVBORw0K"))).await.unwrap();
+    assert_eq!(answer(&mut a).await, (false, true), "a PNG isn't taken");
+    // unreadable base64: told at once, nothing sent on
+    proto::write_msg(&mut a, &set(Some("not base64!"))).await.unwrap();
+    loop {
+        if let DaemonMsg::Event(Event::Error { message }) = proto::read_msg::<_, DaemonMsg>(&mut a).await.unwrap().unwrap() {
+            assert!(message.contains("readable"));
+            break;
+        }
+    }
+}

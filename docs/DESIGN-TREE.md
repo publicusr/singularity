@@ -616,3 +616,14 @@ flowchart LR
   (only clicks): the wheel code didn't count it as a popup, so it scrolled the list behind. Fixed: while the picker is
   open the wheel moves its highlight wherever the pointer is (Shift: ten); the details form and naming popup swallow
   it. Unit test + pty `playlist-add` wheel step.
+- **#56 Custom covers ✅** (2026-10-18): "Change cover…" and "Remove cover" on your own playlists (sidebar menu;
+  Ctrl+K "change cover"). Type a path or drop a file on the terminal (it arrives as a paste: quotes, `file://` with
+  %-escapes, `\ ` and `~/` are undone) and it previews at once: cropped square from the centre, at most 640 px, JPEG
+  quality stepped 90→40 (then 480/320 px) until ≤ 256 KB (`client/src/cover.rs`, the Client does the image work and
+  sends the JPEG as base64; the Daemon decodes it with a small decoder of its own, no new dependency). The preview is
+  half-blocks inside the popup (pixel images are kept out of overlays). Enter uploads; the cover shows at once
+  wherever covers are drawn and goes back if Spotify refuses. Daemon: upload (`image-upload…/v4/playlist`, only
+  authorization + `Content-Type: image/jpeg`, as the web player's `withoutGlobalHeaders`) → `register-image` →
+  changes `{values:{picture}}`; removal `noValue:[LIST_PICTURE]`. Live check (`playlist_probe --cover`): token in
+  ~2.5 s, a 28-char picture id, the new cover URL at once on both the page and the library (`image-cdn-fa`), removal
+  back to none; scratch deleted. Batch 3 done.

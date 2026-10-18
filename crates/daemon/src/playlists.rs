@@ -48,8 +48,68 @@ pub fn details(name: &str, description: &str) -> Value {
 
 /// `/playlist/{id}/changes` for `spotify:playlist:{id}`.
 pub fn changes_path(uri: &str) -> Option<String> {
+    playlist_path(uri, "changes")
+}
+
+/// `/playlist/{id}/{what}` for `spotify:playlist:{id}` (ids are base62: anything else is refused).
+pub fn playlist_path(uri: &str, what: &str) -> Option<String> {
     let id = uri.strip_prefix("spotify:playlist:")?;
-    id.bytes().all(|b| b.is_ascii_alphanumeric()).then(|| format!("/playlist/{id}/changes"))
+    (!id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric())).then(|| format!("/playlist/{id}/{what}"))
+}
+
+/// The cover upload host (#56): the JPEG goes here first and comes back as an upload token.
+pub const UPLOAD: &str = "https://image-upload.spotify.com/v4/playlist";
+
+/// `POST /playlist/{id}/changes`: the registered picture as the cover, or (None) Spotify's mosaic back.
+pub fn picture(picture: Option<&str>) -> Value {
+    let attrs = match picture {
+        Some(p) => json!({ "values": { "picture": p } }),
+        None => json!({ "values": {}, "noValue": ["LIST_PICTURE"] }),
+    };
+    changes(vec![json!({ "kind": "UPDATE_LIST_ATTRIBUTES", "updateListAttributes": { "newAttributes": attrs } })])
+}
+
+/// Standard base64 (with or without padding); None if it isn't.
+pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let bytes: Vec<u8> = s.trim_end_matches('=').bytes().map(val).collect::<Option<_>>()?;
+    if bytes.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
+    for chunk in bytes.chunks(4) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, &b)| n | (b as u32) << (18 - 6 * i));
+        out.extend(n.to_be_bytes()[1..chunk.len()].iter());
+    }
+    Some(out)
+}
+
+/// Send the JPEG to the upload host, once; its upload token.
+pub async fn upload(session: &Session, jpeg: Vec<u8>) -> anyhow::Result<String> {
+    let token = session.login5().auth_token().await?;
+    // as the web player does: none of the usual headers, just who and what
+    let resp = reqwest::Client::new()
+        .post(UPLOAD)
+        .header("authorization", format!("{} {}", token.token_type, token.access_token))
+        .header("content-type", "image/jpeg")
+        .body(jpeg)
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        tracing::debug!("image upload: {status}: {}", text.chars().take(300).collect::<String>());
+        anyhow::bail!("Spotify said {status}");
+    }
+    let v: Value = serde_json::from_str(&text)?;
+    v["uploadToken"].as_str().map(String::from).ok_or_else(|| anyhow::anyhow!("no upload token"))
 }
 
 /// `addToPlaylist` (Pathfinder mutation): `uris` at the end of `playlist`.
@@ -168,6 +228,30 @@ mod tests {
         assert_eq!(rows, vec!["b", "c", "a", "d"]);
         apply_move(&mut rows, |r| Some(*r), &["b".into()], None, Some("d"));
         assert_eq!(rows, vec!["c", "a", "d", "b"]);
+    }
+
+    #[test]
+    fn covers_are_set_or_put_back_and_base64_decodes() {
+        assert_eq!(picture(Some("YWJj"))["deltas"][0]["ops"][0]["updateListAttributes"]["newAttributes"], json!({"values":{"picture":"YWJj"}}));
+        assert_eq!(picture(None)["deltas"][0]["ops"][0]["updateListAttributes"]["newAttributes"], json!({"values":{},"noValue":["LIST_PICTURE"]}));
+        assert_eq!(playlist_path("spotify:playlist:abc", "register-image"), Some("/playlist/abc/register-image".into()));
+        assert_eq!(playlist_path("spotify:playlist:", "x"), None);
+        for s in ["", "a", "ab", "abc", "abcd", "\u{0}\u{ff}\u{80} binary"] {
+            let enc = {
+                const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                let b = s.as_bytes();
+                let mut o = String::new();
+                for c in b.chunks(3) {
+                    let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+                    for i in 0..4 {
+                        o.push(if i <= c.len() { T[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+                    }
+                }
+                o
+            };
+            assert_eq!(base64_decode(&enc).as_deref(), Some(s.as_bytes()), "{enc}");
+        }
+        assert_eq!(base64_decode("a?b="), None);
     }
 
     #[test]

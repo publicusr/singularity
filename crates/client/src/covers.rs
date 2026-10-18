@@ -55,7 +55,6 @@ impl Covers {
         Covers { mem: HashMap::new(), scaled: HashMap::new(), requests: Some(req_tx), done: Some(done_rx), tick: 0 }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn insert(&mut self, url: &str, img: RgbImage) {
         self.mem.insert(url.into(), Entry::Ready(Arc::new(img), self.tick));
     }

@@ -39,7 +39,10 @@ Live (2026-10-18): a description written as `probe & <b>words</b>` reads back fr
 `uris` = the songs gives each matching playlist's `curates` (true once it has them). `fetchPlaylist` rows carry `uid`,
 distinct per copy of a song; `removeFromPlaylist {playlistUri, uids}` answers `{data:{removeItemsFromPlaylist:…}}`
 and takes only those rows. `moveItemsInPlaylist {playlistUri, uids, newPosition:{moveType:BEFORE_UID|AFTER_UID,
-fromUid}}` answers `{data:{moveItemsInPlaylist:…}}`; both anchors verified live.
+fromUid}}` answers `{data:{moveItemsInPlaylist:…}}`; both anchors verified live. Covers: the upload takes the bare
+JPEG with just `authorization` and `Content-Type: image/jpeg` (→ `{uploadToken}`, ~2.5 s); `register-image` →
+`{picture}` (a 28-char base64 id) that goes straight into `values.picture`; the new `image-cdn-fa.spotifycdn.com`
+URL shows at once in `fetchPlaylist` and `libraryV3`; `noValue:[LIST_PICTURE]` takes it away.
 
 All playlist routes above are still there. Details read from the bundle:
 

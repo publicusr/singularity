@@ -6,6 +6,7 @@
 //!     cargo run -p singularityd --example playlist_probe -- --add
 //!     cargo run -p singularityd --example playlist_probe -- --remove
 //!     cargo run -p singularityd --example playlist_probe -- --move
+//!     cargo run -p singularityd --example playlist_probe -- --cover some.jpg
 //!
 //! Spotify's "delete" takes the playlist out of the library (as the web player does); the emptied playlist stays
 //! behind on Spotify's side, unlisted.
@@ -51,6 +52,17 @@ async fn row_uids(session: &Session, registry: &mut QueryRegistry, uri: &str) ->
     let (name, vars) = singularityd::library::tracks_query(uri, 0).unwrap();
     let (rows, _) = singularityd::library::parse_tracks(uri, &op(session, registry, name, vars).await?);
     Ok(rows.into_iter().filter_map(|r| r.uid).collect())
+}
+
+/// The cover the playlist's page shows, and the library's for it.
+async fn covers_of(session: &Session, registry: &mut QueryRegistry, uri: &str) -> anyhow::Result<(Option<String>, Option<String>)> {
+    let (name, vars) = singularityd::library::tracks_query(uri, 0).unwrap();
+    let page = singularityd::library::parse_header(uri, &op(session, registry, name, vars).await?).and_then(|h| h.cover_url);
+    let mut vars = singularityd::library::library_vars(0, None);
+    vars["textFilter"] = Value::from(SCRATCH);
+    let v = op(session, registry, "libraryV3", vars).await?;
+    let lib = singularityd::library::parse_library(&v, 0, &session.username()).items.into_iter().find(|i| i.uri == uri).and_then(|i| i.image_url);
+    Ok((page, lib))
 }
 
 /// A scratch playlist in the library; its URI.
@@ -188,7 +200,34 @@ async fn main() -> anyhow::Result<()> {
             println!("after delete, in the library: {there}");
             res?;
         }
-        _ => anyhow::bail!("modes: --create-delete, --details, --add, --remove, --move"),
+        "--cover" => {
+            let jpeg = std::fs::read(std::env::args().nth(2).ok_or_else(|| anyhow::anyhow!("--cover <file.jpg>"))?)?;
+            let uri = scratch(&session, &root).await?;
+            let checked = async {
+                let host = |u: &Option<String>| u.as_ref().map(|u| u.split('/').take(3).collect::<Vec<_>>().join("/"));
+                let (p0, l0) = covers_of(&session, &mut registry, &uri).await?;
+                println!("before: page cover {:?}, library cover {:?}", host(&p0), host(&l0));
+                let t = std::time::Instant::now();
+                let token = playlists::upload(&session, jpeg).await?;
+                println!("upload: a token came back ({:?})", t.elapsed());
+                let reg = playlists::post(&session, &playlists::playlist_path(&uri, "register-image").unwrap(), &serde_json::json!({ "uploadToken": token })).await?;
+                let pic = reg["picture"].as_str().ok_or_else(|| anyhow::anyhow!("no picture: keys {:?}", reg.as_object().map(|o| o.keys().collect::<Vec<_>>())))?.to_string();
+                println!("register-image: picture is a string of {} chars", pic.len());
+                playlists::post(&session, &playlists::changes_path(&uri).unwrap(), &playlists::picture(Some(&pic))).await?;
+                let (p1, l1) = covers_of(&session, &mut registry, &uri).await?;
+                println!("set: page cover {:?} (changed {}), library cover {:?} (changed {}), same url both {}", host(&p1), p1 != p0, host(&l1), l1 != l0, p1 == l1);
+                playlists::post(&session, &playlists::changes_path(&uri).unwrap(), &playlists::picture(None)).await?;
+                let (p2, l2) = covers_of(&session, &mut registry, &uri).await?;
+                println!("removed: page cover back as before {}, library {}", p2 == p0, l2 == l0);
+                anyhow::Ok(())
+            };
+            let res = checked.await;
+            playlists::post(&session, &root, &playlists::rootlist_remove(&uri)).await?;
+            let (there, _) = listed(&session, &mut registry, &uri).await?;
+            println!("after delete, in the library: {there}");
+            res?;
+        }
+        _ => anyhow::bail!("modes: --create-delete, --details, --add, --remove, --move, --cover <jpg>"),
     }
     Ok(())
 }

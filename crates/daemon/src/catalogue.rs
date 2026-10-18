@@ -57,6 +57,8 @@ pub enum CatCmd {
     AddToPlaylist { playlist: String, name: String, uris: Vec<String>, anyway: bool },
     /// rows out of one of your playlists, by uid (#54)
     RemoveFromPlaylist { playlist: String, uids: Vec<String> },
+    /// a new cover (a JPEG) for one of your playlists, or None for Spotify's mosaic (#56)
+    SetCover { playlist: String, jpeg: Option<Vec<u8>> },
     /// rows of one of your playlists to a new place (#55)
     MoveInPlaylist { playlist: String, uids: Vec<String>, before: Option<String>, after: Option<String> },
     /// one of your playlists out of the library (#51)
@@ -95,6 +97,8 @@ pub enum CatEvent {
     Added { playlist: String, name: String, uris: Vec<String>, outcome: singularity_proto::AddOutcome },
     /// rows taken out of a playlist, or refused
     Removed { playlist: String, uids: Vec<String>, ok: bool },
+    /// a cover set (or put back), or refused
+    CoverSet { playlist: String, ok: bool },
     /// rows moved, or refused
     Moved { playlist: String, uids: Vec<String>, ok: bool },
     Error(String),
@@ -191,6 +195,11 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
             CatCmd::AddToPlaylist { playlist, name, uris, anyway } => st.add_to_playlist(playlist, name, uris, anyway).await,
             CatCmd::RemoveFromPlaylist { playlist, uids } => st.remove_from_playlist(playlist, uids).await,
             CatCmd::MoveInPlaylist { playlist, uids, before, after } => st.move_in_playlist(playlist, uids, before, after).await,
+            CatCmd::SetCover { playlist, jpeg } => {
+                if st.set_cover(playlist, jpeg).await {
+                    let _ = self_tx.send(CatCmd::Library).await;
+                }
+            }
             CatCmd::DeletePlaylist(uri) => {
                 st.delete_playlist(uri).await;
                 let _ = self_tx.send(CatCmd::Library).await;
@@ -315,6 +324,17 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                         ev.push(CatEvent::Error("Couldn't remove it from the playlist (fake failure)".into()));
                     }
                     ev.push(CatEvent::Removed { playlist, uids, ok });
+                    ev
+                }
+                // others' playlists, and anything that isn't a JPEG, are refused
+                CatCmd::SetCover { playlist, jpeg } => {
+                    let ok = lib.items.iter().any(|i| i.uri == playlist && i.own) && jpeg.as_ref().is_none_or(|j| j.starts_with(&[0xFF, 0xD8]));
+                    let mut ev = vec![];
+                    if !ok {
+                        ev.push(CatEvent::Error("Couldn't change the cover (fake failure)".into()));
+                    }
+                    ev.push(CatEvent::CoverSet { playlist, ok });
+                    ev.push(CatEvent::Library(lib.clone()));
                     ev
                 }
                 CatCmd::MoveInPlaylist { playlist, uids, before, after } => {
@@ -900,6 +920,36 @@ impl State {
             }
         };
         let _ = self.ev.send(CatEvent::Added { playlist, name, uris, outcome }).await;
+    }
+
+    /// Upload, register and set a cover (or put the mosaic back). True if Spotify took it.
+    async fn set_cover(&mut self, playlist: String, jpeg: Option<Vec<u8>>) -> bool {
+        let Some(session) = self.session().await else { return false };
+        let set = async {
+            let changes = crate::playlists::changes_path(&playlist).ok_or_else(|| anyhow::anyhow!("not a playlist"))?;
+            let picture = match jpeg {
+                Some(jpeg) => {
+                    let token = crate::playlists::upload(&session, jpeg).await?;
+                    let register = crate::playlists::playlist_path(&playlist, "register-image").unwrap();
+                    let v = crate::playlists::post(&session, &register, &json!({ "uploadToken": token })).await?;
+                    Some(v["picture"].as_str().ok_or_else(|| anyhow::anyhow!("no picture from the registration"))?.to_string())
+                }
+                None => None,
+            };
+            crate::playlists::post(&session, &changes, &crate::playlists::picture(picture.as_deref())).await
+        };
+        let ok = match set.await {
+            Ok(_) => {
+                self.tracks.remove(&playlist);
+                true
+            }
+            Err(e) => {
+                let _ = self.ev.send(CatEvent::Error(format!("Couldn't change the cover: {e}"))).await;
+                false
+            }
+        };
+        let _ = self.ev.send(CatEvent::CoverSet { playlist, ok }).await;
+        ok
     }
 
     async fn move_in_playlist(&mut self, playlist: String, uids: Vec<String>, before: Option<String>, after: Option<String>) {

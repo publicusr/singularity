@@ -49,6 +49,7 @@ pub enum Action {
     EditPlaylist,
     DeletePlaylist,
     AddPlayingToPlaylist,
+    ChangeCover,
     ToggleIdle,
     IdlePreview,
     ToggleNotifications,
@@ -81,7 +82,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 49] = [
+    pub const ALL: [Action; 50] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -102,6 +103,7 @@ impl Action {
         Action::EditPlaylist,
         Action::DeletePlaylist,
         Action::AddPlayingToPlaylist,
+        Action::ChangeCover,
         Action::ToggleIdle,
         Action::IdlePreview,
         Action::ToggleNotifications,
@@ -154,6 +156,7 @@ impl Action {
             Action::EditPlaylist => "Edit this playlist's name and description (your own)…",
             Action::DeletePlaylist => "Delete this playlist (your own; asks twice)…",
             Action::AddPlayingToPlaylist => "Add the playing song to a playlist…",
+            Action::ChangeCover => "Change this playlist's cover (your own)…",
             Action::ToggleIdle => "Idle takeover on / off (the hole drifts over the screen)",
             Action::IdlePreview => "Idle takeover: show it now",
             Action::ToggleNotifications => "Track-change notifications on / off",
@@ -208,6 +211,7 @@ impl Action {
             Action::EditPlaylist => "edit_playlist",
             Action::DeletePlaylist => "delete_playlist",
             Action::AddPlayingToPlaylist => "add_to_playlist",
+            Action::ChangeCover => "change_cover",
             Action::ToggleIdle => "idle",
             Action::IdlePreview => "idle_preview",
             Action::ToggleNotifications => "notifications",
@@ -324,6 +328,8 @@ pub enum MenuAct {
     RemoveFromPlaylist,
     NewPlaylist,
     EditPlaylist,
+    ChangeCover,
+    RemoveCover,
     DeletePlaylist,
 }
 
@@ -516,6 +522,9 @@ pub struct App {
     pub layout_name: Option<String>,
     pub saved_layouts: Vec<crate::layouts::Saved>,
     pub naming: Option<Naming>,
+    /// the "Change cover" popup (#56), and covers shown before Spotify answered: (library's, header's) to put back
+    pub cover_form: Option<crate::cover::CoverForm>,
+    pub covers_was: HashMap<String, (Option<String>, Option<String>)>,
     pub layouts_dir: Option<std::path::PathBuf>,
     /// whether we asked the Daemon for spectrum frames
     spectrum_on: bool,
@@ -612,6 +621,8 @@ impl App {
             layout_name: None,
             saved_layouts: vec![],
             naming: None,
+            cover_form: None,
+            covers_was: HashMap::new(),
             layouts_dir: None,
             spectrum_on: false,
             last_input: Instant::now(),
@@ -708,6 +719,7 @@ impl App {
             || self.naming.is_some()
             || self.playlists.details.is_some()
             || self.playlists.adding.is_some()
+            || self.cover_form.is_some()
             || self.view.as_ref().is_some_and(|v| v.filtering)
             || (self.search.is_some() && self.focus == "home")
     }
@@ -897,6 +909,7 @@ impl App {
             Action::SaveLayout => self.naming = Some(Naming::layout()),
             Action::NewPlaylist => self.ask_new_playlist(),
             Action::EditPlaylist => self.edit_this_playlist(),
+            Action::ChangeCover => self.cover_this_playlist(),
             Action::AddPlayingToPlaylist => match self.playback.item.clone() {
                 Some(i) => self.ask_add(vec![i.uri], &i.name),
                 None => self.say("Nothing is playing"),
@@ -1027,6 +1040,9 @@ impl App {
         }
         if self.playlists.adding.is_some() {
             return self.adding_key(k);
+        }
+        if self.cover_form.is_some() {
+            return self.cover_key(k);
         }
         if crate::setup::wanted(self) {
             return self.wizard_key(k);
@@ -1835,6 +1851,8 @@ impl App {
             }
             MenuAct::NewPlaylist => self.ask_new_playlist(),
             MenuAct::EditPlaylist => self.edit_details(&uri),
+            MenuAct::ChangeCover => self.ask_cover(&uri),
+            MenuAct::RemoveCover => self.remove_cover(&uri),
             MenuAct::DeletePlaylist => self.delete_playlist(&uri),
         }
     }
@@ -1893,6 +1911,8 @@ impl App {
         let s = s.trim();
         if crate::setup::wanted(self) && crate::setup::step(self) == crate::setup::Step::Key {
             self.setup.key.push_str(s);
+        } else if self.cover_form.is_some() {
+            self.cover_paste(s);
         } else if self.playlists.details.is_some() {
             self.details_paste(s);
         } else if let Some(a) = self.playlists.adding.as_mut() {
@@ -2322,7 +2342,7 @@ impl App {
                     return self.adding_move(-(sign as i32) * if coarse { 10 } else { 1 });
                 }
                 // the details form has nothing to scroll; what's under it stays put
-                if self.playlists.details.is_some() || self.naming.is_some() {
+                if self.playlists.details.is_some() || self.naming.is_some() || self.cover_form.is_some() {
                     return;
                 }
                 let hit = self.hit_at(m.column, m.row);

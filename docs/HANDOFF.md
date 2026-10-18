@@ -9,10 +9,10 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - **v1 ✅** (spec issue #1, tickets #2–#24). Owner test rounds 1–3 done and fixed (#25–#33, #38–#45).
 - **v1.x in progress** (spec: SPEC.md "v1.x", stories 68–86; decisions DESIGN-TREE D29–D45; spec issue **#34**).
   Batches (D29): ~~1 stats~~ ✅ (#35–#37) · ~~2 unbuilt v1 items + polish~~ ✅ (#46 waveform, later removed (D46), #47 mini-player, #49 ♥ rows,
-  #50 album song into the queue; #48 mouse buttons dropped, D45) · **3 playlist editing (in progress: #51–#55 ✅, next #56)** · 4 Settings screen ·
+  #50 album song into the queue; #48 mouse buttons dropped, D45) · ~~3 playlist editing~~ ✅ (#51–#56, owner-tested up to #55) · **4 Settings screen (next)** ·
   5 album-adaptive theme + more Visuals · 6 podcasts and audiobooks · 7 free tiling (trial) · 8 macOS.
   Visual demos judged: starfield, marquee, glow kept and finished (#44, `ambient.rs`).
-- Tests: **233 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
+- Tests: **238 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
 - **No open bugs.** The waveform seek bar (#46) was removed again at the owner's call (D46).
 - Rule since round 2 (D43): every built-in Design keeps Home, library, queue and lyrics (a test enforces it).
 
@@ -57,7 +57,9 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `a856151` | #52 ✅ | Edit details… (name + description) on own playlists; descriptions shown in the list header |
 | `db1a8a3` | #53 ✅ | Add to playlist… picker (every track menu, Ctrl+K for the playing song); duplicates ask first |
 | `790241a` | #54 ✅ | Remove from this playlist (menu, Delete key), by row uid; MPRIS seek test no longer flaky |
-| (last) | #55 ✅ | Drag rows of your own playlist (preview), Alt+↑↓; moves anchored to a neighbour's uid |
+| `7d5ae96` | #55 ✅ | Drag rows of your own playlist (preview), Alt+↑↓; moves anchored to a neighbour's uid |
+| `9ea047f` | fix | Add to playlist picker: the wheel moves its highlight (owner) |
+| (last) | #56 ✅ | Change cover… / Remove cover (`client/src/cover.rs`): drop or type a path, square ≤ 256 KB JPEG preview, upload |
 
 ## What exists in `crates/`
 
@@ -82,27 +84,19 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 
 ## Then
 
-- **Batch 3: playlist editing**: tickets #51–#56 written (routes re-verified 2026-10-18, details in the research note's
-  "Re-verified" section). #51–#55 done; next #56 Add to playlist…, #54 remove, #55 reorder, #56
-  covers. Each live check is a new mode of `examples/playlist_probe.rs` on its own scratch playlist.
-  (Original plan:) Write its tickets first (as GitHub issues under #34, label
-  `ready-for-agent` + `v1.x`), then build one at a time. Scope (owner): own playlists only; create, rename and
-  description, delete (asks twice), "Add to playlist…" from any track menu with a searchable picker, remove tracks,
-  drag to reorder (as the queue), **custom covers** (a path or an image dropped on the terminal, previewed, cropped
-  square, ≤ 256 KB JPEG). No folder management. The private routes are in `docs/research/2026-10-playlists-and-podcasts.md`
-  (Pathfinder `addToPlaylist` / `removeFromPlaylist` / `moveItemsInPlaylist` / `editablePlaylists`; spclient
-  `POST /playlist`, `/playlist/{id}/changes`, `/user/{username}/rootlist/changes`; covers via
-  `image-upload.spotify.com/v4/playlist` + `register-image`). Re-verify against the current web-player bundle (the
-  QueryRegistry caches its operation names in `~/.cache/singularity/pathfinder-queries.json`), and give each write
-  path one quiet, reverted live check on a scratch playlist the session creates (and deletes) itself.
-- Then batches 4–8 in order; each gets tickets just before it's built.
+- **Batch 3: playlist editing ✅** (#51–#56). The owner tested #51–#55 ("looks good"; one fix: the picker's wheel);
+  #56 covers is waiting for their test. Every write path has a mode in `examples/playlist_probe.rs` (scratch playlist,
+  reverted): `--create-delete`, `--details`, `--add`, `--remove`, `--move`, `--cover <jpg>`.
+- **Next: batch 4, the Settings screen**: write its tickets under #34 first (SPEC v1.x stories, DESIGN-TREE), then
+  build one at a time as before.
+- Then batches 5–8 in order; each gets tickets just before it's built.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
 
 ## Installed binaries
 
 `singularity` and `singularityd` are installed in `~/.cargo/bin` (on the owner's PATH) with
 `cargo install --locked --path crates/daemon` and `--path crates/client`. Reinstall both after each closed ticket so the
-owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #47.
+owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #56.
 
 ## Local state on the owner's machine (not in git)
 
