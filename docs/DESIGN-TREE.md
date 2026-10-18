@@ -65,6 +65,7 @@ so it cannot be settled by talking)
 | D43 | What every Design keeps | D18 | settled | Owner rule (round 2): every built-in Design has Panes for Home, the library, the queue and lyrics; the rest is its own. |
 | D44 | Where ◂ ▸ go | D6 | settled | All at the right end of a Pane's title; the main Pane's back/forward there too, as ← →. |
 | D45 | Mouse back/forward buttons (#48) | D34 | settled | Dropped (owner): it needed a vendored crossterm or our own input parser; ← → in the main Pane's title do the job. |
+| D46 | Waveform seek bar (#46) | D30 | settled | Removed (owner): the plain seek bar looks cleaner; the audio Widgets already show loudness. |
 
 ```mermaid
 flowchart LR
@@ -559,3 +560,6 @@ flowchart LR
   ~1 s stretch. Slots now average `out_level` (no gain, fixed 60 dB scale), a cell averages its slots, and the bar
   scales from the 5th percentile to the loudest. Cache moved to `waves2/` (the old files hold the saturated data).
   Test: steady swings with a quieter bridge and a silent tail. Visibility (taller bar, Widget) put to the owner.
+- **D46: waveform removed** (2026-10-18, fifth session): shown the fix, the owner said they don't like a waveform on
+  the player bar ("it looks cleaner and better normal, the widgets can serve that purpose"). `waveform.rs`, its cache,
+  its test and pty scenario are gone; the seek bar is the plain ━─ line again. SPEC story 72 struck.

@@ -8,12 +8,12 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 
 - **v1 ✅** (spec issue #1, tickets #2–#24). Owner test rounds 1–3 done and fixed (#25–#33, #38–#45).
 - **v1.x in progress** (spec: SPEC.md "v1.x", stories 68–86; decisions DESIGN-TREE D29–D45; spec issue **#34**).
-  Batches (D29): ~~1 stats~~ ✅ (#35–#37) · ~~2 unbuilt v1 items + polish~~ ✅ (#46 waveform, #47 mini-player, #49 ♥ rows,
+  Batches (D29): ~~1 stats~~ ✅ (#35–#37) · ~~2 unbuilt v1 items + polish~~ ✅ (#46 waveform, later removed (D46), #47 mini-player, #49 ♥ rows,
   #50 album song into the queue; #48 mouse buttons dropped, D45) · **3 playlist editing (next)** · 4 Settings screen ·
   5 album-adaptive theme + more Visuals · 6 podcasts and audiobooks · 7 free tiling (trial) · 8 macOS.
   Visual demos judged: starfield, marquee, glow kept and finished (#44, `ambient.rs`).
-- Tests: **220 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
-- **No open bugs.** One open question: the owner couldn't find the waveform (#46; see "Waiting on the owner").
+- Tests: **217 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
+- **No open bugs.** The waveform seek bar (#46) was removed again at the owner's call (D46).
 - Rule since round 2 (D43): every built-in Design keeps Home, library, queue and lyrics (a test enforces it).
 
 ### Recent commits (all pushed to `main`)
@@ -60,7 +60,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `proto` | Versioned length-prefixed JSON protocol. Events that carry a list must be struct variants (`Devices { devices }`, `Saved { entries }`). `Health` has `engine_build` (the Soloist build date). |
 | `config` (`singularity-config`, new) | `config.toml` / `keys.toml` under `~/.config/singularity/`: written with comments on first run, `config.toml` at `CONFIG_SCHEMA` 2 (`keys.toml` at `KEYS_SCHEMA` 1) + migration chain (`CONFIG_MIGRATIONS`: 1→2 adds `ui.tint_art`; `rename` keeps comments), `set` edits one value keeping the file, `Watched` notices saves (mtime+size, polled ~1 s), bad values → defaults + reported problems. Re-exports `toml_edit` (0.25, TOML 1.1). Sections: `[ui]` design/theme/transparent/layout/tint_art, `[notifications]` track_change, `[visuals]` gpu/unfocused_fps, `[idle]` enabled/minutes. |
 | `daemon` (`singularityd`) | Hub + socket; `transport()` routes player commands (Engine, or Connect while another device plays). `soloist.rs` SoloistEngine (+ `keep_current` updater, `quiet_moment`, `Exit::Update`, resume after restart). `update.rs` CDN check/stage/verify/install. `mpris.rs` MPRIS player + notifications. `catalogue.rs` (+ `SetSaved`/`CheckSaved`, `CatCmd::Resume`; the fake Catalogue keeps a saved set). `connect.rs` (`resume` = generalised transfer). `tap.rs`, `lyrics.rs`, `secrets.rs`, `health.rs`, `library.rs`. `main.rs` follows config.toml live (`follow_config`). `store.rs` LocalStore (listening log in SQLite, `Recorder`, summary, backups on disk, export, delete), `backup.rs` (nightly, paced `CatCmd::Query`, revision reuse); `serve_with(…, Extras { mpris, store })`. Stats: `Store::stats`, log schema 2, `backfill` of old plays' links. `Delivery` (Soloist's download speed + stalls, #45). |
-| `client` (`singularity`) | `app.rs` (state, input, actions, pages + history), `ui.rs` (draw, Pane titles, popups; `opaque_overlays` for kitty), `layout.rs` (split tree, `compute_shaped`: the well ≤ 4:3), `home.rs`, `tracks.rs` (lists, ♥ column), `artist.rs`, `search.rs`, `queue.rs` (drag: `preview`, `target`, `into_queue`), `lyrics.rs` (wrap), `stats.rs` (Stats page + "today"/"top this week" Widgets), `ambient.rs` (starfield, marquee, glow), `waveform.rs` (seek-bar waveform, cache), `mini.rs` (mini-player), `saved.rs` (like/follow, `heart`, `want_saved`), `keymap.rs`, `design.rs`, `theme.rs` (Themes, `Tint`, `ramp_at`), `looks.rs`, `widgets.rs`, `layouts.rs` (Slot groups, saved layouts), `setup.rs` (wizard, health, stream Pane), `gfx.rs` (kitty: images under cell backgrounds in kitty), `visual/` (black hole CPU/GPU, well, idle). |
+| `client` (`singularity`) | `app.rs` (state, input, actions, pages + history), `ui.rs` (draw, Pane titles, popups; `opaque_overlays` for kitty), `layout.rs` (split tree, `compute_shaped`: the well ≤ 4:3), `home.rs`, `tracks.rs` (lists, ♥ column), `artist.rs`, `search.rs`, `queue.rs` (drag: `preview`, `target`, `into_queue`), `lyrics.rs` (wrap), `stats.rs` (Stats page + "today"/"top this week" Widgets), `ambient.rs` (starfield, marquee, glow), `mini.rs` (mini-player), `saved.rs` (like/follow, `heart`, `want_saved`), `keymap.rs`, `design.rs`, `theme.rs` (Themes, `Tint`, `ramp_at`), `looks.rs`, `widgets.rs`, `layouts.rs` (Slot groups, saved layouts), `setup.rs` (wizard, health, stream Pane), `gfx.rs` (kitty: images under cell backgrounds in kitty), `visual/` (black hole CPU/GPU, well, idle). |
 
 Dev tools: `cargo run -p singularityd --example probe -- <op> '<vars>' [--raw file]`, `--example connect_probe`.
 **pty harness: `tools/pty/`** (README lists every scenario; recreate the venv). Runs the real binaries against a fake
@@ -108,11 +108,6 @@ A new Client replaces an outdated Daemon by itself (and, since #25, stops one th
 
 ## Waiting on the owner
 
-- **The waveform (#46):** fixed in session 5 (it was saturating into a flat bar; see the round log); asked the owner
-  whether it now reads as a waveform and whether to make it taller. Earlier: the owner "doesn't know what or where it is". It is the player bar's seek bar: heard stretches
-  turn into eighth-block bars (scaled per track), the rest stays a line; a song heard through shows whole next time.
-  Next session: explain it in one line, ask whether they see it, and offer to make it more visible (two rows tall, or
-  a Widget) in grilling format.
 - Owner calls still standing (open to veto): Cockpit's listening Pane packs two days per cell when short; delete asks
   again within 10 s; track notifications off by default; vim preset moves like to `f`; `_example.toml` theme skipped.
 - Soloist's real update path (restart into a new build, resume over Connect) has only run against the stand-in; the
@@ -151,7 +146,7 @@ A new Client replaces an outdated Daemon by itself (and, since #25, stops one th
 > round log, HANDOFF, ROADMAP, GLOSSARY). Each write to Spotify gets one quiet, reverted live check on a scratch
 > playlist you create and delete yourself.
 >
-> Before that, ask the owner about the waveform (they couldn't find it; see HANDOFF "Waiting on the owner"). If the
+> If the
 > owner reports bugs, fix those first. Product decisions go to the owner in the grilling format (numbered questions,
 > a ➡️ recommendation each, worded so "yes" accepts); facts you look up yourself. Never commit secrets or personal
 > listening data (`~/.local/share/singularity/listening.db`, `backups/`, `docs/screenshots/`); only kill processes you

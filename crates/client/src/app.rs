@@ -425,8 +425,6 @@ pub struct App {
     /// each list's sort, filter and scroll, kept while you browse elsewhere
     list_views: HashMap<String, TrackView>,
     last_click: Option<(Instant, usize)>,
-    /// the playing track's waveform, for the seek bar (#46)
-    pub waveform: crate::waveform::Waveform,
     pub meters: Meters,
     pub stream: Option<singularity_proto::StreamInfo>,
     pub health: Option<singularity_proto::Health>,
@@ -533,7 +531,6 @@ impl App {
             forward: vec![],
             list_views: HashMap::new(),
             last_click: None,
-            waveform: Default::default(),
             meters: Meters::default(),
             stream: None,
             health: None,

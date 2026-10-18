@@ -232,7 +232,7 @@ audio, and looks spectacular.
 71. As a user, I want small "today" (minutes, tracks, streak) and "top this week" Widgets for the side Slots, so that stats can sit next to the music.
 
 ### Unbuilt v1 items and polish (batch 2, D30, D34)
-72. As a listener, I want the seek bar to be the track's waveform, built up from the captured audio (spec story 40).
+72. ~~As a listener, I want the seek bar to be the track's waveform, built up from the captured audio (spec story 40).~~ Dropped (D46): the seek bar stays a plain line; the audio Widgets show loudness.
 73. As a user, I want Singularity to shrink to a mini-player in a tiny split instead of "terminal too small" (story 67).
 74. As a mouse user, I want my mouse's back/forward buttons to go back and forward (story 50).
 75. As a user, I want a ♥ on every track row that shows and toggles whether it's liked.

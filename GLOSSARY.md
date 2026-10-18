@@ -95,9 +95,6 @@ _Avoid_: dashboard, analytics, Wrapped (Spotify's yearly thing)
 What Singularity becomes in a terminal too small for any layout (under 50×14): title, controls and progress only.
 _Avoid_: compact mode, tiny mode
 
-**Waveform**:
-The seek bar's picture of the playing track's loudness over time, built up as it plays and kept once heard through.
-_Avoid_: scrubber, visualiser
 
 **Widget**:
 Any self-contained thing that can occupy a Pane: a visual, lyrics, album art, queue, stats.
