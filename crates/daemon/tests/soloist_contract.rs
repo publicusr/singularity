@@ -60,3 +60,19 @@ fn verbose_log_gives_lifetime_and_stream_format() {
     assert_eq!(p.line("Error: another session is running for data directory \"/x\"."), Some(LogNews::Locked));
     assert_eq!(p.line("login failed: make sure --api-key is valid"), Some(LogNews::BadKey));
 }
+
+#[test]
+fn updates_restart_soloist_only_at_quiet_moments() {
+    use singularity_proto::{Item, PlayStatus, PlaybackState};
+    use singularityd::soloist::{quiet_moment, resume_point};
+    let mut p = PlaybackState { status: PlayStatus::Playing, item: Some(Item { uri: "spotify:track:a".into(), duration_ms: 200_000, ..Default::default() }), context_uri: Some("spotify:album:x".into()), position_ms: 42_000, timestamp_ms: singularity_proto::now_ms(), speed: 0.0, ..Default::default() };
+    assert!(!quiet_moment(&p, false), "never in the middle of a playing track");
+    assert!(quiet_moment(&p, true), "between tracks");
+    let r = resume_point(&p, true).unwrap();
+    assert_eq!((r.track_uri.as_str(), r.position_ms, r.paused), ("spotify:track:a", 0, false), "a track that just started starts over");
+    p.status = PlayStatus::Paused;
+    assert!(quiet_moment(&p, false));
+    let r = resume_point(&p, false).unwrap();
+    assert_eq!((r.context_uri.as_deref(), r.position_ms, r.paused), (Some("spotify:album:x"), 42_000, true), "paused stays paused, at the same place");
+    assert!(quiet_moment(&PlaybackState::default(), false) && resume_point(&PlaybackState::default(), false).is_none(), "idle: nothing to pick up");
+}

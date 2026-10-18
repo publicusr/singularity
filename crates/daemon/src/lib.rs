@@ -12,6 +12,7 @@ pub mod queries;
 pub mod secrets;
 pub mod soloist;
 pub mod tap;
+pub mod update;
 
 use catalogue::{CatCmd, CatEvent};
 use engine::{Engine, EngineEvent};
@@ -172,6 +173,20 @@ async fn run_engine(engine: Box<dyn Engine>, hub: Arc<Hub>, mut commands: mpsc::
                 Some(EngineEvent::Notice(message)) => {
                     let _ = hub.events.send(Event::Notice { message });
                 }
+                // the Engine restarted for an update: the context goes back on through Connect (position, paused),
+                // else the track alone through the Engine
+                Some(EngineEvent::Resume(r)) => match &hub.catalogue {
+                    Some(c) => {
+                        let _ = c.send(CatCmd::Resume(r)).await;
+                    }
+                    None => {
+                        let _ = engine_tx.send(Command::Play { uri: Some(r.track_uri) }).await;
+                        let _ = engine_tx.send(Command::Seek { position_ms: r.position_ms }).await;
+                        if r.paused {
+                            let _ = engine_tx.send(Command::Pause).await;
+                        }
+                    }
+                },
                 None => break,
             },
             Some(cmd) = commands.recv() => {

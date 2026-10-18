@@ -11,6 +11,11 @@ through Spotify Soloist, and built-in audio-reactive visuals.
 The process that actually decodes and plays audio. Currently Spotify Soloist.
 _Avoid_: player backend, daemon, streamer
 
+**Build**:
+One Soloist release from Spotify's CDN. Builds expire after about 90 days; the Daemon stages a newer one and restarts
+the Engine into it at a quiet moment (paused, idle, or a track change), so the user never sees the expiry.
+_Avoid_: version (that's what `--version` prints), release, binary
+
 **Catalogue**:
 Everything browsable about Spotify: Home, search, library, entity pages, playlists, lyrics. Comes
 from a catalogue source that is separate from the Engine.

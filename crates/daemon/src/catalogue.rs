@@ -51,6 +51,8 @@ pub enum CatCmd {
     Remote(Command),
     SetSaved { uri: String, saved: bool },
     CheckSaved(Vec<String>),
+    /// the Engine restarted (a Soloist update): start the context again where it was, on our device
+    Resume(crate::engine::Resume),
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +148,7 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
             CatCmd::Artist(uri) => st.artist(uri).await,
             CatCmd::Devices => st.devices().await,
             CatCmd::Transfer(id) => st.transfer(id).await,
+            CatCmd::Resume(r) => st.resume(r).await,
             CatCmd::Remote(cmd) => st.remote_command(cmd).await,
             CatCmd::SetSaved { uri, saved } => {
                 // the library changed: the sidebar and Liked Songs follow (Liked Songs from its next open)
@@ -203,6 +206,14 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 CatCmd::Search(q) => vec![CatEvent::Search(fake_search(&q, &home))],
                 CatCmd::Devices => vec![CatEvent::Devices(fake_devices(None))],
                 CatCmd::Transfer(id) => vec![CatEvent::Devices(fake_devices(Some(&id)))],
+                // the fake has no Connect: the Engine plays the track and seeks
+                CatCmd::Resume(r) => {
+                    let mut v = vec![CatEvent::ToEngine(Command::Play { uri: Some(r.track_uri) }), CatEvent::ToEngine(Command::Seek { position_ms: r.position_ms })];
+                    if r.paused {
+                        v.push(CatEvent::ToEngine(Command::Pause));
+                    }
+                    v
+                }
                 CatCmd::Remote(_) => vec![],
                 // anything with "fail" in its URI fails, so the Client's rollback can be seen
                 CatCmd::SetSaved { uri, saved: want } => {
@@ -638,6 +649,33 @@ impl State {
                 r.forget_ids();
             }
             let _ = self.ev.send(CatEvent::Error(format!("Couldn't move playback: {e}"))).await;
+        }
+    }
+
+    /// After a Soloist update: the restarted device takes a moment to show up on Connect, so this tries a few times,
+    /// then falls back to the Engine playing the track alone.
+    async fn resume(&mut self, r: crate::engine::Resume) {
+        for attempt in 0..4 {
+            tokio::time::sleep(Duration::from_millis(if attempt == 0 { 500 } else { 2000 })).await;
+            let result = async {
+                let (_, remote, to) = self.remote().await?;
+                remote.resume(&to, &r, "").await
+            }
+            .await;
+            match result {
+                Ok(()) => return,
+                Err(e) => {
+                    tracing::debug!("resume after the update (attempt {}): {e}", attempt + 1);
+                    if let Some(rm) = self.remote.as_mut() {
+                        rm.forget_ids();
+                    }
+                }
+            }
+        }
+        let _ = self.ev.send(CatEvent::ToEngine(Command::Play { uri: Some(r.track_uri) })).await;
+        let _ = self.ev.send(CatEvent::ToEngine(Command::Seek { position_ms: r.position_ms })).await;
+        if r.paused {
+            let _ = self.ev.send(CatEvent::ToEngine(Command::Pause)).await;
         }
     }
 

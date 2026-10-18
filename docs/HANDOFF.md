@@ -8,12 +8,12 @@ in `docs/DESIGN-TREE.md` (round log at the bottom); verified facts about Spotify
 
 - **Phase 0 (planning) ✅, Phase 1 (spikes) ✅.** ADRs 0001–0004 (0004 updated: both tracers kept, measurements).
 - **Phase 2/3 (v1 build) 🔄.** Spec issue **#1**, tickets on GitHub (`publicusr/singularity`, label `ready-for-agent`).
-  **Closed: #2, #3, #4, #5, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16, #21, #22, #24.**
-  **Open: #6, #17, #18, #19, #20, #23.**
+  **Closed: #2, #3, #4, #5, #6, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16, #21, #22, #24.**
+  **Open: #17, #18, #19, #20, #23.**
 - The owner tested after #8/#16 and reported two bugs, both fixed (commit `f79a3e2`): the black hole
   flickered (now double-buffered kitty frames at a steady 30 fps, redraws capped at 60/s) and clicking an album played it
   (Cards now open their track list, ▶ Play there). Everything else since then **hasn't been tested by the owner yet**.
-- Tests: **124 passing** (`cargo test`), + ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
+- Tests: **130 passing** (`cargo test`), + ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
   live answers). Clippy: only minor pre-existing style warnings.
 
 ## What exists in `crates/`
@@ -57,14 +57,25 @@ row (would need `CheckSaved` for whole playlists; only Liked Songs is known for 
 are opt-in (`SINGULARITY_NOTIFY=1` in the environment of whatever starts the Daemon) until #20 gives them a setting.
 Not verified by me: KDE's media widget itself (needs the real bus); the owner checks it after rebuilding.
 
+## #6 Soloist auto-update (done 2026-10-18)
+
+`daemon/src/update.rs` + the SoloistEngine (`keep_current`, `quiet_moment`, `Exit::Update`, `EngineEvent::Resume` →
+`CatCmd::Resume` → `ConnectRemote::resume`). Seam test `daemon/tests/update.rs` (fake CDN over HTTP, stand-in builds);
+pty: `tools/pty/update_test.py` (real Daemon + stand-in Soloist + fake CDN, scratch dirs). On the owner's machine the
+first check adopts the existing install (unpacked after the CDN's Last-Modified) instead of downloading it again.
+The restart-into-the-new-build path is proven only against the stand-in: the real one first happens on the owner's
+machine when Spotify publishes the next build (watch `soloist.log` / the Daemon log for "restarting Soloist").
+
+Test knobs (env): `SINGULARITY_SOLOIST_CDN`, `SINGULARITY_SOLOIST_CHECK_SECS`, `SINGULARITY_TAP=off` (a test Daemon
+never listens to the owner's Soloist), `SINGULARITY_DBUS=<address>|off`, `SINGULARITY_NOTIFY=1`.
+
 ## Next (suggested order)
 
-1. **#6** Soloist auto-update before the 90-day expiry (lifetime is already parsed; needs a fake-CDN seam test).
-2. **#20** config files (TOML, schema version, migrations, hot reload), then **#18** designs/palettes/theme files and
+1. **#20** config files (TOML, schema version, migrations, hot reload), then **#18** designs/palettes/theme files and
    **#19** slots/drag/saved layouts (they build on #20). #20 also gets `gpu = "low-power" | "high-performance"`
    (owner, 2026-10-18; commented on the issue).
-3. **#17** idle takeover (reuse `visual::BlackHole`, the prototype's `lens_cells`), **#23** listening log + backups.
-4. Gap left on #11 (commented on the issue): mouse back/forward buttons. crossterm drops SGR buttons 8/9; needs our
+2. **#17** idle takeover (reuse `visual::BlackHole`, the prototype's `lens_cells`), **#23** listening log + backups.
+3. Gap left on #11 (commented on the issue): mouse back/forward buttons. crossterm drops SGR buttons 8/9; needs our
    own small input layer (we already do SGR-Pixels in `client/src/term.rs`).
 
 ## Waiting on the owner
@@ -99,7 +110,7 @@ Not verified by me: KDE's media widget itself (needs the real bus); the owner ch
 > ticket from the GitHub issues (`gh issue list -R publicusr/singularity --label ready-for-agent --state open`), following
 > Matt Pocock's flow (spec → tickets → implement), with the project's vocabulary.
 >
-> Work the frontier in this order: **#6** Soloist auto-update, **#20**
+> Work the frontier in this order: **#20**
 > config files, **#18** designs/themes, **#19** layouts, **#17** idle takeover, **#23** listening log + backups. For each
 > ticket: implement with tests at the seams named in the spec, run `cargo test`, verify the real binaries with the pty
 > harness in `tools/pty/` (screenshots), commit with `Closes #N` plus the co-author line, push, and keep `docs/` current

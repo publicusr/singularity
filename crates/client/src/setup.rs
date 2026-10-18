@@ -194,10 +194,11 @@ pub fn draw_stream(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
         }
     }
     y += 1;
-    if let Some(EngineStatus::Ready { device_name, active, expires_in_days, .. }) = &app.engine {
+    // (the build updates itself, so its expiry isn't news here; the health check has it)
+    if let Some(EngineStatus::Ready { device_name, active, version, .. }) = &app.engine {
         row(buf, &mut y, "device", &format!("{device_name}{}", if *active { " · active" } else { "" }), th.s(th.fg));
-        if let Some(d) = expires_in_days {
-            row(buf, &mut y, "build", &format!("expires in {d} days"), th.s(if *d < 7 { th.error } else { th.dim }));
+        if !version.is_empty() {
+            row(buf, &mut y, "build", version, th.s(th.dim));
         }
     }
     if app.stream.as_ref().is_some_and(|s| !s.lossless()) && y + 1 < r.bottom() {
@@ -234,8 +235,10 @@ fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
     });
     rows.push(match &app.engine {
         Some(EngineStatus::Ready { version, expires_in_days, active, .. }) => {
-            let exp = expires_in_days.map(|d| format!(", expires in {d} days")).unwrap_or_default();
-            (if expires_in_days.is_some_and(|d| d < 7) { '!' } else { '✓' }, "Engine", format!("{version}{exp}{}", if *active { "" } else { " · not the active device" }))
+            let built = app.health.as_ref().and_then(|h| h.engine_build.clone()).map(|d| format!(", built {d}")).unwrap_or_default();
+            let left = expires_in_days.map(|d| format!(", {d} days left (updates itself)")).unwrap_or_default();
+            // a build this close to expiring means updating has failed for days
+            (if expires_in_days.is_some_and(|d| d < 3) { '!' } else { '✓' }, "Engine", format!("{version}{built}{left}{}", if *active { "" } else { " · not the active device" }))
         }
         Some(EngineStatus::NeedsPairing { device_name }) => ('!', "Engine", format!("pick \"{device_name}\" once from your phone's device picker")),
         Some(EngineStatus::Starting) => ('!', "Engine", "starting…".into()),

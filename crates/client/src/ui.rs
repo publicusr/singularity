@@ -1097,7 +1097,7 @@ mod tests {
         app.run(Action::Health);
         app.tick();
         assert_eq!(sent(&mut rx), vec![Command::GetHealth]);
-        app.health = Some(singularity_proto::Health { soloist_key: "keyring".into(), spotify_login: "keyring".into(), audio_output: Some("DAC Pro".into()), engine_expires_in_days: Some(80) });
+        app.health = Some(singularity_proto::Health { soloist_key: "keyring".into(), spotify_login: "keyring".into(), audio_output: Some("DAC Pro".into()), engine_expires_in_days: Some(80), engine_build: Some("2026-10-16".into()) });
         let s = render(&mut app, 160, 48);
         assert!(s.contains("Health check") && s.contains("DAC Pro") && s.contains("FLAC · 1.40 Mbit/s"), "{s}");
     }

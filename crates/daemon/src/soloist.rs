@@ -1,7 +1,8 @@
 //! SoloistEngine (ADR-0001): supervises Spotify Soloist and drives it over its local WebSocket.
 //!
-//! - binary: `$XDG_DATA_HOME/singularity/soloist/soloist`, downloaded from Spotify's CDN when missing
-//!   (never redistributed; auto-update arrives in #6)
+//! - binary: `$XDG_DATA_HOME/singularity/soloist/soloist`, downloaded from Spotify's CDN when missing (never
+//!   redistributed) and kept current by `update` (#6): a new build is restarted into at a quiet moment, and playback
+//!   picks up where it was
 //! - API key: `SOLOIST_API_KEY`, else the keyring (`service singularity account soloist`), else the owner-only
 //!   fallback file; the setup wizard stores it (`Command::SetSoloistKey`). Soloist only takes it as `--api-key`, so it
 //!   shows in `ps` for local users: there's no other way in
@@ -9,18 +10,19 @@
 //!   from it and writes it on to `soloist.log` (the previous one is kept as `soloist.log.1`, never truncated)
 //! - Soloist's own state (pairing, cache) lives under `$XDG_DATA_HOME/singularity/soloist-state`
 
-use crate::engine::{Engine, EngineEvent};
+use crate::engine::{Engine, EngineEvent, Resume};
+use crate::update::{self, Builds, Checked};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use singularity_proto::{Command, EngineStatus, Item, PlayStatus, PlaybackState, QueueEntry, RepeatMode};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::{Child, Command as Proc};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 
 pub const DEVICE_NAME: &str = "Singularity";
-const CDN: &str = "https://soloist-builds.spotifycdn.com/soloist_release_x86_64.tar.gz";
 
 pub struct SoloistEngine {
     pub data_dir: PathBuf,
@@ -34,8 +36,11 @@ impl SoloistEngine {
             .unwrap_or_else(std::env::temp_dir);
         SoloistEngine { data_dir: base.join("singularity") }
     }
+    fn builds(&self) -> Builds {
+        Builds { root: self.data_dir.clone() }
+    }
     fn binary(&self) -> PathBuf {
-        self.data_dir.join("soloist").join("soloist")
+        self.builds().binary()
     }
     fn state_dir(&self) -> PathBuf {
         self.data_dir.join("soloist-state")
@@ -161,9 +166,22 @@ async fn status(tx: &mpsc::Sender<EngineEvent>, s: EngineStatus) {
     let _ = tx.send(EngineEvent::Status(s)).await;
 }
 
+/// What the update side and the running Soloist tell each other.
+struct Updates {
+    /// a new build is staged: restart into it at the next quiet moment
+    staged: Arc<Notify>,
+    /// the running build's days left (the checks get closer near the end)
+    days: watch::Sender<Option<u32>>,
+    /// where playback was when we restarted for an update
+    resume: Option<Resume>,
+}
+
 /// Keep Soloist running: start, connect, pump; on exit wait (with backoff) and start again.
 async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<EngineEvent>) {
     let mut backoff = Duration::from_secs(2);
+    let (builds, url) = (engine.builds(), update::cdn_url());
+    let mut upd = Updates { staged: Arc::new(Notify::new()), days: watch::channel(None).0, resume: None };
+    let mut updater = None;
     loop {
         let Some(key) = api_key().await else {
             status(&ev_tx, EngineStatus::NotConfigured { reason: "no Soloist API key yet".into() }).await;
@@ -173,7 +191,13 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
             continue;
         };
         status(&ev_tx, EngineStatus::Starting).await;
-        if let Err(e) = ensure_binary(&engine).await {
+        // Soloist isn't running: the best moment to put a staged build in place
+        match builds.install() {
+            Ok(true) => tracing::info!("Soloist updated to {}", builds.installed().map(|b| b.version).unwrap_or_default()),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("couldn't install the new Soloist build: {e}"),
+        }
+        if let Err(e) = update::ensure(&builds, &url).await {
             status(&ev_tx, EngineStatus::Failed { message: format!("couldn't download Soloist: {e}") }).await;
             if !wait_or_refuse(&mut cmd_rx, &ev_tx, backoff, "Soloist isn't available").await {
                 return;
@@ -181,11 +205,28 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
             backoff = (backoff * 2).min(Duration::from_secs(300));
             continue;
         }
-        match run_once(&engine, &key, &mut cmd_rx, &ev_tx).await {
-            Ok(Exit::Quit) => return,
+        // there's a build: from now on keep it current
+        if updater.is_none() {
+            updater = Some(tokio::spawn(keep_current(builds.clone(), url.clone(), upd.days.subscribe(), upd.staged.clone())));
+        }
+        match run_once(&engine, &key, &mut cmd_rx, &ev_tx, &mut upd).await {
+            Ok(Exit::Quit) => {
+                if let Some(u) = updater {
+                    u.abort();
+                }
+                return;
+            }
+            // straight back up with the new build
+            Ok(Exit::Update) => {
+                backoff = Duration::from_secs(2);
+                continue;
+            }
             Ok(Exit::Expired) => {
-                status(&ev_tx, EngineStatus::Failed { message: "this Soloist build has expired; updating (#6)".into() }).await;
-                let _ = std::fs::remove_file(engine.binary());
+                // (it shouldn't come to this: updates land well before)
+                status(&ev_tx, EngineStatus::Failed { message: "this Soloist build has expired; updating".into() }).await;
+                if builds.ready().is_none() {
+                    let _ = std::fs::remove_dir_all(builds.current());
+                }
                 backoff = Duration::from_secs(2);
             }
             Ok(Exit::Died) => {}
@@ -226,26 +267,49 @@ async fn wait_or_refuse(cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Send
     }
 }
 
-async fn ensure_binary(engine: &SoloistEngine) -> anyhow::Result<()> {
-    let exe = engine.binary();
-    if exe.exists() {
-        return Ok(());
+/// Check the CDN now and then; when a new build is staged, say so.
+async fn keep_current(builds: Builds, url: String, days: watch::Receiver<Option<u32>>, staged: Arc<Notify>) {
+    let (mut failures, mut told) = (0, None);
+    loop {
+        match update::check(&builds, &url).await {
+            Ok(Checked::UpToDate) => failures = 0,
+            Ok(Checked::Staged(b)) => {
+                failures = 0;
+                if told.as_ref() != Some(&b) {
+                    tracing::info!("new Soloist build staged: {}", b.version);
+                    staged.notify_one();
+                    told = Some(b);
+                }
+            }
+            Err(e) => {
+                failures += 1;
+                tracing::warn!("Soloist update check failed (keeping the current build): {e}");
+            }
+        }
+        // SINGULARITY_SOLOIST_CHECK_SECS: a short interval for the pty harness
+        let wait = std::env::var("SINGULARITY_SOLOIST_CHECK_SECS").ok().and_then(|s| s.parse().ok()).map(Duration::from_secs).unwrap_or_else(|| update::next_check(failures, *days.borrow()));
+        tokio::time::sleep(wait).await;
     }
-    let dir = exe.parent().unwrap().to_path_buf();
-    tokio::fs::create_dir_all(&dir).await?;
-    let tgz = dir.join("soloist.tar.gz");
-    tracing::info!("downloading Soloist from Spotify's CDN");
-    let ok = Proc::new("curl").args(["--fail", "--location", "--silent", "--show-error", "-o"]).arg(&tgz).arg(CDN).status().await?.success()
-        && Proc::new("tar").arg("-xzf").arg(&tgz).arg("-C").arg(&dir).status().await?.success();
-    let _ = tokio::fs::remove_file(&tgz).await;
-    anyhow::ensure!(ok && exe.exists(), "download or extraction failed");
-    Ok(())
+}
+
+/// Is now a good moment to restart into a new build? Not in the middle of a playing track.
+pub fn quiet_moment(p: &PlaybackState, track_changed: bool) -> bool {
+    track_changed || !matches!(p.status, PlayStatus::Playing | PlayStatus::Buffering)
+}
+
+/// Where to pick up after the restart (a track that just started resumes from its start).
+pub fn resume_point(p: &PlaybackState, track_changed: bool) -> Option<Resume> {
+    let item = p.item.as_ref()?;
+    let position_ms = if track_changed { 0 } else { p.position_at(singularity_proto::now_ms()) };
+    Some(Resume { context_uri: p.context_uri.clone(), track_uri: item.uri.clone(), position_ms, paused: p.status == PlayStatus::Paused })
 }
 
 enum Exit {
     Quit,
     Died,
     Expired,
+    /// restarting into a new build
+    Update,
 }
 
 /// Is a Soloist already running on this state directory? (Its pid file names a live `soloist` process.)
@@ -255,7 +319,7 @@ pub fn running_soloist(state: &std::path::Path) -> Option<u32> {
     (comm.trim() == "soloist").then_some(pid)
 }
 
-async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<EngineEvent>) -> anyhow::Result<Exit> {
+async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<EngineEvent>, upd: &mut Updates) -> anyhow::Result<Exit> {
     let state = engine.state_dir();
     // another Daemon's Soloist owns these files: touch nothing (its port file, its log)
     if let Some(pid) = running_soloist(&state) {
@@ -333,7 +397,10 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
         }
         while let Ok(n) = news_rx.try_recv() {
             match n {
-                LogNews::Lifetime(d) => expires_in_days = Some(d),
+                LogNews::Lifetime(d) => {
+                    expires_in_days = Some(d);
+                    upd.days.send_replace(Some(d));
+                }
                 LogNews::Locked => anyhow::bail!("another Soloist is already running with Singularity's data (is a second singularityd running?)"),
                 LogNews::BadKey => return Err(BadKey.into()),
                 LogNews::Stream(_) => {}
@@ -351,6 +418,8 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
     let mut st = SoloistState::default();
     let mut logged_in = false;
     let mut active = false;
+    // a build staged while this one runs waits for a quiet moment
+    let mut staged = false;
 
     loop {
         tokio::select! {
@@ -368,6 +437,10 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                     Some("auth_state") | Some("device_changed") => {
                         if let Some(l) = ev["logged_in"].as_bool() { logged_in = l; }
                         if let Some(a) = ev["is_active"].as_bool() { active = a; }
+                        // back after an update: pick up where playback was
+                        if logged_in && let Some(r) = upd.resume.take() {
+                            let _ = ev_tx.send(EngineEvent::Resume(r)).await;
+                        }
                         let s = if logged_in {
                             // (the lifetime may still arrive below; status is re-sent then)
                             EngineStatus::Ready { device_name: DEVICE_NAME.into(), active, version: version.clone(), expires_in_days }
@@ -387,13 +460,24 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                         if track_changed {
                             let _ = ws_tx.send(Message::text(json!({"type":"command","command":"get_queue","limit":20}).to_string())).await;
                         }
+                        if staged && quiet_moment(&st.playback, track_changed) {
+                            return restart_for_update(&mut child, &st.playback, track_changed, upd).await;
+                        }
                     }
+                }
+            }
+            // (a notice from before this build started may be stale: only a build still waiting counts)
+            _ = upd.staged.notified(), if engine.builds().ready().is_some() => {
+                staged = true;
+                if quiet_moment(&st.playback, false) {
+                    return restart_for_update(&mut child, &st.playback, false, upd).await;
                 }
             }
             Some(n) = news_rx.recv() => match n {
                 LogNews::Stream(info) => { let _ = ev_tx.send(EngineEvent::Stream(info)).await; }
                 LogNews::Lifetime(d) => {
                     expires_in_days = Some(d);
+                    upd.days.send_replace(Some(d));
                     if logged_in {
                         status(ev_tx, EngineStatus::Ready { device_name: DEVICE_NAME.into(), active, version: version.clone(), expires_in_days }).await;
                     }
@@ -414,6 +498,14 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
             }
         }
     }
+}
+
+/// Stop Soloist so the new build takes over, remembering where playback was.
+async fn restart_for_update(child: &mut Child, p: &PlaybackState, track_changed: bool, upd: &mut Updates) -> anyhow::Result<Exit> {
+    upd.resume = resume_point(p, track_changed);
+    tracing::info!("restarting Soloist into the new build ({})", if track_changed { "between tracks" } else { "while quiet" });
+    let _ = child.kill().await;
+    Ok(Exit::Update)
 }
 
 /// Translates Soloist's WebSocket events into our `PlaybackState`, and our commands into Soloist's.

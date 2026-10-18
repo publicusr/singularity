@@ -47,6 +47,7 @@ pub fn report() -> Health {
         spotify_login: location("spotify", None),
         audio_output: audio_output(&pactl("sink-inputs"), &pactl("sinks")),
         engine_expires_in_days: None,
+        engine_build: crate::update::Builds { root: crate::soloist::SoloistEngine::from_env().data_dir }.installed().and_then(|b| b.date()),
     }
 }
 

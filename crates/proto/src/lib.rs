@@ -409,8 +409,11 @@ pub struct Health {
     pub spotify_login: String,
     /// the PipeWire output the Engine plays to, if it's playing
     pub audio_output: Option<String>,
-    /// days until this Soloist build expires
+    /// days until this Soloist build expires (the Daemon updates it well before)
     pub engine_expires_in_days: Option<u32>,
+    /// when the installed Soloist build was published (`2026-10-16`)
+    #[serde(default)]
+    pub engine_build: Option<String>,
 }
 
 /// What the AudioTap heard in the last ~33 ms. Levels are relative to the track's own recent loudness

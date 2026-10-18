@@ -18,6 +18,9 @@ under the text, as kitty does with z=-1.
 
 - `wizard_test.py out-wiz`: first run with no key and no keyring (scratch XDG dirs, a stand-in `soloist` script in
   `fresh/data/singularity/soloist/soloist`: create it first, see the script). Never touches your real Soloist.
+- `update_test.py out-update` (#6): a real Daemon runs an expiring stand-in Soloist (`fake_soloist.py`: WebSocket
+  protocol, `--version`, the lifetime line) from scratch dirs; a fake CDN then offers a newer build, which must be
+  staged while a track plays and taken over at the next track. No key, keyring, audio tap or D-Bus of the owner's.
 - `ws.py '<json>' [secs]`: talk to Soloist's WebSocket directly (`WS=addr:port` overrides the port file). Only for
   deliberate, quiet live tests on the owner's player; restore volume afterwards.
 

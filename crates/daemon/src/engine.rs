@@ -12,6 +12,17 @@ pub enum EngineEvent {
     Stream(singularity_proto::StreamInfo),
     Error(String),
     Notice(String),
+    /// the Engine restarted (a Soloist update): pick up where playback was
+    Resume(Resume),
+}
+
+/// Where playback was when the Engine restarted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Resume {
+    pub context_uri: Option<String>,
+    pub track_uri: String,
+    pub position_ms: u64,
+    pub paused: bool,
 }
 
 pub trait Engine: Send + 'static {

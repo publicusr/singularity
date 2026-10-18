@@ -190,5 +190,16 @@ flowchart LR
   opt-in with `SINGULARITY_NOTIFY=1` until config files (#20). `SINGULARITY_DBUS=<address>|off` picks the bus; a fake
   Engine stays off the session bus unless asked. Soloist has no D-Bus connection, so there's no second player. Verified
   with real `playerctl` on a private bus (pty scenario `mpris`).
+- **#6 Soloist auto-update** (2026-10-18): `daemon/src/update.rs`. The CDN (`soloist-builds.spotifycdn.com`, sends
+  ETag and Last-Modified, verified 2026-10-18) is checked at start, then daily, every 6 h in a build's last week, and
+  after failures at 15 min doubling to 6 h; the old build always stays. A new build is unpacked into `soloist.new/`,
+  must answer `--version`, and is installed by renaming directories (previous kept as `soloist.old/`), which is safe
+  under a running Soloist. The SoloistEngine restarts into it only at a quiet moment: paused or idle at once, else at
+  the next track change (the new track then starts over); playback is picked up through ConnectRemote (`resume`, the
+  generalised transfer: context, track, position, paused), else by the Engine alone. Installs from before tracking are
+  adopted when unpacked after the CDN's Last-Modified (no pointless re-download). The expiry left the stream Pane; the
+  health check shows version, build date and days left ("updates itself"), and warns only under 3 days. Verified in a
+  pty with a stand-in Soloist (`tools/pty/fake_soloist.py`) and a fake CDN: v2 staged while v1 played, taken over at
+  the next track, playback continued.
 - **Owner answers** (2026-10-18): keep the 10 fps slowdown when the terminal is unfocused; keep the black hole on the
   low-power adapter (iGPU) and add a `gpu = "low-power" | "high-performance"` setting in #20.

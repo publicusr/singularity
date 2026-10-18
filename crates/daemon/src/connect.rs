@@ -78,15 +78,23 @@ impl ConnectRemote {
     pub async fn transfer(&self, cluster: &Cluster, to: &str) -> anyhow::Result<()> {
         let ps = cluster.player_state.as_ref().ok_or_else(|| anyhow::anyhow!("nothing is playing"))?;
         let track = ps.track.as_ref().filter(|t| !t.uri.is_empty()).ok_or_else(|| anyhow::anyhow!("nothing is playing"))?;
-        let context = if ps.context_uri.is_empty() { track.uri.clone() } else { ps.context_uri.clone() };
         let mut pos = ps.position_as_of_timestamp.max(0) as u64;
         if ps.is_playing && !ps.is_paused && ps.timestamp > 0 {
             pos += singularity_proto::now_ms().saturating_sub(ps.timestamp as u64);
         }
-        let mut skip = json!({ "track_uri": track.uri });
-        if !track.uid.is_empty() {
-            skip["track_uid"] = json!(track.uid);
+        let r = crate::engine::Resume { context_uri: Some(ps.context_uri.clone()), track_uri: track.uri.clone(), position_ms: pos, paused: ps.is_paused || !ps.is_playing };
+        self.resume(to, &r, &track.uid).await
+    }
+
+    /// Start a context on `to` at a track and position, paused or not (a transfer, or picking up after the Engine
+    /// restarted).
+    pub async fn resume(&self, to: &str, r: &crate::engine::Resume, track_uid: &str) -> anyhow::Result<()> {
+        let context = r.context_uri.clone().filter(|c| !c.is_empty()).unwrap_or_else(|| r.track_uri.clone());
+        let mut skip = json!({ "track_uri": r.track_uri });
+        if !track_uid.is_empty() {
+            skip["track_uid"] = json!(track_uid);
         }
+        let (pos, paused) = (r.position_ms, r.paused);
         let cmd = json!({
             "endpoint": "play",
             "context": { "uri": context, "url": format!("context://{context}"), "metadata": {} },
@@ -94,7 +102,7 @@ impl ConnectRemote {
             "options": {
                 "skip_to": skip,
                 "seek_to": pos,
-                "initially_paused": ps.is_paused || !ps.is_playing,
+                "initially_paused": paused,
                 "license": "premium",
                 "player_options_override": {},
             },
