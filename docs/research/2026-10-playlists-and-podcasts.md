@@ -33,6 +33,9 @@ images under 256 KB anyway (re-encode, square crop).
 
 ## Re-verified 2026-10-18 (web-player.0079e2e5, desktop bundle + 158 chunks)
 
+Live (2026-10-18): a description written as `probe & <b>words</b>` reads back from `fetchPlaylist` as
+`probe & &lt;b&gt;words&lt;&#x2F;b&gt;` (escaped, never markup); `noValue: [LIST_DESCRIPTION]` clears it.
+
 All playlist routes above are still there. Details read from the bundle:
 
 - `addToPlaylist`, `removeFromPlaylist`, `moveItemsInPlaylist` are mutations sharing one persisted hash. Variables:

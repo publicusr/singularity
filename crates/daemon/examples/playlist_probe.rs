@@ -2,6 +2,7 @@
 //! deletes itself, with the saved Catalogue login. Prints only yes/no and timings, never the library.
 //!
 //!     cargo run -p singularityd --example playlist_probe -- --create-delete
+//!     cargo run -p singularityd --example playlist_probe -- --details
 //!
 //! Spotify's "delete" takes the playlist out of the library (as the web player does); the emptied playlist stays
 //! behind on Spotify's side, unlisted.
@@ -23,6 +24,23 @@ async fn listed(session: &Session, registry: &mut QueryRegistry, uri: &str) -> a
     let page = singularityd::library::parse_library(&v, 0, &session.username());
     let it = page.items.iter().find(|i| i.uri == uri);
     Ok((it.is_some(), it.is_some_and(|i| i.own)))
+}
+
+/// The playlist's name and description as its page says (fetchPlaylist, first page).
+async fn read_details(session: &Session, registry: &mut QueryRegistry, uri: &str) -> anyhow::Result<(String, String)> {
+    let (op, vars) = singularityd::library::tracks_query(uri, 0).unwrap();
+    let hash = registry.hash(op).await?;
+    let v = session.spclient().pathfinder_query(op, &hash, vars).await?;
+    let name = v["data"]["playlistV2"]["name"].as_str().unwrap_or_default().to_string();
+    Ok((name, singularityd::library::parse_header(uri, &v).map(|h| h.description).unwrap_or_default()))
+}
+
+/// A scratch playlist in the library; its URI.
+async fn scratch(session: &Session, root: &str) -> anyhow::Result<String> {
+    let made = playlists::post(session, "/playlist", &playlists::create(SCRATCH)).await?;
+    let uri = made["uri"].as_str().ok_or_else(|| anyhow::anyhow!("no uri"))?.to_string();
+    playlists::post(session, root, &playlists::rootlist_add(&uri, singularity_proto::now_ms())).await?;
+    Ok(uri)
 }
 
 #[tokio::main]
@@ -49,7 +67,31 @@ async fn main() -> anyhow::Result<()> {
             let (there, _) = listed(&session, &mut registry, &uri).await?;
             println!("after delete, in the library: {there}");
         }
-        _ => anyhow::bail!("modes: --create-delete"),
+        "--details" => {
+            let uri = scratch(&session, &root).await?;
+            let renamed = format!("{SCRATCH} renamed");
+            let checked = async {
+                let path = playlists::changes_path(&uri).unwrap();
+                let t = std::time::Instant::now();
+                playlists::post(&session, &path, &playlists::details(&renamed, "probe & <b>words</b>")).await?;
+                println!("rename + describe: accepted ({:?})", t.elapsed());
+                let (name, desc) = read_details(&session, &mut registry, &uri).await?;
+                println!("read back: name matches {}, description matches {} ({desc:?})", name == renamed, desc == "probe & <b>words</b>");
+                playlists::post(&session, &path, &playlists::details(&renamed, "")).await?;
+                let (_, desc) = read_details(&session, &mut registry, &uri).await?;
+                println!("emptied: description gone {}", desc.is_empty());
+                let (there, _) = listed(&session, &mut registry, &uri).await?;
+                println!("library lists it (by the new name's filter): {there}");
+                anyhow::Ok(())
+            };
+            let res = checked.await;
+            // whatever happened, the scratch playlist goes
+            playlists::post(&session, &root, &playlists::rootlist_remove(&uri)).await?;
+            let (there, _) = listed(&session, &mut registry, &uri).await?;
+            println!("after delete, in the library: {there}");
+            res?;
+        }
+        _ => anyhow::bail!("modes: --create-delete, --details"),
     }
     Ok(())
 }

@@ -90,6 +90,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.devices_open.then(|| devices_rect(area, app)),
         app.picker.as_ref().map(|p| crate::looks::picker_rect(area, p)),
         app.naming.is_some().then(|| naming_rect(area)),
+        app.playlists.details.is_some().then(|| crate::playlists::details_rect(area)),
         app.menu.as_ref().map(|m| menu_rect(area, m)),
         app.toast.as_ref().map(|(msg, _)| toast_rect(area, msg)),
     ];
@@ -132,6 +133,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         let shown: String = n.text.chars().skip(n.text.chars().count().saturating_sub(w)).collect();
         text(buf, inner.x + 1, inner.y, inner.width.saturating_sub(2), &format!("› {shown}▏"), th.s(th.fg).add_modifier(Modifier::BOLD));
         text(buf, inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), hint, th.s(th.dim));
+    }
+    if app.playlists.details.is_some() {
+        crate::playlists::draw_details(f.buffer_mut(), area, app, &th);
     }
     if app.health_open {
         crate::setup::draw_health(f.buffer_mut(), crate::setup::health_rect(area), app, &th);

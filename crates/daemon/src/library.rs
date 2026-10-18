@@ -222,7 +222,7 @@ pub fn parse_header(uri: &str, v: &Value) -> Option<ListHeader> {
             let year = a["date"]["isoString"].as_str().and_then(|d| d.get(..4)).map(String::from).or_else(|| a["date"]["year"].as_i64().map(|y| y.to_string())).unwrap_or_default();
             let mut parts = vec![kind.to_string()];
             parts.extend([year, a["label"].as_str().unwrap_or("").to_string()].into_iter().filter(|s| !s.is_empty()));
-            Some(ListHeader { subtitle: parts.join(" · "), artists: links(&a["artists"]["items"]), cover_url: image(&a["coverArt"]["sources"]) })
+            Some(ListHeader { subtitle: parts.join(" · "), artists: links(&a["artists"]["items"]), cover_url: image(&a["coverArt"]["sources"]), description: String::new() })
         }
         "playlist" => {
             let p = &v["data"]["playlistV2"];
@@ -233,7 +233,8 @@ pub fn parse_header(uri: &str, v: &Value) -> Option<ListHeader> {
             if let Some(f) = p["followers"].as_u64().filter(|f| *f > 0) {
                 parts.push(format!("{} likes", grouped(f)));
             }
-            Some(ListHeader { subtitle: parts.join(" · "), artists: vec![], cover_url: image(&p["images"]["items"][0]["sources"]) })
+            let description = crate::catalogue::plain(p["description"].as_str().unwrap_or_default());
+            Some(ListHeader { subtitle: parts.join(" · "), artists: vec![], cover_url: image(&p["images"]["items"][0]["sources"]), description })
         }
         _ => None,
     }
@@ -423,6 +424,18 @@ mod tests {
             "duration": {"totalMilliseconds": 210000}, "contentRating": {"label": "NONE"}}}});
         let i = parse_track(&v).unwrap();
         assert_eq!((i.name.as_str(), i.artists.len(), i.duration_ms, i.album.as_deref()), ("Perihelion", 2, 210_000, Some("Quiet Orbit")));
+    }
+
+    #[test]
+    fn a_playlist_header_carries_its_description_as_plain_text() {
+        let v = serde_json::json!({"data":{"playlistV2":{"name":"Mix","description":"For <a href=\"spotify:artist:x\">Nova</a> &amp; friends","ownerV2":{"data":{"name":"nova"}},"followers":0,"images":{"items":[]}}}});
+        let h = parse_header("spotify:playlist:p", &v).unwrap();
+        assert_eq!((h.subtitle.as_str(), h.description.as_str()), ("Playlist · nova", "For Nova & friends"));
+        let v = serde_json::json!({"data":{"playlistV2":{"name":"Mix","images":{"items":[]}}}});
+        assert_eq!(parse_header("spotify:playlist:p", &v).unwrap().description, "");
+        // what Spotify gave back for a description typed as `probe & <b>words</b>` (live, 2026-10-18)
+        let v = serde_json::json!({"data":{"playlistV2":{"description":"probe & &lt;b&gt;words&lt;&#x2F;b&gt; &amp;lt;","images":{"items":[]}}}});
+        assert_eq!(parse_header("spotify:playlist:p", &v).unwrap().description, "probe & <b>words</b> &lt;");
     }
 
     /// Against real answers saved by `examples/probe.rs --raw` (never committed):

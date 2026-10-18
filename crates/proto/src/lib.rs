@@ -119,6 +119,9 @@ pub enum Command {
     /// Delete one of your playlists (Spotify's "delete": it leaves your library); a fresh `Event::Library` follows,
     /// with it still there if Spotify refused (the Client confirms first).
     DeletePlaylist { uri: String },
+    /// Rename and re-describe one of your playlists (#52); an empty description clears it. Answered by
+    /// `Event::PlaylistEdited`.
+    EditPlaylist { uri: String, name: String, description: String },
     #[serde(other)]
     Unknown,
 }
@@ -177,6 +180,9 @@ pub enum Event {
     Stats(Stats),
     /// A playlist was created (answer to `CreatePlaylist`; the Client that asked opens it).
     PlaylistCreated { uri: String, name: String },
+    /// A playlist's name and description were saved (`ok`), or Spotify refused them (the Client that asked rolls
+    /// back; the others ignore it).
+    PlaylistEdited { uri: String, name: String, description: String, ok: bool },
     #[serde(other)]
     Unknown,
 }
@@ -347,6 +353,9 @@ pub struct ListHeader {
     /// the album's artists (for links)
     pub artists: Vec<Link>,
     pub cover_url: Option<String>,
+    /// a playlist's description, as plain text (#52)
+    #[serde(default)]
+    pub description: String,
 }
 
 /// A name that opens something.

@@ -362,6 +362,9 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
             CatEvent::Created { uri, name } => {
                 let _ = hub.events.send(Event::PlaylistCreated { uri, name });
             }
+            CatEvent::Edited { uri, name, description, ok } => {
+                let _ = hub.events.send(Event::PlaylistEdited { uri, name, description, ok });
+            }
             CatEvent::Devices(d) => {
                 *hub.devices.lock().await = Some(d.clone());
                 let _ = hub.events.send(Event::Devices { devices: d });
@@ -556,7 +559,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                     let s = hub.playback.lock().await.clone();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;
                 }
-                ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. } | Command::PlayNext { .. } | Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::MoveInQueue { .. } | Command::GetArtist { .. } | Command::Search { .. } | Command::GetDevices | Command::Transfer { .. } | Command::SetSaved { .. } | Command::CheckSaved { .. } | Command::CreatePlaylist { .. } | Command::DeletePlaylist { .. })) => match &hub.catalogue {
+                ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. } | Command::PlayNext { .. } | Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::MoveInQueue { .. } | Command::GetArtist { .. } | Command::Search { .. } | Command::GetDevices | Command::Transfer { .. } | Command::SetSaved { .. } | Command::CheckSaved { .. } | Command::CreatePlaylist { .. } | Command::DeletePlaylist { .. } | Command::EditPlaylist { .. })) => match &hub.catalogue {
                     Some(tx) => {
                         let c = match cmd {
                             Command::Login => CatCmd::Login,
@@ -576,6 +579,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                             Command::CheckSaved { uris } => CatCmd::CheckSaved(uris),
                             Command::CreatePlaylist { name } => CatCmd::CreatePlaylist(name),
                             Command::DeletePlaylist { uri } => CatCmd::DeletePlaylist(uri),
+                            Command::EditPlaylist { uri, name, description } => CatCmd::EditPlaylist { uri, name, description },
                             _ => CatCmd::Home,
                         };
                         let _ = tx.send(c).await;

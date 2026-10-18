@@ -46,6 +46,7 @@ pub enum Action {
     PickTheme,
     SaveLayout,
     NewPlaylist,
+    EditPlaylist,
     DeletePlaylist,
     ToggleIdle,
     IdlePreview,
@@ -79,7 +80,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 47] = [
+    pub const ALL: [Action; 48] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -97,6 +98,7 @@ impl Action {
         Action::PickTheme,
         Action::SaveLayout,
         Action::NewPlaylist,
+        Action::EditPlaylist,
         Action::DeletePlaylist,
         Action::ToggleIdle,
         Action::IdlePreview,
@@ -147,6 +149,7 @@ impl Action {
             Action::PickTheme => "Theme: pick colours (live preview)",
             Action::SaveLayout => "Save layout as… (comes back in Design)",
             Action::NewPlaylist => "New playlist…",
+            Action::EditPlaylist => "Edit this playlist's name and description (your own)…",
             Action::DeletePlaylist => "Delete this playlist (your own; asks twice)…",
             Action::ToggleIdle => "Idle takeover on / off (the hole drifts over the screen)",
             Action::IdlePreview => "Idle takeover: show it now",
@@ -199,6 +202,7 @@ impl Action {
             Action::PickTheme => "theme",
             Action::SaveLayout => "save_layout",
             Action::NewPlaylist => "new_playlist",
+            Action::EditPlaylist => "edit_playlist",
             Action::DeletePlaylist => "delete_playlist",
             Action::ToggleIdle => "idle",
             Action::IdlePreview => "idle_preview",
@@ -311,6 +315,7 @@ pub enum MenuAct {
     /// like/unlike, save/remove, follow/unfollow
     Save,
     NewPlaylist,
+    EditPlaylist,
     DeletePlaylist,
 }
 
@@ -459,7 +464,7 @@ pub struct App {
     pub back: Vec<Page>,
     pub forward: Vec<Page>,
     /// each list's sort, filter and scroll, kept while you browse elsewhere
-    list_views: HashMap<String, TrackView>,
+    pub(crate) list_views: HashMap<String, TrackView>,
     last_click: Option<(Instant, usize)>,
     pub meters: Meters,
     pub stream: Option<singularity_proto::StreamInfo>,
@@ -693,6 +698,7 @@ impl App {
             || (crate::setup::wanted(self) && crate::setup::step(self) == crate::setup::Step::Key)
             || self.picker.is_some()
             || self.naming.is_some()
+            || self.playlists.details.is_some()
             || self.view.as_ref().is_some_and(|v| v.filtering)
             || (self.search.is_some() && self.focus == "home")
     }
@@ -881,6 +887,7 @@ impl App {
             Action::PickTheme => self.open_picker(crate::looks::PickerKind::Theme),
             Action::SaveLayout => self.naming = Some(Naming::layout()),
             Action::NewPlaylist => self.ask_new_playlist(),
+            Action::EditPlaylist => self.edit_this_playlist(),
             Action::DeletePlaylist => self.delete_this_playlist(),
             Action::ToggleIdle => self.toggle_idle(),
             Action::IdlePreview => self.idle_preview = true,
@@ -1001,6 +1008,9 @@ impl App {
         }
         if self.naming.is_some() {
             return self.naming_key(k);
+        }
+        if self.playlists.details.is_some() {
+            return self.details_key(k);
         }
         if crate::setup::wanted(self) {
             return self.wizard_key(k);
@@ -1221,6 +1231,7 @@ impl App {
             self.seed_liked(&p.tracks);
         }
         self.lists.entry(p.uri.clone()).or_default().add(&p);
+        self.details_arrived(&p.uri);
     }
 
     /// Open sidebar row `row` (0 = Home, 1 = Search, then the library).
@@ -1783,6 +1794,7 @@ impl App {
             }
             MenuAct::Save => self.toggle_saved(&uri, &name),
             MenuAct::NewPlaylist => self.ask_new_playlist(),
+            MenuAct::EditPlaylist => self.edit_details(&uri),
             MenuAct::DeletePlaylist => self.delete_playlist(&uri),
         }
     }
@@ -1841,6 +1853,8 @@ impl App {
         let s = s.trim();
         if crate::setup::wanted(self) && crate::setup::step(self) == crate::setup::Step::Key {
             self.setup.key.push_str(s);
+        } else if self.playlists.details.is_some() {
+            self.details_paste(s);
         } else if let Some(n) = self.naming.as_mut() {
             n.text.extend(s.chars().filter(|c| !c.is_control()).take(100usize.saturating_sub(n.text.chars().count())));
         } else if let Some(p) = self.palette.as_mut() {

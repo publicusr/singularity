@@ -575,3 +575,12 @@ flowchart LR
   Catalogue keeps created/deleted playlists, refuses others'), App create/open and delete-twice. pty `playlists`.
   Live check (`examples/playlist_probe.rs --create-delete`): created, listed and marked ours, deleted, gone. The
   first two tries were 400s with the `info` field; nothing was created by them.
+- **#52 Rename and re-describe ✅** (2026-10-18): "Edit details…" on your own playlists (sidebar right-click, Ctrl+K
+  "edit this playlist"): Name and a wrapped Description (300 chars; pasted line breaks become spaces), Tab between
+  them, Enter saves, Ctrl+U clears a field. The new name shows at once in the sidebar, page and Pane titles and
+  back/forward; the description at once in the list header (now shown after the subtitle: "Playlist · owner — …").
+  A refusal puts the old ones back with a toast (`Event::PlaylistEdited { ok }`). The form waits for the playlist's
+  first page before it can save, so a description not yet fetched can't be cleared by mistake. An emptied
+  description is sent as `noValue: [LIST_DESCRIPTION]`. Live check (`playlist_probe --details`): accepted in ~0.3 s,
+  read back, emptied, scratch deleted. Spotify stores descriptions HTML-escaped (`&lt;b&gt;`, `&#x2F;`): the
+  decoder now handles those and decodes `&amp;` last.

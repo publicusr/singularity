@@ -35,6 +35,23 @@ pub fn rootlist_remove(uri: &str) -> Value {
     changes(vec![json!({ "kind": "REM", "rem": { "itemsAsKey": true, "items": [{ "uri": uri }] } })])
 }
 
+/// `POST /playlist/{id}/changes`: a new name and description; an empty description is cleared (`noValue`).
+pub fn details(name: &str, description: &str) -> Value {
+    let mut attrs = json!({ "values": { "name": name } });
+    if description.is_empty() {
+        attrs["noValue"] = json!(["LIST_DESCRIPTION"]);
+    } else {
+        attrs["values"]["description"] = Value::from(description);
+    }
+    changes(vec![json!({ "kind": "UPDATE_LIST_ATTRIBUTES", "updateListAttributes": { "newAttributes": attrs } })])
+}
+
+/// `/playlist/{id}/changes` for `spotify:playlist:{id}`.
+pub fn changes_path(uri: &str) -> Option<String> {
+    let id = uri.strip_prefix("spotify:playlist:")?;
+    id.bytes().all(|b| b.is_ascii_alphanumeric()).then(|| format!("/playlist/{id}/changes"))
+}
+
 pub fn rootlist_path(username: &str) -> String {
     let user: String = username.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
     format!("/user/{user}/rootlist/changes")
@@ -77,5 +94,13 @@ mod tests {
         assert!(add.get("baseRevision").is_none());
         assert_eq!(rootlist_remove("spotify:playlist:x")["deltas"][0]["ops"][0], json!({"kind":"REM","rem":{"itemsAsKey":true,"items":[{"uri":"spotify:playlist:x"}]}}));
         assert_eq!(rootlist_path("a b@c"), "/user/a%20b%40c/rootlist/changes");
+        assert_eq!(
+            details("Road trip", "Songs for the car")["deltas"][0]["ops"][0],
+            json!({"kind":"UPDATE_LIST_ATTRIBUTES","updateListAttributes":{"newAttributes":{"values":{"name":"Road trip","description":"Songs for the car"}}}})
+        );
+        assert_eq!(details("Road trip", "")["deltas"][0]["ops"][0]["updateListAttributes"]["newAttributes"], json!({"values":{"name":"Road trip"},"noValue":["LIST_DESCRIPTION"]}));
+        assert_eq!(changes_path("spotify:playlist:37i9dQZF1"), Some("/playlist/37i9dQZF1/changes".into()));
+        assert_eq!(changes_path("spotify:album:x"), None);
+        assert_eq!(changes_path("spotify:playlist:../x"), None);
     }
 }

@@ -275,7 +275,11 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             sx += 3;
         }
     }
-    let sub = list.header.as_ref().map(|h| h.subtitle.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| view.subtitle.clone());
+    let mut sub = list.header.as_ref().map(|h| h.subtitle.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| view.subtitle.clone());
+    // a playlist's description follows what it is, on one line
+    if let Some(d) = list.header.as_ref().map(|h| h.description.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|d| !d.is_empty()) {
+        sub = if sub.is_empty() { d } else { format!("{sub} — {d}") };
+    }
     text(buf, sx, r.y + 1, end.saturating_sub(sx), &clip(&sub, end.saturating_sub(sx)), th.s(th.dim));
     let flabel = if view.filtering {
         format!("filter: {}▏", view.filter)

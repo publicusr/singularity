@@ -345,6 +345,36 @@ async fn playlists_are_created_and_deleted_and_only_your_own() {
 }
 
 #[tokio::test]
+async fn a_playlist_is_renamed_and_redescribed_and_a_refusal_is_told() {
+    use singularity_proto::{Command, HomeFeed};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ed.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
+    let mut a = connect(&path).await;
+    // the answer to an edit, then the Library after it
+    async fn edited(s: &mut UnixStream) -> ((String, String, bool), singularity_proto::Library) {
+        let mut got = None;
+        loop {
+            match proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap() {
+                DaemonMsg::Event(Event::PlaylistEdited { name, description, ok, .. }) => got = Some((name, description, ok)),
+                DaemonMsg::Event(Event::Library(l)) if got.is_some() => return (got.unwrap(), l),
+                _ => {}
+            }
+        }
+    }
+    let mine = "spotify:playlist:fakemine".to_string();
+    let edit = |name: &str, description: &str| ClientMsg::Command(Command::EditPlaylist { uri: mine.clone(), name: name.into(), description: description.into() });
+    proto::write_msg(&mut a, &edit("Mixtape II", "")).await.unwrap();
+    let ((name, description, ok), lib) = edited(&mut a).await;
+    assert_eq!((name.as_str(), description.as_str(), ok), ("Mixtape II", "", true));
+    assert!(lib.items.iter().any(|i| i.uri == mine && i.name == "Mixtape II"));
+    proto::write_msg(&mut a, &edit("fail", "x")).await.unwrap();
+    let ((_, _, ok), lib) = edited(&mut a).await;
+    assert!(!ok && lib.items.iter().any(|i| i.uri == mine && i.name == "Mixtape II"), "refused: the old name stays");
+}
+
+#[tokio::test]
 async fn the_listening_log_sums_up_exports_and_deletes_through_the_protocol() {
     use singularity_proto::{Command, Item};
     use singularityd::store::{Play, Store};

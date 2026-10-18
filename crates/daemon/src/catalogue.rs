@@ -55,6 +55,8 @@ pub enum CatCmd {
     CreatePlaylist(String),
     /// one of your playlists out of the library (#51)
     DeletePlaylist(String),
+    /// a new name and description for one of your playlists (#52)
+    EditPlaylist { uri: String, name: String, description: String },
     /// the Engine restarted (a Soloist update): start the context again where it was, on our device
     Resume(crate::engine::Resume),
     /// one raw private-API query, answered on `reply` (the library backup, one request at a time)
@@ -81,6 +83,8 @@ pub enum CatEvent {
     Saved(Vec<singularity_proto::SavedFlag>),
     /// a playlist was created (#51)
     Created { uri: String, name: String },
+    /// a playlist's details were saved, or refused (`ok: false`)
+    Edited { uri: String, name: String, description: String, ok: bool },
     Error(String),
 }
 
@@ -176,6 +180,11 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
                 st.delete_playlist(uri).await;
                 let _ = self_tx.send(CatCmd::Library).await;
             }
+            CatCmd::EditPlaylist { uri, name, description } => {
+                if st.edit_playlist(uri, name, description).await {
+                    let _ = self_tx.send(CatCmd::Library).await;
+                }
+            }
             CatCmd::Query { op, vars, reply } => {
                 let _ = reply.send(st.query(&op, vars).await);
             }
@@ -233,6 +242,19 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                     } else {
                         lib.items.retain(|i| i.uri != uri);
                     }
+                    ev.push(CatEvent::Library(lib.clone()));
+                    ev
+                }
+                // a name with "fail" in it is refused
+                CatCmd::EditPlaylist { uri, name, description } => {
+                    let ok = !name.contains("fail") && lib.items.iter().any(|i| i.uri == uri && i.own);
+                    let mut ev = vec![];
+                    if ok {
+                        lib.items.iter_mut().filter(|i| i.uri == uri).for_each(|i| i.name = name.clone());
+                    } else {
+                        ev.push(CatEvent::Error("Couldn't save the playlist's details (fake failure)".into()));
+                    }
+                    ev.push(CatEvent::Edited { uri, name, description, ok });
                     ev.push(CatEvent::Library(lib.clone()));
                     ev
                 }
@@ -454,7 +476,9 @@ fn fake_tracks(uri: &str) -> Vec<CatEvent> {
                 subtitle: "Album · 2024 · Fake Records".into(),
                 artists: vec![singularity_proto::Link { name: "Nova Drift".into(), uri: "spotify:artist:fake0".into() }],
                 cover_url: None,
+                description: String::new(),
             });
+            let header = header.or_else(|| (offset == 0 && uri == "spotify:playlist:fakemine").then(|| singularity_proto::ListHeader { subtitle: "Playlist · fake".into(), description: "Made up for the pty".into(), ..Default::default() }));
             CatEvent::Tracks(TrackPage { uri: uri.into(), offset, total, tracks, header })
         })
         .collect()
@@ -748,6 +772,24 @@ impl State {
                 let _ = self.ev.send(CatEvent::Error(format!("Couldn't delete the playlist: {e}"))).await;
             }
         }
+    }
+
+    /// True if Spotify took the new details.
+    async fn edit_playlist(&mut self, uri: String, name: String, description: String) -> bool {
+        let Some(session) = self.session().await else { return false };
+        let saved = async {
+            let path = crate::playlists::changes_path(&uri).ok_or_else(|| anyhow::anyhow!("not a playlist"))?;
+            crate::playlists::post(&session, &path, &crate::playlists::details(&name, &description)).await
+        };
+        let ok = match saved.await {
+            Ok(_) => true,
+            Err(e) => {
+                let _ = self.ev.send(CatEvent::Error(format!("Couldn't save the playlist's details: {e}"))).await;
+                false
+            }
+        };
+        let _ = self.ev.send(CatEvent::Edited { uri, name, description, ok }).await;
+        ok
     }
 
     async fn check_saved(&mut self, uris: Vec<String>) {
@@ -1051,7 +1093,7 @@ fn first_url(sources: &Value) -> Option<String> {
         .and_then(|s| s["url"].as_str().map(String::from))
 }
 
-fn plain(html: &str) -> String {
+pub(crate) fn plain(html: &str) -> String {
     let mut out = String::new();
     let mut tag = false;
     for c in html.chars() {
@@ -1062,7 +1104,9 @@ fn plain(html: &str) -> String {
             _ => {}
         }
     }
-    out.replace("&amp;", "&").replace("&quot;", "\"").replace("&#x27;", "'").replace("&#39;", "'").trim().to_string()
+    // `&amp;` last, so an escaped entity stays as typed
+    let out = out.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#x27;", "'").replace("&#39;", "'").replace("&#x2F;", "/");
+    out.replace("&amp;", "&").trim().to_string()
 }
 
 /// A Pathfinder entity (Album, Playlist, Artist, Episode, Podcast) as a Card.
