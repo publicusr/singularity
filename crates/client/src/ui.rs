@@ -120,11 +120,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.picker.is_some() {
         crate::looks::draw_picker(f.buffer_mut(), area, app, &th);
     }
-    if let Some(name) = app.naming.clone() {
-        let inner = popup(f.buffer_mut(), naming_rect(area), &th, "Save layout as");
+    if let Some(n) = app.naming.clone() {
+        let (title, hint) = match n.purpose {
+            crate::app::NameFor::Layout => ("Save layout as", "Enter save · Esc cancel · it comes back in Ctrl+K → Design"),
+            crate::app::NameFor::NewPlaylist => ("New playlist", "Enter create · Esc cancel"),
+        };
+        let inner = popup(f.buffer_mut(), naming_rect(area), &th, title);
         let buf = f.buffer_mut();
-        text(buf, inner.x + 1, inner.y, inner.width.saturating_sub(2), &format!("› {name}▏"), th.s(th.fg).add_modifier(Modifier::BOLD));
-        text(buf, inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), "Enter save · Esc cancel · it comes back in Ctrl+K → Design", th.s(th.dim));
+        // the end of a long name stays in view
+        let w = inner.width.saturating_sub(5) as usize;
+        let shown: String = n.text.chars().skip(n.text.chars().count().saturating_sub(w)).collect();
+        text(buf, inner.x + 1, inner.y, inner.width.saturating_sub(2), &format!("› {shown}▏"), th.s(th.fg).add_modifier(Modifier::BOLD));
+        text(buf, inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), hint, th.s(th.dim));
     }
     if app.health_open {
         crate::setup::draw_health(f.buffer_mut(), crate::setup::health_rect(area), app, &th);
@@ -1231,7 +1238,7 @@ mod tests {
     fn library_app() -> (App, tokio::sync::mpsc::Receiver<singularity_proto::Command>) {
         use singularity_proto::{Library, LibraryItem};
         let (mut app, rx) = playing_app(200_000);
-        let item = |uri: &str, name: &str, kind: &str, depth| LibraryItem { uri: uri.into(), name: name.into(), subtitle: String::new(), kind: kind.into(), image_url: None, depth };
+        let item = |uri: &str, name: &str, kind: &str, depth| LibraryItem { uri: uri.into(), name: name.into(), subtitle: String::new(), kind: kind.into(), image_url: None, depth, own: false };
         app.library = Some(Library {
             items: vec![
                 item("spotify:collection", "Liked Songs", "liked", 0),
@@ -1394,7 +1401,7 @@ mod tests {
             .collect();
         app.track_page(singularity_proto::TrackPage { uri: "spotify:playlist:p".into(), offset: 0, total: 80, tracks: rows, header: None });
         app.library = Some(singularity_proto::Library {
-            items: (0..60).map(|i| singularity_proto::LibraryItem { uri: format!("spotify:playlist:{i}"), name: format!("List {i}"), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0 }).collect(),
+            items: (0..60).map(|i| singularity_proto::LibraryItem { uri: format!("spotify:playlist:{i}"), name: format!("List {i}"), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: false }).collect(),
         });
         render(&mut app, 160, 48);
         // over an artist link, where the wheel used to do nothing

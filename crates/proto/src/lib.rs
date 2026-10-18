@@ -113,6 +113,12 @@ pub enum Command {
     ExportLocalData,
     /// Delete the listening log and every library backup (the Client confirms first).
     DeleteLocalData,
+    /// Create a playlist of your own at the top of the library (#51); answered by `Event::PlaylistCreated` and a
+    /// fresh `Event::Library`.
+    CreatePlaylist { name: String },
+    /// Delete one of your playlists (Spotify's "delete": it leaves your library); a fresh `Event::Library` follows,
+    /// with it still there if Spotify refused (the Client confirms first).
+    DeletePlaylist { uri: String },
     #[serde(other)]
     Unknown,
 }
@@ -169,6 +175,8 @@ pub enum Event {
     Listening(ListeningSummary),
     /// Stats for one period (answer to `GetStats`).
     Stats(Stats),
+    /// A playlist was created (answer to `CreatePlaylist`; the Client that asked opens it).
+    PlaylistCreated { uri: String, name: String },
     #[serde(other)]
     Unknown,
 }
@@ -297,6 +305,9 @@ pub struct LibraryItem {
     pub image_url: Option<String>,
     /// nesting inside folders (0 = top level)
     pub depth: u8,
+    /// a playlist you own (you can edit or delete it)
+    #[serde(default)]
+    pub own: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

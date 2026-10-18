@@ -73,7 +73,8 @@ pub struct LibraryPage {
     pub total: u32,
 }
 
-pub fn parse_library(v: &Value, depth: u8) -> LibraryPage {
+/// `me`: the logged-in username (playlists it owns are marked `own`).
+pub fn parse_library(v: &Value, depth: u8, me: &str) -> LibraryPage {
     let lib = &v["data"]["me"]["libraryV3"];
     let mut page = LibraryPage { items: vec![], total: lib["totalCount"].as_u64().unwrap_or(0) as u32 };
     for it in lib["items"].as_array().into_iter().flatten() {
@@ -95,7 +96,8 @@ pub fn parse_library(v: &Value, depth: u8) -> LibraryPage {
             t if t.contains("Folder") => ("folder", d["name"].as_str().unwrap_or("Folder").to_string(), String::new(), None),
             _ => continue,
         };
-        page.items.push(LibraryItem { uri, name, subtitle, kind: kind.into(), image_url: img, depth });
+        let own = kind == "playlist" && !me.is_empty() && d["ownerV2"]["data"]["username"].as_str() == Some(me);
+        page.items.push(LibraryItem { uri, name, subtitle, kind: kind.into(), image_url: img, depth, own });
     }
     page
 }
@@ -371,7 +373,7 @@ mod tests {
 
     #[test]
     fn library_items_kinds_and_folders() {
-        let p = parse_library(&fixture("library.json"), 0);
+        let p = parse_library(&fixture("library.json"), 0, "nova");
         let kinds: Vec<&str> = p.items.iter().map(|i| i.kind.as_str()).collect();
         assert_eq!(kinds, ["liked", "playlist", "folder", "album", "artist"]);
         assert_eq!(p.items[0].subtitle, "321 songs");
@@ -379,6 +381,9 @@ mod tests {
         assert_eq!(p.items[2].uri, "spotify:user:someone:folder:f00");
         assert_eq!(p.total, 5);
         assert!(p.items[3].image_url.as_deref().unwrap().ends_with("300"));
+        assert!(p.items[1].own, "nova's own playlist");
+        assert!(!parse_library(&fixture("library.json"), 0, "someone").items[1].own);
+        assert!(!parse_library(&fixture("library.json"), 0, "").items[1].own, "unknown user: nothing is ours");
     }
 
     #[test]

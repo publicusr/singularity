@@ -527,6 +527,40 @@ def queue_lift(t, out):
     t.send(b"q", 0.5)
 
 
+def playlists(t, out):
+    """#51: a new playlist from the sidebar's menu opens; deleting your own asks twice; others' offer no Delete."""
+    t.pump(1.0)
+    x, y = t.find("Fake Mixtape")
+    mouse(t, 2, x + 1, y, wait=0.4)  # right-click your own playlist
+    t.shot(f"{out}/0-own-menu.png")
+    print("own menu:", [l.strip() for l in t.screen.display if "Delete playlist" in l or "New playlist" in l][:2])
+    t.send(b"\x1b", 0.2)
+    x, y = t.find("Daily Mix 1")
+    mouse(t, 2, x + 1, y, wait=0.4)  # someone else's: no Delete
+    print("their menu has Delete:", any("Delete playlist" in l for l in t.screen.display))
+    t.shot(f"{out}/1-their-menu.png")
+    t.send(b"\x1b", 0.2)
+    t.send(b"\x0b", 0.3)  # Ctrl+K
+    t.send(b"new playlist", 0.3)
+    t.send(b"\r", 0.3)
+    t.send(b"Road trip", 0.3)
+    t.shot(f"{out}/2-naming.png")
+    t.send(b"\r", 1.0)
+    t.shot(f"{out}/3-created.png")
+    print("opened:", any("Road trip" in l for l in t.screen.display[:6]), "| toast:", [l.strip() for l in t.screen.display if "Created" in l][:1])
+    t.send(b"\x0b", 0.3)
+    t.send(b"delete this playlist", 0.3)
+    t.send(b"\r", 0.4)
+    t.shot(f"{out}/4-asks.png")
+    print("asks:", [l.strip() for l in t.screen.display if "again within" in l][:1])
+    t.send(b"\x0b", 0.3)
+    t.send(b"delete this playlist", 0.3)
+    t.send(b"\r", 1.0)
+    t.shot(f"{out}/5-deleted.png")
+    print("still listed:", any("Road trip" in l for l in t.screen.display))
+    t.send(b"q", 0.5)
+
+
 def arrows(t, out):
     """The owner's report: cycling a narrow Pane onto a long title hid its ◂ ▸. Walk two Panes through every Widget."""
     t.pump(1.0)
@@ -696,7 +730,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "mini"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "mini", "playlists"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "ambient", "popup") else "0"
@@ -751,6 +785,8 @@ def main():
             return stalls(t, out)
         if scenario == "queue-lift":
             return queue_lift(t, out)
+        if scenario == "playlists":
+            return playlists(t, out)
         if scenario == "mini":
             return mini(t, out)
         if scenario == "wheel":

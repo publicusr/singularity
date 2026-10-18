@@ -1,0 +1,81 @@
+//! Playlist editing (batch 3, #51–#56): the web player's own writes, as JSON. Bodies are built here (pure, tested);
+//! `post` sends one, once (a retried write could add tracks twice).
+//!
+//! Shapes read from the web player's bundle on 2026-10-18 (`docs/research/2026-10-playlists-and-podcasts.md`):
+//! protobuf messages in their JSON form (enums by name, empty fields left out).
+
+use librespot_core::session::Session;
+use serde_json::{Value, json};
+
+/// The web player's playlist host.
+pub const HOST: &str = "https://spclient.wg.spotify.com/playlist/v2";
+
+fn delta(ops: Vec<Value>) -> Value {
+    json!({ "ops": ops, "info": { "source": { "client": "WEBPLAYER" } } })
+}
+
+/// List changes: one delta, no base revision (none of these writes needs one).
+fn changes(ops: Vec<Value>) -> Value {
+    json!({ "deltas": [delta(ops)] })
+}
+
+/// `POST /playlist`: a new playlist with this name (answered by `{uri}`; it isn't in the library until `rootlist_add`).
+/// The body is the bare op list: unlike a delta it has no `info` (an unknown field is a 400).
+pub fn create(name: &str) -> Value {
+    json!({ "ops": [{ "kind": "UPDATE_LIST_ATTRIBUTES", "updateListAttributes": { "newAttributes": { "values": { "name": name } } } }] })
+}
+
+/// `POST /user/{username}/rootlist/changes`: put a playlist at the top of the library.
+pub fn rootlist_add(uri: &str, now_ms: u64) -> Value {
+    changes(vec![json!({ "kind": "ADD", "add": { "addFirst": true, "items": [{ "uri": uri, "attributes": { "timestamp": now_ms.to_string() } }] } })])
+}
+
+/// `POST /user/{username}/rootlist/changes`: take a playlist out of the library (Spotify's "delete").
+pub fn rootlist_remove(uri: &str) -> Value {
+    changes(vec![json!({ "kind": "REM", "rem": { "itemsAsKey": true, "items": [{ "uri": uri }] } })])
+}
+
+pub fn rootlist_path(username: &str) -> String {
+    let user: String = username.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+    format!("/user/{user}/rootlist/changes")
+}
+
+/// Send one write to the playlist host. A non-2xx answer is an error carrying Spotify's status.
+pub async fn post(session: &Session, path: &str, body: &Value) -> anyhow::Result<Value> {
+    let token = session.login5().auth_token().await?;
+    let mut req = reqwest::Client::new()
+        .post(format!("{HOST}{path}"))
+        .header("authorization", format!("{} {}", token.token_type, token.access_token))
+        .header("accept", "application/json")
+        .header("content-type", "application/json;charset=UTF-8")
+        .body(body.to_string());
+    if let Ok(t) = session.spclient().client_token().await {
+        req = req.header("client-token", t);
+    }
+    let resp = req.send().await?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        tracing::debug!("{path}: {status}: {}", text.chars().take(300).collect::<String>());
+        anyhow::bail!("Spotify said {status}");
+    }
+    Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bodies_are_the_web_players() {
+        assert_eq!(
+            create("Road trip"),
+            json!({"ops":[{"kind":"UPDATE_LIST_ATTRIBUTES","updateListAttributes":{"newAttributes":{"values":{"name":"Road trip"}}}}]})
+        );
+        let add = rootlist_add("spotify:playlist:x", 1_700_000_000_000);
+        assert_eq!(add["deltas"][0]["ops"][0]["add"], json!({"addFirst":true,"items":[{"uri":"spotify:playlist:x","attributes":{"timestamp":"1700000000000"}}]}));
+        assert!(add.get("baseRevision").is_none());
+        assert_eq!(rootlist_remove("spotify:playlist:x")["deltas"][0]["ops"][0], json!({"kind":"REM","rem":{"itemsAsKey":true,"items":[{"uri":"spotify:playlist:x"}]}}));
+        assert_eq!(rootlist_path("a b@c"), "/user/a%20b%40c/rootlist/changes");
+    }
+}

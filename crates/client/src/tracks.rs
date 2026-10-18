@@ -225,6 +225,8 @@ fn fmt_dur(ms: u64) -> String {
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let Some(mut view) = app.view.take() else { return };
     let empty = TrackList::default();
+    // a page has arrived (an empty playlist's says total 0)
+    let arrived = app.lists.contains_key(&view.uri);
     let list = app.lists.get(&view.uri).unwrap_or(&empty);
     let order = view.order(&list.rows);
     // hit-boxes are registered once the list is no longer borrowed
@@ -234,7 +236,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let w = r.width.saturating_sub(2);
     // header: title, count / progress, filter
     let count = if list.total == 0 && list.rows.is_empty() {
-        "loading…".to_string()
+        if arrived { "no songs yet".to_string() } else { "loading…".to_string() }
     } else if list.complete() {
         format!("{} songs", list.total)
     } else {

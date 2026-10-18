@@ -15,6 +15,7 @@ mod looks;
 mod lyrics;
 mod meters;
 mod mini;
+mod playlists;
 mod queue;
 mod scrub;
 mod saved;
@@ -157,6 +158,7 @@ fn apply(app: &mut App, ev: ConnEvent) {
         }
         ConnEvent::Msg(DaemonMsg::Event(Event::Home(h))) => app.home = Some(h),
         ConnEvent::Msg(DaemonMsg::Event(Event::Library(l))) => app.library = Some(l),
+        ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistCreated { uri, name })) => app.playlist_created(&uri, &name),
         ConnEvent::Msg(DaemonMsg::Event(Event::Tracks(p))) => app.track_page(p),
         ConnEvent::Msg(DaemonMsg::Event(Event::Spectrum(f))) => {
             // the setup's audio check passes once real sound comes through

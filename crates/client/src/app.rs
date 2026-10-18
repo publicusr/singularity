@@ -45,6 +45,8 @@ pub enum Action {
     PickDesign,
     PickTheme,
     SaveLayout,
+    NewPlaylist,
+    DeletePlaylist,
     ToggleIdle,
     IdlePreview,
     ToggleNotifications,
@@ -77,7 +79,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 45] = [
+    pub const ALL: [Action; 47] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -94,6 +96,8 @@ impl Action {
         Action::PickDesign,
         Action::PickTheme,
         Action::SaveLayout,
+        Action::NewPlaylist,
+        Action::DeletePlaylist,
         Action::ToggleIdle,
         Action::IdlePreview,
         Action::ToggleNotifications,
@@ -142,6 +146,8 @@ impl Action {
             Action::PickDesign => "Design: pick one (layout + colours, live preview)",
             Action::PickTheme => "Theme: pick colours (live preview)",
             Action::SaveLayout => "Save layout as… (comes back in Design)",
+            Action::NewPlaylist => "New playlist…",
+            Action::DeletePlaylist => "Delete this playlist (your own; asks twice)…",
             Action::ToggleIdle => "Idle takeover on / off (the hole drifts over the screen)",
             Action::IdlePreview => "Idle takeover: show it now",
             Action::ToggleNotifications => "Track-change notifications on / off",
@@ -192,6 +198,8 @@ impl Action {
             Action::PickDesign => "design",
             Action::PickTheme => "theme",
             Action::SaveLayout => "save_layout",
+            Action::NewPlaylist => "new_playlist",
+            Action::DeletePlaylist => "delete_playlist",
             Action::ToggleIdle => "idle",
             Action::IdlePreview => "idle_preview",
             Action::ToggleNotifications => "notifications",
@@ -302,6 +310,8 @@ pub enum MenuAct {
     CopyLink,
     /// like/unlike, save/remove, follow/unfollow
     Save,
+    NewPlaylist,
+    DeletePlaylist,
 }
 
 /// What a context menu is about.
@@ -314,6 +324,32 @@ pub enum Target {
     Queued { uri: String, uid: String, name: String, queued: bool },
     /// any other track (an artist's popular tracks)
     Track { uri: String, name: String },
+    /// a sidebar row: a playlist, album, artist or folder of the library
+    Library { uri: String, name: String },
+}
+
+/// The naming popup: a name being typed, and what it's for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Naming {
+    pub text: String,
+    pub purpose: NameFor,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NameFor {
+    /// "Save layout as…" (#19)
+    Layout,
+    /// "New playlist…" (#51)
+    NewPlaylist,
+}
+
+impl Naming {
+    pub fn layout() -> Naming {
+        Naming { text: String::new(), purpose: NameFor::Layout }
+    }
+    pub fn playlist() -> Naming {
+        Naming { text: String::new(), purpose: NameFor::NewPlaylist }
+    }
 }
 
 /// What the main Pane shows; back/forward walk these.
@@ -448,6 +484,8 @@ pub struct App {
     pub(crate) saved: crate::saved::Saved,
     /// a saved playlist's Saved button was clicked once: a second click soon after removes it
     confirm_remove: Option<(String, Instant)>,
+    /// creating and deleting playlists (#51)
+    pub(crate) playlists: crate::playlists::Playlists,
     /// `config.toml` and `keys.toml` (#20), and the files they came from (None in tests)
     pub config: singularity_config::Config,
     pub keymap: crate::keymap::Keymap,
@@ -464,7 +502,7 @@ pub struct App {
     /// the saved layout on screen (its file name), the ones there are, and the name being typed for a new one (#19)
     pub layout_name: Option<String>,
     pub saved_layouts: Vec<crate::layouts::Saved>,
-    pub naming: Option<String>,
+    pub naming: Option<Naming>,
     pub layouts_dir: Option<std::path::PathBuf>,
     /// whether we asked the Daemon for spectrum frames
     spectrum_on: bool,
@@ -548,6 +586,7 @@ impl App {
             hole_at: None,
             saved: Default::default(),
             confirm_remove: None,
+            playlists: Default::default(),
             config: Default::default(),
             keymap: Default::default(),
             config_files: None,
@@ -840,7 +879,9 @@ impl App {
             Action::NextVariant => self.next_variant(),
             Action::PickDesign => self.open_picker(crate::looks::PickerKind::Design),
             Action::PickTheme => self.open_picker(crate::looks::PickerKind::Theme),
-            Action::SaveLayout => self.naming = Some(String::new()),
+            Action::SaveLayout => self.naming = Some(Naming::layout()),
+            Action::NewPlaylist => self.ask_new_playlist(),
+            Action::DeletePlaylist => self.delete_this_playlist(),
             Action::ToggleIdle => self.toggle_idle(),
             Action::IdlePreview => self.idle_preview = true,
             Action::Login => self.send(Command::Login),
@@ -1573,6 +1614,10 @@ impl App {
                     self.focus = "home".into();
                 }
             }
+            KeyCode::Menu | KeyCode::F(10) => {
+                let row = self.sidebar.sel;
+                self.open_side_menu(row, None);
+            }
             _ => return false,
         }
         true
@@ -1678,7 +1723,7 @@ impl App {
         self.toggle_saved(&l.uri, &l.name);
     }
 
-    fn hit_rect(&self, h: &Hit) -> Option<Rect> {
+    pub(crate) fn hit_rect(&self, h: &Hit) -> Option<Rect> {
         self.hits.iter().find(|(_, x)| x == h).map(|(r, _)| *r)
     }
 
@@ -1693,10 +1738,11 @@ impl App {
                 Some((row.uri.clone(), row.name.clone(), "track".into()))
             }
             Target::Queued { uri, name, .. } | Target::Track { uri, name } => Some((uri.clone(), name.clone(), "track".into())),
+            Target::Library { uri, name } => Some((uri.clone(), name.clone(), uri.split(':').nth(1).unwrap_or("").into())),
         }
     }
 
-    fn menu_run(&mut self, i: usize) {
+    pub(crate) fn menu_run(&mut self, i: usize) {
         let Some(m) = self.menu.take() else { return };
         let Some((_, act)) = m.items.get(i).cloned() else { return };
         let Some((uri, name, kind)) = self.target_track(&m.target) else { return };
@@ -1736,6 +1782,8 @@ impl App {
                 self.say("Link copied");
             }
             MenuAct::Save => self.toggle_saved(&uri, &name),
+            MenuAct::NewPlaylist => self.ask_new_playlist(),
+            MenuAct::DeletePlaylist => self.delete_playlist(&uri),
         }
     }
 
@@ -1793,6 +1841,8 @@ impl App {
         let s = s.trim();
         if crate::setup::wanted(self) && crate::setup::step(self) == crate::setup::Step::Key {
             self.setup.key.push_str(s);
+        } else if let Some(n) = self.naming.as_mut() {
+            n.text.extend(s.chars().filter(|c| !c.is_control()).take(100usize.saturating_sub(n.text.chars().count())));
         } else if let Some(p) = self.palette.as_mut() {
             p.query.push_str(s);
             p.selected = 0;
@@ -1976,6 +2026,10 @@ impl App {
                     Some(Hit::Card(c)) => {
                         self.focus = "home".into();
                         self.open_menu(c, at);
+                    }
+                    Some(Hit::Side(row)) => {
+                        self.focus = "library".into();
+                        self.open_side_menu(row, at);
                     }
                     Some(Hit::Track(vi)) => {
                         self.focus = "home".into();

@@ -230,21 +230,24 @@ impl App {
         }
     }
 
-    /// Typing a name for "Save layout as…".
+    /// Typing a name: for "Save layout as…" (#19) or a new playlist (#51).
     pub fn naming_key(&mut self, k: KeyEvent) {
         let Some(n) = self.naming.as_mut() else { return };
+        let max = if n.purpose == crate::app::NameFor::Layout { 40 } else { 100 };
         match k.code {
             KeyCode::Esc => self.naming = None,
             KeyCode::Enter => {
-                let name = self.naming.take().unwrap_or_default();
-                if !name.trim().is_empty() {
-                    self.save_layout(&name);
+                let Some(n) = self.naming.take() else { return };
+                match n.purpose {
+                    crate::app::NameFor::Layout if !n.text.trim().is_empty() => self.save_layout(&n.text),
+                    crate::app::NameFor::Layout => {}
+                    crate::app::NameFor::NewPlaylist => self.create_playlist(&n.text),
                 }
             }
             KeyCode::Backspace => {
-                n.pop();
+                n.text.pop();
             }
-            KeyCode::Char(c) if n.chars().count() < 40 => n.push(c),
+            KeyCode::Char(c) if n.text.chars().count() < max => n.text.push(c),
             _ => {}
         }
     }

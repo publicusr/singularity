@@ -26,5 +26,5 @@ Done from round 1: #25 stale Daemon, #26 wheel, #27 Home by lines, #28 back/forw
 **v1.x (2026-10-18):** planned in DESIGN-TREE D29–D42, SPEC.md "v1.x", spec issue #34. Batch 1 (stats) done:
 #35 Daemon stats, #36 Stats page, #37 Widgets. Next: the Visual demos, then batch 2.
 Batch 2 done (2026-10-18): #46 waveform seek bar (removed again, D46), #47 mini-player, #49 ♥ on every row, #50 album song into the queue;
-#48 mouse buttons dropped (D45). Also #45 (slow-connection notice) and owner rounds 2–3 (#38–#44). **Next: batch 3,
-playlist editing (D32, D40), tickets first.**
+#48 mouse buttons dropped (D45). Also #45 (slow-connection notice) and owner rounds 2–3 (#38–#44). Batch 3,
+playlist editing (D32, D40): tickets #51–#56; #51 create/delete done. Waveform removed again (D46).

@@ -302,6 +302,49 @@ async fn saving_settles_on_spotifys_answer_and_failures_carry_the_old_value() {
 }
 
 #[tokio::test]
+async fn playlists_are_created_and_deleted_and_only_your_own() {
+    use singularity_proto::{Command, HomeFeed, Library};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pl.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
+    let mut a = connect(&path).await;
+    // events up to the next Library that passes `ok`: (errors, created, that library)
+    async fn until_library(s: &mut UnixStream, ok: impl Fn(&Library) -> bool) -> (Vec<String>, Option<(String, String)>, Library) {
+        let (mut errs, mut made) = (vec![], None);
+        loop {
+            match proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap() {
+                DaemonMsg::Event(Event::Error { message }) => errs.push(message),
+                DaemonMsg::Event(Event::PlaylistCreated { uri, name }) => made = Some((uri, name)),
+                DaemonMsg::Event(Event::Library(l)) if ok(&l) => return (errs, made, l),
+                _ => {}
+            }
+        }
+    }
+    let send = |c| ClientMsg::Command(c);
+    let (_, _, lib) = until_library(&mut a, |_| true).await;
+    assert!(lib.items.iter().any(|i| i.own), "the fake user owns one");
+    proto::write_msg(&mut a, &send(Command::CreatePlaylist { name: "Road trip".into() })).await.unwrap();
+    let (errs, made, lib) = until_library(&mut a, |l| l.items.iter().any(|i| i.name == "Road trip")).await;
+    let (uri, name) = made.expect("created");
+    assert!(errs.is_empty() && name == "Road trip");
+    assert_eq!((lib.items[1].uri.as_str(), lib.items[1].own), (uri.as_str(), true), "at the top, under Liked Songs");
+    proto::write_msg(&mut a, &send(Command::DeletePlaylist { uri: uri.clone() })).await.unwrap();
+    let (errs, _, lib) = until_library(&mut a, |l| !l.items.iter().any(|i| i.uri == uri)).await;
+    assert!(errs.is_empty());
+    // someone else's: refused, the library unchanged
+    let theirs = lib.items.iter().find(|i| i.kind == "playlist" && !i.own).map(|i| i.uri.clone());
+    if let Some(theirs) = theirs {
+        proto::write_msg(&mut a, &send(Command::DeletePlaylist { uri: theirs.clone() })).await.unwrap();
+        let (errs, _, lib) = until_library(&mut a, |_| true).await;
+        assert!(!errs.is_empty() && lib.items.iter().any(|i| i.uri == theirs));
+    }
+    proto::write_msg(&mut a, &send(Command::CreatePlaylist { name: "fail".into() })).await.unwrap();
+    let (errs, made, _) = until_library(&mut a, |_| true).await;
+    assert!(!errs.is_empty() && made.is_none(), "a failure is told");
+}
+
+#[tokio::test]
 async fn the_listening_log_sums_up_exports_and_deletes_through_the_protocol() {
     use singularity_proto::{Command, Item};
     use singularityd::store::{Play, Store};

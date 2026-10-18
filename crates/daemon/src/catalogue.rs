@@ -51,6 +51,10 @@ pub enum CatCmd {
     Remote(Command),
     SetSaved { uri: String, saved: bool },
     CheckSaved(Vec<String>),
+    /// a new playlist of your own (#51)
+    CreatePlaylist(String),
+    /// one of your playlists out of the library (#51)
+    DeletePlaylist(String),
     /// the Engine restarted (a Soloist update): start the context again where it was, on our device
     Resume(crate::engine::Resume),
     /// one raw private-API query, answered on `reply` (the library backup, one request at a time)
@@ -75,6 +79,8 @@ pub enum CatEvent {
     /// another device's playback (None: our Engine is the active device again)
     Remote(Option<singularity_proto::PlaybackState>),
     Saved(Vec<singularity_proto::SavedFlag>),
+    /// a playlist was created (#51)
+    Created { uri: String, name: String },
     Error(String),
 }
 
@@ -161,6 +167,15 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
                 }
             }
             CatCmd::CheckSaved(uris) => st.check_saved(uris).await,
+            // either way the sidebar shows the truth afterwards
+            CatCmd::CreatePlaylist(name) => {
+                st.create_playlist(name).await;
+                let _ = self_tx.send(CatCmd::Library).await;
+            }
+            CatCmd::DeletePlaylist(uri) => {
+                st.delete_playlist(uri).await;
+                let _ = self_tx.send(CatCmd::Library).await;
+            }
             CatCmd::Query { op, vars, reply } => {
                 let _ = reply.send(st.query(&op, vars).await);
             }
@@ -191,15 +206,36 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
         let ready = CatalogueStatus::Ready { username: "fake".into(), country: "SE".into(), premium: true };
         let _ = ev_tx.send(CatEvent::Status(ready.clone())).await;
         let _ = ev_tx.send(CatEvent::Home(home.clone())).await;
-        let _ = ev_tx.send(CatEvent::Library(fake_library(&home))).await;
+        let mut lib = fake_library(&home);
+        let _ = ev_tx.send(CatEvent::Library(lib.clone())).await;
         // what's been liked/saved here; the rest follows `fake_saved`
         let mut saved: HashMap<String, bool> = HashMap::new();
+        let mut created = 0;
         while let Some(cmd) = cmd_rx.recv().await {
             let evs = match cmd {
                 CatCmd::Home => vec![CatEvent::Home(home.clone())],
                 CatCmd::Login => vec![CatEvent::Status(ready.clone())],
                 CatCmd::Logout => vec![CatEvent::Status(CatalogueStatus::LoggedOut)],
-                CatCmd::Library => vec![CatEvent::Library(fake_library(&home))],
+                CatCmd::Library => vec![CatEvent::Library(lib.clone())],
+                // a name with "fail" in it fails, as does deleting a playlist whose URI has it
+                CatCmd::CreatePlaylist(name) if name.contains("fail") => vec![CatEvent::Error("Couldn't create the playlist (fake failure)".into()), CatEvent::Library(lib.clone())],
+                CatCmd::CreatePlaylist(name) => {
+                    created += 1;
+                    let uri = format!("spotify:playlist:fakenew{created}");
+                    let at = lib.items.iter().position(|i| i.kind != "liked").unwrap_or(lib.items.len());
+                    lib.items.insert(at, singularity_proto::LibraryItem { uri: uri.clone(), name: name.clone(), subtitle: "Playlist · fake".into(), kind: "playlist".into(), image_url: None, depth: 0, own: true });
+                    vec![CatEvent::Created { uri, name }, CatEvent::Library(lib.clone())]
+                }
+                CatCmd::DeletePlaylist(uri) => {
+                    let mut ev = vec![];
+                    if uri.contains("fail") || !lib.items.iter().any(|i| i.uri == uri && i.own) {
+                        ev.push(CatEvent::Error("Couldn't delete the playlist (fake failure)".into()));
+                    } else {
+                        lib.items.retain(|i| i.uri != uri);
+                    }
+                    ev.push(CatEvent::Library(lib.clone()));
+                    ev
+                }
                 CatCmd::Tracks(uri) => fake_tracks(&uri),
                 CatCmd::PlayFrom { context_uri, index, track_uri } => vec![CatEvent::ToEngine(Command::PlayFrom { context_uri, index, track_uri })],
                 // no Connect here: the fake Engine edits its own queue
@@ -331,10 +367,13 @@ fn fake_library(home: &HomeFeed) -> Library {
         kind: "liked".into(),
         image_url: None,
         depth: 0,
+        own: false,
     }];
     for c in home.shelves.iter().take(2).flat_map(|s| &s.cards).filter(|c| c.uri != "spotify:playlist:liked") {
-        items.push(singularity_proto::LibraryItem { uri: c.uri.clone(), name: c.name.clone(), subtitle: c.subtitle.clone(), kind: c.kind.clone(), image_url: c.image_url.clone(), depth: 0 });
+        items.push(singularity_proto::LibraryItem { uri: c.uri.clone(), name: c.name.clone(), subtitle: c.subtitle.clone(), kind: c.kind.clone(), image_url: c.image_url.clone(), depth: 0, own: false });
     }
+    // one playlist of the fake user's own, to edit
+    items.push(singularity_proto::LibraryItem { uri: "spotify:playlist:fakemine".into(), name: "Fake Mixtape".into(), subtitle: "Playlist · fake".into(), kind: "playlist".into(), image_url: None, depth: 0, own: true });
     Library { items }
 }
 
@@ -390,6 +429,9 @@ fn fake_saved(uri: &str) -> bool {
 }
 
 fn fake_tracks(uri: &str) -> Vec<CatEvent> {
+    if uri.contains(":fakenew") {
+        return vec![CatEvent::Tracks(TrackPage { uri: uri.into(), offset: 0, total: 0, tracks: vec![], header: None })];
+    }
     let total = if uri == library::LIKED { 250 } else { 40 };
     let artists = ["Nova Drift", "Mira Vale", "Lumen Fields", "Glass Harbour", "Polar Static"];
     (0..total)
@@ -580,7 +622,8 @@ impl State {
         let mut items = vec![];
         let mut offset = 0;
         loop {
-            let page = library::parse_library(&self.query("libraryV3", library::library_vars(offset, folder)).await?, depth);
+            let me = self.session.as_ref().map(|s| s.username()).unwrap_or_default();
+            let page = library::parse_library(&self.query("libraryV3", library::library_vars(offset, folder)).await?, depth, &me);
             let n = page.items.len();
             items.extend(page.items);
             offset += library::LIBRARY_PAGE;
@@ -675,6 +718,36 @@ impl State {
         // on failure this carries the old value back, so the Client rolls back
         let _ = self.ev.send(CatEvent::Saved(vec![singularity_proto::SavedFlag { uri, saved: if ok { saved } else { !saved } }])).await;
         ok
+    }
+
+    /// A new playlist, put at the top of the library; the Client that asked opens it.
+    async fn create_playlist(&mut self, name: String) {
+        let Some(session) = self.session().await else { return };
+        let made = async {
+            let v = crate::playlists::post(&session, "/playlist", &crate::playlists::create(&name)).await?;
+            let uri = v["uri"].as_str().ok_or_else(|| anyhow::anyhow!("no URI in the answer"))?.to_string();
+            crate::playlists::post(&session, &crate::playlists::rootlist_path(&session.username()), &crate::playlists::rootlist_add(&uri, singularity_proto::now_ms())).await?;
+            anyhow::Ok(uri)
+        };
+        match made.await {
+            Ok(uri) => {
+                tracing::info!("created playlist {uri}");
+                let _ = self.ev.send(CatEvent::Created { uri, name }).await;
+            }
+            Err(e) => {
+                let _ = self.ev.send(CatEvent::Error(format!("Couldn't create the playlist: {e}"))).await;
+            }
+        }
+    }
+
+    async fn delete_playlist(&mut self, uri: String) {
+        let Some(session) = self.session().await else { return };
+        match crate::playlists::post(&session, &crate::playlists::rootlist_path(&session.username()), &crate::playlists::rootlist_remove(&uri)).await {
+            Ok(_) => tracing::info!("deleted playlist {uri}"),
+            Err(e) => {
+                let _ = self.ev.send(CatEvent::Error(format!("Couldn't delete the playlist: {e}"))).await;
+            }
+        }
     }
 
     async fn check_saved(&mut self, uris: Vec<String>) {

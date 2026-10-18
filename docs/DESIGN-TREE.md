@@ -563,3 +563,15 @@ flowchart LR
 - **D46: waveform removed** (2026-10-18, fifth session): shown the fix, the owner said they don't like a waveform on
   the player bar ("it looks cleaner and better normal, the widgets can serve that purpose"). `waveform.rs`, its cache,
   its test and pty scenario are gone; the seek bar is the plain ━─ line again. SPEC story 72 struck.
+- **#51 Create and delete your own playlists ✅** (2026-10-18): `LibraryItem.own` (the library's `ownerV2` username =
+  the session's); `CreatePlaylist { name }` → `Event::PlaylistCreated` + a fresh Library; `DeletePlaylist { uri }` →
+  a fresh Library (with it back if Spotify refused). Daemon `playlists.rs`: JSON bodies built purely, sent once with
+  reqwest to `spclient.wg.spotify.com/playlist/v2` (create = `POST /playlist` with a bare `{ops}`: an `info` field
+  there is a 400; then rootlist ADD addFirst; delete = rootlist REM itemsAsKey). Client `playlists.rs`: the sidebar
+  gets a right-click/Menu-key menu (Play, New playlist…, Delete playlist… on your own, Copy link); palette "New
+  playlist…" and "Delete this playlist"; the naming popup now names layouts or playlists (`Naming`, `NameFor`); a
+  delete asks again within 10 s, leaves the sidebar at once and closes its page; the playlist you created opens. An
+  empty list says "no songs yet" (was "loading…" forever). Tests: body shapes, `own`, the protocol round trip (fake
+  Catalogue keeps created/deleted playlists, refuses others'), App create/open and delete-twice. pty `playlists`.
+  Live check (`examples/playlist_probe.rs --create-delete`): created, listed and marked ours, deleted, gone. The
+  first two tries were 400s with the `info` field; nothing was created by them.
