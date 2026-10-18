@@ -83,6 +83,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if th.scanlines {
         scanlines(f.buffer_mut(), body);
     }
+    crate::visual::idle::draw(f.buffer_mut(), body, app, &th);
     player_bar(f, player, app, &th);
     hint_bar(f.buffer_mut(), hints, &th, &app.keymap);
     if let (Some(r), Some(CatalogueStatus::LoginPending { url, code })) = (login_r, app.catalogue.clone()) {
@@ -654,6 +655,7 @@ fn help_rows(m: &crate::keymap::Keymap) -> Vec<(String, String)> {
         (m.nav_label().into(), "move through Home, play · right-click or Menu key: more".into()),
         (m.pair(A::Back, A::Forward), "back / forward (Esc and Backspace go back too)".into()),
         (m.label(A::FocusNext), "focus the next pane".into()),
+        (m.label(A::ToggleIdle), "idle takeover on / off (any key wakes the screen)".into()),
         (m.label(A::Quit), "quit the Client (music keeps playing)".into()),
         ("keys.toml".into(), format!("{} keys · change them in ~/.config/singularity/keys.toml", m.preset)),
     ]

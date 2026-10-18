@@ -229,5 +229,11 @@ flowchart LR
   and fixed nested splits shrinking to one row). "Save layout as…" writes `layouts/<name>.toml` (the split tree,
   ratios written exactly, one split per line as TOML 1.1 inline tables); saved layouts follow the built-in Designs in
   the picker, the one in use is `ui.layout`, and it comes back identically after a restart (unit test and pty).
+- **#17 Idle takeover — in progress** (2026-10-18): `visual/idle.rs` (break-out from the hole's Pane or the top-right
+  corner, Lissajous drift, body dimmed, cells lensed with the prototype's `lens_cells`, the hole as kitty image 2 under
+  the text or half-blocks), `BlackHole::free_frame` (free centre, no stars; `Frame.center` in CPU and GPU), App idle
+  clock with the waking input swallowed (`wake()` in key/pointer/paste), Shift+I writes `idle.enabled`, palette preview,
+  `[idle] enabled/minutes` in config.toml, the well empty meanwhile. Committed as WIP; App-level tests and the pty check
+  remain (HANDOFF).
 - **Owner answers** (2026-10-18): keep the 10 fps slowdown when the terminal is unfocused; keep the black hole on the
   low-power adapter (iGPU) and add a `gpu = "low-power" | "high-performance"` setting in #20.

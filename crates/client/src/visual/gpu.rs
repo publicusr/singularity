@@ -87,7 +87,7 @@ impl Gpu {
         let levels = if l.pixel > 0 { PIXEL_LEVELS } else { 0.0 };
         let params = Params {
             size: [w as f32, h as f32, f.t, f.gain],
-            center: [0.5, 0.5, f.rh, 0.0],
+            center: [f.center.0, f.center.1, f.rh, 0.0],
             look0: [l.temp, l.incl, l.roll, l.inner],
             look1: [l.outer, l.opac, l.dopp, l.beam],
             look2: [l.gain, l.contr, l.wind, l.speed],

@@ -45,6 +45,8 @@ pub enum Action {
     PickDesign,
     PickTheme,
     SaveLayout,
+    ToggleIdle,
+    IdlePreview,
     ToggleNotifications,
     Login,
     Logout,
@@ -72,7 +74,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 40] = [
+    pub const ALL: [Action; 42] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -89,6 +91,8 @@ impl Action {
         Action::PickDesign,
         Action::PickTheme,
         Action::SaveLayout,
+        Action::ToggleIdle,
+        Action::IdlePreview,
         Action::ToggleNotifications,
         Action::Login,
         Action::Logout,
@@ -132,6 +136,8 @@ impl Action {
             Action::PickDesign => "Design: pick one (layout + colours, live preview)",
             Action::PickTheme => "Theme: pick colours (live preview)",
             Action::SaveLayout => "Save layout as… (comes back in Design)",
+            Action::ToggleIdle => "Idle takeover on / off (the hole drifts over the screen)",
+            Action::IdlePreview => "Idle takeover: show it now",
             Action::ToggleNotifications => "Track-change notifications on / off",
             Action::Login => "Log in to Spotify",
             Action::Logout => "Log out of Spotify",
@@ -177,6 +183,8 @@ impl Action {
             Action::PickDesign => "design",
             Action::PickTheme => "theme",
             Action::SaveLayout => "save_layout",
+            Action::ToggleIdle => "idle",
+            Action::IdlePreview => "idle_preview",
             Action::ToggleNotifications => "notifications",
             Action::Login => "login",
             Action::Logout => "logout",
@@ -417,6 +425,12 @@ pub struct App {
     pub layouts_dir: Option<std::path::PathBuf>,
     /// whether we asked the Daemon for spectrum frames
     spectrum_on: bool,
+    /// the idle takeover (#17): the last input, since when the hole is out, a preview asked for, and where the hole
+    /// sat in its Pane (where it breaks out from)
+    last_input: Instant,
+    idle_since: Option<Instant>,
+    idle_preview: bool,
+    pub hole_origin: Option<crate::visual::idle::Origin>,
     last_tick: Instant,
     told_backend: bool,
     commands: Option<mpsc::Sender<Command>>,
@@ -494,6 +508,10 @@ impl App {
             naming: None,
             layouts_dir: None,
             spectrum_on: false,
+            last_input: Instant::now(),
+            idle_since: None,
+            idle_preview: false,
+            hole_origin: None,
             last_tick: Instant::now(),
             told_backend: false,
             commands,
@@ -586,6 +604,33 @@ impl App {
             || (self.search.is_some() && self.focus == "home")
     }
 
+    // ── idle takeover ─────────────────────────────────────────────────
+
+    /// Seconds the hole has been out of its Pane, while the UI is idle.
+    pub fn idle_secs(&self) -> Option<f32> {
+        self.idle_since.map(|t| t.elapsed().as_secs_f32())
+    }
+
+    /// Input arrived: the idle clock starts over. True if the UI was idle (that input is then swallowed).
+    fn wake(&mut self) -> bool {
+        self.last_input = Instant::now();
+        self.idle_preview = false;
+        self.idle_since.take().is_some()
+    }
+
+    /// Shift+I: the takeover off or on, in config.toml.
+    fn toggle_idle(&mut self) {
+        let on = !self.config.idle.enabled;
+        if let Some(path) = self.config_path()
+            && let Err(e) = singularity_config::set(&path, singularity_config::DEFAULT_CONFIG, "idle.enabled", on.into())
+        {
+            return self.say(format!("Couldn't change config.toml: {e}"));
+        }
+        self.config.idle.enabled = on;
+        let mins = self.config.idle.minutes;
+        self.say(if on { format!("Idle takeover on (after {mins} min)") } else { "Idle takeover off".into() });
+    }
+
     // ── frame bookkeeping ─────────────────────────────────────────────
 
     pub fn begin_frame(&mut self) {
@@ -668,6 +713,8 @@ impl App {
             Action::PickDesign => self.open_picker(crate::looks::PickerKind::Design),
             Action::PickTheme => self.open_picker(crate::looks::PickerKind::Theme),
             Action::SaveLayout => self.naming = Some(String::new()),
+            Action::ToggleIdle => self.toggle_idle(),
+            Action::IdlePreview => self.idle_preview = true,
             Action::Login => self.send(Command::Login),
             Action::Logout => self.send(Command::Logout),
             Action::RefreshHome => self.send(Command::GetHome),
@@ -752,6 +799,10 @@ impl App {
     // ── keyboard ──────────────────────────────────────────────────────
 
     pub fn key(&mut self, k: KeyEvent) {
+        // the key that wakes the idle UI only wakes it
+        if self.wake() {
+            return;
+        }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && k.code == KeyCode::Char('c') {
             self.quit = true;
@@ -1457,6 +1508,9 @@ impl App {
 
     /// Pasted text (bracketed paste): into the wizard's key field, the palette or the filter.
     pub fn paste(&mut self, s: &str) {
+        if self.wake() {
+            return;
+        }
         let s = s.trim();
         if crate::setup::wanted(self) && crate::setup::step(self) == crate::setup::Step::Key {
             self.setup.key.push_str(s);
@@ -1535,6 +1589,13 @@ impl App {
     pub fn tick(&mut self) {
         self.poll_config();
         self.poll_themes(false);
+        let idle = &self.config.idle;
+        let due = self.idle_preview || (idle.enabled && idle.minutes > 0.0 && self.last_input.elapsed().as_secs_f32() >= idle.minutes * 60.0);
+        match (due, self.idle_since) {
+            (true, None) => self.idle_since = Some(Instant::now()),
+            (false, Some(_)) => self.idle_since = None,
+            _ => {}
+        }
         let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
         self.last_tick = Instant::now();
         self.hole.advance(dt, self.meters.frame.as_ref());
@@ -1611,6 +1672,10 @@ impl App {
 
     /// A mouse event; `fx` is the pointer's fractional column, `precise` whether it has real sub-cell resolution.
     pub fn pointer(&mut self, m: MouseEvent, fx: f64, precise: bool) {
+        // any mouse event wakes the idle UI, and does nothing else
+        if self.wake() {
+            return;
+        }
         let coarse = m.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT);
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) if self.picker.is_some() => match self.hit_at(m.column, m.row) {

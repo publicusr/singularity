@@ -143,6 +143,7 @@ const STANDARD: &[(Action, &[&str])] = &[
     (Action::Filter, &["/", "Ctrl+F"]),
     (Action::NextLook, &["v"]),
     (Action::NextVariant, &["t"]),
+    (Action::ToggleIdle, &["I"]),
     (Action::Devices, &["d"]),
     (Action::FocusNext, &["Tab"]),
     (Action::Palette, &["Ctrl+K", ":"]),

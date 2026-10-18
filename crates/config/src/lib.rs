@@ -36,6 +36,21 @@ pub struct Config {
     pub ui: Ui,
     pub notifications: Notifications,
     pub visuals: Visuals,
+    pub idle: Idle,
+}
+
+/// The idle takeover: after `minutes` without input the black hole leaves its Pane and drifts over the screen.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Idle {
+    pub enabled: bool,
+    pub minutes: f32,
+}
+
+impl Default for Idle {
+    fn default() -> Self {
+        Idle { enabled: true, minutes: 3.0 }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -113,6 +128,12 @@ track_change = false
 gpu = "low-power"
 # frames per second while the terminal isn't focused (1–30; the Visuals keep moving, slower)
 unfocused_fps = 10
+
+[idle]
+# after this many minutes without input the black hole leaves its Pane and drifts over the screen; any key wakes it
+# (Shift+I switches it off and on)
+enabled = true
+minutes = 3
 "#;
 
 /// What a fresh `keys.toml` says.
@@ -388,7 +409,12 @@ mod tests {
         set(&p, DEFAULT_CONFIG, "idle.minutes", Value::from(5)).unwrap();
         let r = load_config(&p);
         assert!(r.value.notifications.track_change && r.problems.is_empty());
-        assert!(std::fs::read_to_string(&p).unwrap().ends_with("[idle]\nminutes = 5\n"));
+        assert_eq!(r.value.idle.minutes, 5.0);
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("# (Shift+I switches it off and on)\nenabled = true\nminutes = 5\n"), "{text}");
+        // a table that isn't there yet is added at the end
+        set(&p, DEFAULT_CONFIG, "later.answer", Value::from(42)).unwrap();
+        assert!(std::fs::read_to_string(&p).unwrap().ends_with("[later]\nanswer = 42\n"));
     }
 
     #[test]

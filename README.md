@@ -29,6 +29,8 @@ it by itself ("Updating singularityd…"; music pauses for a second while Solois
   preview; `t` cycles a design's palettes. Your own themes go in `~/.config/singularity/themes/` (see `_example.toml`).
 - **Layouts**: drag Pane borders; `v` (or a Pane's ◂ ▸) swaps its Widget; Ctrl+K → "Save layout as…" keeps it, and it
   comes back in Ctrl+K → Design.
+- **Idle**: after 3 minutes without input the black hole drifts over the screen; any key wakes it (and does nothing
+  else). Shift+I or `[idle]` in config.toml switches it off or changes the delay.
 - Media keys, KDE's media widget and `playerctl` control the Daemon (MPRIS); Soloist updates itself before its build
   expires.
 - `singularityd --fake-engine` runs a pretend player for UI work; `--no-catalogue` skips Spotify browsing;

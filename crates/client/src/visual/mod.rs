@@ -4,6 +4,7 @@
 
 pub mod blackhole;
 mod gpu;
+pub mod idle;
 pub mod well;
 
 use blackhole::{Frame, LOOKS};
@@ -30,11 +31,13 @@ pub struct BlackHole {
     bass: f32,
     /// the last frame: when, its size, its pixels
     last: Option<(Instant, (usize, usize), Arc<Vec<u8>>)>,
+    /// the same for the hole out of its well (idle takeover)
+    free_last: Option<(Instant, (usize, usize), Arc<Vec<u8>>)>,
 }
 
 impl Default for BlackHole {
     fn default() -> Self {
-        BlackHole { gpu: None, allow_gpu: false, high_performance: false, look: 0, t: 0.0, beat: 0.0, bass: 0.0, last: None }
+        BlackHole { gpu: None, allow_gpu: false, high_performance: false, look: 0, t: 0.0, beat: 0.0, bass: 0.0, last: None, free_last: None }
     }
 }
 
@@ -109,12 +112,35 @@ impl BlackHole {
         matches!(self.gpu, Some(Some(_)))
     }
 
+    /// The idle takeover's hole: `w`×`h`, the shadow `rh` (fraction of `h`) at `center`, no stars (the UI is the
+    /// background). Kept for a frame interval like the well's.
+    pub fn free_frame(&mut self, w: usize, h: usize, rh: f32, center: (f32, f32)) -> (Arc<Vec<u8>>, bool) {
+        if let Some((t, size, px)) = &self.free_last
+            && *size == (w, h)
+            && t.elapsed() < FRAME
+        {
+            return (px.clone(), false);
+        }
+        let px = Arc::new(self.render_at(w, h, Some((rh, center))));
+        self.free_last = Some((Instant::now(), (w, h), px.clone()));
+        (px, true)
+    }
+
     /// Render a `w`×`h` RGBA8 frame. Pixel-art looks render at 1/5 resolution and are scaled up crisply.
     pub fn render(&mut self, w: usize, h: usize) -> Vec<u8> {
-        let look = *self.look();
+        self.render_at(w, h, None)
+    }
+
+    /// `free`: the shadow radius and centre for a hole out of its well (no stars); None fits it in the middle.
+    fn render_at(&mut self, w: usize, h: usize, free: Option<(f32, (f32, f32))>) -> Vec<u8> {
+        let mut look = *self.look();
+        if free.is_some() {
+            look.star = 0.0;
+        }
         let k = if look.pixel > 0 && w >= look.pixel * 8 { look.pixel } else { 1 };
         let (rw, rh_px) = ((w / k).max(1), (h / k).max(1));
-        let f = Frame { look, t: self.t, gain: 0.85 + 0.45 * self.bass + 0.25 * self.beat, rh: blackhole::fit_rh(rw, rh_px, &look) };
+        let (rh, center) = free.unwrap_or((blackhole::fit_rh(rw, rh_px, &look), (0.5, 0.5)));
+        let f = Frame { look, t: self.t, gain: 0.85 + 0.45 * self.bass + 0.25 * self.beat, rh, center };
         let small = match self.gpu_ready().then(|| self.gpu.as_mut().and_then(|g| g.as_mut()).and_then(|g| g.render(&f, rw, rh_px))).flatten() {
             Some(px) => px,
             None => blackhole::render_cpu(&f, rw, rh_px),
@@ -149,7 +175,7 @@ mod tests {
         for i in [0usize, 2, 6] {
             let look = LOOKS[i];
             let (w, h) = (128, 64);
-            let f = Frame { look, t: 2.5, gain: 1.1, rh: blackhole::fit_rh(w, h, &look) };
+            let f = Frame { look, t: 2.5, gain: 1.1, rh: blackhole::fit_rh(w, h, &look), center: (0.5, 0.5) };
             let g = gpu.render(&f, w, h).expect("GPU frame");
             let c = blackhole::render_cpu(&f, w, h);
             let mean = g.iter().zip(&c).map(|(a, b)| (*a as f32 - *b as f32).abs()).sum::<f32>() / g.len() as f32;

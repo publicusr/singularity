@@ -68,12 +68,19 @@ pub struct Frame {
     pub gain: f32,
     /// shadow radius as a fraction of the image height
     pub rh: f32,
+    /// where the hole sits in the image (0..1, y down); the middle unless it's cut by the screen's edge
+    pub center: (f32, f32),
+}
+
+/// How far the disk and its halo reach, in shadow radii.
+pub fn reach(look: &DiskLook) -> f32 {
+    (look.outer + 3.0) / B_CRIT
 }
 
 /// Shadow radius that fits the whole disk (with its lensed halo) inside a `w`×`h` image.
 pub fn fit_rh(w: usize, h: usize, look: &DiskLook) -> f32 {
     let aspect = w as f32 / h.max(1) as f32;
-    let reach = (look.outer + 3.0) / B_CRIT;
+    let reach = reach(look);
     (0.92 * aspect / (2.0 * reach)).min(0.85 / (2.0 * reach * look.incl.cos().abs().max(0.35)))
 }
 
@@ -145,8 +152,8 @@ fn trace(f: &Frame, x: usize, y: usize, w: usize, h: usize) -> [f32; 3] {
     let rout = l.outer.max(rin + 0.5);
     let gain = l.gain * f.gain;
     let wk = B_CRIT / f.rh.max(1e-3);
-    let px = (x as f32 + 0.5 - 0.5 * w as f32) / h as f32;
-    let py = -((y as f32 + 0.5 - 0.5 * h as f32) / h as f32);
+    let px = (x as f32 + 0.5 - f.center.0 * w as f32) / h as f32;
+    let py = -((y as f32 + 0.5 - f.center.1 * h as f32) / h as f32);
     let (cr, sr) = (l.roll.cos(), l.roll.sin());
     let (prx, pry) = ((cr * px - sr * py) * wk, (sr * px + cr * py) * wk);
     let b = (prx * prx + pry * pry).sqrt();
@@ -270,7 +277,7 @@ mod tests {
 
     fn frame(look: usize, w: usize, h: usize) -> Frame {
         let look = LOOKS[look];
-        Frame { look, t: 1.0, gain: 1.0, rh: fit_rh(w, h, &look) }
+        Frame { look, t: 1.0, gain: 1.0, rh: fit_rh(w, h, &look), center: (0.5, 0.5) }
     }
 
     #[test]
