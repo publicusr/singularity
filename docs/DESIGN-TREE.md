@@ -256,3 +256,27 @@ flowchart LR
   half-blocks), palette Export / Delete (a second run within 10 s confirms). The fake Catalogue answers raw queries in
   Spotify's shapes. pty `listening`: seeded scratch log, a 31 s play shows up live, backup taken in 10 s (paced),
   export 0600 with the backup inside, delete empties the Pane and removes the backups.
+- **Owner test round 1** (2026-10-18), feedback in 9 points; my findings, and the questions put to the owner (pending):
+  - Found first: the owner's running Daemon was the 00:08 build (started 00:12, before `c026772` "Client replaces an
+    outdated Daemon"), so it ignored the new Clients' `Shutdown`. Everything tested ran new Client screens on an old
+    Daemon (no like/follow, MPRIS, config following, listening log). Owner to restart it once; fix so a Daemon that
+    ignores `Shutdown` is stopped anyway (peer pid via `SO_PEERCRED`, SIGTERM).
+  - 1 + 6 wheel in track lists / library "works 50/50": over a row's artist or album name the hit is `Hit::Link`, which
+    the wheel handler ignores. Wanted: the highlight follows the wheel. Small.
+  - 2 Home drops a Shelf row unless it fits whole, and scrolls a row at a time. Fix: line-based scrolling, rows clipped
+    at both edges (kitty placements can crop the source; half-blocks clip by row). Medium.
+  - 3 a clickable back (◂) / forward (▸) in the main Pane's title while there's history. Small.
+  - 4 loudness "maxed at 10 %": by design (D16 automatic gain, the tap is post-volume). Proposal: meters show the real
+    level (follow the volume), spectrum/Visuals keep auto gain. Small.
+  - 5 lyrics: Spotify's, then LRCLIB, already there (#14); misses are logged at debug only. Re-test after the Daemon
+    restart; say why when there are none. Idea: Genius as an opt-in last fallback (no lyrics API: search via its API or
+    site, scrape the page; unsynced text only; against Genius' terms, brittle). Medium.
+  - 7 tint covers and the black hole with the Theme: feasible (gradient-map luminance onto the Theme's ramp, once per
+    cover and Theme, both tiers; the hole: a post-pass in the CPU tracer and a uniform in the WGSL). Medium.
+  - 8 drag to reorder the queue: feasible over Connect `set_queue` (already used for remove / play next); likely only
+    the songs you queued yourself, to be verified quietly. Medium.
+  - 9 fullscreen: reproduced at 256×68 (pty `PTY_COLS`/`PTY_ROWS`): the well gets very wide, the track list stretches,
+    the queue is mostly empty. The hole renders round here; the owner sees it stretched (cell size? screenshot asked).
+    Proposal: the well keeps a ~16:10 shape on wide terminals and the middle gets the width; track-list columns capped.
+  - Also seen at 256×68: a kitty escape printed as text (`Ga=…`) in a track row once; harness or real, to check.
+

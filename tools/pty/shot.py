@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
 BIN = f"{ROOT}/target/debug"
-COLS, ROWS, CW, CH = 140, 40, 10, 20
+COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
 BRAILLE = ImageFont.truetype("/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf", 16)
 FONT = ImageFont.truetype("/usr/share/fonts/nerd-fonts/DejaVuSansMono/DejaVuSansMNerdFontMono-Regular.ttf", 16)
 
