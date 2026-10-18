@@ -543,3 +543,7 @@ flowchart LR
   controls). Keys work as usual; toasts show on the bottom row. Test at 20×1, 40×2, 60×5, 49×13, 120×13 (title, nothing
   spilling, ▶ sends TogglePlay, a seek bar from two rows) and back to the full layout at 80×24. pty `mini`
   (`PTY_COLS`/`PTY_ROWS`).
+- **#48 mouse back/forward: blocked on a decision** (2026-10-18): crossterm 0.29's `parse_cb` turns SGR buttons 8/9
+  (codes 128/129) into a parse error and drops the event, and it reads the tty itself, so nothing can see them
+  without (a) a vendored crossterm with a 3-line patch (`[patch.crates-io]`, ~12k lines in the repo, re-applied on
+  upgrades) or (b) our own full input parser. Put to the owner with (a) recommended.
