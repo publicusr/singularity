@@ -592,6 +592,42 @@ def playlist_details(t, out):
     t.send(b"q", 0.5)
 
 
+def playlist_add(t, out):
+    """#53: Add to playlist… from a track's menu: the picker filtered as you type, a duplicate asked first, a new
+    playlist made with the song in it."""
+    t.pump(1.0)
+
+    def add_from_first_row():
+        x, y = t.find("Fake Track 001")
+        mouse(t, 2, x + 1, y, wait=0.4)
+        mx, my = t.find("Add to playlist")
+        mouse(t, 0, mx + 1, my); mouse(t, 0, mx + 1, my, release=True, wait=0.4)
+
+    x, y = t.find("♥ Liked Songs")
+    mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=1.0)
+    add_from_first_row()
+    t.shot(f"{out}/0-picker.png")
+    t.send(b"mix", 0.3)
+    t.shot(f"{out}/1-filtered.png")
+    print("filtered:", [l.strip()[:60] for l in t.screen.display if "New playlist" in l or "Fake Mixtape" in l and "›" in l][:3])
+    t.send(b"\x1b[B\r", 1.0)  # Down, Enter: Fake Mixtape, which has it
+    t.shot(f"{out}/2-already.png")
+    print("asks:", [l.strip()[-80:] for l in t.screen.display if "Already in" in l][:1])
+    add_from_first_row()
+    t.send(b"mix\x1b[B\r", 1.0)
+    print("anyway:", [l.strip()[-40:] for l in t.screen.display if "Added to" in l][:1])
+    add_from_first_row()
+    t.send(b"Gym", 0.3)
+    t.send(b"\r", 1.2)
+    t.shot(f"{out}/3-new.png")
+    print("new:", [l.strip()[-40:] for l in t.screen.display if "Added to Gym" in l][:1], "| in sidebar:", any("Gym" in l[:30] for l in t.screen.display))
+    x, y = t.find("Gym")
+    mouse(t, 0, x + 1, y); mouse(t, 0, x + 1, y, release=True, wait=1.0)
+    t.shot(f"{out}/4-gym.png")
+    print("Gym holds:", [l.strip()[:60] for l in t.screen.display[3:8] if "Added" in l or "songs" in l])
+    t.send(b"q", 0.5)
+
+
 def arrows(t, out):
     """The owner's report: cycling a narrow Pane onto a long title hid its ◂ ▸. Walk two Panes through every Widget."""
     t.pump(1.0)
@@ -761,7 +797,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "mini", "playlists", "playlist-details"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "mini", "playlists", "playlist-details", "playlist-add"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "ambient", "popup") else "0"
@@ -818,6 +854,8 @@ def main():
             return queue_lift(t, out)
         if scenario == "playlists":
             return playlists(t, out)
+        if scenario == "playlist-add":
+            return playlist_add(t, out)
         if scenario == "playlist-details":
             return playlist_details(t, out)
         if scenario == "mini":

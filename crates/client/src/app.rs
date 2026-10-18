@@ -48,6 +48,7 @@ pub enum Action {
     NewPlaylist,
     EditPlaylist,
     DeletePlaylist,
+    AddPlayingToPlaylist,
     ToggleIdle,
     IdlePreview,
     ToggleNotifications,
@@ -80,7 +81,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 48] = [
+    pub const ALL: [Action; 49] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -100,6 +101,7 @@ impl Action {
         Action::NewPlaylist,
         Action::EditPlaylist,
         Action::DeletePlaylist,
+        Action::AddPlayingToPlaylist,
         Action::ToggleIdle,
         Action::IdlePreview,
         Action::ToggleNotifications,
@@ -151,6 +153,7 @@ impl Action {
             Action::NewPlaylist => "New playlist…",
             Action::EditPlaylist => "Edit this playlist's name and description (your own)…",
             Action::DeletePlaylist => "Delete this playlist (your own; asks twice)…",
+            Action::AddPlayingToPlaylist => "Add the playing song to a playlist…",
             Action::ToggleIdle => "Idle takeover on / off (the hole drifts over the screen)",
             Action::IdlePreview => "Idle takeover: show it now",
             Action::ToggleNotifications => "Track-change notifications on / off",
@@ -204,6 +207,7 @@ impl Action {
             Action::NewPlaylist => "new_playlist",
             Action::EditPlaylist => "edit_playlist",
             Action::DeletePlaylist => "delete_playlist",
+            Action::AddPlayingToPlaylist => "add_to_playlist",
             Action::ToggleIdle => "idle",
             Action::IdlePreview => "idle_preview",
             Action::ToggleNotifications => "notifications",
@@ -283,6 +287,8 @@ pub enum Hit {
     Save(singularity_proto::Link),
     /// a row of the design or theme picker
     PickerItem(usize),
+    /// a row of the "Add to playlist" picker (#53)
+    AddPick(usize),
     /// a Pane's ◂ ▸: the Slot's Widget, and which way to swap it
     Swap(String, i32),
     /// the main Pane's ◂ ▸: back / forward through the pages seen
@@ -314,6 +320,7 @@ pub enum MenuAct {
     CopyLink,
     /// like/unlike, save/remove, follow/unfollow
     Save,
+    AddToPlaylist,
     NewPlaylist,
     EditPlaylist,
     DeletePlaylist,
@@ -699,6 +706,7 @@ impl App {
             || self.picker.is_some()
             || self.naming.is_some()
             || self.playlists.details.is_some()
+            || self.playlists.adding.is_some()
             || self.view.as_ref().is_some_and(|v| v.filtering)
             || (self.search.is_some() && self.focus == "home")
     }
@@ -888,6 +896,10 @@ impl App {
             Action::SaveLayout => self.naming = Some(Naming::layout()),
             Action::NewPlaylist => self.ask_new_playlist(),
             Action::EditPlaylist => self.edit_this_playlist(),
+            Action::AddPlayingToPlaylist => match self.playback.item.clone() {
+                Some(i) => self.ask_add(vec![i.uri], &i.name),
+                None => self.say("Nothing is playing"),
+            },
             Action::DeletePlaylist => self.delete_this_playlist(),
             Action::ToggleIdle => self.toggle_idle(),
             Action::IdlePreview => self.idle_preview = true,
@@ -1011,6 +1023,9 @@ impl App {
         }
         if self.playlists.details.is_some() {
             return self.details_key(k);
+        }
+        if self.playlists.adding.is_some() {
+            return self.adding_key(k);
         }
         if crate::setup::wanted(self) {
             return self.wizard_key(k);
@@ -1654,6 +1669,9 @@ impl App {
             items.push(("Play next".into(), MenuAct::PlayNext));
             items.push(("Add to queue".into(), MenuAct::Queue));
         }
+        if kind == "track" {
+            items.push(("Add to playlist…".into(), MenuAct::AddToPlaylist));
+        }
         if matches!(kind.as_str(), "album" | "artist" | "playlist" | "show") {
             items.push((format!("Go to {kind}"), MenuAct::GoTo));
         }
@@ -1670,6 +1688,7 @@ impl App {
             v.sel = vi;
         }
         let mut items = vec![("Play from here".to_string(), MenuAct::PlayHere), ("Play next".into(), MenuAct::PlayNext), ("Add to queue".into(), MenuAct::Queue)];
+        items.push(("Add to playlist…".into(), MenuAct::AddToPlaylist));
         if let Some((uri, ..)) = self.target_track(&Target::Row(vi)) {
             items.extend(self.save_entry(&uri));
         }
@@ -1708,6 +1727,7 @@ impl App {
         if self.playback.queue.iter().any(|q| q.source == "queue") {
             items.push(("Clear queue".into(), MenuAct::ClearQueue));
         }
+        items.push(("Add to playlist…".into(), MenuAct::AddToPlaylist));
         items.extend(self.save_entry(&q.item.uri));
         items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::QueueRow(i)).map(|r| (r.x + 4, r.y + 1))).unwrap_or((0, 0));
@@ -1717,7 +1737,7 @@ impl App {
 
     /// Right-click on any other track (search results, an artist's popular tracks).
     fn open_track_menu(&mut self, uri: String, name: String, at: Option<(u16, u16)>) {
-        let mut items = vec![("Play next".to_string(), MenuAct::PlayNext), ("Add to queue".into(), MenuAct::Queue)];
+        let mut items = vec![("Play next".to_string(), MenuAct::PlayNext), ("Add to queue".into(), MenuAct::Queue), ("Add to playlist…".into(), MenuAct::AddToPlaylist)];
         items.extend(self.save_entry(&uri));
         items.push(("Copy link".into(), MenuAct::CopyLink));
         self.menu = Some(Menu { at: at.unwrap_or((0, 0)), target: Target::Track { uri, name }, items, selected: 0 });
@@ -1793,6 +1813,7 @@ impl App {
                 self.say("Link copied");
             }
             MenuAct::Save => self.toggle_saved(&uri, &name),
+            MenuAct::AddToPlaylist => self.ask_add(vec![uri], &name),
             MenuAct::NewPlaylist => self.ask_new_playlist(),
             MenuAct::EditPlaylist => self.edit_details(&uri),
             MenuAct::DeletePlaylist => self.delete_playlist(&uri),
@@ -1855,6 +1876,9 @@ impl App {
             self.setup.key.push_str(s);
         } else if self.playlists.details.is_some() {
             self.details_paste(s);
+        } else if let Some(a) = self.playlists.adding.as_mut() {
+            a.filter.extend(s.chars().filter(|c| !c.is_control()).take(100));
+            a.sel = 0;
         } else if let Some(n) = self.naming.as_mut() {
             n.text.extend(s.chars().filter(|c| !c.is_control()).take(100usize.saturating_sub(n.text.chars().count())));
         } else if let Some(p) = self.palette.as_mut() {
@@ -2021,6 +2045,10 @@ impl App {
         }
         let coarse = m.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT);
         match m.kind {
+            MouseEventKind::Down(MouseButton::Left) if self.playlists.adding.is_some() => match self.hit_at(m.column, m.row) {
+                Some(Hit::AddPick(i)) => self.add_pick(i),
+                _ => self.playlists.adding = None,
+            },
             MouseEventKind::Down(MouseButton::Left) if self.picker.is_some() => match self.hit_at(m.column, m.row) {
                 Some(Hit::PickerItem(i)) => {
                     self.picker_select(i);
@@ -2190,7 +2218,7 @@ impl App {
                             self.last_click = Some((Instant::now(), usize::MAX - i));
                         }
                     }
-                    Some(Hit::MenuItem(_) | Hit::PickerItem(_)) => {}
+                    Some(Hit::MenuItem(_) | Hit::PickerItem(_) | Hit::AddPick(_)) => {}
                     Some(Hit::Swap(slot, d)) => {
                         self.swap_widget(&slot, d);
                     }
@@ -2346,6 +2374,7 @@ impl App {
                     }
                     Some(Hit::Bar(Bar::Seek, _)) => self.nudge_seek(sign * if coarse { 5000 } else { 1000 }),
                     Some(Hit::Bar(Bar::Volume, _)) => self.nudge_volume(sign * if coarse { 5 } else { 1 }),
+                    Some(Hit::AddPick(_)) => self.adding_move(if up { -1 } else { 1 }),
                     Some(Hit::PickerItem(_)) => {
                         let sel = self.picker.as_ref().map(|p| p.sel).unwrap_or(0);
                         self.picker_select(if up { sel.saturating_sub(1) } else { sel + 1 });

@@ -584,3 +584,14 @@ flowchart LR
   description is sent as `noValue: [LIST_DESCRIPTION]`. Live check (`playlist_probe --details`): accepted in ~0.3 s,
   read back, emptied, scratch deleted. Spotify stores descriptions HTML-escaped (`&lt;b&gt;`, `&#x2F;`): the
   decoder now handles those and decodes `&amp;` last.
+- **#53 Add to playlist… ✅** (2026-10-18): in every track menu (list rows, queue, search, an artist's tracks, stats,
+  track Cards) and Ctrl+K "add to playlist" for the playing song. The picker lists your own playlists from the
+  library the Client already has (scope: own playlists only), filtered as you type, so opening it costs no request;
+  "+ New playlist “filter”" on top makes one with the song in it (without a filter, the naming popup first); a
+  playlist made this way doesn't open. Before adding, the Daemon asks `editablePlaylists` (by name, one small page)
+  whether it has the song (`curates`); if so the Client says so and the same pick within 10 s adds it anyway. An
+  open view of the playlist fetches its new end; the Daemon drops its cached pages after an add or a details edit
+  (#52 left a stale description in that cache for up to its TTL). Live check (`playlist_probe --add`):
+  `curates` false → added in ~0.14 s (`data.addItemsToPlaylist`, no `errors`) → read back with a row `uid` →
+  `curates` true; scratch deleted. Mutations go through `pathfinder_query`, which retries only on a 429 (nothing
+  written).

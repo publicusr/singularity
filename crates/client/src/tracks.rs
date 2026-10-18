@@ -238,7 +238,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let count = if list.total == 0 && list.rows.is_empty() {
         if arrived { "no songs yet".to_string() } else { "loading…".to_string() }
     } else if list.complete() {
-        format!("{} songs", list.total)
+        format!("{} song{}", list.total, if list.total == 1 { "" } else { "s" })
     } else {
         format!("{} songs · loading {}/{}", list.total, list.rows.len(), list.total)
     };

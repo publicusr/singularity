@@ -324,7 +324,7 @@ async fn playlists_are_created_and_deleted_and_only_your_own() {
     let send = |c| ClientMsg::Command(c);
     let (_, _, lib) = until_library(&mut a, |_| true).await;
     assert!(lib.items.iter().any(|i| i.own), "the fake user owns one");
-    proto::write_msg(&mut a, &send(Command::CreatePlaylist { name: "Road trip".into() })).await.unwrap();
+    proto::write_msg(&mut a, &send(Command::CreatePlaylist { name: "Road trip".into(), uris: vec![] })).await.unwrap();
     let (errs, made, lib) = until_library(&mut a, |l| l.items.iter().any(|i| i.name == "Road trip")).await;
     let (uri, name) = made.expect("created");
     assert!(errs.is_empty() && name == "Road trip");
@@ -339,7 +339,7 @@ async fn playlists_are_created_and_deleted_and_only_your_own() {
         let (errs, _, lib) = until_library(&mut a, |_| true).await;
         assert!(!errs.is_empty() && lib.items.iter().any(|i| i.uri == theirs));
     }
-    proto::write_msg(&mut a, &send(Command::CreatePlaylist { name: "fail".into() })).await.unwrap();
+    proto::write_msg(&mut a, &send(Command::CreatePlaylist { name: "fail".into(), uris: vec![] })).await.unwrap();
     let (errs, made, _) = until_library(&mut a, |_| true).await;
     assert!(!errs.is_empty() && made.is_none(), "a failure is told");
 }
@@ -429,4 +429,44 @@ async fn the_listening_log_sums_up_exports_and_deletes_through_the_protocol() {
     let Event::Listening(s) = next(&mut a, |e| matches!(e, Event::Listening(_))).await else { unreachable!() };
     assert_eq!((s.plays, s.minutes.iter().sum::<u32>()), (0, 0));
     assert_eq!(Store::open(&data).unwrap().summary(now).unwrap().plays, 0, "gone from disk");
+}
+
+#[tokio::test]
+async fn tracks_are_added_to_a_playlist_and_a_duplicate_asks_first() {
+    use singularity_proto::{AddOutcome, Command, HomeFeed};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("add.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
+    let mut a = connect(&path).await;
+    async fn outcome(s: &mut UnixStream) -> (String, AddOutcome) {
+        loop {
+            if let DaemonMsg::Event(Event::AddedToPlaylist { playlist, outcome, .. }) = proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap() {
+                return (playlist, outcome);
+            }
+        }
+    }
+    let mine = "spotify:playlist:fakemine".to_string();
+    let add = |uri: &str, anyway| ClientMsg::Command(Command::AddToPlaylist { playlist: mine.clone(), name: "Fake Mixtape".into(), uris: vec![uri.into()], anyway });
+    proto::write_msg(&mut a, &add("spotify:track:new1", false)).await.unwrap();
+    assert_eq!(outcome(&mut a).await.1, AddOutcome::Added);
+    proto::write_msg(&mut a, &add("spotify:track:new1", false)).await.unwrap();
+    assert_eq!(outcome(&mut a).await.1, AddOutcome::AlreadyThere, "added once already");
+    proto::write_msg(&mut a, &add("spotify:track:new1", true)).await.unwrap();
+    assert_eq!(outcome(&mut a).await.1, AddOutcome::Added, "anyway");
+    // the playlist now ends with them
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::GetTracks { uri: mine.clone() })).await.unwrap();
+    let page = loop {
+        if let DaemonMsg::Event(Event::Tracks(p)) = proto::read_msg::<_, DaemonMsg>(&mut a).await.unwrap().unwrap() {
+            break p;
+        }
+    };
+    assert_eq!((page.total, page.tracks.last().map(|t| t.uri.as_str())), (42, Some("spotify:track:new1")));
+    // someone else's: refused
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::AddToPlaylist { playlist: "spotify:playlist:theirs".into(), name: "x".into(), uris: vec!["spotify:track:a".into()], anyway: false })).await.unwrap();
+    assert_eq!(outcome(&mut a).await.1, AddOutcome::Failed);
+    // a new playlist made with a track in it
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::CreatePlaylist { name: "With one".into(), uris: vec!["spotify:track:b".into()] })).await.unwrap();
+    let (uri, o) = outcome(&mut a).await;
+    assert!(uri.contains(":fakenew") && o == AddOutcome::Added);
 }

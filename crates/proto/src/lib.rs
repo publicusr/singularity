@@ -114,16 +114,41 @@ pub enum Command {
     /// Delete the listening log and every library backup (the Client confirms first).
     DeleteLocalData,
     /// Create a playlist of your own at the top of the library (#51); answered by `Event::PlaylistCreated` and a
-    /// fresh `Event::Library`.
-    CreatePlaylist { name: String },
+    /// fresh `Event::Library`. With `uris`, they're added to it straight away (#53: "New playlist" in the picker),
+    /// answered by `Event::AddedToPlaylist` too.
+    CreatePlaylist {
+        name: String,
+        #[serde(default)]
+        uris: Vec<String>,
+    },
     /// Delete one of your playlists (Spotify's "delete": it leaves your library); a fresh `Event::Library` follows,
     /// with it still there if Spotify refused (the Client confirms first).
     DeletePlaylist { uri: String },
     /// Rename and re-describe one of your playlists (#52); an empty description clears it. Answered by
     /// `Event::PlaylistEdited`.
     EditPlaylist { uri: String, name: String, description: String },
+    /// Add tracks at the end of one of your playlists (`name` is its name, for the duplicate check); unless
+    /// `anyway`, a playlist that already has them answers `AlreadyThere` instead. Answered by `Event::AddedToPlaylist`.
+    AddToPlaylist {
+        playlist: String,
+        name: String,
+        uris: Vec<String>,
+        #[serde(default)]
+        anyway: bool,
+    },
     #[serde(other)]
     Unknown,
+}
+
+/// How an `AddToPlaylist` went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AddOutcome {
+    Added,
+    /// the playlist already has them; nothing was added (ask, then send again with `anyway`)
+    AlreadyThere,
+    /// Spotify refused (an `Event::Error` says why)
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -183,6 +208,8 @@ pub enum Event {
     /// A playlist's name and description were saved (`ok`), or Spotify refused them (the Client that asked rolls
     /// back; the others ignore it).
     PlaylistEdited { uri: String, name: String, description: String, ok: bool },
+    /// The answer to `AddToPlaylist` (and to `CreatePlaylist` with tracks).
+    AddedToPlaylist { playlist: String, name: String, uris: Vec<String>, outcome: AddOutcome },
     #[serde(other)]
     Unknown,
 }

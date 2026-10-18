@@ -1,7 +1,8 @@
 //! Editing your own playlists (batch 3, #51–#56). Create and delete (#51): a new playlist is named in the naming
 //! popup and opened once Spotify answers; a delete asks twice, leaves the sidebar at once and comes back with the
 //! Daemon's fresh library if Spotify refused. Edit details (#52): a name and a description, shown everywhere at once
-//! and put back if Spotify refuses.
+//! and put back if Spotify refuses. Add to playlist (#53): a picker over your own playlists, filtered as you type,
+//! "New playlist" on top; a playlist that has the song already asks first.
 
 use crate::app::{App, MenuAct, Naming, Page, Target};
 use crate::theme::Theme;
@@ -10,7 +11,7 @@ use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
-use singularity_proto::{Command, LibraryItem};
+use singularity_proto::{AddOutcome, Command, LibraryItem};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,16 @@ const NAME_MAX: usize = 100;
 const DESCRIPTION_MAX: usize = 300;
 /// Lines of description the form shows (the end of a long one stays in view).
 const DESCRIPTION_LINES: usize = 3;
+
+/// The "Add to playlist" picker: what's being added, and the filter typed so far.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Adding {
+    pub uris: Vec<String>,
+    /// the song's name (the picker's title)
+    pub label: String,
+    pub filter: String,
+    pub sel: usize,
+}
 
 /// The "Edit details" form.
 #[derive(Clone, Debug, PartialEq)]
@@ -43,6 +54,13 @@ pub struct Playlists {
     pub details: Option<Details>,
     /// details shown before Spotify answered: what to put back if it refuses
     was: HashMap<String, (String, String)>,
+    pub adding: Option<Adding>,
+    /// songs for the playlist being named in the naming popup ("New playlist" in the picker)
+    with: Vec<String>,
+    /// playlists (by name) this Client asked to add to: their answers toast here
+    asked: Vec<String>,
+    /// Spotify said this playlist has these already: picking it again within 10 s adds them anyway
+    dup: Option<(String, Vec<String>, Instant)>,
 }
 
 impl App {
@@ -60,6 +78,7 @@ impl App {
     }
 
     pub fn ask_new_playlist(&mut self) {
+        self.playlists.with.clear();
         self.naming = Some(Naming::playlist());
     }
 
@@ -69,8 +88,14 @@ impl App {
         if name.is_empty() {
             return self.say("A playlist needs a name");
         }
-        self.playlists.creating = Some(name.to_string());
-        self.send(Command::CreatePlaylist { name: name.into() });
+        let uris = std::mem::take(&mut self.playlists.with);
+        // made for a song: it stays where you are and says when the song's in it; else it opens
+        if uris.is_empty() {
+            self.playlists.creating = Some(name.to_string());
+        } else {
+            self.playlists.asked.push(name.to_string());
+        }
+        self.send(Command::CreatePlaylist { name: name.into(), uris });
         self.say(format!("Creating {name}…"));
     }
 
@@ -275,6 +300,131 @@ impl App {
     }
 }
 
+impl App {
+    /// "Add to playlist…": open the picker for these songs.
+    pub fn ask_add(&mut self, uris: Vec<String>, label: &str) {
+        if uris.iter().any(|u| !u.starts_with("spotify:track:") && !u.starts_with("spotify:episode:")) {
+            return self.say("Only songs and episodes go into playlists");
+        }
+        self.playlists.adding = Some(Adding { uris, label: label.into(), filter: String::new(), sel: 0 });
+    }
+
+    /// The picker's rows: "New playlist" first, then your playlists whose names have the filter in them.
+    pub fn adding_rows(&self) -> Vec<(Option<String>, String)> {
+        let Some(a) = &self.playlists.adding else { return vec![] };
+        let f = a.filter.trim().to_lowercase();
+        let new = if f.is_empty() { "+ New playlist…".to_string() } else { format!("+ New playlist “{}”", a.filter.trim()) };
+        let mut rows = vec![(None, new)];
+        let own = self.library.iter().flat_map(|l| &l.items).filter(|i| i.own && i.kind == "playlist");
+        rows.extend(own.filter(|i| i.name.to_lowercase().contains(&f)).map(|i| (Some(i.uri.clone()), i.name.clone())));
+        rows
+    }
+
+    pub fn adding_key(&mut self, k: KeyEvent) {
+        let Some(a) = self.playlists.adding.as_mut() else { return };
+        match k.code {
+            KeyCode::Esc => self.playlists.adding = None,
+            KeyCode::Up => self.adding_move(-1),
+            KeyCode::Down => self.adding_move(1),
+            KeyCode::Enter => {
+                let sel = a.sel;
+                self.add_pick(sel);
+            }
+            KeyCode::Backspace => {
+                a.filter.pop();
+                a.sel = 0;
+            }
+            KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) && a.filter.chars().count() < NAME_MAX => {
+                a.filter.push(c);
+                a.sel = 0;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn adding_move(&mut self, d: i32) {
+        let n = self.adding_rows().len();
+        if let Some(a) = self.playlists.adding.as_mut() {
+            a.sel = (a.sel as i64 + d as i64).clamp(0, n.saturating_sub(1) as i64) as usize;
+        }
+    }
+
+    /// Picker row `i`: a new playlist (named by the filter, else in the naming popup) or one of yours.
+    pub fn add_pick(&mut self, i: usize) {
+        let Some((uri, name)) = self.adding_rows().get(i).cloned() else { return };
+        let Some(a) = self.playlists.adding.take() else { return };
+        let Some(uri) = uri else {
+            self.playlists.with = a.uris;
+            if a.filter.trim().is_empty() {
+                self.naming = Some(Naming::playlist());
+            } else {
+                self.create_playlist(&a.filter);
+            }
+            return;
+        };
+        let anyway = self.playlists.dup.take().is_some_and(|(u, uris, t)| u == uri && uris == a.uris && t.elapsed() < CONFIRM);
+        self.playlists.asked.push(name.clone());
+        self.send(Command::AddToPlaylist { playlist: uri, name: name.clone(), uris: a.uris, anyway });
+        self.say(format!("Adding to {name}…"));
+    }
+
+    /// `Event::AddedToPlaylist`: an open view of the playlist fetches its new end; the Client that asked is told.
+    pub fn added_to_playlist(&mut self, playlist: &str, name: &str, uris: Vec<String>, outcome: AddOutcome) {
+        let mine = self.playlists.asked.iter().position(|n| n == name).map(|i| self.playlists.asked.remove(i)).is_some();
+        match outcome {
+            AddOutcome::Added => {
+                if self.view.as_ref().is_some_and(|v| v.uri == playlist) {
+                    self.send(Command::GetTracks { uri: playlist.into() });
+                } else {
+                    self.lists.remove(playlist);
+                }
+                if mine {
+                    self.say(format!("Added to {name}"));
+                }
+            }
+            AddOutcome::AlreadyThere if mine => {
+                self.playlists.dup = Some((playlist.into(), uris, Instant::now()));
+                self.say(format!("Already in {name}. Add it there again within 10 s to have it twice"));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// As tall as its rows, up to 18.
+pub fn adding_rect(area: Rect, rows: usize) -> Rect {
+    crate::ui::centered(area, 56, (rows as u16 + 4).clamp(7, 18))
+}
+
+/// The "Add to playlist" picker: the filter, "New playlist", your playlists.
+pub fn draw_adding(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
+    let Some(a) = app.playlists.adding.clone() else { return };
+    let rows = app.adding_rows();
+    let title = format!("Add “{}” to", a.label);
+    let inner = crate::ui::popup(buf, adding_rect(area, rows.len()), th, &title);
+    let w = inner.width;
+    let shown = if a.filter.is_empty() { "type to filter".to_string() } else { a.filter.clone() };
+    text(buf, inner.x + 1, inner.y, w.saturating_sub(2), &format!("› {shown}▏"), th.s(if a.filter.is_empty() { th.dim } else { th.fg }).add_modifier(Modifier::BOLD));
+    // the filter above, the hint below
+    let room = inner.height.saturating_sub(2) as usize;
+    // keep the selection in view
+    let top = a.sel.saturating_sub(room.saturating_sub(1));
+    for (n, (i, (uri, name))) in rows.iter().enumerate().skip(top).take(room).enumerate() {
+        let y = inner.y + 1 + n as u16;
+        let on = i == a.sel;
+        let bg = if on { th.selection.color() } else { th.bg.color() };
+        text(buf, inner.x, y, w, &" ".repeat(w as usize), th.base().bg(bg));
+        text(buf, inner.x + 1, y, 2, if on { "›" } else { " " }, th.s(th.accent).bg(bg));
+        let style = if uri.is_none() { th.s(th.accent) } else if on { th.title() } else { th.s(th.fg) };
+        text(buf, inner.x + 3, y, w.saturating_sub(4), name, style.bg(bg));
+        app.hit(Rect::new(inner.x, y, w, 1), crate::app::Hit::AddPick(i));
+    }
+    if rows.len() == 1 && !a.filter.is_empty() {
+        text(buf, inner.x + 3, inner.y + 2, w.saturating_sub(4), "none of your playlists match", th.s(th.dim));
+    }
+    text(buf, inner.x + 1, inner.bottom().saturating_sub(1), w.saturating_sub(2), "type to filter · ↑↓ · Enter add · Esc close", th.s(th.dim));
+}
+
 pub fn details_rect(area: Rect) -> Rect {
     crate::ui::centered(area, 64, 5 + DESCRIPTION_LINES as u16 + 1)
 }
@@ -364,7 +514,7 @@ mod tests {
             app.key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Char(c)));
         }
         app.key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Enter));
-        assert_eq!(sent(&mut rx), vec![Command::CreatePlaylist { name: "Road trip".into() }]);
+        assert_eq!(sent(&mut rx), vec![Command::CreatePlaylist { name: "Road trip".into(), uris: vec![] }]);
         // another Client's playlist doesn't open here
         app.playlist_created("spotify:playlist:other", "Something else");
         assert_eq!(app.current_page(), crate::app::Page::Home);
@@ -464,5 +614,55 @@ mod tests {
         assert_eq!(super::wrap("songs for the car", 9), vec!["songs for", "the car"]);
         assert_eq!(super::wrap("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
         assert_eq!(super::wrap("", 4), vec![""]);
+    }
+
+    #[test]
+    fn songs_are_added_from_a_filtered_picker_and_a_duplicate_asks_first() {
+        use ratatui::crossterm::event::KeyCode;
+        use singularity_proto::AddOutcome;
+        let (mut app, mut rx) = app();
+        app.library.as_mut().unwrap().items.push(item("spotify:playlist:road", "Road trip", true));
+        // every track menu offers it
+        app.open_row_menu(0, None);
+        app.menu = None;
+        app.ask_add(vec!["spotify:track:t".into()], "Song");
+        let names = |app: &App| app.adding_rows().into_iter().map(|(_, n)| n).collect::<Vec<_>>();
+        assert_eq!(names(&app), vec!["+ New playlist…", "Mine", "Road trip"], "only your own, New first");
+        typed(&mut app, "ROAD");
+        assert_eq!(names(&app), vec!["+ New playlist “ROAD”", "Road trip"]);
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Enter);
+        let add = |anyway| Command::AddToPlaylist { playlist: "spotify:playlist:road".into(), name: "Road trip".into(), uris: vec!["spotify:track:t".into()], anyway };
+        assert_eq!(sent(&mut rx), vec![add(false)]);
+        assert!(app.playlists.adding.is_none());
+        // it has it: asked, and the same pick again adds it anyway
+        app.added_to_playlist("spotify:playlist:road", "Road trip", vec!["spotify:track:t".into()], AddOutcome::AlreadyThere);
+        assert!(app.toast.as_ref().unwrap().0.contains("Already in Road trip"));
+        app.ask_add(vec!["spotify:track:t".into()], "Song");
+        app.add_pick(2);
+        assert_eq!(sent(&mut rx), vec![add(true)]);
+        // the open playlist fetches its new end; the toast says so
+        app.open("spotify:playlist:road", "Road trip", "", "playlist");
+        sent(&mut rx);
+        app.added_to_playlist("spotify:playlist:road", "Road trip", vec!["spotify:track:t".into()], AddOutcome::Added);
+        assert_eq!(app.toast.as_ref().unwrap().0, "Added to Road trip");
+        assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|c| c == Command::GetTracks { uri: "spotify:playlist:road".into() }));
+        // "New playlist" with a filter: made with the song in it, and it doesn't open
+        app.ask_add(vec!["spotify:track:t".into()], "Song");
+        typed(&mut app, "Fresh");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(sent(&mut rx), vec![Command::CreatePlaylist { name: "Fresh".into(), uris: vec!["spotify:track:t".into()] }]);
+        app.playlist_created("spotify:playlist:fresh", "Fresh");
+        assert!(matches!(app.current_page(), crate::app::Page::List { uri, .. } if uri == "spotify:playlist:road"));
+        // without a filter, it's named first
+        app.ask_add(vec!["spotify:track:u".into()], "Other");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.naming.is_some());
+        typed(&mut app, "Named");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(sent(&mut rx), vec![Command::CreatePlaylist { name: "Named".into(), uris: vec!["spotify:track:u".into()] }]);
+        // albums don't go into playlists
+        app.ask_add(vec!["spotify:album:a".into()], "Album");
+        assert!(app.playlists.adding.is_none());
     }
 }

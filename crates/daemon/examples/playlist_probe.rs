@@ -3,6 +3,7 @@
 //!
 //!     cargo run -p singularityd --example playlist_probe -- --create-delete
 //!     cargo run -p singularityd --example playlist_probe -- --details
+//!     cargo run -p singularityd --example playlist_probe -- --add
 //!
 //! Spotify's "delete" takes the playlist out of the library (as the web player does); the emptied playlist stays
 //! behind on Spotify's side, unlisted.
@@ -14,6 +15,14 @@ use singularityd::playlists;
 use singularityd::queries::QueryRegistry;
 
 const SCRATCH: &str = "singularity scratch (safe to delete)";
+/// A well-known public track to add to the scratch playlist.
+const TRACK: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+
+/// One Pathfinder operation (the probe has no 412 refresh: run it with a fresh registry).
+async fn op(session: &Session, registry: &mut QueryRegistry, name: &str, vars: Value) -> anyhow::Result<Value> {
+    let hash = registry.hash(name).await?;
+    Ok(session.spclient().pathfinder_query(name, &hash, vars).await?)
+}
 
 /// Whether the library lists `uri`, and whether it's marked ours (filtered by the scratch name: one small page).
 async fn listed(session: &Session, registry: &mut QueryRegistry, uri: &str) -> anyhow::Result<(bool, bool)> {
@@ -91,7 +100,31 @@ async fn main() -> anyhow::Result<()> {
             println!("after delete, in the library: {there}");
             res?;
         }
-        _ => anyhow::bail!("modes: --create-delete, --details"),
+        "--add" => {
+            let uri = scratch(&session, &root).await?;
+            let uris = vec![TRACK.to_string()];
+            let checked = async {
+                let v = op(&session, &mut registry, "editablePlaylists", playlists::editable_vars(SCRATCH, &uris)).await?;
+                println!("editablePlaylists: lists the scratch {}, has the track {:?}", playlists::curates(&v, &uri).is_some(), playlists::curates(&v, &uri));
+                let t = std::time::Instant::now();
+                let v = op(&session, &mut registry, "addToPlaylist", playlists::add_vars(&uri, &uris)).await?;
+                println!("addToPlaylist: errors {:?}, top-level keys {:?} ({:?})", playlists::graphql_error(&v), v["data"].as_object().map(|o| o.keys().collect::<Vec<_>>()), t.elapsed());
+                let (op_name, vars) = singularityd::library::tracks_query(&uri, 0).unwrap();
+                let page = op(&session, &mut registry, op_name, vars).await?;
+                let (rows, total) = singularityd::library::parse_tracks(&uri, &page);
+                let uid = page["data"]["playlistV2"]["content"]["items"][0]["uid"].is_string();
+                println!("read back: total {total}, it's the track {}, row has a uid {uid}", rows.first().is_some_and(|r| r.uri == TRACK));
+                let v = op(&session, &mut registry, "editablePlaylists", playlists::editable_vars(SCRATCH, &uris)).await?;
+                println!("editablePlaylists now: has the track {:?}", playlists::curates(&v, &uri));
+                anyhow::Ok(())
+            };
+            let res = checked.await;
+            playlists::post(&session, &root, &playlists::rootlist_remove(&uri)).await?;
+            let (there, _) = listed(&session, &mut registry, &uri).await?;
+            println!("after delete, in the library: {there}");
+            res?;
+        }
+        _ => anyhow::bail!("modes: --create-delete, --details, --add"),
     }
     Ok(())
 }

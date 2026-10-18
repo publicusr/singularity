@@ -91,6 +91,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.picker.as_ref().map(|p| crate::looks::picker_rect(area, p)),
         app.naming.is_some().then(|| naming_rect(area)),
         app.playlists.details.is_some().then(|| crate::playlists::details_rect(area)),
+        app.playlists.adding.is_some().then(|| crate::playlists::adding_rect(area, app.adding_rows().len())),
         app.menu.as_ref().map(|m| menu_rect(area, m)),
         app.toast.as_ref().map(|(msg, _)| toast_rect(area, msg)),
     ];
@@ -136,6 +137,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.playlists.details.is_some() {
         crate::playlists::draw_details(f.buffer_mut(), area, app, &th);
+    }
+    if app.playlists.adding.is_some() {
+        crate::playlists::draw_adding(f.buffer_mut(), area, app, &th);
     }
     if app.health_open {
         crate::setup::draw_health(f.buffer_mut(), crate::setup::health_rect(area), app, &th);

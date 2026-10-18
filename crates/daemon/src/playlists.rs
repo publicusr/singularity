@@ -52,6 +52,28 @@ pub fn changes_path(uri: &str) -> Option<String> {
     id.bytes().all(|b| b.is_ascii_alphanumeric()).then(|| format!("/playlist/{id}/changes"))
 }
 
+/// `addToPlaylist` (Pathfinder mutation): `uris` at the end of `playlist`.
+pub fn add_vars(playlist: &str, uris: &[String]) -> Value {
+    json!({ "playlistUri": playlist, "playlistItemUris": uris, "newPosition": { "moveType": "BOTTOM_OF_PLAYLIST", "fromUid": null }, "interactionId": null })
+}
+
+/// `editablePlaylists` (Pathfinder query), filtered by a name, asking whether each already has `uris`.
+pub fn editable_vars(filter: &str, uris: &[String]) -> Value {
+    json!({ "offset": 0, "limit": 50, "textFilter": filter, "folderUri": null, "uris": uris })
+}
+
+/// From an `editablePlaylists` answer: whether `playlist` already has the tracks asked about (None: not listed).
+pub fn curates(v: &Value, playlist: &str) -> Option<bool> {
+    let items = v["data"]["me"]["editablePlaylists"]["items"].as_array()?;
+    items.iter().find(|i| i["item"]["data"]["uri"] == playlist).map(|i| i["curates"].as_bool().unwrap_or(false))
+}
+
+/// A GraphQL answer can be a 200 carrying `errors`: their first message.
+pub fn graphql_error(v: &Value) -> Option<String> {
+    let e = v["errors"].as_array().filter(|e| !e.is_empty())?;
+    Some(e[0]["message"].as_str().unwrap_or("an error").to_string())
+}
+
 pub fn rootlist_path(username: &str) -> String {
     let user: String = username.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
     format!("/user/{user}/rootlist/changes")
@@ -102,5 +124,25 @@ mod tests {
         assert_eq!(changes_path("spotify:playlist:37i9dQZF1"), Some("/playlist/37i9dQZF1/changes".into()));
         assert_eq!(changes_path("spotify:album:x"), None);
         assert_eq!(changes_path("spotify:playlist:../x"), None);
+        let uris = vec!["spotify:track:a".to_string()];
+        assert_eq!(
+            add_vars("spotify:playlist:p", &uris),
+            json!({"playlistUri":"spotify:playlist:p","playlistItemUris":["spotify:track:a"],"newPosition":{"moveType":"BOTTOM_OF_PLAYLIST","fromUid":null},"interactionId":null})
+        );
+        assert_eq!(editable_vars("Mix", &uris)["uris"], json!(["spotify:track:a"]));
+    }
+
+    #[test]
+    fn editable_playlists_say_what_they_already_have() {
+        // the web player's own reading of it: {items:[{item:{__typename, data:{__typename, uri, name}}, pinned, curates}]}
+        let v = json!({"data":{"me":{"editablePlaylists":{"totalCount":3,"items":[
+            {"item":{"__typename":"LibraryFolderResponseWrapper","data":{"__typename":"Folder","uri":"spotify:user:u:folder:f","name":"F"}},"pinned":false},
+            {"item":{"__typename":"PlaylistResponseWrapper","data":{"__typename":"Playlist","uri":"spotify:playlist:has","name":"Has"}},"pinned":false,"curates":true},
+            {"item":{"__typename":"PlaylistResponseWrapper","data":{"__typename":"Playlist","uri":"spotify:playlist:not","name":"Not"}},"pinned":false,"curates":false}]}}}});
+        assert_eq!(curates(&v, "spotify:playlist:has"), Some(true));
+        assert_eq!(curates(&v, "spotify:playlist:not"), Some(false));
+        assert_eq!(curates(&v, "spotify:playlist:elsewhere"), None);
+        assert_eq!(graphql_error(&json!({"errors":[{"message":"nope"}],"data":null})), Some("nope".into()));
+        assert_eq!(graphql_error(&json!({"data":{}})), None);
     }
 }

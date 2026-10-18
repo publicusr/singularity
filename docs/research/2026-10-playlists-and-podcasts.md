@@ -35,6 +35,8 @@ images under 256 KB anyway (re-encode, square crop).
 
 Live (2026-10-18): a description written as `probe & <b>words</b>` reads back from `fetchPlaylist` as
 `probe & &lt;b&gt;words&lt;&#x2F;b&gt;` (escaped, never markup); `noValue: [LIST_DESCRIPTION]` clears it.
+`addToPlaylist` answers `{data:{addItemsToPlaylist:…}}`; `editablePlaylists` with `textFilter` = the name and
+`uris` = the songs gives each matching playlist's `curates` (true once it has them). `fetchPlaylist` rows carry `uid`.
 
 All playlist routes above are still there. Details read from the bundle:
 
