@@ -295,20 +295,11 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         let focused = *slot == app.focus;
         let title_st = if focused { th.title() } else { th.s(th.accent) };
         let mut spans = vec![Span::styled(format!(" {number}"), title_st)];
-        // the main Pane: ◂ ▸ through the pages seen, while there are any (dim when there's nowhere to go that way)
+        // the main Pane: ← → through the pages seen, while there are any, at the right end of its title like every
+        // Pane's arrows (D44); dim when there's nowhere to go that way
         let history = slot == "home" && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20;
-        if history {
-            let x = rect.x + 2 + number.chars().count() as u16;
-            let on = |b: bool| th.s(if b { th.fg } else { th.border });
-            spans.push(Span::styled("◂", on(!app.back.is_empty())));
-            spans.push(Span::styled(" ", title_st));
-            spans.push(Span::styled("▸", on(!app.forward.is_empty())));
-            spans.push(Span::styled(" ", title_st));
-            swaps.push((Rect::new(x.saturating_sub(1), rect.y, 2, 1), Hit::History(-1)));
-            swaps.push((Rect::new(x + 2, rect.y, 2, 1), Hit::History(1)));
-        }
         // a Slot that can show other Widgets always keeps its ◂ ▸ (7 cells at the right): a long title gives way
-        let can_swap = !crate::layouts::options(slot).is_empty() && slot != "well";
+        let can_swap = (!crate::layouts::options(slot).is_empty() && slot != "well") || history;
         let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
         let room = (rect.width as usize).saturating_sub(2 + used + if can_swap { 8 } else { 0 });
         let title = if title.chars().count() + 1 > room && room > 1 { title.chars().take(room - 2).collect::<String>() + "…" } else { title };
@@ -334,7 +325,18 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             continue;
         }
         f.render_widget(block, *rect);
-        if swappable {
+        if history {
+            let (x, y) = (rect.right().saturating_sub(7), rect.y);
+            let buf = f.buffer_mut();
+            let on = |b: bool| th.s(if b { th.fg } else { th.border });
+            text(buf, x, y, 1, " ", title_st);
+            text(buf, x + 1, y, 1, "←", on(!app.back.is_empty()));
+            text(buf, x + 2, y, 1, " ", title_st);
+            text(buf, x + 3, y, 1, "→", on(!app.forward.is_empty()));
+            text(buf, x + 4, y, 1, " ", title_st);
+            swaps.push((Rect::new(x, y, 2, 1), Hit::History(-1)));
+            swaps.push((Rect::new(x + 2, y, 3, 1), Hit::History(1)));
+        } else if swappable {
             let (x, y) = (rect.right().saturating_sub(7), rect.y);
             let buf = f.buffer_mut();
             text(buf, x, y, 5, " ◂ ▸ ", th.s(if focused { th.accent } else { th.dim }));
@@ -1017,7 +1019,11 @@ mod tests {
         let r = card_rect(&app, 1, 0);
         click(&mut app, r.x + 2, r.y + 1);
         render(&mut app, 200, 64);
-        let back = app.hits.iter().find_map(|(r, h)| (*h == Hit::History(-1)).then_some(*r)).expect("◂ shown with history");
+        let back = app.hits.iter().find_map(|(r, h)| (*h == Hit::History(-1)).then_some(*r)).expect("← shown with history");
+        // at the right end of the title, where every Pane keeps its arrows (D44)
+        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        assert!(back.x > home.x + home.width / 2, "{back:?} in {home:?}");
+        assert!(render(&mut app, 200, 64).contains("← →"));
         assert!(app.view.is_some());
         click(&mut app, back.x + 1, back.y);
         assert!(app.view.is_none() && app.forward.len() == 1, "back on Home");

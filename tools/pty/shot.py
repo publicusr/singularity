@@ -229,18 +229,18 @@ def home_scroll(t, out):
 
 
 def history(t, out):
-    """#28: ◂ ▸ in the main Pane's title: open a list, back to Home, forward again."""
+    """#28/#43: ← → at the right of the main Pane's title: open a list, back to Home, forward again."""
     t.pump(1.0)
     x, y = t.find("♥ Liked Songs")
     mouse(t, 0, x + 2, y)
     mouse(t, 0, x + 2, y, release=True, wait=0.8)
     t.shot(f"{out}/0-list.png")
-    bx, by = t.find("◂ ▸ Liked Songs")
+    bx, by = t.find("← →")
     mouse(t, 0, bx, by)
     mouse(t, 0, bx, by, release=True, wait=0.6)
     t.shot(f"{out}/1-back.png")
     print("back on Home:", t.find("Made For You") is not None)
-    fx, fy = t.find("◂ ▸ home")
+    fx, fy = t.find("← →")
     mouse(t, 0, fx + 2, fy)
     mouse(t, 0, fx + 2, fy, release=True, wait=0.6)
     t.shot(f"{out}/2-forward.png")
