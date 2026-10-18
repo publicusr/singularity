@@ -313,7 +313,16 @@ fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     let y = r.y + 1;
     let (title, artists) = pb.item.as_ref().map(|i| (i.name.clone(), i.artists.join(", "))).unwrap_or_default();
     let tw = (r.width / 4).max(16);
-    text(buf, r.x + 1, y, tw, &title, th.s(th.fg).add_modifier(Modifier::BOLD));
+    // ♥ after the title: liked or not, a click toggles it
+    let heart = pb.item.as_ref().filter(|i| crate::saved::savable(&i.uri)).map(|i| (i.uri.clone(), app.is_saved(&i.uri) == Some(true)));
+    let title_w = (title.chars().count() as u16).min(tw.saturating_sub(if heart.is_some() { 3 } else { 0 }));
+    text(buf, r.x + 1, y, title_w, &title, th.s(th.fg).add_modifier(Modifier::BOLD));
+    if let Some((uri, liked)) = heart {
+        let hx = r.x + 1 + title_w + 1;
+        text(buf, hx, y, 1, if liked { "♥" } else { "♡" }, th.s(if liked { th.accent } else { th.dim }));
+        app.hit(Rect::new(hx, y, 1, 1), Hit::Save(singularity_proto::Link { name: title.clone(), uri }));
+    }
+    let buf = f.buffer_mut();
     text(buf, r.x + 1, y + 1, tw, &artists, th.s(th.dim));
     // the title opens its album, each artist their page
     if let Some(i) = &pb.item {
@@ -520,12 +529,13 @@ fn login(f: &mut Frame, r: Rect, th: &Theme, url: &str, code: &str) {
     text(buf, inner.x + 2, inner.y + 6, inner.width.saturating_sub(4), "Singularity never sees your password.  Esc hides this.", th.s(th.dim));
 }
 
-const HELP_ROWS: [(&str, &str); 9] = [
+const HELP_ROWS: [(&str, &str); 10] = [
     ("Mouse", "click anything · drag pane borders · drag seek/volume · scroll"),
     ("Ctrl+K  :", "command palette: find any action by typing"),
     ("Space", "play / pause"),
     ("⇧← ⇧→", "seek 5 s    , .  seek 1 s    n / b  next / previous"),
     ("+ -", "volume           s / r   shuffle / repeat"),
+    ("l", "like / unlike what's playing (or click its ♡)"),
     ("↑↓←→ ⏎", "move through Home, play · right-click or Menu key: more"),
     ("Alt+← →", "back / forward (Esc and Backspace go back too)"),
     ("Tab", "focus the next pane"),
@@ -651,7 +661,12 @@ mod tests {
         (app, rx)
     }
 
+    /// What the App sent, without the background `CheckSaved` questions (`sent_all` keeps them).
     fn sent(rx: &mut tokio::sync::mpsc::Receiver<singularity_proto::Command>) -> Vec<singularity_proto::Command> {
+        sent_all(rx).into_iter().filter(|c| !matches!(c, singularity_proto::Command::CheckSaved { .. })).collect()
+    }
+
+    fn sent_all(rx: &mut tokio::sync::mpsc::Receiver<singularity_proto::Command>) -> Vec<singularity_proto::Command> {
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
@@ -1285,5 +1300,137 @@ mod tests {
         // now the phone plays: the bar says so
         app.devices = vec![dev("solo", "Singularity", false, true), dev("phone", "Pixel", true, false)];
         assert!(render(&mut app, 160, 48).contains("⧉ playing on Pixel"));
+    }
+
+    // ── Like/follow (#22) ──
+
+    fn flag(uri: &str, saved: bool) -> singularity_proto::SavedFlag {
+        singularity_proto::SavedFlag { uri: uri.into(), saved }
+    }
+
+    fn liked_app() -> (App, tokio::sync::mpsc::Receiver<singularity_proto::Command>) {
+        let (mut app, mut rx) = library_app();
+        app.playback.item = Some(singularity_proto::Item { uri: "spotify:track:new".into(), name: "Fresh".into(), artists: vec!["Nova Drift".into()], duration_ms: 200_000, ..Default::default() });
+        render(&mut app, 160, 48);
+        let r = side_rect(&app, 2);
+        click(&mut app, r.x + 3, r.y);
+        app.track_page(page(0, 5, 5));
+        app.tick();
+        sent(&mut rx);
+        (app, rx)
+    }
+
+    fn liked_uris(app: &App) -> Vec<String> {
+        app.lists["spotify:collection"].rows.iter().map(|r| r.uri.clone()).collect()
+    }
+
+    #[test]
+    fn the_heart_likes_at_once_and_rolls_back_when_spotify_refuses() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = playing_app(200_000);
+        app.playback.item.as_mut().unwrap().uri = "spotify:track:fail".into();
+        app.tick();
+        assert!(sent_all(&mut rx).contains(&Command::CheckSaved { uris: vec!["spotify:track:fail".into()] }), "the ♥ asks about the new track");
+        app.tick();
+        assert!(sent_all(&mut rx).is_empty(), "once");
+        app.saved_event(vec![flag("spotify:track:fail", false)]);
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("Song ♡"), "{s}");
+        // click the heart
+        let h = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Save(_)).then_some(*r)).unwrap();
+        click(&mut app, h.x, h.y);
+        assert_eq!(sent(&mut rx), vec![Command::SetSaved { uri: "spotify:track:fail".into(), saved: true }]);
+        assert!(render(&mut app, 160, 48).contains("Song ♥"), "shown before Spotify answers");
+        // Spotify refuses: the old value comes back
+        app.saved_event(vec![flag("spotify:track:fail", false)]);
+        assert!(render(&mut app, 160, 48).contains("Song ♡"));
+        // the key does the same
+        app.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        assert_eq!(sent(&mut rx), vec![Command::SetSaved { uri: "spotify:track:fail".into(), saved: true }]);
+        assert_eq!(app.is_saved("spotify:track:fail"), Some(true));
+    }
+
+    #[test]
+    fn quick_double_toggles_settle_on_the_last_answer() {
+        let (mut app, mut rx) = playing_app(200_000);
+        app.playback.item.as_mut().unwrap().uri = "spotify:track:x".into();
+        app.run(Action::Like);
+        app.run(Action::Like);
+        assert_eq!(sent(&mut rx).len(), 2);
+        assert_eq!(app.is_saved("spotify:track:x"), Some(false));
+        // the first answer is stale: the second toggle is still out
+        app.saved_event(vec![flag("spotify:track:x", true)]);
+        assert_eq!(app.is_saved("spotify:track:x"), Some(false));
+        app.saved_event(vec![flag("spotify:track:x", false)]);
+        assert_eq!(app.is_saved("spotify:track:x"), Some(false));
+    }
+
+    #[test]
+    fn liked_songs_follow_likes_without_a_reload() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = liked_app();
+        assert_eq!(app.is_saved("spotify:track:t3"), Some(true), "everything in Liked Songs is liked");
+        // like what's playing: it lands on top
+        app.run(Action::Like);
+        assert_eq!(sent(&mut rx), vec![Command::SetSaved { uri: "spotify:track:new".into(), saved: true }]);
+        assert_eq!(liked_uris(&app)[0], "spotify:track:new");
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("6 songs") && s.contains("Fresh"), "{s}");
+        assert_eq!(app.library.as_ref().unwrap().items[0].subtitle, "6 songs", "the sidebar counts along");
+        // unlike row 3 (t2) from its menu
+        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::Track(3)).then_some(*r)).unwrap();
+        app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column: row.x + 5, row: row.y, modifiers: KeyModifiers::NONE });
+        let m = app.menu.as_ref().unwrap();
+        let i = m.items.iter().position(|(l, _)| l == "Remove from Liked Songs").expect("menu offers removal");
+        app.menu.as_mut().unwrap().selected = i;
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(sent(&mut rx), vec![Command::SetSaved { uri: "spotify:track:t2".into(), saved: false }]);
+        assert!(!liked_uris(&app).contains(&"spotify:track:t2".to_string()));
+        assert!(!render(&mut app, 160, 48).contains("Song 0003"));
+        // Spotify refuses: the row comes back where it was
+        app.saved_event(vec![flag("spotify:track:t2", true)]);
+        assert_eq!(liked_uris(&app)[3], "spotify:track:t2");
+        assert_eq!(app.lists["spotify:collection"].total, 6);
+        assert!(sent(&mut rx).is_empty(), "no reload");
+    }
+
+    #[test]
+    fn menus_ask_and_reword_save_when_the_answer_arrives() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = playing_app(200_000);
+        let item = singularity_proto::Item { uri: "spotify:track:q".into(), name: "Q".into(), ..Default::default() };
+        app.playback.queue = vec![singularity_proto::QueueEntry { item, source: "queue".into(), uid: "u".into() }];
+        app.open_queue_menu(0, Some((10, 10)));
+        assert_eq!(sent_all(&mut rx), vec![Command::CheckSaved { uris: vec!["spotify:track:q".into()] }]);
+        assert!(app.menu.as_ref().unwrap().items.iter().any(|(l, _)| l == "Save to Liked Songs"));
+        app.saved_event(vec![flag("spotify:track:q", true)]);
+        assert!(app.menu.as_ref().unwrap().items.iter().any(|(l, _)| l == "Remove from Liked Songs"));
+    }
+
+    #[test]
+    fn artists_are_followed_and_playlists_need_a_second_click_to_go() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = library_app();
+        app.open("spotify:artist:nova", "Nova Drift", "", "artist");
+        assert!(sent_all(&mut rx).contains(&Command::CheckSaved { uris: vec!["spotify:artist:nova".into()] }));
+        app.artist_page(fake_artist());
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("+ Follow"), "{s}");
+        let b = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Save(l) if l.uri == "spotify:artist:nova").then_some(*r)).unwrap();
+        click(&mut app, b.x + 1, b.y);
+        assert_eq!(sent(&mut rx), vec![Command::SetSaved { uri: "spotify:artist:nova".into(), saved: true }]);
+        assert!(render(&mut app, 160, 48).contains("✓ Following"));
+        // a saved playlist: the first click only asks
+        app.open("spotify:playlist:p", "Night Drive", "", "playlist");
+        sent(&mut rx);
+        app.saved_event(vec![flag("spotify:playlist:p", true)]);
+        let s = render(&mut app, 160, 48);
+        assert!(s.contains("♥ Saved"), "{s}");
+        let b = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Save(l) if l.uri == "spotify:playlist:p").then_some(*r)).unwrap();
+        click(&mut app, b.x + 1, b.y);
+        assert!(sent(&mut rx).is_empty());
+        click(&mut app, b.x + 1, b.y);
+        assert_eq!(sent(&mut rx), vec![Command::SetSaved { uri: "spotify:playlist:p".into(), saved: false }]);
+        assert!(render(&mut app, 160, 48).contains("♡ Save"));
     }
 }

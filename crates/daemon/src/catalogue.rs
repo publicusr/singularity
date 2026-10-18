@@ -182,6 +182,8 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
         let _ = ev_tx.send(CatEvent::Status(ready.clone())).await;
         let _ = ev_tx.send(CatEvent::Home(home.clone())).await;
         let _ = ev_tx.send(CatEvent::Library(fake_library(&home))).await;
+        // what's been liked/saved here; the rest follows `fake_saved`
+        let mut saved: HashMap<String, bool> = HashMap::new();
         while let Some(cmd) = cmd_rx.recv().await {
             let evs = match cmd {
                 CatCmd::Home => vec![CatEvent::Home(home.clone())],
@@ -203,15 +205,19 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 CatCmd::Transfer(id) => vec![CatEvent::Devices(fake_devices(Some(&id)))],
                 CatCmd::Remote(_) => vec![],
                 // anything with "fail" in its URI fails, so the Client's rollback can be seen
-                CatCmd::SetSaved { uri, saved } => {
+                CatCmd::SetSaved { uri, saved: want } => {
                     let ok = !uri.contains("fail");
+                    if ok {
+                        saved.insert(uri.clone(), want);
+                    }
+                    let saved = want;
                     let mut ev = vec![CatEvent::Saved(vec![singularity_proto::SavedFlag { saved: if ok { saved } else { !saved }, uri }])];
                     if !ok {
                         ev.insert(0, CatEvent::Error("Couldn't save it (fake failure)".into()));
                     }
                     ev
                 }
-                CatCmd::CheckSaved(uris) => vec![CatEvent::Saved(uris.into_iter().map(|uri| singularity_proto::SavedFlag { saved: uri.ends_with('1'), uri }).collect())],
+                CatCmd::CheckSaved(uris) => vec![CatEvent::Saved(uris.into_iter().map(|uri| singularity_proto::SavedFlag { saved: saved.get(&uri).copied().unwrap_or_else(|| fake_saved(&uri)), uri }).collect())],
                 CatCmd::Describe(uris) => vec![CatEvent::Described(
                     uris.into_iter().map(|u| singularity_proto::Item { name: format!("Described {}", u.rsplit(':').next().unwrap_or("")), uri: u, artists: vec!["Fake Artist".into()], duration_ms: 180_000, ..Default::default() }).collect(),
                 )],
@@ -300,6 +306,12 @@ fn fake_library(home: &HomeFeed) -> Library {
 }
 
 /// Invented tracks in pages of 100: 250 for Liked Songs, 40 elsewhere.
+/// The fake library before any change: the fake tracks are all in Liked Songs; other things are saved when their URI
+/// ends in 1.
+fn fake_saved(uri: &str) -> bool {
+    uri.strip_prefix("spotify:track:fake").is_some_and(|n| n.parse::<u32>().is_ok_and(|n| n < 250)) || uri.ends_with('1')
+}
+
 fn fake_tracks(uri: &str) -> Vec<CatEvent> {
     let total = if uri == library::LIKED { 250 } else { 40 };
     let artists = ["Nova Drift", "Mira Vale", "Lumen Fields", "Glass Harbour", "Polar Static"];

@@ -8,13 +8,12 @@ in `docs/DESIGN-TREE.md` (round log at the bottom); verified facts about Spotify
 
 - **Phase 0 (planning) ✅, Phase 1 (spikes) ✅.** ADRs 0001–0004 (0004 updated: both tracers kept, measurements).
 - **Phase 2/3 (v1 build) 🔄.** Spec issue **#1**, tickets on GitHub (`publicusr/singularity`, label `ready-for-agent`).
-  **Closed: #2, #3, #4, #5, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16, #24.**
-  **In progress: #22** (Daemon side done, Client side not started; see below).
+  **Closed: #2, #3, #4, #5, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16, #22, #24.**
   **Open: #6, #17, #18, #19, #20, #21, #23.**
 - The owner tested after #8/#16 and reported two bugs, both fixed (commit `f79a3e2`): the black hole
   flickered (now double-buffered kitty frames at a steady 30 fps, redraws capped at 60/s) and clicking an album played it
   (Cards now open their track list, ▶ Play there). Everything else since then **hasn't been tested by the owner yet**.
-- Tests: **110 passing** (`cargo test`), + ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
+- Tests: **118 passing** (`cargo test`), + ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
   live answers). Clippy: only minor pre-existing style warnings.
 
 ## What exists in `crates/`
@@ -42,27 +41,21 @@ Soloist only accepts its key as `--api-key`, so `ps` shows it (no other way in; 
 wasn't affected; the port file comes back when Soloist next starts. Live tests on the owner's player were done quietly
 (volume 10, paused afterwards, volume restored to 63 last time): play-at-offset, queue add/remove, transfer both ways.
 
-## Next: finish #22 (like/follow)
+## #22 like/follow (done 2026-10-18)
 
-Done (Daemon, committed as WIP): `Command::SetSaved {uri, saved}` (tracks, albums, playlists, artists) →
-`addToLibrary`/`removeFromLibrary` with `{libraryItemUris: [uri], interactionId: null}`; `Command::CheckSaved {uris}` →
-`areEntitiesInLibrary {uris}` (`data.lookup[].data.saved`, verified live). `Event::Saved { entries }` is the truth to
-settle on; on failure it carries the old value (rollback) plus an `Error`. Liked Songs' Daemon cache is dropped after a
-track change; the library is refetched after non-track changes. Fake Catalogue: URIs containing "fail" fail.
+`client/src/saved.rs` holds the store: optimistic toggles (`SetSaved`), settled by `Event::Saved` (stale answers ignored
+while a newer toggle is out), Liked Songs patched in place with a stash for rollbacks. `CheckSaved` goes out for the
+playing track (on change), every opened list/artist page, and a menu's target when unknown. The fake Catalogue keeps a
+saved set (its fake tracks start liked; "fail" URIs fail). pty scenario: `like`. Not done: hearts on every track-list
+row (would need `CheckSaved` for whole playlists; only Liked Songs is known for free).
 
-To do (Client): `saved: HashMap<String, bool>` in App; optimistic toggle → `SetSaved`, settle on `Event::Saved`;
-`CheckSaved` for the current item (on track change), the open list's URI, the artist page; a ♥/♡ in the player bar
-(click) and key `l`; "Save to / Remove from Liked Songs" in track menus; Follow/Following on artist pages, Save on
-album/playlist headers; patch the cached Liked Songs `TrackList` in place (insert the row on like, remove on unlike).
-Tests: Seam 2 (optimistic + rollback with a failing URI), Seam 1 (fake Catalogue round trip). Then pty check, commit
-`Closes #22`.
-
-## After that (suggested order)
+## Next (suggested order)
 
 1. **#21** MPRIS + notifications (media keys, KDE widget, playerctl): `zbus` in the Daemon.
 2. **#6** Soloist auto-update before the 90-day expiry (lifetime is already parsed; needs a fake-CDN seam test).
 3. **#20** config files (TOML, schema version, migrations, hot reload), then **#18** designs/palettes/theme files and
-   **#19** slots/drag/saved layouts (they build on #20).
+   **#19** slots/drag/saved layouts (they build on #20). #20 also gets `gpu = "low-power" | "high-performance"`
+   (owner, 2026-10-18; commented on the issue).
 4. **#17** idle takeover (reuse `visual::BlackHole`, the prototype's `lens_cells`), **#23** listening log + backups.
 5. Gap left on #11 (commented on the issue): mouse back/forward buttons. crossterm drops SGR buttons 8/9; needs our
    own small input layer (we already do SGR-Pixels in `client/src/term.rs`).
@@ -70,9 +63,9 @@ Tests: Seam 2 (optimistic + rollback with a failing URI), Seam 1 (fake Catalogue
 ## Waiting on the owner
 
 - To test everything since the flicker fix: setup wizard/health (`Ctrl+K → Health check`), queue, lyrics, artist and
-  album pages + history, search (`Ctrl+L`), devices (`d`).
-- Two open questions from earlier (unanswered): keep the black hole on the iGPU (low power) rather than the RX 7900 GRE
-  (➡️ yes); keep the 10 fps slowdown when the terminal is unfocused (➡️ yes).
+  album pages + history, search (`Ctrl+L`), devices (`d`), like/follow (♡ in the player bar, `l`, menus, Follow).
+- Answered 2026-10-18: keep the 10 fps slowdown when the terminal is unfocused; keep the black hole on the iGPU by
+  default and add a `gpu = "low-power" | "high-performance"` setting in #20 (commented on the issue).
 - D17 answered "phone only for now" (Soloist has a remote-quality feature flag, no setter found).
 
 ## Working rules (from CLAUDE.md, repeated because they matter)
@@ -98,8 +91,7 @@ Tests: Seam 2 (optimistic + rollback with a failing URI), Seam 1 (fake Catalogue
 > ticket from the GitHub issues (`gh issue list -R publicusr/singularity --label ready-for-agent --state open`), following
 > Matt Pocock's flow (spec → tickets → implement), with the project's vocabulary.
 >
-> First finish **#22** (like/follow): the Daemon side is done; build the Client side as described in HANDOFF ("Next:
-> finish #22"). Then work the frontier in this order: **#21** MPRIS + notifications, **#6** Soloist auto-update, **#20**
+> Work the frontier in this order: **#21** MPRIS + notifications, **#6** Soloist auto-update, **#20**
 > config files, **#18** designs/themes, **#19** layouts, **#17** idle takeover, **#23** listening log + backups. For each
 > ticket: implement with tests at the seams named in the spec, run `cargo test`, verify the real binaries with the pty
 > harness in `tools/pty/` (screenshots), commit with `Closes #N` plus the co-author line, push, and keep `docs/` current

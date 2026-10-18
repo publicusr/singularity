@@ -11,6 +11,7 @@ mod lyrics;
 mod meters;
 mod queue;
 mod scrub;
+mod saved;
 mod search;
 mod setup;
 mod sidebar;
@@ -168,6 +169,7 @@ fn apply(app: &mut App, ev: ConnEvent) {
             }
         }
         ConnEvent::Msg(DaemonMsg::Event(Event::Notice { message })) => app.say(message),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Saved { entries })) => app.saved_event(entries),
         ConnEvent::Msg(_) => {}
     }
 }

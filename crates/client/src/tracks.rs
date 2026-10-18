@@ -62,6 +62,22 @@ impl TrackList {
         let end = (at + p.tracks.len()).min(self.rows.len());
         self.rows.splice(at..end, p.tracks.iter().cloned());
     }
+
+    /// Put a row at `at` (a like lands on top of Liked Songs; a rollback puts it back where it was).
+    pub fn insert(&mut self, at: usize, row: TrackRow) {
+        if self.rows.iter().any(|r| r.uri == row.uri) {
+            return;
+        }
+        self.rows.insert(at.min(self.rows.len()), row);
+        self.total += 1;
+    }
+
+    /// Take a track out; returns where it was and the row.
+    pub fn remove(&mut self, uri: &str) -> Option<(usize, TrackRow)> {
+        let i = self.rows.iter().position(|r| r.uri == uri)?;
+        self.total = self.total.saturating_sub(1);
+        Some((i, self.rows.remove(i)))
+    }
 }
 
 /// How one list is being looked at: sort, filter, selection, scroll.
@@ -229,8 +245,17 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let play = " ▶ Play ";
     text(buf, x0, r.y + 1, 8, play, th.chip(th.accent));
     hits.push((Rect::new(x0, r.y + 1, 8, 1), Hit::PlayView));
-    // what it is (album: by its artists, year, label), with the artists as links
+    // ♡ Save / ♥ Saved: the album or playlist in Your Library
     let mut sx = x0 + 9;
+    if crate::saved::savable(&view.uri) {
+        let saved = app.is_saved(&view.uri) == Some(true);
+        let label = if saved { " ♥ Saved " } else { " ♡ Save " };
+        let lw = label.chars().count() as u16;
+        text(buf, sx, r.y + 1, lw, label, if saved { th.chip(th.accent2) } else { th.s(th.dim) });
+        hits.push((Rect::new(sx, r.y + 1, lw, 1), Hit::Save(singularity_proto::Link { name: view.title.clone(), uri: view.uri.clone() })));
+        sx += lw + 1;
+    }
+    // what it is (album: by its artists, year, label), with the artists as links
     let end = x0 + w;
     if let Some(h) = &list.header {
         for (i, a) in h.artists.iter().enumerate() {

@@ -40,6 +40,7 @@ pub enum Action {
     VolumeDown,
     Shuffle,
     Repeat,
+    Like,
     Login,
     Logout,
     RefreshHome,
@@ -66,7 +67,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 34] = [
+    pub const ALL: [Action; 35] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -78,6 +79,7 @@ impl Action {
         Action::VolumeDown,
         Action::Shuffle,
         Action::Repeat,
+        Action::Like,
         Action::Login,
         Action::Logout,
         Action::RefreshHome,
@@ -115,6 +117,7 @@ impl Action {
             Action::VolumeDown => "Volume down",
             Action::Shuffle => "Toggle shuffle",
             Action::Repeat => "Cycle repeat (off → all → one)",
+            Action::Like => "Like / unlike the current track",
             Action::Login => "Log in to Spotify",
             Action::Logout => "Log out of Spotify",
             Action::RefreshHome => "Refresh Home",
@@ -153,6 +156,7 @@ impl Action {
             Action::VolumeDown => "-",
             Action::Shuffle => "s",
             Action::Repeat => "r",
+            Action::Like => "l",
             Action::Login | Action::Logout | Action::RefreshHome => "",
             Action::GoHome => "",
             Action::Back => "Alt+← · Backspace",
@@ -210,6 +214,8 @@ pub enum Hit {
     PlayArtist,
     /// a popular track on an artist page
     TopTrack(usize),
+    /// ♥ / Save / Follow: toggles whether this is in the library
+    Save(singularity_proto::Link),
 }
 
 /// Two clicks on the same row within this time play it.
@@ -227,6 +233,8 @@ pub enum MenuAct {
     ClearQueue,
     GoTo,
     CopyLink,
+    /// like/unlike, save/remove, follow/unfollow
+    Save,
 }
 
 /// What a context menu is about.
@@ -343,6 +351,10 @@ pub struct App {
     lyrics_asked: Option<String>,
     /// where the hole was drawn this frame (for bending the neighbouring borders)
     pub hole_at: Option<Hole>,
+    /// what's liked, saved and followed (#22)
+    pub(crate) saved: crate::saved::Saved,
+    /// a saved playlist's Saved button was clicked once: a second click soon after removes it
+    confirm_remove: Option<(String, Instant)>,
     last_tick: Instant,
     told_backend: bool,
     commands: Option<mpsc::Sender<Command>>,
@@ -405,6 +417,8 @@ impl App {
             lyrics_scroll: 0,
             lyrics_asked: None,
             hole_at: None,
+            saved: Default::default(),
+            confirm_remove: None,
             last_tick: Instant::now(),
             told_backend: false,
             commands,
@@ -449,7 +463,7 @@ impl App {
         self.toast = Some((msg.into(), Instant::now()));
     }
 
-    fn send(&mut self, c: Command) {
+    pub(crate) fn send(&mut self, c: Command) {
         let ok = match (&self.link, &self.commands) {
             (Link::Connected { .. }, Some(tx)) => tx.try_send(c).is_ok(),
             _ => false,
@@ -478,6 +492,7 @@ impl App {
                 let mode = match self.playback.repeat { Off => Context, Context => Track, Track => Off };
                 self.send(Command::SetRepeat { mode });
             }
+            Action::Like => self.toggle_current(),
             Action::Login => self.send(Command::Login),
             Action::Logout => self.send(Command::Logout),
             Action::RefreshHome => self.send(Command::GetHome),
@@ -635,6 +650,7 @@ impl App {
             KeyCode::Char('-') => self.run(Action::VolumeDown),
             KeyCode::Char('s') => self.run(Action::Shuffle),
             KeyCode::Char('r') => self.run(Action::Repeat),
+            KeyCode::Char('l') => self.run(Action::Like),
             KeyCode::Tab => self.run(Action::FocusNext),
             _ => {}
         }
@@ -671,6 +687,9 @@ impl App {
 
     /// A page from the Daemon.
     pub fn track_page(&mut self, p: singularity_proto::TrackPage) {
+        if p.uri == crate::tracks::LIKED {
+            self.seed_liked(&p.tracks);
+        }
         self.lists.entry(p.uri.clone()).or_default().add(&p);
     }
 
@@ -767,12 +786,14 @@ impl App {
                     v
                 });
                 self.view = Some(v);
+                self.recheck_saved(&uri);
                 if self.lists.get(&uri).is_none_or(|l| !l.complete()) {
                     self.lists.remove(&uri);
                     self.send(Command::GetTracks { uri });
                 }
             }
             Page::Artist { uri, name } => {
+                self.recheck_saved(&uri);
                 let mut a = crate::artist::ArtistView::new(&uri, &name);
                 match self.artist_pages.get(&uri) {
                     Some(p) => a.set_page(p.clone()),
@@ -1074,7 +1095,7 @@ impl App {
     /// Right-click (or the Menu key) on a Card. `at` is the pointer; None opens it under the selected Card.
     pub fn open_menu(&mut self, c: CardRef, at: Option<(u16, u16)>) {
         let Some(card) = self.card(c) else { return };
-        let kind = card.kind.clone();
+        let (kind, uri) = (card.kind.clone(), card.uri.clone());
         let mut items = vec![("Play".to_string(), MenuAct::Play)];
         if matches!(kind.as_str(), "track" | "episode") {
             items.push(("Play next".into(), MenuAct::PlayNext));
@@ -1083,6 +1104,7 @@ impl App {
         if matches!(kind.as_str(), "album" | "artist" | "playlist" | "show") {
             items.push((format!("Go to {kind}"), MenuAct::GoTo));
         }
+        items.extend(self.save_entry(&uri));
         items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::Card(c)).map(|r| (r.x + 2, r.y + 1))).unwrap_or((0, 0));
         self.feed_view().sel = Some(c);
@@ -1094,12 +1116,11 @@ impl App {
         if let Some(v) = self.view.as_mut() {
             v.sel = vi;
         }
-        let items = vec![
-            ("Play from here".to_string(), MenuAct::PlayHere),
-            ("Play next".into(), MenuAct::PlayNext),
-            ("Add to queue".into(), MenuAct::Queue),
-            ("Copy link".into(), MenuAct::CopyLink),
-        ];
+        let mut items = vec![("Play from here".to_string(), MenuAct::PlayHere), ("Play next".into(), MenuAct::PlayNext), ("Add to queue".into(), MenuAct::Queue)];
+        if let Some((uri, ..)) = self.target_track(&Target::Row(vi)) {
+            items.extend(self.save_entry(&uri));
+        }
+        items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::Track(vi)).map(|r| (r.x + 4, r.y + 1))).unwrap_or((0, 0));
         self.menu = Some(Menu { at, target: Target::Row(vi), items, selected: 0 });
     }
@@ -1118,10 +1139,30 @@ impl App {
         if self.playback.queue.iter().any(|q| q.source == "queue") {
             items.push(("Clear queue".into(), MenuAct::ClearQueue));
         }
+        items.extend(self.save_entry(&q.item.uri));
         items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::QueueRow(i)).map(|r| (r.x + 4, r.y + 1))).unwrap_or((0, 0));
         let target = Target::Queued { uri: q.item.uri.clone(), uid: q.uid.clone(), name: q.item.name.clone(), queued };
         self.menu = Some(Menu { at, target, items, selected: 0 });
+    }
+
+    /// Right-click on any other track (search results, an artist's popular tracks).
+    fn open_track_menu(&mut self, uri: String, name: String, at: Option<(u16, u16)>) {
+        let mut items = vec![("Play next".to_string(), MenuAct::PlayNext), ("Add to queue".into(), MenuAct::Queue)];
+        items.extend(self.save_entry(&uri));
+        items.push(("Copy link".into(), MenuAct::CopyLink));
+        self.menu = Some(Menu { at: at.unwrap_or((0, 0)), target: Target::Track { uri, name }, items, selected: 0 });
+    }
+
+    /// A ♥ / Save / Follow button. Removing a playlist takes a second click (it may be your own).
+    fn save_clicked(&mut self, l: singularity_proto::Link) {
+        let playlist = l.uri.starts_with("spotify:playlist:") && self.is_saved(&l.uri) == Some(true);
+        let confirmed = self.confirm_remove.take().is_some_and(|(u, t)| u == l.uri && t.elapsed() < Duration::from_secs(3));
+        if playlist && !confirmed {
+            self.confirm_remove = Some((l.uri, Instant::now()));
+            return self.say("Click again to remove this playlist from Your Library");
+        }
+        self.toggle_saved(&l.uri, &l.name);
     }
 
     fn hit_rect(&self, h: &Hit) -> Option<Rect> {
@@ -1129,7 +1170,7 @@ impl App {
     }
 
     /// URI and name of a menu's target.
-    fn target_track(&self, t: &Target) -> Option<(String, String, String)> {
+    pub(crate) fn target_track(&self, t: &Target) -> Option<(String, String, String)> {
         match t {
             Target::Card(c) => self.card(*c).map(|k| (k.uri.clone(), k.name.clone(), k.kind.clone())),
             Target::Row(vi) => {
@@ -1181,6 +1222,7 @@ impl App {
                 self.clipboard = Some(web_link(&uri));
                 self.say("Link copied");
             }
+            MenuAct::Save => self.toggle_saved(&uri, &name),
         }
     }
 
@@ -1324,6 +1366,14 @@ impl App {
             self.lyrics_asked = Some(uri.clone());
             self.send(Command::GetLyrics { uri });
         }
+        // the ♥ in the player bar follows the track
+        if let Some(uri) = self.playback.item.as_ref().map(|i| i.uri.clone()).filter(|u| crate::saved::savable(u))
+            && self.saved.checked_now.as_deref() != Some(uri.as_str())
+            && matches!(self.link, Link::Connected { .. })
+        {
+            self.saved.checked_now = Some(uri.clone());
+            self.recheck_saved(&uri);
+        }
         // the health check refreshes itself while it's open
         if self.health_open && self.health_asked.is_none_or(|t| t.elapsed() > Duration::from_secs(3)) {
             self.health_asked = Some(Instant::now());
@@ -1402,15 +1452,13 @@ impl App {
                     Some(Hit::SearchTrack(i)) => {
                         let t = self.search.as_ref().and_then(|s| s.results.as_ref()?.tracks.get(i).cloned());
                         if let Some(t) = t {
-                            let items = vec![("Play next".to_string(), MenuAct::PlayNext), ("Add to queue".into(), MenuAct::Queue), ("Copy link".into(), MenuAct::CopyLink)];
-                            self.menu = Some(Menu { at: at.unwrap_or((0, 0)), target: Target::Track { uri: t.uri, name: t.name }, items, selected: 0 });
+                            self.open_track_menu(t.uri, t.name, at);
                         }
                     }
                     Some(Hit::TopTrack(i)) => {
                         let t = self.artist.as_ref().and_then(|a| a.page.as_ref()?.top_tracks.get(i).cloned());
                         if let Some(t) = t {
-                            let items = vec![("Play next".to_string(), MenuAct::PlayNext), ("Add to queue".into(), MenuAct::Queue), ("Copy link".into(), MenuAct::CopyLink)];
-                            self.menu = Some(Menu { at: at.unwrap_or((0, 0)), target: Target::Track { uri: t.uri, name: t.name }, items, selected: 0 });
+                            self.open_track_menu(t.uri, t.name, at);
                         }
                     }
                     _ => {}
@@ -1488,6 +1536,7 @@ impl App {
                         }
                     }
                     Some(Hit::PlayArtist) => self.play_artist(),
+                    Some(Hit::Save(l)) => self.save_clicked(l),
                     Some(Hit::TopTrack(i)) => {
                         // top tracks share the double-click memory with list rows, kept apart by index
                         let double = self.last_click.is_some_and(|(t, j)| j == usize::MAX - i && t.elapsed() < DOUBLE_CLICK);

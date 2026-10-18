@@ -12,7 +12,7 @@ venv/bin/python shot.py <scenario> out-<scenario>   # writes PNGs + text dumps
 ```
 
 Scenarios: `cells`, `pixel` (seek), `home-cells`, `home-pixels`, `library`, `queue`, `lyrics`, `artist`, `search`,
-`audio`, `well-cells`, `well-pixels`, `well-hover` (counts black-hole frames while the mouse moves). The pty reports
+`like` (#22: ♥, `l`, unlike from a menu, Follow), `audio`, `well-cells`, `well-pixels`, `well-hover` (counts black-hole frames while the mouse moves). The pty reports
 10×20 px cells, so pixel-mouse and pixel-tier paths run; kitty APCs (static and animated) are decoded and composited
 under the text, as kitty does with z=-1.
 

@@ -45,7 +45,7 @@ so it cannot be settled by talking)
 | D23 | Test seams | D22 | open | After D27. |
 | D24 | Credential storage (KWallet/Secret Service vs files) | D2, D3, D10 | settled | OS password store (KWallet/Secret Service on Linux, Keychain on macOS); owner-only file fallback with a warning. |
 | D25 | macOS Engine (Spotify.app over Connect vs librespot) | D10 | settled | The hidden official Spotify app as the macOS Engine (lossless, controlled over Connect); librespot fallback. |
-| D26 | Where visuals are computed (CPU vs GPU compute) | D4, D5 | settled | GPU (wgpu compute) first, CPU fallback; frames reach kitty via shared memory. ADR-0004. Measured 626% → 14% CPU for a full-res hole. |
+| D26 | Where visuals are computed (CPU vs GPU compute) | D4, D5 | settled | GPU (wgpu compute) first, CPU fallback; frames reach kitty via shared memory. ADR-0004. Measured 626% → 14% CPU for a full-res hole. Low-power adapter (iGPU) by default, `gpu` setting to pick the dGPU (#20, owner 2026-10-18); 10 fps when unfocused. |
 | D27 | Daemon↔Client protocol & local socket | D22 | settled | Local Unix socket, versioned length-prefixed messages; the audio spectrum streams over it at 60 Hz so several Clients share one tap. |
 | D28 | Arrow keys in content Panes; Home scrolling | D19 | settled | Arrows + Enter navigate the focused Pane (Home Cards, later lists), like the desktop app; seek is Shift+←/→ (±5 s) and `,`/`.` (±1 s); ←/→ still seek in Panes with nothing to navigate. Home scrolls by whole rows and each Shelf sideways by whole Cards, so covers are never cut. |
 
@@ -171,7 +171,14 @@ flowchart LR
   and `initially_paused`; verified live both ways (owner's desktop app ↔ Singularity, paused). Fixed on the way: after
   any Connect failure the remote was dropped, and the dealer can't start twice on one session, so Connect features died
   until the next login. Device picker: `d`, the palette, or the player bar's ⧉ label. D17 answered (above).
-- **#22 Like/follow — in progress** (2026-10-18): Daemon side done (uncommitted work committed as WIP): `SetSaved {uri,
-  saved}` → `addToLibrary`/`removeFromLibrary` (`libraryItemUris`), `CheckSaved {uris}` → `areEntitiesInLibrary`
-  (`lookup[].data.saved`, verified live read-only), `Event::Saved` carries the truth (the old value on failure, for
-  rollback); the fake Catalogue fails any URI containing "fail". Client side not started.
+- **#22 Like/follow** (2026-10-18): Daemon: `SetSaved {uri, saved}` → `addToLibrary`/`removeFromLibrary`
+  (`libraryItemUris`), `CheckSaved {uris}` → `areEntitiesInLibrary` (`lookup[].data.saved`, verified live read-only),
+  `Event::Saved` carries the truth (the old value on failure, for rollback). Client (`client/src/saved.rs`): optimistic
+  toggles settled by `Event::Saved`; answers to older toggles are ignored while a newer one is out. ♥/♡ after the title
+  in the player bar (click, key `l`, palette), "Save to / Remove from Liked Songs" (and Your Library / Follow wording
+  by kind) in every track and Card menu, ♡ Save / ♥ Saved on album and playlist headers, + Follow / ✓ Following on
+  artist pages. Removing a saved playlist takes a second click (it may be your own). Liked Songs is patched in place
+  (a like lands on top, an unlike leaves, a rollback restores the row where it was; counts follow) and seeds what's
+  liked. The playing track and every opened page re-ask, so changes from other devices show.
+- **Owner answers** (2026-10-18): keep the 10 fps slowdown when the terminal is unfocused; keep the black hole on the
+  low-power adapter (iGPU) and add a `gpu = "low-power" | "high-performance"` setting in #20.

@@ -206,6 +206,37 @@ def library(t, out):
     t.send(b"q", 0.5)
 
 
+def like(t, out):
+    """#22: the ♥ in the player bar, `l`, unliking from a row's menu, Follow on an artist page."""
+    t.pump(1.0)
+    x, y = t.find("♥ Liked Songs")
+    mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
+    rx, ry = t.find("Fake Track 001")
+    for _ in range(2):
+        mouse(t, 0, rx + 2, ry)
+        mouse(t, 0, rx + 2, ry, release=True, wait=0.1)
+    t.pump(1.0)
+    t.send(b" ", 0.5)  # pause, so the screen holds still
+    t.shot(f"{out}/0-playing-liked.png")
+    t.send(b"l", 0.8)  # unlike what's playing: it leaves Liked Songs at once
+    t.shot(f"{out}/1-unliked.png")
+    t.send(b"l", 0.8)  # and back on top
+    t.shot(f"{out}/2-liked-again.png")
+    rx, ry = t.find("Fake Track 003")
+    mouse(t, 2, rx + 2, ry, wait=0.4)  # right-click
+    t.shot(f"{out}/3-menu.png")
+    t.send(b"\x1b[B" * 3, 0.1)
+    t.send(b"\r", 0.8)
+    t.shot(f"{out}/4-removed.png")
+    ax, ay = t.find("Nova Drift")
+    mouse(t, 0, ax + 1, ay); mouse(t, 0, ax + 1, ay, release=True, wait=0.8)
+    t.shot(f"{out}/5-artist.png")
+    fx, fy = t.find("+ Follow")
+    mouse(t, 0, fx + 1, fy); mouse(t, 0, fx + 1, fy, release=True, wait=0.6)
+    t.shot(f"{out}/6-following.png")
+    t.send(b"q", 0.5)
+
+
 def main():
     scenario, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
@@ -218,7 +249,7 @@ def main():
     cat = ["--no-catalogue"]
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario == "home-pixels" else "0"
@@ -232,6 +263,8 @@ def main():
             return home(t, out)
         if scenario == "library":
             return library(t, out)
+        if scenario == "like":
+            return like(t, out)
         if scenario == "artist":
             t.pump(1.0)
             x, y = t.find("♥ Liked Songs")

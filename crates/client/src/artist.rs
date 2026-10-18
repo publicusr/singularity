@@ -58,8 +58,15 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     };
     text(buf, x, r.y, 8, " ▶ Play ", th.chip(th.accent));
     app.hit(Rect::new(x, r.y, 8, 1), Hit::PlayArtist);
+    // + Follow / ✓ Following
+    let following = app.is_saved(&v.uri) == Some(true);
+    let label = if following { " ✓ Following " } else { " + Follow " };
+    let fw = label.chars().count() as u16;
+    text(buf, x + 9, r.y, fw, label, if following { th.chip(th.accent2) } else { th.s(th.fg) });
+    app.hit(Rect::new(x + 9, r.y, fw, 1), Hit::Save(singularity_proto::Link { name: v.name.clone(), uri: v.uri.clone() }));
     if let Some(n) = page.monthly_listeners {
-        text(buf, x + 9, r.y, w.saturating_sub(9), &format!("{} monthly listeners", crate::tracks::grouped(n)), th.s(th.dim));
+        let lx = x + 10 + fw;
+        text(buf, lx, r.y, w.saturating_sub(lx - x), &format!("{} monthly listeners", crate::tracks::grouped(n)), th.s(th.dim));
     }
     let mut y = r.y + 2;
     let n = top_rows(r.height, page.top_tracks.len());

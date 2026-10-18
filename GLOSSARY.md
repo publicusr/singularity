@@ -42,13 +42,20 @@ One titled horizontal row on the Home page ("Made For You", "Recently played").
 _Avoid_: section, row, carousel
 
 **Card**:
-One item on a Shelf (album, playlist, artist, show): its cover, name and subtitle. Clicking it plays it.
+One item on a Shelf (album, playlist, artist, show): its cover, name and subtitle. Clicking it opens it (a track Card
+plays); ▶ Play is on the page it opens.
 _Avoid_: tile, item, thumbnail
 
 **Track list**:
 The tracks of Liked Songs, a playlist or an album, shown in the main Pane. Sorting and filtering change only what
 you see; playing a row always starts the list at that track.
 _Avoid_: playlist view, table
+
+**Saved**:
+Whether something is in the user's library: a liked track (in Liked Songs), a saved album or playlist, a followed
+artist. One toggle covers all four ("like", "save", "follow" are its wordings per kind); it shows at once and settles on
+Spotify's answer, rolling back if Spotify refuses.
+_Avoid_: favourite, bookmarked, starred
 
 **Widget**:
 Any self-contained thing that can occupy a Pane: a visual, lyrics, album art, queue, stats.

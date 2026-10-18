@@ -265,3 +265,33 @@ async fn devices_and_transfer() {
     let d = devices(&mut a).await;
     assert!(d.iter().any(|d| d.id == "phone" && d.active));
 }
+
+#[tokio::test]
+async fn saving_settles_on_spotifys_answer_and_failures_carry_the_old_value() {
+    use singularity_proto::{Command, HomeFeed, SavedFlag};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sv.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
+    let mut a = connect(&path).await;
+    // the error (if any) and the flags, up to the next Saved
+    async fn answer(s: &mut UnixStream) -> (Option<String>, Vec<SavedFlag>) {
+        let mut err = None;
+        loop {
+            match proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap() {
+                DaemonMsg::Event(Event::Error { message }) => err = Some(message),
+                DaemonMsg::Event(Event::Saved { entries }) => return (err, entries),
+                _ => {}
+            }
+        }
+    }
+    let flag = |uri: &str, saved| SavedFlag { uri: uri.into(), saved };
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::CheckSaved { uris: vec!["spotify:track:t1".into(), "spotify:artist:a0".into()] })).await.unwrap();
+    assert_eq!(answer(&mut a).await, (None, vec![flag("spotify:track:t1", true), flag("spotify:artist:a0", false)]));
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::SetSaved { uri: "spotify:artist:a0".into(), saved: true })).await.unwrap();
+    assert_eq!(answer(&mut a).await, (None, vec![flag("spotify:artist:a0", true)]));
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::SetSaved { uri: "spotify:track:fail".into(), saved: true })).await.unwrap();
+    let (err, flags) = answer(&mut a).await;
+    assert!(err.is_some(), "the failure is told");
+    assert_eq!(flags, vec![flag("spotify:track:fail", false)], "the old value comes back for the rollback");
+}
