@@ -385,6 +385,11 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
             CatEvent::Error(message) => {
                 let _ = hub.events.send(Event::Error { message });
             }
+            // a change the Clients showed early didn't happen: the last real state puts it back
+            CatEvent::Resync => {
+                let state = hub.playback.lock().await.clone();
+                let _ = hub.events.send(Event::Playback(state));
+            }
         }
     }
 }
@@ -514,7 +519,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                     let s = hub.playback.lock().await.clone();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;
                 }
-                ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. } | Command::PlayNext { .. } | Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::GetArtist { .. } | Command::Search { .. } | Command::GetDevices | Command::Transfer { .. } | Command::SetSaved { .. } | Command::CheckSaved { .. })) => match &hub.catalogue {
+                ClientMsg::Command(cmd @ (Command::Login | Command::Logout | Command::GetHome | Command::GetLibrary | Command::GetTracks { .. } | Command::PlayFrom { .. } | Command::PlayNext { .. } | Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::MoveInQueue { .. } | Command::GetArtist { .. } | Command::Search { .. } | Command::GetDevices | Command::Transfer { .. } | Command::SetSaved { .. } | Command::CheckSaved { .. })) => match &hub.catalogue {
                     Some(tx) => {
                         let c = match cmd {
                             Command::Login => CatCmd::Login,
@@ -525,6 +530,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                             Command::PlayNext { uri } => CatCmd::Queue(connect::QueueEdit::PlayNext(uri)),
                             Command::RemoveFromQueue { uri, uid } => CatCmd::Queue(connect::QueueEdit::Remove { uri, uid }),
                             Command::ClearQueue => CatCmd::Queue(connect::QueueEdit::Clear),
+                            Command::MoveInQueue { uri, uid, to } => CatCmd::Queue(connect::QueueEdit::Move { uri, uid, to }),
                             Command::GetArtist { uri } => CatCmd::Artist(uri),
                             Command::Search { query } => CatCmd::Search(query),
                             Command::GetDevices => CatCmd::Devices,

@@ -335,3 +335,14 @@ flowchart LR
   was the harness (fixed in #27). Tests: shapes at 256×68 / 400×60 with cell aspects 2.0 and 2.2, the middle takes
   exactly what the well gives, no change at 120×40 or without a well; column caps at widths 60–400. pty `library` and
   `home-pixels` at 256×68 and 140×40.
+- **#32 Queue drag (built; live check pending)** (2026-10-18): `Command::MoveInQueue { uri, uid, to }` (`to` = place
+  among the songs you queued; additive), `QueueEdit::Move` over Connect `set_queue` (the song is taken out and put
+  before the `to`-th remaining queued song, else after the last; context and autoplay untouched; a context song
+  can't move). Client: pressing a queued row arms a drag (`QueueDrag`), the pointer's row is the place (clamped to the
+  queued songs, never into the context), the list shows the new order while dragging with the song highlighted, and
+  the drop reorders at once and sends the move. A failed edit sends a toast and `CatEvent::Resync`: the hub re-sends
+  its last real playback state, which undoes the early order. The fake Engine moves too. Tests: Connect edit (front,
+  past the end, context refused), protocol round trip through the fake Engine, App drag (preview, optimistic order,
+  command, clamp, context row inert). pty `queue`: three songs queued, the last dragged to the top, the Daemon's
+  order comes back as dropped. Not yet: the quiet live check on the owner's account; their Daemon (03:53, #29) predates
+  the command, and the next Client start replaces it.

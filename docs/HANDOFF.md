@@ -9,7 +9,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - **Phase 0 (planning) ✅, Phase 1 (spikes) ✅.** ADRs 0001–0004.
 - **Phase 2/3 (v1 build) ✅ (pending the owner's test round).** Spec issue **#1**, tickets on GitHub
   (`publicusr/singularity`, label `ready-for-agent`). **All v1 tickets are closed (#2–#24).**
-- Tests: **190 passing** (`cargo test`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
+- Tests: **192 passing** (`cargo test`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes` (needs saved
   live answers). Clippy: only minor style warnings, all in older code (setup.rs, connect.rs, probe example) or
   harmless (`type_complexity` on theme tables, `needless_range_loop` in a test).
 - **Owner test round 1 is in** (2026-10-18): 9 points, findings and proposals in the DESIGN-TREE round log ("Owner
@@ -36,7 +36,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `137497b` | #28 ✅ | ◂ ▸ back/forward in the main Pane's title |
 | `db94e22` | #29 ✅ | Loudness and levels follow the real output level (`out_level`, `out_vu`, `out_bands`) |
 | `6a55da1` | #30 ✅ | Lyrics wrap; `Lyrics.missing` says why there are none; lookups logged at info |
-| (last) | #31 ✅ | Wide terminals: the well keeps ~16:10 (`compute_shaped`), track-list columns capped |
+| `fd62c6a` | #31 ✅ | Wide terminals: the well keeps ~16:10 (`compute_shaped`), track-list columns capped |
+| (last) | #32 🔄 | Drag to reorder your queued songs (`MoveInQueue`, `QueueEdit::Move`, `CatEvent::Resync`); issue open until the live check |
 
 ## What exists in `crates/`
 
@@ -62,7 +63,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 ## Then
 
 - Test round 1 tickets, in order: ~~#25 stale Daemon~~ ✅, ~~#26 wheel/highlight~~ ✅, ~~#27 Home by lines~~ ✅, ~~#28 back/forward~~ ✅,
-  ~~#29 meters~~ ✅, ~~#30 lyrics wrap~~ ✅, ~~#31 wide terminals~~ ✅, **#32 queue drag (next)**, #33 Theme tint. Genius parked.
+  ~~#29 meters~~ ✅, ~~#30 lyrics wrap~~ ✅, ~~#31 wide terminals~~ ✅, #32 queue drag (built, **open until one quiet live check** on the owner's account once their Daemon is the new build: queue two songs, drag, check the order in the phone app, remove them), **#33 Theme tint (next)**. Genius parked.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
 - v1.x (spec "Out of Scope"): playlist editing, stats widgets (the listening log is ready for them), Settings screen,
   more Visuals, free-tiling, podcasts, macOS Engine. Turn into tickets with the owner before building.
@@ -74,7 +75,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 
 `singularity` and `singularityd` are installed in `~/.cargo/bin` (on the owner's PATH) with
 `cargo install --locked --path crates/daemon` and `--path crates/client`. Reinstall both after each closed ticket so the
-owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #31.
+owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #32.
 
 ## Local state on the owner's machine (not in git)
 
@@ -91,7 +92,7 @@ A new Client replaces an outdated Daemon by itself (and, since #25, stops one th
 
 - To test from round 1's fixes: Daemon replacement (#25), wheel (#26), Home by lines (#27), ◂ ▸ (#28), meters at low
   volume (#29), lyrics at half width and a track without lyrics (#30; the Daemon log has a `lyrics for …` line per
-  lookup), fullscreen (#31: a rounder well, wider middle). Not yet reported on: setup/health, queue, artist/album pages, search, devices, and from the earlier session: like/follow (♡ in the player bar, `l`, menus, Follow, Save), media keys / KDE's
+  lookup), fullscreen (#31: a rounder well, wider middle), dragging queued songs (#32). Not yet reported on: setup/health, queue, artist/album pages, search, devices, and from the earlier session: like/follow (♡ in the player bar, `l`, menus, Follow, Save), media keys / KDE's
   media widget / `playerctl` (KDE widget not verified by me: it needs the real bus), designs (Ctrl+K → Design / Theme,
   `t`), Slots (`v`, ◂ ▸), "Save layout as…", keys.toml / config.toml live edits, vim preset.
 - Answered this session: keep the 10 fps unfocused slowdown (now `visuals.unfocused_fps`); keep the black hole on the

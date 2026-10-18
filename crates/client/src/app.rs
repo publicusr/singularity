@@ -361,6 +361,8 @@ pub struct App {
     pub dividers: Vec<Divider>,
     pub(crate) hits: Vec<(Rect, Hit)>,
     drag: Option<Hit>,
+    /// a queued song being dragged to a new place
+    pub queue_drag: Option<crate::queue::QueueDrag>,
     /// boundary minus grab position, so a divider moves exactly with the mouse whichever grip cell was grabbed
     drag_offset: i32,
     /// the seek or volume bar being dragged
@@ -468,6 +470,7 @@ impl App {
             dividers: vec![],
             hits: vec![],
             drag: None,
+            queue_drag: None,
             drag_offset: 0,
             scrub: None,
             nudge: Nudge::default(),
@@ -1400,6 +1403,19 @@ impl App {
     }
 
     /// Right-click on a queue entry.
+    /// A dragged queued song let go: shown in its new place at once, then moved on Spotify (if Spotify refuses, the
+    /// Daemon sends the real queue back).
+    fn drop_queued(&mut self, d: crate::queue::QueueDrag) {
+        if d.to == d.from || d.from >= crate::queue::queued(self) {
+            return;
+        }
+        let e = self.playback.queue.remove(d.from);
+        let (uri, uid) = (e.item.uri.clone(), (!e.uid.is_empty()).then(|| e.uid.clone()));
+        self.playback.queue.insert(d.to, e);
+        self.queue_view.sel = d.to;
+        self.send(Command::MoveInQueue { uri, uid, to: d.to });
+    }
+
     pub fn open_queue_menu(&mut self, i: usize, at: Option<(u16, u16)>) {
         let Some(q) = self.playback.queue.get(i).cloned() else { return };
         self.queue_view.sel = i;
@@ -1793,6 +1809,10 @@ impl App {
                     Some(Hit::QueueRow(i)) => {
                         self.focus = "queue".into();
                         self.queue_view.sel = i;
+                        // a song you queued can be dragged (it shows on consecutive rows, from the first queued one)
+                        if i < crate::queue::queued(self) {
+                            self.queue_drag = Some(crate::queue::QueueDrag { from: i, to: i, top_y: m.row as i32 - i as i32 });
+                        }
                     }
                     // click a lyric line: jump there
                     Some(Hit::Lyric(ms)) => self.seek_to(ms),
@@ -1893,6 +1913,9 @@ impl App {
                         let v = s.value as u8;
                         self.set_volume(v);
                     }
+                } else if let Some(mut d) = self.queue_drag {
+                    d.over(m.row, crate::queue::queued(self));
+                    self.queue_drag = Some(d);
                 } else if let Some(Hit::Divider(i)) = self.drag.clone()
                     && let Some(d) = self.dividers.get(i).cloned()
                 {
@@ -1902,6 +1925,9 @@ impl App {
             }
             MouseEventKind::Up(_) => {
                 self.drag = None;
+                if let Some(d) = self.queue_drag.take() {
+                    self.drop_queued(d);
+                }
                 if let Some(s) = self.scrub.take() {
                     match s.bar {
                         Bar::Seek => self.seek_to(s.value),

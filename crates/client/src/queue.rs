@@ -1,5 +1,6 @@
 //! The queue Widget (#12): what's playing, what you queued, what comes next from the context, and what autoplay added
 //! (marked as such, story 11). Right-click or Delete edits the queue; play next / remove / clear go through Connect.
+//! Songs you queued yourself can be dragged into a new order (#32): the list shows the new order while dragging.
 
 use crate::app::{App, Hit};
 use crate::theme::Theme;
@@ -25,6 +26,37 @@ impl QueueView {
         let max = lines.saturating_sub(self.visible.max(1));
         self.top = (self.top as i64 + delta).clamp(0, max as i64) as usize;
     }
+}
+
+/// A queued song being dragged: where it was and where it would land (places among the queued songs), and the
+/// screen row the first queued song sits on (so the pointer's row is a place).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QueueDrag {
+    pub from: usize,
+    pub to: usize,
+    pub top_y: i32,
+}
+
+impl QueueDrag {
+    /// The pointer is on screen row `y`.
+    pub fn over(&mut self, y: u16, queued: usize) {
+        self.to = (y as i32 - self.top_y).clamp(0, queued.saturating_sub(1) as i32) as usize;
+    }
+}
+
+/// How many songs at the head of the queue you queued yourself: only these can be moved.
+pub fn queued(app: &App) -> usize {
+    app.playback.queue.iter().take_while(|e| e.source == "queue").count()
+}
+
+/// Queue entries in the order shown: as they are, or with the dragged song at its new place.
+pub fn order(len: usize, drag: Option<QueueDrag>) -> Vec<usize> {
+    let mut o: Vec<usize> = (0..len).collect();
+    if let Some(d) = drag.filter(|d| d.from < len && d.to < len) {
+        let i = o.remove(d.from);
+        o.insert(d.to, i);
+    }
+    o
 }
 
 /// One line of the Widget: a section heading, or entry `i`.
@@ -107,13 +139,16 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
     view.top = view.top.min(all.len().saturating_sub(view.visible));
     let focused = app.focus == "queue";
+    let shown = order(app.playback.queue.len(), app.queue_drag);
     let mut hits = vec![];
     for line in all.iter().skip(view.top).take(view.visible) {
         match line {
             Line::Heading(h) => text(buf, x, y, w, &clip(h, w as usize), th.s(th.dim).add_modifier(Modifier::BOLD)),
-            Line::Entry(i) => {
+            Line::Entry(at) => {
+                let i = &shown[*at];
                 let e = &app.playback.queue[*i];
-                let selected = focused && *i == view.sel;
+                let dragged = app.queue_drag.is_some_and(|d| d.from == *i);
+                let selected = (focused && *i == view.sel && app.queue_drag.is_none()) || dragged;
                 let bg = if selected { th.selection.color() } else { th.bg.color() };
                 text(buf, x, y, w, &" ".repeat(w as usize), th.base().bg(bg));
                 let auto = e.source == "autoplay";
@@ -125,7 +160,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                 let lw = w.saturating_sub(rw + 1) as usize;
                 let artists = e.item.artists.join(", ");
                 let left = if artists.is_empty() { name.clone() } else { format!("{name} · {artists}") };
-                let name_st = if e.source == "queue" { th.s(th.fg).add_modifier(Modifier::BOLD) } else if auto { th.s(th.dim).add_modifier(Modifier::ITALIC) } else { th.s(th.fg) };
+                let name_st = if dragged { th.s(th.accent).add_modifier(Modifier::BOLD) } else if e.source == "queue" { th.s(th.fg).add_modifier(Modifier::BOLD) } else if auto { th.s(th.dim).add_modifier(Modifier::ITALIC) } else { th.s(th.fg) };
                 text(buf, x, y, lw as u16, &clip(&left, lw), name_st.bg(bg));
                 text(buf, x + w - rw, y, rw, &right, th.s(if auto { th.border } else { th.dim }).bg(bg));
                 hits.push((Rect::new(x, y, w, 1), Hit::QueueRow(*i)));
@@ -158,5 +193,17 @@ mod tests {
         assert_eq!(l[2], Line::Heading("Next from Night Drive".into()));
         assert!(matches!(&l[5], Line::Heading(h) if h.starts_with("Autoplay")));
         assert_eq!(l.len(), 7);
+    }
+
+    #[test]
+    fn a_drag_shows_the_new_order() {
+        assert_eq!(order(4, None), [0, 1, 2, 3]);
+        assert_eq!(order(4, Some(QueueDrag { from: 2, to: 0, top_y: 0 })), [2, 0, 1, 3]);
+        assert_eq!(order(4, Some(QueueDrag { from: 0, to: 2, top_y: 0 })), [1, 2, 0, 3]);
+        let mut d = QueueDrag { from: 1, to: 1, top_y: 10 };
+        d.over(3, 3);
+        assert_eq!(d.to, 0, "above the queued songs: first");
+        d.over(40, 3);
+        assert_eq!(d.to, 2, "below them: last of the queued, never into the context");
     }
 }

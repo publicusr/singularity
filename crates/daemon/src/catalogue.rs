@@ -67,6 +67,8 @@ pub enum CatEvent {
     ToEngine(Command),
     Described(Vec<singularity_proto::Item>),
     Lyrics(singularity_proto::Lyrics),
+    /// send the Clients the last playback state again (an edit they showed early failed)
+    Resync,
     Artist(singularity_proto::ArtistPage),
     Search(singularity_proto::SearchResults),
     Devices(Vec<singularity_proto::Device>),
@@ -205,6 +207,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                     QueueEdit::PlayNext(uri) => Command::PlayNext { uri },
                     QueueEdit::Remove { uri, uid } => Command::RemoveFromQueue { uri, uid },
                     QueueEdit::Clear => Command::ClearQueue,
+                    QueueEdit::Move { uri, uid, to } => Command::MoveInQueue { uri, uid, to },
                 })],
                 CatCmd::Lyrics { uri, .. } => vec![CatEvent::Lyrics(fake_lyrics(&uri))],
                 CatCmd::Artist(uri) => vec![CatEvent::Artist(fake_artist(&uri, &home))],
@@ -746,7 +749,7 @@ impl State {
         }
     }
 
-    /// Queue edits Soloist can't make (play next, remove, clear) go through Connect.
+    /// Queue edits Soloist can't make (play next, remove, clear, move) go through Connect.
     async fn queue(&mut self, edit: QueueEdit) {
         let result = async {
             let (_, remote, to) = self.remote().await?;
@@ -766,6 +769,7 @@ impl State {
                 }
                 _ => {
                     let _ = self.ev.send(CatEvent::Error(format!("Couldn't change the queue: {e}"))).await;
+                    let _ = self.ev.send(CatEvent::Resync).await;
                 }
             }
         }

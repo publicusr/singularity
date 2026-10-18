@@ -1426,6 +1426,45 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::PlayNext { uri: "spotify:track:t3".into() }]);
     }
 
+    // ── Queue drag (#32) ──
+
+    #[test]
+    fn dragging_a_queued_song_reorders_it_and_context_songs_stay() {
+        use singularity_proto::{Command, Item, QueueEntry};
+        let (mut app, mut rx) = playing_app(200_000);
+        let e = |n: &str, source: &str| QueueEntry { item: Item { uri: format!("spotify:track:{n}"), name: format!("Song {n}"), ..Default::default() }, source: source.into(), uid: format!("u{n}") };
+        app.playback.queue = vec![e("a", "queue"), e("b", "queue"), e("c", "queue"), e("x", "context"), e("y", "context")];
+        render(&mut app, 160, 48);
+        let row = |app: &App, i: usize| app.hits.iter().find_map(|(r, h)| (*h == Hit::QueueRow(i)).then_some(*r)).unwrap();
+        let (c, a) = (row(&app, 2), row(&app, 0));
+        let mouse = |app: &mut App, kind, r: Rect| app.mouse(MouseEvent { kind, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), c);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), a);
+        // while dragging, the list shows where it lands
+        let s = render(&mut app, 160, 48);
+        let (pc, pa) = (s.find("Song c").unwrap(), s.find("Song a").unwrap());
+        assert!(pc < pa, "c shown above a while dragging");
+        assert!(sent(&mut rx).is_empty(), "nothing sent before the drop");
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), a);
+        assert_eq!(sent(&mut rx), vec![Command::MoveInQueue { uri: "spotify:track:c".into(), uid: Some("uc".into()), to: 0 }]);
+        assert_eq!(app.playback.queue.iter().map(|q| q.item.uri.rsplit(':').next().unwrap()).collect::<String>(), "cabxy", "shown at once");
+        // dragged far down, it stays among the queued songs
+        render(&mut app, 160, 48);
+        let (c, y) = (row(&app, 0), row(&app, 4));
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), c);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), y);
+        assert_eq!(sent(&mut rx), vec![Command::MoveInQueue { uri: "spotify:track:c".into(), uid: Some("uc".into()), to: 2 }]);
+        // a context song doesn't move
+        render(&mut app, 160, 48);
+        let (x, top) = (row(&app, 3), row(&app, 0));
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), top);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), top);
+        assert!(sent(&mut rx).is_empty());
+        assert_eq!(app.playback.queue[3].item.uri, "spotify:track:x");
+    }
+
     // ── Lyrics (#14) ──
 
     #[test]

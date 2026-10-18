@@ -650,7 +650,7 @@ impl SoloistState {
             Command::PlayFrom { .. } | Command::GetLibrary | Command::GetTracks { .. } | Command::Spectrum { .. } | Command::Shutdown | Command::SetSoloistKey { .. } | Command::GetHealth | Command::GetLyrics { .. } | Command::GetArtist { .. } | Command::Search { .. } | Command::GetDevices | Command::Transfer { .. } | Command::SetSaved { .. } | Command::CheckSaved { .. } | Command::GetListening | Command::ExportLocalData | Command::DeleteLocalData => vec![],
             // Soloist only appends; the rest goes through ConnectRemote
             Command::PlayNext { uri } => vec![json!({"type":"command","command":"add_to_queue","uri":uri})],
-            Command::RemoveFromQueue { .. } | Command::ClearQueue => vec![],
+            Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::MoveInQueue { .. } => vec![],
             Command::Login | Command::Logout | Command::GetHome | Command::Unknown => vec![],
         }
     }

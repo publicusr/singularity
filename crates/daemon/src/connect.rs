@@ -241,12 +241,14 @@ pub fn remote_playback(cluster: &Cluster, engine_name: &str, now_ms: u64) -> Opt
     })
 }
 
-/// One change to what plays next. Only user-queued tracks (`provider == "queue"`) can be removed.
+/// One change to what plays next. Only user-queued tracks (`provider == "queue"`) can be removed or moved.
 #[derive(Debug, Clone, PartialEq)]
 pub enum QueueEdit {
     PlayNext(String),
     Remove { uri: String, uid: Option<String> },
     Clear,
+    /// to place `to` among the queued tracks
+    Move { uri: String, uid: Option<String>, to: usize },
 }
 
 /// Apply `edit` to the player's `next_tracks` (as sent back in `set_queue`). False if there was nothing to change.
@@ -257,15 +259,21 @@ pub fn edit_queue(next: &mut Vec<serde_json::Value>, edit: &QueueEdit) -> bool {
             next.insert(0, json!({ "uri": uri, "uid": "", "metadata": { "is_queued": "true" }, "provider": "queue" }));
             true
         }
-        QueueEdit::Remove { uri, uid } => {
-            let by_uid = uid.as_deref().filter(|u| !u.is_empty()).and_then(|u| next.iter().position(|t| queued(t) && t["uid"] == u));
-            match by_uid.or_else(|| next.iter().position(|t| queued(t) && t["uri"] == uri.as_str())) {
-                Some(i) => {
-                    next.remove(i);
-                    true
-                }
-                None => false,
+        QueueEdit::Remove { uri, uid } => match find_queued(next, uri, uid.as_deref()) {
+            Some(i) => {
+                next.remove(i);
+                true
             }
+            None => false,
+        },
+        QueueEdit::Move { uri, uid, to } => {
+            let Some(i) = find_queued(next, uri, uid.as_deref()) else { return false };
+            let track = next.remove(i);
+            let places: Vec<usize> = (0..next.len()).filter(|&k| queued(&next[k])).collect();
+            // before the `to`-th queued track, else after the last one
+            let at = places.get(*to).copied().unwrap_or_else(|| places.last().map_or(0, |&k| k + 1));
+            next.insert(at, track);
+            at != i
         }
         QueueEdit::Clear => {
             let before = next.len();
@@ -273,6 +281,13 @@ pub fn edit_queue(next: &mut Vec<serde_json::Value>, edit: &QueueEdit) -> bool {
             next.len() != before
         }
     }
+}
+
+/// A queued track by its uid, else its URI.
+fn find_queued(next: &[serde_json::Value], uri: &str, uid: Option<&str>) -> Option<usize> {
+    let queued = |t: &serde_json::Value| t["provider"] == "queue";
+    let by_uid = uid.filter(|u| !u.is_empty()).and_then(|u| next.iter().position(|t| queued(t) && t["uid"] == u));
+    by_uid.or_else(|| next.iter().position(|t| queued(t) && t["uri"] == uri))
 }
 
 impl ConnectRemote {
@@ -356,6 +371,16 @@ mod tests {
         assert!(!edit_queue(&mut n, &QueueEdit::Remove { uri: "spotify:track:c".into(), uid: None }), "context tracks can't be removed");
         assert!(edit_queue(&mut n, &QueueEdit::PlayNext("spotify:track:z".into())));
         assert_eq!((n[0]["uri"].as_str(), n[0]["provider"].as_str()), (Some("spotify:track:z"), Some("queue")));
+        let mut m = q();
+        m.insert(2, json!({"uri": "spotify:track:b", "uid": "u5", "provider": "queue"}));
+        let mv = |uri: &str, uid: &str, to| QueueEdit::Move { uri: uri.into(), uid: Some(uid.into()), to };
+        assert!(edit_queue(&mut m, &mv("spotify:track:b", "u5", 0)));
+        let uids = |m: &[serde_json::Value]| m.iter().map(|t| t["uid"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
+        assert_eq!(uids(&m), ["u5", "u1", "u2", "u3", "u4"]);
+        assert!(edit_queue(&mut m, &mv("spotify:track:b", "u5", 9)), "past the end: last of the queued");
+        assert_eq!(m[2]["uid"], "u5");
+        assert_eq!(m[3]["provider"], "context", "context order untouched");
+        assert!(!edit_queue(&mut m, &mv("spotify:track:c", "u3", 0)), "context tracks don't move");
         assert!(edit_queue(&mut n, &QueueEdit::Clear));
         assert!(n.iter().all(|t| t["provider"] != "queue") && n.len() == 2, "context and autoplay stay");
     }

@@ -606,12 +606,24 @@ def main():
             t.pump(1.0)
             x, y = t.find("♥ Liked Songs")
             mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
-            for row in (3, 5):
+            for row in (3, 5, 7):
                 rx, ry = t.find(f"Fake Track 00{row}")
                 mouse(t, 2, rx + 2, ry, wait=0.3)  # right-click
                 t.send(b"\x1b[B", 0.1)  # down: "Play next"
                 t.send(b"\r", 0.8)
             t.shot(f"{out}/0-queued.png")
+            # #32: drag the last queued song (track 3, "fake2") onto the first (track 7, "fake6"): press, move (32 = left
+            # held), release
+            (sx, sy), (dx, dy) = t.find("Described fake2 ·"), t.find("Described fake6 ·")
+            mouse(t, 0, sx + 2, sy)
+            mouse(t, 32, sx + 2, sy - 1, wait=0.15)
+            mouse(t, 32, dx + 2, dy, wait=0.3)
+            t.shot(f"{out}/1-dragging.png")
+            mouse(t, 0, dx + 2, dy, release=True, wait=1.0)
+            t.shot(f"{out}/2-dropped.png")
+            order = [n for n in ("fake2", "fake4", "fake6") if t.find(f"Described {n} ·")]
+            rows = sorted((t.find(f"Described {n} ·")[1], n) for n in order)
+            print("queue after the drop:", [n for _, n in rows])
             t.send(b"q", 0.5)
             return
         if scenario == "well-hover":
