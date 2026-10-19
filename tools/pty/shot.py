@@ -540,6 +540,32 @@ def settings(t, out, env):
     t.send(b"q", 0.5)
 
 
+def show(t, out):
+    """#59: a show from search: its episodes with progress, one played; older ones load near the end; an episode
+    card opens its show at that episode."""
+    t.pump(1.0)
+    t.send(b"\x0c", 0.3); t.send(b"fake", 1.2)  # Ctrl+L, search
+    t.shot(f"{out}/0-search.png")
+    x, y = t.find("Fake Sh")
+    mouse(t, 0, x + 1, y); mouse(t, 0, x + 1, y, release=True, wait=1.0)
+    t.shot(f"{out}/1-show.png")
+    x, y = t.find("Episode 129")
+    for _ in range(2):  # double-click plays it
+        mouse(t, 0, x + 2, y, wait=0.03); mouse(t, 0, x + 2, y, release=True, wait=0.05)
+    t.pump(1.5)
+    t.shot(f"{out}/2-playing.png")
+    print("now playing:", [l.strip()[:80] for l in t.screen.display if "now-playing" in l][:1])
+    t.send(b"\x1b[F", 1.0)  # End: older episodes load
+    t.send(b"\x1b[F", 0.6)
+    t.shot(f"{out}/3-end.png")
+    print("last rows:", [l.strip()[30:90] for l in t.screen.display if "Episode 1:" in l or "Episode 2:" in l][:2])
+    t.send(b"\x1b", 0.6)  # back to search
+    x, y = t.find("Episode…")
+    mouse(t, 0, x + 1, y); mouse(t, 0, x + 1, y, release=True, wait=1.5)
+    t.shot(f"{out}/4-episode-card.png")
+    t.send(b"q", 0.5)
+
+
 def queue_wheel(t, out):
     """The wheel over the queue moves its highlight one song at a time and the list follows (as in the lists, #26)."""
     t.pump(1.0)
@@ -954,7 +980,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "settings", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "settings", "show", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "ambient", "popup") else "0"
@@ -1007,6 +1033,8 @@ def main():
             return popup(t, out)
         if scenario == "stalls":
             return stalls(t, out)
+        if scenario == "show":
+            return show(t, out)
         if scenario == "settings":
             return settings(t, out, env)
         if scenario == "queue-wheel":

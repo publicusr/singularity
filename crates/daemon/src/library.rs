@@ -13,6 +13,10 @@ pub const LIKED: &str = "spotify:collection";
 pub const LIBRARY_PAGE: u32 = 50;
 pub const TRACK_PAGE: u32 = 100;
 pub const ALBUM_PAGE: u32 = 50;
+pub const SHOW_PAGE: u32 = 50;
+/// A show's episodes come this many at a time (#59): the newest first, the next ones as the list is scrolled
+/// (a long-running show has thousands).
+pub const SHOW_BATCH: u32 = 100;
 
 pub fn library_vars(offset: u32, folder: Option<&str>) -> Value {
     json!({
@@ -32,6 +36,7 @@ pub fn tracks_query(uri: &str, offset: u32) -> Option<(&'static str, Value)> {
             json!({ "uri": uri, "offset": offset, "limit": TRACK_PAGE, "enableWatchFeedEntrypoint": false, "includeEpisodeContentRatingsV2": false }),
         )),
         "album" => Some(("getAlbum", json!({ "uri": uri, "locale": "", "offset": offset, "limit": ALBUM_PAGE }))),
+        "show" => Some(("queryPodcastEpisodes", json!({ "uri": uri, "offset": offset, "limit": SHOW_PAGE, "includeEpisodeContentRatingsV2": false }))),
         _ => None,
     }
 }
@@ -158,6 +163,11 @@ pub fn parse_track(v: &Value) -> Option<singularity_proto::Item> {
 
 /// One page of a track list, in any of the three shapes, plus the list's total length.
 pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
+    if uri.starts_with("spotify:show:") {
+        let e = &v["data"]["podcastUnionV2"]["episodesV2"];
+        let rows = e["items"].as_array().into_iter().flatten().filter_map(|it| episode_row(&it["entity"]["data"])).collect();
+        return (rows, e["totalCount"].as_u64().unwrap_or(0) as u32);
+    }
     let (items, total) = match uri.split(':').nth(1) {
         _ if uri == LIKED => {
             let t = &v["data"]["me"]["library"]["tracks"];
@@ -196,6 +206,7 @@ pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
                 artist_uris: uris(&d["artists"]["items"]),
                 album_uri: d["albumOfTrack"]["uri"].as_str().or(album_uri).map(String::from),
                 uid: it["uid"].as_str().map(String::from),
+                progress: None,
                 uri,
                 name: d["name"].as_str().unwrap_or_default().to_string(),
                 artists: names(&d["artists"]["items"]),
@@ -207,6 +218,65 @@ pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
         })
         .collect();
     (rows, total.unwrap_or(0) as u32)
+}
+
+/// An episode as a list row (#59): its release date in `added_at`, Spotify's played state as `progress`.
+pub fn episode_row(d: &Value) -> Option<TrackRow> {
+    if d["__typename"] != "Episode" {
+        return None;
+    }
+    let played = &d["playedState"];
+    let progress = played["state"].as_str().map(|state| singularity_proto::Progress {
+        position_ms: played["playPositionMilliseconds"].as_u64().unwrap_or(0),
+        done: state == "COMPLETED",
+    });
+    Some(TrackRow {
+        uri: d["uri"].as_str()?.to_string(),
+        name: d["name"].as_str().unwrap_or_default().to_string(),
+        artists: vec![],
+        album: String::new(),
+        added_at: d["releaseDate"]["isoString"].as_str().map(String::from),
+        duration_ms: d["duration"]["totalMilliseconds"].as_u64().unwrap_or(0),
+        playable: d["playability"]["playable"].as_bool().unwrap_or(true),
+        artist_uris: vec![],
+        album_uri: None,
+        uid: None,
+        progress,
+    })
+}
+
+/// A show's header (#59), from `queryShowMetadataV2`: "Podcast · publisher", its description and cover.
+pub fn parse_show_header(v: &Value) -> Option<ListHeader> {
+    let p = &v["data"]["podcastUnionV2"];
+    if p["__typename"] != "Podcast" {
+        return None;
+    }
+    let mut parts = vec!["Podcast".to_string()];
+    parts.extend(p["publisher"]["name"].as_str().filter(|n| !n.is_empty()).map(String::from));
+    let description = crate::catalogue::plain(p["description"].as_str().unwrap_or_default());
+    Some(ListHeader { subtitle: parts.join(" · "), artists: vec![], cover_url: image(&p["coverArt"]["sources"]), description })
+}
+
+/// A `getEpisodeOrChapter` answer → an Item (the show as its artist and album) and the show's link.
+pub fn parse_episode(v: &Value) -> Option<(singularity_proto::Item, Link)> {
+    let e = &v["data"]["episodeUnionV2"];
+    if e["__typename"] != "Episode" {
+        return None;
+    }
+    let show = &e["podcastV2"]["data"];
+    let link = Link { name: show["name"].as_str().unwrap_or_default().to_string(), uri: show["uri"].as_str()?.to_string() };
+    let item = singularity_proto::Item {
+        uri: e["uri"].as_str()?.to_string(),
+        name: e["name"].as_str().unwrap_or_default().to_string(),
+        artists: vec![link.name.clone()],
+        artist_uris: vec![link.uri.clone()],
+        album: Some(link.name.clone()),
+        album_uri: Some(link.uri.clone()),
+        cover_url: image(&e["coverArt"]["sources"]).or_else(|| image(&show["coverArt"]["sources"])),
+        duration_ms: e["duration"]["totalMilliseconds"].as_u64().unwrap_or(0),
+        explicit: e["contentRating"]["label"] == "EXPLICIT",
+    };
+    Some((item, link))
 }
 
 /// What a list is (album: artists, year, label; playlist: owner, likes), from its first page.
@@ -295,6 +365,7 @@ pub fn parse_search(query: &str, v: &Value) -> singularity_proto::SearchResults 
                 album: t["albumOfTrack"]["name"].as_str().unwrap_or_default().into(),
                 album_uri: t["albumOfTrack"]["uri"].as_str().map(String::from),
                 uid: None,
+                progress: None,
                 added_at: None,
                 duration_ms: t["duration"]["totalMilliseconds"].as_u64().unwrap_or(0),
                 playable: t["playability"]["playable"].as_bool().unwrap_or(true),
@@ -331,6 +402,7 @@ pub fn parse_artist(v: &Value) -> Option<ArtistPage> {
                 album: t["albumOfTrack"]["name"].as_str().unwrap_or_default().into(),
                 album_uri: t["albumOfTrack"]["uri"].as_str().map(String::from),
                 uid: None,
+                progress: None,
                 added_at: None,
                 duration_ms: t["duration"]["totalMilliseconds"].as_u64().unwrap_or(0),
                 playable: t["playability"]["playable"].as_bool().unwrap_or(true),
@@ -427,6 +499,33 @@ mod tests {
             "duration": {"totalMilliseconds": 210000}, "contentRating": {"label": "NONE"}}}});
         let i = parse_track(&v).unwrap();
         assert_eq!((i.name.as_str(), i.artists.len(), i.duration_ms, i.album.as_deref()), ("Perihelion", 2, 210_000, Some("Quiet Orbit")));
+    }
+
+    #[test]
+    fn a_shows_episodes_come_with_dates_and_progress_and_its_header_with_the_publisher() {
+        // the shapes of queryPodcastEpisodes / queryShowMetadataV2 / getEpisodeOrChapter (2026-10-19), anonymised
+        let ep = |n: u32, state: &str, pos: u64| json!({ "entity": { "_uri": format!("spotify:episode:e{n}"), "data": {
+            "__typename": "Episode", "uri": format!("spotify:episode:e{n}"), "name": format!("Episode {n}"),
+            "duration": { "totalMilliseconds": 3_600_000 }, "playability": { "playable": true },
+            "playedState": { "playPositionMilliseconds": pos, "state": state },
+            "releaseDate": { "isoString": "2026-10-16T17:00:00Z", "precision": "MINUTE" } } } });
+        let page = json!({ "data": { "podcastUnionV2": { "__typename": "Podcast", "episodesV2": { "__typename": "ContextEpisodePage",
+            "pagingInfo": { "nextOffset": 3 }, "totalCount": 2766,
+            "items": [ep(1, "NOT_STARTED", 0), ep(2, "IN_PROGRESS", 1_200_000), ep(3, "COMPLETED", 0), { "entity": { "data": { "__typename": "RestrictedContent" } } }] } } } });
+        let (rows, total) = parse_tracks("spotify:show:s", &page);
+        assert_eq!((rows.len(), total), (3, 2766), "restricted items are skipped");
+        assert_eq!(rows[0].added_at.as_deref(), Some("2026-10-16T17:00:00Z"));
+        assert_eq!(rows[1].progress, Some(singularity_proto::Progress { position_ms: 1_200_000, done: false }));
+        assert!(rows[2].progress.unwrap().done);
+        assert_eq!(tracks_query("spotify:show:s", 50).unwrap().0, "queryPodcastEpisodes");
+        let meta = json!({ "data": { "podcastUnionV2": { "__typename": "Podcast", "name": "A Show", "publisher": { "name": "Pub" },
+            "description": "Talk &amp; more", "coverArt": { "sources": [{ "url": "https://i/x", "width": 300, "height": 300 }] } } } });
+        let h = parse_show_header(&meta).unwrap();
+        assert_eq!((h.subtitle.as_str(), h.description.as_str(), h.cover_url.as_deref()), ("Podcast · Pub", "Talk & more", Some("https://i/x")));
+        let one = json!({ "data": { "episodeUnionV2": { "__typename": "Episode", "uri": "spotify:episode:e1", "name": "Episode 1",
+            "duration": { "totalMilliseconds": 60_000 }, "podcastV2": { "data": { "__typename": "Podcast", "uri": "spotify:show:s", "name": "A Show" } } } } });
+        let (item, show) = parse_episode(&one).unwrap();
+        assert_eq!((item.artists, show.uri.as_str(), item.album.as_deref()), (vec!["A Show".to_string()], "spotify:show:s", Some("A Show")));
     }
 
     #[test]

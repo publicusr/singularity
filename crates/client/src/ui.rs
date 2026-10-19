@@ -1655,6 +1655,63 @@ mod tests {
     }
 
     #[test]
+    fn a_show_lists_its_episodes_with_progress_and_fetches_older_ones_near_the_end() {
+        use singularity_proto::{Command, Progress, TrackPage, TrackRow};
+        let (mut app, mut rx) = playing_app(200_000);
+        let show = "spotify:show:s1";
+        let eps = |from: u32, to: u32| TrackPage {
+            uri: show.into(),
+            offset: from,
+            total: 130,
+            tracks: (from..to)
+                .map(|i| TrackRow {
+                    uri: format!("spotify:episode:e{i}"),
+                    name: format!("Episode {}", 130 - i),
+                    added_at: Some("2026-10-16T06:00:00Z".into()),
+                    duration_ms: 3_725_000,
+                    playable: true,
+                    progress: Some(match i {
+                        0 => Progress { position_ms: 600_000, done: false },
+                        1 => Progress { position_ms: 0, done: true },
+                        _ => Progress::default(),
+                    }),
+                    ..Default::default()
+                })
+                .collect(),
+            header: (from == 0).then(|| singularity_proto::ListHeader { subtitle: "Podcast · Pub".into(), ..Default::default() }),
+        };
+        app.open(show, "A Show", "", "show");
+        assert_eq!(sent(&mut rx), vec![Command::GetTracks { uri: show.into() }]);
+        app.track_page(eps(0, 50));
+        app.track_page(eps(50, 100));
+        let s = render(&mut app, 160, 48);
+        for part in ["130 episodes", "Podcast · Pub", "Progress", "Released", "52 min left", "✓ played", "2026-10-16", "1:02:05"] {
+            assert!(s.contains(part), "missing {part:?}\n{s}");
+        }
+        assert!(sent(&mut rx).is_empty(), "the top of a show asks for nothing more");
+        // near the end of what's here: the next episodes, once
+        app.key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        render(&mut app, 160, 48);
+        render(&mut app, 160, 48);
+        assert_eq!(sent(&mut rx), vec![Command::MoreTracks { uri: show.into(), offset: 100 }]);
+        // an episode card opens its show at that episode, fetching on until it's there
+        app.run(Action::GoHome);
+        app.open("spotify:episode:e120", "Episode 10", "", "episode");
+        assert_eq!(sent(&mut rx), vec![Command::FindShow { uri: "spotify:episode:e120".into() }]);
+        app.episode_show("spotify:episode:e120".into(), singularity_proto::Link { name: "A Show".into(), uri: show.into() });
+        assert_eq!(sent(&mut rx), vec![Command::GetTracks { uri: show.into() }]);
+        app.track_page(eps(0, 50));
+        app.track_page(eps(50, 100));
+        render(&mut app, 160, 48);
+        assert!(sent(&mut rx).iter().any(|c| matches!(c, Command::MoreTracks { offset: 100, .. })));
+        app.track_page(eps(100, 130));
+        render(&mut app, 160, 48);
+        let v = app.view.as_ref().unwrap();
+        assert_eq!((v.sel, v.reveal_uri.is_none()), (120, true));
+        assert!(render(&mut app, 160, 48).contains("Episode 10"));
+    }
+
+    #[test]
     fn track_rows_can_play_next_or_be_queued() {
         use singularity_proto::Command;
         let (mut app, mut rx) = library_app();

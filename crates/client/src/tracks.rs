@@ -110,11 +110,15 @@ pub struct TrackView {
     pub top: usize,
     /// visible rows last frame
     pub visible: usize,
+    /// highlight this row once it has arrived (an episode card opens its show at that episode, #59)
+    pub reveal_uri: Option<String>,
+    /// a show's rows when its next episodes were last asked for (#59)
+    pub more_for: Option<usize>,
 }
 
 impl TrackView {
     pub fn new(uri: &str, title: &str) -> TrackView {
-        TrackView { uri: uri.into(), title: title.into(), subtitle: String::new(), sort: None, filter: String::new(), filtering: false, sel: 0, top: 0, visible: 1 }
+        TrackView { uri: uri.into(), title: title.into(), subtitle: String::new(), sort: None, filter: String::new(), filtering: false, sel: 0, top: 0, visible: 1, reveal_uri: None, more_for: None }
     }
 
     /// Indexes into `rows` in display order.
@@ -134,6 +138,8 @@ impl TrackView {
             let key = |r: &TrackRow| -> String {
                 match col {
                     Col::Title => r.name.to_lowercase(),
+                    // a show's episodes: by how far you are (new, started, played)
+                    Col::Artist if r.progress.is_some() => r.progress.map(|p| format!("{}{:012}", p.done as u8, p.position_ms)).unwrap_or_default(),
                     Col::Artist => r.artists.join(", ").to_lowercase(),
                     Col::Album => r.album.to_lowercase(),
                     Col::Added => r.added_at.clone().unwrap_or_default(),
@@ -207,6 +213,30 @@ fn columns(w: u16) -> [(u16, u16); 7] {
     out
 }
 
+/// A show's columns (#59): (#, title, progress, —, released, time, —).
+fn show_columns(w: u16) -> [(u16, u16); 7] {
+    let (num, time) = (5, 9);
+    let released = if w >= 50 { 12 } else { 0 };
+    let progress = if w >= 64 { 15 } else { 0 };
+    let title = w.saturating_sub(num + time + released + progress + 1).min(TITLE_MAX + 20);
+    let mut x = 0;
+    let mut out = [(0, 0); 7];
+    for (i, cw) in [num, title, progress, 0, released, time, 0].into_iter().enumerate() {
+        out[i] = (x, cw);
+        x += cw;
+    }
+    out
+}
+
+/// How far into an episode you are: "✓ played", "23 min left", or nothing for a new one.
+pub fn progress_label(p: Option<singularity_proto::Progress>, duration_ms: u64) -> String {
+    match p {
+        Some(p) if p.done => "✓ played".into(),
+        Some(p) if p.position_ms > 0 => format!("{} min left", (duration_ms.saturating_sub(p.position_ms) / 60_000).max(1)),
+        _ => String::new(),
+    }
+}
+
 /// "1 234 567"
 pub fn grouped(n: u64) -> String {
     let s = n.to_string();
@@ -232,7 +262,7 @@ fn clip(s: &str, w: u16) -> String {
 
 fn fmt_dur(ms: u64) -> String {
     let s = ms / 1000;
-    format!("{}:{:02}", s / 60, s % 60)
+    if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
 }
 
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
@@ -241,7 +271,16 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     // a page has arrived (an empty playlist's says total 0)
     let arrived = app.lists.contains_key(&view.uri);
     let list = app.lists.get(&view.uri).unwrap_or(&empty);
+    let show = view.uri.starts_with("spotify:show:");
     let mut order = view.order(&list.rows);
+    // an episode we were asked to show: highlighted once it's here
+    if let Some(want) = view.reveal_uri.clone()
+        && let Some(vi) = order.iter().position(|&ri| list.rows[ri].uri == want)
+    {
+        view.sel = vi;
+        view.top = vi.saturating_sub(view.visible.max(1) / 3);
+        view.reveal_uri = None;
+    }
     // a row being dragged shows where it would land (#55)
     if let Some(d) = app.playlists.row_drag.filter(|d| d.from < order.len() && d.to < order.len()) {
         let x = order.remove(d.from);
@@ -254,7 +293,9 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let w = r.width.saturating_sub(2);
     // header: title, count / progress, filter
     let count = if list.total == 0 && list.rows.is_empty() {
-        if arrived { "no songs yet".to_string() } else { "loading…".to_string() }
+        if !arrived { "loading…".to_string() } else if show { "no episodes".to_string() } else { "no songs yet".to_string() }
+    } else if show {
+        format!("{} episode{}", grouped(list.total as u64), if list.total == 1 { "" } else { "s" })
     } else if list.complete() {
         format!("{} song{}", list.total, if list.total == 1 { "" } else { "s" })
     } else {
@@ -309,7 +350,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let fw = flabel.chars().count() as u16;
     text(buf, r.right().saturating_sub(fw + 2), r.y, fw, &flabel, th.s(if view.filtering || !view.filter.is_empty() { th.accent } else { th.border }));
     // column headers: click to sort
-    let cols = columns(w);
+    let cols = if show { show_columns(w) } else { columns(w) };
     let hy = r.y + 2;
     text(buf, x0 + cols[0].0, hy, cols[0].1, "#", th.s(th.dim));
     for (i, col) in Col::ALL.iter().enumerate() {
@@ -323,7 +364,12 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             _ => "",
         };
         let st = if arrow.is_empty() { th.s(th.dim) } else { th.s(th.accent) };
-        text(buf, x0 + cx, hy, cw, &format!("{}{arrow}", col.label()), st);
+        let label = match (show, col) {
+            (true, Col::Artist) => "Progress",
+            (true, Col::Added) => "Released",
+            _ => col.label(),
+        };
+        text(buf, x0 + cx, hy, cw, &format!("{label}{arrow}"), st);
         hits.push((Rect::new(x0 + cx, hy, cw, 1), Hit::SortCol(*col)));
     }
     for x in 0..w {
@@ -349,7 +395,13 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         text(buf, x0 + cols[0].0, y, cols[0].1, &num, th.s(if now { th.accent } else { th.dim }).bg(bg));
         let title_st = th.s(fg).bg(bg).add_modifier(if selected { Modifier::BOLD } else { Modifier::empty() });
         text(buf, x0 + cols[1].0, y, cols[1].1, &clip(&row.name, cols[1].1), title_st);
-        text(buf, x0 + cols[2].0, y, cols[2].1, &clip(&row.artists.join(", "), cols[2].1), th.s(if row.playable { th.dim } else { th.border }).bg(bg));
+        if show {
+            let p = progress_label(row.progress, row.duration_ms);
+            let st = if row.progress.is_some_and(|p| p.done) { th.s(th.border) } else { th.s(th.accent2) };
+            text(buf, x0 + cols[2].0, y, cols[2].1, &clip(&p, cols[2].1), st.bg(bg));
+        } else {
+            text(buf, x0 + cols[2].0, y, cols[2].1, &clip(&row.artists.join(", "), cols[2].1), th.s(if row.playable { th.dim } else { th.border }).bg(bg));
+        }
         // each artist name, and the album, opens its page
         let mut ax = x0 + cols[2].0;
         let aend = x0 + cols[2].0 + cols[2].1.saturating_sub(1);
@@ -375,19 +427,29 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             let added = row.added_at.as_deref().map(|d| d.get(..10).unwrap_or(d)).unwrap_or("");
             text(buf, x0 + cols[4].0, y, cols[4].1, added, th.s(th.dim).bg(bg));
         }
-        text(buf, x0 + cols[5].0, y, cols[5].1, &format!("{:>5}", fmt_dur(row.duration_ms)), th.s(th.dim).bg(bg));
-        let liked = if view.uri == LIKED { Some(true) } else { app.is_saved(&row.uri) };
-        hits.push(crate::saved::heart(buf, x0 + cols[6].0 + 1, y, &row.uri, &row.name, liked, bg, th));
+        text(buf, x0 + cols[5].0, y, cols[5].1, &format!("{:>w$}", fmt_dur(row.duration_ms), w = cols[5].1.saturating_sub(1) as usize), th.s(th.dim).bg(bg));
+        if cols[6].1 > 0 {
+            let liked = if view.uri == LIKED { Some(true) } else { app.is_saved(&row.uri) };
+            hits.push(crate::saved::heart(buf, x0 + cols[6].0 + 1, y, &row.uri, &row.name, liked, bg, th));
+        }
     }
     // the ♥s in view (and the next rows) are asked about in one batch
     let ahead: Vec<String> = order.iter().skip(view.top).take(50).map(|&ri| list.rows[ri].uri.clone()).collect();
     if order.is_empty() && list.complete() && list.total > 0 {
         text(buf, x0, body.y + 1, w, "no tracks match the filter", th.s(th.dim));
     }
+    // a show's older episodes: asked for as the list nears its end (or while looking for an episode)
+    let near_end = view.top + view.visible + 20 >= order.len() || view.reveal_uri.is_some();
+    let more = show && arrived && list.rows.len() < list.total as usize && near_end && view.more_for != Some(list.rows.len());
+    let loaded = list.rows.len();
     for (r, h) in hits {
         app.hit(r, h);
     }
-    if view.uri != LIKED {
+    if more {
+        view.more_for = Some(loaded);
+        app.send(singularity_proto::Command::MoreTracks { uri: view.uri.clone(), offset: loaded as u32 });
+    }
+    if view.uri != LIKED && !show {
         app.want_saved(ahead.iter().map(String::as_str), view.visible);
     }
     app.view = Some(view);

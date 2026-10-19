@@ -178,6 +178,7 @@ fn apply(app: &mut App, ev: ConnEvent) {
         ConnEvent::Msg(DaemonMsg::Event(Event::Delivery(d))) => app.delivery_event(d),
         ConnEvent::Msg(DaemonMsg::Event(Event::Health(h))) => app.health = Some(h),
         ConnEvent::Msg(DaemonMsg::Event(Event::Artist(p))) => app.artist_page(p),
+        ConnEvent::Msg(DaemonMsg::Event(Event::EpisodeShow { episode, show })) => app.episode_show(episode, show),
         ConnEvent::Msg(DaemonMsg::Event(Event::Devices { devices })) => app.devices = devices,
         ConnEvent::Msg(DaemonMsg::Event(Event::Search(r))) => {
             if let Some(s) = app.search.as_mut() {

@@ -78,8 +78,13 @@ pub enum Command {
     GetHome,
     /// Fetch the library sidebar; arrives as `Event::Library`.
     GetLibrary,
-    /// Fetch a track list (playlist, album, or `spotify:collection` for Liked Songs); arrives page by page as `Event::Tracks`.
+    /// Fetch a track list (playlist, album, `spotify:collection` for Liked Songs, or a show's episodes); arrives page
+    /// by page as `Event::Tracks`. A show sends its newest episodes only; `MoreTracks` asks for the next ones.
     GetTracks { uri: String },
+    /// The next pages of a show's episodes from `offset` (#59), as `Event::Tracks`.
+    MoreTracks { uri: String, offset: u32 },
+    /// Which show an episode belongs to (#59); answered by `Event::EpisodeShow`.
+    FindShow { uri: String },
     /// Play a context starting at its `index`-th track (`track_uri` guards against the list having changed).
     PlayFrom { context_uri: String, index: u32, track_uri: Option<String> },
     /// Store the Soloist API key (keyring, else an owner-only file) and (re)start the Engine with it.
@@ -231,6 +236,8 @@ pub enum Event {
     PlaylistCoverSet { playlist: String, ok: bool },
     /// The answer to `MoveInPlaylist` (the Client that asked moves them back if not `ok`).
     MovedInPlaylist { playlist: String, uids: Vec<String>, ok: bool },
+    /// The answer to `FindShow`: the episode's show.
+    EpisodeShow { episode: String, show: Link },
     #[serde(other)]
     Unknown,
 }
@@ -394,6 +401,16 @@ pub struct TrackRow {
     /// a playlist row's own id (a song can be in a playlist twice): what removing and moving name (#54, #55)
     #[serde(default)]
     pub uid: Option<String>,
+    /// an episode's progress, as Spotify keeps it (#59); `added_at` is then its release date
+    #[serde(default)]
+    pub progress: Option<Progress>,
+}
+
+/// How far into an episode you are (Spotify's `playedState`; marks can't be set from here).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Progress {
+    pub position_ms: u64,
+    pub done: bool,
 }
 
 /// What a track list is, shown above it (sent with the first page).

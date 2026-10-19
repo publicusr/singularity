@@ -661,3 +661,15 @@ flowchart LR
 - **Batch 6 tickets** (2026-10-19): #59 show pages + episodes, #60 saved shows + Follow, #61 episodes in search, #62
   audiobooks (if Soloist plays chapters). Played marks read-only (the web player can't set them either). Soloist's
   first real update ran today (1.3.9.35).
+- **#59 Show pages ✅** (2026-10-19): a show opens as a list in the main Pane (search/Home cards, links): header
+  "Podcast · publisher — description", columns # · Title · Progress · Released · Time (no ♥). Progress from
+  `playedState`: "✓ played", "N min left", blank when new (read-only: the web player can't set marks either).
+  Durations over an hour read h:mm:ss everywhere. The Daemon sends a show's newest 100 episodes (`SHOW_BATCH`, pages
+  of 50 from `queryPodcastEpisodes`, header from `queryShowMetadataV2`); `Command::MoreTracks { uri, offset }`
+  fetches 100 more when the list is within 20 rows of its end (a long show has thousands: no eager crawl). An
+  episode card sends `FindShow` (`getEpisodeOrChapter`) → `Event::EpisodeShow`; its show opens with that episode
+  highlighted, loading older pages until it's there. Episodes in the queue get names via `getEpisodeOrChapter`
+  (the show as artist and album); a Soloist episode without a creator shows its show. Episodes play in the show's
+  context like tracks. Not yet run live: playing an episode (would interrupt the owner's player and write a resume
+  point), so whether Soloist resumes at the saved point is the owner's test. Tests: parsers (anonymised shapes of
+  2026-10-19), App show page/paging/episode card; pty `show`.

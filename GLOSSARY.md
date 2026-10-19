@@ -91,6 +91,11 @@ A page in the main Pane that sums up the listening log for a calendar period (th
 artists, tracks and albums by minutes, minutes and plays, streaks, a 24-hour clock. A live "Wrapped".
 _Avoid_: dashboard, analytics, Wrapped (Spotify's yearly thing)
 
+**Show page**:
+A podcast show's episodes as a list in the main Pane, newest first, with each episode's progress as Spotify keeps it
+(played, minutes left, new). Long shows load their older episodes as you scroll.
+_Avoid_: podcast page, channel
+
 **Settings page**:
 A page in the main Pane built from `config.toml`: every setting with its value and the comment above it in the file
 as its description. A change is written into the file (its comments kept) and applies at once; an edit in the file

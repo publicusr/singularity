@@ -544,13 +544,16 @@ pub struct SoloistState {
 fn entity(v: &Value) -> Option<Item> {
     let uri = v["uri"].as_str().filter(|u| !u.is_empty())?.to_string();
     let d = &v["decorations"];
-    let artists = d["creators"].as_array().map(|a| a.iter().filter_map(|c| c["entity"]["decorations"]["identity"]["name"].as_str().map(String::from)).collect()).unwrap_or_default();
+    let artists: Vec<String> = d["creators"].as_array().map(|a| a.iter().filter_map(|c| c["entity"]["decorations"]["identity"]["name"].as_str().map(String::from)).collect()).unwrap_or_default();
     let covers = d["visual_identity"]["cover"].as_array().cloned().unwrap_or_default();
     let cover_url = ["large", "xlarge", "default", "small"]
         .iter()
         .find_map(|size| covers.iter().find(|c| c["size"] == *size))
         .or(covers.first())
         .and_then(|c| c["url"].as_str().map(String::from));
+    // an episode's creator may be missing: its show (the parent) stands in
+    let parent = d["parent"]["entity"]["decorations"]["identity"]["name"].as_str().map(String::from);
+    let artists = if artists.is_empty() && uri.starts_with("spotify:episode:") { parent.clone().into_iter().collect() } else { artists };
     Some(Item {
         uri,
         name: d["identity"]["name"].as_str().unwrap_or_default().to_string(),
@@ -673,7 +676,7 @@ impl SoloistState {
             // Soloist can't start a context at an offset (tested 2026-10-17); ConnectRemote does that. Here, as a
             // last resort, the track plays on its own.
             Command::PlayFrom { track_uri: Some(u), .. } => vec![json!({"type":"command","command":"play","uri":u})],
-            Command::PlayFrom { .. } | Command::GetLibrary | Command::GetTracks { .. } | Command::Spectrum { .. } | Command::Shutdown | Command::SetSoloistKey { .. } | Command::GetHealth | Command::GetLyrics { .. } | Command::GetArtist { .. } | Command::Search { .. } | Command::GetDevices | Command::Transfer { .. } | Command::SetSaved { .. } | Command::CheckSaved { .. } | Command::GetListening | Command::GetStats { .. } | Command::ExportLocalData | Command::DeleteLocalData | Command::CreatePlaylist { .. } | Command::DeletePlaylist { .. } | Command::EditPlaylist { .. } | Command::AddToPlaylist { .. } | Command::RemoveFromPlaylist { .. } | Command::MoveInPlaylist { .. } | Command::SetPlaylistCover { .. } => vec![],
+            Command::PlayFrom { .. } | Command::GetLibrary | Command::GetTracks { .. } | Command::MoreTracks { .. } | Command::FindShow { .. } | Command::Spectrum { .. } | Command::Shutdown | Command::SetSoloistKey { .. } | Command::GetHealth | Command::GetLyrics { .. } | Command::GetArtist { .. } | Command::Search { .. } | Command::GetDevices | Command::Transfer { .. } | Command::SetSaved { .. } | Command::CheckSaved { .. } | Command::GetListening | Command::GetStats { .. } | Command::ExportLocalData | Command::DeleteLocalData | Command::CreatePlaylist { .. } | Command::DeletePlaylist { .. } | Command::EditPlaylist { .. } | Command::AddToPlaylist { .. } | Command::RemoveFromPlaylist { .. } | Command::MoveInPlaylist { .. } | Command::SetPlaylistCover { .. } => vec![],
             // Soloist only appends; the rest goes through ConnectRemote
             Command::PlayNext { uri } => vec![json!({"type":"command","command":"add_to_queue","uri":uri})],
             Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::MoveInQueue { .. } => vec![],

@@ -477,6 +477,8 @@ pub struct App {
     /// the Stats page, while it's open (#36)
     pub stats_view: Option<crate::stats::StatsView>,
     pub settings_view: Option<crate::settings::SettingsView>,
+    /// an episode card was opened: its show is being looked up (#59)
+    pub pending_episode: Option<String>,
     /// `config.toml` as it is now (the Settings page is built from it), and what's wrong with it
     pub config_text: String,
     pub config_problems: Vec<String>,
@@ -599,6 +601,7 @@ impl App {
             search_kept: None,
             stats_view: None,
             settings_view: None,
+            pending_episode: None,
             config_text: String::new(),
             config_problems: vec![],
             keys_problems: vec![],
@@ -1333,7 +1336,12 @@ impl App {
             _ if uri == crate::tracks::LIKED => Page::List { uri: uri.into(), title: "Liked Songs".into(), subtitle: subtitle.into() },
             "playlist" | "album" => Page::List { uri: uri.into(), title: name.into(), subtitle: subtitle.into() },
             "artist" => Page::Artist { uri: uri.into(), name: name.into() },
-            "show" | "episode" => return self.say("Podcasts arrive in v1.x"),
+            "show" => Page::List { uri: uri.into(), title: name.into(), subtitle: subtitle.into() },
+            // an episode opens its show, at that episode (the Daemon says which show)
+            "episode" => {
+                self.pending_episode = Some(uri.to_string());
+                return self.send(Command::FindShow { uri: uri.into() });
+            }
             _ => return,
         };
         self.navigate(page);
@@ -1342,6 +1350,18 @@ impl App {
     /// A link: its kind is in its URI.
     pub fn open_link(&mut self, l: &singularity_proto::Link) {
         self.open(&l.uri, &l.name, "", "");
+    }
+
+    /// The show of an episode we asked about: open it there.
+    pub fn episode_show(&mut self, episode: String, show: singularity_proto::Link) {
+        if self.pending_episode.as_deref() != Some(episode.as_str()) {
+            return;
+        }
+        self.pending_episode = None;
+        self.navigate(Page::List { uri: show.uri, title: show.name, subtitle: String::new() });
+        if let Some(v) = self.view.as_mut() {
+            v.reveal_uri = Some(episode);
+        }
     }
 
     pub fn current_page(&self) -> Page {
@@ -1421,6 +1441,10 @@ impl App {
                 self.recheck_saved(&uri);
                 if self.lists.get(&uri).is_none_or(|l| !l.complete()) {
                     self.lists.remove(&uri);
+                    // fetched again from the top: a show asks for its older episodes again too
+                    if let Some(v) = self.view.as_mut() {
+                        v.more_for = None;
+                    }
                     self.send(Command::GetTracks { uri });
                 }
             }

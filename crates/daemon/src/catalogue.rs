@@ -37,6 +37,10 @@ pub enum CatCmd {
     Home,
     Library,
     Tracks(String),
+    /// a show's next episodes (#59)
+    MoreTracks { uri: String, offset: u32 },
+    /// an episode's show (#59)
+    FindShow(String),
     PlayFrom { context_uri: String, index: u32, track_uri: Option<String> },
     Queue(QueueEdit),
     /// look up names, artists and durations for these track URIs (Soloist sometimes sends bare URIs)
@@ -101,6 +105,8 @@ pub enum CatEvent {
     CoverSet { playlist: String, ok: bool },
     /// rows moved, or refused
     Moved { playlist: String, uids: Vec<String>, ok: bool },
+    /// the show an episode belongs to (#59)
+    EpisodeShow { episode: String, show: singularity_proto::Link },
     Error(String),
 }
 
@@ -171,6 +177,8 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
             CatCmd::Home => st.home().await,
             CatCmd::Library => st.library().await,
             CatCmd::Tracks(uri) => st.track_list(uri).await,
+            CatCmd::MoreTracks { uri, offset } => st.more_tracks(uri, offset).await,
+            CatCmd::FindShow(uri) => st.find_show(uri).await,
             CatCmd::PlayFrom { context_uri, index, track_uri } => st.play_from(context_uri, index, track_uri).await,
             CatCmd::Queue(edit) => st.queue(edit).await,
             CatCmd::Describe(uris) => st.describe(uris).await,
@@ -350,6 +358,8 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 }
                 CatCmd::Tracks(uri) => {
                     let mut pages = fake_tracks(&uri);
+                    // a show: its newest episodes only, as the real one sends
+                    pages.retain(|e| !matches!(e, CatEvent::Tracks(p) if p.uri.starts_with("spotify:show:") && p.offset >= library::SHOW_BATCH));
                     // what was added comes last (the fake playlists fit one page)
                     if let (Some(extra), [CatEvent::Tracks(p)]) = (added.get(&uri), pages.as_mut_slice()) {
                         let n = p.tracks.len();
@@ -377,6 +387,8 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 })],
                 CatCmd::Lyrics { uri, .. } => vec![CatEvent::Lyrics(fake_lyrics(&uri))],
                 CatCmd::Artist(uri) => vec![CatEvent::Artist(fake_artist(&uri, &home))],
+                CatCmd::MoreTracks { uri, offset } => fake_tracks(&uri).into_iter().filter(|e| matches!(e, CatEvent::Tracks(p) if p.offset >= offset)).collect(),
+                CatCmd::FindShow(uri) => vec![CatEvent::EpisodeShow { episode: uri, show: singularity_proto::Link { name: "Fake Show".into(), uri: "spotify:show:fake1".into() } }],
                 CatCmd::Search(q) => vec![CatEvent::Search(fake_search(&q, &home))],
                 CatCmd::Devices => vec![CatEvent::Devices(fake_devices(None))],
                 CatCmd::Transfer(id) => vec![CatEvent::Devices(fake_devices(Some(&id)))],
@@ -456,7 +468,15 @@ fn fake_search(q: &str, home: &HomeFeed) -> singularity_proto::SearchResults {
     let tracks = (0..8)
         .map(|i| singularity_proto::TrackRow { uri: format!("spotify:track:s{i}"), name: format!("{q} song {}", i + 1), artists: vec!["Nova Drift".into()], album: "Search Results".into(), duration_ms: 190_000, playable: true, ..Default::default() })
         .collect();
-    singularity_proto::SearchResults { query: q.into(), top: all.iter().take(3).cloned().collect(), tracks, artists: of("artist"), albums: of("album"), playlists: of("playlist"), podcasts: vec![] }
+    singularity_proto::SearchResults { query: q.into(), top: all.iter().take(3).cloned().collect(), tracks, artists: of("artist"), albums: of("album"), playlists: of("playlist"), podcasts: fake_podcasts() }
+}
+
+/// A show and one of its older episodes (#59), in every search.
+fn fake_podcasts() -> Vec<Card> {
+    vec![
+        Card { uri: "spotify:show:fake1".into(), name: "Fake Show".into(), subtitle: "Fake Publisher".into(), image_url: None, kind: "show".into() },
+        Card { uri: "spotify:episode:fakeep120".into(), name: "Episode 10: Orbits and Echoes".into(), subtitle: "Fake Show".into(), image_url: None, kind: "episode".into() },
+    ]
 }
 
 /// An invented artist page: top tracks, and the Home feed's first Shelves as releases.
@@ -474,6 +494,7 @@ fn fake_artist(uri: &str, home: &HomeFeed) -> singularity_proto::ArtistPage {
             album: "Greatest Orbits".into(),
             album_uri: Some("spotify:album:fake1".into()),
             uid: None,
+            progress: None,
             added_at: None,
             duration_ms: 200_000 + i * 3_000,
             playable: true,
@@ -560,6 +581,9 @@ fn fake_saved(uri: &str) -> bool {
 }
 
 fn fake_tracks(uri: &str) -> Vec<CatEvent> {
+    if uri.starts_with("spotify:show:") {
+        return fake_show(uri);
+    }
     if uri.contains(":fakenew") {
         return vec![CatEvent::Tracks(TrackPage { uri: uri.into(), offset: 0, total: 0, tracks: vec![], header: None })];
     }
@@ -580,6 +604,7 @@ fn fake_tracks(uri: &str) -> Vec<CatEvent> {
                     artist_uris: vec![format!("spotify:artist:fake{}", i as usize % artists.len())],
                     album_uri: Some(format!("spotify:album:fake{}", (i * 7) % 13 + 1)),
                     uid: uri.contains(":playlist:").then(|| format!("fakeuid{i}")),
+                    progress: None,
                 })
                 .collect();
             let header = (offset == 0 && uri.contains(":album:")).then(|| singularity_proto::ListHeader {
@@ -590,6 +615,35 @@ fn fake_tracks(uri: &str) -> Vec<CatEvent> {
             });
             let header = header.or_else(|| (offset == 0 && uri == "spotify:playlist:fakemine").then(|| singularity_proto::ListHeader { subtitle: "Playlist · fake".into(), description: "Made up for the pty".into(), ..Default::default() }));
             CatEvent::Tracks(TrackPage { uri: uri.into(), offset, total, tracks, header })
+        })
+        .collect()
+}
+
+/// A fake show (#59): 130 episodes, newest first, the first three started, finished, and half-way; a page each
+/// for the first `SHOW_BATCH` (so `MoreTracks` has something left to fetch).
+fn fake_show(uri: &str) -> Vec<CatEvent> {
+    let total = 130u32;
+    let pages: Vec<(u32, u32)> = vec![(0, 50), (50, 100), (100, 130)];
+    pages
+        .into_iter()
+        .map(|(from, to)| {
+            let tracks = (from..to)
+                .map(|i| singularity_proto::TrackRow {
+                    uri: format!("spotify:episode:fakeep{i}"),
+                    name: format!("Episode {}: Orbits and Echoes", total - i),
+                    added_at: Some(format!("2026-{:02}-{:02}T06:00:00Z", 10 - (i / 28).min(9), 28 - i % 28)),
+                    duration_ms: 1_800_000 + (i as u64 * 104_729) % 4_000_000,
+                    playable: true,
+                    progress: Some(match i {
+                        0 => singularity_proto::Progress { position_ms: 600_000, done: false },
+                        1 => singularity_proto::Progress { position_ms: 0, done: true },
+                        _ => singularity_proto::Progress::default(),
+                    }),
+                    ..Default::default()
+                })
+                .collect();
+            let header = (from == 0).then(|| singularity_proto::ListHeader { subtitle: "Podcast · Fake Publisher".into(), description: "Conversations about light and gravity.".into(), ..Default::default() });
+            CatEvent::Tracks(TrackPage { uri: uri.into(), offset: from, total, tracks, header })
         })
         .collect()
 }
@@ -767,7 +821,8 @@ impl State {
         }
     }
 
-    /// Fetch a track list page by page, sending each as it arrives (so long lists show at once).
+    /// Fetch a track list page by page, sending each as it arrives (so long lists show at once). A show sends its
+    /// newest `SHOW_BATCH` episodes; `more_tracks` fetches the next ones.
     async fn track_list(&mut self, uri: String) {
         if let Some((at, pages)) = self.tracks.get(&uri)
             && at.elapsed() < TRACKS_TTL
@@ -777,35 +832,70 @@ impl State {
             }
             return;
         }
+        let until = if uri.starts_with("spotify:show:") { library::SHOW_BATCH } else { MAX_TRACKS };
+        if let Some(pages) = self.fetch_pages(&uri, 0, until).await {
+            self.tracks.insert(uri, (Instant::now(), pages));
+        }
+    }
+
+    /// A show's next episodes from `offset` (#59), added to what's cached.
+    async fn more_tracks(&mut self, uri: String, offset: u32) {
+        let cached = self.tracks.get(&uri).map(|(_, p)| p.iter().map(|p| p.offset + p.tracks.len() as u32).max().unwrap_or(0));
+        // pages already here are sent again (cheap); the rest are fetched
+        if let Some((_, pages)) = self.tracks.get(&uri) {
+            for p in pages.iter().filter(|p| p.offset >= offset).cloned().collect::<Vec<_>>() {
+                let _ = self.ev.send(CatEvent::Tracks(p)).await;
+            }
+        }
+        let from = cached.unwrap_or(0).max(offset);
+        if !uri.starts_with("spotify:show:") || from >= offset + library::SHOW_BATCH {
+            return;
+        }
+        if let Some(pages) = self.fetch_pages(&uri, from, offset + library::SHOW_BATCH).await
+            && let Some((_, kept)) = self.tracks.get_mut(&uri)
+        {
+            kept.extend(pages);
+        }
+    }
+
+    /// Pages from `from` until `until` (or the list's end), each sent as it arrives; None if one failed.
+    async fn fetch_pages(&mut self, uri: &str, from: u32, until: u32) -> Option<Vec<TrackPage>> {
         let mut pages = vec![];
-        let mut offset = 0u32;
+        let mut offset = from;
         loop {
-            let Some((op, vars)) = library::tracks_query(&uri, offset) else {
+            let Some((op, vars)) = library::tracks_query(uri, offset) else {
                 let _ = self.ev.send(CatEvent::Error(format!("can't list the tracks of {uri}"))).await;
-                return;
+                return None;
             };
             let v = match self.query(op, vars).await {
                 Ok(v) => v,
                 Err(e) => {
                     let _ = self.ev.send(CatEvent::Error(format!("Track list unavailable: {e}"))).await;
-                    return;
+                    return None;
                 }
             };
-            let (tracks, total) = library::parse_tracks(&uri, &v);
+            let (tracks, total) = library::parse_tracks(uri, &v);
             let page_len = match op {
                 "getAlbum" => library::ALBUM_PAGE,
+                "queryPodcastEpisodes" => library::SHOW_PAGE,
                 _ => library::TRACK_PAGE,
             };
-            let header = if offset == 0 { library::parse_header(&uri, &v) } else { None };
-            let page = TrackPage { uri: uri.clone(), offset, total, tracks, header };
+            let header = match offset {
+                0 if uri.starts_with("spotify:show:") => {
+                    let vars = json!({ "uri": uri, "includeContentCapabilityTrait": false, "includeEpisodeContentRatingsV2": false });
+                    self.query("queryShowMetadataV2", vars).await.ok().and_then(|m| library::parse_show_header(&m))
+                }
+                0 => library::parse_header(uri, &v),
+                _ => None,
+            };
+            let page = TrackPage { uri: uri.to_string(), offset, total, tracks, header };
             let _ = self.ev.send(CatEvent::Tracks(page.clone())).await;
             pages.push(page);
             offset += page_len;
-            if offset >= total.min(MAX_TRACKS) {
-                break;
+            if offset >= total.min(until) {
+                return Some(pages);
             }
         }
-        self.tracks.insert(uri, (Instant::now(), pages));
     }
 
     /// ConnectRemote (started on first use) and Soloist's Connect id.
@@ -1131,9 +1221,12 @@ impl State {
                 out.push(i.clone());
                 continue;
             }
-            match self.query("getTrack", json!({ "uri": uri })).await {
+            let episode = uri.starts_with("spotify:episode:");
+            let asked = if episode { self.query("getEpisodeOrChapter", json!({ "uri": uri, "includeEpisodeContentRatingsV2": false })).await } else { self.query("getTrack", json!({ "uri": uri })).await };
+            match asked {
                 Ok(v) => {
-                    if let Some(item) = library::parse_track(&v) {
+                    let item = if episode { library::parse_episode(&v).map(|(i, _)| i) } else { library::parse_track(&v) };
+                    if let Some(item) = item {
                         self.described.insert(uri, item.clone());
                         out.push(item);
                     }
@@ -1146,6 +1239,22 @@ impl State {
         }
         if !out.is_empty() {
             let _ = self.ev.send(CatEvent::Described(out)).await;
+        }
+    }
+
+    /// Which show an episode is from (an episode card opens its show).
+    async fn find_show(&mut self, uri: String) {
+        match self.query("getEpisodeOrChapter", json!({ "uri": uri, "includeEpisodeContentRatingsV2": false })).await.map(|v| library::parse_episode(&v)) {
+            Ok(Some((item, show))) => {
+                self.described.insert(uri.clone(), item);
+                let _ = self.ev.send(CatEvent::EpisodeShow { episode: uri, show }).await;
+            }
+            Ok(None) => {
+                let _ = self.ev.send(CatEvent::Error("That episode isn't available".into())).await;
+            }
+            Err(e) => {
+                let _ = self.ev.send(CatEvent::Error(format!("Episode unavailable: {e}"))).await;
+            }
         }
     }
 
