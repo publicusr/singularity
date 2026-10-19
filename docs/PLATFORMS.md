@@ -18,7 +18,7 @@ on macOS (D54: standalone, lightest, the audio Widgets work out of the box; the 
 | Soloist (ADR-0001) | ✅ default | ➖ Spotify ships it for Linux only | ✅ | (Linux: not measured yet, #71) |
 | Spotify app over Connect (D51, #65) | 🔶 built (`spotify --minimized`), never run | ✅ live-checked, network-change fixes awaiting the owner's re-check | ✅ the app's own setting | app ~600 MB, 5–25 % CPU playing |
 | librespot in the Daemon (D52, #70) | 🔶 built, type-checked; needs `alsa-lib` to build; never run | 🔶 default (D54); on Connect live (read-only check); playback awaits the owner | ❌ 320 kbps at most, never | Daemon ~26 MB, ~0–1 % CPU idle; playing not measured yet |
-| Soloist in a Linux VM (D53, spike) | ➖ | spike: runs (vfkit + gvproxy + Debian arm64); playback unmeasured | ✅ (Soloist's own) | est. ~200–270 MB, ~1–3 % CPU (`research/2026-10-soloist-vm-spike.md`) |
+| Soloist in a Linux VM (D53, spike) | ➖ | spike: paired from the phone, plays lossless on the Mac's speakers | ✅ FLAC verified | ~300 MB, ~5.6 % CPU playing FLAC (untuned; `research/2026-10-soloist-vm-spike.md`) |
 
 Lossless without the Spotify app on macOS: not possible with librespot (Spotify keeps lossless to its own players and
 asked librespot not to pursue it). The only other route is Soloist itself in a small Linux VM (D53, spiked).

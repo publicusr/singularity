@@ -26,10 +26,24 @@ the Daemon.
 | Soloist, no key | Starts, ~22 MB RSS, opens its ZeroConf pairing endpoint (`/zc` on a random port) and mDNS (inside the VM only) |
 | Pairing endpoint from the Mac | Reachable through a gvproxy port forward (`getInfo` answered: `deviceType` SPEAKER, `remoteName` as given). For the phone, the Mac would forward a LAN port and announce it with `dns-sd -P` (Bonjour proxy registration). |
 
-Not measured (needs the owner's Soloist API key and a pairing from the phone): CPU and memory while streaming
-lossless, and the phone actually pairing through the proxy.
+### Round 2 (2026-10-20): paired and playing lossless
 
-## Estimate
+With the owner's Soloist key (Keychain → the VM over SSH stdin, never on a host command line), a 256 MB VM:
+
+- **Pairing from the phone worked**: gvproxy forwards Soloist's ZeroConf port to the Mac's loopback; macOS's
+  application firewall silently withholds connections from unsigned programs (gvproxy never saw them, no prompt), so a
+  tiny relay run by Apple's signed `/usr/bin/python3` takes the LAN port; `dns-sd -P` announces "Singularity VM"
+  (`_spotify-connect._tcp`, `CPath=/zc`). The owner's VPN (Mullvad, local network sharing on) didn't get in the way.
+- **Audio on the Mac's speakers**: `parec` on the guest's null sink → TCP → a 60-line cpal player (scratch). It
+  stuttered until the player had a jitter buffer (fill to 0.3 s, catch up past 2 s); then smooth.
+- **Lossless**: the device quality (set from the phone) applies from the next track, as on Linux; then
+  `codec: flac`, 1.4 Mbit/s nominal.
+- **Cost while playing FLAC, CPU time over 60 s**: the VM 4.6 % of a core (Soloist, PulseAudio, the Linux kernel,
+  the audio hop), gvproxy 0.5 %, the player 0.5 %: **~5.6 %**. Memory: VM 264 MB + gvproxy 28 MB + player 6 MB:
+  **~300 MB**. Inside the guest Soloist is 58 MB, 104 MB free. Against Spotify.app's ~600 MB and 5–25 %: half the
+  memory, CPU at the app's low end. Untuned (stock Debian, TCP through gvproxy, PulseAudio).
+
+## Estimate (round 1; round 2 measured ~300 MB and ~5.6 % CPU while playing FLAC)
 
 ~200–270 MB (a 192–256 MB VM + ~10–20 MB of gvproxy) and probably 1–3 % CPU while playing (Soloist's decode + the
 audio hop), against the app's ~600 MB and 5–25 %. So: roughly a third to half of the app's memory, a fraction of its
@@ -46,7 +60,8 @@ CPU, lossless, standalone (no Spotify app), Widgets working. librespot stays far
 - The existing SoloistEngine talks to Soloist's WebSocket through a forwarded port: almost all of its code is reused.
 - Audio: a vsock or TCP stream of PCM from the guest's PulseAudio to the Daemon, played through cpal and fed to the tap.
 - Pairing once from the phone: a LAN port forward + a Bonjour proxy record for Soloist's ZeroConf (with a VPN, its
-  "local network sharing" must allow the phone in). Possibly the Daemon could pair Soloist itself with the Catalogue's
+  "local network sharing" must allow the phone in). The LAN listener must be in a process the firewall admits: the
+  Daemon itself, once signed, or a launchd socket; verified with Apple's python as the relay. Possibly the Daemon could pair Soloist itself with the Catalogue's
   login (ZeroConf `addUser`), which would drop the phone step on Linux too: unverified.
 - Risks: VM memory can't be shared with the Mac the way an app's can; sleep/wake and network changes need handling;
   one more moving part to keep updated.
