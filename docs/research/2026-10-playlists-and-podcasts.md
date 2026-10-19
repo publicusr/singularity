@@ -64,3 +64,16 @@ All playlist routes above are still there. Details read from the bundle:
   `{uploadToken}`; `POST /playlist/{id}/register-image {uploadToken}` → `{picture}` (bytes); then details above.
 - Our librespot fork (`spotatui-librespot-core` 0.8.6) already has `post_playlist_changes` and
   `post_rootlist_changes` (protobuf `ListChanges`, sent once, no retry).
+
+## Re-verified 2026-10-19 for batch 6 (web-player.66702f58, desktop bundle + 159 chunks)
+
+- Still there: `queryShowMetadataV2`, `queryPodcastEpisodes`, `getEpisodeOrChapter`, `showItemsPlayedState`,
+  `decorateContextEpisodesOrChapters`, `searchPodcasts`, `searchEpisodes`, `searchFullEpisodes`,
+  `getAudiobooksMetadata`, `queryBookChapters`, `searchAudiobooks`, `similarAudiobooks`.
+- Played marks are read-only for us: the web player's `markAsPlayed()` / `markAsUnPlayed()` resolve without doing
+  anything, and the menu item only shows when `getCapabilities().canMarkEpisodesAsDone`. Episodes carry
+  `playedState {playPositionMilliseconds, state: COMPLETED | …}`; the web player counts an episode as started from 30 s.
+- `libraryV3` already returns saved shows (`__typename: "Podcast"`); our parser skipped them.
+- Soloist 1.3.9.35 (static, `strings`): `abp_chapter_expiry`, `abp_chapter_keys_*`, `audiobook_enable_smart_resumption`,
+  `audiobook_min_resume_point_age_seconds`, `audiobook_not_playable`, `resumePoint` messages: chapters and resume
+  points are in the engine. Not yet played live.

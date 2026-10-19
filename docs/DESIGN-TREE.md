@@ -658,3 +658,6 @@ flowchart LR
   binding and a mistake added to keys.toml). Batch 4 done.
 - **Batch 5 dropped (D47)** (owner, 2026-10-19): asked what the album theme was, then: "I like the themeing as is
   currently". Story 81 struck; story 82 was done in #44. Next: batch 6, podcasts and audiobooks.
+- **Batch 6 tickets** (2026-10-19): #59 show pages + episodes, #60 saved shows + Follow, #61 episodes in search, #62
+  audiobooks (if Soloist plays chapters). Played marks read-only (the web player can't set them either). Soloist's
+  first real update ran today (1.3.9.35).

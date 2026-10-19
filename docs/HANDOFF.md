@@ -92,9 +92,9 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
   After #56 they asked to see covers in the TUI: library miniatures added; both wait for their test, as does the queue wheel fix (owner-reported). Every write path has a mode in `examples/playlist_probe.rs` (scratch playlist,
   reverted): `--create-delete`, `--details`, `--add`, `--remove`, `--move`, `--cover <jpg>`.
 - **Batch 4, the Settings screen ✅** (#57, #58): Ctrl+K "settings"; both wait for the owner's test.
-- **Next: batch 6, podcasts and audiobooks** (stories 83–84, D35, D41): first check whether Soloist plays audiobook
-  chapters (if not, audiobooks are dropped and reported), re-verify the show/episode routes against the current
-  web-player bundle, then write the tickets under #34 and build one at a time.
+- **Batch 6, podcasts and audiobooks** (stories 83–84): tickets #59 show pages + episodes, #60 saved shows + Follow,
+  #61 episodes in search, #62 audiobooks (live chapter check first). Routes re-verified 2026-10-19 (research file).
+  **Next: #59.**
 - Then batches 5–8 in order; each gets tickets just before it's built.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
 
@@ -119,8 +119,8 @@ A new Client replaces an outdated Daemon by itself (and, since #25, stops one th
 
 - Owner calls still standing (open to veto): Settings opens from Ctrl+K only (no key, no sidebar row); Cockpit's listening Pane packs two days per cell when short; delete asks
   again within 10 s; track notifications off by default; vim preset moves like to `f`; `_example.toml` theme skipped.
-- Soloist's real update path (restart into a new build, resume over Connect) has only run against the stand-in; the
-  first real one happens when Spotify publishes a build (Daemon log: "restarting Soloist into the new build").
+- Soloist's real update path ran for the first time on 2026-10-19 12:48 (1.3.9.35, staged → restarted while quiet →
+  updated, at a Daemon start). Resuming over Connect after a restart mid-song has still only run against the stand-in.
 - Background noise the owner should know: Stremio's torrent server saturated their uplink once (music stalled);
   #45 now says so in-app.
 
