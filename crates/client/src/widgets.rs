@@ -266,16 +266,22 @@ pub fn scope(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 
 // ── top (Terminal) ────────────────────────────────────────────────────
 
-/// The processes behind the music, as `top` would show them (read from /proc once a second).
+/// The processes behind the music, as `top` would show them (sampled once a second): the Daemon, the Client, and
+/// whichever player runs (Soloist, the Spotify app and its helpers), plus PipeWire on Linux.
 #[derive(Default)]
 struct Top {
     rows: Vec<(u32, f32, u64, String)>,
-    /// pid → CPU ticks at the last sample
-    ticks: HashMap<u32, u64>,
+    /// pid → CPU time (ns) at the last sample
+    cpu_ns: HashMap<u32, u64>,
     at: Option<Instant>,
 }
 
-const WATCHED: [&str; 4] = ["soloist", "singularityd", "singularity", "pipewire"];
+const WATCHED: [&str; 5] = ["soloist", "singularityd", "singularity", "pipewire", "spotify"];
+
+/// Is `name` one of the music's processes? (the Spotify app is "Spotify" and "Spotify Helper (…)" on macOS)
+fn watched(name: &str) -> bool {
+    WATCHED.contains(&name) || name == "Spotify" || name.starts_with("Spotify Helper")
+}
 
 impl Top {
     fn sample(&mut self) {
@@ -284,29 +290,80 @@ impl Top {
         }
         let dt = self.at.map(|a| a.elapsed().as_secs_f32()).unwrap_or(1.0);
         self.at = Some(Instant::now());
-        let page = 4096u64;
         let mut rows = vec![];
-        let mut ticks = HashMap::new();
-        let Ok(dir) = std::fs::read_dir("/proc") else { return };
-        for e in dir.flatten() {
-            let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
-            let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) else { continue };
-            let comm = comm.trim();
-            if !WATCHED.contains(&comm) {
-                continue;
-            }
-            let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { continue };
-            // fields after the ")" of the command name: utime and stime are 12th and 13th
-            let f: Vec<&str> = stat.rsplit_once(')').map(|(_, r)| r.split_whitespace().collect()).unwrap_or_default();
-            let t = f.get(11).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) + f.get(12).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-            let rss = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok().and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok()).unwrap_or(0) * page;
-            let cpu = self.ticks.get(&pid).map(|p| t.saturating_sub(*p) as f32 / 100.0 / dt * 100.0).unwrap_or(0.0);
-            ticks.insert(pid, t);
-            rows.push((pid, cpu, rss, comm.to_string()));
+        let mut cpu_ns = HashMap::new();
+        for (pid, name, ns, rss) in processes() {
+            let cpu = self.cpu_ns.get(&pid).map(|p| ns.saturating_sub(*p) as f32 / 1e9 / dt * 100.0).unwrap_or(0.0);
+            cpu_ns.insert(pid, ns);
+            rows.push((pid, cpu, rss, name));
         }
         rows.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         self.rows = rows;
-        self.ticks = ticks;
+        self.cpu_ns = cpu_ns;
+    }
+}
+
+/// The watched processes: pid, name, CPU time used so far (ns), resident memory (bytes). Linux: `/proc`.
+#[cfg(not(target_os = "macos"))]
+fn processes() -> Vec<(u32, String, u64, u64)> {
+    let page = 4096u64;
+    // clock ticks are 10 ms on every Linux this runs on (USER_HZ = 100)
+    let tick_ns = 10_000_000u64;
+    let Ok(dir) = std::fs::read_dir("/proc") else { return vec![] };
+    let mut out = vec![];
+    for e in dir.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
+        let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) else { continue };
+        let comm = comm.trim();
+        if !watched(comm) {
+            continue;
+        }
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { continue };
+        // fields after the ")" of the command name: utime and stime are 12th and 13th
+        let f: Vec<&str> = stat.rsplit_once(')').map(|(_, r)| r.split_whitespace().collect()).unwrap_or_default();
+        let t = f.get(11).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) + f.get(12).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        let rss = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok().and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok()).unwrap_or(0) * page;
+        out.push((pid, comm.to_string(), t * tick_ns, rss));
+    }
+    out
+}
+
+/// The watched processes: pid, name, CPU time used so far (ns), resident memory (bytes). macOS: libproc.
+#[cfg(target_os = "macos")]
+#[allow(deprecated)] // libc's Mach timebase (it points at the `mach2` crate, not worth a dependency)
+fn processes() -> Vec<(u32, String, u64, u64)> {
+    // SAFETY: libproc fills buffers of the sizes passed; every count it returns is bounds-checked before use
+    unsafe {
+        let n = libc::proc_listallpids(std::ptr::null_mut(), 0);
+        if n <= 0 {
+            return vec![];
+        }
+        let mut pids = vec![0i32; n as usize + 64];
+        let n = libc::proc_listallpids(pids.as_mut_ptr().cast(), (pids.len() * std::mem::size_of::<i32>()) as i32);
+        pids.truncate(n.max(0) as usize);
+        // task times are in Mach absolute time units (not ns on Apple silicon)
+        let mut tb = libc::mach_timebase_info { numer: 1, denom: 1 };
+        libc::mach_timebase_info(&mut tb);
+        let mut out = vec![];
+        for pid in pids.into_iter().filter(|p| *p > 0) {
+            let mut buf = [0u8; 64];
+            let len = libc::proc_name(pid, buf.as_mut_ptr().cast(), buf.len() as u32);
+            if len <= 0 {
+                continue;
+            }
+            let name = String::from_utf8_lossy(&buf[..len as usize]).into_owned();
+            if !watched(&name) {
+                continue;
+            }
+            let mut ti: libc::proc_taskinfo = std::mem::zeroed();
+            let size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
+            if libc::proc_pidinfo(pid, libc::PROC_PIDTASKINFO, 0, (&mut ti as *mut libc::proc_taskinfo).cast(), size) != size {
+                continue;
+            }
+            let ns = (ti.pti_total_user + ti.pti_total_system) as u128 * tb.numer as u128 / tb.denom.max(1) as u128;
+            out.push((pid as u32, name, ns as u64, ti.pti_resident_size));
+        }
+        out
     }
 }
 
@@ -351,7 +408,8 @@ mod tests {
         // produce rows only for the watched names
         let mut t = Top::default();
         t.sample();
-        assert!(t.rows.iter().all(|r| WATCHED.contains(&r.3.as_str())));
+        assert!(t.rows.iter().all(|r| watched(&r.3)));
+        assert!(watched("Spotify Helper (Renderer)") && watched("singularityd") && !watched("Spotlight"));
     }
 
     #[test]

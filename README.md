@@ -14,10 +14,20 @@ cargo build --release
 ./target/release/singularity        # starts the Daemon (singularityd) automatically
 ```
 
-Linux and macOS are both supported, with the same features (`docs/PLATFORMS.md` tracks the macOS work, #63–#69).
-On macOS: Rust from rustup (`brew install rustup && rustup default stable`), and Spotify.app installed; until #65
-lands, macOS runs with `singularityd --fake-engine` only. Developing on a Mac, `tools/check-linux.sh` type-checks
+Linux and macOS are both supported, with the same features (`docs/PLATFORMS.md` has the exact status, #63–#70).
+On Linux the build needs ALSA's development files (Arch: `alsa-lib`; Debian/Ubuntu: `libasound2-dev`). On macOS: Rust
+from rustup (`brew install rustup && rustup default stable`). Developing on a Mac, `tools/check-linux.sh` type-checks
 the Linux build.
+
+What plays the music is `[engine] kind` in `~/.config/singularity/config.toml` (or the Settings page), read when the
+Daemon starts:
+
+| `kind` | What | Lossless | Notes |
+|--------|------|----------|-------|
+| `auto` (default) | Soloist on Linux, the Spotify app on macOS | yes | |
+| `soloist` | Spotify Soloist, headless (Linux only) | yes | needs a Soloist API key |
+| `spotify-app` | the official app, started hidden and driven over Connect | yes | ~600 MB while playing |
+| `librespot` | built into the Daemon, both OSes | no, 320 kbps | the lightest (~26 MB) |
 
 After a rebuild, the next Client notices the running Daemon is older than `target/release/singularityd` and replaces
 it by itself ("Updating singularityd…"; music pauses for a second while Soloist restarts).

@@ -36,12 +36,14 @@ pub struct Identity {
     pub via_connect: bool,
     /// the app's version, for the health view (AppEngine only)
     pub version: String,
+    /// what the user knows it as, in messages: "the Spotify app", "librespot"
+    pub player: &'static str,
 }
 
 impl Default for Identity {
     /// Soloist, as before there was a choice
     fn default() -> Identity {
-        Identity { device_name: crate::soloist::DEVICE_NAME.into(), via_connect: false, version: String::new() }
+        Identity { device_name: crate::soloist::DEVICE_NAME.into(), via_connect: false, version: String::new(), player: "Soloist" }
     }
 }
 

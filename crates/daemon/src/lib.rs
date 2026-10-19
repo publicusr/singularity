@@ -2,6 +2,7 @@
 //! Clients talk to it over the protocol in `singularity-proto` (ADR-0003).
 
 pub mod app_engine;
+pub mod librespot;
 pub mod backup;
 pub mod catalogue;
 pub mod connect;
@@ -423,6 +424,11 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                 let _ = hub.events.send(Event::Playback(state));
             }
             CatEvent::Status(s) => {
+                // librespot plays as the Catalogue's login: waiting for one, it starts as soon as there is one
+                let waiting = matches!(*hub.engine_status.lock().await, Some(proto::EngineStatus::NotConfigured { .. }));
+                if hub.engine_kind == proto::EngineKind::Librespot && waiting && matches!(s, proto::CatalogueStatus::Ready { .. }) {
+                    let _ = hub.commands.send(Command::RestartEngine).await;
+                }
                 *hub.catalogue_status.lock().await = Some(s.clone());
                 let _ = hub.events.send(Event::Catalogue(s));
             }
@@ -584,7 +590,8 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                         Some(proto::EngineStatus::Ready { expires_in_days, .. }) => expires_in_days,
                         _ => None,
                     };
-                    let mut h = tokio::task::spawn_blocking(health::report).await.unwrap_or_default();
+                    let kind = hub.engine_kind;
+                    let mut h = tokio::task::spawn_blocking(move || health::report(kind)).await.unwrap_or_default();
                     h.engine_expires_in_days = expires;
                     let _ = out_tx.send(DaemonMsg::Event(Event::Health(h))).await;
                 }

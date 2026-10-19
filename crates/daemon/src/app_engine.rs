@@ -34,7 +34,7 @@ impl AppEngine {
     pub fn new(device: &str, catalogue: Option<mpsc::Sender<CatCmd>>) -> AppEngine {
         let device_name = if device.trim().is_empty() { this_computer() } else { device.trim().to_string() };
         let version = installed().map(|a| a.version).unwrap_or_default();
-        AppEngine { identity: Identity { device_name, via_connect: true, version }, catalogue, start_app: true }
+        AppEngine { identity: Identity { device_name, via_connect: true, version, player: "the Spotify app" }, catalogue, start_app: true }
     }
 }
 

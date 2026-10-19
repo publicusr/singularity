@@ -145,6 +145,9 @@ audio, and looks spectacular.
     local WebSocket, parses the build lifetime and auto-updates between tracks, reads codec/bitrate from its verbose log.
   - *AppEngine* (macOS, D25, D51): the hidden official Spotify app, controlled over Connect through ConnectRemote; its
     playback, queue and stream quality come from the Connect cluster. `[engine] kind` picks the Engine (default per OS).
+  - *LibrespotEngine* (both OSes, D52): librespot's Connect receiver and player inside the Daemon, driven over Connect
+    like the app; audio to the system output through cpal, and to the AudioTap in-process. The light choice: at most
+    320 kbps, never lossless.
   - Commands Soloist lacks (play-at-offset, queue removal, device quality) go through *ConnectRemote*.
 - **Catalogue** (ADR-0002): Home, search, library, entity pages, lyrics, library writes.
   - *PrivateCatalogue*: device-code login with Spotify's desktop client id, a librespot session (spotatui's maintained
@@ -154,7 +157,8 @@ audio, and looks spectacular.
   - *OfficialCatalogue*: Web API fallback for library/search when the private source is broken.
   - Rules: metadata only, no crawling, cache with TTLs, back off on 429/5xx, never retry in a loop.
 - **ConnectRemote** (D12): device list, transfer, remote control of any device, per-device quality (D17, to verify).
-- **AudioTap** (D16): captures only the Engine's stream (PipeWire on Linux; Core Audio process tap on macOS), runs FFT,
+- **AudioTap** (D16): captures only the Engine's stream (PipeWire on Linux; Core Audio process tap on macOS; librespot's
+  samples in-process on both), runs FFT,
   onset detection and **automatic gain** (the tap is post-volume), and publishes spectrum frames.
 - **LocalStore** (D20): SQLite listening log and nightly JSON library backups under the XDG data dir, owner-only permissions,
   export/delete commands, no telemetry.
@@ -183,8 +187,8 @@ audio, and looks spectacular.
   the hit-testing approach, rewritten to production standards rather than copied wholesale.
 
 ### Platforms
-- Linux first (KDE/Wayland, kitty/Ghostty, PipeWire). macOS second (desktop app as Engine, Core Audio tap, Keychain,
-  LaunchAgent). Never Windows.
+- Linux first (KDE/Wayland, kitty/Ghostty, PipeWire). macOS second (desktop app or librespot as Engine, Core Audio tap,
+  Keychain, LaunchAgent). Never Windows.
 - Parity (D49): the same features on both; OS-specific code only behind the platform seams (Engine, AudioTap, Secrets,
   OS media integration, autostart, process lookup). `docs/PLATFORMS.md` tracks every seam and every unavoidable gap.
   Same paths on both (D50).
@@ -225,7 +229,8 @@ audio, and looks spectacular.
 
 > From the v1.x grilling rounds (2026-10-18, DESIGN-TREE D29–D41). Facts: `research/2026-10-playlists-and-podcasts.md`.
 > Tickets are written per batch, just before it's built (Spotify's private details go stale), under spec issue #34. Order (D29): stats → unbuilt v1 items + polish → playlist editing → Settings screen → album-adaptive theme +
-> Visuals → podcasts and audiobooks → free tiling → macOS (pulled forward to after #61: D48).
+> Visuals → podcasts and audiobooks → free tiling → macOS (pulled forward to after #61: D48) → the codebase audit
+> (batch 9, last of all).
 
 ## User stories
 
@@ -261,7 +266,11 @@ audio, and looks spectacular.
 ### Layout (batch 7, D37) and macOS (batch 8, D38)
 85. As a user, I want a free-tiling edit mode (split, close, swap Panes) on the existing layout tree, as a trial.
 86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready. Started 2026-10-19 (D48),
-    tickets #63–#69, parity rule D49.
+    tickets #63–#70, parity rule D49; the light librespot Engine on both OSes (D52, #70).
+
+### Codebase audit (batch 9, the last; owner 2026-10-19)
+87. As the owner, I want the whole codebase analysed for bugs, vulnerabilities and wasted resources once the features are
+    in, so that Singularity is correct, safe, and uses as little CPU, memory, disk, network and battery as it needs (#71).
 
 ## Implementation notes
 
@@ -275,3 +284,69 @@ audio, and looks spectacular.
 - **Visual demos** are ordinary Widgets marked "demo" in their Slot group's ◂ ▸ cycle; liked ones get tickets,
   the rest are deleted.
 - Out for good: downloads (DRM), video in the terminal.
+
+## Batch 9: codebase audit (#71)
+
+The last batch, after every feature batch: no new features, a hard look at what exists. Run on both OSes (D49), on
+release builds, with every Engine the OS has. Output: `docs/research/<date>-audit.md` (what was checked, how, what was
+found), a ranked GitHub issue per real finding (crash / data loss / security / resources / polish), and the crash and
+security fixes made in the batch itself. Numbers that matter become benchmarks in the repo, so they can't silently
+regress.
+
+### Bugs
+- **Long-running tasks**: every `unwrap`/`expect`/index outside tests in the Daemon (a panic in a task silently stops
+  that feature; a panic on the main task stops the music); lock poisoning (`std::sync::Mutex` in async code); tasks that
+  end without anyone noticing (Engine, Catalogue, tap, MPRIS, backups) and whether the Hub reports or restarts them.
+- **State machines**: Engine status transitions per Engine (Soloist, the app, librespot), reconnects (network changes,
+  sleep/wake, the Daemon replaced mid-command), the Connect cluster vs local state racing, queue edits on stale uids,
+  the wizard's steps for every status combination (property tests over `setup::step`).
+- **Protocol**: frames at and past `MAX_FRAME`, truncated frames, unknown fields and variants both ways, a Client that
+  stops reading (the Daemon must drop it, not buffer forever), many Clients, protocol version skew.
+- **Data**: SQLite migrations from every past `user_version`, the listening log across DST changes and midnight, backup
+  rotation, config migrations from every schema with comments kept, concurrent writes from the Settings page and an editor.
+- **Time**: position interpolation (seek precision, pause/resume, speed 0), clock jumps, `now_ms` before the epoch.
+
+### Vulnerabilities
+- **Secrets**: never on a command line, in a log or in a crash message (Soloist key, Spotify credentials, tokens);
+  Keychain / Secret Service usage; the owner-only fallback file's mode and directory; what `daemon.log` contains (it is
+  0644 today and names the account) and its permissions.
+- **Local attack surface**: the socket directory's mode and ownership on both OSes (macOS uses `$TMPDIR`), whether the
+  Daemon checks the peer's uid, what an unprivileged local process could make it do (commands, file paths in
+  `SetPlaylistCover`, `config.toml` paths).
+- **Subprocesses**: every `Command::new` (`security`, `secret-tool`, `pactl`, `parec`, `pgrep`, `pkill`, `open`,
+  `xdg-open`, `scutil`, `defaults`, Soloist): arguments never built from untrusted strings, absolute paths where it
+  matters, `pkill` patterns that can only match what we mean.
+- **Network input**: parsers of Spotify's private API answers, LRCLIB, Soloist's WebSocket and log, the web player
+  bundles (QueryRegistry) treated as hostile: no panics, bounded sizes, no unbounded recursion.
+- **Downloads**: Soloist builds from the CDN (integrity, where they're unpacked, permissions); cover images (size and
+  decode limits).
+- **`unsafe`** (15 blocks today: shared memory for kitty, libproc, signals, `proc_name`): each one justified, minimal,
+  and under Miri or a sanitizer where it can run.
+- **Dependencies**: `cargo audit` (advisories), `cargo deny` (licenses, duplicates, sources), unused crates; pinned
+  `=0.8.6` librespot crates and how they're kept up to date.
+- **Terminal output**: escape sequences in track, playlist or artist names can't reach the terminal unfiltered.
+
+### Resources
+- **Budgets per process, idle and playing**, measured on both OSes for each Engine (Daemon, Client, Soloist/the app):
+  CPU %, RSS, wakeups per second, threads, open fds. Today's reference: the Daemon with librespot idles at ~26 MB, the
+  Spotify app uses ~600 MB and 5–25 % CPU while playing.
+- **Polling**: every timer and sleep loop (31 today), e.g. the Daemon re-reads `config.toml` every second, librespot
+  waiting for a login looks every 10 s; each replaced by an event where the OS has one (file watching, notifications),
+  or justified.
+- **Idle cost**: nothing runs while nothing plays and no Client is attached: the tap, Visuals, spectrum frames and
+  the Client's redraws stop; an open-but-silent audio stream (cpal) is measured and closed if it costs.
+- **Memory growth**: caches with no bound (the Catalogue's tracks, described, lyrics, artists and searches maps; covers in
+  the Client; images in the terminal) get limits or expiry; a 24 h soak per OS shows a flat RSS.
+- **Hot paths**: allocations per frame in the tap, the renderer and the Visuals; frames encoded or sent when nobody
+  shows them; JSON sizes on the socket (the full playback state on every change).
+- **Disk and network**: what's written and how often (logs bounded and rotated, SQLite, backups, the query registry),
+  requests per hour to Spotify while idle and while browsing, nothing fetched twice that could be cached.
+- **Battery** (the M2 Air): energy impact in Activity Monitor with the Client open and hidden, idle and playing.
+- **Binary size and build**: release profile (LTO, codegen units, strip), feature flags pulling in what isn't used.
+
+### Method
+- Read every module against the list above; tools for the rest: `clippy` (pedantic, triaged), `cargo audit`,
+  `cargo deny`, `cargo udeps`, Miri, `cargo fuzz` on `read_msg` / config / private-API parsers, sanitizers on Linux,
+  `perf`/`heaptrack` on Linux, Instruments (Time Profiler, Allocations, Energy) on macOS.
+- Each finding gets a failing test first where one can be written; the soak runs a real session (play, browse, idle,
+  network change, sleep/wake) with a script measuring every 5 minutes.

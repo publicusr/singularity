@@ -22,6 +22,10 @@ libc = "0.2.191"
 librespot-core = { version = "=0.8.6", package = "spotatui-librespot-core" }
 librespot-oauth = { version = "=0.8.6", package = "spotatui-librespot-oauth" }
 librespot-protocol = { version = "=0.8.6", package = "spotatui-librespot-protocol" }
+# the librespot Engine (D52): Spotify Connect receiver and player, audio out through cpal (CoreAudio, ALSA)
+librespot-connect = { version = "=0.8.6", package = "spotatui-librespot-connect" }
+librespot-playback = { version = "=0.8.6", package = "spotatui-librespot-playback" }
+cpal = "0.16"
 protobuf = "3.7"
 rustfft = "6"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }

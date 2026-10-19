@@ -12,7 +12,8 @@ usable, not just infrastructure.
 | 4. Eye candy ✅ | Visual engine, black hole, spectrum, album art, lyrics, layout presets | LARP preset works and stays within its CPU budget |
 | 5. Personalisation | Theme gallery + picker, album-adaptive theme, settings screen, keymap config | Everything configurable in-app and in files |
 | 6. Polish | Stats widgets, notifications, MPRIS, idle mode, mini-player, health check, podcasts | Owner stops opening the official app |
-| 7. macOS (now, D48) | Engine = hidden Spotify app over Connect, Core Audio tap, Keychain, LaunchAgent; parity with Linux (D49, `docs/PLATFORMS.md`) | Same daily-driver bar on the M2 Air |
+| 7. macOS (now, D48) | Engine = hidden Spotify app over Connect or librespot (D52), Core Audio tap, Keychain, LaunchAgent; parity with Linux (D49, `docs/PLATFORMS.md`) | Same daily-driver bar on the M2 Air |
+| 8. Audit (last) | Bugs, vulnerabilities, resource use, on both OSes (SPEC "Batch 9", #71) | Report + ranked tickets; budgets as benchmarks; 24 h soak flat |
 
 Phase 1 comes before any UI work on purpose. If the Soloist or catalogue spike fails, the whole
 architecture changes, and it is better to learn that in a day than after a month of UI.
@@ -31,4 +32,5 @@ playlist editing (D32, D40): tickets #51–#56; #51 create/delete, #52 edit deta
 
 **macOS (2026-10-19, D48–D51):** pulled forward while the owner works on the M2 Air. Tickets in build order: #63 builds
 and tests green, #64 Keychain, #65 AppEngine (Spotify.app over Connect), #66 setup and health per platform, #67 AudioTap
-on Core Audio, #68 notifications and Now Playing, #69 LaunchAgent and install. Then #62 (audiobooks) and batch 7.
+on Core Audio, #68 notifications and Now Playing, #69 LaunchAgent and install, plus #70 the librespot Engine on both
+OSes (D52). Then #62 (audiobooks), batch 7, and last of all batch 9, the codebase audit (#71).

@@ -1,13 +1,14 @@
-"""#66: the setup wizard and health check with the Spotify app as Engine (D51), in a pty. Never touches the real app
-(SINGULARITY_START_APP=0) or the owner's login (scratch dirs, no keyring). Three Daemons in turn:
-no Catalogue (the app can't be driven), a real but logged-out Catalogue (log in first), the fake Catalogue (logged in:
-waiting for the app on Connect, and the health check)."""
+"""#66: the setup wizard and health check with the Spotify app as Engine (D51), in a pty; `--engine librespot` the
+same for the built-in player (D52, #70). Never touches the real app (SINGULARITY_START_APP=0) or the owner's login
+(scratch dirs, no keyring). Three Daemons in turn: no Catalogue (the player can't be driven), a real but logged-out
+Catalogue (log in first), the fake Catalogue (logged in: waiting for the player on Connect, and the health check)."""
 import os, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shot
 out = os.path.abspath(sys.argv[1]); os.makedirs(out, exist_ok=True)
+engine = sys.argv[sys.argv.index("--engine") + 1] if "--engine" in sys.argv else "spotify-app"
 sock = f"{shot.RUNTIME}/sgl-appw-{os.getpid()}.sock"
-env = dict(os.environ, SINGULARITY_ENGINE="spotify-app", SINGULARITY_START_APP="0", SINGULARITY_SOCKET=sock, TERM="xterm-256color",
+env = dict(os.environ, SINGULARITY_ENGINE=engine, SINGULARITY_START_APP="0", SINGULARITY_SOCKET=sock, TERM="xterm-256color",
            SINGULARITY_NO_KEYRING="1", SINGULARITY_PIXEL="0", SINGULARITY_PIXEL_MOUSE="0", SINGULARITY_DATA="off",
            XDG_DATA_HOME=f"{out}/data", XDG_CONFIG_HOME=f"{out}/config", XDG_CACHE_HOME=f"{out}/cache", XDG_STATE_HOME=f"{out}/state")
 for k in ("KITTY_WINDOW_ID", "TERM_PROGRAM", "GHOSTTY_RESOURCES_DIR", "TMUX", "SOLOIST_API_KEY"):
@@ -22,7 +23,7 @@ def phase(name, args, health=False):
         t.pump(2.0)
         t.shot(f"{out}/{name}.png")
         print(f"== {name}")
-        print("\n".join(l.strip()[:120] for l in t.screen.display if any(w in l for w in ("Spotify app", "Log in", "Connect", "Can't play", "You need", "Audio check", "›"))))
+        print("\n".join(l.strip()[:120] for l in t.screen.display if any(w in l for w in ("Spotify app", "Log in", "Connect", "Can't play", "You need", "Audio check", "player", "›"))))
         if health:
             t.send(b"\x1b", 0.3)
             t.send(b"\x0b", 0.3); t.send(b"health", 0.3); t.send(b"\r", 1.0)

@@ -21,7 +21,8 @@ under the text, as kitty does with z=-1, at pyte's cursor when the APC arrives, 
 - `update_test.py out-update` (#6): a real Daemon runs an expiring stand-in Soloist (`fake_soloist.py`: WebSocket
   protocol, `--version`, the lifetime line) from scratch dirs; a fake CDN then offers a newer build, which must be
   staged while a track plays and taken over at the next track. No key, keyring, audio tap or D-Bus of the owner's.
-- `app_wizard_test.py out-appw` (#66): the wizard and health check with the Spotify app as Engine, three Daemons in turn
+- `app_wizard_test.py out-appw [--engine librespot]` (#66, #70): the wizard and health check with the Spotify app (or
+  librespot) as Engine, three Daemons in turn
   (no Catalogue; a real, logged-out one in scratch dirs; the fake one). Never starts the real app (`SINGULARITY_START_APP=0`).
 - Every script pins `SINGULARITY_ENGINE` (so a Daemon a Client starts by itself never drives the real Spotify app on a Mac).
 - `stale_test.py out-stale` (#25): a Daemon that ignores `Shutdown` (`SINGULARITY_IGNORE_SHUTDOWN=1`, playing a build

@@ -71,7 +71,9 @@ so it cannot be settled by talking)
 | D49 | Platform parity | D10, D38 | settled | Owner (2026-10-19): "both the existing linux version and a separate, same functionality macos version, nothing exclusive to either if possible". One codebase; OS-specific code only behind the platform seams (Engine, AudioTap, Secrets, OS media integration, autostart, process lookup). Every feature works on both or has a row in `docs/PLATFORMS.md` saying why not. |
 | D50 | Paths on macOS | D49, D21 | settled (agent call, open to veto) | The same XDG-style paths as Linux (`~/.config/singularity`, `~/.local/share/…`, `~/.local/state/…`, `~/.cache/…`, the `XDG_*` variables respected), not `~/Library/…`: dotfile-friendly, one set of docs. Already what the code does. |
 | D51 | How the macOS Engine works | D25, D49 | settled (agent call, open to veto) | *AppEngine*: the Daemon starts Spotify.app hidden and drives its Connect device through ConnectRemote (play, transport, queue); its playback and queue come from the Connect cluster. Platform-neutral code (only starting the app is per-OS), so the Engine choice is `[engine] kind` in config.toml, default Soloist on Linux, the app on macOS. Needs the Catalogue login; librespot stays the fallback (D25). |
-| D52 | A light Engine (librespot in the Daemon) | D25, D51 | frontier | Owner asked whether the ~600 MB Spotify app is the only way on macOS. Recommended: librespot as an `[engine] kind` on both OSes (light, 320 kbps at most, the riskier way under Spotify's rules); the app stays the macOS default for lossless. Waiting on the owner. |
+| D52 | A light Engine (librespot in the Daemon) | D25, D51 | settled | Owner (2026-10-19): "600 mb and 5-25 cpu is kinda insane. Lets add the librespot lightweight player." `[engine] kind = "librespot"` on both OSes (#70): librespot's Connect receiver and player inside the Daemon, driven over Connect like the app, audio through cpal and straight into the AudioTap. 320 kbps at most. The app stays the macOS `auto` until D54 says otherwise. |
+| D53 | Lossless on macOS without the Spotify app | D52, D3 | frontier | Owner asked how feasible a lossless player like Soloist is on macOS. Facts: librespot can't (Spotify keeps lossless to its own players and asked librespot not to; going around that is DRM circumvention, out). The only other lossless player Spotify makes is Soloist, Linux-only (arm64 too). Option: run it in a tiny Linux VM (Apple's Virtualization framework), its PCM sent to the Daemon over vsock and played and tapped there. Feasible but a project: a VM image to build and download, pairing needs the phone to reach the VM (mDNS proxied from the Mac), the VM's memory (~150–250 MB estimated, unmeasured). Recommended: a time-boxed spike that measures it, built only if it clearly beats the app. |
+| D54 | macOS default Engine | D52, D53 | frontier | `auto` on macOS is the Spotify app (lossless, heavy). Recommended: keep it, as lossless is a v1 promise (story 26); the owner sets `librespot` for themselves on the Settings page. |
 
 ```mermaid
 flowchart LR
@@ -756,3 +758,22 @@ flowchart LR
   way on macOS (it's ~600 MB and 5–25 % CPU while playing, against Singularity's ~46 MB)? Facts: the only lossless
   way, yes (Soloist is Linux-only); librespot in the Daemon would be light but 320 kbps at most. Put to the owner:
   librespot as an `[engine] kind` choice on both OSes, the app staying the macOS default (D52, open).
+- **D52 answered, #70 librespot Engine built** (owner, 2026-10-19): "Lets add the librespot lightweight player." Also:
+  "How feasible would it be to build a lossless capable player like soloist for macos?" (D53), "the widgets reacting to
+  music live are not working on macos … I need full feature parity … make sure you know EXACTLY where we stand" (the
+  macOS audio tap is #67; `docs/PLATFORMS.md` was re-audited against the code, feature by feature), and "add towards the
+  very end of the spec a codebase analysis meant for finding bugs, vulnerabilities etc, making sure the app uses as
+  little resources as it needs" (batch 9, story 87, #71, SPEC "Batch 9: codebase audit"). Built:
+  `daemon/src/librespot.rs`: Spirc + Player (spotatui's librespot fork 0.8.6, `librespot-connect`/`-playback`), a
+  separate session with the Catalogue's saved login and a stable device id (FNV of the name), "Singularity on
+  <computer>" on Connect, commands through `CatCmd::Engine` like the app (one Connect path for both), its status/
+  playback from the cluster; a `Tee` sink sends the samples to cpal and, while a Client listens, to the tap
+  (`tap::Feed`: bounded, `try_send`, never blocks playback); restarts after a dropped session with the saved state;
+  remembers the volume; starts as soon as the Catalogue logs in. `Identity.player` names the Engine in messages.
+  The tap's PipeWire matcher now takes the Engine (`StreamOf`: Soloist, the desktop app, the Daemon), so the app as
+  Engine is tapped on Linux too. The health view's audio output on macOS is cpal's default device. Client: the wizard's
+  librespot steps (login → player on Connect → audio check, sound must really come through), health rows, "320 kbps:
+  librespot's best" instead of a lossless warning. Found by the parity audit and fixed: the login page never opened on
+  macOS (`xdg-open`), the `top` Widget was empty on macOS (`/proc`; now libproc, and it lists the Spotify app's
+  helpers). Live, read-only: a scratch Daemon reached Connect with the owner's login in ~4 s and idled at ~26 MB.
+  `tools/check-linux.sh` answers alsa-sys's pkg-config with a stand-in. Linux builds now need `alsa-lib`.

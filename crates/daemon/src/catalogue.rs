@@ -490,7 +490,8 @@ pub fn app_engine_events(c: &librespot_protocol::connect::Cluster, engine: &Iden
     let status = if present {
         EngineStatus::Ready { device_name: name.clone(), active: active == Some(true), version: engine.version.clone(), expires_in_days: None }
     } else {
-        EngineStatus::Failed { message: format!("\"{name}\" isn't on Spotify Connect: Ctrl+K → \"Restart the player\", and check the Spotify app is logged in to this account") }
+        let check = if engine.player == "the Spotify app" { ", and check the Spotify app is logged in to this account" } else { "" };
+        EngineStatus::Failed { message: format!("\"{name}\" isn't on Spotify Connect: Ctrl+K → \"Restart the player\"{check}") }
     };
     let mut out = vec![EngineEvent::Status(status)];
     match active {
@@ -1278,7 +1279,7 @@ impl State {
         }
     }
 
-    /// The Spotify app as Engine (D51): its commands go to its Connect device. Failures are reported, never handed
+    /// An Engine played over Connect (the Spotify app, D51; librespot, D52): its commands go to its Connect device. Failures are reported, never handed
     /// back to the Engine (that's where they came from).
     async fn engine_command(&mut self, cmd: Command) {
         let cluster = self.cluster.clone();
@@ -1310,7 +1311,10 @@ impl State {
             if let Some(r) = self.remote.as_mut() {
                 r.forget_ids();
             }
-            let _ = self.ev.send(CatEvent::Error(format!("Spotify app: {e}"))).await;
+            let player = self.engine.player;
+            let mut player = player.strip_prefix("the ").unwrap_or(player).to_string();
+            player[..1].make_ascii_uppercase();
+            let _ = self.ev.send(CatEvent::Error(format!("{player}: {e}"))).await;
         }
     }
 

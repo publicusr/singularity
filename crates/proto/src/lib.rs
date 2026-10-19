@@ -321,10 +321,24 @@ pub enum EngineKind {
     Soloist,
     /// the official Spotify app, driven over Connect
     SpotifyApp,
+    /// librespot inside the Daemon (D52), driven over Connect like the app
+    Librespot,
     /// `--fake-engine` (tests, UI work)
     Fake,
     #[serde(other)]
     Unknown,
+}
+
+impl EngineKind {
+    /// Played over Spotify Connect (the app, librespot): set up and described alike.
+    pub fn via_connect(self) -> bool {
+        matches!(self, EngineKind::SpotifyApp | EngineKind::Librespot)
+    }
+
+    /// Can this Engine play lossless? (librespot can't: Spotify keeps lossless to its own players)
+    pub fn lossless(self) -> bool {
+        self != EngineKind::Librespot
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

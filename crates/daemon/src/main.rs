@@ -2,6 +2,7 @@
 
 use singularityd::engine::{Engine, FakeEngine};
 use singularityd::app_engine::AppEngine;
+use singularityd::librespot::LibrespotEngine;
 use singularityd::soloist::SoloistEngine;
 
 #[tokio::main]
@@ -25,20 +26,23 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => return Err(e.into()),
     };
     tracing::info!("singularityd {} listening on {}", singularityd::VERSION, path.display());
-    // the Engine (D51): --fake-engine, a pretend player for UI work without Soloist or a Spotify account; else
-    // config.toml's [engine] (Soloist on Linux, the Spotify app on macOS)
+    // the Engine (D51, D52): --fake-engine, a pretend player for UI work without Soloist or a Spotify account; else
+    // config.toml's [engine] (Soloist on Linux, the Spotify app on macOS, librespot on either)
     let args: Vec<String> = std::env::args().collect();
     let fake = args.iter().any(|a| a == "--fake-engine");
     let choice = singularity_config::load_config(&singularity_config::config_path()).value.engine;
-    // SINGULARITY_ENGINE=soloist|spotify-app overrides config.toml (tests pin it, whatever the OS)
+    // SINGULARITY_ENGINE=soloist|spotify-app|librespot overrides config.toml (tests pin it, whatever the OS)
+    use singularity_config::EngineKind as Kind;
     let kind = match std::env::var("SINGULARITY_ENGINE").as_deref() {
         _ if fake => None,
-        Ok("soloist") => Some(singularity_config::EngineKind::Soloist),
-        Ok("spotify-app") => Some(singularity_config::EngineKind::SpotifyApp),
+        Ok("soloist") => Some(Kind::Soloist),
+        Ok("spotify-app") => Some(Kind::SpotifyApp),
+        Ok("librespot") => Some(Kind::Librespot),
         _ => Some(choice.kind.resolved()),
     };
-    let app = (kind == Some(singularity_config::EngineKind::SpotifyApp)).then(|| AppEngine::new(&choice.device, None));
-    let identity = app.as_ref().map(|a| a.identity.clone()).unwrap_or_default();
+    let app = (kind == Some(Kind::SpotifyApp)).then(|| AppEngine::new(&choice.device, None));
+    let librespot = (kind == Some(Kind::Librespot)).then(|| LibrespotEngine::new(&choice.device, None, singularityd::catalogue::Dirs::from_env()));
+    let identity = app.as_ref().map(|a| a.identity.clone()).or_else(|| librespot.as_ref().map(|l| l.identity.clone())).unwrap_or_default();
     // --no-catalogue: playback only (no Spotify login / private API)
     // --fake-catalogue <home.json>: a recorded Home feed instead of Spotify (UI work, screenshots)
     let fake_home = args.iter().position(|a| a == "--fake-catalogue").and_then(|i| args.get(i + 1));
@@ -47,21 +51,32 @@ async fn main() -> anyhow::Result<()> {
     } else {
         (!args.iter().any(|a| a == "--no-catalogue")).then(|| singularityd::catalogue::spawn(singularityd::catalogue::Dirs::from_env(), identity.clone()))
     };
-    let engine: Box<dyn Engine> = match app {
+    // the AudioTap listens to the Engine's own audio: Soloist's PipeWire stream, librespot's samples in-process; the
+    // fake Engine "plays" a synthetic groove (SINGULARITY_TAP=off: none, so a test Daemon never listens to the
+    // owner's real player). (The Spotify app's audio: its PipeWire stream on Linux, a Core Audio tap on macOS, #67.)
+    use singularityd::tap::{StreamOf, TapSource};
+    let tap = match (&librespot, kind) {
+        _ if fake => Some(TapSource::Synthetic),
+        (Some(l), _) => Some(TapSource::Feed(l.feed.clone())),
+        (None, Some(Kind::SpotifyApp)) if cfg!(target_os = "macos") => None,
+        (None, Some(Kind::SpotifyApp)) => Some(TapSource::PipeWire(StreamOf::SpotifyApp)),
+        _ => Some(TapSource::PipeWire(StreamOf::Soloist)),
+    };
+    let tap = tap.filter(|_| std::env::var("SINGULARITY_TAP").as_deref() != Ok("off"));
+    let engine: Box<dyn Engine> = match (app, librespot) {
         _ if fake => Box::new(FakeEngine),
-        Some(app) => {
+        (_, Some(l)) => {
+            tracing::info!("Engine: librespot, {:?} on Connect", l.identity.device_name);
+            Box::new(LibrespotEngine { catalogue: catalogue.as_ref().map(|(tx, _)| tx.clone()), ..l })
+        }
+        (Some(app), _) => {
             tracing::info!("Engine: the Spotify app, {:?} on Connect", app.identity.device_name);
             // SINGULARITY_START_APP=0: never look for or start the real app (tests)
             let start_app = std::env::var("SINGULARITY_START_APP").as_deref() != Ok("0");
             Box::new(AppEngine { catalogue: catalogue.as_ref().map(|(tx, _)| tx.clone()), start_app, ..app })
         }
-        None => Box::new(SoloistEngine::from_env()),
+        (None, None) => Box::new(SoloistEngine::from_env()),
     };
-    // the AudioTap listens to Soloist's own stream; the fake Engine "plays" a synthetic groove
-    // (SINGULARITY_TAP=off: none, so a test Daemon never listens to the owner's real Soloist)
-    // (the Spotify app's audio: #67)
-    let tap = if fake { Some(singularityd::tap::TapSource::Synthetic) } else if identity.via_connect { None } else { Some(singularityd::tap::TapSource::PipeWire) };
-    let tap = tap.filter(|_| std::env::var("SINGULARITY_TAP").as_deref() != Ok("off"));
     // MPRIS on the session bus (SINGULARITY_DBUS=<address> picks another bus, =off none). A fake Engine stays off the
     // session bus unless asked, so test Daemons never show up in the desktop's media controls.
     let notify = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

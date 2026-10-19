@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 const MAC: &str = "Owner’s MacBook Air";
 
 fn identity() -> Identity {
-    Identity { device_name: MAC.into(), via_connect: true, version: "1.2.94.583".into() }
+    Identity { device_name: MAC.into(), via_connect: true, version: "1.2.94.583".into(), player: "the Spotify app" }
 }
 
 fn device(name: &str) -> DeviceInfo {

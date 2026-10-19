@@ -13,9 +13,16 @@ pub const LOSSLESS_FIX: &str = "On your phone: Spotify → device picker → Sin
 /// The same for the Spotify app as Engine: its own setting.
 pub const APP_LOSSLESS_FIX: &str = "Open the Spotify app once: Settings → Audio quality → Streaming quality → Lossless";
 
+/// librespot never streams lossless: what to do if you want it.
+pub const LIBRESPOT_LOSSLESS: &str = "librespot plays at most 320 kbps; for lossless set [engine] kind = \"auto\" in config.toml";
+
 /// How to get lossless with this Engine.
 pub fn lossless_fix(app: &App) -> &'static str {
-    if app.engine_kind == EngineKind::SpotifyApp { APP_LOSSLESS_FIX } else { LOSSLESS_FIX }
+    match app.engine_kind {
+        EngineKind::SpotifyApp => APP_LOSSLESS_FIX,
+        EngineKind::Librespot => LIBRESPOT_LOSSLESS,
+        _ => LOSSLESS_FIX,
+    }
 }
 pub const KEY_URL: &str = "https://developer.spotify.com/dashboard/soloist";
 
@@ -55,7 +62,7 @@ pub enum Step {
     /// the Spotify app: installed (and this Daemon has a Catalogue to drive it with)
     App,
     Login,
-    /// the Spotify app: its device found on Connect
+    /// the Spotify app, librespot: its device found on Connect
     Connect,
     Audio,
     Done,
@@ -66,6 +73,7 @@ impl Step {
     fn all(kind: EngineKind) -> &'static [(Step, &'static str)] {
         match kind {
             EngineKind::SpotifyApp => &[(Step::App, "Spotify app"), (Step::Login, "Log in to Spotify"), (Step::Connect, "Find the app on Connect"), (Step::Audio, "Audio check")],
+            EngineKind::Librespot => &[(Step::Login, "Log in to Spotify"), (Step::Connect, "Start the player"), (Step::Audio, "Audio check")],
             _ => &[(Step::Key, "Soloist key"), (Step::Engine, "Download Soloist"), (Step::Pair, "Pair from your phone"), (Step::Login, "Log in to Spotify"), (Step::Audio, "Audio check")],
         }
     }
@@ -73,7 +81,7 @@ impl Step {
 
 /// Where setup stands, from what the Daemon reports.
 pub fn step(app: &App) -> Step {
-    if app.engine_kind == EngineKind::SpotifyApp {
+    if app.engine_kind.via_connect() {
         return app_step(app);
     }
     if app.setup.rekey {
@@ -94,11 +102,15 @@ pub fn step(app: &App) -> Step {
     if !app.setup.heard { Step::Audio } else { Step::Done }
 }
 
-/// Where setup stands with the Spotify app as Engine.
+/// Where setup stands with an Engine played over Connect (the Spotify app, librespot).
 fn app_step(app: &App) -> Step {
+    let librespot = app.engine_kind == EngineKind::Librespot;
     match &app.engine {
         None => return Step::Done,
-        Some(EngineStatus::NotConfigured { .. }) => return Step::App,
+        // librespot waits for the login; the app may not be installed
+        Some(EngineStatus::NotConfigured { .. }) if !librespot => return Step::App,
+        // librespot in a Daemon without the Catalogue: nothing to log in to, it says why on its step
+        Some(EngineStatus::NotConfigured { .. }) if app.catalogue.is_none() => return Step::Connect,
         _ => {}
     }
     if !matches!(app.catalogue, Some(CatalogueStatus::Ready { .. })) {
@@ -107,8 +119,9 @@ fn app_step(app: &App) -> Step {
     if !matches!(app.engine, Some(EngineStatus::Ready { .. })) {
         return Step::Connect;
     }
-    // (the app's audio isn't tapped yet, #67: playing counts as the check)
-    if app.setup.heard || app.playback.status == PlayStatus::Playing { Step::Done } else { Step::Audio }
+    // (the Spotify app's audio isn't tapped on macOS yet, #67: playing counts as the check there)
+    let tapped = librespot || !cfg!(target_os = "macos");
+    if app.setup.heard || (!tapped && app.playback.status == PlayStatus::Playing) { Step::Done } else { Step::Audio }
 }
 
 /// The wizard shows itself while something essential isn't set up (or when asked for).
@@ -137,6 +150,7 @@ pub fn draw_wizard(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     let mut y = inner.y;
     let need = match app.engine_kind {
         EngineKind::SpotifyApp => "You need: Spotify Premium · the Spotify app, logged in to the same account",
+        EngineKind::Librespot => "You need: Spotify Premium (librespot, built in, plays as your account)",
         _ => "You need: Spotify Premium · a Soloist API key · your phone on the same network, once",
     };
     text(buf, x, y, w, need, th.s(th.dim));
@@ -188,6 +202,14 @@ pub fn draw_wizard(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
             }
             _ => line(buf, &mut y, "Looking for the Spotify app…", th.s(th.fg)),
         },
+        Step::Connect if app.engine_kind == EngineKind::Librespot => {
+            match &app.engine {
+                Some(EngineStatus::Failed { message }) => line(buf, &mut y, message, th.s(th.error)),
+                Some(EngineStatus::NotConfigured { reason }) => line(buf, &mut y, &format!("Can't play yet: {reason}"), th.s(th.error)),
+                _ => line(buf, &mut y, "Starting the built-in player (librespot) and waiting for it on Spotify Connect…", th.s(th.fg)),
+            }
+            line(buf, &mut y, "Press Enter to restart it.", th.s(th.dim));
+        }
         Step::Connect => {
             match &app.engine {
                 Some(EngineStatus::Failed { message }) => line(buf, &mut y, message, th.s(th.error)),
@@ -214,6 +236,8 @@ pub fn draw_wizard(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
             }
             match &app.stream {
                 Some(s) if s.lossless() => line(buf, &mut y, &format!("✓ Lossless: {}", describe(s)), th.s(th.accent2)),
+                // as good as this Engine gets: nothing to fix
+                Some(s) if !app.engine_kind.lossless() => line(buf, &mut y, &format!("✓ {} (librespot's best; never lossless)", describe(s)), th.s(th.accent2)),
                 Some(s) => {
                     line(buf, &mut y, &format!("! Not lossless yet: {}", describe(s)), th.s(th.error));
                     line(buf, &mut y, lossless_fix(app), th.s(th.fg));
@@ -250,6 +274,8 @@ pub fn draw_stream(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
         Some(s) => {
             if s.lossless() {
                 text(buf, x, y, 10, " LOSSLESS ", th.chip(th.accent2));
+            } else if !app.engine_kind.lossless() {
+                text(buf, x, y, 11, " 320 KBPS ", th.chip(th.dim));
             } else {
                 text(buf, x, y, 14, " NOT LOSSLESS ", th.chip(th.error));
             }
@@ -293,7 +319,11 @@ pub fn draw_stream(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
         y += 1;
         // the fix, wrapped to the Pane
         let mut line = String::new();
-        let fix = if app.engine_kind == EngineKind::SpotifyApp { APP_LOSSLESS_FIX } else { "Fix it once from your phone: device picker → Singularity → Change quality settings → Lossless" };
+        let fix = match app.engine_kind {
+            EngineKind::SpotifyApp => APP_LOSSLESS_FIX,
+            EngineKind::Librespot => LIBRESPOT_LOSSLESS,
+            _ => "Fix it once from your phone: device picker → Singularity → Change quality settings → Lossless",
+        };
         for word in fix.split(' ') {
             if line.chars().count() + word.chars().count() + 1 > w as usize {
                 if y >= r.bottom() {
@@ -322,10 +352,11 @@ fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
         Link::Connecting => ('✗', "Daemon", "not reachable; starting it…".into()),
         Link::Incompatible(m) => ('✗', "Daemon", m.clone()),
     });
-    let spotify_app = app.engine_kind == EngineKind::SpotifyApp;
+    let spotify_app = app.engine_kind.via_connect();
     rows.push(match &app.engine {
         Some(EngineStatus::Ready { version, device_name, active, .. }) if spotify_app => {
-            ('✓', "Engine", format!("Spotify app {version} · \"{device_name}\" on Connect{}", if *active { "" } else { " · not the active device" }))
+            let what = if app.engine_kind == EngineKind::Librespot { "librespot (built in)".to_string() } else { format!("Spotify app {version}") };
+            ('✓', "Engine", format!("{what} · \"{device_name}\" on Connect{}", if *active { "" } else { " · not the active device" }))
         }
         Some(EngineStatus::Ready { version, expires_in_days, active, .. }) => {
             let built = app.health.as_ref().and_then(|h| h.engine_build.clone()).map(|d| format!(", built {d}")).unwrap_or_default();
@@ -367,6 +398,7 @@ fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
     }
     rows.push(match &app.stream {
         Some(s) if s.lossless() => ('✓', "Stream", describe(s)),
+        Some(s) if !app.engine_kind.lossless() => ('✓', "Stream", format!("{}: librespot's best (never lossless)", describe(s))),
         Some(s) => ('!', "Stream", format!("{}: not lossless", describe(s))),
         None => ('·', "Stream", "play something to check the quality".into()),
     });
@@ -451,7 +483,10 @@ mod tests {
         app.engine = Some(EngineStatus::Ready { device_name: "Mac".into(), active: false, version: "1.2.94".into(), expires_in_days: None });
         assert_eq!(step(&app), Step::Audio);
         assert!(!wanted(&app));
+        // its audio is tapped on Linux (its PipeWire stream), not yet on macOS (#67): there playing counts
         app.playback.status = PlayStatus::Playing;
+        assert_eq!(step(&app) == Step::Done, cfg!(target_os = "macos"));
+        app.setup.heard = true;
         assert_eq!(step(&app), Step::Done);
         // the health check names the app, and has no Soloist key row
         app.health = Some(singularity_proto::Health { soloist_key: "missing".into(), spotify_login: "keyring".into(), ..Default::default() });
@@ -465,5 +500,37 @@ mod tests {
         app.engine = Some(EngineStatus::Failed { message: "\"Mac\" isn't on Spotify Connect".into() });
         assert_eq!(step(&app), Step::Connect);
         assert!(!wanted(&app));
+    }
+
+    #[test]
+    fn librespot_needs_only_the_login_and_never_nags_about_lossless() {
+        let mut app = App::new(None);
+        app.link = Link::Connected { version: "t".into() };
+        app.engine_kind = EngineKind::Librespot;
+        // it waits for the Catalogue's login: that's the first step, not "install the app"
+        app.engine = Some(EngineStatus::NotConfigured { reason: "log in to Spotify first".into() });
+        app.catalogue = Some(CatalogueStatus::LoggedOut);
+        assert_eq!(step(&app), Step::Login);
+        assert!(wanted(&app));
+        assert_eq!(Step::all(app.engine_kind).iter().map(|s| s.0).collect::<Vec<_>>(), [Step::Login, Step::Connect, Step::Audio]);
+        app.catalogue = Some(CatalogueStatus::Ready { username: "u".into(), country: "PL".into(), premium: true });
+        app.engine = Some(EngineStatus::Starting);
+        assert_eq!(step(&app), Step::Connect);
+        app.engine = Some(EngineStatus::Ready { device_name: "Singularity on Mac".into(), active: true, version: String::new(), expires_in_days: None });
+        // its audio is always tapped (in-process): playing isn't enough, sound must come through
+        app.playback.status = PlayStatus::Playing;
+        assert_eq!(step(&app), Step::Audio);
+        app.setup.heard = true;
+        assert_eq!(step(&app), Step::Done);
+        app.stream = Some(crate::setup::tests::vorbis());
+        let rows = health_rows(&app);
+        assert_eq!(rows.iter().find(|r| r.1 == "Engine").unwrap().2, "librespot (built in) · \"Singularity on Mac\" on Connect");
+        let stream = rows.iter().find(|r| r.1 == "Stream").unwrap();
+        assert_eq!(stream.0, '✓', "320 kbps is as good as librespot gets: {stream:?}");
+        assert_eq!(lossless_fix(&app), LIBRESPOT_LOSSLESS);
+    }
+
+    pub fn vorbis() -> StreamInfo {
+        StreamInfo { codec: "vorbis".into(), bitrate: 320_000, average_bitrate: None, sample_rate: 44_100, sample_format: String::new() }
     }
 }

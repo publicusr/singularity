@@ -157,7 +157,8 @@ fn apply(app: &mut App, ev: ConnEvent) {
                 if !matches!(app.catalogue, Some(singularity_proto::CatalogueStatus::LoginPending { .. })) {
                     app.login_hidden = false;
                     // open the pairing page in the user's browser (the code is also shown in the UI)
-                    let _ = std::process::Command::new("xdg-open").arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+                    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+                    let _ = std::process::Command::new(opener).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
                 }
             }
             app.catalogue = Some(c);

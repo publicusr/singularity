@@ -13,12 +13,16 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
   6 podcasts and audiobooks (#59–#61 ✅, #62 open) · 7 free tiling (trial) · **8 macOS (now: D48)**.
 - **macOS (batch 8, pulled forward by D48)**: the owner works on the M2 Air for a while. Rule D49: Linux and macOS
   keep the same features; OS code only behind the platform seams, tracked in **`docs/PLATFORMS.md`**. Tickets in build
-  order: ~~#63 builds and tests green~~ ✅ · ~~#64 Keychain~~ ✅ · **#65 AppEngine (built, live check pending)** · ~~#66 setup
-  and health per platform~~ ✅ · #67 AudioTap on Core Audio (+ the audio-output row) · #68 notifications and Now Playing ·
-  #69 LaunchAgent and install.
-  Then #62 (audiobooks) and batch 7.
+  order: ~~#63 builds and tests green~~ ✅ · ~~#64 Keychain~~ ✅ · **#65 AppEngine (built; network-change fixes await the
+  owner's re-check)** · ~~#66 setup and health per platform~~ ✅ · **#70 librespot Engine (D52; built, on Connect live,
+  playback awaits the owner)** · #67 AudioTap on Core Audio (the app's audio: the only reason the audio Widgets are
+  still flat on macOS) · #68 notifications and Now Playing (from the Daemon, so librespot gets media keys too) · #69
+  LaunchAgent and install. **`docs/PLATFORMS.md` is the exact status, feature by feature** (re-audited 2026-10-19).
+  Then #62 (audiobooks), batch 7, and last of all batch 9: the codebase audit (#71, SPEC "Batch 9").
+  Open questions to the owner: D53 (lossless without the app on macOS: spike Soloist in a VM?), D54 (macOS default
+  Engine).
   Visual demos judged: starfield, marquee, glow kept and finished (#44, `ambient.rs`).
-- Tests: **255 passing** on macOS (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`),
+- Tests: **259 passing** on macOS (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`),
   `live_shapes` and `secrets_live`. On a Mac, `tools/check-linux.sh` type-checks the Linux build (it can't run Linux
   tests: run `cargo test` on the Linux machine when back there).
 - **No open bugs.** The waveform seek bar (#46) was removed again at the owner's call (D46).
@@ -99,7 +103,7 @@ kitty images as kitty does (under/over cell backgrounds, judged by colour). `con
 Daemon never listens to the owner's Soloist), `SINGULARITY_DBUS=<address>|off` (MPRIS bus; fake-Engine Daemons stay
 off the session bus unless asked), plus the older `SINGULARITY_CPU`, `SINGULARITY_PIXEL`, `SINGULARITY_PIXEL_MOUSE`,
 `SINGULARITY_NO_KEYRING`, `SINGULARITY_SOCKET`. #23: `SINGULARITY_DATA=<dir>|off` (LocalStore; fake-Engine Daemons
-keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SHUTDOWN` (#25 tests), `SINGULARITY_BELOW_BG=1|0` (#41: kitty's under-background layer), `SINGULARITY_FAKE_STALLS=1` (#45: the fake Engine starves), and `XDG_DOWNLOAD_DIR` decides where exports go. #65/#66: `SINGULARITY_ENGINE=soloist|spotify-app` (overrides `[engine] kind`), `SINGULARITY_START_APP=0` (the AppEngine never looks for or starts the real app: tests). `SINGULARITY_NOTIFY` is gone (now `notifications.track_change`).
+keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SHUTDOWN` (#25 tests), `SINGULARITY_BELOW_BG=1|0` (#41: kitty's under-background layer), `SINGULARITY_FAKE_STALLS=1` (#45: the fake Engine starves), and `XDG_DOWNLOAD_DIR` decides where exports go. #65/#66: `SINGULARITY_ENGINE=soloist|spotify-app|librespot` (overrides `[engine] kind`), `SINGULARITY_START_APP=0` (the AppEngine never looks for or starts the real app: tests). `SINGULARITY_NOTIFY` is gone (now `notifications.track_change`).
 
 ## Then
 
@@ -110,9 +114,8 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 - **Batch 6, podcasts and audiobooks** (stories 83–84): tickets #59 show pages + episodes, #60 saved shows + Follow,
   #61 episodes in search, #62 audiobooks (live chapter check first). Routes re-verified 2026-10-19 (research file).
   #59 ✅ (owner to check: does an episode resume where it was left?). #60 ✅, #61 ✅. **Next: #62 (audiobooks: live chapter check first).**
-- **Batch 8, macOS** (D48–D51): see "Where things stand". #65 waits for its live check on the owner's Mac: log in
-  (Ctrl+K → Log in to Spotify), then check the app's Connect name matches (`connect_probe` lists devices), play from a
-  list, transport, queue. Then #66.
+- **Batch 8, macOS** (D48–D52): see "Where things stand". #65 and #70 wait for the owner's live checks; next to
+  build: #67 (Core Audio process tap on Spotify.app), #68, #69.
 - Then #62, then batch 7.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
 
@@ -122,7 +125,8 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 `--path crates/client`. Reinstall both after each closed ticket so the owner tests the latest; the Client finds
 `singularityd` next to itself. Linux: on the owner's PATH, last installed after #61. macOS: the repo is at
 `~/src/singularity`, Rust from Homebrew's rustup (keg-only: `/opt/homebrew/opt/rustup/bin` and
-`~/.cargo/bin` go on the PATH in `~/.zshrc`, the owner's to add); last installed after #65 (2026-10-19). Also on the Mac:
+`~/.cargo/bin` go on the PATH in `~/.zshrc`, added); last installed after #70 (2026-10-19). Linux builds now need
+`alsa-lib` (cpal, for librespot). Also on the Mac:
 zig + cargo-zigbuild + openssl@3 (for `tools/check-linux.sh`) and the target `x86_64-unknown-linux-gnu`.
 
 ## Local state on the owner's machine (not in git)
@@ -139,6 +143,9 @@ A new Client replaces an outdated Daemon by itself (and, since #25, stops one th
 On the Mac (from #65): no Soloist. Spotify.app 1.2.94 in `/Applications`, logged in; the Daemon starts it hidden and
 leaves it running. Secrets in the login Keychain (`service=singularity`). Same `~/.config`/`~/.local` paths as Linux
 (D50). The Mac's computer name is the app's Connect name (`scutil --get ComputerName`; `[engine] device` overrides).
+librespot (#70) appears as "Singularity on <computer name>"; its last volume is in
+`~/.local/share/singularity/catalogue/librespot-volume`. The owner's old Linux Soloist device "Singularity" still
+shows in the Mac's device list (offline).
 
 ## Waiting on the owner
 
@@ -173,7 +180,7 @@ leaves it running. Secrets in the login Keychain (`service=singularity`). Same `
 >
 > v1 is done; v1.x is being built in batches (D29). Batches 1–4 (stats; mini-player, ♥ rows, album song into the
 > queue; playlist editing; the Settings page) are done. Batch 5 was dropped (D47); batch 6 is done but #62.
-> **Now: batch 8, macOS (D48–D51, `docs/PLATFORMS.md`, tickets #63–#69)**: the same features on Linux and macOS,
+> **Now: batch 8, macOS (D48–D54, `docs/PLATFORMS.md`, tickets #63–#70; the audit #71 comes last)**: the same features on Linux and macOS,
 > OS code only behind the platform seams. Build one ticket at a time: code + tests at the spec's seams,
 > `cargo test --workspace` (on a Mac also `tools/check-linux.sh`), verify the real binaries in the pty harness (`tools/pty/`, screenshots), commit with
 > `Closes #N`, push, reinstall both binaries (`cargo install --locked --path crates/daemon` and `--path crates/client`),

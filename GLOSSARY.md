@@ -8,14 +8,21 @@ through Spotify Soloist, and built-in audio-reactive visuals.
 ### Backends
 
 **Engine**:
-The process that actually decodes and plays audio: Spotify Soloist on Linux (SoloistEngine), the hidden Spotify.app on
-macOS (AppEngine, D51). Either is "this computer" in the device list.
+The thing that actually decodes and plays audio: Spotify Soloist on Linux (SoloistEngine), the hidden Spotify.app on
+macOS (AppEngine, D51), or librespot inside the Daemon on either (LibrespotEngine, D52). Whichever runs is "this
+computer" in the device list; `[engine] kind` picks it.
 _Avoid_: player backend, daemon, streamer
 
 **AppEngine**:
 The Engine that is the official Spotify desktop app, started hidden and driven over Connect; what it plays is read
 from the Connect cluster. The macOS default.
 _Avoid_: DesktopAppEngine (its old name), Spotify engine
+
+**LibrespotEngine**:
+The Engine that is librespot (a Connect receiver and player) running inside the Daemon, on Linux and macOS alike: the
+light choice, at most 320 kbps, never lossless. Driven over Connect like the AppEngine; its samples feed the AudioTap
+directly (the tap's *Feed*).
+_Avoid_: built-in player (fine in UI text, not as a term), spotifyd
 
 **Platform seam**:
 One of the few places where Linux and macOS have their own code (Engine, AudioTap, Secrets, OS media integration,

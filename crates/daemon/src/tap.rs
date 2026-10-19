@@ -1,7 +1,8 @@
 //! AudioTap (spec D16, #15): listen to the Engine's own audio stream only, and turn it into spectrum frames.
 //!
-//! - *Source*: Soloist's PipeWire stream through `parec --monitor-stream` (it shows up as `application.name="Spotify"`
-//!   without a process binary; the official desktop app has one, so it's never picked up), or a synthetic groove for
+//! - *Source*: the Engine's PipeWire stream through `parec --monitor-stream` (Soloist's shows up as
+//!   `application.name="Spotify"` without a process binary, the desktop app's with binary `spotify`), the librespot
+//!   Engine's own samples handed over in-process ([`Feed`], same on every OS), or a synthetic groove for
 //!   `--fake-engine` and tests.
 //! - *Analysis* ([`Analyzer`]): 2048-point FFT every 1470 samples (30 Hz), 64 log-spaced bands, onset detection on
 //!   bass flux, and automatic gain. The tap is post-volume, so the bands (for Visuals) are measured against the
@@ -194,17 +195,66 @@ impl Analyzer {
     }
 }
 
-/// Soloist's stream in `pactl -f json list sink-inputs`: the newest `Spotify` stream without a process binary.
-pub fn find_engine_stream(sink_inputs: &serde_json::Value) -> Option<u64> {
+/// Which PipeWire stream is the Engine's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamOf {
+    /// Soloist: `application.name="Spotify"` without a process binary (or binary `soloist`)
+    Soloist,
+    /// the official desktop app (D51 on Linux): binary `spotify`
+    SpotifyApp,
+    /// the librespot Engine plays from this Daemon (for the health view; its tap is the [`Feed`])
+    Daemon,
+}
+
+/// The Engine's stream in `pactl -f json list sink-inputs`: the newest one that matches.
+pub fn find_engine_stream(sink_inputs: &serde_json::Value, of: StreamOf) -> Option<u64> {
     sink_inputs
         .as_array()?
         .iter()
         .filter(|si| {
             let p = &si["properties"];
-            p["application.name"].as_str() == Some("Spotify") && p["application.process.binary"].as_str().is_none_or(|b| b == "soloist")
+            let binary = p["application.process.binary"].as_str();
+            match of {
+                StreamOf::Soloist => p["application.name"].as_str() == Some("Spotify") && binary.is_none_or(|b| b == "soloist"),
+                StreamOf::SpotifyApp => binary == Some("spotify"),
+                StreamOf::Daemon => binary == Some("singularityd"),
+            }
         })
         .filter_map(|si| si["index"].as_u64())
         .max()
+}
+
+/// Samples handed over in-process by an Engine that plays from this Daemon (librespot): it pushes interleaved
+/// stereo at 44.1 kHz while [`Feed::wanted`], the tap takes them. Nothing is copied while nobody listens, and a tap
+/// that falls behind drops packets instead of holding up playback.
+pub struct Feed {
+    wanted: std::sync::atomic::AtomicBool,
+    tx: tokio::sync::mpsc::Sender<Vec<f32>>,
+    rx: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Vec<f32>>>,
+}
+
+impl Feed {
+    pub fn new() -> Arc<Feed> {
+        // ~1.5 s of librespot's packets
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        Arc::new(Feed { wanted: Default::default(), tx, rx: tokio::sync::Mutex::new(rx) })
+    }
+
+    /// Does the tap want samples now?
+    pub fn wanted(&self) -> bool {
+        self.wanted.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Hand over samples (from the player's thread; never blocks).
+    pub fn push(&self, samples: Vec<f32>) {
+        let _ = self.tx.try_send(samples);
+    }
+}
+
+impl std::fmt::Debug for Feed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Feed").field("wanted", &self.wanted()).finish()
+    }
 }
 
 /// A 118 bpm groove (kick, hats, bass, pad, arpeggio) for `--fake-engine`: `frames` stereo samples from sample `t0`.
@@ -240,10 +290,12 @@ pub fn synth(t0: u64, frames: usize) -> Vec<f32> {
 }
 
 /// Where the tap's audio comes from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum TapSource {
-    /// Soloist's PipeWire stream
-    PipeWire,
+    /// the Engine's PipeWire stream (Linux)
+    PipeWire(StreamOf),
+    /// samples from an Engine inside this Daemon (librespot, every OS)
+    Feed(Arc<Feed>),
     /// the built-in groove, while the (fake) Engine plays
     Synthetic,
 }
@@ -264,7 +316,26 @@ pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
         }
         volume = Some(pb.volume);
         let playing = pb.status == singularity_proto::PlayStatus::Playing;
-        match source {
+        match &source {
+            TapSource::Feed(feed) => {
+                feed.wanted.store(true, Ordering::Relaxed);
+                let mut rx = feed.rx.lock().await;
+                while listening(&hub) {
+                    // paused: no packets; look at the listeners again every second
+                    let Ok(Some(samples)) = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await else { continue };
+                    let v = hub.playback.lock().await.volume;
+                    if volume.is_some_and(|old| old != v) {
+                        an.reset_gain();
+                    }
+                    volume = Some(v);
+                    for f in an.push(&samples) {
+                        let _ = hub.spectrum.send(f);
+                    }
+                }
+                feed.wanted.store(false, Ordering::Relaxed);
+                // what came in meanwhile is stale by the next listen
+                while rx.try_recv().is_ok() {}
+            }
             TapSource::Synthetic => {
                 // one frame's worth of audio per frame period
                 let mut t = 0u64;
@@ -285,9 +356,9 @@ pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
                     }
                 }
             }
-            TapSource::PipeWire if !playing => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
-            TapSource::PipeWire => {
-                if let Err(e) = capture(&hub, &mut an).await {
+            TapSource::PipeWire(_) if !playing => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+            TapSource::PipeWire(of) => {
+                if let Err(e) = capture(&hub, &mut an, *of).await {
                     tracing::debug!("audio tap: {e}");
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }
@@ -296,12 +367,12 @@ pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
     }
 }
 
-/// Capture Soloist's stream until it ends or nobody listens any more.
-async fn capture(hub: &crate::Hub, an: &mut Analyzer) -> anyhow::Result<()> {
+/// Capture the Engine's stream until it ends or nobody listens any more.
+async fn capture(hub: &crate::Hub, an: &mut Analyzer, of: StreamOf) -> anyhow::Result<()> {
     use std::sync::atomic::Ordering;
     use tokio::io::AsyncReadExt;
     let out = tokio::process::Command::new("pactl").args(["-f", "json", "list", "sink-inputs"]).output().await?;
-    let idx = find_engine_stream(&serde_json::from_slice(&out.stdout)?).ok_or_else(|| anyhow::anyhow!("no Engine stream in PipeWire yet"))?;
+    let idx = find_engine_stream(&serde_json::from_slice(&out.stdout)?, of).ok_or_else(|| anyhow::anyhow!("no Engine stream in PipeWire yet"))?;
     tracing::info!("audio tap on PipeWire stream #{idx}");
     let mut child = tokio::process::Command::new("parec")
         .args([&format!("--monitor-stream={idx}"), "--format=float32le", "--rate=44100", "--channels=2", "--raw", "--latency-msec=30", "--client-name=singularity-tap"])
@@ -427,8 +498,27 @@ mod tests {
             {"index": 7, "properties": {"application.name": "Spotify"}},
             {"index": 11, "properties": {"application.name": "mpv"}}
         ]);
-        assert_eq!(find_engine_stream(&v), Some(9));
-        assert_eq!(find_engine_stream(&serde_json::json!([])), None);
+        assert_eq!(find_engine_stream(&v, StreamOf::Soloist), Some(9));
+        assert_eq!(find_engine_stream(&v, StreamOf::SpotifyApp), Some(5), "the desktop app as Engine (D51 on Linux)");
+        assert_eq!(find_engine_stream(&v, StreamOf::Daemon), None);
+        assert_eq!(find_engine_stream(&serde_json::json!([]), StreamOf::Soloist), None);
+    }
+
+    #[tokio::test]
+    async fn a_feed_takes_samples_only_while_wanted_and_never_blocks() {
+        let feed = Feed::new();
+        assert!(!feed.wanted());
+        feed.wanted.store(true, std::sync::atomic::Ordering::Relaxed);
+        // far more than it holds: the extra packets are dropped, push returns at once
+        for _ in 0..1000 {
+            feed.push(vec![0.5; 8]);
+        }
+        let mut rx = feed.rx.lock().await;
+        let mut n = 0;
+        while rx.try_recv().is_ok() {
+            n += 1;
+        }
+        assert_eq!(n, 64);
     }
 
     /// Budget check (spec: benchmarks, not unit tests): `cargo test --release -p singularityd tap_cpu -- --ignored`

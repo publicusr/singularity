@@ -47,7 +47,7 @@ pub struct Config {
 #[serde(default)]
 pub struct EngineChoice {
     pub kind: EngineKind,
-    /// the Spotify app's Connect device name; empty: this computer's name
+    /// the player's Connect device name (the app, librespot); empty: the default for that Engine
     pub device: String,
 }
 
@@ -59,6 +59,8 @@ pub enum EngineKind {
     Auto,
     Soloist,
     SpotifyApp,
+    /// librespot inside the Daemon (D52): light, every OS, at most 320 kbps
+    Librespot,
 }
 
 impl EngineKind {
@@ -173,10 +175,11 @@ enabled = true
 minutes = 3
 
 [engine]
-# what plays the music: "auto" (Soloist on Linux, the Spotify app on macOS), "soloist" or "spotify-app"
-# (the official Spotify app, started hidden and driven over Connect); restart the Daemon after changing it
+# what plays the music: "auto" (Soloist on Linux, the Spotify app on macOS), "soloist" (Linux), "spotify-app"
+# (the official Spotify app, started hidden and driven over Connect) or "librespot" (built in: the lightest,
+# but at most 320 kbps, never lossless); restart the Daemon after changing it
 kind = "auto"
-# the Spotify app's name in device pickers; empty: this computer's name
+# the player's name in device pickers; empty: this computer's name (librespot: "Singularity on <computer>")
 device = ""
 "#;
 
@@ -412,7 +415,7 @@ pub const SETTINGS: &[(&str, Kind)] = &[
     ("visuals.unfocused_fps", Kind::Number { min: 1.0, max: 30.0, step: 1.0, whole: true }),
     ("idle.enabled", Kind::Toggle),
     ("idle.minutes", Kind::Number { min: 0.5, max: 120.0, step: 0.5, whole: false }),
-    ("engine.kind", Kind::Choice(&["auto", "soloist", "spotify-app"])),
+    ("engine.kind", Kind::Choice(&["auto", "soloist", "spotify-app", "librespot"])),
 ];
 
 /// One row of the Settings page: a setting as the file has it (or its default, if the file leaves it out).
