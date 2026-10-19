@@ -85,6 +85,17 @@ impl Analyzer {
         self.env_db = None;
     }
 
+    /// Has it gone quiet (the clearing frame sent), so silence needs no more feeding?
+    pub fn is_quiet(&self) -> bool {
+        self.quiet_frames > 0
+    }
+
+    /// One frame period of silence: while the Engine sends nothing (paused), the bars still fall and the clearing
+    /// frame still goes out, instead of the last frame hanging in every Client.
+    pub fn silence(&mut self) -> Vec<SpectrumFrame> {
+        if self.is_quiet() { vec![] } else { self.push(&[0.0; HOP * 2]) }
+    }
+
     /// Feed interleaved stereo samples; returns the frames completed meanwhile. A silent stretch yields one final
     /// all-zero frame and then nothing until sound returns.
     pub fn push(&mut self, stereo: &[f32]) -> Vec<SpectrumFrame> {
@@ -321,8 +332,15 @@ pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
                 feed.wanted.store(true, Ordering::Relaxed);
                 let mut rx = feed.rx.lock().await;
                 while listening(&hub) {
-                    // paused: no packets; look at the listeners again every second
-                    let Ok(Some(samples)) = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await else { continue };
+                    // paused: no packets. Let the bars fall a frame period at a time until they're down, then only
+                    // look at the listeners again every second
+                    let wait = if an.is_quiet() { std::time::Duration::from_secs(1) } else { std::time::Duration::from_secs_f32(DT) };
+                    let Ok(Some(samples)) = tokio::time::timeout(wait, rx.recv()).await else {
+                        for f in an.silence() {
+                            let _ = hub.spectrum.send(f);
+                        }
+                        continue;
+                    };
                     let v = hub.playback.lock().await.volume;
                     if volume.is_some_and(|old| old != v) {
                         an.reset_gain();
@@ -356,7 +374,14 @@ pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
                     }
                 }
             }
-            TapSource::PipeWire(_) if !playing => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+            TapSource::PipeWire(_) if !playing => {
+                // not playing: let the bars fall, then wait
+                let frames = an.silence();
+                for f in frames.iter().cloned() {
+                    let _ = hub.spectrum.send(f);
+                }
+                tokio::time::sleep(if frames.is_empty() { std::time::Duration::from_secs(1) } else { std::time::Duration::from_secs_f32(DT) }).await;
+            }
             TapSource::PipeWire(of) => {
                 if let Err(e) = capture(&hub, &mut an, *of).await {
                     tracing::debug!("audio tap: {e}");
@@ -385,9 +410,16 @@ async fn capture(hub: &crate::Hub, an: &mut Analyzer, of: StreamOf) -> anyhow::R
     let mut have = 0;
     let mut volume = hub.playback.lock().await.volume;
     while hub.spectrum_listeners.load(Ordering::SeqCst) > 0 {
-        let n = match tokio::time::timeout(std::time::Duration::from_secs(1), stdout.read(&mut bytes[have..])).await {
+        let wait = if an.is_quiet() { std::time::Duration::from_secs(1) } else { std::time::Duration::from_secs_f32(DT) };
+        let n = match tokio::time::timeout(wait, stdout.read(&mut bytes[have..])).await {
             Ok(r) => r?,
-            Err(_) => continue, // paused: no data, but keep the stream open
+            // paused: no data, but keep the stream open (and let the bars fall)
+            Err(_) => {
+                for f in an.silence() {
+                    let _ = hub.spectrum.send(f);
+                }
+                continue;
+            }
         };
         if n == 0 {
             anyhow::bail!("the Engine stream ended");
@@ -488,6 +520,21 @@ mod tests {
         assert_eq!(zeros, 1);
         assert!(frames.len() < 55 && frames.last().unwrap().bands.iter().all(|b| *b == 0), "bars fall within ~1.5 s, then frames stop");
         assert!(!run(&mut a, &sine(200.0, 0.3, 0.2)).is_empty(), "and come back with the sound");
+    }
+
+    #[test]
+    fn when_the_samples_stop_the_bars_still_fall_and_clear() {
+        let mut a = Analyzer::new();
+        run(&mut a, &sine(200.0, 0.3, 1.0));
+        assert!(!a.is_quiet());
+        // paused: no samples at all, a frame period of silence at a time
+        let mut frames = vec![];
+        for _ in 0..90 {
+            frames.extend(a.silence());
+        }
+        assert!(a.is_quiet(), "down within 3 s");
+        assert!(frames.last().unwrap().bands.iter().all(|b| *b == 0), "the last frame clears every Client");
+        assert!(a.silence().is_empty(), "then silence costs nothing");
     }
 
     #[test]

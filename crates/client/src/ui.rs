@@ -55,6 +55,7 @@ fn fill(buf: &mut Buffer, r: Rect, th: &Theme) {
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    app.meters.expire();
     app.begin_frame();
     let area = f.area();
     let th = app.theme.clone();

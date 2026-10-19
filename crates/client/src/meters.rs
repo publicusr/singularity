@@ -18,10 +18,25 @@ pub struct Meters {
     pub frame: Option<SpectrumFrame>,
     pub history: VecDeque<u8>,
     acc: (u32, u32),
+    /// when the last frame came
+    at: Option<std::time::Instant>,
 }
 
+/// A frame this old is no longer the music: the Daemon sends 30 a second while there's sound.
+const STALE: std::time::Duration = std::time::Duration::from_millis(500);
+
 impl Meters {
+    /// Drop a frame that's gone stale (the music paused or the tap stopped without a last silent frame), so no
+    /// Widget keeps moving to it.
+    pub fn expire(&mut self) {
+        if self.at.is_some_and(|t| t.elapsed() > STALE) {
+            self.frame = None;
+            self.at = None;
+        }
+    }
+
     pub fn push(&mut self, f: SpectrumFrame) {
+        self.at = Some(std::time::Instant::now());
         self.acc.0 += f.out_level as u32;
         self.acc.1 += 1;
         if self.acc.1 == 3 {
@@ -118,6 +133,17 @@ pub fn loudness(buf: &mut Buffer, r: Rect, m: &Meters, th: &Theme) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_stale_frame_is_dropped() {
+        let mut m = Meters::default();
+        m.push(SpectrumFrame { bands: vec![200; 64], level: 200, ..Default::default() });
+        m.expire();
+        assert!(m.frame.is_some(), "fresh");
+        m.at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        m.expire();
+        assert!(m.frame.is_none(), "paused a second ago: nothing to move to");
+    }
+
     use super::*;
 
     fn frame(level: u8, band: u8) -> SpectrumFrame {

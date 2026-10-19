@@ -74,6 +74,8 @@ so it cannot be settled by talking)
 | D52 | A light Engine (librespot in the Daemon) | D25, D51 | settled | Owner (2026-10-19): "600 mb and 5-25 cpu is kinda insane. Lets add the librespot lightweight player." `[engine] kind = "librespot"` on both OSes (#70): librespot's Connect receiver and player inside the Daemon, driven over Connect like the app, audio through cpal and straight into the AudioTap. 320 kbps at most. The app stays the macOS `auto` until D54 says otherwise. |
 | D53 | Lossless on macOS without the Spotify app | D52, D3 | settled | Owner asked how feasible a lossless player like Soloist is on macOS. Facts: librespot can't (Spotify keeps lossless to its own players and asked librespot not to; going around that is DRM circumvention, out). The only other lossless player Spotify makes is Soloist, Linux-only (arm64 too). Option: run it in a tiny Linux VM (Apple's Virtualization framework), its PCM sent to the Daemon over vsock and played and tapped there. Feasible but a project: a VM image to build and download, pairing needs the phone to reach the VM (mDNS proxied from the Mac), the VM's memory (~150–250 MB estimated, unmeasured). Owner: "if its somehow less resources than spotify client thats hilarious and worth it, try it out": a time-boxed spike that measures it, built only if it clearly beats the app. **Spike done** (`research/2026-10-soloist-vm-spike.md`): runs; ~200–270 MB and ~1–3 % CPU estimated (a 192–256 MB VM), against the app's ~600 MB; playback and phone pairing unmeasured until the owner provides the Soloist key. |
 | D54 | macOS default Engine | D52, D53 | settled | Owner (2026-10-19): librespot, "since widgets work out of the box, and it uses the least resources by far and its standalone. requiring the spotify app on top of it makes it just a second interface to an app already there working, dont love that for my player." `auto` = librespot on macOS (Soloist stays Linux's); the app remains `kind = "spotify-app"`, the lossless choice. |
+| D55 | Soloist in a VM as a macOS Engine | D53 | settled | Owner (2026-10-20): yes, after the spike measured ~300 MB and ~5.6 % CPU playing FLAC. `[engine] kind = "soloist"` on macOS runs Soloist in a Linux VM the Daemon manages: lossless, standalone, the audio Widgets fed from its PCM. |
+| D56 | macOS default with the VM available | D54, D55 | settled | Owner (2026-10-20): librespot stays the default (26 MB, no pairing); the Soloist VM is the setting to switch to for lossless. |
 
 ```mermaid
 flowchart LR
@@ -805,4 +807,11 @@ flowchart LR
   removed cleanly. `singularityd` itself now builds its own runtime (`daemon()`), so exit codes come from one place.
   The "Incompatible" message names the OS's restart (`RESTART`). README: install steps for both OSes. Installing it
   for real is the owner's choice (one command).
+- **Owner bug (2026-10-20): the audio Widgets kept moving while paused ✅**. The tap only sends its last, all-zero
+  frame after it has *heard* silence; a paused Engine sends nothing at all (librespot stops writing, Soloist's stream
+  goes quiet), so every Client kept the last loud frame and the oscilloscope kept animating it (the rain stayed
+  boosted). Fixed at both ends: the tap feeds a frame period of silence whenever no samples arrive, so the bars fall
+  as they do between tracks and the clearing frame goes out, then it waits without cost (`Analyzer::silence`,
+  `is_quiet`); and a Client drops a frame older than 0.5 s (`Meters::expire`). Tests on both; pty: the Terminal design's
+  osc flattens and stops within 3 s of pausing. The rain keeps falling at its calm base speed (ambient), unboosted.
 

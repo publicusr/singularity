@@ -65,3 +65,22 @@ CPU, lossless, standalone (no Spotify app), Widgets working. librespot stays far
   login (ZeroConf `addUser`), which would drop the phone step on Linux too: unverified.
 - Risks: VM memory can't be shared with the Mac the way an app's can; sleep/wake and network changes need handling;
   one more moving part to keep updated.
+
+### Pairing without the phone: no (2026-10-20)
+
+Tried handing Soloist the Catalogue's login over its own ZeroConf endpoint, as a phone does (`getInfo` → `addUser`,
+Diffie-Hellman + AES-CTR + HMAC outer layer, librespot's stored-credentials blob inside; the code round-tripped
+through librespot's own decoder). Against a fresh Soloist: the stored login (`tokenType=default`), a login5 access
+token as is and inside the blob (`tokenType=accesstoken`) were all answered "OK" (101) and silently ignored. Soloist's
+`getInfo` carries an `authInfo` with its own client id (the developer's Soloist app) and what look like PKCE
+challenges: it expects an authorization code minted for *its* client id, which only Spotify's apps get. Not pursued
+(more private-API reverse engineering). So pairing stays a one-time step from the phone, on Linux too.
+
+### The firewall and the pairing listener
+
+macOS's application firewall (on, stealth mode, on the owner's Mac) completes the TCP handshake and then withholds
+the connection from any program it doesn't trust: gvproxy (downloaded, unsigned) and a locally built, ad-hoc-signed
+listener (as `singularityd` is) both got nothing from the LAN, no prompt either. An ad-hoc signature also changes with
+every build, so a manual "allow" wouldn't stick. Apple's signed `/usr/bin/python3` is admitted, and is always there
+where Singularity can be built (Command Line Tools): the pairing relay runs in it, only while pairing.
+
