@@ -1566,7 +1566,7 @@ impl App {
 
     fn play_search_track(&mut self, i: usize) {
         let Some(s) = self.search.as_ref() else { return };
-        let Some(t) = s.results.as_ref().and_then(|r| r.tracks.get(i)) else { return };
+        let Some(t) = s.rows().get(i) else { return };
         let (uri, q) = (t.uri.clone(), s.query.clone());
         crate::search::remember(&mut self.recent, &q);
         crate::search::save_recent(&self.recent);
@@ -1777,6 +1777,9 @@ impl App {
         if matches!(kind.as_str(), "album" | "artist" | "playlist" | "show") {
             items.push((format!("Go to {kind}"), MenuAct::GoTo));
         }
+        if kind == "episode" {
+            items.push(("Go to show".into(), MenuAct::GoTo));
+        }
         items.extend(self.save_entry(&uri));
         items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::Card(c)).map(|r| (r.x + 2, r.y + 1))).unwrap_or((0, 0));
@@ -1843,6 +1846,9 @@ impl App {
     /// Right-click on any other track (search results, an artist's popular tracks).
     fn open_track_menu(&mut self, uri: String, name: String, at: Option<(u16, u16)>) {
         let mut items = vec![("Play next".to_string(), MenuAct::PlayNext), ("Add to queue".into(), MenuAct::Queue), ("Add to playlist…".into(), MenuAct::AddToPlaylist)];
+        if uri.starts_with("spotify:episode:") {
+            items.push(("Go to show".into(), MenuAct::GoTo));
+        }
         items.extend(self.save_entry(&uri));
         items.push(("Copy link".into(), MenuAct::CopyLink));
         self.menu = Some(Menu { at: at.unwrap_or((0, 0)), target: Target::Track { uri, name }, items, selected: 0 });
@@ -1911,6 +1917,8 @@ impl App {
             MenuAct::ClearQueue => self.run(Action::ClearQueue),
             MenuAct::GoTo => match m.target {
                 Target::Card(c) => self.open_card(c),
+                // an episode row: its show, at that episode
+                _ if uri.starts_with("spotify:episode:") => self.open(&uri, &name, "", "episode"),
                 _ => self.say(format!("{} pages arrive with #11", capitalise(&kind))),
             },
             MenuAct::CopyLink => {
@@ -2208,7 +2216,7 @@ impl App {
                         }
                     }
                     Some(Hit::SearchTrack(i)) => {
-                        let t = self.search.as_ref().and_then(|s| s.results.as_ref()?.tracks.get(i).cloned());
+                        let t = self.search.as_ref().and_then(|s| s.rows().get(i).cloned());
                         if let Some(t) = t {
                             self.open_track_menu(t.uri, t.name, at);
                         }
@@ -2477,7 +2485,7 @@ impl App {
                             let n = a.page.as_ref().map(|p| p.top_tracks.len()).unwrap_or(0);
                             a.top_sel = (a.top_sel as i64 + d).clamp(0, n.saturating_sub(1) as i64) as usize;
                         } else if let Some(s) = self.search.as_mut() {
-                            let n = s.results.as_ref().map(|r| r.tracks.len()).unwrap_or(0);
+                            let n = s.rows().len();
                             s.track_sel = Some((s.track_sel.unwrap_or(0) as i64 + d).clamp(0, n.saturating_sub(1) as i64) as usize);
                         }
                     } else {

@@ -478,7 +478,10 @@ fn fake_search(q: &str, home: &HomeFeed) -> singularity_proto::SearchResults {
     let tracks = (0..8)
         .map(|i| singularity_proto::TrackRow { uri: format!("spotify:track:s{i}"), name: format!("{q} song {}", i + 1), artists: vec!["Nova Drift".into()], album: "Search Results".into(), duration_ms: 190_000, playable: true, ..Default::default() })
         .collect();
-    singularity_proto::SearchResults { query: q.into(), top: all.iter().take(3).cloned().collect(), tracks, artists: of("artist"), albums: of("album"), playlists: of("playlist"), podcasts: fake_podcasts() }
+    singularity_proto::SearchResults { query: q.into(), top: all.iter().take(3).cloned().collect(), tracks, artists: of("artist"), albums: of("album"), playlists: of("playlist"), podcasts: fake_podcasts(), episodes: fake_show("spotify:show:fakeshow").into_iter().find_map(|e| match e {
+        CatEvent::Tracks(p) => Some(p.tracks.into_iter().take(4).map(|mut t| { t.artists = vec!["Fake Show".into()]; t.artist_uris = vec!["spotify:show:fakeshow".into()]; t }).collect()),
+        _ => None,
+    }).unwrap_or_default() }
 }
 
 /// A show and one of its older episodes (#59), in every search.

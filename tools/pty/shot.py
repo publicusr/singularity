@@ -546,6 +546,11 @@ def show(t, out):
     t.pump(1.0)
     t.send(b"\x0c", 0.3); t.send(b"fake", 1.2)  # Ctrl+L, search
     t.shot(f"{out}/0-search.png")
+    # #61: the Podcasts chip lists episodes above the shows
+    cx, cy = t.find(" Podcasts ")
+    mouse(t, 0, cx + 2, cy); mouse(t, 0, cx + 2, cy, release=True, wait=0.6)
+    t.shot(f"{out}/0b-podcasts-chip.png")
+    print("episodes:", [l.strip()[30:120] for l in t.screen.display if "min left" in l or "played" in l][:2])
     x, y = t.find("Fake Sh")
     mouse(t, 0, x + 1, y); mouse(t, 0, x + 1, y, release=True, wait=1.0)
     t.shot(f"{out}/1-show.png")

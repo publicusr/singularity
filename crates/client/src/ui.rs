@@ -1718,6 +1718,36 @@ mod tests {
     }
 
     #[test]
+    fn podcasts_in_search_list_episodes_that_play_and_lead_to_their_show() {
+        use singularity_proto::{Command, Progress, SearchResults, TrackRow};
+        let (mut app, mut rx) = playing_app(200_000);
+        app.run(Action::Search);
+        app.search.as_mut().unwrap().query = "orbits".into();
+        let ep = |i: u32, p: Progress| TrackRow { uri: format!("spotify:episode:e{i}"), name: format!("Orbit talk {i}"), artists: vec!["A Show".into()], artist_uris: vec!["spotify:show:s".into()], duration_ms: 3_000_000, playable: true, progress: Some(p), ..Default::default() };
+        let episodes = vec![ep(1, Progress { position_ms: 1_200_000, done: false }), ep(2, Progress { position_ms: 0, done: true })];
+        app.search.as_mut().unwrap().set_results(SearchResults { query: "orbits".into(), episodes, ..Default::default() });
+        app.search.as_mut().unwrap().set_chip(5);
+        let s = render(&mut app, 160, 48);
+        for part in ["Episodes", "Orbit talk 1", "A Show", "30 min left", "✓ played", "50 min"] {
+            assert!(s.contains(part), "missing {part:?}\n{s}");
+        }
+        sent(&mut rx);
+        // a double-click plays it
+        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::SearchTrack(0)).then_some(*r)).unwrap();
+        click(&mut app, row.x + 2, row.y);
+        click(&mut app, row.x + 2, row.y);
+        assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:episode:e1".into()) }]);
+        // its menu leads to the show, at that episode
+        app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column: row.x + 2, row: row.y, modifiers: KeyModifiers::NONE });
+        let at = app.menu.as_ref().unwrap().items.iter().position(|(l, _)| l == "Go to show").expect("Go to show");
+        for _ in 0..at {
+            app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(sent(&mut rx), vec![Command::FindShow { uri: "spotify:episode:e1".into() }]);
+    }
+
+    #[test]
     fn track_rows_can_play_next_or_be_queued() {
         use singularity_proto::Command;
         let (mut app, mut rx) = library_app();
@@ -2321,7 +2351,7 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::Search { query: "nova".into() }]);
         let card = |n: &str, k: &str| Card { uri: format!("spotify:{k}:{n}"), name: n.into(), subtitle: k.into(), image_url: None, kind: k.into() };
         let tracks = (0..8).map(|i| TrackRow { uri: format!("spotify:track:n{i}"), name: format!("Nova song {i}"), artists: vec!["Nova Drift".into()], artist_uris: vec!["spotify:artist:nova".into()], duration_ms: 200_000, playable: true, ..Default::default() }).collect();
-        app.search.as_mut().unwrap().set_results(SearchResults { query: "nova".into(), top: vec![card("Nova Drift", "artist")], tracks, artists: vec![card("Nova Drift", "artist")], albums: vec![card("Event Horizon", "album")], playlists: vec![], podcasts: vec![] });
+        app.search.as_mut().unwrap().set_results(SearchResults { query: "nova".into(), top: vec![card("Nova Drift", "artist")], tracks, artists: vec![card("Nova Drift", "artist")], albums: vec![card("Event Horizon", "album")], playlists: vec![], podcasts: vec![], episodes: vec![] });
         let s = render(&mut app, 200, 64);
         assert!(s.contains("Songs") && s.contains("Nova song 4") && !s.contains("Nova song 5"), "All shows five songs:\n{s}");
         assert!(s.contains("Top results") && s.contains("Albums"));

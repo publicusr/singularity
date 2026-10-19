@@ -374,7 +374,24 @@ pub fn parse_search(query: &str, v: &Value) -> singularity_proto::SearchResults 
             })
         })
         .collect();
+    // episodes: rows with their show as the artist (a link), and their progress
+    let episodes = s["episodes"]["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|it| {
+            let d = &it["data"];
+            let mut row = episode_row(d)?;
+            let show = &d["podcastV2"]["data"];
+            if let (Some(name), Some(uri)) = (show["name"].as_str(), show["uri"].as_str()) {
+                row.artists = vec![name.into()];
+                row.artist_uris = vec![uri.into()];
+            }
+            Some(row)
+        })
+        .collect();
     singularity_proto::SearchResults {
+        episodes,
         query: query.into(),
         top: cards("topResultsV2", "itemsV2"),
         tracks,
@@ -501,6 +518,20 @@ mod tests {
             "duration": {"totalMilliseconds": 210000}, "contentRating": {"label": "NONE"}}}});
         let i = parse_track(&v).unwrap();
         assert_eq!((i.name.as_str(), i.artists.len(), i.duration_ms, i.album.as_deref()), ("Perihelion", 2, 210_000, Some("Quiet Orbit")));
+    }
+
+    #[test]
+    fn search_episodes_are_rows_with_their_show() {
+        // searchV2.episodes (shape seen live 2026-10-19), anonymised
+        let v = json!({ "data": { "searchV2": { "episodes": { "totalCount": 1, "items": [{ "__typename": "EpisodeResponseWrapper", "data": {
+            "__typename": "Episode", "uri": "spotify:episode:e", "name": "Talk", "duration": { "totalMilliseconds": 60_000 },
+            "playability": { "reason": "PLAYABLE" }, "playedState": { "playPositionMilliseconds": 0, "state": "NOT_STARTED" },
+            "releaseDate": { "isoString": "2026-10-01T00:00:00Z" },
+            "podcastV2": { "data": { "__typename": "Podcast", "name": "A Show", "uri": "spotify:show:s" } } } }] } } } });
+        let r = parse_search("talk", &v);
+        let e = &r.episodes[0];
+        assert_eq!((e.name.as_str(), e.artists[0].as_str(), e.artist_uris[0].as_str(), e.playable), ("Talk", "A Show", "spotify:show:s", true));
+        assert_eq!(e.progress, Some(singularity_proto::Progress::default()));
     }
 
     #[test]

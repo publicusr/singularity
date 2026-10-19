@@ -63,12 +63,21 @@ impl SearchView {
         self.rebuild();
     }
 
-    /// Songs shown above the Shelves: a few under All, all of them under Songs, none otherwise.
+    /// The rows above the Shelves: songs, or under Podcasts its episodes (#61).
+    pub fn rows(&self) -> &[singularity_proto::TrackRow] {
+        match &self.results {
+            Some(r) if self.chip == 5 => &r.episodes,
+            Some(r) => &r.tracks,
+            None => &[],
+        }
+    }
+
+    /// Rows shown above the Shelves: a few songs under All, all of them under Songs, the episodes under Podcasts.
     pub fn songs(&self) -> usize {
-        let n = self.results.as_ref().map(|r| r.tracks.len()).unwrap_or(0);
+        let n = self.rows().len();
         match self.chip {
             0 => n.min(5),
-            1 => n,
+            1 | 5 => n,
             _ => 0,
         }
     }
@@ -184,12 +193,16 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         // under All, songs give way so at least one Shelf of Cards fits below them
         let room = r.bottom().saturating_sub(y + 2) as usize;
         let n = if v.chip == 0 && !v.feed.shelves.is_empty() { v.songs().min(room.saturating_sub(10)).max(v.songs().min(2)) } else { v.songs() };
+        let episodes = v.chip == 5;
+        let rows = if episodes { &res.episodes } else { &res.tracks };
         if n > 0 {
-            text(buf, x, y, w, "Songs", th.s(th.accent).add_modifier(Modifier::BOLD));
+            text(buf, x, y, w, if episodes { "Episodes" } else { "Songs" }, th.s(th.accent).add_modifier(Modifier::BOLD));
             y += 1;
             let playing = app.playback.item.as_ref().map(|i| i.uri.clone());
-            app.want_saved(res.tracks.iter().take(n).map(|t| t.uri.as_str()), n);
-            for (i, t) in res.tracks.iter().take(n).enumerate() {
+            if !episodes {
+                app.want_saved(rows.iter().take(n).map(|t| t.uri.as_str()), n);
+            }
+            for (i, t) in rows.iter().take(n).enumerate() {
                 if y >= r.bottom() {
                     break;
                 }
@@ -216,8 +229,17 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                     ax += lw;
                 }
                 let d = t.duration_ms / 1000;
-                text(buf, x + w - 8, y, 6, &format!("{:>2}:{:02}", d / 60, d % 60), th.s(th.dim).bg(bg));
-                hits.push(crate::saved::heart(buf, x + w - 1, y, &t.uri, &t.name, app.is_saved(&t.uri), bg, th));
+                if episodes {
+                    // an episode: how far you are and how long, where a song has its time and ♥
+                    let p = crate::tracks::progress_label(t.progress, t.duration_ms);
+                    let pw = p.chars().count() as u16;
+                    let tail = format!("{:>3} min", (d / 60).max(1));
+                    text(buf, x + w - 8 - pw - 2, y, pw, &p, th.s(if t.progress.is_some_and(|p| p.done) { th.border } else { th.accent2 }).bg(bg));
+                    text(buf, x + w - 8, y, 8, &tail, th.s(th.dim).bg(bg));
+                } else {
+                    text(buf, x + w - 8, y, 6, &format!("{:>2}:{:02}", d / 60, d % 60), th.s(th.dim).bg(bg));
+                    hits.push(crate::saved::heart(buf, x + w - 1, y, &t.uri, &t.name, app.is_saved(&t.uri), bg, th));
+                }
                 y += 1;
             }
             y += 1;

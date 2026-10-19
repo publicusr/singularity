@@ -680,3 +680,8 @@ flowchart LR
   "Podcasts"; the filter is looked up by id) as `PodcastResponseWrapper` → `Podcast {name, publisher.name,
   coverArt.sources, uri}` → `removeFromLibrary` → gone (the library's filters back to three). Four ~2 s follows in
   all, each reverted. Tests: parser, App (chip), pty `show`.
+- **#61 Episodes in search ✅** (2026-10-19): `searchDesktop` already answers with `episodes` (Episode with
+  `playedState`, `releaseDate`, `podcastV2`), so no `searchEpisodes` request is needed. `SearchResults.episodes` are
+  rows with their show as the (linked) artist. Under the Podcasts chip they list above the show cards: name, show,
+  progress, minutes; double-click/Enter plays; the row menu (and an episode card's) has "Go to show", which opens
+  the show at that episode. Tests: parser, App; pty `show` (chip step).

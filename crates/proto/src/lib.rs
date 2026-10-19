@@ -465,6 +465,9 @@ pub struct SearchResults {
     pub albums: Vec<Card>,
     pub playlists: Vec<Card>,
     pub podcasts: Vec<Card>,
+    /// episodes (#61), as rows: the show as their artist, Spotify's progress
+    #[serde(default)]
+    pub episodes: Vec<TrackRow>,
 }
 
 /// An artist page: header, popular tracks, and Shelves of releases and related artists.
