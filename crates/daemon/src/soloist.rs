@@ -513,6 +513,11 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
             },
             cmd = cmd_rx.recv() => {
                 let Some(cmd) = cmd else { let _ = child.kill().await; return Ok(Exit::Quit) };
+                if cmd == Command::RestartEngine {
+                    let _ = ev_tx.send(EngineEvent::Notice("Restarting Soloist…".into())).await;
+                    let _ = child.kill().await;
+                    return Ok(Exit::Died);
+                }
                 if let Command::SetSoloistKey { key } = cmd {
                     // a new key: restart Soloist with it
                     store_key(key, ev_tx).await;
@@ -681,7 +686,7 @@ impl SoloistState {
             // Soloist only appends; the rest goes through ConnectRemote
             Command::PlayNext { uri } => vec![json!({"type":"command","command":"add_to_queue","uri":uri})],
             Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::MoveInQueue { .. } => vec![],
-            Command::Login | Command::Logout | Command::GetHome | Command::Unknown => vec![],
+            Command::Login | Command::Logout | Command::GetHome | Command::RestartEngine | Command::Unknown => vec![],
         }
     }
 }

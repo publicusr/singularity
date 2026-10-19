@@ -73,6 +73,28 @@ impl Engine for AppEngine {
             }
             let cat = self.catalogue.expect("checked above");
             while let Some(cmd) = cmd_rx.recv().await {
+                if self.start_app {
+                    // asked to: quit it and start it again (the fix when it's gone from Connect after a network change)
+                    if cmd == Command::RestartEngine {
+                        let _ = ev_tx.send(EngineEvent::Notice("Restarting the Spotify app…".into())).await;
+                        let _ = ev_tx.send(EngineEvent::Status(EngineStatus::Starting)).await;
+                        if let Err(e) = restart().await {
+                            let _ = ev_tx.send(EngineEvent::Status(EngineStatus::Failed { message: format!("couldn't restart the Spotify app: {e}") })).await;
+                        }
+                        continue;
+                    }
+                    // the app was quit: start it again, hidden; the Catalogue waits for it on Connect
+                    if !running() {
+                        let _ = ev_tx.send(EngineEvent::Notice("Starting the Spotify app…".into())).await;
+                        if let Err(e) = start() {
+                            let _ = ev_tx.send(EngineEvent::Status(EngineStatus::Failed { message: format!("couldn't start the Spotify app: {e}") })).await;
+                            continue;
+                        }
+                    }
+                }
+                if cmd == Command::RestartEngine {
+                    continue;
+                }
                 if cat.send(CatCmd::Engine(cmd)).await.is_err() {
                     return;
                 }
@@ -123,6 +145,19 @@ fn start() -> std::io::Result<()> {
     let null = || std::process::Stdio::null();
     // its own process group, so it outlives the Daemon like the desktop app it is
     std::process::Command::new("spotify").arg("--minimized").stdin(null()).stdout(null()).stderr(null()).process_group(0).spawn().map(|_| ())
+}
+
+/// Quit the app (SIGTERM: it shuts down as from its menu), wait up to 5 s for it to go, and start it again hidden.
+async fn restart() -> std::io::Result<()> {
+    let name = if cfg!(target_os = "macos") { "Spotify" } else { "spotify" };
+    let _ = std::process::Command::new("pkill").args(["-TERM", "-x", name]).status();
+    for _ in 0..50 {
+        if !running() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    start()
 }
 
 /// This computer's name, as the Spotify app registers on Connect.

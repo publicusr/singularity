@@ -71,6 +71,7 @@ so it cannot be settled by talking)
 | D49 | Platform parity | D10, D38 | settled | Owner (2026-10-19): "both the existing linux version and a separate, same functionality macos version, nothing exclusive to either if possible". One codebase; OS-specific code only behind the platform seams (Engine, AudioTap, Secrets, OS media integration, autostart, process lookup). Every feature works on both or has a row in `docs/PLATFORMS.md` saying why not. |
 | D50 | Paths on macOS | D49, D21 | settled (agent call, open to veto) | The same XDG-style paths as Linux (`~/.config/singularity`, `~/.local/share/…`, `~/.local/state/…`, `~/.cache/…`, the `XDG_*` variables respected), not `~/Library/…`: dotfile-friendly, one set of docs. Already what the code does. |
 | D51 | How the macOS Engine works | D25, D49 | settled (agent call, open to veto) | *AppEngine*: the Daemon starts Spotify.app hidden and drives its Connect device through ConnectRemote (play, transport, queue); its playback and queue come from the Connect cluster. Platform-neutral code (only starting the app is per-OS), so the Engine choice is `[engine] kind` in config.toml, default Soloist on Linux, the app on macOS. Needs the Catalogue login; librespot stays the fallback (D25). |
+| D52 | A light Engine (librespot in the Daemon) | D25, D51 | frontier | Owner asked whether the ~600 MB Spotify app is the only way on macOS. Recommended: librespot as an `[engine] kind` on both OSes (light, 320 kbps at most, the riskier way under Spotify's rules); the app stays the macOS default for lossless. Waiting on the owner. |
 
 ```mermaid
 flowchart LR
@@ -742,3 +743,16 @@ flowchart LR
   `SINGULARITY_START_APP=0` keeps the AppEngine away from the real app, so a Daemon a test Client starts by itself never
   drives the owner's Spotify app. Tests: App (both flows, health rows), pty `app_wizard_test.py` (three Daemons),
   `stale_test`/`update_test`/scenarios rerun.
+- **#65 live check, round 1** (owner, 2026-10-19): playing worked; after moving to another wifi the wizard said the
+  Mac "isn't on Spotify Connect", Enter did nothing, and restarting the Spotify app fixed it. The Daemon's log: the
+  dealer was offline ~30 min and reconnected, but the hidden controller was never registered under the new connection
+  id, so cluster pushes stopped; and the app's own Connect link stayed stale until it restarted. Fixes: the
+  Catalogue keeps the dealer's connection-id stream and registers again on every new id (`connect::reconnected`); a
+  cached device id the latest cluster contradicts is looked up again; an AppEngine command waits up to 20 s for the
+  app's device, woken by each pushed cluster (no polling); a command while the app isn't running starts it hidden
+  first; `Command::RestartEngine` ("Restart the player" in Ctrl+K; Enter on the wizard's Connect step) quits and
+  restarts the app (SIGTERM, then `open -gj`) or restarts Soloist (parity); once the Engine was ready this run, losing
+  it shows in the status bar and health check instead of reopening the wizard. Owner's question: is the app the only
+  way on macOS (it's ~600 MB and 5–25 % CPU while playing, against Singularity's ~46 MB)? Facts: the only lossless
+  way, yes (Soloist is Linux-only); librespot in the Daemon would be light but 320 kbps at most. Put to the owner:
+  librespot as an `[engine] kind` choice on both OSes, the app staying the macOS default (D52, open).

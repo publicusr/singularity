@@ -95,6 +95,8 @@ pub enum Command {
     /// Play a context starting at its `index`-th track (`track_uri` guards against the list having changed).
     PlayFrom { context_uri: String, index: u32, track_uri: Option<String> },
     /// Store the Soloist API key (keyring, else an owner-only file) and (re)start the Engine with it.
+    /// Restart the Engine (Soloist, or the Spotify app): for a player that's stuck, or gone from Connect.
+    RestartEngine,
     SetSoloistKey { key: String },
     /// Like or unlike a track; save/unsave an album; follow/unfollow an artist or playlist. Answered by `Event::Saved`.
     SetSaved { uri: String, saved: bool },

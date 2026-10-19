@@ -78,6 +78,8 @@ async fn the_spotify_app_plays_through_the_catalogue() {
     tokio::spawn(singularityd::serve(listener, Box::new(engine), Some((cat_tx, ev_rx)), None));
     let mut s = connect(&path).await;
 
+    // a restart is the AppEngine's own business (here, with no real app, nothing): it never reaches the Catalogue
+    proto::write_msg(&mut s, &ClientMsg::Command(Command::RestartEngine)).await.unwrap();
     // transport commands and "add to queue" go to the app's Connect device, through the Catalogue
     for cmd in [Command::TogglePlay, Command::Seek { position_ms: 5000 }, Command::AddToQueue { uri: "spotify:track:z".into() }] {
         proto::write_msg(&mut s, &ClientMsg::Command(cmd.clone())).await.unwrap();

@@ -157,11 +157,13 @@ struct State {
     searches: HashMap<String, (Instant, singularity_proto::SearchResults)>,
     /// the latest Connect cluster, kept fresh by the dealer
     cluster: std::sync::Arc<std::sync::Mutex<Option<librespot_protocol::connect::Cluster>>>,
+    /// told whenever a new cluster arrives (the Spotify app as Engine waits on it for its device)
+    cluster_changed: std::sync::Arc<tokio::sync::Notify>,
 }
 
 async fn run(dirs: Dirs, engine: Identity, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
     let registry = QueryRegistry::new(dirs.queries.clone());
-    let mut st = State { dirs, engine, session: None, registry, ev, remote: None, tracks: HashMap::new(), described: HashMap::new(), lyrics: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default() };
+    let mut st = State { dirs, engine, session: None, registry, ev, remote: None, tracks: HashMap::new(), described: HashMap::new(), lyrics: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default(), cluster_changed: Default::default() };
     // resume a previous login
     if saved_credentials(&st.dirs).is_some() {
         if st.connect(None).await {
@@ -488,7 +490,7 @@ pub fn app_engine_events(c: &librespot_protocol::connect::Cluster, engine: &Iden
     let status = if present {
         EngineStatus::Ready { device_name: name.clone(), active: active == Some(true), version: engine.version.clone(), expires_in_days: None }
     } else {
-        EngineStatus::Failed { message: format!("\"{name}\" isn't on Spotify Connect: is the Spotify app running and logged in to this account?") }
+        EngineStatus::Failed { message: format!("\"{name}\" isn't on Spotify Connect: Ctrl+K → \"Restart the player\", and check the Spotify app is logged in to this account") }
     };
     let mut out = vec![EngineEvent::Status(status)];
     match active {
@@ -957,23 +959,57 @@ impl State {
     async fn remote(&mut self) -> anyhow::Result<(Session, &mut ConnectRemote, String)> {
         let session = self.session().await.ok_or_else(|| anyhow::anyhow!("not logged in to Spotify"))?;
         if self.remote.is_none() {
-            let (remote, cluster, mut updates) = ConnectRemote::start(session.clone()).await?;
+            let (remote, cluster, mut updates, mut ids) = ConnectRemote::start(session.clone()).await?;
             self.remote = Some(remote);
             *self.cluster.lock().expect("cluster lock") = Some(cluster.clone());
             emit_cluster(&self.ev, &cluster, &self.engine).await;
-            // the dealer pushes every change; keep the latest and tell the Daemon
-            let (latest, ev, engine) = (self.cluster.clone(), self.ev.clone(), self.engine.clone());
+            // the dealer pushes every change; keep the latest and tell the Daemon. After a reconnect (a network
+            // change) it has a new connection id, which must be registered again, or the pushes stop.
+            let (latest, ev, engine, changed) = (self.cluster.clone(), self.ev.clone(), self.engine.clone(), self.cluster_changed.clone());
+            let session = session.clone();
             tokio::spawn(async move {
-                while let Some(u) = updates.next().await {
-                    let Ok(u) = u else { continue };
-                    let Some(c) = u.cluster.into_option() else { continue };
+                loop {
+                    let c = tokio::select! {
+                        u = updates.next() => match u {
+                            Some(Ok(u)) => match u.cluster.into_option() {
+                                Some(c) => c,
+                                None => continue,
+                            },
+                            Some(Err(_)) => continue,
+                            None => return,
+                        },
+                        id = ids.next() => match id {
+                            Some(Ok(id)) => match crate::connect::reconnected(&session, &id).await {
+                                Ok(c) => {
+                                    tracing::info!("Connect: registered again after a reconnect");
+                                    c
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Connect: couldn't register again after a reconnect: {e}");
+                                    continue;
+                                }
+                            },
+                            Some(Err(_)) => continue,
+                            None => return,
+                        },
+                    };
                     *latest.lock().expect("cluster lock") = Some(c.clone());
                     emit_cluster(&ev, &c, &engine).await;
+                    changed.notify_waiters();
                 }
             });
         }
         let remote = self.remote.as_mut().expect("just started");
-        let to = remote.device_id(&self.engine.device_name).await?;
+        // the latest cluster shows the device under another id, or not at all: it re-registered (the app restarted,
+        // or came back after a network change), so look it up again
+        let name = &self.engine.device_name;
+        if let Some(cached) = remote.cached_id(name) {
+            let latest = self.cluster.lock().expect("cluster lock").as_ref().map(|c| c.device.iter().find(|(_, d)| d.name == *name).map(|(id, _)| id.clone()));
+            if latest.is_some_and(|now| now.as_deref() != Some(cached)) {
+                remote.forget_ids();
+            }
+        }
+        let to = remote.device_id(name).await?;
         Ok((session, remote, to))
     }
 
@@ -1247,7 +1283,7 @@ impl State {
     async fn engine_command(&mut self, cmd: Command) {
         let cluster = self.cluster.clone();
         let result = async {
-            let (session, remote, to) = self.remote().await?;
+            let (session, remote, to) = self.engine_device().await?;
             let state = remote_cluster(&cluster).ok();
             let ours = state.as_ref().is_some_and(|c| c.active_device_id == to);
             let ps = state.as_ref().and_then(|c| c.player_state.as_ref());
@@ -1276,6 +1312,29 @@ impl State {
             }
             let _ = self.ev.send(CatEvent::Error(format!("Spotify app: {e}"))).await;
         }
+    }
+
+    /// ConnectRemote and the Spotify app's device. A device that isn't on Connect (the app just started, or came back
+    /// after a network change) is waited for: each pushed cluster is looked at, for up to 20 s. No polling.
+    async fn engine_device(&mut self) -> anyhow::Result<(Session, &mut ConnectRemote, String)> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let name = self.engine.device_name.clone();
+        loop {
+            let changed = self.cluster_changed.clone();
+            let next = changed.notified();
+            match self.remote().await {
+                Ok(_) => break,
+                Err(e) if Instant::now() >= deadline || !e.to_string().contains("not found") => return Err(e),
+                Err(_) => {
+                    tracing::debug!("waiting for {name:?} on Connect");
+                    if let Some(r) = self.remote.as_mut() {
+                        r.forget_ids();
+                    }
+                    let _ = tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), next).await;
+                }
+            }
+        }
+        self.remote().await
     }
 
     /// Queue edits Soloist can't make (play next, remove, clear, move) go through Connect.

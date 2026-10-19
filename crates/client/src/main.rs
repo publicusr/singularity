@@ -36,7 +36,7 @@ use app::{App, Link};
 use conn::ConnEvent;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event as TermEvent, KeyEventKind};
 use ratatui::crossterm::execute;
-use singularity_proto::{DaemonMsg, Event};
+use singularity_proto::{DaemonMsg, EngineStatus, Event};
 use std::io::{Write, stdout};
 use std::time::Duration;
 
@@ -146,7 +146,10 @@ fn apply(app: &mut App, ev: ConnEvent) {
             app.say(m.clone());
             app.link = Link::Incompatible(m);
         }
-        ConnEvent::Msg(DaemonMsg::Event(Event::Engine(s))) => app.engine = Some(s),
+        ConnEvent::Msg(DaemonMsg::Event(Event::Engine(s))) => {
+            app.setup.engine_was_ready |= matches!(s, EngineStatus::Ready { .. });
+            app.engine = Some(s);
+        }
         ConnEvent::Msg(DaemonMsg::Event(Event::Playback(p))) => app.playback = p,
         ConnEvent::Msg(DaemonMsg::Event(Event::Error { message })) => app.say(message),
         ConnEvent::Msg(DaemonMsg::Event(Event::Catalogue(c))) => {

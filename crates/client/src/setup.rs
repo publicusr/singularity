@@ -36,6 +36,9 @@ pub struct Setup {
     pub key: String,
     /// the audio check passed: sound came through the tap
     pub heard: bool,
+    /// the Engine was ready once this run: if it drops off later (the Spotify app gone from Connect), the status bar
+    /// and the health check say so, the wizard doesn't jump up again
+    pub engine_was_ready: bool,
     /// asked to enter the key again (Soloist rejected it)
     pub rekey: bool,
 }
@@ -116,7 +119,12 @@ pub fn wanted(app: &App) -> bool {
     if app.setup.dismissed || !matches!(app.link, Link::Connected { .. }) {
         return false;
     }
-    matches!(step(app), Step::Key | Step::Engine | Step::Pair | Step::App | Step::Connect) || matches!(app.catalogue, Some(CatalogueStatus::LoggedOut))
+    let missing = match step(app) {
+        Step::Key | Step::Engine | Step::Pair | Step::App => true,
+        Step::Connect => !app.setup.engine_was_ready,
+        _ => false,
+    };
+    missing || matches!(app.catalogue, Some(CatalogueStatus::LoggedOut))
 }
 
 pub fn rect(area: Rect) -> Rect {
@@ -185,7 +193,7 @@ pub fn draw_wizard(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
                 Some(EngineStatus::Failed { message }) => line(buf, &mut y, message, th.s(th.error)),
                 _ => line(buf, &mut y, "Starting the Spotify app (hidden) and waiting for it on Spotify Connect…", th.s(th.fg)),
             }
-            line(buf, &mut y, "If it isn't logged in, open it once and log in with the same account.", th.s(th.dim));
+            line(buf, &mut y, "Press Enter to restart it. If it isn't logged in, open it once and log in with the same account.", th.s(th.dim));
         }
         Step::Login => match &app.catalogue {
             Some(CatalogueStatus::LoginPending { url, code }) => {
@@ -452,5 +460,10 @@ mod tests {
         assert_eq!(engine.2, "Spotify app 1.2.94 · \"Mac\" on Connect · not the active device");
         assert!(rows.iter().all(|r| r.1 != "Soloist key"));
         assert_eq!(rows.iter().find(|r| r.1 == "Spotify login").unwrap().2, KEYRING);
+        // later it drops off Connect (a network change): the health check says so, the wizard stays away
+        app.setup.engine_was_ready = true;
+        app.engine = Some(EngineStatus::Failed { message: "\"Mac\" isn't on Spotify Connect".into() });
+        assert_eq!(step(&app), Step::Connect);
+        assert!(!wanted(&app));
     }
 }

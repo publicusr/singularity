@@ -14,6 +14,8 @@ use std::time::Duration;
 
 /// Cluster updates as they're pushed (devices appearing, playback moving between them).
 pub type ClusterStream = librespot_core::dealer::manager::BoxedStreamResult<librespot_protocol::connect::ClusterUpdate>;
+/// The dealer's connection ids: a new one after every reconnect (a network change), which must be registered again.
+pub type ConnectionIds = librespot_core::dealer::manager::BoxedStreamResult<String>;
 
 pub struct ConnectRemote {
     session: Session,
@@ -22,8 +24,9 @@ pub struct ConnectRemote {
 }
 
 impl ConnectRemote {
-    /// Open the dealer connection and register the hidden controller. The stream carries every cluster change.
-    pub async fn start(session: Session) -> anyhow::Result<(ConnectRemote, Cluster, ClusterStream)> {
+    /// Open the dealer connection and register the hidden controller. The streams carry every cluster change, and
+    /// the connection ids of later reconnects (pass each to [`reconnected`]).
+    pub async fn start(session: Session) -> anyhow::Result<(ConnectRemote, Cluster, ClusterStream, ConnectionIds)> {
         let mut conn = session.dealer().listen_for("hm://pusher/v1/connections/", |m| {
             m.headers.get("Spotify-Connection-Id").cloned().ok_or_else(|| librespot_core::Error::internal("no Spotify-Connection-Id"))
         })?;
@@ -33,27 +36,12 @@ impl ConnectRemote {
         session.set_connection_id(&id);
         let remote = ConnectRemote { session, ids: Default::default() };
         let cluster = remote.devices().await?;
-        Ok((remote, cluster, updates))
+        Ok((remote, cluster, updates, conn))
     }
 
     /// Announce the hidden controller; the answer is the account's Connect cluster.
     async fn devices(&self) -> anyhow::Result<Cluster> {
-        let mut caps = Capabilities::new();
-        caps.hidden = true;
-        caps.is_observable = true;
-        caps.gaia_eq_connect_id = true;
-        let mut info = DeviceInfo::new();
-        info.name = "Singularity remote".into();
-        info.device_id = self.session.device_id().to_string();
-        info.capabilities = Some(caps).into();
-        let mut dev = Device::new();
-        dev.device_info = Some(info).into();
-        let mut req = PutStateRequest::new();
-        req.member_type = MemberType::CONNECT_STATE.into();
-        req.put_state_reason = PutStateReason::NEW_DEVICE.into();
-        req.device = Some(dev).into();
-        let bytes = self.session.spclient().put_connect_state_request(&req).await?;
-        Ok(Cluster::parse_from_bytes(&bytes)?)
+        register(&self.session).await
     }
 
     /// The Connect id of the device called `name` (Soloist registers as [`crate::soloist::DEVICE_NAME`]).
@@ -65,6 +53,11 @@ impl ConnectRemote {
         let id = cluster.device.iter().find(|(_, d)| d.name == name).map(|(id, _)| id.clone()).ok_or_else(|| anyhow::anyhow!("Connect device {name:?} not found"))?;
         self.ids.insert(name.into(), id.clone());
         Ok(id)
+    }
+
+    /// The id looked up for `name` earlier, if any.
+    pub fn cached_id(&self, name: &str) -> Option<&str> {
+        self.ids.get(name).map(String::as_str)
     }
 
     /// Forget looked-up device ids (after a failure: a device may have re-registered under a new one).
@@ -163,6 +156,33 @@ impl ConnectRemote {
         self.session.spclient().send_player_command(to, cmd).await?;
         Ok(())
     }
+}
+
+/// The dealer came back with a new connection id (after a network change): register the hidden controller under it,
+/// or Spotify stops pushing cluster changes to this session. The answer is the cluster as it is now.
+pub async fn reconnected(session: &Session, connection_id: &str) -> anyhow::Result<Cluster> {
+    session.set_connection_id(connection_id);
+    register(session).await
+}
+
+/// Announce the hidden controller (never shown in device pickers); the answer is the account's Connect cluster.
+async fn register(session: &Session) -> anyhow::Result<Cluster> {
+    let mut caps = Capabilities::new();
+    caps.hidden = true;
+    caps.is_observable = true;
+    caps.gaia_eq_connect_id = true;
+    let mut info = DeviceInfo::new();
+    info.name = "Singularity remote".into();
+    info.device_id = session.device_id().to_string();
+    info.capabilities = Some(caps).into();
+    let mut dev = Device::new();
+    dev.device_info = Some(info).into();
+    let mut req = PutStateRequest::new();
+    req.member_type = MemberType::CONNECT_STATE.into();
+    req.put_state_reason = PutStateReason::NEW_DEVICE.into();
+    req.device = Some(dev).into();
+    let bytes = session.spclient().put_connect_state_request(&req).await?;
+    Ok(Cluster::parse_from_bytes(&bytes)?)
 }
 
 fn device_kind(t: librespot_protocol::devices::DeviceType) -> &'static str {

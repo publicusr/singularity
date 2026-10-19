@@ -55,6 +55,7 @@ pub enum Action {
     ToggleNotifications,
     Login,
     Logout,
+    RestartEngine,
     RefreshHome,
     GoHome,
     Back,
@@ -83,7 +84,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 51] = [
+    pub const ALL: [Action; 52] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -110,6 +111,7 @@ impl Action {
         Action::ToggleNotifications,
         Action::Login,
         Action::Logout,
+        Action::RestartEngine,
         Action::RefreshHome,
         Action::GoHome,
         Action::Back,
@@ -164,6 +166,7 @@ impl Action {
             Action::ToggleNotifications => "Track-change notifications on / off",
             Action::Login => "Log in to Spotify",
             Action::Logout => "Log out of Spotify",
+            Action::RestartEngine => "Restart the player (Soloist, or the Spotify app)",
             Action::RefreshHome => "Refresh Home",
             Action::GoHome => "Go to Home",
             Action::Back => "Back",
@@ -220,6 +223,7 @@ impl Action {
             Action::ToggleNotifications => "notifications",
             Action::Login => "login",
             Action::Logout => "logout",
+            Action::RestartEngine => "restart_player",
             Action::RefreshHome => "refresh_home",
             Action::GoHome => "home",
             Action::Back => "back",
@@ -963,6 +967,7 @@ impl App {
             Action::ToggleIdle => self.toggle_idle(),
             Action::IdlePreview => self.idle_preview = true,
             Action::Login => self.send(Command::Login),
+            Action::RestartEngine => self.send(Command::RestartEngine),
             Action::Logout => self.send(Command::Logout),
             Action::RefreshHome => self.send(Command::GetHome),
             Action::GoHome => self.navigate(Page::Home),
@@ -1980,6 +1985,8 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Char('K') if step == Step::Engine => self.setup.rekey = true,
             KeyCode::Enter if step == Step::Login && !matches!(self.catalogue, Some(CatalogueStatus::LoginPending { .. })) => self.run(Action::Login),
+            // the Spotify app isn't on Connect: Enter restarts it
+            KeyCode::Enter if step == Step::Connect => self.run(Action::RestartEngine),
             KeyCode::Char(' ') if step == Step::Audio => self.run(Action::TogglePlay),
             KeyCode::Enter if matches!(step, Step::Audio | Step::Done) => {
                 self.setup.forced = false;
