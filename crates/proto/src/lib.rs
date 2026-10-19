@@ -361,7 +361,7 @@ pub struct LibraryItem {
     pub uri: String,
     pub name: String,
     pub subtitle: String,
-    /// `liked`, `playlist`, `folder`, `album`, `artist` or `other`
+    /// `liked`, `playlist`, `folder`, `album`, `artist`, `show` or `other`
     pub kind: String,
     pub image_url: Option<String>,
     /// nesting inside folders (0 = top level)

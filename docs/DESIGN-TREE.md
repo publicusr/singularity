@@ -673,3 +673,10 @@ flowchart LR
   context like tracks. Not yet run live: playing an episode (would interrupt the owner's player and write a resume
   point), so whether Soloist resumes at the saved point is the owner's test. Tests: parsers (anonymised shapes of
   2026-10-19), App show page/paging/episode card; pty `show`.
+- **#60 Saved shows ✅** (2026-10-19): `libraryV3`'s `Podcast` items become sidebar rows (kind `show`, "Podcast ·
+  publisher", cover miniature; ◈ until it arrives) and open the show page. The show page's chip reads ♡ Follow /
+  ♥ Following (the same optimistic `SetSaved` as albums; the Daemon refreshes the library after it). Live check
+  (2026-10-19): `addToLibrary` of a public show → it appears under the filter id "Podcasts & Shows" (named
+  "Podcasts"; the filter is looked up by id) as `PodcastResponseWrapper` → `Podcast {name, publisher.name,
+  coverArt.sources, uri}` → `removeFromLibrary` → gone (the library's filters back to three). Four ~2 s follows in
+  all, each reverted. Tests: parser, App (chip), pty `show`.

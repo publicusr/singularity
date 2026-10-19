@@ -12,7 +12,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
   #50 album song into the queue; #48 mouse buttons dropped, D45) · ~~3 playlist editing~~ ✅ (#51–#56, owner-tested up to #55) · ~~4 Settings screen~~ ✅ (#57, #58) · ~~5 album-adaptive theme~~ dropped (D47; Visuals done in #44) ·
   **6 podcasts and audiobooks (next)** · 7 free tiling (trial) · 8 macOS.
   Visual demos judged: starfield, marquee, glow kept and finished (#44, `ambient.rs`).
-- Tests: **247 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
+- Tests: **248 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
 - **No open bugs.** The waveform seek bar (#46) was removed again at the owner's call (D46).
 - Rule since round 2 (D43): every built-in Design keeps Home, library, queue and lyrics (a test enforces it).
 
@@ -64,7 +64,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `65b5e50` | owner | The wheel over the queue moves its highlight a song at a time, the list follows |
 | `f8251bb` | #57 ✅ | Settings page from config.toml (`client/src/settings.rs`, `singularity_config::{SETTINGS, entries}`) |
 | `67aaf11` | #58 ✅ | Settings: a read-only keys tab; batch 4 done |
-| (last) | #59 ✅ | Show pages and episodes (`library::{episode_row, parse_show_header, parse_episode}`, `MoreTracks`, `FindShow`) |
+| `f964997` | #59 ✅ | Show pages and episodes (`library::{episode_row, parse_show_header, parse_episode}`, `MoreTracks`, `FindShow`) |
+| (last) | #60 ✅ | Saved shows in the library, Follow on a show page |
 
 ## What exists in `crates/`
 
@@ -95,7 +96,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 - **Batch 4, the Settings screen ✅** (#57, #58): Ctrl+K "settings"; both wait for the owner's test.
 - **Batch 6, podcasts and audiobooks** (stories 83–84): tickets #59 show pages + episodes, #60 saved shows + Follow,
   #61 episodes in search, #62 audiobooks (live chapter check first). Routes re-verified 2026-10-19 (research file).
-  #59 ✅ (owner to check: does an episode resume where it was left?). **Next: #60.**
+  #59 ✅ (owner to check: does an episode resume where it was left?). #60 ✅. **Next: #61.**
 - Then batches 5–8 in order; each gets tickets just before it's built.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
 
@@ -103,7 +104,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 
 `singularity` and `singularityd` are installed in `~/.cargo/bin` (on the owner's PATH) with
 `cargo install --locked --path crates/daemon` and `--path crates/client`. Reinstall both after each closed ticket so the
-owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #59 (2026-10-19).
+owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #60 (2026-10-19).
 
 ## Local state on the owner's machine (not in git)
 

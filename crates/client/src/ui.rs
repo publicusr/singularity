@@ -1689,6 +1689,12 @@ mod tests {
             assert!(s.contains(part), "missing {part:?}\n{s}");
         }
         assert!(sent(&mut rx).is_empty(), "the top of a show asks for nothing more");
+        // Follow (#60): the chip says so, and the change goes to the Daemon
+        assert!(s.contains("♡ Follow"));
+        let chip = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Save(l) if l.uri == show).then_some(*r)).unwrap();
+        click(&mut app, chip.x + 1, chip.y);
+        assert!(render(&mut app, 160, 48).contains("♥ Following"));
+        assert_eq!(sent(&mut rx), vec![Command::SetSaved { uri: show.into(), saved: true }]);
         // near the end of what's here: the next episodes, once
         app.key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
         render(&mut app, 160, 48);

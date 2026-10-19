@@ -541,7 +541,7 @@ def settings(t, out, env):
 
 
 def show(t, out):
-    """#59: a show from search: its episodes with progress, one played; older ones load near the end; an episode
+    """#59/#60: a show from search, followed into the library: its episodes with progress, one played; older ones load near the end; an episode
     card opens its show at that episode."""
     t.pump(1.0)
     t.send(b"\x0c", 0.3); t.send(b"fake", 1.2)  # Ctrl+L, search
@@ -549,6 +549,11 @@ def show(t, out):
     x, y = t.find("Fake Sh")
     mouse(t, 0, x + 1, y); mouse(t, 0, x + 1, y, release=True, wait=1.0)
     t.shot(f"{out}/1-show.png")
+    # #60: Follow puts it in the library
+    fx, fy = t.find("♡ Follow")
+    mouse(t, 0, fx + 1, fy); mouse(t, 0, fx + 1, fy, release=True, wait=1.2)
+    t.shot(f"{out}/1b-followed.png")
+    print("library row:", [l[:30].strip() for l in t.screen.display if "Fake Show" in l[:32]][:1], "| chip:", bool(t.find("♥ Following")))
     x, y = t.find("Episode 129")
     for _ in range(2):  # double-click plays it
         mouse(t, 0, x + 2, y, wait=0.03); mouse(t, 0, x + 2, y, release=True, wait=0.05)

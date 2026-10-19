@@ -35,6 +35,7 @@ fn glyph(kind: &str) -> &'static str {
         "folder" => "▸",
         "album" => "◎",
         "artist" => "◍",
+        "show" => "◈",
         _ => "·",
     }
 }

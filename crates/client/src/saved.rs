@@ -38,8 +38,8 @@ pub fn label(uri: &str, saved: bool) -> &'static str {
     match (kind(uri), saved) {
         ("track", false) => "Save to Liked Songs",
         ("track", true) => "Remove from Liked Songs",
-        ("artist", false) => "Follow",
-        ("artist", true) => "Unfollow",
+        ("artist" | "show", false) => "Follow",
+        ("artist" | "show", true) => "Unfollow",
         (_, false) => "Save to Your Library",
         (_, true) => "Remove from Your Library",
     }
@@ -47,7 +47,7 @@ pub fn label(uri: &str, saved: bool) -> &'static str {
 
 /// Things that can be liked, saved or followed.
 pub fn savable(uri: &str) -> bool {
-    matches!(kind(uri), "track" | "album" | "playlist" | "artist") && uri != LIKED
+    matches!(kind(uri), "track" | "album" | "playlist" | "artist" | "show") && uri != LIKED
 }
 
 /// A track row's ♥ at (x, y): filled when liked, outlined when not, blank until Spotify has said (#49). Returns its
@@ -121,8 +121,8 @@ impl App {
         let msg = match (kind(uri), now) {
             ("track", true) => "Added to Liked Songs".to_string(),
             ("track", false) => "Removed from Liked Songs".to_string(),
-            ("artist", true) => format!("Following {name}"),
-            ("artist", false) => format!("Unfollowed {name}"),
+            ("artist" | "show", true) => format!("Following {name}"),
+            ("artist" | "show", false) => format!("Unfollowed {name}"),
             (_, true) => "Saved to Your Library".to_string(),
             (_, false) => "Removed from Your Library".to_string(),
         };
@@ -268,6 +268,7 @@ mod tests {
         assert_eq!(label("spotify:track:x", false), "Save to Liked Songs");
         assert_eq!(label("spotify:artist:x", true), "Unfollow");
         assert_eq!(label("spotify:playlist:x", true), "Remove from Your Library");
-        assert!(!savable(LIKED) && !savable("spotify:show:x"));
+        assert!(!savable(LIKED) && savable("spotify:show:x") && !savable("spotify:episode:x"));
+        assert_eq!(label("spotify:show:x", true), "Unfollow");
     }
 }

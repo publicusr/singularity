@@ -388,7 +388,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 CatCmd::Lyrics { uri, .. } => vec![CatEvent::Lyrics(fake_lyrics(&uri))],
                 CatCmd::Artist(uri) => vec![CatEvent::Artist(fake_artist(&uri, &home))],
                 CatCmd::MoreTracks { uri, offset } => fake_tracks(&uri).into_iter().filter(|e| matches!(e, CatEvent::Tracks(p) if p.offset >= offset)).collect(),
-                CatCmd::FindShow(uri) => vec![CatEvent::EpisodeShow { episode: uri, show: singularity_proto::Link { name: "Fake Show".into(), uri: "spotify:show:fake1".into() } }],
+                CatCmd::FindShow(uri) => vec![CatEvent::EpisodeShow { episode: uri, show: singularity_proto::Link { name: "Fake Show".into(), uri: "spotify:show:fakeshow".into() } }],
                 CatCmd::Search(q) => vec![CatEvent::Search(fake_search(&q, &home))],
                 CatCmd::Devices => vec![CatEvent::Devices(fake_devices(None))],
                 CatCmd::Transfer(id) => vec![CatEvent::Devices(fake_devices(Some(&id)))],
@@ -408,14 +408,24 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 // anything with "fail" in its URI fails, so the Client's rollback can be seen
                 CatCmd::SetSaved { uri, saved: want } => {
                     let ok = !uri.contains("fail");
+                    let mut shows = None;
                     if ok {
                         saved.insert(uri.clone(), want);
+                        // a followed show joins the library (#60)
+                        if uri.starts_with("spotify:show:") {
+                            lib.items.retain(|i| i.uri != uri);
+                            if want {
+                                lib.items.insert(1, singularity_proto::LibraryItem { uri: uri.clone(), name: "Fake Show".into(), subtitle: "Podcast · Fake Publisher".into(), kind: "show".into(), image_url: None, depth: 0, own: false });
+                            }
+                            shows = Some(CatEvent::Library(lib.clone()));
+                        }
                     }
                     let saved = want;
                     let mut ev = vec![CatEvent::Saved(vec![singularity_proto::SavedFlag { saved: if ok { saved } else { !saved }, uri }])];
                     if !ok {
                         ev.insert(0, CatEvent::Error("Couldn't save it (fake failure)".into()));
                     }
+                    ev.extend(shows);
                     ev
                 }
                 CatCmd::CheckSaved(uris) => vec![CatEvent::Saved(uris.into_iter().map(|uri| singularity_proto::SavedFlag { saved: saved.get(&uri).copied().unwrap_or_else(|| fake_saved(&uri)), uri }).collect())],
@@ -474,7 +484,7 @@ fn fake_search(q: &str, home: &HomeFeed) -> singularity_proto::SearchResults {
 /// A show and one of its older episodes (#59), in every search.
 fn fake_podcasts() -> Vec<Card> {
     vec![
-        Card { uri: "spotify:show:fake1".into(), name: "Fake Show".into(), subtitle: "Fake Publisher".into(), image_url: None, kind: "show".into() },
+        Card { uri: "spotify:show:fakeshow".into(), name: "Fake Show".into(), subtitle: "Fake Publisher".into(), image_url: None, kind: "show".into() },
         Card { uri: "spotify:episode:fakeep120".into(), name: "Episode 10: Orbits and Echoes".into(), subtitle: "Fake Show".into(), image_url: None, kind: "episode".into() },
     ]
 }

@@ -97,6 +97,8 @@ pub fn parse_library(v: &Value, depth: u8, me: &str) -> LibraryPage {
                 image(&d["images"]["items"][0]["sources"]),
             ),
             "Album" => ("album", d["name"].as_str().unwrap_or_default().to_string(), names(&d["artists"]["items"]).join(", "), image(&d["coverArt"]["sources"])),
+            // a saved show (#60)
+            "Podcast" => ("show", d["name"].as_str().unwrap_or_default().to_string(), d["publisher"]["name"].as_str().map(|p| format!("Podcast · {p}")).unwrap_or_else(|| "Podcast".into()), image(&d["coverArt"]["sources"])),
             "Artist" => ("artist", d["profile"]["name"].as_str().unwrap_or_default().to_string(), "Artist".into(), image(&d["visuals"]["avatarImage"]["sources"])),
             t if t.contains("Folder") => ("folder", d["name"].as_str().unwrap_or("Folder").to_string(), String::new(), None),
             _ => continue,
@@ -499,6 +501,17 @@ mod tests {
             "duration": {"totalMilliseconds": 210000}, "contentRating": {"label": "NONE"}}}});
         let i = parse_track(&v).unwrap();
         assert_eq!((i.name.as_str(), i.artists.len(), i.duration_ms, i.album.as_deref()), ("Perihelion", 2, 210_000, Some("Quiet Orbit")));
+    }
+
+    #[test]
+    fn saved_shows_are_library_rows() {
+        // a saved show in libraryV3 (shape seen live 2026-10-19), anonymised
+        let v = json!({ "data": { "me": { "libraryV3": { "totalCount": 1, "items": [{ "item": { "__typename": "PodcastResponseWrapper", "_uri": "spotify:show:s",
+            "data": { "__typename": "Podcast", "uri": "spotify:show:s", "name": "A Show", "publisher": { "name": "Pub" },
+                "coverArt": { "sources": [{ "url": "https://i/s", "width": 300, "height": 300 }] } } } }] } } } });
+        let p = parse_library(&v, 0, "me");
+        let i = &p.items[0];
+        assert_eq!((i.kind.as_str(), i.name.as_str(), i.subtitle.as_str(), i.image_url.as_deref()), ("show", "A Show", "Podcast · Pub", Some("https://i/s")));
     }
 
     #[test]

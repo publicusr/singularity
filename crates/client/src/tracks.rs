@@ -312,7 +312,12 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let mut sx = x0 + 9;
     if crate::saved::savable(&view.uri) {
         let saved = app.is_saved(&view.uri) == Some(true);
-        let label = if saved { " ♥ Saved " } else { " ♡ Save " };
+        let label = match (show, saved) {
+            (true, true) => " ♥ Following ",
+            (true, false) => " ♡ Follow ",
+            (false, true) => " ♥ Saved ",
+            (false, false) => " ♡ Save ",
+        };
         let lw = label.chars().count() as u16;
         text(buf, sx, r.y + 1, lw, label, if saved { th.chip(th.accent2) } else { th.s(th.dim) });
         hits.push((Rect::new(sx, r.y + 1, lw, 1), Hit::Save(singularity_proto::Link { name: view.title.clone(), uri: view.uri.clone() })));

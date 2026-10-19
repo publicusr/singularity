@@ -77,3 +77,7 @@ All playlist routes above are still there. Details read from the bundle:
 - Soloist 1.3.9.35 (static, `strings`): `abp_chapter_expiry`, `abp_chapter_keys_*`, `audiobook_enable_smart_resumption`,
   `audiobook_min_resume_point_age_seconds`, `audiobook_not_playable`, `resumePoint` messages: chapters and resume
   points are in the engine. Not yet played live.
+- Live 2026-10-19: a followed show is a `libraryV3` item `{__typename: PodcastResponseWrapper, data: {__typename:
+  Podcast, name, publisher{name}, coverArt{sources}, description, uri}}`; the library's filter for them has id
+  `"Podcasts & Shows"` (name "Podcasts") and only appears while one is saved. `addToLibrary` / `removeFromLibrary`
+  take show URIs like albums'.
