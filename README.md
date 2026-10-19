@@ -24,7 +24,7 @@ Daemon starts:
 
 | `kind` | What | Lossless | Notes |
 |--------|------|----------|-------|
-| `auto` (default) | Soloist on Linux, the Spotify app on macOS | yes | |
+| `auto` (default) | Soloist on Linux, librespot on macOS | Linux yes, macOS no | |
 | `soloist` | Spotify Soloist, headless (Linux only) | yes | needs a Soloist API key |
 | `spotify-app` | the official app, started hidden and driven over Connect | yes | ~600 MB while playing |
 | `librespot` | built into the Daemon, both OSes | no, 320 kbps | the lightest (~26 MB) |

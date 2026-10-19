@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
     };
     tracing::info!("singularityd {} listening on {}", singularityd::VERSION, path.display());
     // the Engine (D51, D52): --fake-engine, a pretend player for UI work without Soloist or a Spotify account; else
-    // config.toml's [engine] (Soloist on Linux, the Spotify app on macOS, librespot on either)
+    // config.toml's [engine] (Soloist on Linux, librespot on macOS; any of them where it exists)
     let args: Vec<String> = std::env::args().collect();
     let fake = args.iter().any(|a| a == "--fake-engine");
     let choice = singularity_config::load_config(&singularity_config::config_path()).value.engine;

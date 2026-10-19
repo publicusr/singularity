@@ -15,12 +15,12 @@ _Avoid_: player backend, daemon, streamer
 
 **AppEngine**:
 The Engine that is the official Spotify desktop app, started hidden and driven over Connect; what it plays is read
-from the Connect cluster. The macOS default.
+from the Connect cluster. The lossless choice on macOS.
 _Avoid_: DesktopAppEngine (its old name), Spotify engine
 
 **LibrespotEngine**:
 The Engine that is librespot (a Connect receiver and player) running inside the Daemon, on Linux and macOS alike: the
-light choice, at most 320 kbps, never lossless. Driven over Connect like the AppEngine; its samples feed the AudioTap
+light choice and the macOS default (D54), at most 320 kbps, never lossless. Driven over Connect like the AppEngine; its samples feed the AudioTap
 directly (the tap's *Feed*).
 _Avoid_: built-in player (fine in UI text, not as a term), spotifyd
 

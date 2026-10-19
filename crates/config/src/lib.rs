@@ -54,7 +54,7 @@ pub struct EngineChoice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EngineKind {
-    /// this OS's own: Soloist on Linux, the Spotify app on macOS
+    /// this OS's own: Soloist on Linux, librespot on macOS (D54)
     #[default]
     Auto,
     Soloist,
@@ -67,7 +67,7 @@ impl EngineKind {
     /// What `Auto` means here.
     pub fn resolved(self) -> EngineKind {
         match self {
-            EngineKind::Auto if cfg!(target_os = "macos") => EngineKind::SpotifyApp,
+            EngineKind::Auto if cfg!(target_os = "macos") => EngineKind::Librespot,
             EngineKind::Auto => EngineKind::Soloist,
             k => k,
         }
@@ -175,7 +175,7 @@ enabled = true
 minutes = 3
 
 [engine]
-# what plays the music: "auto" (Soloist on Linux, the Spotify app on macOS), "soloist" (Linux), "spotify-app"
+# what plays the music: "auto" (Soloist on Linux, librespot on macOS), "soloist" (Linux), "spotify-app"
 # (the official Spotify app, started hidden and driven over Connect) or "librespot" (built in: the lightest,
 # but at most 320 kbps, never lossless); restart the Daemon after changing it
 kind = "auto"
@@ -625,7 +625,7 @@ minutes = 3
         // an [engine] of the user's own is left as it is
         let theirs = parse::<Config>("config.toml", "schema = 2\n[engine]\nkind = \"soloist\"\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert_eq!((theirs.value.engine.kind, theirs.migrated.as_deref()), (EngineKind::Soloist, Some("schema = 3\n[engine]\nkind = \"soloist\"\n")));
-        assert_eq!(EngineKind::Auto.resolved(), if cfg!(target_os = "macos") { EngineKind::SpotifyApp } else { EngineKind::Soloist });
+        assert_eq!(EngineKind::Auto.resolved(), if cfg!(target_os = "macos") { EngineKind::Librespot } else { EngineKind::Soloist });
     }
 
     #[test]
