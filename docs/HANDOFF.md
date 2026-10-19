@@ -15,7 +15,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
   keep the same features; OS code only behind the platform seams, tracked in **`docs/PLATFORMS.md`**. Tickets in build
   order: ~~#63 builds and tests green~~ ✅ · ~~#64 Keychain~~ ✅ · **#65 AppEngine (built; network-change fixes await the
   owner's re-check)** · ~~#66 setup and health per platform~~ ✅ · **#70 librespot Engine (D52; built, on Connect live,
-  playback awaits the owner)** · **#68 Now Playing, media keys, notifications (built; owner's check pending)** · #69 LaunchAgent and install · #67
+  playback awaits the owner)** · **#68 Now Playing, media keys, notifications (built; owner's check pending)** · ~~#69 LaunchAgent and install~~ ✅ (`packaging/launchd/install.sh`, not installed on the owner's Mac unless they ask) · #67
   AudioTap on Core Audio (only for the Spotify app as Engine now that librespot is the default). **`docs/PLATFORMS.md` is the exact status, feature by feature** (re-audited 2026-10-19).
   Then #62 (audiobooks), batch 7, and last of all batch 9: the codebase audit (#71, SPEC "Batch 9").
   librespot is the macOS default (D54). D53 (Soloist in a VM) spiked: `research/2026-10-soloist-vm-spike.md`; the

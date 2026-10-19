@@ -30,6 +30,13 @@ use tokio::sync::{Mutex, broadcast, mpsc};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// How to restart the Daemon by hand, as the OS's service manager says it (packaging/systemd, packaging/launchd).
+pub const RESTART: &str = if cfg!(target_os = "macos") {
+    "`launchctl kickstart -k gui/$(id -u)/io.github.publicusr.singularityd`, or quit it: the next Client starts it"
+} else {
+    "`systemctl --user restart singularityd`"
+};
+
 /// Shared Daemon state that every connection reads.
 pub struct Hub {
     pub started_unix_ms: u64,
@@ -491,9 +498,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                 .await?;
         }
         Some(ClientMsg::Hello { protocol, .. }) => {
-            let message = format!(
-                "this singularityd speaks protocol {PROTOCOL_VERSION}, the Client speaks {protocol}. Restart the Daemon (`systemctl --user restart singularityd`) after updating."
-            );
+            let message = format!("this singularityd speaks protocol {PROTOCOL_VERSION}, the Client speaks {protocol}. Restart the Daemon ({RESTART}) after updating.");
             proto::write_msg(&mut wr, &DaemonMsg::Incompatible { protocol: PROTOCOL_VERSION, message }).await?;
             return Ok(());
         }

@@ -796,4 +796,13 @@ flowchart LR
   notifications: which changes are news is now shared with Linux (`nowplaying::TrackNews`, tested); macOS posts them
   with `osascript` (title and body as arguments, never script text), without the cover. Smoke: start, a Play,
   "already running", SIGTERM all exit cleanly; `stale_test` (replace an old Daemon) passes.
+- **#69 LaunchAgent and install ✅** (2026-10-19): `packaging/launchd/singularityd.plist` (label
+  `io.github.publicusr.singularityd`; `KeepAlive.SuccessfulExit = false` like systemd's `Restart=on-failure`, so a
+  crash or exit 75 restarts it; `ProcessType = Interactive`, never throttled while it plays; `TMPDIR` set to the
+  per-user temp dir, where the Client looks for the socket, as launchd doesn't always set it) and
+  `packaging/launchd/install.sh` (fills in the paths, `launchctl bootstrap gui/<uid>`, `--uninstall`). Tested on the
+  Mac under a scratch label with a fake-Engine Daemon: running at load, a `Shutdown` (exit 75) restarted by launchd,
+  removed cleanly. `singularityd` itself now builds its own runtime (`daemon()`), so exit codes come from one place.
+  The "Incompatible" message names the OS's restart (`RESTART`). README: install steps for both OSes. Installing it
+  for real is the owner's choice (one command).
 

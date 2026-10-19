@@ -37,7 +37,7 @@ asked librespot not to pursue it). The only other route is Soloist itself in a s
 | Media keys, OS now-playing (28) | ✅ MPRIS | 🔶 librespot: the Daemon's own Now Playing entry + remote commands (play/pause/next/previous/seek; built, awaits the owner's media keys); the app: its own entry | #68 (cover art in Now Playing still to do) |
 | Track notifications (29) | ✅ D-Bus, with the cover | 🔶 `osascript` notifications, no cover (a process without an app bundle can't post its own) | #68 |
 | Music survives closing the terminal (30) | ✅ | ✅ (own process group) | — |
-| Daemon starts at login | ✅ systemd user unit | ❌ | #69 (LaunchAgent; also the "Incompatible" message still names `systemctl`) |
+| Daemon starts at login (optional: a Client starts it anyway) | ✅ systemd user unit | ✅ LaunchAgent (`packaging/launchd/install.sh`; tested under a scratch label: start, exit-75 restart, uninstall) | — |
 | **Audio Widgets react to the music (40): spectrum, loudness, VU, rain, scope, the hole's pulse** | ✅ Soloist (PipeWire); 🔶 app (its PipeWire stream); 🔶 librespot (in-process) | 🔶 **librespot: in-process, no permission needed**; ❌ **app: nothing yet, the Widgets stay flat** | #67 (Core Audio process tap on Spotify.app) |
 | Visuals on the GPU, paused when hidden (36–42) | ✅ Vulkan | ✅ Metal ("Apple M2") | `tap_cpu` budget on the M2: #71 |
 | Pixel tier: kitty graphics, shared memory (43) | ✅ kitty, Ghostty | 🔶 same code (POSIX `shm_open`); not tried in a real kitty/Ghostty on macOS yet | owner's terminal check |
@@ -58,7 +58,7 @@ asked librespot not to pursue it). The only other route is Soloist itself in a s
 | Secrets (D24) | `secret-tool` | `/usr/bin/security` | ✅ #64 |
 | OS media integration | MPRIS on D-Bus | Now Playing + remote commands (MediaPlayer framework; the main thread runs the run loop, tokio another thread) | 🔶 #68 |
 | Notifications | D-Bus | `osascript` | 🔶 #68 |
-| Autostart | systemd user unit | LaunchAgent | 🔨 #69 |
+| Autostart | systemd user unit | LaunchAgent | ✅ #69 |
 | Process lookup | `/proc` | `proc_name`, libproc | ✅ |
 | Audio output name (health) | `pactl` (the Engine's stream → its sink) | cpal's default output device | ✅ |
 | Opening a URL | `xdg-open` | `open` | ✅ |

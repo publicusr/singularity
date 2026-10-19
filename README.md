@@ -14,6 +14,9 @@ cargo build --release
 ./target/release/singularity        # starts the Daemon (singularityd) automatically
 ```
 
+To install (both OSes): `cargo install --locked --path crates/daemon && cargo install --locked --path crates/client`,
+then run `singularity` (`~/.cargo/bin` on your PATH).
+
 Linux and macOS are both supported, with the same features (`docs/PLATFORMS.md` has the exact status, #63–#70).
 On Linux the build needs ALSA's development files (Arch: `alsa-lib`; Debian/Ubuntu: `libasound2-dev`). On macOS: Rust
 from rustup (`brew install rustup && rustup default stable`). Developing on a Mac, `tools/check-linux.sh` type-checks
@@ -53,7 +56,9 @@ it by itself ("Updating singularityd…"; music pauses for a second while Solois
   expires.
 - `singularityd --fake-engine` runs a pretend player for UI work; `--no-catalogue` skips Spotify browsing;
   `--fake-catalogue crates/client/tests/fixtures/home.json` serves a recorded (anonymised) Home feed.
-- Music keeps playing when you quit the Client; `systemctl --user` unit in `packaging/systemd/`.
+- Music keeps playing when you quit the Client. To start the Daemon at login (optional: the Client starts it anyway):
+  Linux: `cp packaging/systemd/singularityd.service ~/.config/systemd/user/ && systemctl --user enable --now
+  singularityd`; macOS: `packaging/launchd/install.sh` (`--uninstall` removes it).
 
 ## Docs
 

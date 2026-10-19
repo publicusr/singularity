@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Singularity Daemon at login (macOS): owns playback so music keeps going when every terminal is closed.
+     The counterpart of packaging/systemd/singularityd.service. Install with packaging/launchd/install.sh, which fills
+     in the @…@ paths. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.publicusr.singularityd</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@BIN@</string>
+  </array>
+  <!-- the Client finds the Daemon's socket under the per-user temp dir; launchd doesn't always set it -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TMPDIR</key>
+    <string>@TMPDIR@</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- like systemd's Restart=on-failure: a crash, or exit 75 (replaced by a newer build), starts it again; a clean
+       stop (or "already running") doesn't -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>2</integer>
+  <!-- it plays audio: never throttled like a background job -->
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardErrorPath</key>
+  <string>@LOG@</string>
+</dict>
+</plist>
