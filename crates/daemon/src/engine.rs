@@ -27,6 +27,24 @@ pub struct Resume {
     pub paused: bool,
 }
 
+/// Which Connect device is this computer's Engine, and where its playback comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    /// the device's name on Connect
+    pub device_name: String,
+    /// AppEngine (D51): driven over Connect, its playback read from the Connect cluster; Soloist reports its own
+    pub via_connect: bool,
+    /// the app's version, for the health view (AppEngine only)
+    pub version: String,
+}
+
+impl Default for Identity {
+    /// Soloist, as before there was a choice
+    fn default() -> Identity {
+        Identity { device_name: crate::soloist::DEVICE_NAME.into(), via_connect: false, version: String::new() }
+    }
+}
+
 pub trait Engine: Send + 'static {
     /// Start the Engine task. Returns the command sender and the event stream.
     fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>);

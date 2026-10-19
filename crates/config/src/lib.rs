@@ -14,7 +14,7 @@ pub use toml_edit;
 use toml_edit::{DocumentMut, Item, Value};
 
 /// The `config.toml` schema this build writes and reads.
-pub const CONFIG_SCHEMA: i64 = 2;
+pub const CONFIG_SCHEMA: i64 = 3;
 /// The `keys.toml` schema.
 pub const KEYS_SCHEMA: i64 = 1;
 
@@ -39,6 +39,37 @@ pub struct Config {
     pub notifications: Notifications,
     pub visuals: Visuals,
     pub idle: Idle,
+    pub engine: EngineChoice,
+}
+
+/// Which Engine plays (D51); read when the Daemon starts.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default)]
+pub struct EngineChoice {
+    pub kind: EngineKind,
+    /// the Spotify app's Connect device name; empty: this computer's name
+    pub device: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EngineKind {
+    /// this OS's own: Soloist on Linux, the Spotify app on macOS
+    #[default]
+    Auto,
+    Soloist,
+    SpotifyApp,
+}
+
+impl EngineKind {
+    /// What `Auto` means here.
+    pub fn resolved(self) -> EngineKind {
+        match self {
+            EngineKind::Auto if cfg!(target_os = "macos") => EngineKind::SpotifyApp,
+            EngineKind::Auto => EngineKind::Soloist,
+            k => k,
+        }
+    }
 }
 
 /// The idle takeover: after `minutes` without input the black hole leaves its Pane and drifts over the screen.
@@ -111,7 +142,7 @@ pub enum GpuPower {
 /// What a fresh `config.toml` says.
 pub const DEFAULT_CONFIG: &str = r#"# Singularity settings. Changes apply as soon as you save this file.
 # (Don't change `schema`: Singularity uses it to update this file when settings change between versions.)
-schema = 2
+schema = 3
 
 [ui]
 # the design: "singularity", "event-horizon", "classic", "cockpit" or "terminal" (Ctrl+K → Design shows them)
@@ -140,6 +171,13 @@ unfocused_fps = 10
 # (Shift+I switches it off and on)
 enabled = true
 minutes = 3
+
+[engine]
+# what plays the music: "auto" (Soloist on Linux, the Spotify app on macOS), "soloist" or "spotify-app"
+# (the official Spotify app, started hidden and driven over Connect); restart the Daemon after changing it
+kind = "auto"
+# the Spotify app's name in device pickers; empty: this computer's name
+device = ""
 "#;
 
 /// What a fresh `keys.toml` says.
@@ -162,7 +200,7 @@ preset = "standard"
 pub type Migration = fn(&mut DocumentMut);
 
 /// `config.toml`'s migrations: entry `i` takes schema `i + 1` to `i + 2`.
-pub const CONFIG_MIGRATIONS: &[Migration] = &[add_tint_art];
+pub const CONFIG_MIGRATIONS: &[Migration] = &[add_tint_art, add_engine];
 
 /// 1 → 2: `ui.tint_art` (#33) appears at the end of `[ui]`, with its comment, so it can be found.
 fn add_tint_art(doc: &mut DocumentMut) {
@@ -173,6 +211,17 @@ fn add_tint_art(doc: &mut DocumentMut) {
     let mut key = toml_edit::Key::new("tint_art");
     key.leaf_decor_mut().set_prefix("# covers and the black hole in the theme's colours, for themes that tint (Cockpit's and Terminal's); false: real colours\n");
     ui.insert_formatted(&key, toml_edit::value(true));
+}
+
+/// 2 → 3: `[engine]` (#65) appears at the end, as a fresh file has it.
+fn add_engine(doc: &mut DocumentMut) {
+    if doc.contains_key("engine") {
+        return;
+    }
+    let fresh: DocumentMut = DEFAULT_CONFIG.parse().expect("the default config parses");
+    let mut engine = fresh["engine"].as_table().expect("[engine] in the default file").clone();
+    engine.decor_mut().set_prefix("\n");
+    doc.insert("engine", Item::Table(engine));
 }
 
 /// Bring `doc` up to `target` with `migrations`. Returns whether anything changed; a document from a newer
@@ -363,6 +412,7 @@ pub const SETTINGS: &[(&str, Kind)] = &[
     ("visuals.unfocused_fps", Kind::Number { min: 1.0, max: 30.0, step: 1.0, whole: true }),
     ("idle.enabled", Kind::Toggle),
     ("idle.minutes", Kind::Number { min: 0.5, max: 120.0, step: 0.5, whole: false }),
+    ("engine.kind", Kind::Choice(&["auto", "soloist", "spotify-app"])),
 ];
 
 /// One row of the Settings page: a setting as the file has it (or its default, if the file leaves it out).
@@ -557,8 +607,22 @@ minutes = 3
         let r = parse::<Config>("config.toml", mine, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert!(r.value.ui.tint_art && r.value.ui.design == "cockpit");
         assert!(r.migrated.unwrap().contains("design = \"cockpit\" # mine\n# covers"));
-        let off = parse::<Config>("config.toml", "schema = 2\n[ui]\ntint_art = false\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        let off = parse::<Config>("config.toml", "schema = 3\n[ui]\ntint_art = false\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert!(!off.value.ui.tint_art && off.migrated.is_none());
+    }
+
+    #[test]
+    fn a_schema_2_config_gains_the_engine_section() {
+        let mine = "schema = 2\n\n[idle]\n# never\nenabled = false\n";
+        let r = parse::<Config>("config.toml", mine, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        assert!(r.problems.is_empty(), "{:?}", r.problems);
+        let text = r.migrated.unwrap();
+        assert!(text.starts_with("schema = 3\n\n[idle]\n# never\nenabled = false\n\n[engine]\n# what plays the music"), "{text}");
+        assert_eq!((r.value.engine.kind, r.value.idle.enabled), (EngineKind::Auto, false));
+        // an [engine] of the user's own is left as it is
+        let theirs = parse::<Config>("config.toml", "schema = 2\n[engine]\nkind = \"soloist\"\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        assert_eq!((theirs.value.engine.kind, theirs.migrated.as_deref()), (EngineKind::Soloist, Some("schema = 3\n[engine]\nkind = \"soloist\"\n")));
+        assert_eq!(EngineKind::Auto.resolved(), if cfg!(target_os = "macos") { EngineKind::SpotifyApp } else { EngineKind::Soloist });
     }
 
     #[test]

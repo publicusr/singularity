@@ -717,3 +717,18 @@ flowchart LR
   live round trip (`--test secrets_live -- --ignored`: one `account=probe` item written, replaced, removed; run on the
   owner's Mac, gone afterwards). pty: the health view says "owner-only file (no Keychain found)" with
   `SINGULARITY_NO_KEYRING=1`.
+- **#65 AppEngine 🔄** (2026-10-19, built; live check pending): `daemon/src/app_engine.rs`. The Engine's Connect
+  identity (`engine::Identity`: name, `via_connect`, version) replaces the hard-wired `soloist::DEVICE_NAME` in the
+  Catalogue. The AppEngine finds and starts the app hidden (`open -gj -a Spotify`; Linux: `spotify --minimized`) and
+  forwards every command as `CatCmd::Engine`; the Catalogue sends them to the app's device (TogglePlay from the
+  cluster's state; resuming while the app isn't active moves the account's last playback onto it; `add_to_queue`
+  endpoint). Every cluster update also becomes Engine events (`app_engine_events`): Ready (active or not) / Failed
+  ("isn't on Spotify Connect") by the device's presence, and while it's active its playback with `next_tracks` as the
+  queue (≤ 50, bare, named by the Catalogue; delimiters dropped) and `playback_quality` as the stream (hifi → FLAC
+  16-bit, hifi24 → 24-bit, else Vorbis at the level's bitrate); idle when nothing plays anywhere. The Hub handles
+  them with the same code as Soloist's (`on_engine_event`), and now passes on Engine status and stream only when
+  they change. Another device's playback still has no queue (edits always go to this computer's device). The tap is
+  off for the app until #67. `config.toml` schema 3 adds `[engine] kind = "auto" | "soloist" | "spotify-app"`
+  (auto: Soloist on Linux, the app on macOS; read at Daemon start, on the Settings page) and `device`. Tests:
+  migration 2 → 3, a Daemon with the AppEngine and a stand-in Catalogue (commands arrive as `CatCmd::Engine`, a
+  cluster's playback/queue/quality reach the Client), status from the cluster (present, active, idle, missing).

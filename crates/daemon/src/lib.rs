@@ -1,6 +1,7 @@
 //! `singularityd`: owns playback (Engine), later the Catalogue session, the audio tap and local data.
 //! Clients talk to it over the protocol in `singularity-proto` (ADR-0003).
 
+pub mod app_engine;
 pub mod backup;
 pub mod catalogue;
 pub mod connect;
@@ -175,58 +176,72 @@ async fn run_engine(engine: Box<dyn Engine>, hub: Arc<Hub>, mut commands: mpsc::
     loop {
         tokio::select! {
             ev = events.recv() => match ev {
-                Some(EngineEvent::Playback(mut state)) => {
-                    let missing = fill_queue(&hub, &mut state).await;
-                    if !missing.is_empty()
-                        && let Some(c) = &hub.catalogue
-                    {
-                        let _ = c.send(CatCmd::Describe(missing)).await;
-                    }
-                    *hub.engine_playback.lock().await = state.clone();
-                    // while another device plays, Clients follow that one
-                    if hub.remote.lock().await.is_none() {
-                        *hub.playback.lock().await = state.clone();
-                        let _ = hub.events.send(Event::Playback(state));
-                    }
-                }
-                Some(EngineEvent::Status(status)) => {
-                    *hub.engine_status.lock().await = Some(status.clone());
-                    let _ = hub.events.send(Event::Engine(status));
-                }
-                Some(EngineEvent::Stream(info)) => {
-                    *hub.stream.lock().await = Some(info.clone());
-                    let _ = hub.events.send(Event::Stream(info));
-                }
-                Some(EngineEvent::Delivery(d)) => {
-                    *hub.delivery.lock().await = Some(d.clone());
-                    let _ = hub.events.send(Event::Delivery(d));
-                }
-                Some(EngineEvent::Error(message)) => {
-                    let _ = hub.events.send(Event::Error { message });
-                }
-                Some(EngineEvent::Notice(message)) => {
-                    let _ = hub.events.send(Event::Notice { message });
-                }
-                // the Engine restarted for an update: the context goes back on through Connect (position, paused),
-                // else the track alone through the Engine
-                Some(EngineEvent::Resume(r)) => match &hub.catalogue {
-                    Some(c) => {
-                        let _ = c.send(CatCmd::Resume(r)).await;
-                    }
-                    None => {
-                        let _ = engine_tx.send(Command::Play { uri: Some(r.track_uri) }).await;
-                        let _ = engine_tx.send(Command::Seek { position_ms: r.position_ms }).await;
-                        if r.paused {
-                            let _ = engine_tx.send(Command::Pause).await;
-                        }
-                    }
-                },
+                Some(ev) => on_engine_event(&hub, ev, &engine_tx).await,
                 None => break,
             },
             Some(cmd) = commands.recv() => {
                 let _ = engine_tx.send(cmd).await;
             }
         }
+    }
+}
+
+/// What the Engine reports (Soloist itself, or the Catalogue for the Spotify app, D51), into the shared state.
+async fn on_engine_event(hub: &Arc<Hub>, ev: EngineEvent, engine_tx: &mpsc::Sender<Command>) {
+    match ev {
+        EngineEvent::Playback(mut state) => {
+            let missing = fill_queue(hub, &mut state).await;
+            if !missing.is_empty()
+                && let Some(c) = &hub.catalogue
+            {
+                let _ = c.send(CatCmd::Describe(missing)).await;
+            }
+            *hub.engine_playback.lock().await = state.clone();
+            // while another device plays, Clients follow that one
+            if hub.remote.lock().await.is_none() {
+                *hub.playback.lock().await = state.clone();
+                let _ = hub.events.send(Event::Playback(state));
+            }
+        }
+        EngineEvent::Status(status) => {
+            // (the app's status comes with every Connect update: Clients hear only changes)
+            let mut current = hub.engine_status.lock().await;
+            if current.as_ref() != Some(&status) {
+                *current = Some(status.clone());
+                let _ = hub.events.send(Event::Engine(status));
+            }
+        }
+        EngineEvent::Stream(info) => {
+            let mut current = hub.stream.lock().await;
+            if current.as_ref() != Some(&info) {
+                *current = Some(info.clone());
+                let _ = hub.events.send(Event::Stream(info));
+            }
+        }
+        EngineEvent::Delivery(d) => {
+            *hub.delivery.lock().await = Some(d.clone());
+            let _ = hub.events.send(Event::Delivery(d));
+        }
+        EngineEvent::Error(message) => {
+            let _ = hub.events.send(Event::Error { message });
+        }
+        EngineEvent::Notice(message) => {
+            let _ = hub.events.send(Event::Notice { message });
+        }
+        // the Engine restarted for an update: the context goes back on through Connect (position, paused),
+        // else the track alone through the Engine
+        EngineEvent::Resume(r) => match &hub.catalogue {
+            Some(c) => {
+                let _ = c.send(CatCmd::Resume(r)).await;
+            }
+            None => {
+                let _ = engine_tx.send(Command::Play { uri: Some(r.track_uri) }).await;
+                let _ = engine_tx.send(Command::Seek { position_ms: r.position_ms }).await;
+                if r.paused {
+                    let _ = engine_tx.send(Command::Pause).await;
+                }
+            }
+        },
     }
 }
 
@@ -431,6 +446,7 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
             CatEvent::EpisodeShow { episode, show } => {
                 let _ = hub.events.send(Event::EpisodeShow { episode, show });
             }
+            CatEvent::Engine(e) => on_engine_event(&hub, e, &hub.commands).await,
             CatEvent::ToEngine(cmd) => {
                 let _ = hub.commands.send(cmd).await;
             }

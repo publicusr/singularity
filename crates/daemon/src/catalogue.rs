@@ -11,8 +11,9 @@ use librespot_core::{authentication::Credentials, cache::Cache, config::SessionC
 use librespot_oauth::DeviceAuthClientBuilder;
 use serde_json::{Value, json};
 use crate::connect::{ConnectRemote, QueueEdit};
+use crate::engine::Identity;
 use crate::library;
-use singularity_proto::{Card, CatalogueStatus, Command, HomeFeed, Library, Shelf, TrackPage};
+use singularity_proto::{Card, CatalogueStatus, Command, EngineStatus, HomeFeed, Library, Shelf, TrackPage};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use std::path::PathBuf;
@@ -71,6 +72,8 @@ pub enum CatCmd {
     EditPlaylist { uri: String, name: String, description: String },
     /// the Engine restarted (a Soloist update): start the context again where it was, on our device
     Resume(crate::engine::Resume),
+    /// a command for the Engine when it's the Spotify app (D51): sent to its Connect device
+    Engine(Command),
     /// one raw private-API query, answered on `reply` (the library backup, one request at a time)
     Query { op: String, vars: Value, reply: tokio::sync::oneshot::Sender<anyhow::Result<Value>> },
 }
@@ -107,6 +110,8 @@ pub enum CatEvent {
     Moved { playlist: String, uids: Vec<String>, ok: bool },
     /// the show an episode belongs to (#59)
     EpisodeShow { episode: String, show: singularity_proto::Link },
+    /// what the Engine does, when it's the Spotify app (D51): read from the Connect cluster
+    Engine(crate::engine::EngineEvent),
     Error(String),
 }
 
@@ -129,15 +134,18 @@ impl Dirs {
     }
 }
 
-pub fn spawn(dirs: Dirs) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
+/// The Catalogue, for an Engine that is `engine` on Connect.
+pub fn spawn(dirs: Dirs, engine: Identity) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
     let (cmd_tx, cmd_rx) = mpsc::channel(16);
     let (ev_tx, ev_rx) = mpsc::channel(64);
-    tokio::spawn(run(dirs, cmd_rx, ev_tx, cmd_tx.clone()));
+    tokio::spawn(run(dirs, engine, cmd_rx, ev_tx, cmd_tx.clone()));
     (cmd_tx, ev_rx)
 }
 
 struct State {
     dirs: Dirs,
+    /// this computer's Engine on Connect
+    engine: Identity,
     session: Option<Session>,
     registry: QueryRegistry,
     ev: mpsc::Sender<CatEvent>,
@@ -151,9 +159,9 @@ struct State {
     cluster: std::sync::Arc<std::sync::Mutex<Option<librespot_protocol::connect::Cluster>>>,
 }
 
-async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
+async fn run(dirs: Dirs, engine: Identity, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
     let registry = QueryRegistry::new(dirs.queries.clone());
-    let mut st = State { dirs, session: None, registry, ev, remote: None, tracks: HashMap::new(), described: HashMap::new(), lyrics: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default() };
+    let mut st = State { dirs, engine, session: None, registry, ev, remote: None, tracks: HashMap::new(), described: HashMap::new(), lyrics: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default() };
     // resume a previous login
     if saved_credentials(&st.dirs).is_some() {
         if st.connect(None).await {
@@ -188,6 +196,7 @@ async fn run(dirs: Dirs, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatE
             CatCmd::Transfer(id) => st.transfer(id).await,
             CatCmd::Resume(r) => st.resume(r).await,
             CatCmd::Remote(cmd) => st.remote_command(cmd).await,
+            CatCmd::Engine(cmd) => st.engine_command(cmd).await,
             CatCmd::SetSaved { uri, saved } => {
                 // the library changed: the sidebar and Liked Songs follow (Liked Songs from its next open)
                 if st.set_saved(uri.clone(), saved).await && !uri.starts_with("spotify:track:") {
@@ -400,7 +409,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                     }
                     v
                 }
-                CatCmd::Remote(_) => vec![],
+                CatCmd::Remote(_) | CatCmd::Engine(_) => vec![],
                 CatCmd::Query { op, vars, reply } => {
                     let _ = reply.send(fake_query(&op, &vars, &home));
                     vec![]
@@ -455,10 +464,43 @@ fn remote_cluster(c: &std::sync::Mutex<Option<librespot_protocol::connect::Clust
     c.lock().expect("cluster lock").clone().ok_or_else(|| anyhow::anyhow!("no Connect state yet"))
 }
 
-/// Tell the Daemon what a cluster says: the devices, and whether another device is the one playing.
-async fn emit_cluster(ev: &mpsc::Sender<CatEvent>, c: &librespot_protocol::connect::Cluster) {
-    let _ = ev.send(CatEvent::Devices(crate::connect::devices(c, crate::soloist::DEVICE_NAME))).await;
-    let _ = ev.send(CatEvent::Remote(crate::connect::remote_playback(c, crate::soloist::DEVICE_NAME, singularity_proto::now_ms()))).await;
+/// Tell the Daemon what a cluster says: the devices, and whether another device is the one playing. For the Spotify
+/// app as Engine (D51), also the Engine's own state: whether its device is there and active, what it plays, how well.
+async fn emit_cluster(ev: &mpsc::Sender<CatEvent>, c: &librespot_protocol::connect::Cluster, engine: &Identity) {
+    let now = singularity_proto::now_ms();
+    let _ = ev.send(CatEvent::Devices(crate::connect::devices(c, &engine.device_name))).await;
+    let _ = ev.send(CatEvent::Remote(crate::connect::remote_playback(c, &engine.device_name, now))).await;
+    if !engine.via_connect {
+        return;
+    }
+    for e in app_engine_events(c, engine, now) {
+        let _ = ev.send(CatEvent::Engine(e)).await;
+    }
+}
+
+/// The Spotify app's state as Engine events: its status (found on Connect? the active device?), and while it's the
+/// active device its playback and stream quality; idle while no device plays.
+pub fn app_engine_events(c: &librespot_protocol::connect::Cluster, engine: &Identity, now: u64) -> Vec<crate::engine::EngineEvent> {
+    use crate::engine::EngineEvent;
+    let name = &engine.device_name;
+    let present = c.device.values().any(|d| d.name == *name);
+    let active = c.device.get(&c.active_device_id).map(|d| d.name == *name);
+    let status = if present {
+        EngineStatus::Ready { device_name: name.clone(), active: active == Some(true), version: engine.version.clone(), expires_in_days: None }
+    } else {
+        EngineStatus::Failed { message: format!("\"{name}\" isn't on Spotify Connect: is the Spotify app running and logged in to this account?") }
+    };
+    let mut out = vec![EngineEvent::Status(status)];
+    match active {
+        Some(true) => {
+            out.extend(crate::connect::engine_playback(c, name, now).map(EngineEvent::Playback));
+            out.extend(crate::connect::stream_quality(c).map(EngineEvent::Stream));
+        }
+        // nothing plays anywhere: the app is idle too (another device playing is `Remote`)
+        None => out.push(EngineEvent::Playback(singularity_proto::PlaybackState { timestamp_ms: now, ..Default::default() })),
+        Some(false) => {}
+    }
+    out
 }
 
 /// The Engine, a phone and a speaker; `active` moves when transferred to.
@@ -918,20 +960,20 @@ impl State {
             let (remote, cluster, mut updates) = ConnectRemote::start(session.clone()).await?;
             self.remote = Some(remote);
             *self.cluster.lock().expect("cluster lock") = Some(cluster.clone());
-            emit_cluster(&self.ev, &cluster).await;
+            emit_cluster(&self.ev, &cluster, &self.engine).await;
             // the dealer pushes every change; keep the latest and tell the Daemon
-            let (latest, ev) = (self.cluster.clone(), self.ev.clone());
+            let (latest, ev, engine) = (self.cluster.clone(), self.ev.clone(), self.engine.clone());
             tokio::spawn(async move {
                 while let Some(u) = updates.next().await {
                     let Ok(u) = u else { continue };
                     let Some(c) = u.cluster.into_option() else { continue };
                     *latest.lock().expect("cluster lock") = Some(c.clone());
-                    emit_cluster(&ev, &c).await;
+                    emit_cluster(&ev, &c, &engine).await;
                 }
             });
         }
         let remote = self.remote.as_mut().expect("just started");
-        let to = remote.device_id(crate::soloist::DEVICE_NAME).await?;
+        let to = remote.device_id(&self.engine.device_name).await?;
         Ok((session, remote, to))
     }
 
@@ -1140,7 +1182,7 @@ impl State {
         }
         let c = self.cluster.lock().expect("cluster lock").clone();
         if let Some(c) = c {
-            emit_cluster(&self.ev, &c).await;
+            emit_cluster(&self.ev, &c, &self.engine).await;
         }
     }
 
@@ -1197,6 +1239,42 @@ impl State {
         .await;
         if let Err(e) = result {
             let _ = self.ev.send(CatEvent::Error(format!("Couldn't control the other device: {e}"))).await;
+        }
+    }
+
+    /// The Spotify app as Engine (D51): its commands go to its Connect device. Failures are reported, never handed
+    /// back to the Engine (that's where they came from).
+    async fn engine_command(&mut self, cmd: Command) {
+        let cluster = self.cluster.clone();
+        let result = async {
+            let (session, remote, to) = self.remote().await?;
+            let state = remote_cluster(&cluster).ok();
+            let ours = state.as_ref().is_some_and(|c| c.active_device_id == to);
+            let ps = state.as_ref().and_then(|c| c.player_state.as_ref());
+            let playing = ours && ps.is_some_and(|p| p.is_playing && !p.is_paused);
+            match cmd {
+                Command::SetSoloistKey { .. } => anyhow::bail!("the Spotify app plays without a Soloist key"),
+                Command::TogglePlay if playing => remote.control(&to, &Command::Pause).await,
+                // resume what the account played last, on this computer
+                Command::TogglePlay | Command::Play { uri: None } if !ours => match state.as_ref().filter(|_| ps.is_some_and(|p| p.track.is_some())) {
+                    Some(c) => remote.transfer(c, &to).await,
+                    None => anyhow::bail!("nothing to resume yet: play something from a list"),
+                },
+                Command::TogglePlay => remote.control(&to, &Command::Play { uri: None }).await,
+                Command::AddToQueue { uri } => remote.add_to_queue(&to, &uri).await,
+                Command::PlayFrom { context_uri, index, track_uri } => {
+                    let context = if context_uri == library::LIKED { format!("spotify:user:{}:collection", session.username()) } else { context_uri };
+                    remote.play_from(&to, &context, index, track_uri.as_deref()).await
+                }
+                other => remote.control(&to, &other).await,
+            }
+        }
+        .await;
+        if let Err(e) = result {
+            if let Some(r) = self.remote.as_mut() {
+                r.forget_ids();
+            }
+            let _ = self.ev.send(CatEvent::Error(format!("Spotify app: {e}"))).await;
         }
     }
 

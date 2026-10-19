@@ -141,6 +141,13 @@ impl ConnectRemote {
         Ok(())
     }
 
+    /// Put `uri` at the end of what's queued on device `to`.
+    pub async fn add_to_queue(&self, to: &str, uri: &str) -> anyhow::Result<()> {
+        let cmd = json!({ "endpoint": "add_to_queue", "track": { "uri": uri, "metadata": { "is_queued": "true" }, "provider": "queue" } });
+        self.session.spclient().send_player_command(to, cmd).await?;
+        Ok(())
+    }
+
     /// Start `context` at its `index`-th track on device `to`.
     pub async fn play_from(&self, to: &str, context: &str, index: u32, track_uri: Option<&str>) -> anyhow::Result<()> {
         let mut skip = json!({ "track_index": index });
@@ -196,11 +203,57 @@ pub fn devices(cluster: &Cluster, engine_name: &str) -> Vec<singularity_proto::D
 
 /// When another device is playing: its playback, as ours is shown. None when it's our Engine (or nothing).
 pub fn remote_playback(cluster: &Cluster, engine_name: &str, now_ms: u64) -> Option<singularity_proto::PlaybackState> {
-    use singularity_proto::{Item, PlayStatus, PlaybackState, RepeatMode};
     let active = cluster.device.get(&cluster.active_device_id)?;
-    if active.name == engine_name {
+    (active.name != engine_name).then(|| playback(cluster, now_ms)).flatten()
+}
+
+/// When our Engine is the Spotify app (D51) and it's the active device: its playback, with what plays next.
+/// (Another device's queue isn't shown: queue edits always go to this computer's device.)
+pub fn engine_playback(cluster: &Cluster, engine_name: &str, now_ms: u64) -> Option<singularity_proto::PlaybackState> {
+    let active = cluster.device.get(&cluster.active_device_id)?;
+    if active.name != engine_name {
         return None;
     }
+    let mut state = playback(cluster, now_ms)?;
+    let ps = cluster.player_state.as_ref()?;
+    state.queue = ps
+        .next_tracks
+        .iter()
+        .filter(|t| matches!(t.provider.as_str(), "queue" | "context" | "autoplay") && t.uri.starts_with("spotify:") && !t.uri.starts_with("spotify:delimiter"))
+        .take(QUEUE_SHOWN)
+        .map(|t| singularity_proto::QueueEntry {
+            // bare, like Soloist's: the Daemon fills in names from the Catalogue
+            item: singularity_proto::Item { uri: t.uri.clone(), ..Default::default() },
+            source: t.provider.clone(),
+            uid: t.uid.clone(),
+        })
+        .collect();
+    Some(state)
+}
+
+/// How many upcoming tracks of the app's queue are shown.
+const QUEUE_SHOWN: usize = 50;
+
+/// What the active device streams, from its `playback_quality` (the level only: Connect has no exact bitrate).
+pub fn stream_quality(cluster: &Cluster) -> Option<singularity_proto::StreamInfo> {
+    use librespot_protocol::player::BitrateLevel as L;
+    let q = cluster.player_state.as_ref()?.playback_quality.as_ref()?;
+    let (codec, bitrate, format) = match q.bitrate_level.enum_value_or_default() {
+        L::hifi24 => ("flac", 2_116_800, "24-bit"),
+        L::hifi => ("flac", 1_411_200, "16-bit"),
+        L::very_high => ("vorbis", 320_000, ""),
+        L::high => ("vorbis", 160_000, ""),
+        L::normal => ("vorbis", 96_000, ""),
+        L::low => ("vorbis", 24_000, ""),
+        _ => return None,
+    };
+    Some(singularity_proto::StreamInfo { codec: codec.into(), bitrate, average_bitrate: None, sample_rate: 44_100, sample_format: format.into() })
+}
+
+/// The active device's playback: the track, its position moved to now, the options. No queue.
+fn playback(cluster: &Cluster, now_ms: u64) -> Option<singularity_proto::PlaybackState> {
+    use singularity_proto::{Item, PlayStatus, PlaybackState, RepeatMode};
+    let active = cluster.device.get(&cluster.active_device_id)?;
     let ps = cluster.player_state.as_ref()?;
     let t = ps.track.as_ref()?;
     let md = |k: &str| t.metadata.get(k).cloned().filter(|v| !v.is_empty());
