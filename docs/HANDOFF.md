@@ -19,8 +19,9 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
   still flat on macOS) · #68 notifications and Now Playing (from the Daemon, so librespot gets media keys too) · #69
   LaunchAgent and install. **`docs/PLATFORMS.md` is the exact status, feature by feature** (re-audited 2026-10-19).
   Then #62 (audiobooks), batch 7, and last of all batch 9: the codebase audit (#71, SPEC "Batch 9").
-  Open questions to the owner: D53 (lossless without the app on macOS: spike Soloist in a VM?), D54 (macOS default
-  Engine).
+  librespot is the macOS default (D54). D53 (Soloist in a VM) spiked: `research/2026-10-soloist-vm-spike.md`; the
+  next step needs the owner's Soloist key in the Mac's Keychain and one pairing from the phone. Spike files (VM disk,
+  scripts `up.sh`/`down.sh`) were in the session scratchpad only; vfkit is installed from Homebrew.
   Visual demos judged: starfield, marquee, glow kept and finished (#44, `ambient.rs`).
 - Tests: **259 passing** on macOS (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`),
   `live_shapes` and `secrets_live`. On a Mac, `tools/check-linux.sh` type-checks the Linux build (it can't run Linux
