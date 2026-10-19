@@ -631,3 +631,7 @@ flowchart LR
   row with a cover (playlists, albums, artists, Liked Songs has none) shows it two cells wide (about square) where the
   glyph was; the glyph stays until the cover has arrived, and for folders. Pixel tier in kitty, half-blocks elsewhere
   (a 2×2 swatch). Names moved one cell right so rows line up. Covers are fetched only for rows in view.
+- **Queue wheel** (owner, 2026-10-19: smooth scrolling "does not work in queue"): the queue was the one list left
+  where the wheel jumped the view three lines and the next frame pulled it back to the highlight. Now it moves the
+  highlight one song per notch (Shift: a page) anywhere over the queue Pane, focuses it, and the list follows, as in
+  track lists and the library (#26). Unit test + pty `queue-wheel`.

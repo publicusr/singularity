@@ -1625,6 +1625,31 @@ mod tests {
     }
 
     #[test]
+    fn the_wheel_moves_the_queues_highlight_and_the_list_follows() {
+        use singularity_proto::{Item, QueueEntry};
+        let (mut app, _rx) = playing_app(200_000);
+        let e = |i: usize| QueueEntry { item: Item { uri: format!("spotify:track:{i}"), name: format!("Song {i}"), ..Default::default() }, source: if i < 5 { "queue" } else { "context" }.into(), uid: format!("u{i}") };
+        app.playback.queue = (0..120).map(e).collect();
+        render(&mut app, 160, 48);
+        let pane = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(s) if s == "queue").then_some(*r)).unwrap();
+        // over a heading, a row or "now playing": anywhere in the Pane
+        for _ in 0..7 {
+            mouse(&mut app, MouseEventKind::ScrollDown, pane.x as f64 + 3.5, pane.y + 1, false);
+        }
+        assert_eq!((app.queue_view.sel, app.focus.as_str()), (7, "queue"));
+        mouse(&mut app, MouseEventKind::ScrollUp, pane.x as f64 + 3.5, pane.y + 1, false);
+        assert_eq!(app.queue_view.sel, 6);
+        // Shift: a page; the list follows the highlight, which stays on screen
+        for _ in 0..4 {
+            app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: pane.x + 3, row: pane.y + 1, modifiers: KeyModifiers::SHIFT }, pane.x as f64 + 3.5, false);
+            render(&mut app, 160, 48);
+        }
+        let sel = app.queue_view.sel;
+        assert!(sel > 6 + 3 * app.queue_view.visible, "{sel}");
+        assert!(app.hits.iter().any(|(_, h)| *h == Hit::QueueRow(sel)), "the highlighted row is drawn");
+    }
+
+    #[test]
     fn track_rows_can_play_next_or_be_queued() {
         use singularity_proto::Command;
         let (mut app, mut rx) = library_app();

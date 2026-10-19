@@ -2404,9 +2404,12 @@ impl App {
                     self.lyrics_scroll = (self.lyrics_scroll as i64 - sign as i64 * 3).max(0) as usize;
                     return;
                 }
-                if matches!(&hit, Some(Hit::QueueRow(_))) || matches!(&hit, Some(Hit::Focus(s)) if s == "queue") {
-                    let lines = crate::queue::lines(self).len();
-                    self.queue_view.scroll(-sign * 3, lines);
+                // the queue, like the lists: the wheel moves the highlight (Shift: a page) and the list follows it
+                if pane.as_deref() == Some("queue") {
+                    self.focus = "queue".into();
+                    let n = self.playback.queue.len();
+                    let step = if coarse { self.queue_view.visible.max(1) as i64 } else { 1 };
+                    self.queue_view.move_sel(-sign * step, n);
                     return;
                 }
                 let over_home = matches!(&hit, Some(Hit::Card(_) | Hit::ShelfScroll(..))) || matches!(&hit, Some(Hit::Focus(s)) if s == "home");

@@ -25,10 +25,6 @@ impl QueueView {
     pub fn move_sel(&mut self, delta: i64, len: usize) {
         self.sel = (self.sel as i64 + delta).clamp(0, len.saturating_sub(1) as i64) as usize;
     }
-    pub fn scroll(&mut self, delta: i64, lines: usize) {
-        let max = lines.saturating_sub(self.visible.max(1));
-        self.top = (self.top as i64 + delta).clamp(0, max as i64) as usize;
-    }
 }
 
 /// A song being dragged: where it was, where it would land (an index into the queue as it would then be), and
