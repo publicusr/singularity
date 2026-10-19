@@ -8,17 +8,12 @@ fn location(account: &str, env: Option<&str>) -> String {
     if env.is_some_and(|v| std::env::var(v).is_ok_and(|k| !k.trim().is_empty())) {
         return format!("environment ({})", env.unwrap_or_default());
     }
-    let in_keyring = std::env::var_os("SINGULARITY_NO_KEYRING").is_none() && Command::new("secret-tool")
-        .args(["lookup", "service", "singularity", "account", account])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .is_ok_and(|o| o.status.success() && !o.stdout.is_empty());
-    if in_keyring {
+    // "keyring" means the OS's own store on either platform (the Client names it)
+    if crate::secrets::in_keyring(account).is_some() {
         return "keyring".into();
     }
     match crate::secrets::get(account) {
-        Some(_) => "owner-only file (no keyring found)".into(),
+        Some(_) => format!("owner-only file (no {} found)", crate::secrets::KEYRING),
         None => "missing".into(),
     }
 }

@@ -62,10 +62,10 @@ async fn store_key(key: String, ev_tx: &mpsc::Sender<EngineEvent>) {
     let key = key.trim().to_string();
     match tokio::task::spawn_blocking(move || crate::secrets::set("soloist", &key)).await {
         Ok(Ok(crate::secrets::Stored::Keyring)) => {
-            let _ = ev_tx.send(EngineEvent::Notice("Soloist key saved in your keyring".into())).await;
+            let _ = ev_tx.send(EngineEvent::Notice(format!("Soloist key saved in your {}", crate::secrets::KEYRING))).await;
         }
         Ok(Ok(crate::secrets::Stored::File(p))) => {
-            let _ = ev_tx.send(EngineEvent::Notice(format!("No keyring available: the key is in {} (owner-only)", p.display()))).await;
+            let _ = ev_tx.send(EngineEvent::Notice(format!("No {} available: the key is in {} (owner-only)", crate::secrets::KEYRING, p.display()))).await;
         }
         _ => {
             let _ = ev_tx.send(EngineEvent::Error("Couldn't store the Soloist key".into())).await;

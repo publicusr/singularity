@@ -12,7 +12,7 @@ Status: ✅ works · 🔨 ticket open · ➖ not needed there (the OS or the Eng
 |------|-------|-------|--------------|
 | Engine (ADR-0001, D51) | SoloistEngine: Soloist over its local WebSocket | AppEngine: Spotify.app started hidden, driven over Connect | 🔨 #65 |
 | AudioTap (D16) | PipeWire monitor of the Soloist stream (`parec`) | Core Audio process tap on Spotify.app (macOS 14.2+) | 🔨 #67 |
-| Secrets (D24) | Secret Service (`secret-tool`) | Keychain | 🔨 #64 |
+| Secrets (D24) | Secret Service (`secret-tool`) | Keychain (`/usr/bin/security`) | ✅ #64 |
 | OS media integration | MPRIS on D-Bus (media keys, KDE widget, `playerctl`) | Spotify.app's own Now Playing entry (media keys, Control Centre) | 🔨 #68 |
 | Track notifications | D-Bus notifications | macOS notifications | 🔨 #68 |
 | Daemon autostart | systemd user unit (`packaging/systemd/`) | LaunchAgent (`packaging/launchd/`) | 🔨 #69 |

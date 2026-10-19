@@ -12,6 +12,14 @@ use singularity_proto::{CatalogueStatus, EngineStatus, StreamInfo};
 pub const LOSSLESS_FIX: &str = "On your phone: Spotify → device picker → Singularity → Change quality settings → Lossless";
 pub const KEY_URL: &str = "https://developer.spotify.com/dashboard/soloist";
 
+/// What this OS calls its keyring (the Daemon reports "keyring" for either).
+const KEYRING: &str = if cfg!(target_os = "macos") { "Keychain" } else { "keyring" };
+
+/// Where a secret lives, as the health view says it.
+fn place(at: &str) -> String {
+    if at == "keyring" { KEYRING.into() } else { at.into() }
+}
+
 #[derive(Default)]
 pub struct Setup {
     /// the user closed the wizard this run (the palette's "Setup" reopens it)
@@ -105,7 +113,7 @@ pub fn draw_wizard(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
         Step::Key => {
             line(buf, &mut y, "1. Open this page, log in with your Premium account, and create a key:", th.s(th.fg));
             line(buf, &mut y, &format!("   {KEY_URL}"), th.s(th.accent2));
-            line(buf, &mut y, "2. Paste it here and press Enter (it goes to your keyring):", th.s(th.fg));
+            line(buf, &mut y, &format!("2. Paste it here and press Enter (it goes to your {KEYRING}):"), th.s(th.fg));
             let shown = if app.setup.key.is_empty() { "paste the key…".to_string() } else { "•".repeat(app.setup.key.chars().count().min(48)) };
             line(buf, &mut y, &format!("   › {shown}▏"), th.s(if app.setup.key.is_empty() { th.dim } else { th.accent }));
         }
@@ -261,7 +269,7 @@ fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
         None => ('!', "Engine", "no status yet".into()),
     });
     if let Some(h) = &app.health {
-        rows.push((if h.soloist_key == "keyring" || h.soloist_key.starts_with("environment") { '✓' } else if h.soloist_key == "missing" { '✗' } else { '!' }, "Soloist key", h.soloist_key.clone()));
+        rows.push((if h.soloist_key == "keyring" || h.soloist_key.starts_with("environment") { '✓' } else if h.soloist_key == "missing" { '✗' } else { '!' }, "Soloist key", place(&h.soloist_key)));
     }
     rows.push(match &app.catalogue {
         Some(CatalogueStatus::Ready { username, premium, .. }) => (if *premium { '✓' } else { '!' }, "Catalogue", format!("logged in as {username}{}", if *premium { " · Premium" } else { " · not Premium" })),
@@ -272,7 +280,7 @@ fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
         None => ('!', "Catalogue", "disabled in this Daemon".into()),
     });
     if let Some(h) = &app.health {
-        rows.push((if h.spotify_login == "keyring" { '✓' } else if h.spotify_login == "missing" { '!' } else { '!' }, "Spotify login", h.spotify_login.clone()));
+        rows.push((if h.spotify_login == "keyring" { '✓' } else if h.spotify_login == "missing" { '!' } else { '!' }, "Spotify login", place(&h.spotify_login)));
     }
     let net = match &app.catalogue {
         Some(CatalogueStatus::Ready { .. }) => ('✓', "Network", "Spotify reachable".to_string()),

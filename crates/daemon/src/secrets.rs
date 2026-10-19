@@ -1,5 +1,10 @@
-//! Secrets (spec D24, #5): the system keyring (Secret Service via `secret-tool`: KWallet, GNOME Keyring, KeePassXC…),
-//! with an owner-only file fallback that warns. Items: `service=singularity account=<name>` (`soloist`, `spotify`).
+//! Secrets (spec D24, #5, #64): the system keyring, with an owner-only file fallback that warns. Items:
+//! `service=singularity account=<name>` (`soloist`, `spotify`).
+//!
+//! - Linux: Secret Service via `secret-tool` (KWallet, GNOME Keyring, KeePassXC…)
+//! - macOS: the login Keychain via `/usr/bin/security`. Items it creates trust that (Apple-signed) tool, so a rebuilt
+//!   `singularityd` reads them without a Keychain prompt. Values go over stdin (`security -i`, hex), never on a
+//!   command line.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -13,6 +18,9 @@ pub enum Stored {
     File(PathBuf),
 }
 
+/// What this OS calls its keyring, for messages.
+pub const KEYRING: &str = if cfg!(target_os = "macos") { "Keychain" } else { "keyring" };
+
 fn fallback_dir() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".config")).join("singularity/secrets")
@@ -23,16 +31,17 @@ fn keyring() -> bool {
     std::env::var_os("SINGULARITY_NO_KEYRING").is_none()
 }
 
+/// The keyring's copy of a secret, if there is one.
+pub fn in_keyring(account: &str) -> Option<String> {
+    let o = keyring().then(|| store::lookup(account).stderr(Stdio::null()).output().ok()).flatten()?;
+    let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    (o.status.success() && !v.is_empty()).then_some(v)
+}
+
 /// Read a secret: keyring first, then the fallback file.
 pub fn get(account: &str) -> Option<String> {
-    let out = keyring()
-        .then(|| Command::new("secret-tool").args(["lookup", "service", "singularity", "account", account]).stderr(Stdio::null()).output().ok())
-        .flatten();
-    if let Some(o) = out {
-        let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        if o.status.success() && !v.is_empty() {
-            return Some(v);
-        }
+    if let Some(v) = in_keyring(account) {
+        return Some(v);
     }
     let v = std::fs::read_to_string(fallback_dir().join(account)).ok()?.trim().to_string();
     (!v.is_empty()).then_some(v)
@@ -40,22 +49,9 @@ pub fn get(account: &str) -> Option<String> {
 
 /// Store a secret in the keyring, or (if there is none) in an owner-only file.
 pub fn set(account: &str, value: &str) -> std::io::Result<Stored> {
-    let label = format!("Singularity: {account}");
-    let child = keyring().then(|| {
-        Command::new("secret-tool")
-            .args(["store", "--label", &label, "service", "singularity", "account", account])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-    });
-    if let Some(Ok(mut c)) = child {
-        // the value goes over stdin, never on a command line
-        let wrote = c.stdin.take().map(|mut s| s.write_all(value.as_bytes()).is_ok()).unwrap_or(false);
-        if wrote && c.wait().is_ok_and(|s| s.success()) && get(account).as_deref() == Some(value) {
-            let _ = std::fs::remove_file(fallback_dir().join(account));
-            return Ok(Stored::Keyring);
-        }
+    if keyring() && store::store(account, value) && in_keyring(account).as_deref() == Some(value) {
+        let _ = std::fs::remove_file(fallback_dir().join(account));
+        return Ok(Stored::Keyring);
     }
     write_private(&fallback_dir().join(account), value)?;
     Ok(Stored::File(fallback_dir().join(account)))
@@ -64,9 +60,72 @@ pub fn set(account: &str, value: &str) -> std::io::Result<Stored> {
 /// Remove a secret everywhere.
 pub fn clear(account: &str) {
     if keyring() {
-        let _ = Command::new("secret-tool").args(["clear", "service", "singularity", "account", account]).stderr(Stdio::null()).status();
+        let _ = store::remove(account).stdout(Stdio::null()).stderr(Stdio::null()).status();
     }
     let _ = std::fs::remove_file(fallback_dir().join(account));
+}
+
+/// Run `cmd` with `input` on its stdin; true if it took it and succeeded.
+fn feed(mut cmd: Command, input: &str) -> bool {
+    let Ok(mut c) = cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else { return false };
+    let wrote = c.stdin.take().map(|mut s| s.write_all(input.as_bytes()).is_ok()).unwrap_or(false);
+    wrote && c.wait().is_ok_and(|s| s.success())
+}
+
+#[cfg(not(target_os = "macos"))]
+mod store {
+    use std::process::Command;
+
+    pub fn lookup(account: &str) -> Command {
+        let mut c = Command::new("secret-tool");
+        c.args(["lookup", "service", "singularity", "account", account]);
+        c
+    }
+
+    /// The value goes over stdin, never on a command line.
+    pub fn store(account: &str, value: &str) -> bool {
+        let mut c = Command::new("secret-tool");
+        c.args(["store", "--label", &format!("Singularity: {account}"), "service", "singularity", "account", account]);
+        super::feed(c, value)
+    }
+
+    pub fn remove(account: &str) -> Command {
+        let mut c = Command::new("secret-tool");
+        c.args(["clear", "service", "singularity", "account", account]);
+        c
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod store {
+    use std::process::Command;
+
+    const SECURITY: &str = "/usr/bin/security";
+
+    pub fn lookup(account: &str) -> Command {
+        let mut c = Command::new(SECURITY);
+        c.args(["find-generic-password", "-s", "singularity", "-a", account, "-w"]);
+        c
+    }
+
+    /// `security -i` reads the command from stdin, the value hex-encoded (`-X`): never on a command line, no quoting.
+    /// `-U` replaces an existing item.
+    pub fn store(account: &str, value: &str) -> bool {
+        if !account.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return false;
+        }
+        let hex: String = value.bytes().map(|b| format!("{b:02x}")).collect();
+        let line = format!("add-generic-password -U -s singularity -a {account} -l \"Singularity: {account}\" -X {hex}\n");
+        let mut c = Command::new(SECURITY);
+        c.arg("-i");
+        super::feed(c, &line)
+    }
+
+    pub fn remove(account: &str) -> Command {
+        let mut c = Command::new(SECURITY);
+        c.args(["delete-generic-password", "-s", "singularity", "-a", account]);
+        c
+    }
 }
 
 /// Write `value` to `path`, readable by its owner only (directory 0700, file 0600).

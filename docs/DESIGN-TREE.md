@@ -708,3 +708,12 @@ flowchart LR
   "loudne…" since #43), `search`/`config` failed on the Client having quit already, and `mini` had gone with the
   waveform scenario (D46). On macOS every scenario but `mpris` (D-Bus) passes, plus `stale_test` and `update_test`.
   `tools/check-linux.sh` type-checks the Linux build from a Mac (zig as the C toolchain): clean.
+- **#64 Keychain ✅** (2026-10-19): `secrets.rs` keeps one interface with a store per OS: `secret-tool` on Linux
+  (unchanged), `/usr/bin/security` on macOS. The macOS store goes through Apple's tool on purpose: items it creates
+  trust that signed binary, so a rebuilt (ad-hoc signed) `singularityd` reads them without a Keychain prompt, which a
+  Keychain crate linked into `singularityd` would not. Values reach it over stdin (`security -i`, hex via `-X`), never on
+  a command line; `-U` replaces in place. The protocol keeps `"keyring"` for "in the OS store"; the Client and the
+  Daemon's messages say "Keychain" on macOS. Tests: the owner-only fallback (own test binary, env set), and an opt-in
+  live round trip (`--test secrets_live -- --ignored`: one `account=probe` item written, replaced, removed; run on the
+  owner's Mac, gone afterwards). pty: the health view says "owner-only file (no Keychain found)" with
+  `SINGULARITY_NO_KEYRING=1`.
