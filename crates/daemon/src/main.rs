@@ -5,8 +5,34 @@ use singularityd::app_engine::AppEngine;
 use singularityd::librespot::LibrespotEngine;
 use singularityd::soloist::SoloistEngine;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() {
+    // macOS delivers media-key and Control Centre commands on the main thread's run loop (#68): the Daemon runs on
+    // another thread and the main thread serves those, until the Daemon ends the process
+    #[cfg(target_os = "macos")]
+    {
+        std::thread::spawn(|| std::process::exit(daemon()));
+        singularityd::nowplaying::main_thread();
+    }
+    #[cfg(not(target_os = "macos"))]
+    std::process::exit(daemon());
+}
+
+/// Run the Daemon; its exit code.
+fn daemon() -> i32 {
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("a tokio runtime");
+    let code = match rt.block_on(run()) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            1
+        }
+    };
+    // dropping the runtime drops the Engine task, and with it Soloist (kill_on_drop + PDEATHSIG)
+    rt.shutdown_timeout(std::time::Duration::from_secs(2));
+    code
+}
+
+async fn run() -> anyhow::Result<i32> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .with_writer(std::io::stderr)
@@ -14,14 +40,14 @@ async fn main() -> anyhow::Result<()> {
         .init();
     if std::env::args().any(|a| a == "--version" || a == "-V") {
         println!("singularityd {}", singularityd::VERSION);
-        return Ok(());
+        return Ok(0);
     }
     let path = singularityd::default_socket();
     let listener = match singularityd::bind(&path) {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
             eprintln!("singularityd is already running ({})", path.display());
-            return Ok(());
+            return Ok(0);
         }
         Err(e) => return Err(e.into()),
     };
@@ -94,21 +120,29 @@ async fn main() -> anyhow::Result<()> {
         None if fake => None,
         None => Some(singularityd::store::Store::default_dir()),
     };
+    // macOS: Now Playing, media keys and notifications (#68), for an Engine that plays from the Daemon (the Spotify app
+    // has its own Now Playing entry). SINGULARITY_NOWPLAYING=off: none; a fake Engine only with =on (tests, pty).
+    let now_playing = match std::env::var("SINGULARITY_NOWPLAYING").as_deref() {
+        _ if !cfg!(target_os = "macos") => None,
+        Ok("off") => None,
+        Ok("on") => Some(singularityd::nowplaying::Options { notify: notify.clone() }),
+        _ if fake || kind == Some(Kind::SpotifyApp) => None,
+        _ => Some(singularityd::nowplaying::Options { notify: notify.clone() }),
+    };
+    // MPRIS is D-Bus: Linux's (a macOS session has no session bus)
+    let mpris = mpris.filter(|_| !cfg!(target_os = "macos"));
     // config.toml: what the Daemon uses of it now, and again whenever it's saved
     tokio::spawn(follow_config(notify));
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = tokio::select! {
-        r = singularityd::serve_with(listener, engine, catalogue, tap, singularityd::Extras { mpris, store }) => r.map(Some),
+        r = singularityd::serve_with(listener, engine, catalogue, tap, singularityd::Extras { mpris, now_playing, store }) => r.map(Some),
         _ = tokio::signal::ctrl_c() => Ok(None),
         _ = term.recv() => Ok(None),
     };
-    // dropping the runtime drops the Engine task, and with it Soloist (kill_on_drop + PDEATHSIG)
     let _ = std::fs::remove_file(&path);
     tracing::info!("singularityd stopped");
-    if matches!(result, Ok(Some(singularityd::Served::Replaced))) {
-        std::process::exit(75); // EX_TEMPFAIL
-    }
-    result.map(|_| ())
+    // replaced by a newer build: EX_TEMPFAIL
+    result.map(|r| if matches!(r, Some(singularityd::Served::Replaced)) { 75 } else { 0 })
 }
 
 /// Apply `config.toml` (desktop notifications) and re-read it whenever it's saved.

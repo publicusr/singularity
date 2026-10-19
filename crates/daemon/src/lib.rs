@@ -11,6 +11,7 @@ pub mod health;
 pub mod library;
 pub mod lyrics;
 pub mod mpris;
+pub mod nowplaying;
 pub mod playlists;
 pub mod queries;
 pub mod secrets;
@@ -94,6 +95,8 @@ pub fn bind(path: &Path) -> std::io::Result<UnixListener> {
 pub struct Extras {
     /// MPRIS (and notifications) on a D-Bus
     pub mpris: Option<mpris::Options>,
+    /// Now Playing, media keys and notifications on macOS (#68)
+    pub now_playing: Option<nowplaying::Options>,
     /// the LocalStore's directory: the listening log and nightly library backups
     pub store: Option<PathBuf>,
 }
@@ -156,6 +159,13 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
     }
     if let Some(opts) = extras.mpris {
         tokio::spawn(mpris::run(hub.clone(), opts));
+    }
+    #[cfg(target_os = "macos")]
+    match extras.now_playing {
+        Some(opts) => {
+            tokio::spawn(nowplaying::run(hub.clone(), opts));
+        }
+        None => nowplaying::not_wanted(),
     }
     loop {
         let stream = tokio::select! {

@@ -785,3 +785,15 @@ flowchart LR
   the RAM it's given (192 MB VM → 199 MB footprint with Soloist up, 72 MB free inside); idle ~0 % CPU; PCM out of the
   VM to the Mac ~0.5 % CPU; Soloist's pairing endpoint reachable from the Mac through a forward. Unmeasured without
   the owner's key: lossless playback cost and pairing from the phone (a Bonjour proxy record).
+- **#68 Now Playing and notifications on macOS 🔶** (2026-10-19, built; the owner's media-key check pending): with
+  librespot the default (D54) there's no Spotify app to publish Now Playing, so the Daemon does
+  (`daemon/src/nowplaying.rs`, objc2-media-player): the Now Playing entry follows `Hub::playback` (title, artists,
+  album, duration, position + rate, playback state), and play/pause/toggle/stop/next/previous and Control Centre's
+  position drag become transport commands (`crate::transport`, as MPRIS's do). Apple delivers those on the main
+  thread's run loop, so on macOS `singularityd`'s main thread runs a CFRunLoop (kept alive by a daily timer) and
+  tokio runs on another thread, which ends the process with the Daemon's exit code. Not for the Spotify app as Engine
+  (its own entry would fight ours for the keys) or a fake Engine (`SINGULARITY_NOWPLAYING=on|off` overrides). Track
+  notifications: which changes are news is now shared with Linux (`nowplaying::TrackNews`, tested); macOS posts them
+  with `osascript` (title and body as arguments, never script text), without the cover. Smoke: start, a Play,
+  "already running", SIGTERM all exit cleanly; `stale_test` (replace an old Daemon) passes.
+

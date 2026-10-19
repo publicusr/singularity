@@ -42,7 +42,7 @@ async fn serve(hub: Arc<Hub>, opts: Options) -> zbus::Result<()> {
     let conn = builder.name(BUS_NAME)?.serve_at(PATH, Root)?.serve_at(PATH, Player { hub: hub.clone(), state })?.build().await?;
     tracing::info!("MPRIS: {BUS_NAME}");
     let player = conn.object_server().interface::<_, Player>(PATH).await?;
-    let mut notifier = Notifier { conn: conn.clone(), last_uri: None, id: 0, on: opts.notify.clone() };
+    let mut notifier = Notifier { conn: conn.clone(), news: Default::default(), id: 0, on: opts.notify.clone() };
     loop {
         match events.recv().await {
             Ok(Event::Playback(new)) => {
@@ -360,7 +360,7 @@ impl Player {
 /// Desktop notifications on track change (`org.freedesktop.Notifications`), each replacing the last.
 struct Notifier {
     conn: zbus::Connection,
-    last_uri: Option<String>,
+    news: crate::nowplaying::TrackNews,
     /// the notification to replace (0: none yet)
     id: u32,
     on: Arc<std::sync::atomic::AtomicBool>,
@@ -373,35 +373,20 @@ trait Notifications {
 }
 
 impl Notifier {
-    /// Notify once per new track, when it starts playing.
+    /// Notify once per new track, when it starts playing (which changes are news: shared with macOS).
     async fn track(&mut self, s: &PlaybackState) {
-        let Some(i) = s.item.as_ref().filter(|_| s.status == PlayStatus::Playing) else { return };
-        if self.last_uri.as_deref() == Some(i.uri.as_str()) {
-            return;
-        }
-        let first = self.last_uri.is_none();
-        self.last_uri = Some(i.uri.clone());
-        if !self.on.load(std::sync::atomic::Ordering::Relaxed) {
-            return;
-        }
-        if first && s.position_at(singularity_proto::now_ms()) > 5000 {
-            return; // the Daemon just started into a playing track: not news
-        }
-        let body = match &i.album {
-            Some(a) if !a.is_empty() => format!("{} — {a}", i.artists.join(", ")),
-            _ => i.artists.join(", "),
-        };
+        let Some(n) = self.news.news(s, self.on.load(std::sync::atomic::Ordering::Relaxed)) else { return };
         let mut hints = HashMap::new();
         hints.insert("desktop-entry", Value::from("singularity"));
         hints.insert("transient", Value::from(true));
-        if let Some(c) = &i.cover_url
+        if let Some(c) = &n.cover_url
             && let Some(path) = cached_cover(c).await
         {
             hints.insert("image-path", Value::from(format!("file://{}", path.display())));
         }
         let r = async {
             let proxy = NotificationsProxy::new(&self.conn).await?;
-            proxy.notify("Singularity", self.id, "media-playback-start", &i.name, &body, &[], hints, -1).await
+            proxy.notify("Singularity", self.id, "media-playback-start", &n.title, &n.body, &[], hints, -1).await
         };
         match r.await {
             Ok(id) => self.id = id,

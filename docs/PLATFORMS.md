@@ -34,8 +34,8 @@ asked librespot not to pursue it). The only other route is Soloist itself in a s
 | Lossless notice and fix (6, 26, 27) | ✅ | ✅ app (quality level from Connect, not the exact bitrate); librespot says "320 kbps, its best" | Stream Pane's exact bitrate: Soloist only (⚠️ the app doesn't report it) |
 | Home, search, library, pages, lyrics, devices, queue, playlists, podcasts, stats, Settings (7–25, 31–35, 68–80, 83) | ✅ | ✅ (shared code; pty scenarios pass on macOS) | — |
 | Download speed and stalls (#45) | ✅ Soloist | ⚠️ neither the app nor librespot reports it | inherent; noted in the Stream Pane |
-| Media keys, OS now-playing (28) | ✅ MPRIS | 🔶 app: its own Now Playing entry; ❌ librespot: nothing yet | #68 (Now Playing + remote commands from the Daemon, so it works for every Engine) |
-| Track notifications (29) | ✅ D-Bus | ❌ | #68 |
+| Media keys, OS now-playing (28) | ✅ MPRIS | 🔶 librespot: the Daemon's own Now Playing entry + remote commands (play/pause/next/previous/seek; built, awaits the owner's media keys); the app: its own entry | #68 (cover art in Now Playing still to do) |
+| Track notifications (29) | ✅ D-Bus, with the cover | 🔶 `osascript` notifications, no cover (a process without an app bundle can't post its own) | #68 |
 | Music survives closing the terminal (30) | ✅ | ✅ (own process group) | — |
 | Daemon starts at login | ✅ systemd user unit | ❌ | #69 (LaunchAgent; also the "Incompatible" message still names `systemctl`) |
 | **Audio Widgets react to the music (40): spectrum, loudness, VU, rain, scope, the hole's pulse** | ✅ Soloist (PipeWire); 🔶 app (its PipeWire stream); 🔶 librespot (in-process) | 🔶 **librespot: in-process, no permission needed**; ❌ **app: nothing yet, the Widgets stay flat** | #67 (Core Audio process tap on Spotify.app) |
@@ -56,8 +56,8 @@ asked librespot not to pursue it). The only other route is Soloist itself in a s
 | Engine (ADR-0001, D51, D52) | Soloist over its WebSocket; or the app / librespot | the app (started hidden), or librespot | see the Engines table |
 | AudioTap (D16) | `parec` on the Engine's PipeWire stream (Soloist's, or the app's); librespot in-process | librespot in-process; Core Audio process tap on Spotify.app | 🔨 #67 for the app |
 | Secrets (D24) | `secret-tool` | `/usr/bin/security` | ✅ #64 |
-| OS media integration | MPRIS on D-Bus | Now Playing / remote commands | 🔨 #68 |
-| Notifications | D-Bus | macOS notifications | 🔨 #68 |
+| OS media integration | MPRIS on D-Bus | Now Playing + remote commands (MediaPlayer framework; the main thread runs the run loop, tokio another thread) | 🔶 #68 |
+| Notifications | D-Bus | `osascript` | 🔶 #68 |
 | Autostart | systemd user unit | LaunchAgent | 🔨 #69 |
 | Process lookup | `/proc` | `proc_name`, libproc | ✅ |
 | Audio output name (health) | `pactl` (the Engine's stream → its sink) | cpal's default output device | ✅ |

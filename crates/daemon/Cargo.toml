@@ -35,5 +35,14 @@ zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 # the listening log (bundled SQLite: no system library needed)
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 
+# Now Playing, media keys and Control Centre on macOS (the counterpart of MPRIS, #68)
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSDictionary", "NSValue", "NSObject"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSImage"] }
+objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "MPNowPlayingInfoCenter", "MPMediaItem", "MPRemoteCommand", "MPRemoteCommandCenter", "MPRemoteCommandEvent"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "CFDate"] }
+
 [dev-dependencies]
 tempfile = "3"

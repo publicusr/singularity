@@ -15,9 +15,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
   keep the same features; OS code only behind the platform seams, tracked in **`docs/PLATFORMS.md`**. Tickets in build
   order: ~~#63 builds and tests green~~ ✅ · ~~#64 Keychain~~ ✅ · **#65 AppEngine (built; network-change fixes await the
   owner's re-check)** · ~~#66 setup and health per platform~~ ✅ · **#70 librespot Engine (D52; built, on Connect live,
-  playback awaits the owner)** · #67 AudioTap on Core Audio (the app's audio: the only reason the audio Widgets are
-  still flat on macOS) · #68 notifications and Now Playing (from the Daemon, so librespot gets media keys too) · #69
-  LaunchAgent and install. **`docs/PLATFORMS.md` is the exact status, feature by feature** (re-audited 2026-10-19).
+  playback awaits the owner)** · **#68 Now Playing, media keys, notifications (built; owner's check pending)** · #69 LaunchAgent and install · #67
+  AudioTap on Core Audio (only for the Spotify app as Engine now that librespot is the default). **`docs/PLATFORMS.md` is the exact status, feature by feature** (re-audited 2026-10-19).
   Then #62 (audiobooks), batch 7, and last of all batch 9: the codebase audit (#71, SPEC "Batch 9").
   librespot is the macOS default (D54). D53 (Soloist in a VM) spiked: `research/2026-10-soloist-vm-spike.md`; the
   next step needs the owner's Soloist key in the Mac's Keychain and one pairing from the phone. Spike files (VM disk,
@@ -104,7 +103,8 @@ kitty images as kitty does (under/over cell backgrounds, judged by colour). `con
 Daemon never listens to the owner's Soloist), `SINGULARITY_DBUS=<address>|off` (MPRIS bus; fake-Engine Daemons stay
 off the session bus unless asked), plus the older `SINGULARITY_CPU`, `SINGULARITY_PIXEL`, `SINGULARITY_PIXEL_MOUSE`,
 `SINGULARITY_NO_KEYRING`, `SINGULARITY_SOCKET`. #23: `SINGULARITY_DATA=<dir>|off` (LocalStore; fake-Engine Daemons
-keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SHUTDOWN` (#25 tests), `SINGULARITY_BELOW_BG=1|0` (#41: kitty's under-background layer), `SINGULARITY_FAKE_STALLS=1` (#45: the fake Engine starves), and `XDG_DOWNLOAD_DIR` decides where exports go. #65/#66: `SINGULARITY_ENGINE=soloist|spotify-app|librespot` (overrides `[engine] kind`), `SINGULARITY_START_APP=0` (the AppEngine never looks for or starts the real app: tests). `SINGULARITY_NOTIFY` is gone (now `notifications.track_change`).
+keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SHUTDOWN` (#25 tests), `SINGULARITY_BELOW_BG=1|0` (#41: kitty's under-background layer), `SINGULARITY_FAKE_STALLS=1` (#45: the fake Engine starves), and `XDG_DOWNLOAD_DIR` decides where exports go. #65/#66: `SINGULARITY_ENGINE=soloist|spotify-app|librespot` (overrides `[engine] kind`), `SINGULARITY_START_APP=0` (the AppEngine never looks for or starts the real app: tests). #68:
+`SINGULARITY_NOWPLAYING=on|off` (macOS Now Playing; off by default for a fake Engine). `SINGULARITY_NOTIFY` is gone (now `notifications.track_change`).
 
 ## Then
 
