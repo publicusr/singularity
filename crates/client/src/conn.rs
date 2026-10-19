@@ -119,7 +119,23 @@ async fn let_go(path: &std::path::Path, tries: u32) -> bool {
 
 /// Is process `pid` a `singularityd` (its binary may have been replaced on disk: "singularityd (deleted)")?
 fn is_daemon(pid: i32) -> bool {
-    std::fs::read_link(format!("/proc/{pid}/exe")).ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().starts_with("singularityd"))).unwrap_or(false)
+    exe_name(pid).is_some_and(|n| n.starts_with("singularityd"))
+}
+
+/// The file name of the binary process `pid` runs (Linux: `/proc/<pid>/exe`).
+#[cfg(target_os = "linux")]
+fn exe_name(pid: i32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok()?.file_name().map(|n| n.to_string_lossy().into_owned())
+}
+
+/// The name process `pid` was started under (macOS: `proc_name`; `proc_pidpath` fails once the binary is deleted,
+/// which is the case after a rebuild).
+#[cfg(target_os = "macos")]
+fn exe_name(pid: i32) -> Option<String> {
+    let mut buf = [0u8; 64];
+    // SAFETY: the buffer is as long as we say; proc_name writes at most that much
+    let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
 }
 
 /// SIGTERM the Daemon `pid`, SIGKILL if it's still there 2 s later. Anything that isn't a singularityd is left alone.
@@ -178,10 +194,17 @@ mod tests {
     #[tokio::test]
     async fn only_a_singularityd_is_stopped() {
         let dir = tempfile::tempdir().unwrap();
-        // a stand-in Daemon that ignores everything but signals: `sleep`, under the Daemon's name
+        // a stand-in Daemon that ignores everything but signals: this test binary waiting, under the Daemon's name
+        // (not a copy of /bin/sleep: macOS kills copies of its own signed binaries)
         let fake = dir.path().join("singularityd");
-        std::fs::copy("/bin/sleep", &fake).unwrap();
-        let mut d = std::process::Command::new(&fake).arg("60").spawn().unwrap();
+        std::fs::copy(std::env::current_exe().unwrap(), &fake).unwrap();
+        let mut d = std::process::Command::new(&fake)
+            .args(["--ignored", "--exact", "conn::tests::stand_in_waits", "--quiet"])
+            .env("SINGULARITY_STAND_IN", "1")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
         let mut other = std::process::Command::new("/bin/sleep").arg("60").spawn().unwrap();
         // its binary replaced on disk, as after a rebuild
         std::fs::remove_file(&fake).unwrap();
@@ -192,5 +215,14 @@ mod tests {
         assert!(d.wait().unwrap().code().is_none(), "stopped by a signal");
         other.kill().unwrap();
         other.wait().unwrap();
+    }
+
+    /// The stand-in above: waits for a signal when asked to (`SINGULARITY_STAND_IN=1`), else passes at once.
+    #[test]
+    #[ignore]
+    fn stand_in_waits() {
+        if std::env::var_os("SINGULARITY_STAND_IN").is_some() {
+            std::thread::sleep(Duration::from_secs(60));
+        }
     }
 }

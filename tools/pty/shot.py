@@ -10,8 +10,24 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
 BIN = f"{ROOT}/target/debug"
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
-BRAILLE = ImageFont.truetype("/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf", 16)
-FONT = ImageFont.truetype("/usr/share/fonts/nerd-fonts/DejaVuSansMono/DejaVuSansMNerdFontMono-Regular.ttf", 16)
+
+
+def first_font(*paths):
+    """The first of these fonts that exists (Linux paths first, then macOS's)."""
+    for p in paths:
+        p = os.path.expanduser(p)
+        if os.path.exists(p):
+            return ImageFont.truetype(p, 16)
+    raise SystemExit(f"none of these fonts is installed: {paths}")
+
+
+BRAILLE = first_font("/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf", "/System/Library/Fonts/Apple Braille.ttf")
+FONT = first_font("/usr/share/fonts/nerd-fonts/DejaVuSansMono/DejaVuSansMNerdFontMono-Regular.ttf",
+                  "~/Library/Fonts/DejaVuSansMNerdFontMono-Regular.ttf", "~/Library/Fonts/HackNerdFontMono-Regular.ttf",
+                  "/System/Library/Fonts/Menlo.ttc")
+# test sockets (short paths) go here: $XDG_RUNTIME_DIR on Linux, an owner-only dir in /tmp where there is none (macOS)
+RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/sgl-{os.getuid()}"
+os.makedirs(RUNTIME, mode=0o700, exist_ok=True)
 
 
 class Term:
@@ -99,7 +115,13 @@ class Term:
                 self.placed.clear()
 
     def send(self, b, wait=0.15):
-        os.write(self.fd, b)
+        try:
+            os.write(self.fd, b)
+        except OSError:
+            # the Client has quit (Esc with nothing open quits too): the closing keys of a scenario have nothing to do
+            if os.waitpid(self.pid, os.WNOHANG) != (0, 0):
+                return
+            raise
         self.pump(wait)
 
     def text(self):
@@ -172,7 +194,8 @@ def home(t, out):
     t.pump(0.6)
     t.shot(f"{out}/1-scrolled.png")
     for _ in range(12):
-        if t.find("Recommended Stations"):
+        # the shelf's covers on screen too, not just its heading at the bottom edge
+        if (f := t.find("Recommended Stations")) and f[1] <= hy + 12:
             break
         mouse(t, 65, hx + 5, hy + 3)
         t.pump(0.2)
@@ -310,8 +333,8 @@ def like(t, out):
     rx, ry = t.find("Fake Track 003")
     mouse(t, 2, rx + 2, ry, wait=0.4)  # right-click
     t.shot(f"{out}/3-menu.png")
-    t.send(b"\x1b[B" * 3, 0.1)
-    t.send(b"\r", 0.8)
+    mx, my = t.find("Remove from Liked Songs")  # by name: the menu grew (Add to playlist…, #53)
+    mouse(t, 0, mx + 1, my); mouse(t, 0, mx + 1, my, release=True, wait=0.8)
     t.shot(f"{out}/4-removed.png")
     ax, ay = t.find("Nova Drift")
     mouse(t, 0, ax + 1, ay); mouse(t, 0, ax + 1, ay, release=True, wait=0.8)
@@ -325,8 +348,8 @@ def like(t, out):
 def private_bus(out):
     """A private D-Bus without service activation, so playerctl and the Daemon never touch the desktop's bus."""
     conf = f"{out}/bus.conf"
-    # socket paths must be short: under $XDG_RUNTIME_DIR, removed with the bus
-    sockdir = f"{os.environ['XDG_RUNTIME_DIR']}/sgl-bus-{os.getpid()}"
+    # socket paths must be short: under RUNTIME, removed with the bus
+    sockdir = f"{RUNTIME}/sgl-bus-{os.getpid()}"
     os.makedirs(sockdir, mode=0o700, exist_ok=True)
     with open(conf, "w") as f:
         f.write(f"""<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
@@ -936,6 +959,16 @@ def designs(t, out):
     t.send(b"q", 0.5)
 
 
+def mini(t, out):
+    """#47: a tiny terminal is a mini-player; play, then show it. (Restored: it went with the waveform scenario, D46.)"""
+    t.pump(1.0)
+    t.send(b" ", 2.5)
+    t.shot(f"{out}/0-mini.png")
+    print("\n".join(l.rstrip() for l in t.screen.display))
+    t.send(b" ", 0.3)
+    t.send(b"q", 0.5)
+
+
 def layouts(t, out, env):
     """#19: swap Widgets (v, ◂ ▸), drag a divider, save the layout, and find it again in a new Client."""
     t.pump(1.0)
@@ -943,7 +976,7 @@ def layouts(t, out, env):
     x, y = t.find("fft")
     mouse(t, 0, x + 1, y + 3); mouse(t, 0, x + 1, y + 3, release=True, wait=0.3)  # focus the fft Pane
     t.send(b"v", 0.6)  # fft → levels
-    lx, ly = t.find("loudness")
+    lx, ly = t.find("loudne")  # the title is cut short ("loudne…") since the arrows moved into it (#43)
     row = t.screen.display[ly]
     sx = row.index("▸", lx)
     mouse(t, 0, sx, ly); mouse(t, 0, sx, ly, release=True, wait=0.6)  # loudness → next free one
@@ -976,7 +1009,7 @@ def layouts(t, out, env):
 def main():
     scenario, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
-    sock = f"{os.environ['XDG_RUNTIME_DIR']}/sgl-{os.getpid()}.sock"
+    sock = f"{RUNTIME}/sgl-{os.getpid()}.sock"
     env = dict(os.environ, SINGULARITY_SOCKET=sock, TERM="xterm-256color", COLORTERM="truecolor",
                # scratch config and state: test runs never write the owner's files
                XDG_CONFIG_HOME=f"{os.path.abspath(out)}/config", XDG_STATE_HOME=f"{os.path.abspath(out)}/state",
@@ -1200,7 +1233,7 @@ def main():
         if bus:
             bus.terminate()
             bus.wait(3)
-            shutil.rmtree(f"{os.environ['XDG_RUNTIME_DIR']}/sgl-bus-{os.getpid()}", ignore_errors=True)
+            shutil.rmtree(f"{RUNTIME}/sgl-bus-{os.getpid()}", ignore_errors=True)
 
 
 if __name__ == "__main__":

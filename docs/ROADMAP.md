@@ -12,7 +12,7 @@ usable, not just infrastructure.
 | 4. Eye candy ✅ | Visual engine, black hole, spectrum, album art, lyrics, layout presets | LARP preset works and stays within its CPU budget |
 | 5. Personalisation | Theme gallery + picker, album-adaptive theme, settings screen, keymap config | Everything configurable in-app and in files |
 | 6. Polish | Stats widgets, notifications, MPRIS, idle mode, mini-player, health check, podcasts | Owner stops opening the official app |
-| 7. macOS | Engine = hidden Spotify app over Connect, Core Audio tap, Keychain, LaunchAgent | Same daily-driver bar on the M2 Air |
+| 7. macOS (now, D48) | Engine = hidden Spotify app over Connect, Core Audio tap, Keychain, LaunchAgent; parity with Linux (D49, `docs/PLATFORMS.md`) | Same daily-driver bar on the M2 Air |
 
 Phase 1 comes before any UI work on purpose. If the Soloist or catalogue spike fails, the whole
 architecture changes, and it is better to learn that in a day than after a month of UI.
@@ -28,3 +28,7 @@ Done from round 1: #25 stale Daemon, #26 wheel, #27 Home by lines, #28 back/forw
 Batch 2 done (2026-10-18): #46 waveform seek bar (removed again, D46), #47 mini-player, #49 ♥ on every row, #50 album song into the queue;
 #48 mouse buttons dropped (D45). Also #45 (slow-connection notice) and owner rounds 2–3 (#38–#44). Batch 3,
 playlist editing (D32, D40): tickets #51–#56; #51 create/delete, #52 edit details, #53 Add to playlist…, #54 remove, #55 reorder, #56 covers done: batch 3 complete. Batch 4 (Settings screen): #57 Settings page, #58 keys tab: batch 4 complete. Batch 5 dropped (D47). Next: batch 6 (podcasts and audiobooks). Waveform removed again (D46).
+
+**macOS (2026-10-19, D48–D51):** pulled forward while the owner works on the M2 Air. Tickets in build order: #63 builds
+and tests green, #64 Keychain, #65 AppEngine (Spotify.app over Connect), #66 setup and health per platform, #67 AudioTap
+on Core Audio, #68 notifications and Now Playing, #69 LaunchAgent and install. Then #62 (audiobooks) and batch 7.

@@ -14,6 +14,11 @@ cargo build --release
 ./target/release/singularity        # starts the Daemon (singularityd) automatically
 ```
 
+Linux and macOS are both supported, with the same features (`docs/PLATFORMS.md` tracks the macOS work, #63–#69).
+On macOS: Rust from rustup (`brew install rustup && rustup default stable`), and Spotify.app installed; until #65
+lands, macOS runs with `singularityd --fake-engine` only. Developing on a Mac, `tools/check-linux.sh` type-checks
+the Linux build.
+
 After a rebuild, the next Client notices the running Daemon is older than `target/release/singularityd` and replaces
 it by itself ("Updating singularityd…"; music pauses for a second while Soloist restarts).
 
@@ -54,6 +59,7 @@ it by itself ("Updating singularityd…"; music pauses for a second while Solois
 | [docs/adr/](docs/adr/) | Hard-to-reverse decisions: Soloist Engine, private-API Catalogue, Daemon + Client, GPU visuals |
 | [docs/research/2026-10-private-api-risk.md](docs/research/2026-10-private-api-risk.md) | How risky the private API is for a one-person client |
 | [docs/research/2026-10-macos.md](docs/research/2026-10-macos.md) | How macOS support works (official app as Engine) |
+| [docs/PLATFORMS.md](docs/PLATFORMS.md) | Linux/macOS parity: every platform seam and its status |
 | [docs/research/2026-10-free-tiling.md](docs/research/2026-10-free-tiling.md) | What fully free tiling would take |
 | [spikes/soloist-control/](spikes/soloist-control/) | Spike 1: run, pair, control and tap Soloist (walkthrough inside) |
 | [prototypes/design-directions/](prototypes/design-directions/) | Five runnable design directions with a GPU black hole (`cargo run --release`) |

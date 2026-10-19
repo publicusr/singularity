@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shot
 
 out = os.path.abspath(sys.argv[1]); os.makedirs(out, exist_ok=True)
-sock = f"{os.environ['XDG_RUNTIME_DIR']}/sgl-st-{os.getpid()}.sock"
+sock = f"{shot.RUNTIME}/sgl-st-{os.getpid()}.sock"
 env = dict(os.environ, SINGULARITY_SOCKET=sock, TERM="xterm-256color", COLORTERM="truecolor", SINGULARITY_NO_KEYRING="1",
            SINGULARITY_TAP="off", SINGULARITY_DBUS="off", SINGULARITY_DATA="off", SINGULARITY_SOLOIST_CDN="http://127.0.0.1:9",
            XDG_DATA_HOME=f"{out}/data", XDG_CONFIG_HOME=f"{out}/config", XDG_CACHE_HOME=f"{out}/cache", XDG_STATE_HOME=f"{out}/state")
@@ -17,6 +17,9 @@ def peer_pid():
     s = socket.socket(socket.AF_UNIX)
     try:
         s.connect(sock)
+        if sys.platform == "darwin":
+            # macOS: getsockopt(SOL_LOCAL = 0, LOCAL_PEERPID = 2)
+            return struct.unpack("i", s.getsockopt(0, 2, 4))[0]
         return struct.unpack("3i", s.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[0]
     except OSError:
         return None

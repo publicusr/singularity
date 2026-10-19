@@ -15,4 +15,7 @@
   building on them.
 - Never commit secrets (Soloist API key, tokens).
 - Verify user-visible changes in a pseudo-terminal (pyte + PIL screenshots) before closing a ticket.
-- Only kill processes you started; test sockets go in `$XDG_RUNTIME_DIR/sgl-*` (Unix socket paths must be short).
+- Only kill processes you started; test sockets go in `$XDG_RUNTIME_DIR/sgl-*`, on macOS
+  `/tmp/sgl-<uid>/` (Unix socket paths must be short).
+- Linux and macOS have the same features (D49): OS-specific code only behind the platform seams in `docs/PLATFORMS.md`.
+  On a Mac, `tools/check-linux.sh` type-checks the Linux build; run it before committing.

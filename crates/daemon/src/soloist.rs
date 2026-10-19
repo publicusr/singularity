@@ -355,7 +355,8 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     // Soloist must never outlive the Daemon, even if the Daemon is SIGKILLed: ask the kernel to
-    // SIGTERM it when its parent dies.
+    // SIGTERM it when its parent dies. (Linux-only, like Soloist itself.)
+    #[cfg(target_os = "linux")]
     unsafe {
         cmd.pre_exec(|| {
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);

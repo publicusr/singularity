@@ -57,7 +57,7 @@ so it cannot be settled by talking)
 | D35 | Podcasts scope | D14 | settled | Show pages + episodes, play/resume, played marks, saved shows in the sidebar, search. Audiobooks / video / downloads: feasibility looked up. |
 | D36 | More Visuals | D8 | settled | Demos (`client/src/demos.rs`) judged in round 2: keep starfield, marquee, glow (#44 finishes them); drop up next (it cuts song names). |
 | D37 | Free tiling | D18 | settled | Build it (batch 7), remove it if the owner doesn't like it. |
-| D38 | macOS | D10, D25 | settled | Last; started when the owner has the Mac ready. |
+| D38 | macOS | D10, D25 | settled | Last; started when the owner has the Mac ready. Pulled forward by D48. |
 | D39 | Stats ranking | D31 | settled | By minutes (play counts alongside); calendar periods (week from Monday, month, year, all time). |
 | D40 | Playlist covers | D32 | settled | In batch 3: a path or an image dropped on the terminal, previewed, cropped square, ≤ 256 KB JPEG, uploaded the web player's way. |
 | D41 | Podcast extras | D35 | settled | Audiobooks in batch 6 if Soloist plays chapters (checked first, else dropped and reported); video podcasts as audio; downloads never. Demos as in-app Widgets (D36); spec for all of v1.x now, tickets per batch. |
@@ -67,6 +67,10 @@ so it cannot be settled by talking)
 | D45 | Mouse back/forward buttons (#48) | D34 | settled | Dropped (owner): it needed a vendored crossterm or our own input parser; ← → in the main Pane's title do the job. |
 | D46 | Waveform seek bar (#46) | D30 | settled | Removed (owner): the plain seek bar looks cleaner; the audio Widgets already show loudness. |
 | D47 | Album-adaptive theme (batch 5) | D30 | settled | Dropped (owner, 2026-10-19): they like the theming as it is. More Visuals were already done in #44, so batch 5 is gone; next is batch 6 (podcasts and audiobooks). |
+| D48 | When macOS is built | D38, D29 | settled | Now (owner, 2026-10-19: "I will be working on macos temporarily, the next step will be getting the TUI to run on macos"). Batch 8 goes before #62 (audiobooks) and batch 7 (free tiling); both stay planned. |
+| D49 | Platform parity | D10, D38 | settled | Owner (2026-10-19): "both the existing linux version and a separate, same functionality macos version, nothing exclusive to either if possible". One codebase; OS-specific code only behind the platform seams (Engine, AudioTap, Secrets, OS media integration, autostart, process lookup). Every feature works on both or has a row in `docs/PLATFORMS.md` saying why not. |
+| D50 | Paths on macOS | D49, D21 | settled (agent call, open to veto) | The same XDG-style paths as Linux (`~/.config/singularity`, `~/.local/share/…`, `~/.local/state/…`, `~/.cache/…`, the `XDG_*` variables respected), not `~/Library/…`: dotfile-friendly, one set of docs. Already what the code does. |
+| D51 | How the macOS Engine works | D25, D49 | settled (agent call, open to veto) | *AppEngine*: the Daemon starts Spotify.app hidden and drives its Connect device through ConnectRemote (play, transport, queue); its playback and queue come from the Connect cluster. Platform-neutral code (only starting the app is per-OS), so the Engine choice is `[engine] kind` in config.toml, default Soloist on Linux, the app on macOS. Needs the Catalogue login; librespot stays the fallback (D25). |
 
 ```mermaid
 flowchart LR
@@ -685,3 +689,22 @@ flowchart LR
   rows with their show as the (linked) artist. Under the Podcasts chip they list above the show cards: name, show,
   progress, minutes; double-click/Enter plays; the row menu (and an episode card's) has "Go to show", which opens
   the show at that episode. Tests: parser, App; pty `show` (chip step).
+- **Batch 8 pulled forward (D48–D51)** (owner, 2026-10-19, on the M2 Air for a while): "the next step will be getting
+  the TUI to run on macos", then "goal is to have both the existing linux version and a separate, same functionality
+  macos version, nothing exclusive to either if possible". First look on macOS 15.7 (Spotify.app 1.2.94 installed and
+  logged in): the workspace built after one fix (`prctl(PR_SET_PDEATHSIG)` is Linux-only), the Client ran in a pty
+  against a fake Daemon (Home, library, play, GPU visuals on Metal: "Apple M2"), and 2 of 254 tests failed (`/proc`
+  in the stale-Daemon check; a Settings test whose temp path is too long). Parity table: `docs/PLATFORMS.md`. Tickets
+  under spec issue #34 (story 86), in build order: #63 build and tests green, #64 Keychain, #65 AppEngine, #66 setup
+  and health per platform, #67 AudioTap on Core Audio, #68 notifications and Now Playing, #69 LaunchAgent and install.
+- **#63 macOS builds and tests green ✅** (2026-10-19): `prctl(PR_SET_PDEATHSIG)` is Linux-only (`cfg`); the stale-Daemon
+  check reads the process name with `proc_name` on macOS (`proc_pidpath` fails once a rebuild has deleted the binary,
+  which is exactly when it's needed; tokio's `peer_cred` already has the pid there). The #25 test's stand-in is now the
+  test binary itself, not a copy of `/bin/sleep` (macOS SIGKILLs copies of its own signed binaries, even re-signed).
+  A Settings test keeps its files in `/tmp` (macOS's temp path pushed the tab line's text off). The pty harness runs on
+  macOS: fonts found per OS, sockets in `/tmp/sgl-<uid>/` without `$XDG_RUNTIME_DIR`, `SO_PEERCRED` → `LOCAL_PEERPID`
+  in `stale_test.py`. Five scenarios had drifted on both platforms and are fixed: `home` clicked a shelf at the Pane's
+  bottom edge, `like` picked a menu item by position (the menu grew in #53), `layouts` looked for "loudness" (cut to
+  "loudne…" since #43), `search`/`config` failed on the Client having quit already, and `mini` had gone with the
+  waveform scenario (D46). On macOS every scenario but `mpris` (D-Bus) passes, plus `stale_test` and `update_test`.
+  `tools/check-linux.sh` type-checks the Linux build from a Mac (zig as the C toolchain): clean.

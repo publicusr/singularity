@@ -485,7 +485,8 @@ mod tests {
     }
 
     fn app_with_files() -> (App, tempfile::TempDir) {
-        let dir = tempfile::tempdir().unwrap();
+        // a short path, so the tab line fits it and what follows (macOS's temp dir is long)
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
         let mut app = App::new(None);
         app.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
         app.run(crate::app::Action::Settings);

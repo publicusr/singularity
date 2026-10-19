@@ -1,7 +1,7 @@
 # pty harness
 
 Drives the real `singularity` binary in a pseudo-terminal and screenshots it (pyte + PIL), with its own `singularityd`
-on a short test socket (`$XDG_RUNTIME_DIR/sgl-<pid>.sock`) and scratch config/state/data dirs under the output folder. It kills only what it started.
+on a short test socket (`$XDG_RUNTIME_DIR/sgl-<pid>.sock`; on macOS, which has no runtime dir, `/tmp/sgl-<uid>/`) and scratch config/state/data dirs under the output folder. It kills only what it started.
 
 ```sh
 cd tools/pty
@@ -26,6 +26,11 @@ under the text, as kitty does with z=-1, at pyte's cursor when the APC arrives, 
   tap, D-Bus or LocalStore, a dead CDN).
 - `ws.py '<json>' [secs]`: talk to Soloist's WebSocket directly (`WS=addr:port` overrides the port file). Only for
   deliberate, quiet live tests on the owner's player; restore volume afterwards.
+
+On macOS (#63) the same scenarios run, except `mpris` (needs `dbus-daemon` and `playerctl`). Fonts: DejaVu Sans Mono
+Nerd Font and Noto Sans Symbols 2 on Linux; on macOS a Nerd Font Mono in `~/Library/Fonts` (DejaVu or Hack), else
+Menlo, with Apple Braille for the braille. Terminal variables (`TERM_PROGRAM`, `KITTY_WINDOW_ID`, `GHOSTTY_*`) are
+removed from the Client's environment, so a run behaves the same whichever terminal starts it.
 
 Careful: a Client autostarts a *real* Daemon if none answers on its socket; always start the fake one first (the
 harness does). Never start a second real Daemon against the owner's Soloist state.

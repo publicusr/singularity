@@ -143,7 +143,8 @@ audio, and looks spectacular.
   queue; emits playback, queue, device and position events (position is an anchor plus speed, interpolated by the Client).
   - *SoloistEngine* (Linux): downloads Soloist from Spotify's CDN, starts it with the keyring-held key, connects to its
     local WebSocket, parses the build lifetime and auto-updates between tracks, reads codec/bitrate from its verbose log.
-  - *DesktopAppEngine* (macOS, D25): the hidden official Spotify app, controlled over Connect.
+  - *AppEngine* (macOS, D25, D51): the hidden official Spotify app, controlled over Connect through ConnectRemote; its
+    playback, queue and stream quality come from the Connect cluster. `[engine] kind` picks the Engine (default per OS).
   - Commands Soloist lacks (play-at-offset, queue removal, device quality) go through *ConnectRemote*.
 - **Catalogue** (ADR-0002): Home, search, library, entity pages, lyrics, library writes.
   - *PrivateCatalogue*: device-code login with Spotify's desktop client id, a librespot session (spotatui's maintained
@@ -184,6 +185,9 @@ audio, and looks spectacular.
 ### Platforms
 - Linux first (KDE/Wayland, kitty/Ghostty, PipeWire). macOS second (desktop app as Engine, Core Audio tap, Keychain,
   LaunchAgent). Never Windows.
+- Parity (D49): the same features on both; OS-specific code only behind the platform seams (Engine, AudioTap, Secrets,
+  OS media integration, autostart, process lookup). `docs/PLATFORMS.md` tracks every seam and every unavoidable gap.
+  Same paths on both (D50).
 
 ## Testing Decisions
 
@@ -221,7 +225,7 @@ audio, and looks spectacular.
 
 > From the v1.x grilling rounds (2026-10-18, DESIGN-TREE D29–D41). Facts: `research/2026-10-playlists-and-podcasts.md`.
 > Tickets are written per batch, just before it's built (Spotify's private details go stale), under spec issue #34. Order (D29): stats → unbuilt v1 items + polish → playlist editing → Settings screen → album-adaptive theme +
-> Visuals → podcasts and audiobooks → free tiling → macOS.
+> Visuals → podcasts and audiobooks → free tiling → macOS (pulled forward to after #61: D48).
 
 ## User stories
 
@@ -256,7 +260,8 @@ audio, and looks spectacular.
 
 ### Layout (batch 7, D37) and macOS (batch 8, D38)
 85. As a user, I want a free-tiling edit mode (split, close, swap Panes) on the existing layout tree, as a trial.
-86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready.
+86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready. Started 2026-10-19 (D48),
+    tickets #63–#69, parity rule D49.
 
 ## Implementation notes
 
