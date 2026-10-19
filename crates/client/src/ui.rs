@@ -331,6 +331,7 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         let title = match (slot.as_str(), &app.view, &app.artist) {
             ("home", _, _) if app.search.is_some() => "search".to_string(),
             ("home", _, _) if app.stats_view.is_some() => "stats".to_string(),
+            ("home", _, _) if app.settings_view.is_some() => "settings".to_string(),
             ("home", _, Some(a)) => a.name.clone(),
             ("home", Some(v), _) => v.title.clone(),
             // its title is the switch between artists and tracks
@@ -445,6 +446,10 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         }
         if slot == "home" && app.stats_view.is_some() {
             crate::stats::draw(f.buffer_mut(), inner, app, th);
+            continue;
+        }
+        if slot == "home" && app.settings_view.is_some() {
+            crate::settings::draw(f.buffer_mut(), inner, app, th);
             continue;
         }
         if slot == "home" && app.artist.is_some() {

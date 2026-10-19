@@ -338,6 +338,94 @@ pub fn load_keys(path: &Path) -> Read<Keys> {
     load(path, "keys.toml", DEFAULT_KEYS, &[], KEYS_SCHEMA)
 }
 
+/// How a setting is edited on the Settings page (#57).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Kind {
+    /// on or off
+    Toggle,
+    /// one of these strings
+    Choice(&'static [&'static str]),
+    /// one of a list the Client knows (designs, themes, saved layouts); "" is "the design's own"
+    Named,
+    /// a number in `min..=max`, stepped by `step`; `whole`: written as an integer
+    Number { min: f64, max: f64, step: f64, whole: bool },
+}
+
+/// Every setting the Settings page shows, in the file's order, and how it's edited.
+pub const SETTINGS: &[(&str, Kind)] = &[
+    ("ui.design", Kind::Named),
+    ("ui.theme", Kind::Named),
+    ("ui.transparent", Kind::Toggle),
+    ("ui.layout", Kind::Named),
+    ("ui.tint_art", Kind::Toggle),
+    ("notifications.track_change", Kind::Toggle),
+    ("visuals.gpu", Kind::Choice(&["low-power", "high-performance"])),
+    ("visuals.unfocused_fps", Kind::Number { min: 1.0, max: 30.0, step: 1.0, whole: true }),
+    ("idle.enabled", Kind::Toggle),
+    ("idle.minutes", Kind::Number { min: 0.5, max: 120.0, step: 0.5, whole: false }),
+];
+
+/// One row of the Settings page: a setting as the file has it (or its default, if the file leaves it out).
+#[derive(Debug, Clone)]
+pub struct Entry {
+    /// `visuals.gpu`
+    pub key: &'static str,
+    pub kind: Kind,
+    pub value: Value,
+    /// the comment above it in the file (the default file's, if the user's has none), without the `#`s
+    pub description: String,
+}
+
+impl Entry {
+    /// `visuals`
+    pub fn section(&self) -> &'static str {
+        self.key.split_once('.').map_or("", |(s, _)| s)
+    }
+    /// `gpu`
+    pub fn name(&self) -> &'static str {
+        self.key.split_once('.').map_or(self.key, |(_, n)| n)
+    }
+}
+
+/// The comment lines just above `dotted` in a document, joined into one line.
+fn comment_above(doc: &DocumentMut, dotted: &str) -> Option<String> {
+    let (table, key) = dotted.split_once('.')?;
+    let k = doc.get(table)?.as_table()?.key(key)?;
+    let raw = k.leaf_decor().prefix()?.as_str()?;
+    // the comment block right above the key (a blank line ends it)
+    let mut lines: Vec<&str> = vec![];
+    for l in raw.lines().rev() {
+        match l.trim().strip_prefix('#') {
+            Some(c) => lines.push(c.trim()),
+            None if lines.is_empty() => continue,
+            None => break,
+        }
+    }
+    lines.reverse();
+    let s = lines.join(" ");
+    (!s.is_empty()).then_some(s)
+}
+
+fn value_at(doc: &DocumentMut, dotted: &str) -> Option<Value> {
+    let (table, key) = dotted.split_once('.')?;
+    doc.get(table)?.as_table()?.get(key)?.as_value().cloned()
+}
+
+/// The Settings page's rows for `config.toml`'s text: each known setting, its value and description.
+pub fn entries(text: &str) -> Vec<Entry> {
+    let default: DocumentMut = DEFAULT_CONFIG.parse().expect("the default config parses");
+    let doc: DocumentMut = text.parse().unwrap_or_else(|_| default.clone());
+    SETTINGS
+        .iter()
+        .map(|&(key, kind)| {
+            let mut value = value_at(&doc, key).or_else(|| value_at(&default, key)).expect("every setting is in the default file");
+            value.decor_mut().clear();
+            let description = comment_above(&doc, key).or_else(|| comment_above(&default, key)).unwrap_or_default();
+            Entry { key, kind, value, description }
+        })
+        .collect()
+}
+
 /// Notices when a file was saved (polled: once a second is plenty for a human editing a file).
 #[derive(Debug)]
 pub struct Watched {
@@ -370,6 +458,30 @@ fn stamp(p: &Path) -> Option<(SystemTime, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_come_with_their_values_and_the_comments_above_them() {
+        let e = entries(DEFAULT_CONFIG);
+        assert_eq!(e.len(), SETTINGS.len());
+        let gpu = e.iter().find(|e| e.key == "visuals.gpu").unwrap();
+        assert_eq!((gpu.section(), gpu.name(), gpu.value.as_str()), ("visuals", "gpu", Some("low-power")));
+        assert!(gpu.description.starts_with("which graphics chip draws the black hole"), "{}", gpu.description);
+        // two comment lines become one; the first key of a table has its comment too
+        let idle = e.iter().find(|e| e.key == "idle.enabled").unwrap();
+        assert!(idle.description.contains("drifts over the screen; any key wakes it (Shift+I"), "{}", idle.description);
+        // the user's own comment wins; a setting left out of the file shows its default and the default's comment
+        let mine = "schema = 2\n[ui]\n# my words\ntransparent = true # tail\n";
+        let e = entries(mine);
+        let t = e.iter().find(|e| e.key == "ui.transparent").unwrap();
+        assert_eq!((t.description.as_str(), t.value.as_bool()), ("my words", Some(true)));
+        let fps = e.iter().find(|e| e.key == "visuals.unfocused_fps").unwrap();
+        assert_eq!(fps.value.as_integer(), Some(10));
+        assert!(fps.description.starts_with("frames per second"));
+        // every setting maps onto Config: the schema and the struct agree
+        for (key, _) in SETTINGS {
+            assert!(value_at(&DEFAULT_CONFIG.parse().unwrap(), key).is_some(), "{key} in the default file");
+        }
+    }
 
     #[test]
     fn the_default_files_parse_to_the_defaults() {

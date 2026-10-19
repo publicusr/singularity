@@ -71,6 +71,7 @@ pub enum Action {
     ClearQueue,
     Health,
     Stats,
+    Settings,
     ExportListening,
     DeleteListening,
     Setup,
@@ -82,7 +83,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 50] = [
+    pub const ALL: [Action; 51] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -125,6 +126,7 @@ impl Action {
         Action::ClearQueue,
         Action::Health,
         Action::Stats,
+        Action::Settings,
         Action::ExportListening,
         Action::DeleteListening,
         Action::Setup,
@@ -178,6 +180,7 @@ impl Action {
             Action::Devices => "Devices: play on another speaker or phone",
             Action::Health => "Health check (Engine, login, audio, stream quality)",
             Action::Stats => "Stats: your listening, a live Wrapped (top artists, tracks, albums)",
+            Action::Settings => "Settings: every setting in config.toml, explained and changeable",
             Action::ExportListening => "Export listening data (log + latest library backup, to Downloads)",
             Action::DeleteListening => "Delete listening data (the log and every library backup)…",
             Action::Setup => "Setup: key, pairing, login, audio check",
@@ -233,6 +236,7 @@ impl Action {
             Action::ClearQueue => "clear_queue",
             Action::Health => "health",
             Action::Stats => "stats",
+            Action::Settings => "settings",
             Action::ExportListening => "export_listening",
             Action::DeleteListening => "delete_listening",
             Action::Setup => "setup",
@@ -305,6 +309,10 @@ pub enum Hit {
     TopWeek(usize),
     /// the "top this week" Widget's title: artists ⇄ tracks
     TopWeekToggle,
+    /// a setting's row on the Settings page, by its place in `singularity_config::SETTINGS`
+    Setting(usize),
+    /// a setting's ◂ ▸
+    SettingStep(usize, i64),
 }
 
 /// Two clicks on the same row within this time play it.
@@ -379,6 +387,7 @@ pub enum Page {
     Artist { uri: String, name: String },
     Search,
     Stats,
+    Settings,
 }
 
 pub struct Menu {
@@ -463,6 +472,10 @@ pub struct App {
     search_kept: Option<crate::search::SearchView>,
     /// the Stats page, while it's open (#36)
     pub stats_view: Option<crate::stats::StatsView>,
+    pub settings_view: Option<crate::settings::SettingsView>,
+    /// `config.toml` as it is now (the Settings page is built from it), and what's wrong with it
+    pub config_text: String,
+    pub config_problems: Vec<String>,
     /// the period the Stats page last showed
     stats_period: singularity_proto::StatsPeriod,
     /// the Daemon's latest answer per period
@@ -579,6 +592,9 @@ impl App {
             search: None,
             search_kept: None,
             stats_view: None,
+            settings_view: None,
+            config_text: String::new(),
+            config_problems: vec![],
             stats_period: Default::default(),
             stats: Default::default(),
             top_week_tracks: false,
@@ -654,6 +670,7 @@ impl App {
         self.config_files = Some(ConfigFiles { config: singularity_config::Watched::new(cp), keys: singularity_config::Watched::new(kp), polled: Instant::now() });
         self.apply_config(c);
         self.apply_keys(k);
+        self.read_config_text();
     }
 
     /// A config as read: applied live, its problems shown.
@@ -667,8 +684,16 @@ impl App {
         let ui = r.value.ui.clone();
         self.config = r.value;
         self.apply_ui(&ui);
+        self.config_problems = r.problems.clone();
         if !r.problems.is_empty() {
             self.say(r.problems.join(" · "));
+        }
+    }
+
+    /// We wrote `config.toml` ourselves and apply it now: the watcher needn't notice (its toast would come twice).
+    pub fn config_written(&mut self) {
+        if let Some(f) = self.config_files.as_mut() {
+            f.config.changed();
         }
     }
 
@@ -693,6 +718,7 @@ impl App {
         let (cp, kp) = (f.config.path.clone(), f.keys.path.clone());
         if config {
             self.apply_config(singularity_config::load_config(&cp));
+            self.read_config_text();
         }
         if keys {
             self.apply_keys(singularity_config::load_keys(&kp));
@@ -720,6 +746,7 @@ impl App {
             || self.playlists.details.is_some()
             || self.playlists.adding.is_some()
             || self.cover_form.is_some()
+            || self.settings_typing()
             || self.view.as_ref().is_some_and(|v| v.filtering)
             || (self.search.is_some() && self.focus == "home")
     }
@@ -924,6 +951,7 @@ impl App {
             Action::Back => self.go_back(),
             Action::Search => self.navigate(Page::Search),
             Action::Stats => self.navigate(Page::Stats),
+            Action::Settings => self.navigate(Page::Settings),
             Action::Forward => self.go_forward(),
             Action::Filter => match self.view.as_mut() {
                 Some(v) => {
@@ -1089,6 +1117,9 @@ impl App {
         if self.focus == "home" && !shift && self.stats_view.is_some() && self.stats_key(k) {
             return;
         }
+        if self.focus == "home" && self.settings_view.is_some() && (self.settings_typing() || !shift) && self.settings_key(k) {
+            return;
+        }
         if self.focus == "home" && !shift && self.view.is_some() && self.tracks_key(k) {
             return;
         }
@@ -1096,7 +1127,7 @@ impl App {
             return;
         }
         // Esc on an artist or search page goes back, never quits
-        if (self.artist.is_some() || self.search.is_some() || self.stats_view.is_some()) && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
+        if (self.artist.is_some() || self.search.is_some() || self.stats_view.is_some() || self.settings_view.is_some()) && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
             return self.run(Action::Back);
         }
         if self.focus == "library" && !shift && self.side_key(k) {
@@ -1311,6 +1342,9 @@ impl App {
         if self.stats_view.is_some() {
             return Page::Stats;
         }
+        if self.settings_view.is_some() {
+            return Page::Settings;
+        }
         match &self.view {
             Some(v) => Page::List { uri: v.uri.clone(), title: v.title.clone(), subtitle: v.subtitle.clone() },
             None => Page::Home,
@@ -1349,6 +1383,7 @@ impl App {
         }
         self.artist = None;
         self.stats_view = None;
+        self.settings_view = None;
         if let Some(s) = self.search.take() {
             self.search_kept = Some(s);
         }
@@ -1359,6 +1394,10 @@ impl App {
             Page::Stats => {
                 self.stats_view = Some(crate::stats::StatsView { period: self.stats_period, ..Default::default() });
                 self.send(Command::GetStats { period: self.stats_period });
+            }
+            Page::Settings => {
+                self.read_config_text();
+                self.settings_view = Some(Default::default());
             }
             Page::List { uri, title, subtitle } => {
                 let v = self.list_views.remove(&uri).unwrap_or_else(|| {
@@ -2178,6 +2217,22 @@ impl App {
                         }
                     }
                     Some(Hit::SortCol(c)) => self.sort(c),
+                    Some(Hit::Setting(i)) => {
+                        self.focus = "home".into();
+                        if let Some(v) = self.settings_view.as_mut() {
+                            v.sel = i;
+                            v.typing = None;
+                        }
+                        self.settings_activate(i);
+                    }
+                    Some(Hit::SettingStep(i, d)) => {
+                        self.focus = "home".into();
+                        if let Some(v) = self.settings_view.as_mut() {
+                            v.sel = i;
+                            v.typing = None;
+                        }
+                        self.settings_step(i, d);
+                    }
                     Some(Hit::StatsPeriod(p)) => {
                         self.focus = "home".into();
                         self.stats_set_period(p);
@@ -2382,6 +2437,11 @@ impl App {
                             _ => self.feed_view().scroll_lines(-sign as i32 * 2),
                         }
                     }
+                    return;
+                }
+                if pane.as_deref() == Some("home") && self.settings_view.is_some() {
+                    self.focus = "home".into();
+                    self.settings_wheel(-sign, coarse);
                     return;
                 }
                 if pane.as_deref() == Some("home") && self.stats_view.is_some() {

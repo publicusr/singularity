@@ -9,10 +9,10 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - **v1 ✅** (spec issue #1, tickets #2–#24). Owner test rounds 1–3 done and fixed (#25–#33, #38–#45).
 - **v1.x in progress** (spec: SPEC.md "v1.x", stories 68–86; decisions DESIGN-TREE D29–D45; spec issue **#34**).
   Batches (D29): ~~1 stats~~ ✅ (#35–#37) · ~~2 unbuilt v1 items + polish~~ ✅ (#46 waveform, later removed (D46), #47 mini-player, #49 ♥ rows,
-  #50 album song into the queue; #48 mouse buttons dropped, D45) · ~~3 playlist editing~~ ✅ (#51–#56, owner-tested up to #55) · **4 Settings screen (next)** ·
+  #50 album song into the queue; #48 mouse buttons dropped, D45) · ~~3 playlist editing~~ ✅ (#51–#56, owner-tested up to #55) · **4 Settings screen (in progress: #57 ✅, #58 keys tab next)** ·
   5 album-adaptive theme + more Visuals · 6 podcasts and audiobooks · 7 free tiling (trial) · 8 macOS.
   Visual demos judged: starfield, marquee, glow kept and finished (#44, `ambient.rs`).
-- Tests: **240 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
+- Tests: **244 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
 - **No open bugs.** The waveform seek bar (#46) was removed again at the owner's call (D46).
 - Rule since round 2 (D43): every built-in Design keeps Home, library, queue and lyrics (a test enforces it).
 
@@ -61,7 +61,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `9ea047f` | fix | Add to playlist picker: the wheel moves its highlight (owner) |
 | `08d3734` | #56 ✅ | Change cover… / Remove cover (`client/src/cover.rs`): drop or type a path, square ≤ 256 KB JPEG preview, upload |
 | `25df5a4` | owner | Library sidebar: a miniature cover on every row that has one (`sidebar.rs`) |
-| (last) | owner | The wheel over the queue moves its highlight a song at a time, the list follows |
+| `65b5e50` | owner | The wheel over the queue moves its highlight a song at a time, the list follows |
+| (last) | #57 ✅ | Settings page from config.toml (`client/src/settings.rs`, `singularity_config::{SETTINGS, entries}`) |
 
 ## What exists in `crates/`
 
@@ -89,8 +90,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 - **Batch 3: playlist editing ✅** (#51–#56). The owner tested #51–#55 ("looks good"; one fix: the picker's wheel);
   After #56 they asked to see covers in the TUI: library miniatures added; both wait for their test, as does the queue wheel fix (owner-reported). Every write path has a mode in `examples/playlist_probe.rs` (scratch playlist,
   reverted): `--create-delete`, `--details`, `--add`, `--remove`, `--move`, `--cover <jpg>`.
-- **Next: batch 4, the Settings screen**: write its tickets under #34 first (SPEC v1.x stories, DESIGN-TREE), then
-  build one at a time as before.
+- **Batch 4, the Settings screen** (#57, #58): #57 done (Ctrl+K "settings"); **next: #58, the read-only keys tab**.
 - Then batches 5–8 in order; each gets tickets just before it's built.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
 
@@ -98,7 +98,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 
 `singularity` and `singularityd` are installed in `~/.cargo/bin` (on the owner's PATH) with
 `cargo install --locked --path crates/daemon` and `--path crates/client`. Reinstall both after each closed ticket so the
-owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after the queue wheel fix (2026-10-19).
+owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #57 (2026-10-19).
 
 ## Local state on the owner's machine (not in git)
 
@@ -113,7 +113,7 @@ A new Client replaces an outdated Daemon by itself (and, since #25, stops one th
 
 ## Waiting on the owner
 
-- Owner calls still standing (open to veto): Cockpit's listening Pane packs two days per cell when short; delete asks
+- Owner calls still standing (open to veto): Settings opens from Ctrl+K only (no key, no sidebar row); Cockpit's listening Pane packs two days per cell when short; delete asks
   again within 10 s; track notifications off by default; vim preset moves like to `f`; `_example.toml` theme skipped.
 - Soloist's real update path (restart into a new build, resume over Connect) has only run against the stand-in; the
   first real one happens when Spotify publishes a build (Daemon log: "restarting Soloist into the new build").

@@ -497,6 +497,36 @@ def stalls(t, out):
     t.send(b"q", 0.5)
 
 
+def settings(t, out, env):
+    """#57: the Settings page from config.toml: a click flips a setting, → steps the design, a typed number, an edit
+    made in the file shows on the page; the file keeps its comments."""
+    cfg = f"{env['XDG_CONFIG_HOME']}/singularity/config.toml"
+    t.pump(1.0)
+    t.send(b"\x0b", 0.3); t.send(b"settings", 0.3); t.send(b"\r", 0.8)
+    t.shot(f"{out}/0-settings.png")
+    x, y = t.find("transparent")
+    mouse(t, 0, x + 1, y); mouse(t, 0, x + 1, y, release=True, wait=0.8)  # a click flips it
+    t.shot(f"{out}/1-transparent-on.png")
+    t.send(b"\x1b[A", 0.1); t.send(b"\x1b[A", 0.1)  # up to design
+    t.send(b"\x1b[C", 1.0)  # →: the next design
+    t.shot(f"{out}/2-next-design.png")
+    for _ in range(7):
+        t.send(b"\x1b[B", 0.1)  # down to unfocused_fps
+    t.send(b"\r", 0.2); t.send(b"24", 0.3)
+    t.shot(f"{out}/3-typing.png")
+    t.send(b"\r", 0.8)
+    text = open(cfg).read()
+    print("file:", [l for l in text.splitlines() if l.startswith(("design", "transparent", "unfocused_fps"))], "| comments kept:", text.count("#"))
+    # an edit in the file shows within a second
+    open(cfg, "w").write(text.replace("minutes = 3", "minutes = 7"))
+    t.pump(1.6)
+    t.send(b"\x1b[F", 0.4)  # End: the last setting
+    t.shot(f"{out}/4-edited-in-the-file.png")
+    print("page:", [l.strip()[:90] for l in t.screen.display if "minutes" in l or "unfocused_fps" in l][:3])
+    t.send(b"\x1b", 0.4)  # Esc: back
+    t.send(b"q", 0.5)
+
+
 def queue_wheel(t, out):
     """The wheel over the queue moves its highlight one song at a time and the list follows (as in the lists, #26)."""
     t.pump(1.0)
@@ -911,7 +941,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "settings", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "ambient", "popup") else "0"
@@ -964,6 +994,8 @@ def main():
             return popup(t, out)
         if scenario == "stalls":
             return stalls(t, out)
+        if scenario == "settings":
+            return settings(t, out, env)
         if scenario == "queue-wheel":
             return queue_wheel(t, out)
         if scenario == "queue-lift":

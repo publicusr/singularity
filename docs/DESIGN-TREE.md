@@ -635,3 +635,16 @@ flowchart LR
   where the wheel jumped the view three lines and the next frame pulled it back to the highlight. Now it moves the
   highlight one song per notch (Shift: a page) anywhere over the queue Pane, focuses it, and the list follows, as in
   track lists and the library (#26). Unit test + pty `queue-wheel`.
+- **Batch 4 tickets** (2026-10-19): #57 Settings page from config.toml, #58 a read-only keys tab (story 80, D33).
+- **#57 Settings page ✅** (2026-10-19): Ctrl+K "settings" opens it in the main Pane (back/forward as other pages;
+  no key of its own and no sidebar row yet: open to veto). Built from the file: `singularity_config::entries` reads
+  each setting of `SETTINGS` (key + `Kind`: Toggle, Choice, Named, Number with range/step) from `config.toml`, with
+  the comment block right above it as its description (the default file's when the user's has none; a setting left
+  out of the file shows at its default). Toggles flip on Enter/Space/click; lists (design, theme, layout, gpu) step
+  with ←/→ or ◂ ▸, wrapping, theme/layout offering "the design's own" (empty) plus built-in, `themes/` and
+  `layouts/`; numbers step (fps 1–30, idle minutes 0.5–120 by 0.5) or are typed after Enter (out of range: a toast
+  says the range). Each change is one `singularity_config::set` and applies at once (`config_written` keeps the
+  watcher from applying it twice); an edit in the file shows within a second. Problems in the file are listed at
+  the top of the page. Descriptions wrap to two lines under the value; the list never starts with a description's
+  tail (a first try looped between two such lines and froze the pty run; `scrolled` is now a pure function, tested
+  over every selection and height). Tests: config `entries` + App edits/apply/file-follow; pty `settings`.

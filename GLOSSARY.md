@@ -91,6 +91,12 @@ A page in the main Pane that sums up the listening log for a calendar period (th
 artists, tracks and albums by minutes, minutes and plays, streaks, a 24-hour clock. A live "Wrapped".
 _Avoid_: dashboard, analytics, Wrapped (Spotify's yearly thing)
 
+**Settings page**:
+A page in the main Pane built from `config.toml`: every setting with its value and the comment above it in the file
+as its description. A change is written into the file (its comments kept) and applies at once; an edit in the file
+shows on the page. The file is the one source of truth; the page is a view of it.
+_Avoid_: preferences, options, settings screen (the spec's old word)
+
 **Mini-player**:
 What Singularity becomes in a terminal too small for any layout (under 50×14): title, controls and progress only.
 _Avoid_: compact mode, tiny mode
