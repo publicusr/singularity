@@ -1,4 +1,4 @@
-# Session handoff (2026-10-18, end of the fourth session)
+# Session handoff (2026-10-19, sixth session)
 
 Read this first in a new session, then `CLAUDE.md`, `docs/SPEC.md` and `GLOSSARY.md`. Decisions and their history are
 in `docs/DESIGN-TREE.md` (round log at the bottom: one entry per ticket, with the details); verified facts about
@@ -9,10 +9,10 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - **v1 ✅** (spec issue #1, tickets #2–#24). Owner test rounds 1–3 done and fixed (#25–#33, #38–#45).
 - **v1.x in progress** (spec: SPEC.md "v1.x", stories 68–86; decisions DESIGN-TREE D29–D45; spec issue **#34**).
   Batches (D29): ~~1 stats~~ ✅ (#35–#37) · ~~2 unbuilt v1 items + polish~~ ✅ (#46 waveform, later removed (D46), #47 mini-player, #49 ♥ rows,
-  #50 album song into the queue; #48 mouse buttons dropped, D45) · ~~3 playlist editing~~ ✅ (#51–#56, owner-tested up to #55) · **4 Settings screen (in progress: #57 ✅, #58 keys tab next)** ·
-  5 album-adaptive theme + more Visuals · 6 podcasts and audiobooks · 7 free tiling (trial) · 8 macOS.
+  #50 album song into the queue; #48 mouse buttons dropped, D45) · ~~3 playlist editing~~ ✅ (#51–#56, owner-tested up to #55) · ~~4 Settings screen~~ ✅ (#57, #58) · **5 album-adaptive theme + more Visuals (next)** ·
+  6 podcasts and audiobooks · 7 free tiling (trial) · 8 macOS.
   Visual demos judged: starfield, marquee, glow kept and finished (#44, `ambient.rs`).
-- Tests: **244 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
+- Tests: **245 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
 - **No open bugs.** The waveform seek bar (#46) was removed again at the owner's call (D46).
 - Rule since round 2 (D43): every built-in Design keeps Home, library, queue and lyrics (a test enforces it).
 
@@ -62,16 +62,17 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `08d3734` | #56 ✅ | Change cover… / Remove cover (`client/src/cover.rs`): drop or type a path, square ≤ 256 KB JPEG preview, upload |
 | `25df5a4` | owner | Library sidebar: a miniature cover on every row that has one (`sidebar.rs`) |
 | `65b5e50` | owner | The wheel over the queue moves its highlight a song at a time, the list follows |
-| (last) | #57 ✅ | Settings page from config.toml (`client/src/settings.rs`, `singularity_config::{SETTINGS, entries}`) |
+| `f8251bb` | #57 ✅ | Settings page from config.toml (`client/src/settings.rs`, `singularity_config::{SETTINGS, entries}`) |
+| (last) | #58 ✅ | Settings: a read-only keys tab; batch 4 done |
 
 ## What exists in `crates/`
 
 | Crate | What it does now |
 |-------|------------------|
 | `proto` | Versioned length-prefixed JSON protocol. Events that carry a list must be struct variants (`Devices { devices }`, `Saved { entries }`). `Health` has `engine_build` (the Soloist build date). |
-| `config` (`singularity-config`, new) | `config.toml` / `keys.toml` under `~/.config/singularity/`: written with comments on first run, `config.toml` at `CONFIG_SCHEMA` 2 (`keys.toml` at `KEYS_SCHEMA` 1) + migration chain (`CONFIG_MIGRATIONS`: 1→2 adds `ui.tint_art`; `rename` keeps comments), `set` edits one value keeping the file, `Watched` notices saves (mtime+size, polled ~1 s), bad values → defaults + reported problems. Re-exports `toml_edit` (0.25, TOML 1.1). Sections: `[ui]` design/theme/transparent/layout/tint_art, `[notifications]` track_change, `[visuals]` gpu/unfocused_fps, `[idle]` enabled/minutes. |
+| `config` (`singularity-config`, new) | `config.toml` / `keys.toml` under `~/.config/singularity/`: written with comments on first run, `config.toml` at `CONFIG_SCHEMA` 2 (`keys.toml` at `KEYS_SCHEMA` 1) + migration chain (`CONFIG_MIGRATIONS`: 1→2 adds `ui.tint_art`; `rename` keeps comments), `set` edits one value keeping the file, `Watched` notices saves (mtime+size, polled ~1 s), bad values → defaults + reported problems. Re-exports `toml_edit` (0.25, TOML 1.1). Sections: `[ui]` design/theme/transparent/layout/tint_art, `[notifications]` track_change, `[visuals]` gpu/unfocused_fps, `[idle]` enabled/minutes. `SETTINGS` (key + `Kind`) and `entries(text)` feed the Settings page (#57): a new setting needs a row there too. |
 | `daemon` (`singularityd`) | Hub + socket; `transport()` routes player commands (Engine, or Connect while another device plays). `soloist.rs` SoloistEngine (+ `keep_current` updater, `quiet_moment`, `Exit::Update`, resume after restart). `update.rs` CDN check/stage/verify/install. `mpris.rs` MPRIS player + notifications. `catalogue.rs` (+ `SetSaved`/`CheckSaved`, `CatCmd::Resume`; the fake Catalogue keeps a saved set). `connect.rs` (`resume` = generalised transfer). `tap.rs`, `lyrics.rs`, `secrets.rs`, `health.rs`, `library.rs`. `main.rs` follows config.toml live (`follow_config`). `store.rs` LocalStore (listening log in SQLite, `Recorder`, summary, backups on disk, export, delete), `backup.rs` (nightly, paced `CatCmd::Query`, revision reuse); `serve_with(…, Extras { mpris, store })`. Stats: `Store::stats`, log schema 2, `backfill` of old plays' links. `Delivery` (Soloist's download speed + stalls, #45). |
-| `client` (`singularity`) | `app.rs` (state, input, actions, pages + history), `ui.rs` (draw, Pane titles, popups; `opaque_overlays` for kitty), `layout.rs` (split tree, `compute_shaped`: the well ≤ 4:3), `home.rs`, `tracks.rs` (lists, ♥ column), `artist.rs`, `search.rs`, `queue.rs` (drag: `preview`, `target`, `into_queue`), `lyrics.rs` (wrap), `stats.rs` (Stats page + "today"/"top this week" Widgets), `ambient.rs` (starfield, marquee, glow), `mini.rs` (mini-player), `saved.rs` (like/follow, `heart`, `want_saved`), `keymap.rs`, `design.rs`, `theme.rs` (Themes, `Tint`, `ramp_at`), `looks.rs`, `widgets.rs`, `layouts.rs` (Slot groups, saved layouts), `setup.rs` (wizard, health, stream Pane), `gfx.rs` (kitty: images under cell backgrounds in kitty), `visual/` (black hole CPU/GPU, well, idle). |
+| `client` (`singularity`) | `app.rs` (state, input, actions, pages + history), `ui.rs` (draw, Pane titles, popups; `opaque_overlays` for kitty), `layout.rs` (split tree, `compute_shaped`: the well ≤ 4:3), `home.rs`, `tracks.rs` (lists, ♥ column), `artist.rs`, `search.rs`, `queue.rs` (drag: `preview`, `target`, `into_queue`), `lyrics.rs` (wrap), `stats.rs` (Stats page + "today"/"top this week" Widgets), `settings.rs` (Settings page: config.toml + keys tab), `ambient.rs` (starfield, marquee, glow), `mini.rs` (mini-player), `saved.rs` (like/follow, `heart`, `want_saved`), `keymap.rs`, `design.rs`, `theme.rs` (Themes, `Tint`, `ramp_at`), `looks.rs`, `widgets.rs`, `layouts.rs` (Slot groups, saved layouts), `setup.rs` (wizard, health, stream Pane), `gfx.rs` (kitty: images under cell backgrounds in kitty), `visual/` (black hole CPU/GPU, well, idle). |
 
 Dev tools: `cargo run -p singularityd --example probe -- <op> '<vars>' [--raw file]`, `--example connect_probe`.
 **pty harness: `tools/pty/`** (README lists every scenario; recreate the venv). Runs the real binaries against a fake
@@ -90,7 +91,10 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 - **Batch 3: playlist editing ✅** (#51–#56). The owner tested #51–#55 ("looks good"; one fix: the picker's wheel);
   After #56 they asked to see covers in the TUI: library miniatures added; both wait for their test, as does the queue wheel fix (owner-reported). Every write path has a mode in `examples/playlist_probe.rs` (scratch playlist,
   reverted): `--create-delete`, `--details`, `--add`, `--remove`, `--move`, `--cover <jpg>`.
-- **Batch 4, the Settings screen** (#57, #58): #57 done (Ctrl+K "settings"); **next: #58, the read-only keys tab**.
+- **Batch 4, the Settings screen ✅** (#57, #58): Ctrl+K "settings"; both wait for the owner's test.
+- **Next: batch 5, album-adaptive theme + more Visuals** (stories 81–82, D30, D36): write its tickets under #34 first,
+  then build one at a time. The demos were judged already (starfield, marquee, glow kept as `ambient.rs`, #44), so
+  check with the owner what "more Visuals" still means before ticketing that half.
 - Then batches 5–8 in order; each gets tickets just before it's built.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
 
@@ -98,7 +102,7 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
 
 `singularity` and `singularityd` are installed in `~/.cargo/bin` (on the owner's PATH) with
 `cargo install --locked --path crates/daemon` and `--path crates/client`. Reinstall both after each closed ticket so the
-owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #57 (2026-10-19).
+owner tests the latest; the Client finds `singularityd` next to itself. Last installed: after #58 (2026-10-19).
 
 ## Local state on the owner's machine (not in git)
 
@@ -142,14 +146,13 @@ A new Client replaces an outdated Daemon by itself (and, since #25, stops one th
 > (GitHub: `publicusr/singularity`, private). Read `docs/HANDOFF.md` first, then `CLAUDE.md`, `docs/SPEC.md` (v1 and
 > the "v1.x" part), `GLOSSARY.md`, the ADRs in `docs/adr/`, and the end of the round log in `docs/DESIGN-TREE.md`.
 >
-> v1 is done; v1.x is being built in batches (D29). Batches 1 (stats) and 2 (waveform, mini-player, ♥ rows, album song
-> into the queue) are done and owner-tested. **Next is batch 3, playlist editing**: first write its tickets under spec
-> issue #34 (scope and private API routes in HANDOFF "Then"), re-verify the routes against the current web-player
-> bundle, then build one ticket at a time: code + tests at the spec's seams, `cargo test --workspace`, verify the real
-> binaries in the pty harness (`tools/pty/`, screenshots), commit with `Closes #N`, push, reinstall both binaries
-> (`cargo install --locked --path crates/daemon` and `--path crates/client`), and keep `docs/` current (DESIGN-TREE
-> round log, HANDOFF, ROADMAP, GLOSSARY). Each write to Spotify gets one quiet, reverted live check on a scratch
-> playlist you create and delete yourself.
+> v1 is done; v1.x is being built in batches (D29). Batches 1–4 (stats; mini-player, ♥ rows, album song into the
+> queue; playlist editing; the Settings page) are done. **Next is batch 5, album-adaptive theme + more Visuals**:
+> first write its tickets under spec issue #34 (stories 81–82; ask the owner what "more Visuals" still covers, since
+> the demos were judged in #44), then build one ticket at a time: code + tests at the spec's seams,
+> `cargo test --workspace`, verify the real binaries in the pty harness (`tools/pty/`, screenshots), commit with
+> `Closes #N`, push, reinstall both binaries (`cargo install --locked --path crates/daemon` and `--path crates/client`),
+> and keep `docs/` current (DESIGN-TREE round log, HANDOFF, ROADMAP, GLOSSARY).
 >
 > If the
 > owner reports bugs, fix those first. Product decisions go to the owner in the grilling format (numbered questions,

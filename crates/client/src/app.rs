@@ -313,6 +313,10 @@ pub enum Hit {
     Setting(usize),
     /// a setting's ◂ ▸
     SettingStep(usize, i64),
+    /// the Settings page's tabs
+    SettingsTab(crate::settings::Tab),
+    /// an action's row on the keys tab, by its place in `Action::ALL`
+    KeyRow(usize),
 }
 
 /// Two clicks on the same row within this time play it.
@@ -476,6 +480,8 @@ pub struct App {
     /// `config.toml` as it is now (the Settings page is built from it), and what's wrong with it
     pub config_text: String,
     pub config_problems: Vec<String>,
+    /// what's wrong with `keys.toml` (the keys tab lists it)
+    pub keys_problems: Vec<String>,
     /// the period the Stats page last showed
     stats_period: singularity_proto::StatsPeriod,
     /// the Daemon's latest answer per period
@@ -595,6 +601,7 @@ impl App {
             settings_view: None,
             config_text: String::new(),
             config_problems: vec![],
+            keys_problems: vec![],
             stats_period: Default::default(),
             stats: Default::default(),
             top_week_tracks: false,
@@ -697,6 +704,10 @@ impl App {
         }
     }
 
+    pub fn keys_path(&self) -> Option<std::path::PathBuf> {
+        self.config_files.as_ref().map(|f| f.keys.path.clone())
+    }
+
     pub fn config_path(&self) -> Option<std::path::PathBuf> {
         self.config_files.as_ref().map(|f| f.config.path.clone())
     }
@@ -705,6 +716,7 @@ impl App {
         let mut problems = r.problems;
         self.keymap = crate::keymap::Keymap::from_keys(&r.value);
         problems.append(&mut self.keymap.problems.clone());
+        self.keys_problems = problems.clone();
         if !problems.is_empty() {
             self.say(problems.join(" · "));
         }
@@ -2222,14 +2234,27 @@ impl App {
                         if let Some(v) = self.settings_view.as_mut() {
                             v.sel = i;
                             v.typing = None;
+                            v.on_tabs = false;
                         }
                         self.settings_activate(i);
+                    }
+                    Some(Hit::SettingsTab(t)) => {
+                        self.focus = "home".into();
+                        self.settings_tab(t);
+                    }
+                    Some(Hit::KeyRow(i)) => {
+                        self.focus = "home".into();
+                        if let Some(v) = self.settings_view.as_mut() {
+                            v.key_sel = i;
+                            v.on_tabs = false;
+                        }
                     }
                     Some(Hit::SettingStep(i, d)) => {
                         self.focus = "home".into();
                         if let Some(v) = self.settings_view.as_mut() {
                             v.sel = i;
                             v.typing = None;
+                            v.on_tabs = false;
                         }
                         self.settings_step(i, d);
                     }

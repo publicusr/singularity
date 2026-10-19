@@ -765,7 +765,7 @@ fn help_rows(m: &crate::keymap::Keymap) -> Vec<(String, String)> {
         (m.label(A::FocusNext), "focus the next pane".into()),
         (m.label(A::ToggleIdle), "idle takeover on / off (any key wakes the screen)".into()),
         (m.label(A::Quit), "quit the Client (music keeps playing)".into()),
-        ("keys.toml".into(), format!("{} keys · change them in ~/.config/singularity/keys.toml", m.preset)),
+        ("keys.toml".into(), format!("{} keys · all of them: {} settings · change them in keys.toml", m.preset, m.label(A::Palette))),
     ]
 }
 

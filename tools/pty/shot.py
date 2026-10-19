@@ -523,6 +523,19 @@ def settings(t, out, env):
     t.send(b"\x1b[F", 0.4)  # End: the last setting
     t.shot(f"{out}/4-edited-in-the-file.png")
     print("page:", [l.strip()[:90] for l in t.screen.display if "minutes" in l or "unfocused_fps" in l][:3])
+    # #58: the keys tab, by a click; a binding added in keys.toml shows within a second
+    x, y = t.find("keys.toml")
+    mouse(t, 0, x + 1, y); mouse(t, 0, x + 1, y, release=True, wait=0.6)
+    t.shot(f"{out}/5-keys.png")
+    kp = f"{env['XDG_CONFIG_HOME']}/singularity/keys.toml"
+    keys = open(kp).read().replace("# like = \"f\"", "stats = \"Ctrl+T\"\nnope = \"x\"")
+    open(kp, "w").write(keys)
+    t.pump(1.6)
+    for _ in range(41):
+        mouse(t, 65, x + 4, y + 6, wait=0.02)  # the wheel, down to Stats
+    t.pump(0.4)
+    t.shot(f"{out}/6-keys-edited.png")
+    print("keys:", [l.strip()[30:120] for l in t.screen.display if "^T" in l or "nope" in l][:3])
     t.send(b"\x1b", 0.4)  # Esc: back
     t.send(b"q", 0.5)
 

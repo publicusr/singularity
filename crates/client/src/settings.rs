@@ -3,8 +3,10 @@
 //! keeps its comments) and applies at once; the file stays the one source of truth (story 59), so an edit made in
 //! the file shows here within a second. On/off flips (Enter, Space, a click); lists and numbers step with ←/→ or the
 //! ◂ ▸ arrows; Enter on a number types one.
+//! A second tab (#58) lists every action with its keys as they are now (preset + `keys.toml`), read-only: rebinding
+//! happens in the file for now (D33).
 
-use crate::app::{App, Hit};
+use crate::app::{Action, App, Hit};
 use crate::theme::Theme;
 use crate::ui::text;
 use ratatui::buffer::Buffer;
@@ -17,8 +19,21 @@ use singularity_config::{Entry, Kind};
 /// Where the value column starts, after the setting's name.
 const NAME_W: u16 = 16;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Tab {
+    #[default]
+    Config,
+    Keys,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SettingsView {
+    pub tab: Tab,
+    /// the highlight is on the tab row (↑ from the first row; ←/→ there switch tabs)
+    pub on_tabs: bool,
+    /// keys tab: selected action (index into `Action::ALL`) and first visible row
+    pub key_sel: usize,
+    pub key_top: usize,
     /// selected setting (index into `singularity_config::SETTINGS`)
     pub sel: usize,
     /// first visible line
@@ -209,9 +224,45 @@ impl App {
             }
             return true;
         }
+        let other = if v.tab == Tab::Config { Tab::Keys } else { Tab::Config };
+        if v.on_tabs || v.tab == Tab::Keys {
+            match k.code {
+                KeyCode::Left | KeyCode::Right => {
+                    self.settings_tab(other);
+                    return true;
+                }
+                KeyCode::Down if v.on_tabs => {
+                    if let Some(v) = self.settings_view.as_mut() {
+                        v.on_tabs = false;
+                    }
+                    return true;
+                }
+                KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Up if v.on_tabs => return true,
+                _ => {}
+            }
+        }
+        if v.tab == Tab::Keys {
+            let n = Action::ALL.len();
+            let step = |d: i64| (v.key_sel as i64 + d).clamp(0, n as i64 - 1) as usize;
+            let sel = match k.code {
+                KeyCode::Up if v.key_sel == 0 => return self.settings_to_tabs(),
+                KeyCode::Up => step(-1),
+                KeyCode::Down => step(1),
+                KeyCode::PageUp => step(-(v.visible.max(1) as i64)),
+                KeyCode::PageDown => step(v.visible.max(1) as i64),
+                KeyCode::Home => 0,
+                KeyCode::End => n - 1,
+                _ => return false,
+            };
+            if let Some(v) = self.settings_view.as_mut() {
+                v.key_sel = sel;
+            }
+            return true;
+        }
         let n = singularity_config::SETTINGS.len();
         let step = |d: i64| (v.sel as i64 + d).clamp(0, n.saturating_sub(1) as i64) as usize;
         let sel = match k.code {
+            KeyCode::Up if v.sel == 0 => return self.settings_to_tabs(),
             KeyCode::Up => step(-1),
             KeyCode::Down => step(1),
             KeyCode::PageUp => step(-(v.visible.max(1) as i64)),
@@ -234,13 +285,31 @@ impl App {
         true
     }
 
+    fn settings_to_tabs(&mut self) -> bool {
+        if let Some(v) = self.settings_view.as_mut() {
+            v.on_tabs = true;
+        }
+        true
+    }
+
+    /// Show tab `t` (the highlight stays on the tab row if it was there).
+    pub fn settings_tab(&mut self, t: Tab) {
+        if let Some(v) = self.settings_view.as_mut() {
+            v.tab = t;
+            v.typing = None;
+        }
+    }
+
     /// The wheel over the page moves the highlight (Shift: a page).
     pub fn settings_wheel(&mut self, d: i64, coarse: bool) {
-        let n = singularity_config::SETTINGS.len();
-        if let Some(v) = self.settings_view.as_mut() {
-            let step = if coarse { v.visible.max(1) as i64 } else { 1 };
-            v.sel = (v.sel as i64 + d * step).clamp(0, n.saturating_sub(1) as i64) as usize;
-        }
+        let Some(v) = self.settings_view.as_mut() else { return };
+        v.on_tabs = false;
+        let step = if coarse { v.visible.max(1) as i64 } else { 1 };
+        let (sel, n) = match v.tab {
+            Tab::Config => (&mut v.sel, singularity_config::SETTINGS.len()),
+            Tab::Keys => (&mut v.key_sel, Action::ALL.len()),
+        };
+        *sel = (*sel as i64 + d * step).clamp(0, n.saturating_sub(1) as i64) as usize;
     }
 }
 
@@ -274,12 +343,34 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
     let mut hits: Vec<(Rect, Hit)> = vec![];
     let mut y = r.y;
-    // the file, and what's wrong with it
-    text(buf, x, y, w, "config.toml", th.chip(th.accent));
-    let path = app.config_path().map(|p| p.display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~")).unwrap_or_default();
-    text(buf, x + 13, y, w.saturating_sub(13), &format!("{path} · changes apply at once, and so do edits in the file"), th.s(th.border));
+    // the tabs (one per file), the file's path, and what's wrong with it
+    let focused = app.focus == "home";
+    let mut tx = x;
+    for (t, label) in [(Tab::Config, " config.toml "), (Tab::Keys, " keys.toml ")] {
+        let n = label.chars().count() as u16;
+        let st = if t != view.tab { th.s(th.dim) } else if focused && view.on_tabs { th.chip(th.accent).add_modifier(Modifier::UNDERLINED) } else { th.chip(th.accent) };
+        text(buf, tx, y, n, label, st);
+        hits.push((Rect::new(tx, y, n, 1), Hit::SettingsTab(t)));
+        tx += n + 1;
+    }
+    let home = |p: std::path::PathBuf| p.display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~");
+    let (path, problems) = match view.tab {
+        Tab::Config => (app.config_path().map(home).map(|p| format!("{p} · changes apply at once, and so do edits in the file")), &app.config_problems),
+        Tab::Keys => (app.keys_path().map(home).map(|p| format!("{p} · {} preset · change keys there: action = \"key\"", app.keymap.preset)), &app.keys_problems),
+    };
+    text(buf, tx + 1, y, (x + w).saturating_sub(tx + 1), &path.unwrap_or_default(), th.s(th.border));
     y += 1;
-    for p in app.config_problems.iter().take(3) {
+    let problems = problems.clone();
+    if view.tab == Tab::Keys {
+        y += 1;
+        draw_keys(buf, Rect::new(x, y, w, r.bottom().saturating_sub(y)), app, th, &mut view, &problems, &mut hits);
+        for (rect, h) in hits {
+            app.hit(rect, h);
+        }
+        app.settings_view = Some(view);
+        return;
+    }
+    for p in problems.iter().take(3) {
         y += 1;
         text(buf, x, y, w, &format!("! {p}"), th.s(th.error));
     }
@@ -289,7 +380,6 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     view.visible = r.bottom().saturating_sub(y).max(1) as usize;
     view.sel = view.sel.min(es.len().saturating_sub(1));
     view.top = scrolled(&all, view.sel, view.top, view.visible);
-    let focused = app.focus == "home";
     let vx = x + NAME_W;
     let vw = w.saturating_sub(NAME_W);
     for line in all.iter().skip(view.top).take(view.visible) {
@@ -299,7 +389,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             Line::Desc(d) => text(buf, vx, y, vw, d, th.s(th.dim)),
             Line::Setting(i) => {
                 let e = &es[*i];
-                let selected = focused && *i == view.sel;
+                let selected = focused && !view.on_tabs && *i == view.sel;
                 let bg = if selected { th.selection.color() } else { th.bg.color() };
                 text(buf, x, y, w, &" ".repeat(w as usize), th.base().bg(bg));
                 text(buf, x + 1, y, NAME_W - 1, e.name(), th.s(th.fg).bg(bg));
@@ -338,6 +428,51 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         app.hit(rect, h);
     }
     app.settings_view = Some(view);
+}
+
+/// The keys tab: what's wrong with `keys.toml`, then every action with its keys and its name in the file.
+fn draw_keys(buf: &mut Buffer, r: Rect, app: &App, th: &Theme, view: &mut SettingsView, problems: &[String], hits: &mut Vec<(Rect, Hit)>) {
+    let (x, w) = (r.x, r.width);
+    let mut y = r.y;
+    for p in problems.iter().take(3) {
+        text(buf, x, y, w, &format!("! {p}"), th.s(th.error));
+        y += 1;
+    }
+    if !problems.is_empty() {
+        y += 1;
+    }
+    let n = Action::ALL.len();
+    view.visible = r.bottom().saturating_sub(y).max(1) as usize;
+    view.key_sel = view.key_sel.min(n - 1);
+    if view.key_sel < view.key_top {
+        view.key_top = view.key_sel;
+    } else if view.key_sel >= view.key_top + view.visible {
+        view.key_top = view.key_sel + 1 - view.visible;
+    }
+    view.key_top = view.key_top.min(n.saturating_sub(view.visible));
+    let focused = app.focus == "home";
+    let keys_of = |a: Action| app.keymap.keys_of(a).iter().map(|c| c.short()).collect::<Vec<_>>().join("  ");
+    // the keys column fits the longest keys, up to a third of the page
+    let kw = (Action::ALL.iter().map(|a| keys_of(*a).chars().count()).max().unwrap_or(0) as u16 + 3).clamp(NAME_W, (w / 3).max(NAME_W));
+    for (i, a) in Action::ALL.iter().enumerate().skip(view.key_top).take(view.visible) {
+        let selected = focused && !view.on_tabs && i == view.key_sel;
+        let bg = if selected { th.selection.color() } else { th.bg.color() };
+        text(buf, x, y, w, &" ".repeat(w as usize), th.base().bg(bg));
+        let keys = keys_of(*a);
+        let (keys, kst) = if keys.is_empty() { ("—".to_string(), th.s(th.border)) } else { (keys, th.s(th.accent).add_modifier(Modifier::BOLD)) };
+        text(buf, x + 1, y, kw - 2, &keys, kst.bg(bg));
+        // the action's name in keys.toml at the right, if the label still fits beside it
+        let (label, id) = (a.label(), a.id());
+        let (lc, iw) = (label.chars().count() as u16, id.chars().count() as u16);
+        let room = w.saturating_sub(kw);
+        let show_id = room >= lc + iw + 3;
+        text(buf, x + kw, y, if show_id { room - iw - 2 } else { room }, label, th.s(th.fg).bg(bg));
+        if show_id {
+            text(buf, x + w - iw - 1, y, iw, id, th.s(th.dim).bg(bg));
+        }
+        hits.push((Rect::new(x, y, w, 1), Hit::KeyRow(i)));
+        y += 1;
+    }
 }
 
 #[cfg(test)]
@@ -430,6 +565,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_keys_tab_lists_every_action_with_its_keys_and_follows_keys_toml() {
+        let (mut app, dir) = app_with_files();
+        let draw = |app: &mut App| {
+            let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+            t.draw(|f| crate::ui::draw(f, app)).unwrap();
+            let b = t.backend().buffer().clone();
+            (0..48).map(|y| (0..160).map(|x| b[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
+        };
+        // ↑ from the first setting reaches the tabs; → there shows the keys
+        draw(&mut app);
+        key(&mut app, KeyCode::Up);
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.settings_view.as_ref().unwrap().tab, Tab::Keys);
+        let s = draw(&mut app);
+        assert!(s.contains("standard preset") && s.contains("Space") && s.contains("Play / pause") && s.contains("play_pause"), "{s}");
+        // every action has a row, reached by moving down (an unbound one shows —)
+        key(&mut app, KeyCode::Down);
+        for _ in 0..Action::ALL.len() {
+            key(&mut app, KeyCode::Down);
+            draw(&mut app);
+        }
+        assert_eq!(app.settings_view.as_ref().unwrap().key_sel, Action::ALL.len() - 1);
+        assert!(draw(&mut app).contains("Quit (music keeps playing)"));
+        // a binding and a mistake in keys.toml show (what the watcher does)
+        let kp = dir.path().join("keys.toml");
+        std::fs::write(&kp, "schema = 1\npreset = \"vim\"\n[bindings]\nstats = \"Ctrl+T\"\nnope = \"x\"\n").unwrap();
+        app.apply_keys(singularity_config::load_keys(&kp));
+        app.settings_view.as_mut().unwrap().key_sel = Action::ALL.iter().position(|a| *a == Action::Stats).unwrap();
+        let s = draw(&mut app);
+        assert!(s.contains("vim preset") && s.contains("^T") && s.contains("no action called \"nope\""), "{s}");
+        // ← goes back to the config tab; Esc leaves the page
+        key(&mut app, KeyCode::Left);
+        assert_eq!(app.settings_view.as_ref().unwrap().tab, Tab::Config);
+        key(&mut app, KeyCode::Esc);
+        assert!(app.settings_view.is_none());
     }
 
     #[test]

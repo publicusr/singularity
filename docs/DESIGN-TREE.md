@@ -648,3 +648,10 @@ flowchart LR
   the top of the page. Descriptions wrap to two lines under the value; the list never starts with a description's
   tail (a first try looped between two such lines and froze the pty run; `scrolled` is now a pure function, tested
   over every selection and height). Tests: config `entries` + App edits/apply/file-follow; pty `settings`.
+- **#58 Keys tab ✅** (2026-10-19): tabs "config.toml" · "keys.toml" on the Settings page (a click; or ↑ from the
+  first row onto the tab row, then ←/→; on the keys tab ←/→ switch at once, it has nothing else to change). Every
+  action of `Action::ALL` with its keys as they are now (preset + `keys.toml`; "—" when unbound), its label, and its
+  name in `keys.toml` at the right when there's room; the keys column fits the longest keys (≤ a third of the page).
+  The preset and the file's path are on the tab row, `keys.toml`'s problems above the list; both follow the file
+  live. Read-only (D33). The help screen now points to Ctrl+K settings. App test; pty `settings` (keys tab, a
+  binding and a mistake added to keys.toml). Batch 4 done.
