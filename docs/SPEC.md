@@ -247,7 +247,7 @@ audio, and looks spectacular.
 80. As a user, I want a Settings page built from `config.toml` (its comments as descriptions, clickable values, written back keeping the file's comments), and a read-only keymap tab.
 
 ### Looks (batch 5, D30, D36)
-81. As a user, I want an album-adaptive Theme: its colours come from the playing cover (on #33's tinting).
+81. ~~As a user, I want an album-adaptive Theme: its colours come from the playing cover (on #33's tinting).~~ Dropped (D47): the owner likes the theming as it is.
 82. As a user, I want to try demo Visuals in my own layout (warp starfield, up-next river, big now-playing marquee, album-art glow) and keep the ones I like.
 
 ### Podcasts and audiobooks (batch 6, D35, D41)

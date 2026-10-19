@@ -66,6 +66,7 @@ so it cannot be settled by talking)
 | D44 | Where ◂ ▸ go | D6 | settled | All at the right end of a Pane's title; the main Pane's back/forward there too, as ← →. |
 | D45 | Mouse back/forward buttons (#48) | D34 | settled | Dropped (owner): it needed a vendored crossterm or our own input parser; ← → in the main Pane's title do the job. |
 | D46 | Waveform seek bar (#46) | D30 | settled | Removed (owner): the plain seek bar looks cleaner; the audio Widgets already show loudness. |
+| D47 | Album-adaptive theme (batch 5) | D30 | settled | Dropped (owner, 2026-10-19): they like the theming as it is. More Visuals were already done in #44, so batch 5 is gone; next is batch 6 (podcasts and audiobooks). |
 
 ```mermaid
 flowchart LR
@@ -655,3 +656,5 @@ flowchart LR
   The preset and the file's path are on the tab row, `keys.toml`'s problems above the list; both follow the file
   live. Read-only (D33). The help screen now points to Ctrl+K settings. App test; pty `settings` (keys tab, a
   binding and a mistake added to keys.toml). Batch 4 done.
+- **Batch 5 dropped (D47)** (owner, 2026-10-19): asked what the album theme was, then: "I like the themeing as is
+  currently". Story 81 struck; story 82 was done in #44. Next: batch 6, podcasts and audiobooks.

@@ -9,8 +9,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - **v1 ✅** (spec issue #1, tickets #2–#24). Owner test rounds 1–3 done and fixed (#25–#33, #38–#45).
 - **v1.x in progress** (spec: SPEC.md "v1.x", stories 68–86; decisions DESIGN-TREE D29–D45; spec issue **#34**).
   Batches (D29): ~~1 stats~~ ✅ (#35–#37) · ~~2 unbuilt v1 items + polish~~ ✅ (#46 waveform, later removed (D46), #47 mini-player, #49 ♥ rows,
-  #50 album song into the queue; #48 mouse buttons dropped, D45) · ~~3 playlist editing~~ ✅ (#51–#56, owner-tested up to #55) · ~~4 Settings screen~~ ✅ (#57, #58) · **5 album-adaptive theme + more Visuals (next)** ·
-  6 podcasts and audiobooks · 7 free tiling (trial) · 8 macOS.
+  #50 album song into the queue; #48 mouse buttons dropped, D45) · ~~3 playlist editing~~ ✅ (#51–#56, owner-tested up to #55) · ~~4 Settings screen~~ ✅ (#57, #58) · ~~5 album-adaptive theme~~ dropped (D47; Visuals done in #44) ·
+  **6 podcasts and audiobooks (next)** · 7 free tiling (trial) · 8 macOS.
   Visual demos judged: starfield, marquee, glow kept and finished (#44, `ambient.rs`).
 - Tests: **245 passing** (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`) and `live_shapes`.
 - **No open bugs.** The waveform seek bar (#46) was removed again at the owner's call (D46).
@@ -92,9 +92,9 @@ keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SH
   After #56 they asked to see covers in the TUI: library miniatures added; both wait for their test, as does the queue wheel fix (owner-reported). Every write path has a mode in `examples/playlist_probe.rs` (scratch playlist,
   reverted): `--create-delete`, `--details`, `--add`, `--remove`, `--move`, `--cover <jpg>`.
 - **Batch 4, the Settings screen ✅** (#57, #58): Ctrl+K "settings"; both wait for the owner's test.
-- **Next: batch 5, album-adaptive theme + more Visuals** (stories 81–82, D30, D36): write its tickets under #34 first,
-  then build one at a time. The demos were judged already (starfield, marquee, glow kept as `ambient.rs`, #44), so
-  check with the owner what "more Visuals" still means before ticketing that half.
+- **Next: batch 6, podcasts and audiobooks** (stories 83–84, D35, D41): first check whether Soloist plays audiobook
+  chapters (if not, audiobooks are dropped and reported), re-verify the show/episode routes against the current
+  web-player bundle, then write the tickets under #34 and build one at a time.
 - Then batches 5–8 in order; each gets tickets just before it's built.
 - The owner's screenshots go in `docs/screenshots/` (git-ignored: personal data; never commit or quote them).
 
@@ -147,9 +147,9 @@ A new Client replaces an outdated Daemon by itself (and, since #25, stops one th
 > the "v1.x" part), `GLOSSARY.md`, the ADRs in `docs/adr/`, and the end of the round log in `docs/DESIGN-TREE.md`.
 >
 > v1 is done; v1.x is being built in batches (D29). Batches 1–4 (stats; mini-player, ♥ rows, album song into the
-> queue; playlist editing; the Settings page) are done. **Next is batch 5, album-adaptive theme + more Visuals**:
-> first write its tickets under spec issue #34 (stories 81–82; ask the owner what "more Visuals" still covers, since
-> the demos were judged in #44), then build one ticket at a time: code + tests at the spec's seams,
+> queue; playlist editing; the Settings page) are done. Batch 5 was dropped (D47). **Next is batch 6, podcasts and
+> audiobooks**: check first whether Soloist plays audiobook chapters, re-verify the routes, write the tickets under
+> spec issue #34 (stories 83–84), then build one ticket at a time: code + tests at the spec's seams,
 > `cargo test --workspace`, verify the real binaries in the pty harness (`tools/pty/`, screenshots), commit with
 > `Closes #N`, push, reinstall both binaries (`cargo install --locked --path crates/daemon` and `--path crates/client`),
 > and keep `docs/` current (DESIGN-TREE round log, HANDOFF, ROADMAP, GLOSSARY).
