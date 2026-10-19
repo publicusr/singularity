@@ -137,8 +137,9 @@ fn apply(app: &mut App, ev: ConnEvent) {
         ConnEvent::Connecting => {}
         ConnEvent::Updating => app.say("Updating singularityd…"),
         ConnEvent::Disconnected => app.link = Link::Connecting,
-        ConnEvent::Connected { daemon_version } => {
+        ConnEvent::Connected { daemon_version, engine } => {
             app.link = Link::Connected { version: daemon_version };
+            app.engine_kind = engine;
             app.on_connected();
         }
         ConnEvent::Incompatible(m) => {

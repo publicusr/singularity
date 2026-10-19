@@ -31,6 +31,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Shared Daemon state that every connection reads.
 pub struct Hub {
     pub started_unix_ms: u64,
+    /// which Engine this Daemon runs
+    pub engine_kind: proto::EngineKind,
     pub playback: Mutex<PlaybackState>,
     pub engine_status: Mutex<Option<proto::EngineStatus>>,
     pub catalogue_status: Mutex<Option<proto::CatalogueStatus>>,
@@ -118,6 +120,7 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
     };
     let hub = Arc::new(Hub {
         started_unix_ms: proto::now_ms(),
+        engine_kind: engine.kind(),
         playback: Mutex::new(PlaybackState::default()),
         engine_status: Mutex::new(None),
         catalogue_status: Mutex::new(None),
@@ -468,7 +471,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     match hello {
         Some(ClientMsg::Hello { protocol, client }) if protocol == PROTOCOL_VERSION => {
             tracing::info!("client connected: {client}");
-            proto::write_msg(&mut wr, &DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms })
+            proto::write_msg(&mut wr, &DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind })
                 .await?;
         }
         Some(ClientMsg::Hello { protocol, .. }) => {

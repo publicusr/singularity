@@ -30,7 +30,13 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let fake = args.iter().any(|a| a == "--fake-engine");
     let choice = singularity_config::load_config(&singularity_config::config_path()).value.engine;
-    let kind = if fake { None } else { Some(choice.kind.resolved()) };
+    // SINGULARITY_ENGINE=soloist|spotify-app overrides config.toml (tests pin it, whatever the OS)
+    let kind = match std::env::var("SINGULARITY_ENGINE").as_deref() {
+        _ if fake => None,
+        Ok("soloist") => Some(singularity_config::EngineKind::Soloist),
+        Ok("spotify-app") => Some(singularity_config::EngineKind::SpotifyApp),
+        _ => Some(choice.kind.resolved()),
+    };
     let app = (kind == Some(singularity_config::EngineKind::SpotifyApp)).then(|| AppEngine::new(&choice.device, None));
     let identity = app.as_ref().map(|a| a.identity.clone()).unwrap_or_default();
     // --no-catalogue: playback only (no Spotify login / private API)
@@ -45,7 +51,9 @@ async fn main() -> anyhow::Result<()> {
         _ if fake => Box::new(FakeEngine),
         Some(app) => {
             tracing::info!("Engine: the Spotify app, {:?} on Connect", app.identity.device_name);
-            Box::new(AppEngine { catalogue: catalogue.as_ref().map(|(tx, _)| tx.clone()), ..app })
+            // SINGULARITY_START_APP=0: never look for or start the real app (tests)
+            let start_app = std::env::var("SINGULARITY_START_APP").as_deref() != Ok("0");
+            Box::new(AppEngine { catalogue: catalogue.as_ref().map(|(tx, _)| tx.clone()), start_app, ..app })
         }
         None => Box::new(SoloistEngine::from_env()),
     };

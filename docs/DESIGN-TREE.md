@@ -732,3 +732,13 @@ flowchart LR
   (auto: Soloist on Linux, the app on macOS; read at Daemon start, on the Settings page) and `device`. Tests:
   migration 2 → 3, a Daemon with the AppEngine and a stand-in Catalogue (commands arrive as `CatCmd::Engine`, a
   cluster's playback/queue/quality reach the Client), status from the cluster (present, active, idle, missing).
+- **#66 Setup and health per Engine ✅** (2026-10-19): `Welcome` carries the Daemon's `EngineKind` (soloist,
+  spotify-app, fake; defaulted, so no protocol bump: older Daemons ran Soloist). The wizard's steps are the Engine's:
+  Soloist as before (key, download, pairing, login, audio); the Spotify app: found (else why: not installed, or no
+  Catalogue to drive it with), log in (first, as the app is driven over Connect), found on Connect (or the Catalogue's
+  "isn't on Spotify Connect"), audio check (playing counts until #67 taps the app). Lossless hints name the app's own
+  setting. The health check names the app ("Spotify app 1.2.94 · "<name>" on Connect") and drops the Soloist key row.
+  The macOS audio-output row moved to #67 (it needs Core Audio). Every pty script pins `SINGULARITY_ENGINE`, and
+  `SINGULARITY_START_APP=0` keeps the AppEngine away from the real app, so a Daemon a test Client starts by itself never
+  drives the owner's Spotify app. Tests: App (both flows, health rows), pty `app_wizard_test.py` (three Daemons),
+  `stale_test`/`update_test`/scenarios rerun.

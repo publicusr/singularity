@@ -13,11 +13,12 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
   6 podcasts and audiobooks (#59–#61 ✅, #62 open) · 7 free tiling (trial) · **8 macOS (now: D48)**.
 - **macOS (batch 8, pulled forward by D48)**: the owner works on the M2 Air for a while. Rule D49: Linux and macOS
   keep the same features; OS code only behind the platform seams, tracked in **`docs/PLATFORMS.md`**. Tickets in build
-  order: ~~#63 builds and tests green~~ ✅ · ~~#64 Keychain~~ ✅ · **#65 AppEngine (built, live check pending)** · #66 setup
-  and health per platform · #67 AudioTap on Core Audio · #68 notifications and Now Playing · #69 LaunchAgent and install.
+  order: ~~#63 builds and tests green~~ ✅ · ~~#64 Keychain~~ ✅ · **#65 AppEngine (built, live check pending)** · ~~#66 setup
+  and health per platform~~ ✅ · #67 AudioTap on Core Audio (+ the audio-output row) · #68 notifications and Now Playing ·
+  #69 LaunchAgent and install.
   Then #62 (audiobooks) and batch 7.
   Visual demos judged: starfield, marquee, glow kept and finished (#44, `ambient.rs`).
-- Tests: **254 passing** on macOS (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`),
+- Tests: **255 passing** on macOS (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`),
   `live_shapes` and `secrets_live`. On a Mac, `tools/check-linux.sh` type-checks the Linux build (it can't run Linux
   tests: run `cargo test` on the Linux machine when back there).
 - **No open bugs.** The waveform seek bar (#46) was removed again at the owner's call (D46).
@@ -76,7 +77,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `2a19ad2` | #61 ✅ | Podcast episodes in search (Podcasts chip), Go to show |
 | `34f8dc0` | #63 ✅ | macOS builds and tests green; pty harness on macOS (five drifted scenarios fixed); `tools/check-linux.sh`; plan D48–D51 |
 | `4bcfce0` | #64 ✅ | Secrets in the Keychain via `/usr/bin/security` (no prompt after rebuilds) |
-| (last) | #65 🔄 | AppEngine (`daemon/src/app_engine.rs`): Spotify.app over Connect; `[engine]` in config.toml (schema 3) |
+| `f38a8cf` | #65 🔄 | AppEngine (`daemon/src/app_engine.rs`): Spotify.app over Connect; `[engine]` in config.toml (schema 3) |
+| (last) | #66 ✅ | Wizard and health per Engine (`Welcome.engine`: `EngineKind`); `SINGULARITY_ENGINE`, `SINGULARITY_START_APP` |
 
 ## What exists in `crates/`
 
@@ -97,7 +99,7 @@ kitty images as kitty does (under/over cell backgrounds, judged by colour). `con
 Daemon never listens to the owner's Soloist), `SINGULARITY_DBUS=<address>|off` (MPRIS bus; fake-Engine Daemons stay
 off the session bus unless asked), plus the older `SINGULARITY_CPU`, `SINGULARITY_PIXEL`, `SINGULARITY_PIXEL_MOUSE`,
 `SINGULARITY_NO_KEYRING`, `SINGULARITY_SOCKET`. #23: `SINGULARITY_DATA=<dir>|off` (LocalStore; fake-Engine Daemons
-keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SHUTDOWN` (#25 tests), `SINGULARITY_BELOW_BG=1|0` (#41: kitty's under-background layer), `SINGULARITY_FAKE_STALLS=1` (#45: the fake Engine starves), and `XDG_DOWNLOAD_DIR` decides where exports go. `SINGULARITY_NOTIFY` is gone (now `notifications.track_change`).
+keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SHUTDOWN` (#25 tests), `SINGULARITY_BELOW_BG=1|0` (#41: kitty's under-background layer), `SINGULARITY_FAKE_STALLS=1` (#45: the fake Engine starves), and `XDG_DOWNLOAD_DIR` decides where exports go. #65/#66: `SINGULARITY_ENGINE=soloist|spotify-app` (overrides `[engine] kind`), `SINGULARITY_START_APP=0` (the AppEngine never looks for or starts the real app: tests). `SINGULARITY_NOTIFY` is gone (now `notifications.track_change`).
 
 ## Then
 

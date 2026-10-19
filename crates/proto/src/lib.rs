@@ -30,7 +30,14 @@ pub enum ClientMsg {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum DaemonMsg {
-    Welcome { protocol: u32, daemon_version: String, started_unix_ms: u64 },
+    Welcome {
+        protocol: u32,
+        daemon_version: String,
+        started_unix_ms: u64,
+        /// which Engine this Daemon runs (#66; older Daemons ran Soloist)
+        #[serde(default)]
+        engine: EngineKind,
+    },
     Incompatible { protocol: u32, message: String },
     Pong { id: u64 },
     Event(Event),
@@ -302,6 +309,20 @@ pub struct QueueEntry {
     /// the player's id for this entry (tells apart the same track queued twice)
     #[serde(default)]
     pub uid: String,
+}
+
+/// Which Engine a Daemon runs (D51), so Clients set it up and describe it the right way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EngineKind {
+    #[default]
+    Soloist,
+    /// the official Spotify app, driven over Connect
+    SpotifyApp,
+    /// `--fake-engine` (tests, UI work)
+    Fake,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

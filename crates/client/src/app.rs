@@ -429,6 +429,8 @@ pub struct App {
     pub layout: Node,
     pub link: Link,
     pub engine: Option<EngineStatus>,
+    /// which Engine the Daemon runs (Soloist, the Spotify app): the setup wizard and health view follow it
+    pub engine_kind: singularity_proto::EngineKind,
     pub playback: PlaybackState,
     pub catalogue: Option<CatalogueStatus>,
     pub home: Option<HomeFeed>,
@@ -567,6 +569,7 @@ impl App {
             layout: Node::singularity(),
             link: Link::Connecting,
             engine: None,
+            engine_kind: Default::default(),
             playback: PlaybackState::default(),
             catalogue: None,
             home: None,

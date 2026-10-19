@@ -18,7 +18,7 @@ Status: ✅ works · 🔨 ticket open · ➖ not needed there (the OS or the Eng
 | Daemon autostart | systemd user unit (`packaging/systemd/`) | LaunchAgent (`packaging/launchd/`) | 🔨 #69 |
 | Stale-Daemon check (#25) | `/proc/<pid>/exe` | `proc_name` (the binary may be gone after a rebuild) | ✅ #63 |
 | Engine dies with the Daemon | `PR_SET_PDEATHSIG` + `kill_on_drop` | Spotify.app is left running (it's the user's app too) | ➖ |
-| Health check / setup wizard | Soloist key, pairing, Spotify login, audio output (`pactl`) | Spotify.app installed and logged in, Spotify login, audio output | 🔨 #66 |
+| Health check / setup wizard | Soloist key, download, pairing, Spotify login, audio check | Spotify app found, Spotify login (first: the app is driven over Connect), app on Connect, audio check | ✅ #66 (audio-output row: #67) |
 
 ## Features that differ because the Engine differs
 

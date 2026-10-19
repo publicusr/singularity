@@ -48,6 +48,10 @@ impl Default for Identity {
 pub trait Engine: Send + 'static {
     /// Start the Engine task. Returns the command sender and the event stream.
     fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>);
+    /// Which Engine this is, for Clients (#66).
+    fn kind(&self) -> singularity_proto::EngineKind {
+        singularity_proto::EngineKind::Soloist
+    }
 }
 
 /// Used until an Engine is configured: reports why, refuses commands politely.
@@ -73,6 +77,10 @@ impl Engine for NoEngine {
 pub struct FakeEngine;
 
 impl Engine for FakeEngine {
+    fn kind(&self) -> singularity_proto::EngineKind {
+        singularity_proto::EngineKind::Fake
+    }
+
     fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>) {
         use singularity_proto::{Item, PlayStatus};
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(16);

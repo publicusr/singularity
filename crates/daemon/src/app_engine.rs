@@ -39,6 +39,10 @@ impl AppEngine {
 }
 
 impl Engine for AppEngine {
+    fn kind(&self) -> singularity_proto::EngineKind {
+        singularity_proto::EngineKind::SpotifyApp
+    }
+
     fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>) {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(16);
         let (ev_tx, ev_rx) = mpsc::channel(16);

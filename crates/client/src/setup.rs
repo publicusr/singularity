@@ -6,10 +6,17 @@ use crate::ui::text;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
-use singularity_proto::{CatalogueStatus, EngineStatus, StreamInfo};
+use singularity_proto::{CatalogueStatus, EngineKind, EngineStatus, PlayStatus, StreamInfo};
 
 /// How to get lossless once (it's a per-device setting, from a phone).
 pub const LOSSLESS_FIX: &str = "On your phone: Spotify → device picker → Singularity → Change quality settings → Lossless";
+/// The same for the Spotify app as Engine: its own setting.
+pub const APP_LOSSLESS_FIX: &str = "Open the Spotify app once: Settings → Audio quality → Streaming quality → Lossless";
+
+/// How to get lossless with this Engine.
+pub fn lossless_fix(app: &App) -> &'static str {
+    if app.engine_kind == EngineKind::SpotifyApp { APP_LOSSLESS_FIX } else { LOSSLESS_FIX }
+}
 pub const KEY_URL: &str = "https://developer.spotify.com/dashboard/soloist";
 
 /// What this OS calls its keyring (the Daemon reports "keyring" for either).
@@ -33,24 +40,39 @@ pub struct Setup {
     pub rekey: bool,
 }
 
-/// The wizard's steps, in order.
+/// The wizard's steps (each Engine has its own, #66).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
+    /// Soloist: the API key
     Key,
+    /// Soloist: downloading and starting it
     Engine,
+    /// Soloist: picked once from a phone
     Pair,
+    /// the Spotify app: installed (and this Daemon has a Catalogue to drive it with)
+    App,
     Login,
+    /// the Spotify app: its device found on Connect
+    Connect,
     Audio,
     Done,
 }
 
 impl Step {
-    const ALL: [(Step, &'static str); 5] =
-        [(Step::Key, "Soloist key"), (Step::Engine, "Download Soloist"), (Step::Pair, "Pair from your phone"), (Step::Login, "Log in to Spotify"), (Step::Audio, "Audio check")];
+    /// This Engine's steps, in order. The Spotify app is driven over Connect, so the login comes before finding it.
+    fn all(kind: EngineKind) -> &'static [(Step, &'static str)] {
+        match kind {
+            EngineKind::SpotifyApp => &[(Step::App, "Spotify app"), (Step::Login, "Log in to Spotify"), (Step::Connect, "Find the app on Connect"), (Step::Audio, "Audio check")],
+            _ => &[(Step::Key, "Soloist key"), (Step::Engine, "Download Soloist"), (Step::Pair, "Pair from your phone"), (Step::Login, "Log in to Spotify"), (Step::Audio, "Audio check")],
+        }
+    }
 }
 
 /// Where setup stands, from what the Daemon reports.
 pub fn step(app: &App) -> Step {
+    if app.engine_kind == EngineKind::SpotifyApp {
+        return app_step(app);
+    }
     if app.setup.rekey {
         return Step::Key;
     }
@@ -69,6 +91,23 @@ pub fn step(app: &App) -> Step {
     if !app.setup.heard { Step::Audio } else { Step::Done }
 }
 
+/// Where setup stands with the Spotify app as Engine.
+fn app_step(app: &App) -> Step {
+    match &app.engine {
+        None => return Step::Done,
+        Some(EngineStatus::NotConfigured { .. }) => return Step::App,
+        _ => {}
+    }
+    if !matches!(app.catalogue, Some(CatalogueStatus::Ready { .. })) {
+        return Step::Login;
+    }
+    if !matches!(app.engine, Some(EngineStatus::Ready { .. })) {
+        return Step::Connect;
+    }
+    // (the app's audio isn't tapped yet, #67: playing counts as the check)
+    if app.setup.heard || app.playback.status == PlayStatus::Playing { Step::Done } else { Step::Audio }
+}
+
 /// The wizard shows itself while something essential isn't set up (or when asked for).
 pub fn wanted(app: &App) -> bool {
     if app.setup.forced {
@@ -77,7 +116,7 @@ pub fn wanted(app: &App) -> bool {
     if app.setup.dismissed || !matches!(app.link, Link::Connected { .. }) {
         return false;
     }
-    matches!(step(app), Step::Key | Step::Engine | Step::Pair) || matches!(app.catalogue, Some(CatalogueStatus::LoggedOut))
+    matches!(step(app), Step::Key | Step::Engine | Step::Pair | Step::App | Step::Connect) || matches!(app.catalogue, Some(CatalogueStatus::LoggedOut))
 }
 
 pub fn rect(area: Rect) -> Rect {
@@ -88,11 +127,16 @@ pub fn draw_wizard(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     let inner = crate::ui::popup(buf, r, th, "Set up Singularity");
     let (x, w) = (inner.x + 2, inner.width.saturating_sub(4));
     let mut y = inner.y;
-    text(buf, x, y, w, "You need: Spotify Premium · a Soloist API key · your phone on the same network, once", th.s(th.dim));
+    let need = match app.engine_kind {
+        EngineKind::SpotifyApp => "You need: Spotify Premium · the Spotify app, logged in to the same account",
+        _ => "You need: Spotify Premium · a Soloist API key · your phone on the same network, once",
+    };
+    text(buf, x, y, w, need, th.s(th.dim));
     y += 2;
     let now = step(app);
-    let idx = |s: Step| Step::ALL.iter().position(|(t, _)| *t == s).unwrap_or(Step::ALL.len());
-    for (s, label) in Step::ALL {
+    let all = Step::all(app.engine_kind);
+    let idx = |s: Step| all.iter().position(|(t, _)| *t == s).unwrap_or(all.len());
+    for &(s, label) in all {
         let (mark, st) = if idx(s) < idx(now) {
             ("✓", th.s(th.accent2))
         } else if s == now {
@@ -129,6 +173,20 @@ pub fn draw_wizard(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
             line(buf, &mut y, "   Singularity", th.title());
             line(buf, &mut y, "You only do this once. While you're there: Change quality settings → Lossless.", th.s(th.dim));
         }
+        Step::App => match &app.engine {
+            Some(EngineStatus::NotConfigured { reason }) => {
+                line(buf, &mut y, &format!("Can't play yet: {reason}"), th.s(th.error));
+                line(buf, &mut y, "Singularity checks again when the Daemon restarts.", th.s(th.dim));
+            }
+            _ => line(buf, &mut y, "Looking for the Spotify app…", th.s(th.fg)),
+        },
+        Step::Connect => {
+            match &app.engine {
+                Some(EngineStatus::Failed { message }) => line(buf, &mut y, message, th.s(th.error)),
+                _ => line(buf, &mut y, "Starting the Spotify app (hidden) and waiting for it on Spotify Connect…", th.s(th.fg)),
+            }
+            line(buf, &mut y, "If it isn't logged in, open it once and log in with the same account.", th.s(th.dim));
+        }
         Step::Login => match &app.catalogue {
             Some(CatalogueStatus::LoginPending { url, code }) => {
                 line(buf, &mut y, "Approve this code in your browser (it should have opened):", th.s(th.fg));
@@ -150,7 +208,7 @@ pub fn draw_wizard(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
                 Some(s) if s.lossless() => line(buf, &mut y, &format!("✓ Lossless: {}", describe(s)), th.s(th.accent2)),
                 Some(s) => {
                     line(buf, &mut y, &format!("! Not lossless yet: {}", describe(s)), th.s(th.error));
-                    line(buf, &mut y, LOSSLESS_FIX, th.s(th.fg));
+                    line(buf, &mut y, lossless_fix(app), th.s(th.fg));
                 }
                 None => {}
             }
@@ -227,7 +285,8 @@ pub fn draw_stream(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
         y += 1;
         // the fix, wrapped to the Pane
         let mut line = String::new();
-        for word in "Fix it once from your phone: device picker → Singularity → Change quality settings → Lossless".split(' ') {
+        let fix = if app.engine_kind == EngineKind::SpotifyApp { APP_LOSSLESS_FIX } else { "Fix it once from your phone: device picker → Singularity → Change quality settings → Lossless" };
+        for word in fix.split(' ') {
             if line.chars().count() + word.chars().count() + 1 > w as usize {
                 if y >= r.bottom() {
                     return;
@@ -255,7 +314,11 @@ fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
         Link::Connecting => ('✗', "Daemon", "not reachable; starting it…".into()),
         Link::Incompatible(m) => ('✗', "Daemon", m.clone()),
     });
+    let spotify_app = app.engine_kind == EngineKind::SpotifyApp;
     rows.push(match &app.engine {
+        Some(EngineStatus::Ready { version, device_name, active, .. }) if spotify_app => {
+            ('✓', "Engine", format!("Spotify app {version} · \"{device_name}\" on Connect{}", if *active { "" } else { " · not the active device" }))
+        }
         Some(EngineStatus::Ready { version, expires_in_days, active, .. }) => {
             let built = app.health.as_ref().and_then(|h| h.engine_build.clone()).map(|d| format!(", built {d}")).unwrap_or_default();
             let left = expires_in_days.map(|d| format!(", {d} days left (updates itself)")).unwrap_or_default();
@@ -268,7 +331,7 @@ fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
         Some(EngineStatus::Failed { message }) => ('✗', "Engine", message.clone()),
         None => ('!', "Engine", "no status yet".into()),
     });
-    if let Some(h) = &app.health {
+    if let Some(h) = app.health.as_ref().filter(|_| !spotify_app) {
         rows.push((if h.soloist_key == "keyring" || h.soloist_key.starts_with("environment") { '✓' } else if h.soloist_key == "missing" { '✗' } else { '!' }, "Soloist key", place(&h.soloist_key)));
     }
     rows.push(match &app.catalogue {
@@ -360,5 +423,34 @@ mod tests {
         app.setup.dismissed = true;
         app.engine = Some(EngineStatus::NotConfigured { reason: "x".into() });
         assert!(!wanted(&app), "dismissed stays dismissed");
+    }
+
+    #[test]
+    fn the_spotify_app_logs_in_before_it_is_found_on_connect() {
+        let mut app = App::new(None);
+        app.link = Link::Connected { version: "t".into() };
+        app.engine_kind = EngineKind::SpotifyApp;
+        app.engine = Some(EngineStatus::NotConfigured { reason: "the Spotify app isn't installed".into() });
+        assert_eq!(step(&app), Step::App);
+        assert!(wanted(&app));
+        // starting, and not logged in: the login first, as the app is driven over Connect
+        app.engine = Some(EngineStatus::Starting);
+        app.catalogue = Some(CatalogueStatus::LoggedOut);
+        assert_eq!(step(&app), Step::Login);
+        app.catalogue = Some(CatalogueStatus::Ready { username: "u".into(), country: "PL".into(), premium: true });
+        assert_eq!(step(&app), Step::Connect);
+        assert!(wanted(&app), "no Engine yet: the wizard says why");
+        app.engine = Some(EngineStatus::Ready { device_name: "Mac".into(), active: false, version: "1.2.94".into(), expires_in_days: None });
+        assert_eq!(step(&app), Step::Audio);
+        assert!(!wanted(&app));
+        app.playback.status = PlayStatus::Playing;
+        assert_eq!(step(&app), Step::Done);
+        // the health check names the app, and has no Soloist key row
+        app.health = Some(singularity_proto::Health { soloist_key: "missing".into(), spotify_login: "keyring".into(), ..Default::default() });
+        let rows = health_rows(&app);
+        let engine = rows.iter().find(|r| r.1 == "Engine").unwrap();
+        assert_eq!(engine.2, "Spotify app 1.2.94 · \"Mac\" on Connect · not the active device");
+        assert!(rows.iter().all(|r| r.1 != "Soloist key"));
+        assert_eq!(rows.iter().find(|r| r.1 == "Spotify login").unwrap().2, KEYRING);
     }
 }

@@ -70,7 +70,7 @@ with tarfile.open(serving["file"]) as t:
 json.dump({"etag": '"v1"', "last_modified": LAST_MODIFIED, "version": "soloist v1"}, open(f"{inst}/build.json", "w"))
 
 sock = f"{shot.RUNTIME}/sgl-upd-{os.getpid()}.sock"
-env = dict(os.environ, SINGULARITY_SOCKET=sock, TERM="xterm-256color", COLORTERM="truecolor", SINGULARITY_NO_KEYRING="1",
+env = dict(os.environ, SINGULARITY_ENGINE="soloist", SINGULARITY_START_APP="0", SINGULARITY_SOCKET=sock, TERM="xterm-256color", COLORTERM="truecolor", SINGULARITY_NO_KEYRING="1",
            SOLOIST_API_KEY="not-a-real-key", SINGULARITY_TAP="off", SINGULARITY_DBUS="off", SINGULARITY_PIXEL="0",
            SINGULARITY_SOLOIST_CDN=f"http://127.0.0.1:{cdn.server_address[1]}/soloist_release_x86_64.tar.gz",
            SINGULARITY_SOLOIST_CHECK_SECS="2", FAKE_SOLOIST_EVENTS=events,
