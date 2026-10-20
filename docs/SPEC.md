@@ -231,8 +231,8 @@ audio, and looks spectacular.
 
 > From the v1.x grilling rounds (2026-10-18, DESIGN-TREE D29–D41). Facts: `research/2026-10-playlists-and-podcasts.md`.
 > Tickets are written per batch, just before it's built (Spotify's private details go stale), under spec issue #34. Order (D29): stats → unbuilt v1 items + polish → playlist editing → Settings screen → album-adaptive theme +
-> Visuals → podcasts and audiobooks → free tiling → macOS (pulled forward to after #61: D48) → the codebase audit
-> (batch 9, last of all).
+> Visuals → podcasts and audiobooks → free tiling (parked, D59) → macOS (pulled forward to after #61: D48) → the
+> codebase audit (batch 9, last of all).
 
 ## User stories
 
@@ -267,6 +267,7 @@ audio, and looks spectacular.
 
 ### Layout (batch 7, D37) and macOS (batch 8, D38)
 85. As a user, I want a free-tiling edit mode (split, close, swap Panes) on the existing layout tree, as a trial.
+    **Parked (D59, 2026-10-20):** the owner is happy with the layouts as they are; kept as an idea (`ideas/layout.md`).
 86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready. Started 2026-10-19 (D48),
     tickets #63–#70, parity rule D49; the light librespot Engine on both OSes (D52, #70).
 

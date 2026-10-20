@@ -9,7 +9,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - **v1 ✅** (spec issue #1, tickets #2–#24). Owner test rounds 1–3 done and fixed (#25–#33, #38–#45).
 - **v1.x in progress** (spec: SPEC.md "v1.x", stories 68–87; decisions DESIGN-TREE D29–D56; spec issue **#34**).
   Batches (D29): ~~1 stats~~ ✅ · ~~2 polish~~ ✅ · ~~3 playlist editing~~ ✅ · ~~4 Settings~~ ✅ · ~~5~~ dropped (D47) ·
-  6 podcasts and audiobooks (#59–#61 ✅, **#62 audiobooks built 2026-10-20**, open for the owner's check) · 7 free tiling (trial) · **8 macOS (built; owner's
+  6 podcasts and audiobooks (#59–#61 ✅, **#62 audiobooks built 2026-10-20**, open for the owner's check) · ~~7 free tiling~~ parked as an idea (D59) · **8 macOS (built; owner's
   live checks pending, see below)** · 9 the codebase audit (#71, SPEC "Batch 9", last of all).
 - **macOS (batch 8, D48–D56)**: the owner works on an M2 Air (macOS 15.7) for a while. Rule D49: Linux and macOS keep
   the same features; OS code only behind the platform seams; **`docs/PLATFORMS.md` is the exact status**, feature by
@@ -135,7 +135,7 @@ on macOS runs the Soloist VM (a scratch `XDG_DATA_HOME` gets its own VM: ~2 min 
   the VM as their setting (`engine.kind = "soloist"`; measure its CPU while playing FLAC, not measured on the final
   setup yet); the app's audio tap after granting the permission (#67); then close #65, #67, #68, #70, #72.
 - **#62**: the owner checks a book on the VM or the app (a chapter resumes where it was left; save a book and see
-  its library row: `libraryV3`'s `Audiobook` shape is assumed from search's), then close it. Then **batch 7** (free tiling, trial), then **batch 9, the audit**
+  its library row: `libraryV3`'s `Audiobook` shape is assumed from search's), then close it. Batch 7 (free tiling) is parked (D59). Next: **batch 9, the audit**
   (#71; SPEC "Batch 9": bugs, vulnerabilities, resources on both OSes; seeds: `follow_config` polls every second, the
   Catalogue's caches have no bound, `daemon.log` is 0644 and names the account, Soloist's cache is unlimited on Linux,
   the owner's idle Client used ~7 % CPU).
@@ -224,7 +224,8 @@ EFI vars, SSH key, pinned `bin/vfkit` + `bin/gvproxy`, logs), setup version 2, S
 > built** (D48–D56, tickets #63–#72): Linux and macOS have the same features, OS code only behind the platform seams
 > (D49), and `docs/PLATFORMS.md` is the exact status. Several macOS tickets wait only for the owner's live checks
 > (HANDOFF "Then"). If you're on Linux, first run everything there: nothing since the Mac work has run on Linux.
-> Next to build: #62 (audiobooks), then batch 7 (free tiling), then batch 9 (the codebase audit, #71) last.
+> #62 (audiobooks) is built and waits for the owner's check; batch 7 (free tiling) is parked as an idea (D59). Next
+> and last: batch 9, the codebase audit (#71).
 >
 > Build one ticket at a time: code + tests at the spec's seams, `cargo test --workspace` (on a Mac also
 > `tools/check-linux.sh`), verify the real binaries in the pty harness (`tools/pty/`, screenshots), commit with

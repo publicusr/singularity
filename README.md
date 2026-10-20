@@ -147,6 +147,7 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phased plan, spikes first |
 | [docs/research/2026-10-platform-constraints.md](docs/research/2026-10-platform-constraints.md) | What Spotify does and doesn't allow in 2026, with sources |
 | [docs/ideas/visuals-and-widgets.md](docs/ideas/visuals-and-widgets.md) | Brainstorm of visuals, widgets and layout modes |
+| [docs/ideas/layout.md](docs/ideas/layout.md) | Free tiling, parked as an idea (D59) |
 | [GLOSSARY.md](GLOSSARY.md) | The project's vocabulary (Engine, Catalogue, Shelf, Widget, Pane, …) |
 | [docs/adr/](docs/adr/) | Hard-to-reverse decisions: Soloist Engine, private-API Catalogue, Daemon + Client, GPU visuals |
 | [docs/research/2026-10-private-api-risk.md](docs/research/2026-10-private-api-risk.md) | How risky the private API is for a one-person client |
