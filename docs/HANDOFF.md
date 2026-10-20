@@ -1,8 +1,32 @@
-# Session handoff (2026-10-20, end of the first macOS session)
+# Session handoff (2026-10-20, end of the first macOS session; next session is on Linux)
 
 Read this first in a new session, then `CLAUDE.md`, `docs/SPEC.md` and `GLOSSARY.md`. Decisions and their history are
 in `docs/DESIGN-TREE.md` (round log at the bottom: one entry per ticket, with the details); verified facts about
 Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-connect.md`.
+
+## Next session: Linux (start here)
+
+The owner is moving back to Linux (`~/src/singularity`). `git pull` first: a lot landed on the Mac.
+Nothing since the move to the Mac (#63 on) has run on Linux. In order:
+
+1. **Build and test**: `cargo test --workspace` (Linux builds now need `alsa-lib`; the release profile has thin LTO,
+   so a clean release build is slower). Fix anything Linux-only that `tools/check-linux.sh` couldn't see (it only
+   type-checks).
+2. **pty harness**: recreate the venv if needed, run every scenario in `tools/pty/README.md`, look at the shots.
+3. **A session per Engine** on the owner's machine, quietly: Soloist (the default; its updater and resume-after-restart
+   still deserve a look), librespot, the Spotify app. MPRIS and notifications only on a private bus in tests.
+4. **Reinstall both binaries** (Linux was last installed after #61) and tell the owner to restart Singularity.
+5. **The Linux half of the audit** (`docs/research/2026-10-audit.md`, "Not done yet"): `cargo audit`/`deny`/clippy
+   again on Linux, sanitizers (ASan/TSan on nightly), `perf` and `heaptrack`, Miri and `cargo fuzz` (nightly),
+   idle/playing CPU and memory per Engine (the macOS numbers are in the report), a soak with the same sampler
+   (`soak.sh` lives only on the Mac: rewrite it with `/proc` for Linux; it's ~15 lines), Soloist's unlimited cache
+   on Linux (a seed of #71), and the frame profile (the playing Client costs ~9 % CPU on the M2).
+6. Then the remaining review areas, and a ranked GitHub issue per unfixed finding (zbus 6, the librespot fork's
+   quick-xml, clippy style, a streaming cap on cover downloads, absolute subprocess paths, the macOS socket name,
+   the frame cost). Close #71 when the report has no "Not done yet" left.
+
+macOS-only checks still waiting for the owner (can wait until they're back on the Mac): #62 resume and library row,
+#65, #67, #68, #70, #72 (see "Then").
 
 ## Where things stand
 
@@ -10,7 +34,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - **v1.x in progress** (spec: SPEC.md "v1.x", stories 68–87; decisions DESIGN-TREE D29–D56; spec issue **#34**).
   Batches (D29): ~~1 stats~~ ✅ · ~~2 polish~~ ✅ · ~~3 playlist editing~~ ✅ · ~~4 Settings~~ ✅ · ~~5~~ dropped (D47) ·
   6 podcasts and audiobooks (#59–#61 ✅, **#62 audiobooks built 2026-10-20**, open for the owner's check) · ~~7 free tiling~~ parked as an idea (D59) · **8 macOS (built; owner's
-  live checks pending, see below)** · 9 the codebase audit (#71, SPEC "Batch 9", last of all).
+  live checks pending, see below)** · **9 the codebase audit (#71, SPEC "Batch 9"): macOS half done 2026-10-20, Linux
+  half next**.
 - **macOS (batch 8, D48–D56)**: the owner works on an M2 Air (macOS 15.7) for a while. Rule D49: Linux and macOS keep
   the same features; OS code only behind the platform seams; **`docs/PLATFORMS.md` is the exact status**, feature by
   feature, and the README has build/run steps and the macOS quirks for users.
@@ -30,7 +55,9 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
   `live_shapes` and `secrets_live`. `tools/check-linux.sh` type-checks Linux from the Mac: clean. **Nothing since the
   move to the Mac has run on Linux**: first thing back there, `cargo test --workspace`, the pty scenarios, and a
   session per Engine (Linux builds now need `alsa-lib`).
-- **No known open bugs.** (2026-10-20: the #62 live check was meant to be silent but played ~4 s at 40 %: Soloist's
+- **No known open bugs.** Audit fixes so far (D60 and the report): private `daemon.log`, socket ownership checks, a
+  config crash, bounded caches, cover caps, Visuals at 5 fps while idle, a 5 s deadline for Clients that stop reading,
+  a release profile. (2026-10-20: the #62 live check was meant to be silent but played ~4 s at 40 %: Soloist's
   updater restarted it right then and the volume asked for was lost. Fixed in `1ce954b`; the owner was told.) Fixed this session from owner reports: the AppEngine lost Connect after a wifi change;
   the audio Widgets kept moving while paused; the volume snapped back after a mouse drag (Connect devices report it
   ~0.5 s late: the Client now holds what it set); librespot never noticed a connection closed while idle.
@@ -103,6 +130,14 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `db4c150` | #67, #70 | Process tap on Spotify.app (`process_tap.rs`, `tap::Resampler`); librespot dead-session watchdog |
 | `1ce954b` | #62, fix | Live check: Soloist plays chapters, librespot is refused their keys (`examples/chapter_probe`); D57, D58. SoloistEngine keeps the volume asked for across restarts |
 | `2d496bf` | #62 | Audiobooks: book pages (`queryBookChapters`, `ListHeader.book`), Audiobooks chip, library rows, librespot says what plays them |
+| `d8d4082` | D59 | Free tiling parked as an idea (`docs/ideas/layout.md`) |
+| `ee2e35d` | #71 | Audit first pass: private log (0600), socket directory and peer uid checks, `config::set_value` crash, bounded Catalogue caches, `deny.toml` |
+| `0bce068` | D60 | Visuals at 5 fps while nothing plays and nothing was touched for 2 s (`App::frame_rate`, `IDLE_FPS`) |
+| `3306a38` | #71 | Cover downloads ≤ 8 MB, decode ≤ 4096² / 256 MB; no panic into Core Audio's callback |
+| `57d37e6` | #71 | Release profile: thin LTO, one codegen unit, stripped |
+| `bc0377d` | #71 | `tests/hostile_input.rs`: random JSON, LRC and frames through every parser |
+| `d38d2f7` | #71 | `WRITE_DEADLINE`: a Client that stops reading is let go after 5 s |
+| `3873a6e`+ | #71 | macOS soak read: no leak; report updated |
 
 ## What exists in `crates/`
 
@@ -137,8 +172,7 @@ on macOS runs the Soloist VM (a scratch `XDG_DATA_HOME` gets its own VM: ~2 min 
 - **#62**: the owner checks a book on the VM or the app (a chapter resumes where it was left; save a book and see
   its library row: `libraryV3`'s `Audiobook` shape is assumed from search's), then close it. Batch 7 (free tiling) is parked (D59). Now: **batch 9, the audit, started 2026-10-20**: progress and what's left in
   `docs/research/2026-10-audit.md` (macOS tools, security fixes, bounded caches done; Linux, soaks, budgets, Miri, fuzz
-  to do). A 24 h soak sampler runs on the owner's Mac since 2026-10-20 17:03 (`~/.cache/singularity/soak.csv`):
-  read it next session
+  to do). The macOS soak is done (no leak; results in the report).
   (#71; SPEC "Batch 9": bugs, vulnerabilities, resources on both OSes; seeds: `follow_config` polls every second, the
   Catalogue's caches have no bound, `daemon.log` is 0644 and names the account, Soloist's cache is unlimited on Linux,
   the owner's idle Client used ~7 % CPU).
@@ -226,9 +260,10 @@ EFI vars, SSH key, pinned `bin/vfkit` + `bin/gvproxy`, logs), setup version 2, S
 > v1 is done; v1.x is built in batches (D29). Batches 1–4 and 6 (but #62) are done, 5 was dropped. **Batch 8, macOS, is
 > built** (D48–D56, tickets #63–#72): Linux and macOS have the same features, OS code only behind the platform seams
 > (D49), and `docs/PLATFORMS.md` is the exact status. Several macOS tickets wait only for the owner's live checks
-> (HANDOFF "Then"). If you're on Linux, first run everything there: nothing since the Mac work has run on Linux.
-> #62 (audiobooks) is built and waits for the owner's check; batch 7 (free tiling) is parked as an idea (D59). Next
-> and last: batch 9, the codebase audit (#71).
+> (HANDOFF "Then"). **This session is on Linux**: follow HANDOFF "Next session: Linux" (nothing since the Mac work has
+> run there).
+> #62 (audiobooks) is built and waits for the owner's check; batch 7 (free tiling) is parked as an idea (D59). Last:
+> batch 9, the codebase audit (#71): its macOS half is done (`docs/research/2026-10-audit.md`), the Linux half is next.
 >
 > Build one ticket at a time: code + tests at the spec's seams, `cargo test --workspace` (on a Mac also
 > `tools/check-linux.sh`), verify the real binaries in the pty harness (`tools/pty/`, screenshots), commit with
