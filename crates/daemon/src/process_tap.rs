@@ -129,7 +129,9 @@ unsafe extern "C-unwind" fn io_proc(_: AudioObjectID, _: NonNull<AudioTimeStamp>
         if !ctx.heard.load(Ordering::Relaxed) && samples.iter().any(|s| s.abs() > 1e-4) {
             ctx.heard.store(true, Ordering::Relaxed);
         }
-        (ctx.sink)(samples, ctx.rate);
+        // a panic must not unwind into Core Audio's thread: drop this buffer instead
+        let rate = ctx.rate;
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (ctx.sink)(samples, rate)));
     }
     0
 }

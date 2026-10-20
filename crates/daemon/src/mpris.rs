@@ -400,7 +400,15 @@ async fn cached_cover(url: &str) -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
     let dir = std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".cache")).join("singularity");
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build().ok()?;
-    let bytes = client.get(url).send().await.ok()?.error_for_status().ok()?.bytes().await.ok()?;
+    let resp = client.get(url).send().await.ok()?.error_for_status().ok()?;
+    // (#71) a cover is tens of KB: nothing past 8 MB is read
+    if resp.content_length().is_some_and(|n| n > 8 << 20) {
+        return None;
+    }
+    let bytes = resp.bytes().await.ok()?;
+    if bytes.len() > 8 << 20 {
+        return None;
+    }
     tokio::fs::create_dir_all(&dir).await.ok()?;
     // written aside, then moved, so the notification server never reads half a file
     let (tmp, path) = (dir.join("notify-cover.jpg.part"), dir.join("notify-cover.jpg"));

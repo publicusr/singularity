@@ -144,7 +144,14 @@ async fn load(dir: &Path, http: Option<&reqwest::Client>, url: &str) -> Option<R
         Ok(b) => b,
         Err(_) => {
             let resp = http?.get(url).send().await.ok()?.error_for_status().ok()?;
+            // (#71) a cover is tens of KB: anything past the cap is refused, not read into memory
+            if resp.content_length().is_some_and(|n| n > MAX_COVER_BYTES as u64) {
+                return None;
+            }
             let b = resp.bytes().await.ok()?.to_vec();
+            if b.len() > MAX_COVER_BYTES {
+                return None;
+            }
             // write-then-rename, so a half-written file is never read back as a cover
             let tmp = path.with_extension("part");
             if tokio::fs::write(&tmp, &b).await.is_ok() {
@@ -153,7 +160,22 @@ async fn load(dir: &Path, http: Option<&reqwest::Client>, url: &str) -> Option<R
             b
         }
     };
-    tokio::task::spawn_blocking(move || image::load_from_memory(&bytes).ok().map(|i| i.to_rgb8())).await.ok()?
+    tokio::task::spawn_blocking(move || decode(&bytes)).await.ok()?
+}
+
+/// The most a cover download may be, and the most pixels a decoded one may have (Spotify's largest are 640 px).
+const MAX_COVER_BYTES: usize = 8 << 20;
+const MAX_COVER_SIDE: u32 = 4096;
+
+/// Decode a picture within limits: a file that claims to be huge is refused before anything is allocated for it.
+pub fn decode(bytes: &[u8]) -> Option<RgbImage> {
+    let mut r = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_COVER_SIDE);
+    limits.max_image_height = Some(MAX_COVER_SIDE);
+    limits.max_alloc = Some(256 << 20);
+    r.limits(limits);
+    r.decode().ok().map(|i| i.to_rgb8())
 }
 
 /// Delete the least recently modified cache files until the directory fits the budget.
@@ -181,6 +203,34 @@ fn prune(dir: &Path, budget: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_picture_claiming_to_be_huge_is_refused_before_it_is_decoded() {
+        // (#71) a PNG whose header says 12000×12000 (~430 MB of pixels, under the library's own 512 MB limit): refused, nothing allocated
+        fn crc(data: &[u8]) -> u32 {
+            let mut c = !0u32;
+            for &b in data {
+                c ^= b as u32;
+                for _ in 0..8 {
+                    c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+                }
+            }
+            !c
+        }
+        let mut ihdr = b"IHDR".to_vec();
+        ihdr.extend(12_000u32.to_be_bytes());
+        ihdr.extend(12_000u32.to_be_bytes());
+        ihdr.extend([8, 2, 0, 0, 0]);
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend(13u32.to_be_bytes());
+        png.extend(&ihdr);
+        png.extend(crc(&ihdr).to_be_bytes());
+        assert!(decode(&png).is_none());
+        // an ordinary cover decodes
+        let mut ok = vec![];
+        image::RgbImage::new(64, 64).write_to(&mut std::io::Cursor::new(&mut ok), image::ImageFormat::Png).unwrap();
+        assert_eq!(decode(&ok).map(|i| i.dimensions()), Some((64, 64)));
+    }
 
     #[test]
     fn prune_keeps_the_newest_files_within_budget() {
