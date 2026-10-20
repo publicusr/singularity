@@ -6,7 +6,7 @@ use crate::ui::text;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
-use singularity_proto::{CatalogueStatus, EngineKind, EngineStatus, PlayStatus, StreamInfo};
+use singularity_proto::{CatalogueStatus, EngineKind, EngineStatus, StreamInfo};
 
 /// How to get lossless once (it's a per-device setting, from a phone).
 pub const LOSSLESS_FIX: &str = "On your phone: Spotify → device picker → Singularity → Change quality settings → Lossless";
@@ -119,9 +119,8 @@ fn app_step(app: &App) -> Step {
     if !matches!(app.engine, Some(EngineStatus::Ready { .. })) {
         return Step::Connect;
     }
-    // (the Spotify app's audio isn't tapped on macOS yet, #67: playing counts as the check there)
-    let tapped = librespot || !cfg!(target_os = "macos");
-    if app.setup.heard || (!tapped && app.playback.status == PlayStatus::Playing) { Step::Done } else { Step::Audio }
+    // every Engine's audio is tapped now (the Spotify app's: PipeWire on Linux, a process tap on macOS, #67)
+    if app.setup.heard { Step::Done } else { Step::Audio }
 }
 
 /// The wizard shows itself while something essential isn't set up (or when asked for).
@@ -445,6 +444,7 @@ pub fn draw_health(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use singularity_proto::PlayStatus;
 
     #[test]
     fn describe_reads_like_the_spec() {
@@ -491,9 +491,9 @@ mod tests {
         app.engine = Some(EngineStatus::Ready { device_name: "Mac".into(), active: false, version: "1.2.94".into(), expires_in_days: None });
         assert_eq!(step(&app), Step::Audio);
         assert!(!wanted(&app));
-        // its audio is tapped on Linux (its PipeWire stream), not yet on macOS (#67): there playing counts
+        // its audio is tapped on both OSes (#67): playing isn't enough, sound must come through
         app.playback.status = PlayStatus::Playing;
-        assert_eq!(step(&app) == Step::Done, cfg!(target_os = "macos"));
+        assert_eq!(step(&app), Step::Audio);
         app.setup.heard = true;
         assert_eq!(step(&app), Step::Done);
         // the health check names the app, and has no Soloist key row

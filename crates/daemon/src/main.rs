@@ -89,13 +89,15 @@ async fn run() -> anyhow::Result<i32> {
     };
     // the AudioTap listens to the Engine's own audio: Soloist's PipeWire stream, librespot's samples in-process; the
     // fake Engine "plays" a synthetic groove (SINGULARITY_TAP=off: none, so a test Daemon never listens to the
-    // owner's real player). (The Spotify app's audio: its PipeWire stream on Linux, a Core Audio tap on macOS, #67.)
+    // owner's real player). The Spotify app's audio: its PipeWire stream on Linux, a Core Audio process tap on macOS (#67).
     use singularityd::tap::{StreamOf, TapSource};
     let tap = match (&librespot, kind) {
         _ if fake => Some(TapSource::Synthetic),
         (Some(l), _) => Some(TapSource::Feed(l.feed.clone())),
         (None, _) if soloist_vm.is_some() => soloist_vm.as_ref().map(|(_, f)| TapSource::Feed(f.clone())),
-        (None, Some(Kind::SpotifyApp)) if cfg!(target_os = "macos") => None,
+        #[cfg(target_os = "macos")]
+        (None, Some(Kind::SpotifyApp)) => Some(TapSource::App(singularityd::tap::Feed::new())),
+        #[cfg(not(target_os = "macos"))]
         (None, Some(Kind::SpotifyApp)) => Some(TapSource::PipeWire(StreamOf::SpotifyApp)),
         _ => Some(TapSource::PipeWire(StreamOf::Soloist)),
     };

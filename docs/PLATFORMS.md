@@ -38,7 +38,7 @@ asked librespot not to pursue it). The only other route is Soloist itself in a s
 | Track notifications (29) | ✅ D-Bus, with the cover | 🔶 `osascript` notifications, no cover (a process without an app bundle can't post its own) | #68 |
 | Music survives closing the terminal (30) | ✅ | ✅ (own process group) | — |
 | Daemon starts at login (optional: a Client starts it anyway) | ✅ systemd user unit | ✅ LaunchAgent (`packaging/launchd/install.sh`; tested under a scratch label: start, exit-75 restart, uninstall) | — |
-| **Audio Widgets react to the music (40): spectrum, loudness, VU, rain, scope, the hole's pulse** | ✅ Soloist (PipeWire); 🔶 app (its PipeWire stream); 🔶 librespot (in-process) | 🔶 **librespot: in-process, no permission needed**; ❌ **app: nothing yet, the Widgets stay flat** | #67 (Core Audio process tap on Spotify.app) |
+| **Audio Widgets react to the music (40): spectrum, loudness, VU, rain, scope, the hole's pulse** | ✅ Soloist (PipeWire); 🔶 app (its PipeWire stream); 🔶 librespot (in-process) | 🔶 **librespot: in-process, no permission needed**; 🔶 Soloist VM: in-process (its PCM); 🔶 **app: Core Audio process tap, needs the terminal allowed under "System Audio Recording Only"** (silence otherwise, and Singularity says so) | #67 (live check with the app pending) |
 | Visuals on the GPU, paused when hidden (36–42) | ✅ Vulkan | ✅ Metal ("Apple M2") | `tap_cpu` budget on the M2: #71 |
 | Pixel tier: kitty graphics, shared memory (43) | ✅ kitty, Ghostty | 🔶 same code (POSIX `shm_open`); not tried in a real kitty/Ghostty on macOS yet | owner's terminal check |
 | `top` Widget (Terminal design) | ✅ `/proc` | ✅ libproc (new: was empty on macOS); also shows the Spotify app and its helpers | — |
@@ -54,7 +54,7 @@ asked librespot not to pursue it). The only other route is Soloist itself in a s
 | Seam | Linux | macOS | macOS status |
 |------|-------|-------|--------------|
 | Engine (ADR-0001, D51, D52) | Soloist over its WebSocket; or the app / librespot | the app (started hidden), or librespot | see the Engines table |
-| AudioTap (D16) | `parec` on the Engine's PipeWire stream (Soloist's, or the app's); librespot in-process | librespot in-process; Core Audio process tap on Spotify.app | 🔨 #67 for the app |
+| AudioTap (D16) | `parec` on the Engine's PipeWire stream (Soloist's, or the app's); librespot in-process | librespot and the Soloist VM in-process; Core Audio process tap on Spotify.app (48 → 44.1 kHz) | 🔶 #67 for the app |
 | Secrets (D24) | `secret-tool` | `/usr/bin/security` | ✅ #64 |
 | OS media integration | MPRIS on D-Bus | Now Playing + remote commands (MediaPlayer framework; the main thread runs the run loop, tokio another thread) | 🔶 #68 |
 | Notifications | D-Bus | `osascript` | 🔶 #68 |

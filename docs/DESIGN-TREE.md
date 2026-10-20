@@ -847,4 +847,18 @@ flowchart LR
   volume on every `volume_changed` (`soloist-state/volume`) and starts Soloist with `--initial-volume` (Linux and the
   VM alike). `SINGULARITY_SOLOIST=local` keeps a stand-in Soloist local on macOS for the pty harness (`soloist` there
   now means the VM). librespot measured while playing: ~1 % CPU, 28 MB.
+- **#67 AudioTap on the Spotify app (macOS) 🔶** (2026-10-20, built; live check with the app pending): `process_tap.rs`:
+  a `CATapDescription` (stereo mixdown of the app's audio process objects, private, unmuted) → a process tap → a
+  private aggregate device holding only the tap → a C IO callback on Core Audio's thread that only resamples
+  (48 → 44.1 kHz, linear, `tap::Resampler`, tested to keep a 1 kHz tone in its band) and hands the samples to a
+  `Feed`, so the rest is librespot's path. `manage` keeps the tap while a Client wants audio and the app runs
+  (all "Spotify"/"Spotify Helper" processes: which one plays isn't fixed), follows an app restart, and if the app plays
+  but only silence arrives for 6 s, says once where the permission is. Probe (`examples/tap_probe`): mechanically
+  right (48 kHz stereo, real time), but all zeros from a shell: the "record audio from other apps" permission goes to
+  the app Singularity runs in, terminals don't ask for it, so it has to be granted by hand (System Settings → Privacy &
+  Security → Screen & System Audio Recording → System Audio Recording Only → the terminal). The wizard's audio check
+  now needs real sound for the app on both OSes.
+- **librespot: a watchdog for a dead session** (2026-10-20): at 01:13 the owner's Daemon logged "Connection to server
+  closed" while idle and never came back: librespot's Connect loop only checks the session between events. The
+  LibrespotEngine now looks every 5 s and restarts the receiver where it was.
 

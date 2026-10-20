@@ -262,6 +262,39 @@ impl Feed {
     }
 }
 
+/// Interleaved stereo at any rate → 44.1 kHz (linear: the analysis only needs bands, not hi-fi), kept across calls.
+#[derive(Default)]
+pub struct Resampler {
+    /// where the next output sample falls, in input frames, relative to the frame `last` holds
+    pos: f64,
+    last: [f32; 2],
+}
+
+impl Resampler {
+    pub fn push(&mut self, input: &[f32], rate: f64, out: &mut Vec<f32>) {
+        if (rate - RATE as f64).abs() < 1.0 {
+            out.extend_from_slice(input);
+            return;
+        }
+        let step = rate / RATE as f64;
+        let frames = input.len() / 2;
+        // frame -1 is the last one of the previous call
+        let at = |i: isize| if i < 0 { self.last } else { [input[i as usize * 2], input[i as usize * 2 + 1]] };
+        while self.pos < frames as f64 - 1.0 {
+            let i = self.pos.floor() as isize;
+            let t = (self.pos - i as f64) as f32;
+            let (a, b) = (at(i), at(i + 1));
+            out.push(a[0] + (b[0] - a[0]) * t);
+            out.push(a[1] + (b[1] - a[1]) * t);
+            self.pos += step;
+        }
+        if frames > 0 {
+            self.last = at(frames as isize - 1);
+            self.pos -= frames as f64;
+        }
+    }
+}
+
 impl std::fmt::Debug for Feed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Feed").field("wanted", &self.wanted()).finish()
@@ -307,12 +340,24 @@ pub enum TapSource {
     PipeWire(StreamOf),
     /// samples from an Engine inside this Daemon (librespot, every OS)
     Feed(Arc<Feed>),
+    /// macOS: a Core Audio process tap on the Spotify app (#67), delivered like a Feed
+    #[cfg(target_os = "macos")]
+    App(Arc<Feed>),
     /// the built-in groove, while the (fake) Engine plays
     Synthetic,
 }
 
 /// Run the tap for the Daemon: idle until a Client listens, then analyse and broadcast frames.
 pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
+    // the Spotify app's tap feeds a Feed of its own while it's wanted
+    #[cfg(target_os = "macos")]
+    let source = match source {
+        TapSource::App(feed) => {
+            tokio::spawn(crate::process_tap::manage(hub.clone(), feed.clone()));
+            TapSource::Feed(feed)
+        }
+        s => s,
+    };
     use std::sync::atomic::Ordering;
     let mut an = Analyzer::new();
     let mut volume = None;
@@ -354,6 +399,8 @@ pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
                 // what came in meanwhile is stale by the next listen
                 while rx.try_recv().is_ok() {}
             }
+            #[cfg(target_os = "macos")]
+            TapSource::App(_) => unreachable!("turned into a Feed when the tap starts"),
             TapSource::Synthetic => {
                 // one frame's worth of audio per frame period
                 let mut t = 0u64;
@@ -535,6 +582,24 @@ mod tests {
         assert!(a.is_quiet(), "down within 3 s");
         assert!(frames.last().unwrap().bands.iter().all(|b| *b == 0), "the last frame clears every Client");
         assert!(a.silence().is_empty(), "then silence costs nothing");
+    }
+
+    #[test]
+    fn the_resampler_turns_48_khz_into_44_1_and_keeps_the_tone() {
+        let mut r = Resampler::default();
+        let mut out = vec![];
+        // 2 s of a 1 kHz sine at 48 kHz, in uneven chunks as Core Audio hands them over
+        let input: Vec<f32> = (0..96_000).flat_map(|i| [(std::f32::consts::TAU * 1000.0 * i as f32 / 48_000.0).sin() * 0.3; 2]).collect();
+        for c in input.chunks(1_234 * 2) {
+            r.push(c, 48_000.0, &mut out);
+        }
+        assert!((out.len() as i64 - 2 * 88_200).abs() < 8, "2 s at 44.1 kHz: {}", out.len() / 2);
+        let frames = Analyzer::new().push(&out);
+        let last = frames.last().unwrap();
+        let top = (0..BANDS).max_by_key(|&b| last.bands[b]).unwrap();
+        let f0 = 35.0f32 * (16000.0f32 / 35.0).powf(top as f32 / BANDS as f32);
+        let f1 = 35.0f32 * (16000.0f32 / 35.0).powf((top + 1) as f32 / BANDS as f32);
+        assert!(f0 <= 1100.0 && f1 >= 900.0, "still 1 kHz: band {top} ({f0:.0}–{f1:.0} Hz)");
     }
 
     #[test]

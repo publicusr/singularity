@@ -39,10 +39,13 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSDictionary", "NSValue", "NSObject"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSDictionary", "NSValue", "NSObject", "NSArray", "NSUUID"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSImage"] }
 objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "MPNowPlayingInfoCenter", "MPMediaItem", "MPRemoteCommand", "MPRemoteCommandCenter", "MPRemoteCommandEvent"] }
-objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "CFDate"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "CFDate", "CFDictionary"] }
+# the process tap on the Spotify app (#67)
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "objc2", "objc2-foundation", "objc2-core-audio-types", "AudioHardware"] }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -119,8 +119,12 @@ async fn run(engine: LibrespotEngine, mut cmds: mpsc::Receiver<Command>, ev: mps
         };
         tracing::info!("librespot: {:?} is on Connect", engine.identity.device_name);
         // the Catalogue says Ready once Connect shows the device
-        let Receiver { spirc, mut task, player, mut events } = receiver;
+        let Receiver { spirc, mut task, player, mut events, session } = receiver;
         let mut told_stream = false;
+        // librespot's Connect loop only notices a dead session between events: when the connection to Spotify closes
+        // while nothing happens (2026-10-20, 01:13), it waits forever. Look every 5 s.
+        let mut watchdog = tokio::time::interval(Duration::from_secs(5));
+        watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let restart = loop {
             tokio::select! {
                 cmd = cmds.recv() => match cmd {
@@ -159,6 +163,17 @@ async fn run(engine: LibrespotEngine, mut cmds: mpsc::Receiver<Command>, ev: mps
                     saved = r.ok().flatten();
                     break true;
                 }
+                _ = watchdog.tick() => {
+                    if session.is_invalid() {
+                        tracing::warn!("librespot: the connection to Spotify closed; reconnecting");
+                        let _ = spirc.shutdown();
+                        saved = tokio::time::timeout(Duration::from_secs(5), &mut task).await.ok().and_then(|r| r.ok()).flatten();
+                        if saved.is_none() {
+                            task.abort();
+                        }
+                        break true;
+                    }
+                }
             }
         };
         drop(player);
@@ -171,6 +186,7 @@ async fn run(engine: LibrespotEngine, mut cmds: mpsc::Receiver<Command>, ev: mps
 }
 
 struct Receiver {
+    session: Session,
     spirc: Spirc,
     task: tokio::task::JoinHandle<Option<librespot_connect::SavedPlaybackState>>,
     player: Arc<Player>,
@@ -190,8 +206,8 @@ async fn start(engine: &LibrespotEngine, creds: Credentials, saved: Option<libre
     let defaults = ConnectConfig::default();
     let initial_volume = saved_volume(&engine.dirs).unwrap_or(defaults.initial_volume);
     let connect = ConnectConfig { name, device_type: DeviceType::Computer, initial_volume, ..defaults };
-    let (spirc, task) = Spirc::with_saved_state(connect, session, creds, player.clone(), mixer, saved).await?;
-    Ok(Receiver { spirc, task: tokio::spawn(task), player, events })
+    let (spirc, task) = Spirc::with_saved_state(connect, session.clone(), creds, player.clone(), mixer, saved).await?;
+    Ok(Receiver { session, spirc, task: tokio::spawn(task), player, events })
 }
 
 /// The system output, and the same samples to the AudioTap while it wants them.

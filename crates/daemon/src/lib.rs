@@ -13,6 +13,8 @@ pub mod lyrics;
 pub mod mpris;
 pub mod nowplaying;
 pub mod pcm;
+#[cfg(target_os = "macos")]
+pub mod process_tap;
 pub mod playlists;
 pub mod queries;
 pub mod secrets;
