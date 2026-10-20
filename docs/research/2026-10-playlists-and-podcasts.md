@@ -81,3 +81,24 @@ All playlist routes above are still there. Details read from the bundle:
   Podcast, name, publisher{name}, coverArt{sources}, description, uri}}`; the library's filter for them has id
   `"Podcasts & Shows"` (name "Podcasts") and only appears while one is saved. `addToLibrary` / `removeFromLibrary`
   take show URIs like albums'.
+
+## Audiobooks, checked 2026-10-20 (#62, macOS, read-only)
+
+- A book is a `spotify:show:` whose Pathfinder `__typename` is `Audiobook`; its chapters are `spotify:episode:` URIs
+  (`__typename: Chapter`, librespot's `Episode.is_audiobook_chapter = true`). So the queue, Connect and the Engines see
+  chapters as episodes.
+- `searchDesktop` with `includeAudiobooks: true` (and `includeAuthors`) returns `searchV2.audiobooks.items[]
+  {AudiobookResponseWrapper, data: Audiobook {uri, name, authorsV2[{name, uri: spotify:author:…}], coverArt,
+  description ("Author(s): …\nNarrator(s): …\n\n…"), audiobookDuration.totalMilliseconds, accessInfo.signifier.text,
+  isPreRelease, publishDate, mediaType, topics}}` and `searchV2.authors`.
+- `accessInfo.signifier.text` is Spotify's own line about access: on the owner's account "Listen free until Oct 31"
+  (the Polish launch promo), "Access with Audiobooks+" (the paid add-on), or empty.
+- `queryBookChapters {uri, offset, limit}` → `podcastUnionV2 {__typename: Audiobook, chaptersV2 {items[{uid, entity:
+  {_uri, data: Chapter {uri, name, duration.totalMilliseconds, playability {playable, reason}, playedState
+  {playPositionMilliseconds, state}, restrictions.paywallContent, coverArt, description}}}], pagingInfo.nextOffset,
+  totalCount}}`: the same `playedState` as episodes, so progress and resume read like #59.
+- **librespot can't play chapters.** Silent probe (`examples/chapter_probe`, nothing played): a chapter's metadata
+  lists Ogg Vorbis 96 and AAC files and its storage resolves, but the audio key request is refused ("audio key
+  error"); the same probe on an ordinary podcast episode gets its key. Spotify keys chapters separately (Soloist has
+  `abp_chapter_keys_*`); going around that would be DRM circumvention: out.
+- Soloist (Linux, and the macOS VM) and the Spotify app: not yet played live.

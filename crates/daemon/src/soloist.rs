@@ -633,7 +633,15 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                 let Ok(ev) = serde_json::from_str::<Value>(t.as_str()) else { continue };
                 match ev["type"].as_str() {
                     Some("auth_state") | Some("device_changed") => {
+                        let was_logged_in = logged_in;
                         if let Some(l) = ev["logged_in"].as_bool() { logged_in = l; }
+                        // a volume asked for while Soloist was starting is lost (it starts at its own default once
+                        // logged in): set it again
+                        if logged_in && !was_logged_in
+                            && let Some(v) = engine.saved_volume()
+                        {
+                            ws_tx.send(Message::text(json!({"type":"command","command":"set_volume","volume":v}).to_string())).await?;
+                        }
                         if let Some(a) = ev["is_active"].as_bool() { active = a; }
                         // back after an update: pick up where playback was
                         if logged_in && let Some(r) = upd.resume.take() {
@@ -665,11 +673,11 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                     }
                     _ => {
                         let track_changed = ev["type"] == "track_changed";
-                        let volume = st.playback.volume;
                         if st.apply(&ev) {
                             let _ = ev_tx.send(EngineEvent::Playback(st.playback.clone())).await;
                         }
-                        if st.playback.volume != volume && ev["type"] == "volume_changed" {
+                        // (every change: one to 0 looks like no change from the state's default)
+                        if ev["type"] == "volume_changed" {
                             engine.save_volume(st.playback.volume);
                         }
                         if track_changed {
@@ -723,6 +731,10 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                     store_key(key, ev_tx).await;
                     let _ = child.kill().await;
                     return Ok(Exit::Died);
+                }
+                // the volume asked for is the one a restarted Soloist starts at, even if this one never applies it
+                if let Command::SetVolume { percent } = cmd {
+                    engine.save_volume(percent.min(100));
                 }
                 for m in st.to_soloist(cmd) {
                     ws_tx.send(Message::text(m.to_string())).await?;

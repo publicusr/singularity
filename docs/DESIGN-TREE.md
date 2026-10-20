@@ -76,6 +76,8 @@ so it cannot be settled by talking)
 | D54 | macOS default Engine | D52, D53 | settled | Owner (2026-10-19): librespot, "since widgets work out of the box, and it uses the least resources by far and its standalone. requiring the spotify app on top of it makes it just a second interface to an app already there working, dont love that for my player." `auto` = librespot on macOS (Soloist stays Linux's); the app remains `kind = "spotify-app"`, the lossless choice. |
 | D55 | Soloist in a VM as a macOS Engine | D53 | settled | Owner (2026-10-20): yes, after the spike measured ~300 MB and ~5.6 % CPU playing FLAC. `[engine] kind = "soloist"` on macOS runs Soloist in a Linux VM the Daemon manages: lossless, standalone, the audio Widgets fed from its PCM. |
 | D56 | macOS default with the VM available | D54, D55 | settled | Owner (2026-10-20): librespot stays the default (26 MB, no pairing); the Soloist VM is the setting to switch to for lossless. |
+| D57 | Audiobooks on an Engine that can't play them | D41, D49, D52 | settled | Owner (2026-10-20): librespot can't (Spotify refuses it chapter keys; going around that is DRM circumvention). Audiobooks are built for every Engine: book pages, library rows and search work everywhere; on librespot, playing a chapter says "Audiobooks need Soloist or the Spotify app: switch the player in Settings". |
+| D58 | Spotify's access line on books | D57 | settled | Owner (2026-10-20): book rows and the book page show Spotify's own `accessInfo.signifier` text ("Listen free until Oct 31", "Access with Audiobooks+"); a refusal to play still says so. |
 
 ```mermaid
 flowchart LR
@@ -862,3 +864,14 @@ flowchart LR
   closed" while idle and never came back: librespot's Connect loop only checks the session between events. The
   LibrespotEngine now looks every 5 s and restarts the receiver where it was.
 
+- **#62 audiobooks, live check** (2026-10-20, macOS): a book is a `spotify:show:` (`__typename: Audiobook`), its
+  chapters `spotify:episode:` URIs. librespot can't play them: a silent probe (`examples/chapter_probe`) gets a
+  chapter's files but the audio key is refused (an ordinary episode's isn't). Soloist (the VM, 1.3.9.39) plays them:
+  "Opening Credits" of a book played ~4 s, and Spotify recorded `playedState IN_PROGRESS` at 907 ms. Owner round: yes
+  to all three (the VM check; D57 audiobooks everywhere, a message on librespot; D58 Spotify's access line shown).
+  The check was meant to be at volume 0 but was audible at 40 %: Soloist's updater restarted it into a new build just
+  as the check began, the volume asked for reached the new Soloist before it had logged in and was lost, and a volume
+  of exactly 0 was never saved (it looked like no change from the state's default). Fixed: the SoloistEngine saves
+  the volume a Client asks for (a restarted Soloist starts at it), saves every `volume_changed`, and sets the saved
+  volume again once Soloist logs in. The pty `update_test.py` now mutes before the update and checks the new build
+  starts muted.

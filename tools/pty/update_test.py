@@ -1,10 +1,10 @@
 """#6 in a pty: a real Daemon (real SoloistEngine) runs an expiring stand-in Soloist build (`fake_soloist.py`, 1 day
 left) from scratch dirs; a fake CDN then offers a newer one. The new build must be staged while a track plays, and
-taken over only at the next track change, with playback picked up. Never touches the owner's Soloist, keyring or audio.
+taken over only at the next track change, with playback picked up, at the volume last asked for. Never touches the owner's Soloist, keyring or audio.
 
     venv/bin/python update_test.py out-update
 """
-import http.server, json, os, shutil, subprocess, sys, tarfile, threading, time
+import http.server, json, os, shutil, socket, struct, subprocess, sys, tarfile, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shot
 
@@ -79,8 +79,21 @@ for k in ("KITTY_WINDOW_ID", "TERM_PROGRAM", "GHOSTTY_RESOURCES_DIR", "TMUX"):
     env.pop(k, None)
 
 
+def command(c):
+    """One Command over the Daemon's socket, as a Client sends it."""
+    s = socket.socket(socket.AF_UNIX)
+    s.connect(sock)
+    # (read what the Daemon sends: it writes its whole snapshot before reading anything)
+    threading.Thread(target=lambda: [None for _ in iter(lambda: s.recv(65536), b"")], daemon=True).start()
+    for m in ({"t": "hello", "protocol": 1, "client": "update-test"}, {"t": "command", **c}):
+        b = json.dumps(m).encode()
+        s.sendall(struct.pack(">I", len(b)) + b)
+    time.sleep(0.5)
+    s.close()
+
+
 def started():
-    return [l.split()[1] for l in open(events)] if os.path.exists(events) else []
+    return [l.split()[1] for l in open(events) if " started" in l] if os.path.exists(events) else []
 
 
 d = subprocess.Popen([f"{shot.BIN}/singularityd", "--fake-catalogue", f"{shot.ROOT}/crates/client/tests/fixtures/home.json"], env=env, stderr=open(f"{out}/daemon.log", "w"))
@@ -97,6 +110,8 @@ try:
     t.pump(1.5)
     t.shot(f"{out}/0-playing-v1.png")
     print("running builds so far:", started())
+    # muted: the new build must start muted too
+    command({"cmd": "set_volume", "percent": 0})
     # a new build appears on the CDN while the track plays
     serving.update(etag='"v2"', file=build_v2)
     t.pump(6.0)
@@ -106,7 +121,7 @@ try:
     # the next track: the moment to switch
     t.send(b"n", 4.0)
     t.shot(f"{out}/2-next-track-v2.png")
-    print("after next:", started(), "| installed:", json.load(open(f"{inst}/build.json"))["version"], "| playing:", "❚❚" in t.text())
+    print("after next:", started(), "| v2 starts muted:", any(" v2 " in l and "volume=0" in l for l in open(events)), "| installed:", json.load(open(f"{inst}/build.json"))["version"], "| playing:", "❚❚" in t.text())
     t.send(b"\x0b", 0.3); t.send(b"health", 0.3); t.send(b"\r", 2.0)
     t.shot(f"{out}/3-health.png")
     print("health:", [l.strip() for l in t.text().splitlines() if "Engine" in l][:1])

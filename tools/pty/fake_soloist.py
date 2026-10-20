@@ -1,5 +1,6 @@
 """A stand-in Soloist for the update test (`update_test.py`): enough of the WebSocket protocol for the SoloistEngine
-(auth, playback state, play/pause/next/seek/volume), plus `--version` and the "client expires in N days" log line.
+(auth, playback state, play/pause/next/seek/volume, `--initial-volume`), plus `--version` and the "client expires in N
+days" log line.
 
 `update_test.py` copies this into builds with VERSION and DAYS filled in and a shebang to the harness's venv. Every
 start and stop is appended to $FAKE_SOLOIST_EVENTS, so the test can tell when a build ran."""
@@ -26,7 +27,7 @@ def track(n):
 
 class Player:
     def __init__(self):
-        self.n, self.status, self.pos, self.ts, self.volume, self.loaded = 0, "idle", 0, 0, 50, False
+        self.n, self.status, self.pos, self.ts, self.volume, self.loaded = 0, "idle", 0, 0, 40, False
 
     def position(self):
         now = int(time.time() * 1000)
@@ -50,6 +51,8 @@ async def main():
     with open(f"{data}/soloist.pid", "w") as f:
         f.write(str(os.getpid()))
     p = Player()
+    if "--initial-volume" in sys.argv:
+        p.volume = int(sys.argv[sys.argv.index("--initial-volume") + 1])
 
     async def session(ws):
         await ws.send(json.dumps({"type": "auth_state", "logged_in": True, "is_active": True}))
@@ -82,6 +85,7 @@ async def main():
                 await ws.send(json.dumps({"type": "position_sync", "position": p.position()}))
             elif cmd == "set_volume":
                 p.volume = c.get("volume", p.volume)
+                event(f"volume={p.volume}")
                 await ws.send(json.dumps({"type": "volume_changed", "volume": p.volume}))
             elif cmd in ("get_state", "get_queue"):
                 await ws.send(json.dumps(p.state()))
@@ -93,7 +97,7 @@ async def main():
     with open(f"{data}/ws.port", "w") as f:
         f.write(str(port))
     print(f"\x1b[0m00:00:00.000 I [f:128] client expires in {DAYS} days\x1b[0m", flush=True)
-    event("started")
+    event(f"started volume={p.volume}")
     try:
         await asyncio.Future()
     finally:
