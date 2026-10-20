@@ -24,6 +24,20 @@ light choice and the macOS default (D54), at most 320 kbps, never lossless. Driv
 directly (the tap's *Feed*).
 _Avoid_: built-in player (fine in UI text, not as a term), spotifyd
 
+**Soloist VM**:
+Soloist (Linux-only) run on macOS inside a small Linux VM the Daemon manages (`kind = "soloist"` there, D55): the
+SoloistEngine with a VM host. Its audio comes to the Daemon over vsock and plays from there.
+_Avoid_: Linux VM engine, "the VM Engine" (the Engine is still Soloist)
+
+**Process tap**:
+The macOS AudioTap source for the Spotify app as Engine (#67): Core Audio's per-process capture, which needs the
+"System Audio Recording Only" permission for the terminal Singularity runs in.
+_Avoid_: screen recording, loopback
+
+**Feed**:
+The AudioTap's in-process input: an Engine that plays from the Daemon (librespot, the Soloist VM) or the process tap
+hands it samples, only while a Client shows audio Widgets.
+
 **Platform seam**:
 One of the few places where Linux and macOS have their own code (Engine, AudioTap, Secrets, OS media integration,
 autostart, process lookup). Everything else is shared (D49); `docs/PLATFORMS.md` lists them.

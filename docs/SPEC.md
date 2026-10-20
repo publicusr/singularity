@@ -145,7 +145,9 @@ audio, and looks spectacular.
     local WebSocket, parses the build lifetime and auto-updates between tracks, reads codec/bitrate from its verbose log.
   - *AppEngine* (macOS, D25, D51): the hidden official Spotify app, controlled over Connect through ConnectRemote; its
     playback, queue and stream quality come from the Connect cluster. `[engine] kind` picks the Engine (default per OS).
-  - *LibrespotEngine* (both OSes, D52): librespot's Connect receiver and player inside the Daemon, driven over Connect
+  - *Soloist VM* (macOS, D55, #72): the SoloistEngine with a VM host: Soloist in a Linux VM (vfkit, gvproxy, Debian
+    arm64) the Daemon sets up and runs; its audio over vsock to the Daemon, which plays and taps it. `kind = "soloist"`.
+  - *LibrespotEngine* (both OSes, D52; the macOS default, D54/D56): librespot's Connect receiver and player inside the Daemon, driven over Connect
     like the app; audio to the system output through cpal, and to the AudioTap in-process. The light choice: at most
     320 kbps, never lossless.
   - Commands Soloist lacks (play-at-offset, queue removal, device quality) go through *ConnectRemote*.
@@ -157,8 +159,8 @@ audio, and looks spectacular.
   - *OfficialCatalogue*: Web API fallback for library/search when the private source is broken.
   - Rules: metadata only, no crawling, cache with TTLs, back off on 429/5xx, never retry in a loop.
 - **ConnectRemote** (D12): device list, transfer, remote control of any device, per-device quality (D17, to verify).
-- **AudioTap** (D16): captures only the Engine's stream (PipeWire on Linux; Core Audio process tap on macOS; librespot's
-  samples in-process on both), runs FFT,
+- **AudioTap** (D16): captures only the Engine's stream (PipeWire on Linux; a Core Audio process tap on the Spotify app
+  on macOS; librespot's and the Soloist VM's samples in-process), runs FFT,
   onset detection and **automatic gain** (the tap is post-volume), and publishes spectrum frames.
 - **LocalStore** (D20): SQLite listening log and nightly JSON library backups under the XDG data dir, owner-only permissions,
   export/delete commands, no telemetry.

@@ -19,4 +19,7 @@
   `/tmp/sgl-<uid>/` (Unix socket paths must be short).
 - Linux and macOS have the same features (D49): OS-specific code only behind the platform seams in `docs/PLATFORMS.md`.
   On a Mac, `tools/check-linux.sh` type-checks the Linux build; run it before committing. `docs/PLATFORMS.md` is the
-  exact parity status: update its rows whenever something changes on either OS.
+  exact parity status: update its rows whenever something changes on either OS. The README's "Build and run" and
+  "macOS quirks" sections are the user-facing version: keep them true too.
+- Test Daemons pin their Engine and stay in scratch dirs (`SINGULARITY_ENGINE`, `SINGULARITY_SOLOIST=local`,
+  `SINGULARITY_START_APP=0`, `SINGULARITY_NOWPLAYING=off`, `SINGULARITY_NO_KEYRING=1`, scratch `XDG_*`): see HANDOFF.
