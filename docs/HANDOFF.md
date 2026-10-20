@@ -137,7 +137,8 @@ on macOS runs the Soloist VM (a scratch `XDG_DATA_HOME` gets its own VM: ~2 min 
 - **#62**: the owner checks a book on the VM or the app (a chapter resumes where it was left; save a book and see
   its library row: `libraryV3`'s `Audiobook` shape is assumed from search's), then close it. Batch 7 (free tiling) is parked (D59). Now: **batch 9, the audit, started 2026-10-20**: progress and what's left in
   `docs/research/2026-10-audit.md` (macOS tools, security fixes, bounded caches done; Linux, soaks, budgets, Miri, fuzz
-  to do)
+  to do). A 24 h soak sampler runs on the owner's Mac since 2026-10-20 17:03 (`~/.cache/singularity/soak.csv`):
+  read it next session
   (#71; SPEC "Batch 9": bugs, vulnerabilities, resources on both OSes; seeds: `follow_config` polls every second, the
   Catalogue's caches have no bound, `daemon.log` is 0644 and names the account, Soloist's cache is unlimited on Linux,
   the owner's idle Client used ~7 % CPU).
