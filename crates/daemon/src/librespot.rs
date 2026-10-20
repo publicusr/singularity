@@ -49,6 +49,16 @@ fn volume_file(dirs: &Dirs) -> std::path::PathBuf {
     dirs.credentials.join("librespot-volume")
 }
 
+/// Is this an audiobook's chapter? (They are episodes; their metadata says so.)
+async fn is_chapter(session: &Session, uri: &librespot_core::SpotifyUri) -> bool {
+    use protobuf::Message;
+    if !matches!(uri, librespot_core::SpotifyUri::Episode { .. }) {
+        return false;
+    }
+    let Ok(bytes) = session.spclient().get_episode_metadata(uri).await else { return false };
+    librespot_protocol::metadata::Episode::parse_from_bytes(&bytes).is_ok_and(|e| e.is_audiobook_chapter())
+}
+
 /// The volume to start at (librespot's 0–65535), as last set.
 pub fn saved_volume(dirs: &Dirs) -> Option<u16> {
     std::fs::read_to_string(volume_file(dirs)).ok()?.trim().parse().ok()
@@ -153,7 +163,16 @@ async fn run(engine: LibrespotEngine, mut cmds: mpsc::Receiver<Command>, ev: mps
                         let _ = std::fs::write(volume_file(&engine.dirs), volume.to_string());
                     }
                     Some(PlayerEvent::Unavailable { track_id, .. }) => {
-                        let _ = ev.send(EngineEvent::Error(format!("librespot can't play {track_id}: not available to it"))).await;
+                        // an audiobook chapter: Spotify won't give librespot its key (D57); say what plays them
+                        let (session, ev) = (session.clone(), ev.clone());
+                        tokio::spawn(async move {
+                            let message = if is_chapter(&session, &track_id).await {
+                                singularity_proto::AUDIOBOOKS_NEED.to_string()
+                            } else {
+                                format!("librespot can't play {track_id}: not available to it")
+                            };
+                            let _ = ev.send(EngineEvent::Error(message)).await;
+                        });
                     }
                     Some(_) => {}
                     None => break true,

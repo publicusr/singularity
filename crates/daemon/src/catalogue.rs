@@ -151,6 +151,8 @@ struct State {
     ev: mpsc::Sender<CatEvent>,
     remote: Option<ConnectRemote>,
     tracks: HashMap<String, (Instant, Vec<TrackPage>)>,
+    /// shows found to be audiobooks (#62): their pages come from `queryBookChapters`
+    books: std::collections::HashSet<String>,
     described: HashMap<String, singularity_proto::Item>,
     lyrics: HashMap<String, singularity_proto::Lyrics>,
     artists: HashMap<String, (Instant, singularity_proto::ArtistPage)>,
@@ -163,7 +165,7 @@ struct State {
 
 async fn run(dirs: Dirs, engine: Identity, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
     let registry = QueryRegistry::new(dirs.queries.clone());
-    let mut st = State { dirs, engine, session: None, registry, ev, remote: None, tracks: HashMap::new(), described: HashMap::new(), lyrics: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default(), cluster_changed: Default::default() };
+    let mut st = State { dirs, engine, session: None, registry, ev, remote: None, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), lyrics: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default(), cluster_changed: Default::default() };
     // resume a previous login
     if saved_credentials(&st.dirs).is_some() {
         if st.connect(None).await {
@@ -526,7 +528,12 @@ fn fake_search(q: &str, home: &HomeFeed) -> singularity_proto::SearchResults {
     singularity_proto::SearchResults { query: q.into(), top: all.iter().take(3).cloned().collect(), tracks, artists: of("artist"), albums: of("album"), playlists: of("playlist"), podcasts: fake_podcasts(), episodes: fake_show("spotify:show:fakeshow").into_iter().find_map(|e| match e {
         CatEvent::Tracks(p) => Some(p.tracks.into_iter().take(4).map(|mut t| { t.artists = vec!["Fake Show".into()]; t.artist_uris = vec!["spotify:show:fakeshow".into()]; t }).collect()),
         _ => None,
-    }).unwrap_or_default() }
+    }).unwrap_or_default(), audiobooks: fake_audiobooks() }
+}
+
+/// A book (#62), in every search.
+fn fake_audiobooks() -> Vec<Card> {
+    vec![Card { uri: FAKE_BOOK.into(), name: "The Long Orbit".into(), subtitle: "Listen free until Oct 31 · Ada Quill".into(), image_url: None, kind: "show".into() }]
 }
 
 /// A show and one of its older episodes (#59), in every search.
@@ -639,6 +646,9 @@ fn fake_saved(uri: &str) -> bool {
 }
 
 fn fake_tracks(uri: &str) -> Vec<CatEvent> {
+    if uri == FAKE_BOOK {
+        return fake_book();
+    }
     if uri.starts_with("spotify:show:") {
         return fake_show(uri);
     }
@@ -670,11 +680,39 @@ fn fake_tracks(uri: &str) -> Vec<CatEvent> {
                 artists: vec![singularity_proto::Link { name: "Nova Drift".into(), uri: "spotify:artist:fake0".into() }],
                 cover_url: None,
                 description: String::new(),
+                book: false,
             });
             let header = header.or_else(|| (offset == 0 && uri == "spotify:playlist:fakemine").then(|| singularity_proto::ListHeader { subtitle: "Playlist · fake".into(), description: "Made up for the pty".into(), ..Default::default() }));
             CatEvent::Tracks(TrackPage { uri: uri.into(), offset, total, tracks, header })
         })
         .collect()
+}
+
+const FAKE_BOOK: &str = "spotify:show:fakebook";
+
+/// A fake audiobook (#62): 24 chapters, the first finished and the second half-way.
+fn fake_book() -> Vec<CatEvent> {
+    let tracks = (0..24u32)
+        .map(|i| singularity_proto::TrackRow {
+            uri: format!("spotify:episode:fakech{i}"),
+            name: if i == 0 { "Opening Credits".into() } else { format!("Chapter {i}: The Long Orbit") },
+            duration_ms: if i == 0 { 23_000 } else { 1_200_000 + (i as u64 * 104_729) % 900_000 },
+            playable: true,
+            progress: Some(match i {
+                0 => singularity_proto::Progress { position_ms: 0, done: true },
+                1 => singularity_proto::Progress { position_ms: 600_000, done: false },
+                _ => singularity_proto::Progress::default(),
+            }),
+            ..Default::default()
+        })
+        .collect();
+    let header = singularity_proto::ListHeader {
+        subtitle: "Audiobook · Ada Quill · Listen free until Oct 31 · narrated by Rowan Tide · 9 h 12 min".into(),
+        description: "A ship, a slow orbit, and the long way home.".into(),
+        book: true,
+        ..Default::default()
+    };
+    vec![CatEvent::Tracks(TrackPage { uri: FAKE_BOOK.into(), offset: 0, total: 24, tracks, header: Some(header) })]
 }
 
 /// A fake show (#59): 130 episodes, newest first, the first three started, finished, and half-way; a page each
@@ -921,11 +959,22 @@ impl State {
         let mut pages = vec![];
         let mut offset = from;
         loop {
-            let Some((op, vars)) = library::tracks_query(uri, offset) else {
+            let asked = if self.books.contains(uri) { Some(library::chapters_query(uri, offset)) } else { library::tracks_query(uri, offset) };
+            let Some((mut op, vars)) = asked else {
                 let _ = self.ev.send(CatEvent::Error(format!("can't list the tracks of {uri}"))).await;
                 return None;
             };
-            let v = match self.query(op, vars).await {
+            let mut answer = self.query(op, vars).await;
+            // a show that turns out to be a book: its chapters instead (#62)
+            if op == "queryPodcastEpisodes"
+                && answer.as_ref().is_ok_and(library::is_book)
+            {
+                self.books.insert(uri.to_string());
+                let (o, vars) = library::chapters_query(uri, offset);
+                op = o;
+                answer = self.query(op, vars).await;
+            }
+            let v = match answer {
                 Ok(v) => v,
                 Err(e) => {
                     let _ = self.ev.send(CatEvent::Error(format!("Track list unavailable: {e}"))).await;
@@ -935,7 +984,7 @@ impl State {
             let (tracks, total) = library::parse_tracks(uri, &v);
             let page_len = match op {
                 "getAlbum" => library::ALBUM_PAGE,
-                "queryPodcastEpisodes" => library::SHOW_PAGE,
+                "queryPodcastEpisodes" | "queryBookChapters" => library::SHOW_PAGE,
                 _ => library::TRACK_PAGE,
             };
             let header = match offset {
@@ -1614,6 +1663,8 @@ pub fn card(d: &Value) -> Option<Card> {
         "Artist" => ("artist", d["profile"]["name"].as_str()?.to_string(), "Artist".into(), first_url(&d["visuals"]["avatarImage"]["sources"])),
         "Episode" | "PodcastEpisode" => ("episode", d["name"].as_str()?.to_string(), d["podcastV2"]["data"]["name"].as_str().unwrap_or_default().to_string(), first_url(&d["coverArt"]["sources"])),
         "Podcast" => ("show", d["name"].as_str()?.to_string(), d["publisher"]["name"].as_str().unwrap_or_default().to_string(), first_url(&d["coverArt"]["sources"])),
+        // a book is a show (#62)
+        "Audiobook" => ("show", d["name"].as_str()?.to_string(), library::book_subtitle(d), first_url(&d["coverArt"]["sources"])),
         "Track" => (
             "track",
             d["name"].as_str()?.to_string(),

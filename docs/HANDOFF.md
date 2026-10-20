@@ -9,7 +9,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - **v1 ✅** (spec issue #1, tickets #2–#24). Owner test rounds 1–3 done and fixed (#25–#33, #38–#45).
 - **v1.x in progress** (spec: SPEC.md "v1.x", stories 68–87; decisions DESIGN-TREE D29–D56; spec issue **#34**).
   Batches (D29): ~~1 stats~~ ✅ · ~~2 polish~~ ✅ · ~~3 playlist editing~~ ✅ · ~~4 Settings~~ ✅ · ~~5~~ dropped (D47) ·
-  6 podcasts and audiobooks (#59–#61 ✅, **#62 audiobooks open**) · 7 free tiling (trial) · **8 macOS (built; owner's
+  6 podcasts and audiobooks (#59–#61 ✅, **#62 audiobooks built 2026-10-20**, open for the owner's check) · 7 free tiling (trial) · **8 macOS (built; owner's
   live checks pending, see below)** · 9 the codebase audit (#71, SPEC "Batch 9", last of all).
 - **macOS (batch 8, D48–D56)**: the owner works on an M2 Air (macOS 15.7) for a while. Rule D49: Linux and macOS keep
   the same features; OS code only behind the platform seams; **`docs/PLATFORMS.md` is the exact status**, feature by
@@ -26,11 +26,12 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - Engines now: Soloist (Linux; macOS in the VM), librespot (both), the Spotify app (both), the fake one. `auto` =
   Soloist on Linux, librespot on macOS (D56). Costs measured on the M2: librespot ~28 MB / ~1 % playing; the VM
   ~300 MB / ~1 % idle; Spotify.app ~600 MB / 5–25 %.
-- Tests: **267 passing** on macOS (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`),
+- Tests: **269 passing** on macOS (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`),
   `live_shapes` and `secrets_live`. `tools/check-linux.sh` type-checks Linux from the Mac: clean. **Nothing since the
   move to the Mac has run on Linux**: first thing back there, `cargo test --workspace`, the pty scenarios, and a
   session per Engine (Linux builds now need `alsa-lib`).
-- **No known open bugs.** Fixed this session from owner reports: the AppEngine lost Connect after a wifi change;
+- **No known open bugs.** (2026-10-20: the #62 live check was meant to be silent but played ~4 s at 40 %: Soloist's
+  updater restarted it right then and the volume asked for was lost. Fixed in `1ce954b`; the owner was told.) Fixed this session from owner reports: the AppEngine lost Connect after a wifi change;
   the audio Widgets kept moving while paused; the volume snapped back after a mouse drag (Connect devices report it
   ~0.5 s late: the Client now holds what it set); librespot never noticed a connection closed while idle.
 - Rule since round 2 (D43): every built-in Design keeps Home, library, queue and lyrics (a test enforces it).
@@ -100,6 +101,8 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `0da0466` | #72, owner | The VM idles at ~1 % (pipe sink over vsock, 1 vCPU); the volume holds after a drag |
 | `d101b01` | #72 | Soloist starts at its last volume; `SINGULARITY_SOLOIST=local` for the pty harness |
 | `db4c150` | #67, #70 | Process tap on Spotify.app (`process_tap.rs`, `tap::Resampler`); librespot dead-session watchdog |
+| `1ce954b` | #62, fix | Live check: Soloist plays chapters, librespot is refused their keys (`examples/chapter_probe`); D57, D58. SoloistEngine keeps the volume asked for across restarts |
+| (next) | #62 | Audiobooks: book pages (`queryBookChapters`, `ListHeader.book`), Audiobooks chip, library rows, librespot says what plays them |
 
 ## What exists in `crates/`
 
@@ -131,7 +134,8 @@ on macOS runs the Soloist VM (a scratch `XDG_DATA_HOME` gets its own VM: ~2 min 
 - **The owner's live checks (macOS)**, whenever they come back: librespot (wifi change, media keys, Control Centre);
   the VM as their setting (`engine.kind = "soloist"`; measure its CPU while playing FLAC, not measured on the final
   setup yet); the app's audio tap after granting the permission (#67); then close #65, #67, #68, #70, #72.
-- **#62 audiobooks** (live chapter check first), then **batch 7** (free tiling, trial), then **batch 9, the audit**
+- **#62**: the owner checks a book on the VM or the app (a chapter resumes where it was left; save a book and see
+  its library row: `libraryV3`'s `Audiobook` shape is assumed from search's), then close it. Then **batch 7** (free tiling, trial), then **batch 9, the audit**
   (#71; SPEC "Batch 9": bugs, vulnerabilities, resources on both OSes; seeds: `follow_config` polls every second, the
   Catalogue's caches have no bound, `daemon.log` is 0644 and names the account, Soloist's cache is unlimited on Linux,
   the owner's idle Client used ~7 % CPU).

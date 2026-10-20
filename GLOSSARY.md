@@ -128,6 +128,12 @@ A podcast show's episodes as a list in the main Pane, newest first, with each ep
 (played, minutes left, new). Long shows load their older episodes as you scroll.
 _Avoid_: podcast page, channel
 
+**Book page**:
+An audiobook's page: a Show page whose rows are chapters (Spotify keeps a book as a show and its chapters as
+episodes), with "Audiobook · authors · Spotify's access line · narrated by … · length" above them. The access line is
+Spotify's own wording ("Listen free until Oct 31", "Access with Audiobooks+"). librespot can't play chapters (D57).
+_Avoid_: audiobook show, book show
+
 **Settings page**:
 A page in the main Pane built from `config.toml`: every setting with its value and the comment above it in the file
 as its description. A change is written into the file (its comments kept) and applies at once; an edit in the file

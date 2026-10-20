@@ -34,4 +34,5 @@ playlist editing (D32, D40): tickets #51–#56; #51 create/delete, #52 edit deta
 and tests green, #64 Keychain, #65 AppEngine (Spotify.app over Connect), #66 setup and health per platform, #67 AudioTap
 on Core Audio, #68 notifications and Now Playing, #69 LaunchAgent and install, plus #70 the librespot Engine on both
 OSes (D52) and #72 Soloist in a Linux VM (D55). All built by 2026-10-20 (#63, #64, #66, #69 closed; the rest wait for
-the owner's live checks). Then #62 (audiobooks), batch 7, and last of all batch 9, the codebase audit (#71).
+the owner's live checks). Then #62 (audiobooks: built 2026-10-20; Soloist plays chapters, librespot can't, D57), batch 7, and last of all
+batch 9, the codebase audit (#71).

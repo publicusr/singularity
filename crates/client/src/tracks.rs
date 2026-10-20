@@ -272,6 +272,9 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let arrived = app.lists.contains_key(&view.uri);
     let list = app.lists.get(&view.uri).unwrap_or(&empty);
     let show = view.uri.starts_with("spotify:show:");
+    // an audiobook (#62): a show of chapters
+    let book = list.header.as_ref().is_some_and(|h| h.book);
+    let unit = if book { "chapter" } else { "episode" };
     let mut order = view.order(&list.rows);
     // an episode we were asked to show: highlighted once it's here
     if let Some(want) = view.reveal_uri.clone()
@@ -293,9 +296,9 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let w = r.width.saturating_sub(2);
     // header: title, count / progress, filter
     let count = if list.total == 0 && list.rows.is_empty() {
-        if !arrived { "loading…".to_string() } else if show { "no episodes".to_string() } else { "no songs yet".to_string() }
+        if !arrived { "loading…".to_string() } else if show { format!("no {unit}s") } else { "no songs yet".to_string() }
     } else if show {
-        format!("{} episode{}", grouped(list.total as u64), if list.total == 1 { "" } else { "s" })
+        format!("{} {unit}{}", grouped(list.total as u64), if list.total == 1 { "" } else { "s" })
     } else if list.complete() {
         format!("{} song{}", list.total, if list.total == 1 { "" } else { "s" })
     } else {
@@ -312,7 +315,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let mut sx = x0 + 9;
     if crate::saved::savable(&view.uri) {
         let saved = app.is_saved(&view.uri) == Some(true);
-        let label = match (show, saved) {
+        let label = match (show && !book, saved) {
             (true, true) => " ♥ Following ",
             (true, false) => " ♡ Follow ",
             (false, true) => " ♥ Saved ",
@@ -371,6 +374,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let st = if arrow.is_empty() { th.s(th.dim) } else { th.s(th.accent) };
         let label = match (show, col) {
             (true, Col::Artist) => "Progress",
+            (true, Col::Added) if book => "",
             (true, Col::Added) => "Released",
             _ => col.label(),
         };

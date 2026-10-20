@@ -1619,6 +1619,10 @@ impl App {
 
     /// ▶ Play on the open list: the whole context from its first track.
     fn play_view(&mut self) {
+        let Some(uri) = self.view.as_ref().map(|v| v.uri.clone()) else { return };
+        if self.book_refused(&uri) {
+            return;
+        }
         let Some(v) = self.view.as_ref() else { return };
         let cmd = if v.uri == crate::tracks::LIKED {
             Command::PlayFrom { context_uri: v.uri.clone(), index: 0, track_uri: None }
@@ -1633,6 +1637,16 @@ impl App {
             Some(v) => v.cycle_sort(col),
             None => self.say("Open a playlist, album or Liked Songs to sort it"),
         }
+    }
+
+    /// A book on librespot, which Spotify won't give chapter keys (D57): says what plays them instead.
+    fn book_refused(&mut self, uri: &str) -> bool {
+        let book = self.lists.get(uri).and_then(|l| l.header.as_ref()).is_some_and(|h| h.book);
+        if book && self.engine_kind == singularity_proto::EngineKind::Librespot {
+            self.say(singularity_proto::AUDIOBOOKS_NEED);
+            return true;
+        }
+        false
     }
 
     /// The view's visible order and the list length.
@@ -1652,6 +1666,9 @@ impl App {
             return self.say("This track isn't available");
         }
         let cmd = Command::PlayFrom { context_uri: v.uri.clone(), index: ri as u32, track_uri: Some(row.uri.clone()) };
+        if self.book_refused(&v.uri.clone()) {
+            return;
+        }
         self.send(cmd);
     }
 

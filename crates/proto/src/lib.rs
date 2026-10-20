@@ -461,7 +461,13 @@ pub struct ListHeader {
     /// a playlist's description, as plain text (#52)
     #[serde(default)]
     pub description: String,
+    /// an audiobook (#62): a show whose rows are chapters
+    #[serde(default)]
+    pub book: bool,
 }
+
+/// What a Client says when the Engine can't play audiobooks (D57: librespot is refused chapter keys).
+pub const AUDIOBOOKS_NEED: &str = "Audiobooks need Soloist or the Spotify app: switch the player in Settings";
 
 /// A name that opens something.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -505,6 +511,9 @@ pub struct SearchResults {
     /// episodes (#61), as rows: the show as their artist, Spotify's progress
     #[serde(default)]
     pub episodes: Vec<TrackRow>,
+    /// audiobooks (#62): shows that are books, "Audiobook · authors · Spotify's access line"
+    #[serde(default)]
+    pub audiobooks: Vec<Card>,
 }
 
 /// An artist page: header, popular tracks, and Shelves of releases and related artists.

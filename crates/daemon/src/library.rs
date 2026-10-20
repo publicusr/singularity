@@ -41,6 +41,28 @@ pub fn tracks_query(uri: &str, offset: u32) -> Option<(&'static str, Value)> {
     }
 }
 
+/// An audiobook's chapters (#62): a book is a show, but `queryPodcastEpisodes` lists nothing for it.
+pub fn chapters_query(uri: &str, offset: u32) -> (&'static str, Value) {
+    ("queryBookChapters", json!({ "uri": uri, "offset": offset, "limit": SHOW_PAGE }))
+}
+
+/// Is this show answer (`podcastUnionV2`) an audiobook?
+pub fn is_book(v: &Value) -> bool {
+    v["data"]["podcastUnionV2"]["__typename"] == "Audiobook"
+}
+
+/// A book as a Card or library row: Spotify's own line about access first (D58: whether it plays; Cards are narrow),
+/// then its authors: "Listen free until Oct 31 · J.K. Rowling"; without one, "Audiobook · J.K. Rowling".
+pub fn book_subtitle(d: &Value) -> String {
+    let (access, authors) = book_access_and_authors(d);
+    [if access.is_empty() { "Audiobook".into() } else { access }, authors].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ")
+}
+
+fn book_access_and_authors(d: &Value) -> (String, String) {
+    let authors: Vec<&str> = d["authorsV2"].as_array().into_iter().flatten().filter_map(|a| a["name"].as_str()).collect();
+    (d["accessInfo"]["signifier"]["text"].as_str().unwrap_or_default().to_string(), authors.join(", "))
+}
+
 fn image(sources: &Value) -> Option<String> {
     // ~300 px: plenty for a sidebar thumbnail or a card
     let list = sources.as_array()?;
@@ -99,6 +121,8 @@ pub fn parse_library(v: &Value, depth: u8, me: &str) -> LibraryPage {
             "Album" => ("album", d["name"].as_str().unwrap_or_default().to_string(), names(&d["artists"]["items"]).join(", "), image(&d["coverArt"]["sources"])),
             // a saved show (#60)
             "Podcast" => ("show", d["name"].as_str().unwrap_or_default().to_string(), d["publisher"]["name"].as_str().map(|p| format!("Podcast · {p}")).unwrap_or_else(|| "Podcast".into()), image(&d["coverArt"]["sources"])),
+            // a saved book (#62)
+            "Audiobook" => ("show", d["name"].as_str().unwrap_or_default().to_string(), book_subtitle(d), image(&d["coverArt"]["sources"])),
             "Artist" => ("artist", d["profile"]["name"].as_str().unwrap_or_default().to_string(), "Artist".into(), image(&d["visuals"]["avatarImage"]["sources"])),
             t if t.contains("Folder") => ("folder", d["name"].as_str().unwrap_or("Folder").to_string(), String::new(), None),
             _ => continue,
@@ -166,7 +190,9 @@ pub fn parse_track(v: &Value) -> Option<singularity_proto::Item> {
 /// One page of a track list, in any of the three shapes, plus the list's total length.
 pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
     if uri.starts_with("spotify:show:") {
-        let e = &v["data"]["podcastUnionV2"]["episodesV2"];
+        // a podcast's episodes, or a book's chapters
+        let p = &v["data"]["podcastUnionV2"];
+        let e = if p["chaptersV2"].is_object() { &p["chaptersV2"] } else { &p["episodesV2"] };
         let rows = e["items"].as_array().into_iter().flatten().filter_map(|it| episode_row(&it["entity"]["data"])).collect();
         return (rows, e["totalCount"].as_u64().unwrap_or(0) as u32);
     }
@@ -222,9 +248,10 @@ pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
     (rows, total.unwrap_or(0) as u32)
 }
 
-/// An episode as a list row (#59): its release date in `added_at`, Spotify's played state as `progress`.
+/// An episode (or a book's chapter, #62) as a list row (#59): its release date in `added_at`, Spotify's played state
+/// as `progress`.
 pub fn episode_row(d: &Value) -> Option<TrackRow> {
-    if d["__typename"] != "Episode" {
+    if d["__typename"] != "Episode" && d["__typename"] != "Chapter" {
         return None;
     }
     let played = &d["playedState"];
@@ -250,22 +277,46 @@ pub fn episode_row(d: &Value) -> Option<TrackRow> {
 /// A show's header (#59), from `queryShowMetadataV2`: "Podcast · publisher", its description and cover.
 pub fn parse_show_header(v: &Value) -> Option<ListHeader> {
     let p = &v["data"]["podcastUnionV2"];
+    if p["__typename"] == "Audiobook" {
+        return Some(book_header(p));
+    }
     if p["__typename"] != "Podcast" {
         return None;
     }
     let mut parts = vec!["Podcast".to_string()];
     parts.extend(p["publisher"]["name"].as_str().filter(|n| !n.is_empty()).map(String::from));
     let description = crate::catalogue::plain(p["description"].as_str().unwrap_or_default());
-    Some(ListHeader { subtitle: parts.join(" · "), artists: vec![], cover_url: image(&p["coverArt"]["sources"]), description })
+    Some(ListHeader { subtitle: parts.join(" · "), artists: vec![], cover_url: image(&p["coverArt"]["sources"]), description, book: false })
+}
+
+/// A book's header (#62): "Audiobook · authors · access", then "narrated by …" and how long it is; the description
+/// without its "Author(s): … Narrator(s): …" preamble (the header already says so).
+fn book_header(p: &Value) -> ListHeader {
+    let (access, authors) = book_access_and_authors(p);
+    let mut parts: Vec<String> = ["Audiobook".to_string(), authors, access].into_iter().filter(|s| !s.is_empty()).collect();
+    let narrators: Vec<&str> = p["narrators"].as_array().into_iter().flatten().filter_map(|n| n["name"].as_str()).collect();
+    if !narrators.is_empty() {
+        parts.push(format!("narrated by {}", narrators.join(", ")));
+    }
+    if let Some(ms) = p["duration"]["totalMilliseconds"].as_u64().filter(|ms| *ms > 0) {
+        let min = ms / 60_000;
+        parts.push(if min >= 60 { format!("{} h {} min", min / 60, min % 60) } else { format!("{min} min") });
+    }
+    let raw = p["description"].as_str().unwrap_or_default();
+    let body = raw.split("\n\n").skip_while(|para| para.starts_with("Author(s):") || para.starts_with("Narrator(s):")).collect::<Vec<_>>().join("\n\n");
+    let description = crate::catalogue::plain(if body.trim().is_empty() { raw } else { &body });
+    ListHeader { subtitle: parts.join(" · "), artists: vec![], cover_url: image(&p["coverArt"]["sources"]), description, book: true }
 }
 
 /// A `getEpisodeOrChapter` answer → an Item (the show as its artist and album) and the show's link.
 pub fn parse_episode(v: &Value) -> Option<(singularity_proto::Item, Link)> {
     let e = &v["data"]["episodeUnionV2"];
-    if e["__typename"] != "Episode" {
-        return None;
-    }
-    let show = &e["podcastV2"]["data"];
+    // a book's chapter (#62) belongs to its book
+    let show = match e["__typename"].as_str() {
+        Some("Episode") => &e["podcastV2"]["data"],
+        Some("Chapter") => &e["audiobookV2"]["data"],
+        _ => return None,
+    };
     let link = Link { name: show["name"].as_str().unwrap_or_default().to_string(), uri: show["uri"].as_str()?.to_string() };
     let item = singularity_proto::Item {
         uri: e["uri"].as_str()?.to_string(),
@@ -295,7 +346,7 @@ pub fn parse_header(uri: &str, v: &Value) -> Option<ListHeader> {
             let year = a["date"]["isoString"].as_str().and_then(|d| d.get(..4)).map(String::from).or_else(|| a["date"]["year"].as_i64().map(|y| y.to_string())).unwrap_or_default();
             let mut parts = vec![kind.to_string()];
             parts.extend([year, a["label"].as_str().unwrap_or("").to_string()].into_iter().filter(|s| !s.is_empty()));
-            Some(ListHeader { subtitle: parts.join(" · "), artists: links(&a["artists"]["items"]), cover_url: image(&a["coverArt"]["sources"]), description: String::new() })
+            Some(ListHeader { subtitle: parts.join(" · "), artists: links(&a["artists"]["items"]), cover_url: image(&a["coverArt"]["sources"]), description: String::new(), book: false })
         }
         "playlist" => {
             let p = &v["data"]["playlistV2"];
@@ -307,7 +358,7 @@ pub fn parse_header(uri: &str, v: &Value) -> Option<ListHeader> {
                 parts.push(format!("{} likes", grouped(f)));
             }
             let description = crate::catalogue::plain(p["description"].as_str().unwrap_or_default());
-            Some(ListHeader { subtitle: parts.join(" · "), artists: vec![], cover_url: image(&p["images"]["items"][0]["sources"]), description })
+            Some(ListHeader { subtitle: parts.join(" · "), artists: vec![], cover_url: image(&p["images"]["items"][0]["sources"]), description, book: false })
         }
         _ => None,
     }
@@ -337,7 +388,7 @@ pub fn parse_saved(uris: &[String], v: &Value) -> Vec<singularity_proto::SavedFl
 pub fn search_vars(query: &str) -> Value {
     json!({
         "searchTerm": query, "offset": 0, "limit": 20, "numberOfTopResults": 5,
-        "includeAudiobooks": false, "includeArtistHasConcertsField": false, "includePreReleases": true,
+        "includeAudiobooks": true, "includeArtistHasConcertsField": false, "includePreReleases": true,
         "includeLocalConcertsField": false, "includeAuthors": false,
     })
 }
@@ -399,6 +450,7 @@ pub fn parse_search(query: &str, v: &Value) -> singularity_proto::SearchResults 
         albums: cards("albumsV2", "items"),
         playlists: cards("playlists", "items"),
         podcasts: cards("podcasts", "items"),
+        audiobooks: cards("audiobooks", "items"),
     }
 }
 
@@ -602,11 +654,73 @@ mod tests {
             println!("search: top {} · tracks {} · artists {} · albums {} · playlists {} · podcasts {}", r.top.len(), r.tracks.len(), r.artists.len(), r.albums.len(), r.playlists.len(), r.podcasts.len());
             assert!(!r.tracks.is_empty() && !r.artists.is_empty() && !r.top.is_empty());
         }
+        // #62: a book's show metadata, its chapters, and one chapter
+        if let Some(v) = read("SGL_LIVE_BOOK") {
+            let h = parse_show_header(&v).unwrap();
+            println!("book header: {:?} · cover {} · description {} chars", h.subtitle, h.cover_url.is_some(), h.description.len());
+            assert!(h.book && h.subtitle.starts_with("Audiobook") && !h.description.starts_with("Author(s)"));
+        }
+        if let Some(v) = read("SGL_LIVE_CHAPTERS") {
+            let (rows, total) = parse_tracks("spotify:show:x", &v);
+            println!("chapters: {}/{total} · progress {:?}", rows.len(), rows.iter().map(|r| r.progress).take(3).collect::<Vec<_>>());
+            assert!(!rows.is_empty() && rows.iter().all(|r| r.uri.starts_with("spotify:episode:") && r.duration_ms > 0));
+        }
+        if let Some(v) = read("SGL_LIVE_CHAPTER") {
+            let (item, book) = parse_episode(&v).unwrap();
+            println!("chapter: {} · in {}", item.name, book.name);
+            assert!(book.uri.starts_with("spotify:show:"));
+        }
+        if let Some(v) = read("SGL_LIVE_SEARCH") {
+            let r = parse_search("q", &v);
+            println!("search audiobooks: {:?}", r.audiobooks.iter().map(|c| c.subtitle.clone()).take(3).collect::<Vec<_>>());
+        }
         if let Some(v) = read("SGL_LIVE_ARTIST") {
             let p = parse_artist(&v).unwrap();
             println!("artist: {} top tracks · shelves {:?} · listeners {}", p.top_tracks.len(), p.shelves.iter().map(|s| (s.title.clone(), s.cards.len())).collect::<Vec<_>>(), p.monthly_listeners.is_some());
             assert!(!p.top_tracks.is_empty() && !p.shelves.is_empty());
         }
+    }
+
+    #[test]
+    fn audiobooks_are_shows_with_chapters() {
+        // the shapes of queryShowMetadataV2 / queryBookChapters / getEpisodeOrChapter / searchDesktop on a book
+        // (2026-10-20), anonymised
+        let meta = json!({ "data": { "podcastUnionV2": { "__typename": "Audiobook", "uri": "spotify:show:b1", "name": "The Long Orbit",
+            "authorsV2": [{ "name": "Ada Quill", "uri": "spotify:author:a1" }], "narrators": [{ "name": "Rowan Tide" }],
+            "accessInfo": { "signifier": { "text": "Listen free until Oct 31" } }, "duration": { "totalMilliseconds": 30_334_266 },
+            "description": "Author(s): Ada Quill\nNarrator(s): Rowan Tide\n\nA ship, a slow orbit.", "coverArt": { "sources": [{ "url": "https://i/c", "width": 300 }] } } } });
+        let h = parse_show_header(&meta).unwrap();
+        assert!(h.book);
+        assert_eq!(h.subtitle, "Audiobook · Ada Quill · Listen free until Oct 31 · narrated by Rowan Tide · 8 h 25 min");
+        assert_eq!(h.description, "A ship, a slow orbit.");
+        assert!(is_book(&meta) && !parse_show_header(&json!({ "data": { "podcastUnionV2": { "__typename": "Podcast" } } })).unwrap().book);
+        assert_eq!(chapters_query("spotify:show:b1", 50).0, "queryBookChapters");
+
+        let chapter = |id: &str, state: &str, pos: u64| json!({ "uid": "u", "entity": { "_uri": format!("spotify:episode:{id}"), "data": { "__typename": "Chapter",
+            "uri": format!("spotify:episode:{id}"), "name": format!("Chapter {id}"), "duration": { "totalMilliseconds": 1_901_684 },
+            "playability": { "playable": true }, "playedState": { "playPositionMilliseconds": pos, "state": state } } } });
+        let page = json!({ "data": { "podcastUnionV2": { "__typename": "Audiobook", "chaptersV2": { "totalCount": 20,
+            "items": [chapter("c1", "COMPLETED", 0), chapter("c2", "IN_PROGRESS", 907)] } } } });
+        let (rows, total) = parse_tracks("spotify:show:b1", &page);
+        assert_eq!((rows.len(), total), (2, 20));
+        assert_eq!(rows[0].progress, Some(singularity_proto::Progress { position_ms: 0, done: true }));
+        assert_eq!(rows[1].progress, Some(singularity_proto::Progress { position_ms: 907, done: false }));
+
+        let one = json!({ "data": { "episodeUnionV2": { "__typename": "Chapter", "uri": "spotify:episode:c1", "name": "Chapter 1",
+            "duration": { "totalMilliseconds": 1000 }, "audiobookV2": { "data": { "__typename": "Audiobook", "uri": "spotify:show:b1", "name": "The Long Orbit" } } } } });
+        let (item, book) = parse_episode(&one).unwrap();
+        assert_eq!((item.album.as_deref(), book.uri.as_str()), (Some("The Long Orbit"), "spotify:show:b1"));
+
+        let search = json!({ "data": { "searchV2": { "audiobooks": { "items": [{ "__typename": "AudiobookResponseWrapper", "data": meta["data"]["podcastUnionV2"] }] } } } });
+        let r = parse_search("orbit", &search);
+        assert_eq!(r.audiobooks.len(), 1);
+        assert_eq!((r.audiobooks[0].kind.as_str(), r.audiobooks[0].subtitle.as_str()), ("show", "Listen free until Oct 31 · Ada Quill"));
+        assert_eq!(search_vars("x")["includeAudiobooks"], true);
+
+        // a saved book in the library
+        let lib = json!({ "data": { "me": { "libraryV3": { "totalCount": 1, "items": [{ "item": { "data": meta["data"]["podcastUnionV2"] } }] } } } });
+        let page = parse_library(&lib, 0, "me");
+        assert_eq!((page.items[0].kind.as_str(), page.items[0].subtitle.as_str()), ("show", "Listen free until Oct 31 · Ada Quill"));
     }
 
     #[test]

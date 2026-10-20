@@ -91,6 +91,9 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   hidden and leaves it running. For the audio Widgets macOS must let your terminal record other apps' audio: System
   Settings → Privacy & Security → Screen & System Audio Recording → **System Audio Recording Only** → add your
   terminal app. Without it the Widgets stay flat and Singularity says so once.
+- **Audiobooks don't play on the default.** Spotify won't give librespot the keys to audiobook chapters, so books
+  play with `kind = "soloist"` (the VM) or `"spotify-app"`; with librespot their pages, library rows and search
+  still work, and pressing play says so. (Same on Linux with librespot; Linux's default, Soloist, plays them.)
 - **Media keys and Control Centre**: with librespot or the VM, Singularity has its own Now Playing entry (play,
   pause, next, previous, drag the position); with the app, the app's own entry. There's no MPRIS (that's D-Bus,
   Linux's).

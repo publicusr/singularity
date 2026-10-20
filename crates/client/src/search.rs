@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 /// Typing pauses this long before a search goes out.
 pub const DEBOUNCE: Duration = Duration::from_millis(300);
-pub const CHIPS: [&str; 6] = ["All", "Songs", "Artists", "Albums", "Playlists", "Podcasts"];
+pub const CHIPS: [&str; 7] = ["All", "Songs", "Artists", "Albums", "Playlists", "Podcasts", "Audiobooks"];
 const RECENT_MAX: usize = 12;
 
 #[derive(Default)]
@@ -86,11 +86,12 @@ impl SearchView {
         let Some(r) = &self.results else { return };
         let shelf = |t: &str, kind: &str, cards: &Vec<singularity_proto::Card>| Shelf { title: t.into(), kind: kind.into(), cards: cards.clone() };
         let shelves = match self.chip {
-            0 => vec![shelf("Top results", "shelf", &r.top), shelf("Artists", "shelf", &r.artists), shelf("Albums", "shelf", &r.albums), shelf("Playlists", "shelf", &r.playlists), shelf("Podcasts", "shelf", &r.podcasts)],
+            0 => vec![shelf("Top results", "shelf", &r.top), shelf("Artists", "shelf", &r.artists), shelf("Albums", "shelf", &r.albums), shelf("Playlists", "shelf", &r.playlists), shelf("Podcasts", "shelf", &r.podcasts), shelf("Audiobooks", "shelf", &r.audiobooks)],
             2 => vec![shelf("Artists", "grid", &r.artists)],
             3 => vec![shelf("Albums", "grid", &r.albums)],
             4 => vec![shelf("Playlists", "grid", &r.playlists)],
             5 => vec![shelf("Podcasts", "grid", &r.podcasts)],
+            6 => vec![shelf("Audiobooks", "grid", &r.audiobooks)],
             _ => vec![],
         };
         self.feed = HomeFeed { fetched_unix_ms: 0, shelves: shelves.into_iter().filter(|s| !s.cards.is_empty()).collect() };
@@ -174,7 +175,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let mut y = r.y + 3;
     if v.query.trim().is_empty() {
         if app.recent.is_empty() {
-            text(buf, x, y, w, "Search for songs, artists, albums, playlists and podcasts.", th.s(th.dim));
+            text(buf, x, y, w, "Search for songs, artists, albums, playlists, podcasts and audiobooks.", th.s(th.dim));
         } else {
             text(buf, x, y, w, "Recent searches", th.s(th.accent).add_modifier(Modifier::BOLD));
             y += 1;

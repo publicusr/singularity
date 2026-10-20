@@ -1741,6 +1741,53 @@ mod tests {
     }
 
     #[test]
+    fn a_book_lists_its_chapters_and_librespot_says_what_plays_them() {
+        use singularity_proto::{Card, Command, EngineKind, Progress, SearchResults, TrackPage, TrackRow};
+        let (mut app, mut rx) = playing_app(200_000);
+        let book = "spotify:show:b1";
+        // in search: the Audiobooks chip, with Spotify's access line (D58)
+        app.run(Action::Search);
+        app.search.as_mut().unwrap().query = "orbit".into();
+        let card = Card { uri: book.into(), name: "The Long Orbit".into(), subtitle: "Listen free until Oct 31 · Ada Quill".into(), image_url: None, kind: "show".into() };
+        app.search.as_mut().unwrap().set_results(SearchResults { query: "orbit".into(), audiobooks: vec![card], ..Default::default() });
+        app.search.as_mut().unwrap().set_chip(6);
+        let s = render(&mut app, 160, 48);
+        for part in ["Audiobooks", "The Long Or", "Listen free"] {
+            assert!(s.contains(part), "missing {part:?}\n{s}");
+        }
+        // its page: chapters with progress, Save (not Follow), no release dates
+        app.open(book, "The Long Orbit", "", "show");
+        sent(&mut rx);
+        let chapters = (0..24u32)
+            .map(|i| TrackRow {
+                uri: format!("spotify:episode:c{i}"),
+                name: format!("Chapter {i}"),
+                duration_ms: 1_500_000,
+                playable: true,
+                progress: Some(if i == 0 { Progress { position_ms: 0, done: true } } else { Progress::default() }),
+                ..Default::default()
+            })
+            .collect();
+        let header = singularity_proto::ListHeader { subtitle: "Audiobook · Ada Quill · Listen free until Oct 31 · narrated by Rowan Tide".into(), book: true, ..Default::default() };
+        app.track_page(TrackPage { uri: book.into(), offset: 0, total: 24, tracks: chapters, header: Some(header) });
+        let s = render(&mut app, 160, 48);
+        for part in ["24 chapters", "♡ Save", "Audiobook · Ada Quill · Listen free until Oct 31", "✓ played", "Chapter 3"] {
+            assert!(s.contains(part), "missing {part:?}\n{s}");
+        }
+        assert!(!s.contains("Released") && !s.contains("Follow"), "{s}");
+        // Soloist plays a chapter in its book
+        app.engine_kind = EngineKind::Soloist;
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(sent(&mut rx), vec![Command::PlayFrom { context_uri: book.into(), index: 1, track_uri: Some("spotify:episode:c1".into()) }]);
+        // librespot can't (D57): nothing is sent, and the Client says what can
+        app.engine_kind = EngineKind::Librespot;
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(sent(&mut rx).is_empty());
+        assert!(render(&mut app, 160, 48).contains("Audiobooks need Soloist or the Spotify app"));
+    }
+
+    #[test]
     fn podcasts_in_search_list_episodes_that_play_and_lead_to_their_show() {
         use singularity_proto::{Command, Progress, SearchResults, TrackRow};
         let (mut app, mut rx) = playing_app(200_000);
@@ -2374,7 +2421,7 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::Search { query: "nova".into() }]);
         let card = |n: &str, k: &str| Card { uri: format!("spotify:{k}:{n}"), name: n.into(), subtitle: k.into(), image_url: None, kind: k.into() };
         let tracks = (0..8).map(|i| TrackRow { uri: format!("spotify:track:n{i}"), name: format!("Nova song {i}"), artists: vec!["Nova Drift".into()], artist_uris: vec!["spotify:artist:nova".into()], duration_ms: 200_000, playable: true, ..Default::default() }).collect();
-        app.search.as_mut().unwrap().set_results(SearchResults { query: "nova".into(), top: vec![card("Nova Drift", "artist")], tracks, artists: vec![card("Nova Drift", "artist")], albums: vec![card("Event Horizon", "album")], playlists: vec![], podcasts: vec![], episodes: vec![] });
+        app.search.as_mut().unwrap().set_results(SearchResults { query: "nova".into(), top: vec![card("Nova Drift", "artist")], tracks, artists: vec![card("Nova Drift", "artist")], albums: vec![card("Event Horizon", "album")], playlists: vec![], podcasts: vec![], episodes: vec![], audiobooks: vec![] });
         let s = render(&mut app, 200, 64);
         assert!(s.contains("Songs") && s.contains("Nova song 4") && !s.contains("Nova song 5"), "All shows five songs:\n{s}");
         assert!(s.contains("Top results") && s.contains("Albums"));

@@ -875,3 +875,16 @@ flowchart LR
   the volume a Client asks for (a restarted Soloist starts at it), saves every `volume_changed`, and sets the saved
   volume again once Soloist logs in. The pty `update_test.py` now mutes before the update and checks the new build
   starts muted.
+- **#62 audiobooks, built** (2026-10-20): a show whose `queryPodcastEpisodes` answer says `Audiobook` is remembered as
+  a book and paged with `queryBookChapters` (chapters are `Chapter` rows with the episodes' `playedState`, so progress
+  and "min left" come for free); `queryShowMetadataV2` gives the header "Audiobook · authors · access line · narrated
+  by … · 8 h 25 min" (`ListHeader.book`), the description without its "Author(s): … Narrator(s): …" preamble.
+  `getEpisodeOrChapter` names a chapter in the queue with its book. Search asks `includeAudiobooks` and the Client has
+  an Audiobooks chip; a saved book in `libraryV3` (`Audiobook`) is a library row. Cards and library rows lead with
+  the access line ("Listen free until Oct 31 · J.K. Rowling"): Cards are ~8–12 columns, and whether it plays is the
+  useful part (D58). On librespot (D57) the Client refuses to play a book's chapters and says
+  `AUDIOBOOKS_NEED`; a chapter reaching librespot another way (the phone, a queue) fails to load, and the
+  LibrespotEngine checks the episode's metadata (`is_audiobook_chapter`) to say the same instead of "not available".
+  Book page labels: "24 chapters", ♡ Save (not Follow), no Released column. Fake Catalogue: "The Long Orbit"
+  (`spotify:show:fakebook`), pty scenario `book`. Not yet seen live: a saved book in the library (the owner has none),
+  resuming a half-heard chapter.
