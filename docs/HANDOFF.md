@@ -26,7 +26,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - Engines now: Soloist (Linux; macOS in the VM), librespot (both), the Spotify app (both), the fake one. `auto` =
   Soloist on Linux, librespot on macOS (D56). Costs measured on the M2: librespot ~28 MB / ~1 % playing; the VM
   ~300 MB / ~1 % idle; Spotify.app ~600 MB / 5–25 %.
-- Tests: **273 passing** on macOS (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`),
+- Tests: **278 passing** on macOS (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`),
   `live_shapes` and `secrets_live`. `tools/check-linux.sh` type-checks Linux from the Mac: clean. **Nothing since the
   move to the Mac has run on Linux**: first thing back there, `cargo test --workspace`, the pty scenarios, and a
   session per Engine (Linux builds now need `alsa-lib`).

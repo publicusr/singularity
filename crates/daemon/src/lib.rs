@@ -535,40 +535,38 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
         }
         _ => return Ok(()),
     }
-    // initial snapshot
-    if let Some(st) = hub.engine_status.lock().await.clone() {
-        proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Engine(st))).await?;
-    }
-    let snapshot = hub.playback.lock().await.clone();
-    proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Playback(snapshot))).await?;
-    if let Some(c) = hub.catalogue_status.lock().await.clone() {
-        proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Catalogue(c))).await?;
-    }
-    if let Some(h) = hub.home.lock().await.clone() {
-        proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Home(h))).await?;
-    }
-    if let Some(l) = hub.library.lock().await.clone() {
-        proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Library(l))).await?;
-    }
-    if let Some(d) = hub.devices.lock().await.clone() {
-        proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Devices { devices: d })).await?;
-    }
-    if let Some(s) = hub.stream.lock().await.clone() {
-        proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Stream(s))).await?;
-    }
-    if let Some(d) = hub.delivery.lock().await.clone() {
-        proto::write_msg(&mut wr, &DaemonMsg::Event(Event::Delivery(d))).await?;
-    }
-
-    let mut events = hub.events.subscribe();
+    // everything to this Client goes through one writer; a Client that takes nothing for WRITE_DEADLINE has stopped
+    // reading, and its session ends (#71: it used to stay, blocked, for as long as it was connected)
     let (out_tx, mut out_rx) = mpsc::channel::<DaemonMsg>(64);
-    let writer = tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         while let Some(m) = out_rx.recv().await {
-            if proto::write_msg(&mut wr, &m).await.is_err() {
-                break;
+            match tokio::time::timeout(WRITE_DEADLINE, proto::write_msg(&mut wr, &m)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => break,
+                Err(_) => {
+                    tracing::warn!("a Client stopped reading; closing its session");
+                    break;
+                }
             }
         }
     });
+    // initial snapshot
+    let mut snapshot = vec![];
+    if let Some(st) = hub.engine_status.lock().await.clone() {
+        snapshot.push(Event::Engine(st));
+    }
+    snapshot.push(Event::Playback(hub.playback.lock().await.clone()));
+    snapshot.extend(hub.catalogue_status.lock().await.clone().map(Event::Catalogue));
+    snapshot.extend(hub.home.lock().await.clone().map(Event::Home));
+    snapshot.extend(hub.library.lock().await.clone().map(Event::Library));
+    snapshot.extend(hub.devices.lock().await.clone().map(|devices| Event::Devices { devices }));
+    snapshot.extend(hub.stream.lock().await.clone().map(Event::Stream));
+    snapshot.extend(hub.delivery.lock().await.clone().map(Event::Delivery));
+    for ev in snapshot {
+        let _ = out_tx.send(DaemonMsg::Event(ev)).await;
+    }
+
+    let mut events = hub.events.subscribe();
     let fwd_tx = out_tx.clone();
     let forwarder = tokio::spawn(async move {
         loop {
@@ -585,7 +583,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     });
     // this Client's spectrum subscription: a forwarder task while it's on
     let mut spectrum: Option<tokio::task::JoinHandle<()>> = None;
-    let result = async {
+    let reading = async {
         while let Some(msg) = proto::read_msg::<_, ClientMsg>(&mut rd).await? {
             match msg {
                 ClientMsg::Command(Command::Spectrum { on }) => {
@@ -696,8 +694,12 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
             }
         }
         Ok::<(), std::io::Error>(())
-    }
-    .await;
+    };
+    // the session ends when the Client goes, or when its writer gave up on it
+    let result = tokio::select! {
+        r = reading => r,
+        _ = &mut writer => Ok(()),
+    };
     if let Some(t) = spectrum.take() {
         t.abort();
         hub.spectrum_listeners.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -706,6 +708,9 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     writer.abort();
     result
 }
+
+/// How long a Client may take to accept one message before its session is closed.
+const WRITE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A command for the player: to the Engine, or over Connect while another device plays.
 pub(crate) async fn transport(hub: &Hub, cmd: Command) {

@@ -55,6 +55,30 @@ async fn second_daemon_refuses_to_bind() {
 }
 
 #[tokio::test]
+async fn a_client_that_stops_reading_is_let_go() {
+    // (#71) it asks and asks (every Ping is answered) but never reads: once its answers back up for the write
+    // deadline, the Daemon closes the session instead of holding it blocked for as long as it stays connected
+    let (_dir, path) = start().await;
+    let s = connect(&path).await;
+    let (mut rd, mut wr) = s.into_split();
+    let asking = tokio::spawn(async move {
+        for id in 0.. {
+            if proto::write_msg(&mut wr, &ClientMsg::Ping { id }).await.is_err() {
+                return;
+            }
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(7)).await;
+    // what's buffered drains, then the connection ends (it would keep answering forever if it were still served)
+    let drained = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Ok(Some(_)) = proto::read_msg::<_, DaemonMsg>(&mut rd).await {}
+    })
+    .await;
+    asking.abort();
+    assert!(drained.is_ok(), "the session was never closed");
+}
+
+#[tokio::test]
 async fn the_socket_never_goes_through_a_symlinked_directory() {
     // (#71) someone else's directory, linked where ours should be, could hand Clients a socket of theirs
     let dir = tempfile::tempdir().unwrap();
