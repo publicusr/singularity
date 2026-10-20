@@ -830,4 +830,17 @@ flowchart LR
   Linux's "Singularity"). Live: start → waiting for pairing in 5.6 s; the owner paired, FLAC 1.4 Mbit/s on the
   speakers; ~300 MB, ~10 % CPU (VM 6.4 % mostly virtualisation overhead with 2 vCPUs, gvproxy 1.5 % moving the PCM,
   Daemon 1.7 %); later: PCM over virtio-vsock, 1 vCPU.
+- **#72 round 2: idle cost, then the owner's volume report** (2026-10-20). Measured idle (nothing playing) at ~10 %
+  CPU, as much as playing: the null sink's monitor streamed silence nonstop (parec → socat → gvproxy → the Daemon →
+  cpal). Now Soloist plays into a pipe sink on its own clock (`module-pipe-sink`, `use_system_clock_for_timing`) that
+  sleeps when nothing plays, `sgl-pcm` sends it over virtio-vsock (the Daemon listens on a Unix socket vfkit bridges;
+  no gvproxy), the Daemon pauses its cpal stream after 3 s without data, and the VM runs on 1 vCPU (2 only for the
+  first setup). Setup version 2 re-applied on the owner's VM in seconds, pairing kept. Idle: **~1 %** (VM 0.95 %,
+  Daemon 0.02 %, gvproxy ~0). Playing: smooth, no clipped starts (owner). Owner: "adjusting volume makes it jump back
+  to whatever it was pre-adjustment, at least with mouse": a Connect device reports its new volume ~0.5 s late and
+  any playback update meanwhile carried the old one. The Client now holds a volume it just set until the player
+  confirms it (or 2.5 s pass, so a refused change still shows), as the seek bar does with the position. And the VM's
+  Soloist defaults to "Singularity on <computer> (lossless)": devices are found by name, and this Mac's librespot
+  ("Singularity on <computer>") can linger in the device list after a switch (during the test both were online, so
+  the owner's real Client may have been steering the wrong one).
 

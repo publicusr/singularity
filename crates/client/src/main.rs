@@ -150,7 +150,7 @@ fn apply(app: &mut App, ev: ConnEvent) {
             app.setup.engine_was_ready |= matches!(s, EngineStatus::Ready { .. });
             app.engine = Some(s);
         }
-        ConnEvent::Msg(DaemonMsg::Event(Event::Playback(p))) => app.playback = p,
+        ConnEvent::Msg(DaemonMsg::Event(Event::Playback(p))) => app.playback_event(p),
         ConnEvent::Msg(DaemonMsg::Event(Event::Error { message })) => app.say(message),
         ConnEvent::Msg(DaemonMsg::Event(Event::Catalogue(c))) => {
             if let singularity_proto::CatalogueStatus::LoginPending { url, .. } = &c {

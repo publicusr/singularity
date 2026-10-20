@@ -1001,6 +1001,28 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::SetVolume { percent: 49 }]);
     }
 
+    #[test]
+    fn a_volume_just_set_isnt_undone_by_a_late_update() {
+        let (mut app, _rx) = playing_app(240_000);
+        app.playback.volume = 50;
+        render(&mut app, 160, 40);
+        let vbar = app.hits.iter().find_map(|(_, h)| match h { Hit::Bar(Bar::Volume, r) => Some(*r), _ => None }).unwrap();
+        mouse(&mut app, MouseEventKind::ScrollDown, vbar.x as f64 + 1.5, vbar.y, false);
+        std::thread::sleep(crate::app::NUDGE_SETTLE + std::time::Duration::from_millis(20));
+        app.tick();
+        // the Connect device hasn't reported it yet: an update with the old volume keeps the new one
+        let mut late = app.playback.clone();
+        late.volume = 50;
+        app.playback_event(late.clone());
+        assert_eq!(app.display_volume(), 49);
+        // confirmed: from then on the player's value is shown as it comes
+        late.volume = 49;
+        app.playback_event(late.clone());
+        late.volume = 30;
+        app.playback_event(late);
+        assert_eq!(app.display_volume(), 30, "changed elsewhere (the phone): shown");
+    }
+
     // ── Home (#8): recorded, anonymised feed in, state and screen out ──
 
     fn home_app() -> (App, tokio::sync::mpsc::Receiver<singularity_proto::Command>) {

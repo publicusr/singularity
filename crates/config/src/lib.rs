@@ -179,8 +179,8 @@ minutes = 3
 # small Linux VM, ~300 MB), "spotify-app" (the official Spotify app, started hidden and driven over Connect) or
 # "librespot" (built in: the lightest, but at most 320 kbps, never lossless); restart the Daemon after changing it
 kind = "auto"
-# the player's name in device pickers; empty: the default (the app: this computer's name; librespot and the VM's
-# Soloist: "Singularity on <computer>"; Soloist on Linux: "Singularity")
+# the player's name in device pickers; empty: the default (the app: this computer's name; librespot: "Singularity on
+# <computer>"; Soloist: "Singularity" on Linux, "Singularity on <computer> (lossless)" on macOS)
 device = ""
 "#;
 

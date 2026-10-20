@@ -7,10 +7,12 @@
 //!   latest, checked against Debian's SHA512SUMS. Nothing of Spotify's is shipped: the guest downloads Soloist from
 //!   Spotify's CDN itself.
 //! - First boot sets the guest up with cloud-init: a `singularity` user reached over SSH (a key made for this VM,
-//!   loopback only), PulseAudio with a null sink, a PCM server (`sgl-pcm`: the sink's monitor as raw float32 stereo
-//!   44.1 kHz on TCP 5005) and an update script (`sgl-soloist`: ensure / check / install the arm64 build).
-//! - Ports the Daemon reaches through gvproxy (`expose`): SSH, Soloist's WebSocket (7700), the PCM server, and while
-//!   pairing Soloist's ZeroConf endpoint.
+//!   loopback only), PulseAudio playing into a pipe sink (`sgl`, raw float32 stereo 44.1 kHz, its own clock; it sleeps
+//!   whenever nothing plays, so a paused Soloist moves no data at all), `sgl-pcm` sending that pipe to the Mac over
+//!   virtio-vsock (port 5005, the Daemon listening on `pcm_socket`), and an update script (`sgl-soloist`: ensure /
+//!   check / install the arm64 build).
+//! - Ports the Daemon reaches through gvproxy (`expose`): SSH, Soloist's WebSocket (7700), and while pairing Soloist's
+//!   ZeroConf endpoint. The audio skips gvproxy's network stack (vsock): measured, it was most of the cost.
 //! - It costs the RAM it's given (the framework keeps every touched page): 256 MB, 512 for the first boot's setup.
 
 use std::path::{Path, PathBuf};
@@ -26,11 +28,11 @@ const IMAGE: &str = "debian-13-genericcloud-arm64.tar.xz";
 /// gvproxy's DHCP gives this MAC the guest address below
 const MAC: &str = "5a:94:ef:e4:0c:ee";
 pub const GUEST: &str = "192.168.127.2";
-/// Soloist's WebSocket and the PCM server inside the guest
+/// Soloist's WebSocket inside the guest, and the vsock port its audio comes to the Mac on
 pub const GUEST_WS: u16 = 7700;
 pub const GUEST_PCM: u16 = 5005;
-/// bump when the guest's setup changes: a new instance id makes cloud-init run again
-const SETUP_VERSION: u32 = 1;
+/// bump when the guest's setup changes: a new instance id makes cloud-init run again (2: the pipe sink over vsock)
+const SETUP_VERSION: u32 = 2;
 
 /// The VM's files: `$XDG_DATA_HOME/singularity/vm/` (owner-only).
 pub struct Vm {
@@ -44,6 +46,11 @@ pub struct Vm {
 impl Vm {
     pub fn new(data_dir: &Path) -> Vm {
         Vm { dir: data_dir.join("vm"), run: std::env::temp_dir().join("sgl-vm"), ssh_port: free_port().unwrap_or(2223), children: Default::default() }
+    }
+
+    /// Where the guest's audio arrives (the Daemon listens here; vfkit connects the guest's vsock to it).
+    pub fn pcm_socket(&self) -> PathBuf {
+        self.run.join("pcm.sock")
     }
 
     fn bin(&self, name: &str) -> PathBuf {
@@ -136,9 +143,10 @@ impl Vm {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         let efi = format!("efi,variable-store={}{}", self.dir.join("efi.vars").display(), if self.dir.join("efi.vars").exists() { "" } else { ",create" });
-        let memory = if first { "512" } else { "256" };
+        // first setup: 2 CPUs and 512 MB for apt; then 1 and 256 (each idle vCPU costs the Mac timer ticks)
+        let (cpus, memory) = if first { ("2", "512") } else { ("1", "256") };
         let vm = Command::new(self.bin("vfkit"))
-            .args(["--cpus", "2", "--memory", memory, "--bootloader", &efi])
+            .args(["--cpus", cpus, "--memory", memory, "--bootloader", &efi])
             .arg("--device")
             .arg(format!("virtio-blk,path={}", self.dir.join("disk.raw").display()))
             .arg("--device")
@@ -148,6 +156,8 @@ impl Vm {
             .arg("--device")
             .arg(format!("virtio-serial,logFilePath={}", self.dir.join("console.log").display()))
             .args(["--device", "virtio-rng"])
+            .arg("--device")
+            .arg(format!("virtio-vsock,port={GUEST_PCM},socketURL={}", self.pcm_socket().display()))
             .stdout(std::process::Stdio::null())
             .stderr(log("vfkit.log"))
             .kill_on_drop(true)
@@ -294,12 +304,18 @@ users:
 package_update: true
 packages: [pulseaudio, pulseaudio-utils, libatomic1, socat, curl, ca-certificates]
 write_files:
+  - path: /etc/pulse/default.pa.d/singularity.pa
+    content: |
+      # Soloist plays into a pipe on its own clock; it sleeps (writes nothing) whenever nothing plays
+      load-module module-pipe-sink file=/tmp/sgl-pcm sink_name=sgl format=float32le rate=44100 channels=2 use_system_clock_for_timing=yes
+      set-default-sink sgl
   - path: /usr/local/bin/sgl-pcm
     permissions: "0755"
     content: |
       #!/bin/sh
-      # what Soloist plays, as raw float32 stereo 44.1 kHz, to whoever connects (the Daemon, through gvproxy)
-      exec socat TCP-LISTEN:{GUEST_PCM},reuseaddr,fork EXEC:"parec --raw --format=float32le --rate=44100 --channels=2 --latency-msec=30 -d auto_null.monitor"
+      # the pipe sink's audio (raw float32 stereo 44.1 kHz) to the Mac over vsock (host CID 2), where the Daemon listens
+      until [ -p /tmp/sgl-pcm ]; do sleep 1; done
+      exec socat -u OPEN:/tmp/sgl-pcm,rdonly VSOCK-CONNECT:2:{GUEST_PCM}
   - path: /etc/systemd/user/sgl-pcm.service
     content: |
       [Unit]
@@ -309,6 +325,7 @@ write_files:
       [Service]
       ExecStart=/usr/local/bin/sgl-pcm
       Restart=always
+      RestartSec=2
       [Install]
       WantedBy=default.target
   - path: /usr/local/bin/sgl-soloist
@@ -366,7 +383,7 @@ mod tests {
     #[test]
     fn the_setup_names_the_ports_the_daemon_uses() {
         let u = user_data("ssh-ed25519 AAAA test");
-        assert!(u.starts_with("#cloud-config\n") && u.contains("ssh-ed25519 AAAA test") && u.contains("TCP-LISTEN:5005") && u.contains("soloist_release_arm64"));
+        assert!(u.starts_with("#cloud-config\n") && u.contains("ssh-ed25519 AAAA test") && u.contains("VSOCK-CONNECT:2:5005") && u.contains("module-pipe-sink") && u.contains("soloist_release_arm64"));
         assert!(!u.contains("{{") && !u.contains("}}"), "format escapes resolved");
     }
 }

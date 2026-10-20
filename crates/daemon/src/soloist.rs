@@ -50,12 +50,13 @@ impl SoloistEngine {
         }
     }
 
-    /// Soloist in the Soloist VM, as `device` on Connect (empty: "Singularity on <this computer>", apart from a Linux
-    /// machine's "Singularity" on the same account); its audio also goes to `feed`.
+    /// Soloist in the Soloist VM, as `device` on Connect (empty: "Singularity on <this computer> (lossless)", apart from a
+    /// Linux machine's "Singularity" and this Mac's librespot, which can linger in the device list after a switch, as
+    /// devices are found by name); its audio also goes to `feed`.
     #[cfg(target_os = "macos")]
     pub fn in_vm(device: &str, feed: Arc<crate::tap::Feed>) -> SoloistEngine {
         let mut e = SoloistEngine::from_env();
-        e.device_name = if device.trim().is_empty() { format!("Singularity on {}", crate::app_engine::this_computer()) } else { device.trim().into() };
+        e.device_name = if device.trim().is_empty() { format!("Singularity on {} (lossless)", crate::app_engine::this_computer()) } else { device.trim().into() };
         e.vm = Some(Arc::new(crate::soloist_vm::VmHost::new(&e.data_dir, feed)));
         e
     }

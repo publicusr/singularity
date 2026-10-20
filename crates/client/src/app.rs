@@ -455,6 +455,9 @@ pub struct App {
     /// the seek or volume bar being dragged
     pub scrub: Option<Scrub>,
     nudge: Nudge,
+    /// the volume just set here, until the player confirms it (a Connect device reports its new volume ~0.5 s late:
+    /// updates meanwhile would snap the slider back)
+    volume_hold: Option<(u8, Instant)>,
     pub home_view: HomeView,
     pub menu: Option<Menu>,
     pub covers: Covers,
@@ -590,6 +593,7 @@ impl App {
             drag_offset: 0,
             scrub: None,
             nudge: Nudge::default(),
+            volume_hold: None,
             home_view: HomeView::default(),
             menu: None,
             covers: Covers::offline(),
@@ -2158,7 +2162,21 @@ impl App {
         if percent != self.playback.volume {
             self.send(Command::SetVolume { percent });
             self.playback.volume = percent;
+            self.volume_hold = Some((percent, Instant::now()));
         }
+    }
+
+    /// The Daemon's playback, keeping a volume just set here until the player says so too (or 2.5 s pass: then the
+    /// player's word stands, so a refused change shows as refused).
+    pub fn playback_event(&mut self, mut p: singularity_proto::PlaybackState) {
+        if let Some((v, at)) = self.volume_hold {
+            if p.volume == v || at.elapsed() > Duration::from_millis(2500) {
+                self.volume_hold = None;
+            } else {
+                p.volume = v;
+            }
+        }
+        self.playback = p;
     }
 
     // ── mouse ─────────────────────────────────────────────────────────

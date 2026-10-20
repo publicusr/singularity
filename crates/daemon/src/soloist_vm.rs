@@ -19,9 +19,8 @@ pub struct VmHost {
     pub vm: Vm,
     /// the AudioTap's side of the VM's audio
     pub feed: Arc<Feed>,
-    /// Soloist's WebSocket and the PCM server, on the Mac's loopback
+    /// Soloist's WebSocket, on the Mac's loopback
     pub ws_port: u16,
-    pcm_port: u16,
     /// a newer Soloist build waits in the guest
     pub staged: AtomicBool,
     audio: std::sync::Mutex<Option<crate::pcm::Player>>,
@@ -34,7 +33,6 @@ impl VmHost {
             vm: Vm::new(data_dir),
             feed,
             ws_port: vm::free_port().unwrap_or(47_700),
-            pcm_port: vm::free_port().unwrap_or(47_705),
             staged: AtomicBool::new(false),
             audio: Default::default(),
             up: Default::default(),
@@ -46,10 +44,10 @@ impl VmHost {
         let mut up = self.up.lock().await;
         if !*up {
             self.vm.prepare(say).await?;
+            // listening before the guest's audio service tries to connect
+            *self.audio.lock().expect("audio lock") = Some(crate::pcm::listen(self.vm.pcm_socket(), self.feed.clone())?);
             self.vm.start(say).await?;
             self.vm.expose(&format!("127.0.0.1:{}", self.ws_port), vm::GUEST_WS).await?;
-            self.vm.expose(&format!("127.0.0.1:{}", self.pcm_port), vm::GUEST_PCM).await?;
-            *self.audio.lock().expect("audio lock") = Some(crate::pcm::play(format!("127.0.0.1:{}", self.pcm_port), self.feed.clone()));
             *up = true;
         }
         drop(up);
