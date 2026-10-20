@@ -428,6 +428,9 @@ struct ConfigFiles {
     polled: Instant,
 }
 
+/// Frames a second while nothing plays (D60).
+pub const IDLE_FPS: u64 = 5;
+
 pub struct App {
     pub theme: Theme,
     pub layout: Node,
@@ -2103,6 +2106,14 @@ impl App {
     fn nudge_volume(&mut self, delta: i64) {
         self.nudge.volume = Some((self.display_volume() as i64 + delta).clamp(0, 100) as u8);
         self.nudge.due = Some(Instant::now() + NUDGE_SETTLE);
+    }
+
+    /// Frames a second (D60): 30 focused, `visuals.unfocused_fps` unfocused, and at most 5 while nothing plays and
+    /// nobody has touched anything for 2 s (the Visuals keep moving, slowly; a key, the mouse or music brings them back).
+    pub fn frame_rate(&self, focused: bool, since_input: std::time::Duration) -> u64 {
+        let fps = if focused { 30 } else { self.config.visuals.unfocused_fps.clamp(1, 30) as u64 };
+        let playing = matches!(self.playback.status, singularity_proto::PlayStatus::Playing | singularity_proto::PlayStatus::Buffering);
+        if !playing && since_input >= std::time::Duration::from_secs(2) { fps.min(IDLE_FPS) } else { fps }
     }
 
     /// Called every frame: sends nudges once they've settled.

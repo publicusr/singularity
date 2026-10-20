@@ -913,6 +913,20 @@ mod tests {
         (app, rx)
     }
 
+    #[test]
+    fn the_visuals_slow_down_while_nothing_plays() {
+        // D60: paused and untouched for 2 s, at most 5 frames a second; input or music brings them back
+        use std::time::Duration;
+        let (mut app, _rx) = playing_app(200_000);
+        let still = Duration::from_secs(3);
+        assert_eq!(app.frame_rate(true, still), crate::app::IDLE_FPS);
+        assert_eq!(app.frame_rate(true, Duration::from_millis(500)), 30, "just touched");
+        app.config.visuals.unfocused_fps = 2;
+        assert_eq!(app.frame_rate(false, still), 2, "never faster than unfocused asks");
+        app.playback.status = PlayStatus::Playing;
+        assert_eq!(app.frame_rate(true, still), 30);
+    }
+
     /// What the App sent, without the background `CheckSaved` questions (`sent_all` keeps them).
     fn sent(rx: &mut tokio::sync::mpsc::Receiver<singularity_proto::Command>) -> Vec<singularity_proto::Command> {
         sent_all(rx).into_iter().filter(|c| !matches!(c, singularity_proto::Command::CheckSaved { .. })).collect()

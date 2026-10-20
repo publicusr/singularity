@@ -79,6 +79,7 @@ so it cannot be settled by talking)
 | D57 | Audiobooks on an Engine that can't play them | D41, D49, D52 | settled | Owner (2026-10-20): librespot can't (Spotify refuses it chapter keys; going around that is DRM circumvention). Audiobooks are built for every Engine: book pages, library rows and search work everywhere; on librespot, playing a chapter says "Audiobooks need Soloist or the Spotify app: switch the player in Settings". |
 | D58 | Spotify's access line on books | D57 | settled | Owner (2026-10-20): book rows and the book page show Spotify's own `accessInfo.signifier` text ("Listen free until Oct 31", "Access with Audiobooks+"); a refusal to play still says so. |
 | D59 | Free tiling (batch 7) | D37 | settled | Parked (owner, 2026-10-20: "lets pause on the free tiling, maybe as an idea to come back to, current state is very satisfactory"). Not built; kept as an idea (`ideas/layout.md`, research in `research/2026-10-free-tiling.md`). Next is batch 9, the audit. |
+| D60 | Visuals while nothing plays | D36, #71 | settled | Owner (2026-10-20): "slow sounds good". While nothing plays and nothing was touched for 2 s, the Client draws at most 5 frames a second (`IDLE_FPS`); a key, the mouse or music brings 30 back at once. Idle Client in the harness: pixel tier 5.5 → 2.1 %, cell tier 2.8 → 1.2 %. |
 
 ```mermaid
 flowchart LR
@@ -892,3 +893,7 @@ flowchart LR
 - **Batch 7 parked** (2026-10-20): owner: "lets pause on the free tiling, maybe as an idea to come back to, current
   state is very satisfactory." D59: free tiling becomes an idea (`ideas/layout.md`); story 85 stays in the spec, marked
   parked. Next and last: batch 9, the codebase audit (#71).
+- **Audit round 1** (2026-10-20, #71): first pass on macOS (report `research/2026-10-audit.md`): private daemon.log,
+  socket directory and peer uid checks, a config crash on inline tables, bounded Catalogue caches, cargo audit/deny
+  triaged. The owner's idle Client used 9–10 % CPU animating the Visuals with nothing playing: D60 (yes): 5 fps while
+  idle (`App::frame_rate`).
