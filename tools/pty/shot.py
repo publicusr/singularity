@@ -1216,6 +1216,28 @@ def main():
             t.shot(f"{out}/0-playing.png")
             t.send(b" ", 2.0)  # pause: bars fall and stop
             t.shot(f"{out}/1-paused.png")
+            # and stay still: the meters 2 s later (the black hole turns and the rain drifts by design: not compared)
+            top = next(i for i, l in enumerate(t.screen.display) if "loudne" in l)
+            still = t.screen.display[top:]
+            t.pump(2.0)
+            print("paused loudness/fft still:", still == t.screen.display[top:])
+            t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
+            for _ in range(4):
+                t.send(b"\x1b[B", 0.4)  # down to Terminal: osc, rain, fft
+            t.send(b"\r", 1.0)
+            t.send(b" ", 2.5)
+            t.shot(f"{out}/2-terminal-playing.png")
+            t.send(b" ", 2.0)
+            t.shot(f"{out}/3-terminal-paused.png")
+            rain = next(i for i, l in enumerate(t.screen.display) if "rain --audio" in l)
+            x0 = t.screen.display[rain].index("rain --audio") - 3
+            x1 = x0 + 38  # the rain Pane's columns, masked
+            def no_rain():
+                return [l[:x0] + l[x1:] for l in t.screen.display]
+            before = no_rain()
+            t.pump(2.0)
+            t.shot(f"{out}/4-terminal-paused-later.png")
+            print("Terminal paused, osc/fft still:", before == no_rain())
             t.send(b"q", 0.5)
             return
         t.send(b" ", 0.6)  # play

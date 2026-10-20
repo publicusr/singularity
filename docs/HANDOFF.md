@@ -9,6 +9,11 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 The owner is moving back to Linux (`~/src/singularity`). `git pull` first: a lot landed on the Mac.
 Nothing since the move to the Mac (#63 on) has run on Linux. In order:
 
+**Progress (Linux session, 2026-10-20)**: steps 1 and 2 done (278 tests, all 43 pty scenarios, shots looked at);
+fixed: the osc held its height ~3 s after a pause (owner report), kitty shared-memory uploads shared one segment name
+(most fell back to zlib), two TLS advisories patched. Clippy and cargo audit done on Linux; nightly installed (miri,
+rust-src, llvm-tools). `tools/soak.sh` is the Linux soak sampler. Next: step 3 onwards.
+
 1. **Build and test**: `cargo test --workspace` (Linux builds now need `alsa-lib`; the release profile has thin LTO,
    so a clean release build is slower). Fix anything Linux-only that `tools/check-linux.sh` couldn't see (it only
    type-checks).
@@ -138,6 +143,7 @@ macOS-only checks still waiting for the owner (can wait until they're back on th
 | `bc0377d` | #71 | `tests/hostile_input.rs`: random JSON, LRC and frames through every parser |
 | `d38d2f7` | #71 | `WRITE_DEADLINE`: a Client that stops reading is let go after 5 s |
 | `3873a6e`+ | #71 | macOS soak read: no leak; report updated |
+| (next) | #71, owner | Linux: osc flat when paused; one shared-memory segment name per upload; rustls-webpki/webpki-roots patched; `tools/soak.sh` |
 
 ## What exists in `crates/`
 

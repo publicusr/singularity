@@ -85,6 +85,9 @@ pub struct Kitty {
     /// per Visual: which of its two image ids is on screen, and where
     animated: HashMap<u32, (u32, Rect)>,
     shm_pending: Vec<(std::time::Instant, std::ffi::CString)>,
+    /// numbers the shared-memory segments: each needs a name of its own, or a later one would be refused (O_EXCL)
+    /// or unlinked by the sweep before kitty read it
+    shm_seq: u64,
     /// place images under cell backgrounds (kitty does this; the cells under them need the default background)
     pub below_backgrounds: bool,
     /// Visuals that must stay over backgrounds (the idle takeover shows through the whole UI)
@@ -113,6 +116,7 @@ impl Kitty {
             frames: vec![],
             animated: HashMap::new(),
             shm_pending: vec![],
+            shm_seq: 0,
             below_backgrounds: false,
             over_backgrounds: Default::default(),
         }
@@ -287,7 +291,8 @@ impl Kitty {
             }
             keep
         });
-        let name = format!("/sgl-{}-{}", std::process::id(), self.next_id);
+        self.shm_seq += 1;
+        let name = format!("/sgl-{}-{}", std::process::id(), self.shm_seq);
         let cname = std::ffi::CString::new(name.clone()).ok()?;
         // SAFETY: plain POSIX calls on a fresh, exclusively created segment; every failure path unlinks it
         unsafe {
@@ -424,6 +429,24 @@ mod tests {
         assert_eq!(buf[(0, 0)].symbol(), "▀");
         assert!(matches!(buf[(0, 3)].fg, Color::Rgb(r, _, b) if r > b), "left half stays red");
         assert!(matches!(buf[(3, 3)].bg, Color::Rgb(r, _, b) if b > r), "right half stays blue");
+    }
+
+    #[test]
+    fn every_shared_memory_upload_gets_a_segment_of_its_own() {
+        // two covers and a Visual frame in one flush, nobody reading: each must still go through shared memory
+        let mut k = Kitty::new(true);
+        let r = Rect::new(0, 0, 4, 2);
+        k.place_cropped(key("a"), r, None, || RgbImage::new(8, 8));
+        k.place_cropped(key("b"), r, None, || RgbImage::new(8, 8));
+        k.frame(1, r, 8, 8, std::sync::Arc::new(vec![0; 8 * 8 * 4]));
+        let out = flush(&mut k);
+        let names: std::collections::HashSet<&str> = out.split("t=s,").skip(1).map(|s| s.split(';').nth(1).unwrap().split('\x1b').next().unwrap()).collect();
+        assert_eq!((out.matches("t=s,").count(), names.len()), (3, 3), "{out:?}");
+        // a second frame later on: a new name too, so the sweep can never unlink one kitty hasn't read
+        k.frame(1, r, 8, 8, std::sync::Arc::new(vec![0; 8 * 8 * 4]));
+        let out = flush(&mut k);
+        let name = out.split("t=s,").nth(1).unwrap().split(';').nth(1).unwrap().split('\x1b').next().unwrap();
+        assert!(!names.contains(name));
     }
 
     #[test]

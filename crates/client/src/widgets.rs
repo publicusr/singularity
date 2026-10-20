@@ -215,7 +215,10 @@ pub fn scope(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
     let (w, h) = (r.width as usize * 2, r.height as f32 * 4.0);
     let t = app.hole.time();
-    let bands: Vec<f32> = app.meters.frame.as_ref().map(|f| f.bands.iter().map(|b| *b as f32 / 255.0).collect()).unwrap_or_default();
+    // paused: the trace goes flat at once. The bands take a second or two to fall, and the wave is scaled by their
+    // own sum, so it would otherwise hold its full height until they're nearly gone.
+    let playing = matches!(app.playback.status, singularity_proto::PlayStatus::Playing | singularity_proto::PlayStatus::Buffering);
+    let bands: Vec<f32> = app.meters.frame.as_ref().filter(|_| playing).map(|f| f.bands.iter().map(|b| *b as f32 / 255.0).collect()).unwrap_or_default();
     let disp = &mut app.widgets.scope;
     if disp.len() != w {
         *disp = vec![0.0; w];
@@ -236,7 +239,8 @@ pub fn scope(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let mut dots = vec![0u8; w * r.height as usize * 4];
     let mut prev: Option<f32> = None;
     for (i, s) in disp.iter().enumerate() {
-        let y = h * 0.5 - s.clamp(-1.0, 1.0) * h * 0.45;
+        // rounded: a trace a hair off the middle (the persistence never quite reaches 0) stays on one row
+        let y = (h * 0.5 - s.clamp(-1.0, 1.0) * h * 0.45).round().min(h - 1.0);
         let from = prev.unwrap_or(y);
         let (a, b) = if from < y { (from, y) } else { (y, from) };
         for yy in a as usize..=(b as usize).min(h as usize - 1) {
@@ -410,6 +414,32 @@ mod tests {
         t.sample();
         assert!(t.rows.iter().all(|r| watched(&r.3)));
         assert!(watched("Spotify Helper (Renderer)") && watched("singularityd") && !watched("Spotlight"));
+    }
+
+    #[test]
+    fn the_scope_goes_flat_when_the_music_pauses() {
+        let th = Theme::singularity();
+        let mut app = App::new(None);
+        let r = Rect::new(0, 0, 40, 20);
+        let rows = |app: &mut App| {
+            let mut buf = Buffer::empty(r);
+            scope(&mut buf, r, app, &th);
+            (0..20).filter(|y| (0..40).any(|x| buf[(x, *y)].symbol() != " ")).count()
+        };
+        app.playback.status = singularity_proto::PlayStatus::Playing;
+        app.meters.push(singularity_proto::SpectrumFrame { bands: vec![200; 64], level: 200, ..Default::default() });
+        let mut playing = 0;
+        for _ in 0..10 {
+            playing = rows(&mut app);
+        }
+        assert!(playing > 2, "a wave while it plays: {playing} rows");
+        // paused, the last loud frame still there (the Daemon's bars are still falling): flat within ~0.7 s at 30 fps
+        app.playback.status = singularity_proto::PlayStatus::Paused;
+        let mut paused = 0;
+        for _ in 0..20 {
+            paused = rows(&mut app);
+        }
+        assert_eq!(paused, 1, "a flat line");
     }
 
     #[test]

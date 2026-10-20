@@ -897,3 +897,9 @@ flowchart LR
   socket directory and peer uid checks, a config crash on inline tables, bounded Catalogue caches, cargo audit/deny
   triaged. The owner's idle Client used 9–10 % CPU animating the Visuals with nothing playing: D60 (yes): 5 fps while
   idle (`App::frame_rate`).
+- **Audit round 2: back on Linux** (2026-10-20, #71): tests (278) and all 43 pty scenarios green on Linux; clippy and
+  cargo audit as on the Mac plus two new TLS advisories (patched). The owner asked whether the audio Widgets still
+  move while paused: their Linux build predated `12a9e47`, but the osc still held its full height ~3 s after a pause
+  (scaled by the falling bands' own sum); it now goes flat at once. Found while reviewing the `unsafe` blocks: kitty
+  shared-memory segments shared one name, so most uploads fell back to zlib and frames could be unlinked unread.
+  `tools/soak.sh`: the Linux soak sampler.
