@@ -16,3 +16,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-uti
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# (#71) smaller and a little faster binaries; `cargo install` uses this profile
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
