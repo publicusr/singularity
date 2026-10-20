@@ -20,7 +20,7 @@ rust-src, llvm-tools). `tools/soak.sh` is the Linux soak sampler. Next: step 3 o
 2. **pty harness**: recreate the venv if needed, run every scenario in `tools/pty/README.md`, look at the shots.
 3. **A session per Engine** on the owner's machine, quietly: Soloist (the default; its updater and resume-after-restart
    still deserve a look), librespot, the Spotify app. MPRIS and notifications only on a private bus in tests.
-4. **Reinstall both binaries** (Linux was last installed after #61) and tell the owner to restart Singularity.
+4. **Reinstall both binaries** (done after `cabaf58`; again after later changes) and tell the owner to restart Singularity.
 5. **The Linux half of the audit** (`docs/research/2026-10-audit.md`, "Not done yet"): `cargo audit`/`deny`/clippy
    again on Linux, sanitizers (ASan/TSan on nightly), `perf` and `heaptrack`, Miri and `cargo fuzz` (nightly),
    idle/playing CPU and memory per Engine (the macOS numbers are in the report), a soak with the same sampler
@@ -191,7 +191,7 @@ on macOS runs the Soloist VM (a scratch `XDG_DATA_HOME` gets its own VM: ~2 min 
 
 `singularity` and `singularityd` are installed in `~/.cargo/bin` with `cargo install --locked --path crates/daemon` and
 `--path crates/client`. Reinstall both after each change the owner should test; the Client finds `singularityd` next
-to itself and replaces an older running Daemon by itself. Linux: last installed after #61. macOS: the repo is at
+to itself and replaces an older running Daemon by itself. Linux: last installed after `cabaf58` (2026-10-20). macOS: the repo is at
 `~/src/singularity`, Rust from Homebrew's rustup (`/opt/homebrew/opt/rustup/bin` and `~/.cargo/bin` on the
 PATH in `~/.zshrc`); last installed after `d38d2f7` (2026-10-20). Also on the Mac: zig + cargo-zigbuild + openssl@3
 and the target `x86_64-unknown-linux-gnu` (for `tools/check-linux.sh`), and `vfkit` from Homebrew (spike leftover; the
