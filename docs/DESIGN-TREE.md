@@ -820,7 +820,7 @@ flowchart LR
   against Debian's SHA512SUMS and copied sparse; a cloud-init seed (`hdiutil`) makes a `singularity` user (SSH key made
   for the VM, loopback only), PulseAudio with a null sink, `sgl-pcm` (its monitor as raw PCM on TCP 5005) and
   `sgl-soloist` (the guest fetches, checks with `--version` and swaps Soloist's arm64 build itself, ETag-based, so the
-  quiet-moment update flow works unchanged: `keep_current_in_vm`); first boot at 512 MB then 256; package caches
+  quiet-moment update flow works unchanged: `keep_current_in_vm`); Soloist's audio cache capped at 200 MB (its default is unlimited; Linux's: #71); first boot at 512 MB then 256; package caches
   dropped and `fstrim` so the disk file holds ~1.3 GB. `soloist_vm.rs`: Soloist is an SSH session (key and name on its
   stdin, a watcher on fd 3 stops Soloist when it closes: a script's background jobs get /dev/null as stdin, which
   first killed it at once); WebSocket and PCM through gvproxy forwards; pairing announced (Bonjour proxy record via

@@ -93,7 +93,7 @@ impl VmHost {
         // (a background job's stdin is /dev/null in a script: the watcher gets the session's on fd 3 explicitly)
         const SCRIPT: &str = r#"read -r k; read -r n; mkdir -p state/data state/cache
 exec 3<&0
-soloist/soloist --device-name "$n" --api-key "$k" --ws 0.0.0.0:7700 --verbose --data-dir state/data --cache-dir state/cache </dev/null &
+soloist/soloist --device-name "$n" --api-key "$k" --ws 0.0.0.0:7700 --verbose --data-dir state/data --cache-dir state/cache --cache-size 200 </dev/null &
 p=$!
 (cat <&3 >/dev/null; kill $p 2>/dev/null) >/dev/null 2>&1 &
 wait $p"#;
