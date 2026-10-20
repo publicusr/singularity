@@ -4,8 +4,8 @@ A terminal Spotify client for Linux and macOS that feels like the desktop app, p
 and looks spectacular: a Home feed, Made For You, full library, mouse *and* keyboard, btop-grade themes, and
 built-in audio-reactive visuals (yes, including a black hole).
 
-**Status:** v1 is done; v1.x is being built in batches (stats, playlist editing, Settings, podcasts and the macOS
-version are in). Spec in `docs/SPEC.md`, tickets are GitHub issues, the current state is in `docs/HANDOFF.md`.
+**Status:** v1 is done; v1.x is being built in batches (stats, playlist editing, Settings, podcasts, audiobooks and
+the macOS version are in; free tiling is parked; the codebase audit is under way). Spec in `docs/SPEC.md`, tickets are GitHub issues, the current state is in `docs/HANDOFF.md`.
 Product code lives in `crates/`; throwaway code in `prototypes/` and `spikes/`.
 
 Linux and macOS have the same features (the rule is D49); `docs/PLATFORMS.md` lists every feature's exact status on

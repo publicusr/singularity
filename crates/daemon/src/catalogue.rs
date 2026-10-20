@@ -117,6 +117,32 @@ pub enum CatEvent {
 
 /// Track lists stay fresh this long: reopening a playlist doesn't refetch it.
 const TRACKS_TTL: Duration = Duration::from_secs(10 * 60);
+const SEARCH_TTL: Duration = Duration::from_secs(300);
+/// How many entries each cache keeps (#71: they grew for as long as the Daemon ran). Lists and artist pages are the
+/// big ones (a long playlist is a few MB); names and lyrics are small.
+const MAX_LISTS: usize = 40;
+const MAX_PAGES: usize = 60;
+const MAX_DESCRIBED: usize = 2000;
+const MAX_LYRICS: usize = 300;
+
+/// Make room for one more entry in a timed cache: what has expired goes, then the oldest, down to `max - 1`.
+pub fn trim_timed<V>(map: &mut HashMap<String, (Instant, V)>, ttl: Duration, max: usize) {
+    map.retain(|_, (at, _)| at.elapsed() < ttl);
+    while map.len() >= max {
+        let Some(oldest) = map.iter().min_by_key(|(_, (at, _))| *at).map(|(k, _)| k.clone()) else { break };
+        map.remove(&oldest);
+    }
+}
+
+/// Make room for one more entry in a cache without ages: any entries go (they can be asked for again).
+pub fn trim_any<V>(map: &mut HashMap<String, V>, max: usize) {
+    if map.len() >= max {
+        let drop: Vec<String> = map.keys().take(map.len() + 1 - max).cloned().collect();
+        for k in drop {
+            map.remove(&k);
+        }
+    }
+}
 /// Longest track list fetched (Liked Songs can be huge; pages are sequential and never retried in a loop).
 const MAX_TRACKS: u32 = 10_000;
 
@@ -930,6 +956,7 @@ impl State {
         }
         let until = if uri.starts_with("spotify:show:") { library::SHOW_BATCH } else { MAX_TRACKS };
         if let Some(pages) = self.fetch_pages(&uri, 0, until).await {
+            trim_timed(&mut self.tracks, TRACKS_TTL, MAX_LISTS);
             self.tracks.insert(uri, (Instant::now(), pages));
         }
     }
@@ -1430,6 +1457,7 @@ impl State {
                 Ok(v) => {
                     let item = if episode { library::parse_episode(&v).map(|(i, _)| i) } else { library::parse_track(&v) };
                     if let Some(item) = item {
+                        trim_any(&mut self.described, MAX_DESCRIBED);
                         self.described.insert(uri, item.clone());
                         out.push(item);
                     }
@@ -1449,6 +1477,7 @@ impl State {
     async fn find_show(&mut self, uri: String) {
         match self.query("getEpisodeOrChapter", json!({ "uri": uri, "includeEpisodeContentRatingsV2": false })).await.map(|v| library::parse_episode(&v)) {
             Ok(Some((item, show))) => {
+                trim_any(&mut self.described, MAX_DESCRIBED);
                 self.described.insert(uri.clone(), item);
                 let _ = self.ev.send(CatEvent::EpisodeShow { episode: uri, show }).await;
             }
@@ -1464,7 +1493,7 @@ impl State {
     async fn search(&mut self, query: String) {
         let key = query.trim().to_lowercase();
         if let Some((at, r)) = self.searches.get(&key)
-            && at.elapsed() < Duration::from_secs(300)
+            && at.elapsed() < SEARCH_TTL
         {
             let mut r = r.clone();
             r.query = query;
@@ -1474,6 +1503,7 @@ impl State {
         match self.query("searchDesktop", library::search_vars(query.trim())).await {
             Ok(v) => {
                 let r = library::parse_search(&query, &v);
+                trim_timed(&mut self.searches, SEARCH_TTL, MAX_PAGES);
                 self.searches.insert(key, (Instant::now(), r.clone()));
                 let _ = self.ev.send(CatEvent::Search(r)).await;
             }
@@ -1493,6 +1523,7 @@ impl State {
         match self.query("queryArtistOverview", json!({ "uri": uri, "locale": "", "includePrerelease": true })).await {
             Ok(v) => match library::parse_artist(&v) {
                 Some(p) => {
+                    trim_timed(&mut self.artists, TRACKS_TTL, MAX_PAGES);
                     self.artists.insert(uri, (Instant::now(), p.clone()));
                     let _ = self.ev.send(CatEvent::Artist(p)).await;
                 }
@@ -1564,6 +1595,7 @@ impl State {
             }
         };
         if keep {
+            trim_any(&mut self.lyrics, MAX_LYRICS);
             self.lyrics.insert(uri, l.clone());
         }
         let _ = self.ev.send(CatEvent::Lyrics(l)).await;
@@ -1697,6 +1729,25 @@ pub fn parse_home(v: &Value) -> HomeFeed {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn caches_stay_bounded() {
+        use std::collections::HashMap;
+        use std::time::{Duration, Instant};
+        // (#71) expired entries go first, then the oldest; never more than `max`
+        let mut timed: HashMap<String, (Instant, u32)> = HashMap::new();
+        let old = Instant::now() - Duration::from_secs(700);
+        timed.insert("stale".into(), (old, 0));
+        for i in 0..10u32 {
+            super::trim_timed(&mut timed, Duration::from_secs(600), 5);
+            timed.insert(format!("k{i}"), (Instant::now() + Duration::from_millis(i as u64), i));
+            assert!(timed.len() <= 5);
+        }
+        assert!(!timed.contains_key("stale") && timed.contains_key("k9") && !timed.contains_key("k0"));
+        let mut any: HashMap<String, u32> = (0..10).map(|i| (format!("k{i}"), i)).collect();
+        super::trim_any(&mut any, 4);
+        assert_eq!(any.len(), 3);
+    }
+
     use super::*;
 
     /// Anonymised miniature of a real `home` answer (structure from spike 2, invented names).

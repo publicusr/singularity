@@ -1,0 +1,39 @@
+# cargo deny check (#71). Each exception says why; revisit them when the crate that pulls it in moves.
+
+[graph]
+all-features = false
+
+[advisories]
+ignore = [
+    # rsa "Marvin" timing attack on *decryption*: librespot only verifies Spotify's server signature with it
+    { id = "RUSTSEC-2023-0071", reason = "librespot-core verifies signatures only; no private key, no decryption" },
+    # quick-xml 0.38 in librespot-core: it parses Spotify's own answers over its authenticated connection;
+    # a fix needs the librespot fork to move to >= 0.41 (ticketed)
+    { id = "RUSTSEC-2026-0194", reason = "only Spotify's authenticated answers are parsed; waits on librespot" },
+    { id = "RUSTSEC-2026-0195", reason = "only Spotify's authenticated answers are parsed; waits on librespot" },
+    # zbus 5's helper crates were renamed for zbus 6 (ticketed: move to zbus 6)
+    { id = "RUSTSEC-2026-0370", reason = "zbus 5 helper, unmaintained since zbus 6; upgrade ticketed" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus 5 helper, unmaintained since zbus 6; upgrade ticketed" },
+    { id = "RUSTSEC-2026-0372", reason = "zbus 5 helper, unmaintained since zbus 6; upgrade ticketed" },
+]
+
+[licenses]
+allow = [
+    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "0BSD",
+    "Unicode-3.0", "Unlicense", "BSL-1.0", "CDLA-Permissive-2.0",
+    # file-level copyleft (symphonia, priority-queue's MPL option): fine linked unmodified
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# duplicates come from the GPU and audio stacks moving at different speeds: listed, not refused
+multiple-versions = "allow"
+wildcards = "deny"
+# (the workspace's own path dependencies)
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

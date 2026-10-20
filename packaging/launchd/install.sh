@@ -18,6 +18,8 @@ bin="${SINGULARITYD:-$HOME/.cargo/bin/singularityd}"
 [ -x "$bin" ] || { echo "no singularityd at $bin (cargo install --locked --path crates/daemon)" >&2; exit 1; }
 log="${XDG_STATE_HOME:-$HOME/.local/state}/singularity/daemon.log"
 mkdir -p "$(dirname "$log")" "$HOME/Library/LaunchAgents"
+# owner-only (it names the account); launchd keeps the mode of a file that's already there
+touch "$log" && chmod 600 "$log"
 tmp="$(getconf DARWIN_USER_TEMP_DIR)"
 sed -e "s|@BIN@|$bin|" -e "s|@LOG@|$log|" -e "s|@TMPDIR@|$tmp|" -e "s|io.github.publicusr.singularityd|$label|" "$here/singularityd.plist" > "$plist"
 plutil -lint -s "$plist"

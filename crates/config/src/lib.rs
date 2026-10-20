@@ -317,10 +317,17 @@ pub fn set_value(doc: &mut DocumentMut, dotted: &str, v: Value) {
     let last = parts.pop().expect("a key");
     let mut table = doc.as_table_mut();
     for p in parts {
-        if !table.contains_key(p) {
-            table.insert(p, toml_edit::table());
+        // a section written inline (`ui = { … }`) becomes a table with its values; anything else in its place (a
+        // stray `ui = 5`) gives way to one
+        if !table.get(p).is_some_and(Item::is_table) {
+            let section = match table.remove(p) {
+                Some(Item::Value(toml_edit::Value::InlineTable(t))) => t.into_table(),
+                _ => toml_edit::Table::new(),
+            };
+            table.insert(p, Item::Table(section));
         }
-        table = table[p].as_table_mut().expect("a table on the way");
+        let Some(next) = table.get_mut(p).and_then(Item::as_table_mut) else { return };
+        table = next;
     }
     // keep the value's own decoration (an end-of-line comment) when replacing it
     match table.get_mut(last).and_then(Item::as_value_mut) {
@@ -535,6 +542,18 @@ mod tests {
         for (key, _) in SETTINGS {
             assert!(value_at(&DEFAULT_CONFIG.parse().unwrap(), key).is_some(), "{key} in the default file");
         }
+    }
+
+    #[test]
+    fn a_setting_is_set_whatever_shape_its_section_has() {
+        // (#71) an inline table is valid TOML; a stray value in a section's place isn't, but mustn't crash the Client
+        let mut doc: DocumentMut = "[visuals]\ngpu = \"low-power\"\nui = { design = \"nebula\", transparent = true }\n".parse().unwrap();
+        let mut doc2: DocumentMut = "idle = 5\n".parse().unwrap();
+        set_value(&mut doc, "visuals.ui.design", Value::from("cockpit"));
+        set_value(&mut doc2, "idle.minutes", Value::from(7));
+        let text = doc.to_string();
+        assert!(text.contains("cockpit") && text.contains("transparent = true"), "{text}");
+        assert_eq!(value_at(&doc2.to_string().parse().unwrap(), "idle.minutes").and_then(|v| v.as_integer()), Some(7));
     }
 
     #[test]

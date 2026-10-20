@@ -71,7 +71,7 @@ pub fn starfield(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let want = (r.width as usize * r.height as usize / 6).clamp(20, 600);
     while s.stars.len() < want {
         let (x, y, z) = (rnd(&mut s.seed) * 2.0 - 1.0, rnd(&mut s.seed) * 2.0 - 1.0, 0.1 + rnd(&mut s.seed) * 0.9);
-        let (hue, phase) = (rnd(&mut s.seed), rnd(&mut s.seed) * 6.28);
+        let (hue, phase) = (rnd(&mut s.seed), rnd(&mut s.seed) * std::f32::consts::TAU);
         s.stars.push(Star { x, y, z, hue, phase });
     }
     s.stars.truncate(want);
@@ -86,7 +86,7 @@ pub fn starfield(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         st.z -= speed * dt;
         let (px, py) = project(st, st.z);
         if st.z <= 0.02 || px < 0.0 || py < 0.0 || px >= r.width as f32 || py >= r.height as f32 {
-            *st = Star { x: rnd(&mut seed) * 2.0 - 1.0, y: rnd(&mut seed) * 2.0 - 1.0, z: 1.0, hue: rnd(&mut seed), phase: rnd(&mut seed) * 6.28 };
+            *st = Star { x: rnd(&mut seed) * 2.0 - 1.0, y: rnd(&mut seed) * 2.0 - 1.0, z: 1.0, hue: rnd(&mut seed), phase: rnd(&mut seed) * std::f32::consts::TAU };
             continue;
         }
         let near = (1.0 - st.z).clamp(0.0, 1.0);

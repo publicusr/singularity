@@ -54,6 +54,22 @@ async fn second_daemon_refuses_to_bind() {
     assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
 }
 
+#[tokio::test]
+async fn the_socket_never_goes_through_a_symlinked_directory() {
+    // (#71) someone else's directory, linked where ours should be, could hand Clients a socket of theirs
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = dir.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, dir.path().join("sgl")).unwrap();
+    let err = singularityd::bind(&dir.path().join("sgl/d.sock")).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    // our own directory: fine, and owner-only afterwards
+    let ok = dir.path().join("own/d.sock");
+    singularityd::bind(&ok).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(dir.path().join("own")).unwrap().permissions().mode() & 0o777, 0o700);
+}
+
 async fn connect(path: &std::path::Path) -> UnixStream {
     let mut s = UnixStream::connect(path).await.unwrap();
     proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() }).await.unwrap();

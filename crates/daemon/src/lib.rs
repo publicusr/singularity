@@ -91,6 +91,7 @@ pub type CatalogueHandle = (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>);
 pub fn bind(path: &Path) -> std::io::Result<UnixListener> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
+        private_dir(dir)?;
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
@@ -102,6 +103,25 @@ pub fn bind(path: &Path) -> std::io::Result<UnixListener> {
         std::fs::remove_file(path)?;
     }
     UnixListener::bind(path)
+}
+
+/// The socket's directory must be ours (not a symlink), and so must the one holding it (or root's): in a shared
+/// directory like `/tmp`, another user who made either first could swap in a socket of their own.
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let me = unsafe { libc::getuid() }; // SAFETY: getuid has no preconditions and can't fail
+    let m = std::fs::symlink_metadata(dir)?;
+    let parent_ok = dir.parent().and_then(|p| std::fs::metadata(p).ok()).is_none_or(|p| p.uid() == me || p.uid() == 0);
+    if !m.is_dir() || m.uid() != me || !parent_ok {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("{} (or the directory holding it) isn't yours: refusing to put the socket there", dir.display())));
+    }
+    Ok(())
+}
+
+/// Only our own user's processes may talk to the Daemon (the directory's mode says so too; this doesn't rely on it).
+fn same_user(stream: &UnixStream) -> bool {
+    let me = unsafe { libc::getuid() }; // SAFETY: as above
+    stream.peer_cred().is_ok_and(|c| c.uid() == me)
 }
 
 /// What a Daemon runs beyond playback and the Catalogue.
@@ -189,6 +209,10 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
                 return Ok(Served::Replaced);
             }
         };
+        if !same_user(&stream) {
+            tracing::warn!("refused a connection from another user");
+            continue;
+        }
         let hub = hub.clone();
         tokio::spawn(async move {
             if let Err(e) = client_session(stream, hub).await {

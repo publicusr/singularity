@@ -5,6 +5,17 @@ use singularityd::app_engine::AppEngine;
 use singularityd::librespot::LibrespotEngine;
 use singularityd::soloist::SoloistEngine;
 
+/// The log names the account and what plays: whoever opened it (a Client, launchd, a shell), it's owner-only.
+fn private_log() {
+    // SAFETY: fstat fills a zeroed stat for fd 2; fchmod only changes a regular file's mode
+    unsafe {
+        let mut st: libc::stat = std::mem::zeroed();
+        if libc::fstat(2, &mut st) == 0 && (st.st_mode & libc::S_IFMT) == libc::S_IFREG {
+            libc::fchmod(2, 0o600);
+        }
+    }
+}
+
 fn main() {
     // macOS delivers media-key and Control Centre commands on the main thread's run loop (#68): the Daemon runs on
     // another thread and the main thread serves those, until the Daemon ends the process
@@ -33,6 +44,7 @@ fn daemon() -> i32 {
 }
 
 async fn run() -> anyhow::Result<i32> {
+    private_log();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .with_writer(std::io::stderr)

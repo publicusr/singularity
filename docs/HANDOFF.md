@@ -26,7 +26,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 - Engines now: Soloist (Linux; macOS in the VM), librespot (both), the Spotify app (both), the fake one. `auto` =
   Soloist on Linux, librespot on macOS (D56). Costs measured on the M2: librespot ~28 MB / ~1 % playing; the VM
   ~300 MB / ~1 % idle; Spotify.app ~600 MB / 5–25 %.
-- Tests: **269 passing** on macOS (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`),
+- Tests: **272 passing** on macOS (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`),
   `live_shapes` and `secrets_live`. `tools/check-linux.sh` type-checks Linux from the Mac: clean. **Nothing since the
   move to the Mac has run on Linux**: first thing back there, `cargo test --workspace`, the pty scenarios, and a
   session per Engine (Linux builds now need `alsa-lib`).
@@ -135,7 +135,9 @@ on macOS runs the Soloist VM (a scratch `XDG_DATA_HOME` gets its own VM: ~2 min 
   the VM as their setting (`engine.kind = "soloist"`; measure its CPU while playing FLAC, not measured on the final
   setup yet); the app's audio tap after granting the permission (#67); then close #65, #67, #68, #70, #72.
 - **#62**: the owner checks a book on the VM or the app (a chapter resumes where it was left; save a book and see
-  its library row: `libraryV3`'s `Audiobook` shape is assumed from search's), then close it. Batch 7 (free tiling) is parked (D59). Next: **batch 9, the audit**
+  its library row: `libraryV3`'s `Audiobook` shape is assumed from search's), then close it. Batch 7 (free tiling) is parked (D59). Now: **batch 9, the audit, started 2026-10-20**: progress and what's left in
+  `docs/research/2026-10-audit.md` (macOS tools, security fixes, bounded caches done; Linux, soaks, budgets, Miri, fuzz
+  to do)
   (#71; SPEC "Batch 9": bugs, vulnerabilities, resources on both OSes; seeds: `follow_config` polls every second, the
   Catalogue's caches have no bound, `daemon.log` is 0644 and names the account, Soloist's cache is unlimited on Linux,
   the owner's idle Client used ~7 % CPU).

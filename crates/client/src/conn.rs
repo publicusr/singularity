@@ -41,6 +41,13 @@ async fn run(mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>
                 continue;
             }
         };
+        // only a Daemon of our own user's (another user's process could be listening on a path we expect)
+        let me = unsafe { libc::getuid() }; // SAFETY: getuid has no preconditions and can't fail
+        if !stream.peer_cred().is_ok_and(|c| c.uid() == me) {
+            let _ = ev_tx.send(ConnEvent::Incompatible(format!("{} belongs to another user: not connecting", path.display()))).await;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            continue;
+        }
         // who's on the other end, in case it has to be stopped
         let peer = stream.peer_cred().ok().and_then(|c| c.pid());
         let (mut rd, mut wr) = stream.into_split();
@@ -175,7 +182,12 @@ fn start_daemon() {
         .unwrap_or_else(std::env::temp_dir)
         .join("singularity");
     let _ = std::fs::create_dir_all(&log_dir);
-    let log = std::fs::File::create(log_dir.join("daemon.log")).ok();
+    // owner-only: the log names the account and what plays
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let path = log_dir.join("daemon.log");
+    let log = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&path).ok();
+    // (one made by an older build is 0644)
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     let mut cmd = std::process::Command::new(exe);
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null());
     match log {

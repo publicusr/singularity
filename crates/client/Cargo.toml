@@ -1,5 +1,6 @@
 [package]
 name = "singularity"
+publish = false
 description = "Singularity: a terminal Spotify client"
 version.workspace = true
 edition.workspace = true

@@ -1,5 +1,6 @@
 [package]
 name = "singularity-config"
+publish = false
 description = "Singularity's config files: schema versions, migrations, comment-preserving edits, hot reload"
 version.workspace = true
 edition.workspace = true
