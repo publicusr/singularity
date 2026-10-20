@@ -843,4 +843,8 @@ flowchart LR
   Soloist defaults to "Singularity on <computer> (lossless)": devices are found by name, and this Mac's librespot
   ("Singularity on <computer>") can linger in the device list after a switch (during the test both were online, so
   the owner's real Client may have been steering the wrong one).
+- **Soloist remembers its volume** (2026-10-20): it starts at its own 40 % unless told; the SoloistEngine now saves the
+  volume on every `volume_changed` (`soloist-state/volume`) and starts Soloist with `--initial-volume` (Linux and the
+  VM alike). `SINGULARITY_SOLOIST=local` keeps a stand-in Soloist local on macOS for the pty harness (`soloist` there
+  now means the VM). librespot measured while playing: ~1 % CPU, 28 MB.
 

@@ -5,7 +5,7 @@ import shot
 here = os.path.dirname(os.path.abspath(__file__))
 fresh = f"{here}/fresh"
 sock = f"{shot.RUNTIME}/sgl-wiz-{os.getpid()}.sock"
-env = dict(os.environ, SINGULARITY_ENGINE="soloist", SINGULARITY_START_APP="0", SINGULARITY_SOCKET=sock, TERM="xterm-256color", SINGULARITY_NO_KEYRING="1",
+env = dict(os.environ, SINGULARITY_ENGINE="soloist", SINGULARITY_SOLOIST="local", SINGULARITY_START_APP="0", SINGULARITY_SOCKET=sock, TERM="xterm-256color", SINGULARITY_NO_KEYRING="1",
            XDG_DATA_HOME=f"{fresh}/data", XDG_CONFIG_HOME=f"{fresh}/config", XDG_CACHE_HOME=f"{fresh}/cache", XDG_STATE_HOME=f"{fresh}/state")
 for k in ("KITTY_WINDOW_ID", "TERM_PROGRAM", "GHOSTTY_RESOURCES_DIR", "TMUX", "SOLOIST_API_KEY"):
     env.pop(k, None)

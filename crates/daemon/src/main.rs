@@ -70,7 +70,8 @@ async fn run() -> anyhow::Result<i32> {
     let librespot = (kind == Some(Kind::Librespot)).then(|| LibrespotEngine::new(&choice.device, None, singularityd::catalogue::Dirs::from_env()));
     // macOS: Soloist runs in the Soloist VM (D55); its audio comes to the Daemon, which plays it and taps it
     #[cfg(target_os = "macos")]
-    let soloist_vm = (kind == Some(Kind::Soloist)).then(|| {
+    // (SINGULARITY_SOLOIST=local: a local stand-in instead, as the pty harness's tests use on any OS)
+    let soloist_vm = (kind == Some(Kind::Soloist) && std::env::var("SINGULARITY_SOLOIST").as_deref() != Ok("local")).then(|| {
         let feed = singularityd::tap::Feed::new();
         (SoloistEngine::in_vm(&choice.device, feed.clone()), feed)
     });

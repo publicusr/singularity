@@ -61,6 +61,15 @@ impl SoloistEngine {
         e
     }
 
+    /// The volume to start Soloist at: the last one it played at (it would start at its own 40 % otherwise).
+    fn saved_volume(&self) -> Option<u8> {
+        std::fs::read_to_string(self.state_dir().join("volume")).ok()?.trim().parse().ok().filter(|v| *v <= 100)
+    }
+
+    fn save_volume(&self, v: u8) {
+        let _ = std::fs::write(self.state_dir().join("volume"), v.to_string());
+    }
+
     #[cfg(target_os = "macos")]
     fn vm(&self) -> Option<&Arc<crate::soloist_vm::VmHost>> {
         self.vm.as_ref()
@@ -485,7 +494,7 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
     let mut child: Child = match &in_vm {
         #[cfg(target_os = "macos")]
         Some(v) => {
-            let (c, stdin) = v.launch(key, &engine.device_name).await?;
+            let (c, stdin) = v.launch(key, &engine.device_name, engine.saved_volume()).await?;
             session_stdin = Some(stdin);
             c
         }
@@ -494,6 +503,7 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
         None => {
             let mut cmd = Proc::new(engine.binary());
             cmd.args(["--device-name", &engine.device_name, "--api-key", key, "--ws", "127.0.0.1:0", "--verbose"])
+                .args(engine.saved_volume().map(|v| ["--initial-volume".to_string(), v.to_string()]).into_iter().flatten())
                 .arg("--data-dir")
                 .arg(state.join("data"))
                 .arg("--cache-dir")
@@ -655,8 +665,12 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                     }
                     _ => {
                         let track_changed = ev["type"] == "track_changed";
+                        let volume = st.playback.volume;
                         if st.apply(&ev) {
                             let _ = ev_tx.send(EngineEvent::Playback(st.playback.clone())).await;
+                        }
+                        if st.playback.volume != volume && ev["type"] == "volume_changed" {
+                            engine.save_volume(st.playback.volume);
                         }
                         if track_changed {
                             let _ = ws_tx.send(Message::text(json!({"type":"command","command":"get_queue","limit":20}).to_string())).await;

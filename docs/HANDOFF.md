@@ -107,7 +107,8 @@ off the session bus unless asked), plus the older `SINGULARITY_CPU`, `SINGULARIT
 `SINGULARITY_NO_KEYRING`, `SINGULARITY_SOCKET`. #23: `SINGULARITY_DATA=<dir>|off` (LocalStore; fake-Engine Daemons
 keep none unless asked), `SINGULARITY_BACKUP_CHECK_SECS`, `SINGULARITY_IGNORE_SHUTDOWN` (#25 tests), `SINGULARITY_BELOW_BG=1|0` (#41: kitty's under-background layer), `SINGULARITY_FAKE_STALLS=1` (#45: the fake Engine starves), and `XDG_DOWNLOAD_DIR` decides where exports go. #65/#66: `SINGULARITY_ENGINE=soloist|spotify-app|librespot` (overrides `[engine] kind`), `SINGULARITY_START_APP=0` (the AppEngine never looks for or starts the real app: tests). #68:
 `SINGULARITY_NOWPLAYING=on|off` (macOS Now Playing; off by default for a fake Engine). #72: `SINGULARITY_ENGINE=soloist`
-on macOS runs the Soloist VM (a scratch `XDG_DATA_HOME` gets its own VM: ~2 min and ~250 MB of downloads the first time). `SINGULARITY_NOTIFY` is gone (now `notifications.track_change`).
+on macOS runs the Soloist VM (a scratch `XDG_DATA_HOME` gets its own VM: ~2 min and ~250 MB of downloads the first time);
+`SINGULARITY_SOLOIST=local` keeps Soloist local (a stand-in) on any OS: every pty script that pins `soloist` sets it. `SINGULARITY_NOTIFY` is gone (now `notifications.track_change`).
 
 ## Then
 

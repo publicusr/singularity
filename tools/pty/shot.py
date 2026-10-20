@@ -1011,7 +1011,7 @@ def main():
     os.makedirs(out, exist_ok=True)
     sock = f"{RUNTIME}/sgl-{os.getpid()}.sock"
     # (never the real Spotify app: a Daemon a Client starts by itself gets these too)
-    env = dict(os.environ, SINGULARITY_ENGINE="soloist", SINGULARITY_START_APP="0", SINGULARITY_SOCKET=sock, TERM="xterm-256color", COLORTERM="truecolor",
+    env = dict(os.environ, SINGULARITY_ENGINE="soloist", SINGULARITY_SOLOIST="local", SINGULARITY_START_APP="0", SINGULARITY_SOCKET=sock, TERM="xterm-256color", COLORTERM="truecolor",
                # scratch config and state: test runs never write the owner's files
                XDG_CONFIG_HOME=f"{os.path.abspath(out)}/config", XDG_STATE_HOME=f"{os.path.abspath(out)}/state",
                XDG_DATA_HOME=f"{os.path.abspath(out)}/data")

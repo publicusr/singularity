@@ -7,7 +7,7 @@ import shot
 
 out = os.path.abspath(sys.argv[1]); os.makedirs(out, exist_ok=True)
 sock = f"{shot.RUNTIME}/sgl-st-{os.getpid()}.sock"
-env = dict(os.environ, SINGULARITY_ENGINE="soloist", SINGULARITY_START_APP="0", SINGULARITY_SOCKET=sock, TERM="xterm-256color", COLORTERM="truecolor", SINGULARITY_NO_KEYRING="1",
+env = dict(os.environ, SINGULARITY_ENGINE="soloist", SINGULARITY_SOLOIST="local", SINGULARITY_START_APP="0", SINGULARITY_SOCKET=sock, TERM="xterm-256color", COLORTERM="truecolor", SINGULARITY_NO_KEYRING="1",
            SINGULARITY_TAP="off", SINGULARITY_DBUS="off", SINGULARITY_DATA="off", SINGULARITY_SOLOIST_CDN="http://127.0.0.1:9",
            XDG_DATA_HOME=f"{out}/data", XDG_CONFIG_HOME=f"{out}/config", XDG_CACHE_HOME=f"{out}/cache", XDG_STATE_HOME=f"{out}/state")
 for k in ("KITTY_WINDOW_ID", "TERM_PROGRAM", "GHOSTTY_RESOURCES_DIR", "TMUX", "SOLOIST_API_KEY", "DBUS_SESSION_BUS_ADDRESS"):

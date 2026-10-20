@@ -86,18 +86,18 @@ impl VmHost {
 
     /// Start Soloist in the guest as `name`: the SSH session is the process (its output is Soloist's). The key and
     /// name go in on its stdin, which the caller keeps open: closing it (or ending the session) stops Soloist.
-    pub async fn launch(&self, key: &str, name: &str) -> anyhow::Result<(Child, tokio::process::ChildStdin)> {
+    pub async fn launch(&self, key: &str, name: &str, volume: Option<u8>) -> anyhow::Result<(Child, tokio::process::ChildStdin)> {
         use tokio::io::AsyncWriteExt;
         // (a background job's stdin is /dev/null in a script: the watcher gets the session's on fd 3 explicitly)
-        const SCRIPT: &str = r#"read -r k; read -r n; mkdir -p state/data state/cache
+        const SCRIPT: &str = r#"read -r k; read -r n; read -r v; mkdir -p state/data state/cache
 exec 3<&0
-soloist/soloist --device-name "$n" --api-key "$k" --ws 0.0.0.0:7700 --verbose --data-dir state/data --cache-dir state/cache --cache-size 200 </dev/null &
+soloist/soloist --device-name "$n" --api-key "$k" --initial-volume "${v:-40}" --ws 0.0.0.0:7700 --verbose --data-dir state/data --cache-dir state/cache --cache-size 200 </dev/null &
 p=$!
 (cat <&3 >/dev/null; kill $p 2>/dev/null) >/dev/null 2>&1 &
 wait $p"#;
         let mut child = self.vm.ssh_command().arg(SCRIPT).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn()?;
         let mut stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("no stdin for Soloist's session"))?;
-        stdin.write_all(format!("{key}\n{}\n", name.replace('\n', " ")).as_bytes()).await?;
+        stdin.write_all(format!("{key}\n{}\n{}\n", name.replace('\n', " "), volume.unwrap_or(40)).as_bytes()).await?;
         stdin.flush().await?;
         Ok((child, stdin))
     }
