@@ -102,7 +102,7 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 | `d101b01` | #72 | Soloist starts at its last volume; `SINGULARITY_SOLOIST=local` for the pty harness |
 | `db4c150` | #67, #70 | Process tap on Spotify.app (`process_tap.rs`, `tap::Resampler`); librespot dead-session watchdog |
 | `1ce954b` | #62, fix | Live check: Soloist plays chapters, librespot is refused their keys (`examples/chapter_probe`); D57, D58. SoloistEngine keeps the volume asked for across restarts |
-| (next) | #62 | Audiobooks: book pages (`queryBookChapters`, `ListHeader.book`), Audiobooks chip, library rows, librespot says what plays them |
+| `2d496bf` | #62 | Audiobooks: book pages (`queryBookChapters`, `ListHeader.book`), Audiobooks chip, library rows, librespot says what plays them |
 
 ## What exists in `crates/`
 
@@ -150,7 +150,7 @@ on macOS runs the Soloist VM (a scratch `XDG_DATA_HOME` gets its own VM: ~2 min 
 `--path crates/client`. Reinstall both after each change the owner should test; the Client finds `singularityd` next
 to itself and replaces an older running Daemon by itself. Linux: last installed after #61. macOS: the repo is at
 `~/src/singularity`, Rust from Homebrew's rustup (`/opt/homebrew/opt/rustup/bin` and `~/.cargo/bin` on the
-PATH in `~/.zshrc`); last installed after `db4c150` (2026-10-20). Also on the Mac: zig + cargo-zigbuild + openssl@3
+PATH in `~/.zshrc`); last installed after `2d496bf` (2026-10-20). Also on the Mac: zig + cargo-zigbuild + openssl@3
 and the target `x86_64-unknown-linux-gnu` (for `tools/check-linux.sh`), and `vfkit` from Homebrew (spike leftover; the
 Daemon uses its own pinned copy).
 
