@@ -68,7 +68,16 @@ async fn run() -> anyhow::Result<i32> {
     };
     let app = (kind == Some(Kind::SpotifyApp)).then(|| AppEngine::new(&choice.device, None));
     let librespot = (kind == Some(Kind::Librespot)).then(|| LibrespotEngine::new(&choice.device, None, singularityd::catalogue::Dirs::from_env()));
-    let identity = app.as_ref().map(|a| a.identity.clone()).or_else(|| librespot.as_ref().map(|l| l.identity.clone())).unwrap_or_default();
+    // macOS: Soloist runs in the Soloist VM (D55); its audio comes to the Daemon, which plays it and taps it
+    #[cfg(target_os = "macos")]
+    let soloist_vm = (kind == Some(Kind::Soloist)).then(|| {
+        let feed = singularityd::tap::Feed::new();
+        (SoloistEngine::in_vm(&choice.device, feed.clone()), feed)
+    });
+    #[cfg(not(target_os = "macos"))]
+    let soloist_vm: Option<(SoloistEngine, std::sync::Arc<singularityd::tap::Feed>)> = None;
+    let soloist_identity = soloist_vm.as_ref().map(|(s, _)| singularityd::engine::Identity { device_name: s.device_name.clone(), ..Default::default() });
+    let identity = app.as_ref().map(|a| a.identity.clone()).or_else(|| librespot.as_ref().map(|l| l.identity.clone())).or(soloist_identity).unwrap_or_default();
     // --no-catalogue: playback only (no Spotify login / private API)
     // --fake-catalogue <home.json>: a recorded Home feed instead of Spotify (UI work, screenshots)
     let fake_home = args.iter().position(|a| a == "--fake-catalogue").and_then(|i| args.get(i + 1));
@@ -84,6 +93,7 @@ async fn run() -> anyhow::Result<i32> {
     let tap = match (&librespot, kind) {
         _ if fake => Some(TapSource::Synthetic),
         (Some(l), _) => Some(TapSource::Feed(l.feed.clone())),
+        (None, _) if soloist_vm.is_some() => soloist_vm.as_ref().map(|(_, f)| TapSource::Feed(f.clone())),
         (None, Some(Kind::SpotifyApp)) if cfg!(target_os = "macos") => None,
         (None, Some(Kind::SpotifyApp)) => Some(TapSource::PipeWire(StreamOf::SpotifyApp)),
         _ => Some(TapSource::PipeWire(StreamOf::Soloist)),
@@ -101,7 +111,13 @@ async fn run() -> anyhow::Result<i32> {
             let start_app = std::env::var("SINGULARITY_START_APP").as_deref() != Ok("0");
             Box::new(AppEngine { catalogue: catalogue.as_ref().map(|(tx, _)| tx.clone()), start_app, ..app })
         }
-        (None, None) => Box::new(SoloistEngine::from_env()),
+        (None, None) => match soloist_vm {
+            Some((s, _)) => {
+                tracing::info!("Engine: Soloist in the Soloist VM, {:?} on Connect", s.device_name);
+                Box::new(s)
+            }
+            None => Box::new(SoloistEngine::from_env()),
+        },
     };
     // MPRIS on the session bus (SINGULARITY_DBUS=<address> picks another bus, =off none). A fake Engine stays off the
     // session bus unless asked, so test Daemons never show up in the desktop's media controls.

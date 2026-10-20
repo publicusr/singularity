@@ -188,11 +188,19 @@ pub fn draw_wizard(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
                 line(buf, &mut y, &format!("Soloist couldn't start: {message}"), th.s(th.error));
                 line(buf, &mut y, "Singularity retries by itself. A wrong key? Press K to enter it again.", th.s(if message.contains("API key") { th.fg } else { th.dim }));
             }
+            _ if cfg!(target_os = "macos") => {
+                line(buf, &mut y, "Setting up Spotify's own player (Soloist) in a small Linux VM, then starting it…", th.s(th.fg));
+                line(buf, &mut y, "The first time downloads ~250 MB and takes a minute or two; the status bar shows each step.", th.s(th.dim));
+            }
             _ => line(buf, &mut y, "Downloading Spotify's own player (Soloist) from Spotify and starting it…", th.s(th.fg)),
         },
         Step::Pair => {
-            line(buf, &mut y, "On your phone, open Spotify, tap the device picker (bottom), and choose", th.s(th.fg));
-            line(buf, &mut y, "   Singularity", th.title());
+            let name = match &app.engine {
+                Some(EngineStatus::NeedsPairing { device_name }) => device_name.as_str(),
+                _ => "Singularity",
+            };
+            line(buf, &mut y, "On your phone (same wifi), open Spotify, tap the device picker (bottom), and choose", th.s(th.fg));
+            line(buf, &mut y, &format!("   {name}"), th.title());
             line(buf, &mut y, "You only do this once. While you're there: Change quality settings → Lossless.", th.s(th.dim));
         }
         Step::App => match &app.engine {

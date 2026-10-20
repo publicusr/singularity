@@ -814,4 +814,20 @@ flowchart LR
   as they do between tracks and the clearing frame goes out, then it waits without cost (`Analyzer::silence`,
   `is_quiet`); and a Client drops a frame older than 0.5 s (`Meters::expire`). Tests on both; pty: the Terminal design's
   osc flattens and stops within 3 s of pausing. The rain keeps falling at its calm base speed (ambient), unboosted.
+- **#72 Soloist in the Soloist VM 🔶** (2026-10-20, built; live-checked, the owner's own switch pending): `[engine] kind =
+  "soloist"` on macOS runs the same SoloistEngine with a VM host (`soloist_vm.rs`, `vm.rs`, `pcm.rs`). `vm.rs`:
+  vfkit 0.6.4 and gvproxy 0.8.9 downloaded once and pinned by SHA-256; Debian 13's latest arm64 cloud image checked
+  against Debian's SHA512SUMS and copied sparse; a cloud-init seed (`hdiutil`) makes a `singularity` user (SSH key made
+  for the VM, loopback only), PulseAudio with a null sink, `sgl-pcm` (its monitor as raw PCM on TCP 5005) and
+  `sgl-soloist` (the guest fetches, checks with `--version` and swaps Soloist's arm64 build itself, ETag-based, so the
+  quiet-moment update flow works unchanged: `keep_current_in_vm`); first boot at 512 MB then 256; package caches
+  dropped and `fstrim` so the disk file holds ~1.3 GB. `soloist_vm.rs`: Soloist is an SSH session (key and name on its
+  stdin, a watcher on fd 3 stops Soloist when it closes: a script's background jobs get /dev/null as stdin, which
+  first killed it at once); WebSocket and PCM through gvproxy forwards; pairing announced (Bonjour proxy record via
+  `dns-sd`, relay in Apple's python3) only while it waits, stopped once logged in. `pcm.rs`: the PCM to cpal with a
+  jitter buffer (0.3 s, catch up past 2 s) and to the tap's Feed. Pairing without the phone was tried and doesn't work
+  (Soloist wants an authorization code for its own client id). Device name: "Singularity on <computer>" (apart from
+  Linux's "Singularity"). Live: start → waiting for pairing in 5.6 s; the owner paired, FLAC 1.4 Mbit/s on the
+  speakers; ~300 MB, ~10 % CPU (VM 6.4 % mostly virtualisation overhead with 2 vCPUs, gvproxy 1.5 % moving the PCM,
+  Daemon 1.7 %); later: PCM over virtio-vsock, 1 vCPU.
 

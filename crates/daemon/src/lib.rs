@@ -12,13 +12,18 @@ pub mod library;
 pub mod lyrics;
 pub mod mpris;
 pub mod nowplaying;
+pub mod pcm;
 pub mod playlists;
 pub mod queries;
 pub mod secrets;
 pub mod soloist;
+#[cfg(target_os = "macos")]
+pub mod soloist_vm;
 pub mod store;
 pub mod tap;
 pub mod update;
+#[cfg(target_os = "macos")]
+pub mod vm;
 
 use catalogue::{CatCmd, CatEvent};
 use engine::{Engine, EngineEvent};
