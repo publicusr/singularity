@@ -903,3 +903,8 @@ flowchart LR
   (scaled by the falling bands' own sum); it now goes flat at once. Found while reviewing the `unsafe` blocks: kitty
   shared-memory segments shared one name, so most uploads fell back to zlib and frames could be unlinked unread.
   `tools/soak.sh`: the Linux soak sampler.
+- **Audit round 3: Linux tools** (2026-10-21, #71): cargo deny, Miri (proto, config), ASan/LSan (workspace), TSan
+  (Daemon), `cargo fuzz` (four targets in `fuzz/`, ~22 M runs), udeps: nothing found but a test's deliberate leak and
+  Mesa's own. Soloist's build download reviewed (fine; polish: no size cap). Found: Soloist's cache at 2.8 GB on the
+  owner's machine (`--cache-size` unused): a cap goes to the owner. Logged-in test Daemons (librespot, app) wait on the
+  owner (a keyring copy was refused by the tool permission check).

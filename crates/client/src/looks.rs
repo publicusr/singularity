@@ -410,9 +410,13 @@ mod tests {
                     "nowplaying" => "Now playing",
                     "scope" => "osc",
                     "fft" => "fft",
-                    other => Box::leak(other.to_string().into_boxed_str()),
+                    _ => "",
                 };
-                let title = crate::design::title(d, &slot, usual);
+                // most Panes are titled after their Slot
+                let title = match crate::design::title(d, &slot, usual) {
+                    "" => slot.as_str(),
+                    t => t,
+                };
                 // (the main Pane is titled after what it shows: "home" here)
                 assert!(s.contains(title), "{}: no {title:?} Pane\n{s}", DESIGNS[d].id);
             }

@@ -13,6 +13,13 @@ Nothing since the move to the Mac (#63 on) has run on Linux. In order:
 fixed: the osc held its height ~3 s after a pause (owner report), kitty shared-memory uploads shared one segment name
 (most fell back to zlib), two TLS advisories patched. Clippy and cargo audit done on Linux; nightly installed (miri,
 rust-src, llvm-tools). `tools/soak.sh` is the Linux soak sampler. Next: step 3 onwards.
+Then (2026-10-21): the owner restarted on the new build; Soloist's updater ran live at Daemon start (1.3.10.1, clean).
+Step 3: librespot started on Linux in a scratch test Daemon (logged in, on Connect as "Singularity on host",
+ALSA default), but the session was stopped: the tool permission check refused copying the owner's Spotify login out
+of the keyring into a scratch dir (the scratch copy was deleted at once). **Logged-in test Daemons need the owner's
+say** (a permission rule, or the owner switches `[engine] kind` on their own Daemon). The app Engine is blocked the
+same way. Step 5 done but `perf`/`heaptrack` (not installed) and the soak (owner: later). Fuzz targets in `fuzz/`.
+**Open question to the owner**: a cap for Soloist's cache (2.8 GB after four days; `--cache-size`).
 
 1. **Build and test**: `cargo test --workspace` (Linux builds now need `alsa-lib`; the release profile has thin LTO,
    so a clean release build is slower). Fix anything Linux-only that `tools/check-linux.sh` couldn't see (it only

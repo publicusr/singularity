@@ -1,0 +1,46 @@
+# (#71) cargo fuzz targets (nightly): `cargo +nightly fuzz run <target>`. Outside the workspace; the stable stand-in
+# is crates/daemon/tests/hostile_input.rs.
+[package]
+name = "singularity-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "io-util"] }
+singularityd = { path = "../crates/daemon" }
+singularity-proto = { path = "../crates/proto" }
+singularity-config = { path = "../crates/config" }
+
+[[bin]]
+name = "private_api"
+path = "fuzz_targets/private_api.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lrc"
+path = "fuzz_targets/lrc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frames"
+path = "fuzz_targets/frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false
