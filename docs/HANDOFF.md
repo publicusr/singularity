@@ -21,7 +21,10 @@ say** (a permission rule, or the owner switches `[engine] kind` on their own Dae
 same way. Step 5 done but `perf`/`heaptrack` (not installed) and the soak (owner: later). Fuzz targets in `fuzz/`.
 Owner answers (2026-10-21): Soloist's cache cap is a setting, `engine.cache_gb`, default 5 GB (D61, built); the
 logged-in Engine sessions are postponed (the owner will switch `[engine] kind` on their own Daemon later: then read
-its log and measure); `perf`/`heaptrack`: yes (the owner installs them with sudo; then the frame profile).
+its log and measure); `perf`/`heaptrack`: yes, installed. Frame profile on Linux done (audit report, "Linux,
+measured"): playing focused ~3 % Client + ~5 % kitty; heaptrack halved the Client's allocations (`b21d8e6`). Left on
+Linux for #71: the soak (owner: later), the logged-in Engine sessions (owner: later), the remaining review areas
+(state machines per Engine, Time, polling loops), and the ranked issues for unfixed findings (step 6).
 
 1. **Build and test**: `cargo test --workspace` (Linux builds now need `alsa-lib`; the release profile has thin LTO,
    so a clean release build is slower). Fix anything Linux-only that `tools/check-linux.sh` couldn't see (it only
