@@ -200,7 +200,7 @@ on macOS runs the Soloist VM (a scratch `XDG_DATA_HOME` gets its own VM: ~2 min 
 
 `singularity` and `singularityd` are installed in `~/.cargo/bin` with `cargo install --locked --path crates/daemon` and
 `--path crates/client`. Reinstall both after each change the owner should test; the Client finds `singularityd` next
-to itself and replaces an older running Daemon by itself. Linux: last installed after `cabaf58` (2026-10-20). macOS: the repo is at
+to itself and replaces an older running Daemon by itself. Linux: last installed after `dfa60f6` (2026-10-21). macOS: the repo is at
 `~/src/singularity`, Rust from Homebrew's rustup (`/opt/homebrew/opt/rustup/bin` and `~/.cargo/bin` on the
 PATH in `~/.zshrc`); last installed after `d38d2f7` (2026-10-20). Also on the Mac: zig + cargo-zigbuild + openssl@3
 and the target `x86_64-unknown-linux-gnu` (for `tools/check-linux.sh`), and `vfkit` from Homebrew (spike leftover; the
