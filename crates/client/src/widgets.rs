@@ -15,6 +15,8 @@ use std::time::Instant;
 pub struct State {
     rain: Rain,
     scope: Vec<f32>,
+    /// when the scope was last drawn: its persistence is per second, not per frame
+    scope_at: Option<Instant>,
     top: Top,
 }
 
@@ -219,6 +221,11 @@ pub fn scope(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     // own sum, so it would otherwise hold its full height until they're nearly gone.
     let playing = matches!(app.playback.status, singularity_proto::PlayStatus::Playing | singularity_proto::PlayStatus::Buffering);
     let bands: Vec<f32> = app.meters.frame.as_ref().filter(|_| playing).map(|f| f.bands.iter().map(|b| *b as f32 / 255.0).collect()).unwrap_or_default();
+    // phosphor persistence: ~90 ms whatever the frame rate (per frame, it trailed the music by ~0.3 s at an
+    // unfocused 10 fps)
+    let dt = app.widgets.scope_at.map_or(1.0 / 30.0, |t| t.elapsed().as_secs_f32().min(0.5));
+    app.widgets.scope_at = Some(Instant::now());
+    let keep = 0.7f32.powf(dt * 30.0);
     let disp = &mut app.widgets.scope;
     if disp.len() != w {
         *disp = vec![0.0; w];
@@ -233,8 +240,7 @@ pub fn scope(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             let f = 1.5 + g as f32 * 1.7;
             s += a * (std::f32::consts::TAU * f * x + t * (2.0 + g as f32)).sin();
         }
-        // phosphor persistence
-        *d = *d * 0.7 + s / total * 0.9 * 0.3;
+        *d = *d * keep + s / total * 0.9 * (1.0 - keep);
     }
     let mut dots = vec![0u8; w * r.height as usize * 4];
     let mut prev: Option<f32> = None;
@@ -422,6 +428,8 @@ mod tests {
         let mut app = App::new(None);
         let r = Rect::new(0, 0, 40, 20);
         let rows = |app: &mut App| {
+            // a frame every 33 ms, as at 30 fps
+            app.widgets.scope_at = Some(Instant::now() - std::time::Duration::from_millis(33));
             let mut buf = Buffer::empty(r);
             scope(&mut buf, r, app, &th);
             (0..20).filter(|y| (0..40).any(|x| buf[(x, *y)].symbol() != " ")).count()
@@ -440,6 +448,25 @@ mod tests {
             paused = rows(&mut app);
         }
         assert_eq!(paused, 1, "a flat line");
+    }
+
+    #[test]
+    fn the_scope_keeps_up_with_the_music_at_any_frame_rate() {
+        // the same 0.2 s of music drawn at 30 and at 5 fps ends at the same trace
+        let th = Theme::singularity();
+        let r = Rect::new(0, 0, 40, 20);
+        let trace = |fps: u64| {
+            let mut app = App::new(None);
+            app.playback.status = singularity_proto::PlayStatus::Playing;
+            app.meters.push(singularity_proto::SpectrumFrame { bands: vec![200; 64], level: 200, ..Default::default() });
+            for _ in 0..(fps / 5) {
+                app.widgets.scope_at = Some(Instant::now() - std::time::Duration::from_millis(1000 / fps));
+                scope(&mut Buffer::empty(r), r, &mut app, &th);
+            }
+            app.widgets.scope.iter().map(|d| d.abs()).sum::<f32>()
+        };
+        let (fast, slow) = (trace(30), trace(5));
+        assert!((fast - slow).abs() < fast * 0.05, "30 fps {fast}, 5 fps {slow}");
     }
 
     #[test]
