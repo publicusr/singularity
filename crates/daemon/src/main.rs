@@ -131,7 +131,7 @@ async fn run() -> anyhow::Result<i32> {
                 tracing::info!("Engine: Soloist in the Soloist VM, {:?} on Connect", s.device_name);
                 Box::new(s)
             }
-            None => Box::new(SoloistEngine::from_env()),
+            None => Box::new(SoloistEngine { cache_mb: choice.soloist_cache_mb(), ..SoloistEngine::from_env() }),
         },
     };
     // MPRIS on the session bus (SINGULARITY_DBUS=<address> picks another bus, =off none). A fake Engine stays off the

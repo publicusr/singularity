@@ -14,7 +14,7 @@ pub use toml_edit;
 use toml_edit::{DocumentMut, Item, Value};
 
 /// The `config.toml` schema this build writes and reads.
-pub const CONFIG_SCHEMA: i64 = 3;
+pub const CONFIG_SCHEMA: i64 = 4;
 /// The `keys.toml` schema.
 pub const KEYS_SCHEMA: i64 = 1;
 
@@ -43,12 +43,29 @@ pub struct Config {
 }
 
 /// Which Engine plays (D51); read when the Daemon starts.
-#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct EngineChoice {
     pub kind: EngineKind,
     /// the player's Connect device name (the app, librespot); empty: the default for that Engine
     pub device: String,
+    /// Soloist's cache of played songs, in GB; 0: no limit (#71)
+    pub cache_gb: f32,
+}
+
+impl Default for EngineChoice {
+    fn default() -> Self {
+        EngineChoice { kind: EngineKind::Auto, device: String::new(), cache_gb: 5.0 }
+    }
+}
+
+impl EngineChoice {
+    /// What Soloist's `--cache-size` gets: MB, at least its minimum of 100; 0 is its own "no limit". A value that
+    /// makes no sense (negative) is the default.
+    pub fn soloist_cache_mb(&self) -> u32 {
+        let gb = if self.cache_gb >= 0.0 { self.cache_gb } else { EngineChoice::default().cache_gb };
+        if gb == 0.0 { 0 } else { ((gb as f64 * 1024.0).round() as u32).max(100) }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -144,7 +161,7 @@ pub enum GpuPower {
 /// What a fresh `config.toml` says.
 pub const DEFAULT_CONFIG: &str = r#"# Singularity settings. Changes apply as soon as you save this file.
 # (Don't change `schema`: Singularity uses it to update this file when settings change between versions.)
-schema = 3
+schema = 4
 
 [ui]
 # the design: "singularity", "event-horizon", "classic", "cockpit" or "terminal" (Ctrl+K → Design shows them)
@@ -182,6 +199,9 @@ kind = "auto"
 # the player's name in device pickers; empty: the default (the app: this computer's name; librespot: "Singularity on
 # <computer>"; Soloist: "Singularity" on Linux, "Singularity on <computer> (lossless)" on macOS)
 device = ""
+# disk space for Soloist's cache of played songs, in GB; 0 = no limit. Replays come from it instead of the network (a
+# lossless song is ~20–40 MB). Applies when Soloist next starts; Soloist's VM on macOS keeps its own 200 MB.
+cache_gb = 5
 "#;
 
 /// What a fresh `keys.toml` says.
@@ -204,7 +224,7 @@ preset = "standard"
 pub type Migration = fn(&mut DocumentMut);
 
 /// `config.toml`'s migrations: entry `i` takes schema `i + 1` to `i + 2`.
-pub const CONFIG_MIGRATIONS: &[Migration] = &[add_tint_art, add_engine];
+pub const CONFIG_MIGRATIONS: &[Migration] = &[add_tint_art, add_engine, add_cache_gb];
 
 /// 1 → 2: `ui.tint_art` (#33) appears at the end of `[ui]`, with its comment, so it can be found.
 fn add_tint_art(doc: &mut DocumentMut) {
@@ -226,6 +246,17 @@ fn add_engine(doc: &mut DocumentMut) {
     let mut engine = fresh["engine"].as_table().expect("[engine] in the default file").clone();
     engine.decor_mut().set_prefix("\n");
     doc.insert("engine", Item::Table(engine));
+}
+
+/// 3 → 4: `engine.cache_gb` (#71) appears at the end of `[engine]`, with its comment.
+fn add_cache_gb(doc: &mut DocumentMut) {
+    let Some(engine) = doc.get_mut("engine").and_then(Item::as_table_mut) else { return };
+    if engine.contains_key("cache_gb") {
+        return;
+    }
+    let fresh: DocumentMut = DEFAULT_CONFIG.parse().expect("the default config parses");
+    let (key, item) = fresh["engine"].as_table().and_then(|t| t.get_key_value("cache_gb")).expect("cache_gb in the default file");
+    engine.insert_formatted(key, item.clone());
 }
 
 /// Bring `doc` up to `target` with `migrations`. Returns whether anything changed; a document from a newer
@@ -424,6 +455,7 @@ pub const SETTINGS: &[(&str, Kind)] = &[
     ("idle.enabled", Kind::Toggle),
     ("idle.minutes", Kind::Number { min: 0.5, max: 120.0, step: 0.5, whole: false }),
     ("engine.kind", Kind::Choice(&["auto", "soloist", "spotify-app", "librespot"])),
+    ("engine.cache_gb", Kind::Number { min: 0.0, max: 500.0, step: 1.0, whole: false }),
 ];
 
 /// One row of the Settings page: a setting as the file has it (or its default, if the file leaves it out).
@@ -630,7 +662,7 @@ minutes = 3
         let r = parse::<Config>("config.toml", mine, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert!(r.value.ui.tint_art && r.value.ui.design == "cockpit");
         assert!(r.migrated.unwrap().contains("design = \"cockpit\" # mine\n# covers"));
-        let off = parse::<Config>("config.toml", "schema = 3\n[ui]\ntint_art = false\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        let off = parse::<Config>("config.toml", "schema = 4\n[ui]\ntint_art = false\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert!(!off.value.ui.tint_art && off.migrated.is_none());
     }
 
@@ -640,12 +672,33 @@ minutes = 3
         let r = parse::<Config>("config.toml", mine, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert!(r.problems.is_empty(), "{:?}", r.problems);
         let text = r.migrated.unwrap();
-        assert!(text.starts_with("schema = 3\n\n[idle]\n# never\nenabled = false\n\n[engine]\n# what plays the music"), "{text}");
+        assert!(text.starts_with("schema = 4\n\n[idle]\n# never\nenabled = false\n\n[engine]\n# what plays the music"), "{text}");
         assert_eq!((r.value.engine.kind, r.value.idle.enabled), (EngineKind::Auto, false));
         // an [engine] of the user's own is left as it is
         let theirs = parse::<Config>("config.toml", "schema = 2\n[engine]\nkind = \"soloist\"\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
-        assert_eq!((theirs.value.engine.kind, theirs.migrated.as_deref()), (EngineKind::Soloist, Some("schema = 3\n[engine]\nkind = \"soloist\"\n")));
+        assert_eq!(theirs.value.engine.kind, EngineKind::Soloist);
+        assert!(theirs.migrated.unwrap().starts_with("schema = 4\n[engine]\nkind = \"soloist\"\n# disk space"));
         assert_eq!(EngineKind::Auto.resolved(), if cfg!(target_os = "macos") { EngineKind::Librespot } else { EngineKind::Soloist });
+    }
+
+    #[test]
+    fn a_schema_3_config_gains_the_cache_size_keeping_its_engine() {
+        let mine = "schema = 3\n\n[engine]\n# mine\nkind = \"librespot\"\n";
+        let r = parse::<Config>("config.toml", mine, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        assert!(r.problems.is_empty(), "{:?}", r.problems);
+        let text = r.migrated.unwrap();
+        assert!(text.starts_with("schema = 4\n\n[engine]\n# mine\nkind = \"librespot\"\n# disk space for Soloist's cache"), "{text}");
+        assert!(text.ends_with("cache_gb = 5\n"), "{text}");
+        assert_eq!((r.value.engine.kind, r.value.engine.cache_gb), (EngineKind::Librespot, 5.0));
+        // the Settings page finds it, with its comment
+        let e = entries(&text).into_iter().find(|e| e.key == "engine.cache_gb").unwrap();
+        assert!(e.description.contains("0 = no limit"), "{}", e.description);
+    }
+
+    #[test]
+    fn the_cache_size_becomes_soloists_megabytes() {
+        let mb = |gb| EngineChoice { cache_gb: gb, ..Default::default() }.soloist_cache_mb();
+        assert_eq!((mb(5.0), mb(0.0), mb(0.05), mb(1.5), mb(-3.0)), (5120, 0, 100, 1536, 5120), "default, no limit, Soloist's minimum, a half, nonsense");
     }
 
     #[test]

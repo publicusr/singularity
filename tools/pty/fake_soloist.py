@@ -50,6 +50,9 @@ async def main():
     os.makedirs(data, exist_ok=True)
     with open(f"{data}/soloist.pid", "w") as f:
         f.write(str(os.getpid()))
+    with open(f"{data}/soloist.args", "w") as f:  # what the Daemon passed (the key left out)
+        a = sys.argv[1:]
+        f.write(" ".join("<key>" if i and a[i - 1] == "--api-key" else x for i, x in enumerate(a)))
     p = Player()
     if "--initial-volume" in sys.argv:
         p.volume = int(sys.argv[sys.argv.index("--initial-volume") + 1])

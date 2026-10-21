@@ -89,6 +89,7 @@ def command(c):
         b = json.dumps(m).encode()
         s.sendall(struct.pack(">I", len(b)) + b)
     time.sleep(0.5)
+    s.shutdown(socket.SHUT_RDWR)  # the reader sees the end instead of a closed descriptor
     s.close()
 
 
@@ -125,6 +126,8 @@ try:
     t.send(b"\x0b", 0.3); t.send(b"health", 0.3); t.send(b"\r", 2.0)
     t.shot(f"{out}/3-health.png")
     print("health:", [l.strip() for l in t.text().splitlines() if "Engine" in l][:1])
+    args = open(f"{scratch}/data/singularity/soloist-state/data/soloist.args").read().split()
+    print("cache size passed:", args[args.index("--cache-size") + 1] if "--cache-size" in args else "none")
     t.send(b"\x1b", 0.3); t.send(b" ", 0.4); t.send(b"q", 0.5)
 finally:
     d.terminate()

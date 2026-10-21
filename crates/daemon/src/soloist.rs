@@ -31,6 +31,8 @@ pub struct SoloistEngine {
     pub data_dir: PathBuf,
     /// its name on Connect
     pub device_name: String,
+    /// `--cache-size` in MB (0: no limit), from `engine.cache_gb`; the VM keeps its own
+    pub cache_mb: u32,
     /// macOS: Soloist runs in the Soloist VM (D55)
     #[cfg(target_os = "macos")]
     pub vm: Option<Arc<crate::soloist_vm::VmHost>>,
@@ -45,6 +47,7 @@ impl SoloistEngine {
         SoloistEngine {
             data_dir: base.join("singularity"),
             device_name: DEVICE_NAME.into(),
+            cache_mb: singularity_config::EngineChoice::default().soloist_cache_mb(),
             #[cfg(target_os = "macos")]
             vm: None,
         }
@@ -508,6 +511,7 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                 .arg(state.join("data"))
                 .arg("--cache-dir")
                 .arg(state.join("cache"))
+                .args(["--cache-size", &engine.cache_mb.to_string()])
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .kill_on_drop(true);
