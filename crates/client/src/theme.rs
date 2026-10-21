@@ -110,7 +110,13 @@ pub struct Tint {
 impl Tint {
     /// Names this tint in cache keys: a tinted copy is made once per cover and tint.
     pub fn key(&self) -> String {
-        self.stops.iter().map(|c| format!("{:02x}{:02x}{:02x}", c.0, c.1, c.2)).collect::<Vec<_>>().join("-")
+        // one buffer: this runs for every cover on every frame (#71)
+        use std::fmt::Write;
+        let mut s = String::with_capacity(self.stops.len() * 7);
+        for (i, c) in self.stops.iter().enumerate() {
+            let _ = write!(s, "{}{:02x}{:02x}{:02x}", if i == 0 { "" } else { "-" }, c.0, c.1, c.2);
+        }
+        s
     }
 
     /// The colour at `t` (0 = black … 1 = the ramp's top).

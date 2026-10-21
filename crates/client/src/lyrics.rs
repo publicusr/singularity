@@ -21,6 +21,17 @@ fn stamp(ms: u64) -> String {
     format!("[{:02}:{:02}]", ms / 60_000, ms / 1000 % 60)
 }
 
+/// Every line's rows, kept between frames for one song at one width: wrapping all of a song's lines on every frame
+/// was a third of the Client's allocations (#71).
+#[derive(Default)]
+pub struct Wrapped {
+    /// (song, text width, lines)
+    key: (String, usize, usize),
+    rows: Vec<(usize, String)>,
+    /// where each line's first row is
+    starts: Vec<usize>,
+}
+
 /// How far continuation rows are indented.
 const INDENT: usize = 2;
 
@@ -47,7 +58,7 @@ pub fn wrap(s: &str, w: usize) -> Vec<String> {
         // a word wider than a row is broken across rows
         for c in word.chars() {
             let cur = rows.last().unwrap();
-            if cur.width() + c.to_string().width() > room(&rows) {
+            if cur.width() + unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) > room(&rows) {
                 rows.push(String::new());
             }
             rows.last_mut().unwrap().push(c);
@@ -65,10 +76,10 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let n = s.width() as u16;
         text(buf, r.x + r.width.saturating_sub(n) / 2, y, r.width, s, st);
     };
-    let Some(item) = app.playback.item.clone() else {
+    let Some(item) = app.playback.item.as_ref() else {
         return centre(buf, r.y + r.height / 2, "nothing playing", th.s(th.dim));
     };
-    let Some(lyr) = app.lyrics.clone().filter(|l| l.uri == item.uri) else {
+    let Some(lyr) = app.lyrics.as_ref().filter(|l| l.uri == item.uri) else {
         return centre(buf, r.y + r.height / 2, "looking for lyrics…", th.s(th.dim));
     };
     if lyr.lines.is_empty() {
@@ -87,15 +98,20 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let show_stamps = lyr.synced && w >= 30;
     let text_x = if show_stamps { x + 8 } else { x };
     let text_w = w.saturating_sub(text_x - x) as usize;
-    // every line's rows, and where each line's first row is
-    let mut rows: Vec<(usize, String)> = vec![];
-    let mut starts = Vec::with_capacity(lyr.lines.len());
-    for (i, line) in lyr.lines.iter().enumerate() {
-        starts.push(rows.len());
-        let words = if line.text.is_empty() { "♪" } else { line.text.as_str() };
-        rows.extend(wrap(words, text_w).into_iter().map(|t| (i, t)));
-    }
     let pos = app.display_position(singularity_proto::now_ms());
+    // every line's rows, and where each line's first row is: wrapped again only for a new song or width
+    let cache = &mut app.lyrics_wrap;
+    if cache.key.0 != lyr.uri || (cache.key.1, cache.key.2) != (text_w, lyr.lines.len()) {
+        cache.key = (lyr.uri.clone(), text_w, lyr.lines.len());
+        cache.rows.clear();
+        cache.starts.clear();
+        for (i, line) in lyr.lines.iter().enumerate() {
+            cache.starts.push(cache.rows.len());
+            let words = if line.text.is_empty() { "♪" } else { line.text.as_str() };
+            cache.rows.extend(wrap(words, text_w).into_iter().map(|t| (i, t)));
+        }
+    }
+    let (rows, starts) = (&app.lyrics_wrap.rows, &app.lyrics_wrap.starts);
     let now = if lyr.synced { current(&lyr.lines, pos) } else { None };
     // synced: hold the current line about 40 % down, all its rows in view; unsynced: the wheel scrolls by rows
     let first = match now {

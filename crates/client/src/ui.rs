@@ -2342,6 +2342,12 @@ mod tests {
         let rows = lyrics_pane(&mut app, 40, 12);
         let i = rows.iter().position(|r| r.contains("[00:05] 1 and")).unwrap();
         assert!(rows[i + 1].starts_with(&" ".repeat(11)) && !rows[i + 1].contains('['), "{rows:#?}");
+        // the rows are kept between frames: another song with as many lines, at the same width, is wrapped afresh
+        app.playback.item.as_mut().unwrap().uri = "spotify:track:t".into();
+        let lines = (0..30).map(|i| LyricLine { start_ms: i * 5_000, text: format!("another song {i}") }).collect();
+        app.lyrics = Some(Lyrics { uri: "spotify:track:t".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
+        let rows = lyrics_pane(&mut app, 40, 12);
+        assert!(rows.iter().any(|r| r.contains("another song 1")) && !rows.iter().any(|r| r.contains("long")), "{rows:#?}");
     }
 
     #[test]

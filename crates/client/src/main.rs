@@ -195,6 +195,7 @@ fn apply(app: &mut App, ev: ConnEvent) {
         ConnEvent::Msg(DaemonMsg::Event(Event::Lyrics(l))) => {
             if app.playback.item.as_ref().is_some_and(|i| i.uri == l.uri) {
                 app.lyrics_scroll = 0;
+                app.lyrics_wrap = Default::default();
                 app.lyrics = Some(l);
             }
         }

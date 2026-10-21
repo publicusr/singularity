@@ -529,6 +529,7 @@ pub struct App {
     pub lyrics: Option<singularity_proto::Lyrics>,
     /// first line shown of unsynced lyrics
     pub lyrics_scroll: usize,
+    pub lyrics_wrap: crate::lyrics::Wrapped,
     lyrics_asked: Option<String>,
     /// where the hole was drawn this frame (for bending the neighbouring borders)
     pub hole_at: Option<Hole>,
@@ -644,6 +645,7 @@ impl App {
             queue_view: Default::default(),
             lyrics: None,
             lyrics_scroll: 0,
+            lyrics_wrap: Default::default(),
             lyrics_asked: None,
             hole_at: None,
             saved: Default::default(),

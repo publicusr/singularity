@@ -8,7 +8,10 @@ import pyte
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
-BIN = f"{ROOT}/target/debug"
+# PTY_BIN: other binaries (a release build with symbols, for profiling); PTY_WRAP: start the Client under a tool
+# ("heaptrack -o out/heap"), split on spaces
+BIN = os.environ.get("PTY_BIN") or f"{ROOT}/target/debug"
+WRAP = os.environ.get("PTY_WRAP", "").split()
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
 
 
@@ -36,6 +39,8 @@ class Term:
         self.stream = pyte.ByteStream(self.screen)
         pid, fd = pty.fork()
         if pid == 0:
+            if WRAP:
+                os.execvpe(WRAP[0], [*WRAP, f"{BIN}/singularity"], env)
             os.execve(f"{BIN}/singularity", ["singularity"], env)
         self.pid, self.fd = pid, fd
         self.pending = b""
