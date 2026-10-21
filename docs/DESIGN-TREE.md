@@ -79,8 +79,9 @@ so it cannot be settled by talking)
 | D57 | Audiobooks on an Engine that can't play them | D41, D49, D52 | settled | Owner (2026-10-20): librespot can't (Spotify refuses it chapter keys; going around that is DRM circumvention). Audiobooks are built for every Engine: book pages, library rows and search work everywhere; on librespot, playing a chapter says "Audiobooks need Soloist or the Spotify app: switch the player in Settings". |
 | D58 | Spotify's access line on books | D57 | settled | Owner (2026-10-20): book rows and the book page show Spotify's own `accessInfo.signifier` text ("Listen free until Oct 31", "Access with Audiobooks+"); a refusal to play still says so. |
 | D59 | Free tiling (batch 7) | D37 | settled | Parked (owner, 2026-10-20: "lets pause on the free tiling, maybe as an idea to come back to, current state is very satisfactory"). Not built; kept as an idea (`ideas/layout.md`, research in `research/2026-10-free-tiling.md`). Next is batch 9, the audit. |
-| D60 | Visuals while nothing plays | D36, #71 | settled | Owner (2026-10-20): "slow sounds good". While nothing plays and nothing was touched for 2 s, the Client draws at most 5 frames a second (`IDLE_FPS`); a key, the mouse or music brings 30 back at once. Idle Client in the harness: pixel tier 5.5 → 2.1 %, cell tier 2.8 → 1.2 %. |
+| D60 | Visuals while nothing plays | D36, #71 | superseded by D62 | Owner (2026-10-20): "slow sounds good". While nothing plays and nothing was touched for 2 s, the Client draws at most 5 frames a second (`IDLE_FPS`); a key, the mouse or music brings 30 back at once. Idle Client in the harness: pixel tier 5.5 → 2.1 %, cell tier 2.8 → 1.2 %. |
 | D61 | Soloist's cache size | #71 | settled | Owner (2026-10-21): "make the cap user customizable, I'd like to have some songs cached, we can let it go for 5 gb". `engine.cache_gb` (config schema 4, Settings page), default 5, 0 = no limit, passed as `--cache-size` (Soloist's minimum 100 MB). Linux only: the macOS VM keeps 200 MB (its disk is the small cloud image). Their cache had reached 2.8 GB in four days with no limit. |
+| D62 | Smooth Visuals always | D60, #71 | settled | Owner (2026-10-21): "I don't like the 5fps out of focus animations, they look choppy af so lets gut them". D60's 5 fps while nothing plays is gone; `visuals.unfocused_fps` defaults to 30 (was 10; config schema 5 moves an untouched 10 to 30, a chosen number stays). The rain runs at 1.6× without music (it stepped visibly slower). Measured cost on the owner's machine, playing and focused: ~3 % Client + ~5 % kitty. |
 
 ```mermaid
 flowchart LR
@@ -911,3 +912,8 @@ flowchart LR
   owner (a keyring copy was refused by the tool permission check).
 - **D61** (2026-10-21): Soloist's cache is capped by `engine.cache_gb`, default 5 GB (owner). The owner postponed the
   logged-in Engine sessions (they'll switch `[engine] kind` themselves later) and said yes to `perf`/`heaptrack`.
+- **Frame profile and owner report** (2026-10-21): heaptrack halved the Client's allocations (lyrics wrapped once per
+  song and width, tint keys in one buffer). The owner saw the osc lag the music: its persistence was per frame (0.3 s
+  of trail at 10 fps); now per second. PipeWire latencies measured while playing: Soloist follows the headset's
+  21 ms cycle, no buffering ahead. **D62** (yes ×2): no 5 fps idle rate, unfocused default 30; rain faster without
+  music.

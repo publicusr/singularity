@@ -428,8 +428,6 @@ struct ConfigFiles {
     polled: Instant,
 }
 
-/// Frames a second while nothing plays (D60).
-pub const IDLE_FPS: u64 = 5;
 
 pub struct App {
     pub theme: Theme,
@@ -2112,10 +2110,10 @@ impl App {
 
     /// Frames a second (D60): 30 focused, `visuals.unfocused_fps` unfocused, and at most 5 while nothing plays and
     /// nobody has touched anything for 2 s (the Visuals keep moving, slowly; a key, the mouse or music brings them back).
-    pub fn frame_rate(&self, focused: bool, since_input: std::time::Duration) -> u64 {
-        let fps = if focused { 30 } else { self.config.visuals.unfocused_fps.clamp(1, 30) as u64 };
-        let playing = matches!(self.playback.status, singularity_proto::PlayStatus::Playing | singularity_proto::PlayStatus::Buffering);
-        if !playing && since_input >= std::time::Duration::from_secs(2) { fps.min(IDLE_FPS) } else { fps }
+    /// Frames a second: 30, or `visuals.unfocused_fps` while the terminal isn't focused. (D62: no slower rate while
+    /// nothing plays; the owner found 5 fps choppy.)
+    pub fn frame_rate(&self, focused: bool) -> u64 {
+        if focused { 30 } else { self.config.visuals.unfocused_fps.clamp(1, 30) as u64 }
     }
 
     /// Called every frame: sends nudges once they've settled.

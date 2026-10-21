@@ -25,6 +25,10 @@ its log and measure); `perf`/`heaptrack`: yes, installed. Frame profile on Linux
 measured"): playing focused ~3 % Client + ~5 % kitty; heaptrack halved the Client's allocations (`b21d8e6`). Left on
 Linux for #71: the soak (owner: later), the logged-in Engine sessions (owner: later), the remaining review areas
 (state machines per Engine, Time, polling loops), and the ranked issues for unfixed findings (step 6).
+Owner report the same night: the osc lagged the music (fixed: persistence per second) and 5 fps looked choppy (D62:
+no idle rate, unfocused default 30, faster rain without music). **Committed at the owner's bedtime with 282 tests
+green; the full pty rerun for D62 hadn't finished and the binaries were NOT reinstalled**: next session, first run
+the pty scenarios (look at `audio`, `idle-*`, `designs`), then reinstall both binaries and tell the owner to restart.
 
 1. **Build and test**: `cargo test --workspace` (Linux builds now need `alsa-lib`; the release profile has thin LTO,
    so a clean release build is slower). Fix anything Linux-only that `tools/check-linux.sh` couldn't see (it only
@@ -73,7 +77,7 @@ macOS-only checks still waiting for the owner (can wait until they're back on th
   move to the Mac has run on Linux**: first thing back there, `cargo test --workspace`, the pty scenarios, and a
   session per Engine (Linux builds now need `alsa-lib`).
 - **No known open bugs.** Audit fixes so far (D60 and the report): private `daemon.log`, socket ownership checks, a
-  config crash, bounded caches, cover caps, Visuals at 5 fps while idle, a 5 s deadline for Clients that stop reading,
+  config crash, bounded caches, cover caps, Visuals at 5 fps while idle (undone by D62), a 5 s deadline for Clients that stop reading,
   a release profile. (2026-10-20: the #62 live check was meant to be silent but played ~4 s at 40 %: Soloist's
   updater restarted it right then and the volume asked for was lost. Fixed in `1ce954b`; the owner was told.) Fixed this session from owner reports: the AppEngine lost Connect after a wifi change;
   the audio Widgets kept moving while paused; the volume snapped back after a mouse drag (Connect devices report it

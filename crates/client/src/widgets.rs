@@ -179,8 +179,10 @@ pub fn rain(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         s.width = r.width;
         s.cols = (0..r.width as i32).map(|i| (-(hash(i, 1) * r.height as f32 * 2.0), 3.0 + hash(i, 2) * 6.0, 4 + (hash(i, 3) * 18.0) as u16)).collect();
     }
-    // calm: loud passages ease it up to about twice as fast, a beat nudges it; it settles back over a second or two
-    let target = 1.0 + energy * 1.0 + if beat { 0.3 } else { 0.0 };
+    // calm: loud passages ease it up to about twice as fast, a beat nudges it; it settles back over a second or two.
+    // Without music it runs a little faster than a quiet song: slower, it stepped visibly (owner).
+    let playing = matches!(app.playback.status, singularity_proto::PlayStatus::Playing | singularity_proto::PlayStatus::Buffering);
+    let target = if playing { 1.0 + energy * 1.0 + if beat { 0.3 } else { 0.0 } } else { 1.6 };
     s.boost = if s.boost == 0.0 { 1.0 } else { s.boost + (target - s.boost) * (dt * 1.5).min(1.0) };
     let boost = s.boost;
     for (i, c) in s.cols.iter_mut().enumerate() {

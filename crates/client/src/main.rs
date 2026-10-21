@@ -63,7 +63,6 @@ async fn main() -> anyhow::Result<()> {
     // unfocused, the whole Client (and so the Visuals) runs slower: `visuals.unfocused_fps` (10) instead of 30
     let mut focused = true;
     let mut last_draw = std::time::Instant::now();
-    let mut last_input = std::time::Instant::now();
     // pixel-precise pointer where the terminal supports it (#24)
     let mut units = term::MouseUnits::detect();
     units.enable(&mut stdout())?;
@@ -92,9 +91,8 @@ async fn main() -> anyhow::Result<()> {
             out.write_all(b"\x1b[?2026l")?;
             out.flush()?;
             drop(out);
-            let fps = app.frame_rate(focused, last_input.elapsed());
+            let fps = app.frame_rate(focused);
             if event::poll(Duration::from_millis(1000 / fps))? {
-                last_input = std::time::Instant::now();
                 loop {
                     match event::read()? {
                         TermEvent::Key(k) if k.kind != KeyEventKind::Release => app.key(k),

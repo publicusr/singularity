@@ -521,13 +521,13 @@ mod tests {
         // numbers step, stay in range, and can be typed
         select(&mut app, "visuals.unfocused_fps");
         key(&mut app, KeyCode::Left);
-        assert_eq!(app.config.visuals.unfocused_fps, 9);
+        assert_eq!(app.config.visuals.unfocused_fps, 29);
         key(&mut app, KeyCode::Enter);
         for c in "45".chars() {
             key(&mut app, KeyCode::Char(c));
         }
         key(&mut app, KeyCode::Enter);
-        assert_eq!(app.config.visuals.unfocused_fps, 9, "45 is out of range");
+        assert_eq!(app.config.visuals.unfocused_fps, 29, "45 is out of range");
         assert!(app.toast.as_ref().is_some_and(|t| t.0.contains("1 to 30")));
         key(&mut app, KeyCode::Enter);
         for c in "24".chars() {
@@ -610,7 +610,7 @@ mod tests {
     fn the_page_shows_the_file_and_follows_edits_made_in_it() {
         let (mut app, dir) = app_with_files();
         let path = dir.path().join("config.toml");
-        let text = std::fs::read_to_string(&path).unwrap().replace("# let the terminal's own background (and its transparency) show instead of black\ntransparent = false", "# see-through, please\ntransparent = true").replace("unfocused_fps = 10", "unfocused_fps = \"fast\"");
+        let text = std::fs::read_to_string(&path).unwrap().replace("# let the terminal's own background (and its transparency) show instead of black\ntransparent = false", "# see-through, please\ntransparent = true").replace("unfocused_fps = 30", "unfocused_fps = \"fast\"");
         std::fs::write(&path, text).unwrap();
         // what the watcher does
         app.apply_config(singularity_config::load_config(&path));

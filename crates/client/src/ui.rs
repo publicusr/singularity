@@ -914,17 +914,13 @@ mod tests {
     }
 
     #[test]
-    fn the_visuals_slow_down_while_nothing_plays() {
-        // D60: paused and untouched for 2 s, at most 5 frames a second; input or music brings them back
-        use std::time::Duration;
+    fn the_visuals_keep_their_rate_while_nothing_plays() {
+        // D62 (D60 undone): paused or playing, 30 focused and the setting unfocused
         let (mut app, _rx) = playing_app(200_000);
-        let still = Duration::from_secs(3);
-        assert_eq!(app.frame_rate(true, still), crate::app::IDLE_FPS);
-        assert_eq!(app.frame_rate(true, Duration::from_millis(500)), 30, "just touched");
+        assert_eq!((app.frame_rate(true), app.frame_rate(false)), (30, 30));
         app.config.visuals.unfocused_fps = 2;
-        assert_eq!(app.frame_rate(false, still), 2, "never faster than unfocused asks");
         app.playback.status = PlayStatus::Playing;
-        assert_eq!(app.frame_rate(true, still), 30);
+        assert_eq!((app.frame_rate(true), app.frame_rate(false)), (30, 2));
     }
 
     /// What the App sent, without the background `CheckSaved` questions (`sent_all` keeps them).
