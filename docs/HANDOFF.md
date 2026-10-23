@@ -34,7 +34,8 @@ every list: fixed (`term::WheelBursts`, pty `wheel-burst`). D62's pty rerun done
 scenarios: fine). The repo moved to `~/src/singularity`: stale test binaries still had the old fixture path
 baked in (`env!("CARGO_MANIFEST_DIR")`); `cargo clean -p` the four workspace crates after a move. Then #71's review
 areas, all done (audit findings 12–15): Soloist's restart backoff fixed, the AppEngine's `pgrep` per command. 284 tests.
-Step 6 done: open findings are #73–#81 (ranked in the report). Left for #71: the soak and logged-in Engine sessions (owner: later), macOS checks.
+Step 6 done: open findings are #73–#81 (ranked in the report); #73 fixed. 285 tests; both binaries reinstalled
+after `80aea67`. Left for #71: the soak and logged-in Engine sessions (owner: later), macOS checks.
 
 1. **Build and test**: `cargo test --workspace` (Linux builds now need `alsa-lib`; the release profile has thin LTO,
    so a clean release build is slower). Fix anything Linux-only that `tools/check-linux.sh` couldn't see (it only
