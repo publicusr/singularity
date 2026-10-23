@@ -285,6 +285,7 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
             if updater.is_none() {
                 updater = Some(tokio::spawn(keep_current_in_vm(v.clone(), upd.days.subscribe(), upd.staged.clone())));
             }
+            let started = std::time::Instant::now();
             let exit = run_once(&engine, &key, &mut cmd_rx, &ev_tx, &mut upd).await;
             if matches!(exit, Ok(Exit::Quit)) {
                 if let Some(u) = updater {
@@ -294,7 +295,7 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
                 return;
             }
             match exit {
-                Ok(Exit::Update) | Ok(Exit::Expired) => {
+                Ok(Exit::Update) | Ok(Exit::Expired) | Ok(Exit::Restart) => {
                     backoff = Duration::from_secs(2);
                     continue;
                 }
@@ -313,11 +314,10 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
             if !v.alive().await {
                 v.down().await;
             }
-            if !wait_or_refuse(&mut cmd_rx, &ev_tx, backoff, "Soloist is restarting").await {
+            if !wait_or_refuse(&mut cmd_rx, &ev_tx, restart_wait(&mut backoff, started.elapsed()), "Soloist is restarting").await {
                 v.down().await;
                 return;
             }
-            backoff = (backoff * 2).min(Duration::from_secs(60));
             continue;
         }
         // Soloist isn't running: the best moment to put a staged build in place
@@ -338,6 +338,7 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
         if updater.is_none() {
             updater = Some(tokio::spawn(keep_current(builds.clone(), url.clone(), upd.days.subscribe(), upd.staged.clone())));
         }
+        let started = std::time::Instant::now();
         match run_once(&engine, &key, &mut cmd_rx, &ev_tx, &mut upd).await {
             Ok(Exit::Quit) => {
                 if let Some(u) = updater {
@@ -345,8 +346,8 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
                 }
                 return;
             }
-            // straight back up with the new build
-            Ok(Exit::Update) => {
+            // straight back up with the new build, or because it was asked for
+            Ok(Exit::Update) | Ok(Exit::Restart) => {
                 backoff = Duration::from_secs(2);
                 continue;
             }
@@ -369,11 +370,24 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
             }
             Err(e) => status(&ev_tx, EngineStatus::Failed { message: e.to_string() }).await,
         }
-        if !wait_or_refuse(&mut cmd_rx, &ev_tx, backoff, "Soloist is restarting").await {
+        if !wait_or_refuse(&mut cmd_rx, &ev_tx, restart_wait(&mut backoff, started.elapsed()), "Soloist is restarting").await {
             return;
         }
-        backoff = (backoff * 2).min(Duration::from_secs(60));
     }
+}
+
+/// A run at least this long was healthy: if Soloist stops after it, the waits start again from the shortest.
+const HEALTHY_RUN: Duration = Duration::from_secs(300);
+
+/// The wait before starting Soloist again after a run of `ran` that ended by itself: 2 s, doubling up to a minute
+/// while it keeps failing, and 2 s again after a healthy run (a crash days later isn't the fifth in a row).
+fn restart_wait(backoff: &mut Duration, ran: Duration) -> Duration {
+    if ran >= HEALTHY_RUN {
+        *backoff = Duration::from_secs(2);
+    }
+    let wait = *backoff;
+    *backoff = (wait * 2).min(Duration::from_secs(60));
+    wait
 }
 
 /// Sleep for `d`, answering commands with an explanation meanwhile. False if the Daemon is shutting down.
@@ -458,6 +472,8 @@ pub fn resume_point(p: &PlaybackState, track_changed: bool) -> Option<Resume> {
 enum Exit {
     Quit,
     Died,
+    /// stopped because it was asked to (Restart the player, a new key): straight back up
+    Restart,
     Expired,
     /// restarting into a new build
     Update,
@@ -728,13 +744,13 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                 if cmd == Command::RestartEngine {
                     let _ = ev_tx.send(EngineEvent::Notice("Restarting Soloist…".into())).await;
                     let _ = child.kill().await;
-                    return Ok(Exit::Died);
+                    return Ok(Exit::Restart);
                 }
                 if let Command::SetSoloistKey { key } = cmd {
                     // a new key: restart Soloist with it
                     store_key(key, ev_tx).await;
                     let _ = child.kill().await;
-                    return Ok(Exit::Died);
+                    return Ok(Exit::Restart);
                 }
                 // the volume asked for is the one a restarted Soloist starts at, even if this one never applies it
                 if let Command::SetVolume { percent } = cmd {
@@ -904,5 +920,21 @@ impl SoloistState {
             Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::MoveInQueue { .. } => vec![],
             Command::Login | Command::Logout | Command::GetHome | Command::RestartEngine | Command::Unknown => vec![],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restart_waits_grow_while_failing_and_start_over_after_a_healthy_run() {
+        let mut backoff = Duration::from_secs(2);
+        let quick = Duration::from_secs(1);
+        let waits: Vec<u64> = (0..7).map(|_| restart_wait(&mut backoff, quick).as_secs()).collect();
+        assert_eq!(waits, [2, 4, 8, 16, 32, 60, 60]);
+        // days later it stops again: that isn't the eighth failure in a row
+        assert_eq!(restart_wait(&mut backoff, Duration::from_secs(86_400)).as_secs(), 2);
+        assert_eq!(restart_wait(&mut backoff, quick).as_secs(), 4);
     }
 }

@@ -72,23 +72,30 @@ impl Engine for AppEngine {
                 }
             }
             let cat = self.catalogue.expect("checked above");
+            // when the app was last seen running: a volume drag sends a command per percent, each needn't ask `pgrep`
+            let mut seen: Option<std::time::Instant> = None;
             while let Some(cmd) = cmd_rx.recv().await {
                 if self.start_app {
                     // asked to: quit it and start it again (the fix when it's gone from Connect after a network change)
                     if cmd == Command::RestartEngine {
                         let _ = ev_tx.send(EngineEvent::Notice("Restarting the Spotify app…".into())).await;
                         let _ = ev_tx.send(EngineEvent::Status(EngineStatus::Starting)).await;
+                        seen = None;
                         if let Err(e) = restart().await {
                             let _ = ev_tx.send(EngineEvent::Status(EngineStatus::Failed { message: format!("couldn't restart the Spotify app: {e}") })).await;
                         }
                         continue;
                     }
                     // the app was quit: start it again, hidden; the Catalogue waits for it on Connect
-                    if !running() {
-                        let _ = ev_tx.send(EngineEvent::Notice("Starting the Spotify app…".into())).await;
-                        if let Err(e) = start() {
-                            let _ = ev_tx.send(EngineEvent::Status(EngineStatus::Failed { message: format!("couldn't start the Spotify app: {e}") })).await;
-                            continue;
+                    if !seen.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2)) {
+                        if running() {
+                            seen = Some(std::time::Instant::now());
+                        } else {
+                            let _ = ev_tx.send(EngineEvent::Notice("Starting the Spotify app…".into())).await;
+                            if let Err(e) = start() {
+                                let _ = ev_tx.send(EngineEvent::Status(EngineStatus::Failed { message: format!("couldn't start the Spotify app: {e}") })).await;
+                                continue;
+                            }
                         }
                     }
                 }

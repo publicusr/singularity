@@ -922,3 +922,7 @@ flowchart LR
   is now read on its own thread, timestamped as it arrives; wheel reports in one direction within 8 ms of the first
   are one step (`term::WheelBursts`). Separate notches, one report each (kitty), come tens of ms apart and all count.
   pty scenario `wheel-burst`.
+- **Audit round 4: review areas** (2026-10-23, #71): Time, polling loops (measured on the owner's idle Daemon and
+  Client) and the Engine state machines. Fixed: Soloist's restart wait grew for the Daemon's whole life and asked-for
+  restarts (Restart the player, a new key) waited it out too; the AppEngine ran `pgrep` per command. Open: the VM's
+  guest clock may lag after the Mac sleeps (finding 13, a macOS check).

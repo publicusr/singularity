@@ -32,7 +32,9 @@ the pty scenarios (look at `audio`, `idle-*`, `designs`), then reinstall both bi
 Session 2026-10-23 (Linux): the owner moved to **Ghostty** (1.3.1); its 3 wheel reports per notch skipped two rows in
 every list: fixed (`term::WheelBursts`, pty `wheel-burst`). D62's pty rerun done (`audio`, `idle-*`, `designs`, wheel
 scenarios: fine). The repo moved to `~/src/singularity`: stale test binaries still had the old fixture path
-baked in (`env!("CARGO_MANIFEST_DIR")`); `cargo clean -p` the four workspace crates after a move. 283 tests.
+baked in (`env!("CARGO_MANIFEST_DIR")`); `cargo clean -p` the four workspace crates after a move. Then #71's review
+areas, all done (audit findings 12–15): Soloist's restart backoff fixed, the AppEngine's `pgrep` per command. 284 tests.
+Left for #71: the ranked issues (step 6), the soak and logged-in Engine sessions (owner: later), macOS checks.
 
 1. **Build and test**: `cargo test --workspace` (Linux builds now need `alsa-lib`; the release profile has thin LTO,
    so a clean release build is slower). Fix anything Linux-only that `tools/check-linux.sh` couldn't see (it only
