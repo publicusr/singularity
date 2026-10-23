@@ -3,8 +3,9 @@
 //! With SGR-Pixels (DECSET 1016) the terminal reports pointer positions in pixels, in the same SGR format crossterm
 //! already parses, so crossterm's `column`/`row` hold pixels and we divide by the cell size ourselves.
 
-use ratatui::crossterm::event::MouseEvent;
+use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
 use std::io::Write;
+use std::time::{Duration, Instant};
 
 /// Terminals known to implement SGR-Pixels mouse reporting. `SINGULARITY_PIXEL_MOUSE=0|1` overrides.
 pub fn pixel_mouse_supported() -> bool {
@@ -112,6 +113,34 @@ impl MouseUnits {
     }
 }
 
+/// One wheel notch can arrive as a burst of reports: Ghostty sends `mouse-scroll-multiplier` of them (3 by default)
+/// at once, which moved lists three rows a notch. Wheel reports in the same direction that arrive within `BURST` of
+/// the first one are one step; separate notches come tens of milliseconds apart even on a fast spin.
+#[derive(Default)]
+pub struct WheelBursts {
+    first: Option<(MouseEventKind, Instant)>,
+}
+
+impl WheelBursts {
+    pub const BURST: Duration = Duration::from_millis(8);
+
+    /// Whether to act on this event: false only for a repeat inside a wheel burst.
+    pub fn keep(&mut self, kind: MouseEventKind, at: Instant) -> bool {
+        use MouseEventKind::*;
+        if !matches!(kind, ScrollUp | ScrollDown | ScrollLeft | ScrollRight) {
+            return true;
+        }
+        if let Some((k, t)) = self.first
+            && k == kind
+            && at.saturating_duration_since(t) < Self::BURST
+        {
+            return false;
+        }
+        self.first = Some((kind, at));
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +158,24 @@ mod tests {
         assert!((fx - 45.7).abs() < 1e-9 && precise);
         let (m, fx, precise) = MouseUnits::Cells.to_cells(ev(45, 2));
         assert_eq!((m.column, m.row, fx, precise), (45, 2, 45.5, false));
+    }
+
+    #[test]
+    fn a_wheel_burst_is_one_step() {
+        let t = Instant::now();
+        let ms = |n| t + Duration::from_millis(n);
+        let mut w = WheelBursts::default();
+        // Ghostty: three reports for one notch, a microsecond apart
+        let kept: Vec<bool> = (0..3).map(|i| w.keep(MouseEventKind::ScrollDown, t + Duration::from_micros(i))).collect();
+        assert_eq!(kept, [true, false, false]);
+        // the next notch, and one the other way inside the window, both count
+        assert!(w.keep(MouseEventKind::ScrollDown, ms(40)));
+        assert!(w.keep(MouseEventKind::ScrollUp, ms(41)));
+        assert!(!w.keep(MouseEventKind::ScrollUp, ms(42)));
+        // other events pass and don't end a burst
+        assert!(w.keep(MouseEventKind::Moved, ms(43)));
+        assert!(!w.keep(MouseEventKind::ScrollUp, ms(44)));
+        // one report per notch (kitty), notches 20 ms apart: every one counts
+        assert!((0..5).all(|i| w.keep(MouseEventKind::ScrollDown, ms(100 + 20 * i))));
     }
 }

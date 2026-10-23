@@ -917,3 +917,8 @@ flowchart LR
   of trail at 10 fps); now per second. PipeWire latencies measured while playing: Soloist follows the headset's
   21 ms cycle, no buffering ahead. **D62** (yes ×2): no 5 fps idle rate, unfocused default 30; rain faster without
   music.
+- **Ghostty wheel** (2026-10-23, owner report): on Ghostty (1.3.1, Nobara) one wheel notch moved every list three
+  rows. Ghostty sends `mouse-scroll-multiplier` reports per notch (`discrete:3` by default) in one go. Terminal input
+  is now read on its own thread, timestamped as it arrives; wheel reports in one direction within 8 ms of the first
+  are one step (`term::WheelBursts`). Separate notches, one report each (kitty), come tens of ms apart and all count.
+  pty scenario `wheel-burst`.

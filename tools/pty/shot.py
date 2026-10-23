@@ -319,6 +319,23 @@ def wheel(t, out):
     t.send(b"q", 0.5)
 
 
+def wheel_burst(t, out):
+    """Ghostty sends three wheel reports per notch in one write: each burst moves the highlight one row."""
+    t.pump(1.0)
+    x, y = t.find("♥  Liked Songs")
+    mouse(t, 0, x + 2, y)
+    mouse(t, 0, x + 2, y, release=True, wait=0.8)
+    rx, ry = t.find("Fake Track 001")
+    for _ in range(2):
+        t.send(f"\x1b[<65;{rx + 3};{ry + 1}M".encode() * 3, 0.1)  # one notch
+    t.pump(0.4)
+    t.shot(f"{out}/0-two-notches.png")
+    t.send(b"\r", 1.0)  # play the highlighted song: the third
+    t.shot(f"{out}/1-playing.png")
+    t.send(b" ", 0.3)
+    t.send(b"q", 0.5)
+
+
 def like(t, out):
     """#22: the ♥ in the player bar, `l`, unliking from a row's menu, Follow on an artist page."""
     t.pump(1.0)
@@ -1050,7 +1067,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "ambient", "popup") else "0"
@@ -1129,6 +1146,8 @@ def main():
             return mini(t, out)
         if scenario == "wheel":
             return wheel(t, out)
+        if scenario == "wheel-burst":
+            return wheel_burst(t, out)
         if scenario == "history":
             return history(t, out)
         if scenario == "meters":

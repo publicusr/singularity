@@ -38,7 +38,8 @@ use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableFocusChange,
 use ratatui::crossterm::execute;
 use singularity_proto::{DaemonMsg, EngineStatus, Event};
 use std::io::{Write, stdout};
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -62,10 +63,23 @@ async fn main() -> anyhow::Result<()> {
     execute!(stdout(), EnableMouseCapture, EnableFocusChange, EnableBracketedPaste)?;
     // unfocused, the whole Client (and so the Visuals) runs slower: `visuals.unfocused_fps` (10) instead of 30
     let mut focused = true;
-    let mut last_draw = std::time::Instant::now();
+    let mut last_draw = Instant::now();
     // pixel-precise pointer where the terminal supports it (#24)
     let mut units = term::MouseUnits::detect();
     units.enable(&mut stdout())?;
+    // input is read on its own thread so every event carries when it arrived: one wheel notch can come as a burst
+    // of reports (Ghostty), told apart from separate notches by their timing, which the frame's sleep would hide
+    let (input_tx, input) = mpsc::channel();
+    std::thread::spawn(move || {
+        loop {
+            let ev = event::read();
+            let failed = ev.is_err();
+            if input_tx.send((Instant::now(), ev)).is_err() || failed {
+                break;
+            }
+        }
+    });
+    let mut wheel = term::WheelBursts::default();
     let res = (|| -> anyhow::Result<()> {
         while !app.quit {
             while let Ok(ev) = conn_rx.try_recv() {
@@ -75,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some(wait) = Duration::from_millis(16).checked_sub(last_draw.elapsed()) {
                 std::thread::sleep(wait);
             }
-            last_draw = std::time::Instant::now();
+            last_draw = Instant::now();
             app.tick();
             let mut out = stdout().lock();
             out.write_all(b"\x1b[?2026h")?; // synchronized output: the frame and its images appear together
@@ -92,33 +106,36 @@ async fn main() -> anyhow::Result<()> {
             out.flush()?;
             drop(out);
             let fps = app.frame_rate(focused);
-            if event::poll(Duration::from_millis(1000 / fps))? {
-                loop {
-                    match event::read()? {
-                        TermEvent::Key(k) if k.kind != KeyEventKind::Release => app.key(k),
-                        TermEvent::Mouse(m) => {
+            let mut next = match input.recv_timeout(Duration::from_millis(1000 / fps)) {
+                Ok(ev) => Some(ev),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => anyhow::bail!("the terminal input closed"),
+            };
+            while let Some((at, ev)) = next {
+                match ev? {
+                    TermEvent::Key(k) if k.kind != KeyEventKind::Release => app.key(k),
+                    TermEvent::Mouse(m) => {
+                        if wheel.keep(m.kind, at) {
                             let (m, fx, precise) = units.to_cells(m);
                             app.pointer(m, fx, precise);
                         }
-                        TermEvent::Paste(s) => app.paste(&s),
-                        TermEvent::FocusLost => focused = false,
-                        TermEvent::FocusGained => focused = true,
-                        TermEvent::Resize(..) => {
-                            if units != term::MouseUnits::Cells {
-                                units = term::MouseUnits::measure().unwrap_or(units);
-                            }
-                            app.cell_px = term::cell_px();
-                            // the resize clears the screen, and with it every placement
-                            if let Some(k) = app.kitty.as_mut() {
-                                k.reset(&mut stdout())?;
-                            }
+                    }
+                    TermEvent::Paste(s) => app.paste(&s),
+                    TermEvent::FocusLost => focused = false,
+                    TermEvent::FocusGained => focused = true,
+                    TermEvent::Resize(..) => {
+                        if units != term::MouseUnits::Cells {
+                            units = term::MouseUnits::measure().unwrap_or(units);
                         }
-                        _ => {}
+                        app.cell_px = term::cell_px();
+                        // the resize clears the screen, and with it every placement
+                        if let Some(k) = app.kitty.as_mut() {
+                            k.reset(&mut stdout())?;
+                        }
                     }
-                    if !event::poll(Duration::ZERO)? {
-                        break;
-                    }
+                    _ => {}
                 }
+                next = input.try_recv().ok();
             }
         }
         Ok(())

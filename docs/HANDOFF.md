@@ -29,6 +29,10 @@ Owner report the same night: the osc lagged the music (fixed: persistence per se
 no idle rate, unfocused default 30, faster rain without music). **Committed at the owner's bedtime with 282 tests
 green; the full pty rerun for D62 hadn't finished and the binaries were NOT reinstalled**: next session, first run
 the pty scenarios (look at `audio`, `idle-*`, `designs`), then reinstall both binaries and tell the owner to restart.
+Session 2026-10-23 (Linux): the owner moved to **Ghostty** (1.3.1); its 3 wheel reports per notch skipped two rows in
+every list: fixed (`term::WheelBursts`, pty `wheel-burst`). D62's pty rerun done (`audio`, `idle-*`, `designs`, wheel
+scenarios: fine). The repo moved to `~/src/singularity`: stale test binaries still had the old fixture path
+baked in (`env!("CARGO_MANIFEST_DIR")`); `cargo clean -p` the four workspace crates after a move. 283 tests.
 
 1. **Build and test**: `cargo test --workspace` (Linux builds now need `alsa-lib`; the release profile has thin LTO,
    so a clean release build is slower). Fix anything Linux-only that `tools/check-linux.sh` couldn't see (it only
