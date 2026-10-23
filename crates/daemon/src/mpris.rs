@@ -400,14 +400,18 @@ async fn cached_cover(url: &str) -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
     let dir = std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".cache")).join("singularity");
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build().ok()?;
-    let resp = client.get(url).send().await.ok()?.error_for_status().ok()?;
-    // (#71) a cover is tens of KB: nothing past 8 MB is read
-    if resp.content_length().is_some_and(|n| n > 8 << 20) {
+    let mut resp = client.get(url).send().await.ok()?.error_for_status().ok()?;
+    // (#71) a cover is tens of KB: nothing past 8 MB is read, whether or not the server says its length
+    const MAX: usize = 8 << 20;
+    if resp.content_length().is_some_and(|n| n > MAX as u64) {
         return None;
     }
-    let bytes = resp.bytes().await.ok()?;
-    if bytes.len() > 8 << 20 {
-        return None;
+    let mut bytes = Vec::new();
+    while let Some(c) = resp.chunk().await.ok()? {
+        if bytes.len() + c.len() > MAX {
+            return None;
+        }
+        bytes.extend_from_slice(&c);
     }
     tokio::fs::create_dir_all(&dir).await.ok()?;
     // written aside, then moved, so the notification server never reads half a file

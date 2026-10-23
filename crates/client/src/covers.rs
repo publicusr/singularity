@@ -144,14 +144,7 @@ async fn load(dir: &Path, http: Option<&reqwest::Client>, url: &str) -> Option<R
         Ok(b) => b,
         Err(_) => {
             let resp = http?.get(url).send().await.ok()?.error_for_status().ok()?;
-            // (#71) a cover is tens of KB: anything past the cap is refused, not read into memory
-            if resp.content_length().is_some_and(|n| n > MAX_COVER_BYTES as u64) {
-                return None;
-            }
-            let b = resp.bytes().await.ok()?.to_vec();
-            if b.len() > MAX_COVER_BYTES {
-                return None;
-            }
+            let b = body_capped(resp, MAX_COVER_BYTES).await?;
             // write-then-rename, so a half-written file is never read back as a cover
             let tmp = path.with_extension("part");
             if tokio::fs::write(&tmp, &b).await.is_ok() {
@@ -161,6 +154,22 @@ async fn load(dir: &Path, http: Option<&reqwest::Client>, url: &str) -> Option<R
         }
     };
     tokio::task::spawn_blocking(move || decode(&bytes)).await.ok()?
+}
+
+/// The body, or None once it passes `max` bytes: (#71) a cover is tens of KB, so anything past the cap is refused, not
+/// read into memory, whether or not the server says its length.
+async fn body_capped(mut resp: reqwest::Response, max: usize) -> Option<Vec<u8>> {
+    if resp.content_length().is_some_and(|n| n > max as u64) {
+        return None;
+    }
+    let mut b = Vec::new();
+    while let Some(c) = resp.chunk().await.ok()? {
+        if b.len() + c.len() > max {
+            return None;
+        }
+        b.extend_from_slice(&c);
+    }
+    Some(b)
 }
 
 /// The most a cover download may be, and the most pixels a decoded one may have (Spotify's largest are 640 px).
@@ -230,6 +239,33 @@ mod tests {
         let mut ok = vec![];
         image::RgbImage::new(64, 64).write_to(&mut std::io::Cursor::new(&mut ok), image::ImageFormat::Png).unwrap();
         assert_eq!(decode(&ok).map(|i| i.dimensions()), Some((64, 64)));
+    }
+
+    #[tokio::test]
+    async fn a_body_without_a_length_stops_at_the_cap() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // a server that sends a chunked body forever, counting what it got out
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut req = [0u8; 1024];
+            let _ = sock.read(&mut req).await;
+            sock.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+            let chunk = [0u8; 16 * 1024];
+            let mut sent = 0usize;
+            while sock.write_all(format!("{:x}\r\n", chunk.len()).as_bytes()).await.is_ok() && sock.write_all(&chunk).await.is_ok() && sock.write_all(b"\r\n").await.is_ok() {
+                sent += chunk.len();
+                if sent > 64 << 20 {
+                    break;
+                }
+            }
+            sent
+        });
+        let resp = reqwest::Client::new().get(format!("http://{addr}/cover")).send().await.unwrap();
+        assert!(body_capped(resp, 1 << 20).await.is_none());
+        let sent = server.await.unwrap();
+        assert!(sent < 16 << 20, "the download stopped near the cap, not after {sent} bytes");
     }
 
     #[test]
