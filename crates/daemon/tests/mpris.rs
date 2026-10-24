@@ -6,7 +6,7 @@ use singularityd::engine::FakeEngine;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::net::UnixStream;
-use zbus::zvariant::{OwnedValue, Value};
+use zbus::wire::{OwnedVariant, Variant};
 
 struct Bus {
     child: std::process::Child,
@@ -48,7 +48,7 @@ struct FakeNotifications(tokio::sync::mpsc::UnboundedSender<(String, String)>);
 #[zbus::interface(name = "org.freedesktop.Notifications")]
 impl FakeNotifications {
     #[allow(clippy::too_many_arguments)]
-    fn notify(&self, _app: &str, _replaces: u32, _icon: &str, summary: &str, body: &str, _actions: Vec<String>, _hints: HashMap<String, OwnedValue>, _timeout: i32) -> u32 {
+    fn notify(&self, _app: &str, _replaces: u32, _icon: &str, summary: &str, body: &str, _actions: Vec<String>, _hints: HashMap<String, OwnedVariant>, _timeout: i32) -> u32 {
         let _ = self.0.send((summary.into(), body.into()));
         7
     }
@@ -63,7 +63,7 @@ trait Player {
     #[zbus(property)]
     fn playback_status(&self) -> zbus::Result<String>;
     #[zbus(property)]
-    fn metadata(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn metadata(&self) -> zbus::Result<HashMap<String, OwnedVariant>>;
     #[zbus(property)]
     fn position(&self) -> zbus::Result<i64>;
     #[zbus(property)]
@@ -87,7 +87,7 @@ async fn until<F: AsyncFn() -> bool>(what: &str, f: F) {
     panic!("timed out waiting for {what}");
 }
 
-fn title(m: &HashMap<String, OwnedValue>) -> String {
+fn title(m: &HashMap<String, OwnedVariant>) -> String {
     m.get("xesam:title").and_then(|v| String::try_from(v.clone()).ok()).unwrap_or_default()
 }
 
@@ -99,7 +99,7 @@ async fn playerctl_style_control_and_track_notifications() {
     };
     // the desktop's notification server
     let (ntx, mut notes) = tokio::sync::mpsc::unbounded_channel();
-    let _desktop = zbus::connection::Builder::address(bus.address.as_str()).unwrap().name("org.freedesktop.Notifications").unwrap().serve_at("/org/freedesktop/Notifications", FakeNotifications(ntx)).unwrap().build().await.unwrap();
+    let _desktop = zbus::connection::Builder::address(bus.address.as_str()).name("org.freedesktop.Notifications").serve_at("/org/freedesktop/Notifications", FakeNotifications(ntx)).build().await.unwrap();
     // the Daemon
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("m.sock");
@@ -116,12 +116,12 @@ async fn playerctl_style_control_and_track_notifications() {
         drop(w);
     });
     // the desktop's side: what playerctl does
-    let desk = zbus::connection::Builder::address(bus.address.as_str()).unwrap().build().await.unwrap();
+    let desk = zbus::connection::Builder::address(bus.address.as_str()).build().await.unwrap();
     let p = PlayerProxy::builder(&desk).cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
     until("Playing", async || p.playback_status().await.is_ok_and(|s| s == "Playing")).await;
     assert_eq!(title(&p.metadata().await.unwrap()), "abc");
     let m = p.metadata().await.unwrap();
-    assert_eq!(m.get("mpris:trackid").map(|v| v.to_string()), Some(Value::from(zbus::zvariant::ObjectPath::try_from("/org/singularity/track/abc").unwrap()).to_string()));
+    assert_eq!(m.get("mpris:trackid").map(|v| v.to_string()), Some(Variant::from(zbus::wire::ObjectPath::try_from("/org/singularity/track/abc").unwrap()).to_string()));
     assert_eq!(m.get("xesam:url").and_then(|v| String::try_from(v.clone()).ok()).as_deref(), Some("https://open.spotify.com/track/abc"));
     // the notification for the new track
     let (summary, _) = tokio::time::timeout(Duration::from_secs(3), notes.recv()).await.unwrap().unwrap();

@@ -9,7 +9,7 @@ use singularity_proto::{Command, Event, PlayStatus, PlaybackState, RepeatMode};
 use std::collections::HashMap;
 use std::sync::Arc;
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
+use zbus::wire::{ObjectPath, OwnedObjectPath, OwnedVariant, Variant};
 
 pub const BUS_NAME: &str = "org.mpris.MediaPlayer2.singularity";
 const PATH: &str = "/org/mpris/MediaPlayer2";
@@ -36,10 +36,10 @@ async fn serve(hub: Arc<Hub>, opts: Options) -> zbus::Result<()> {
     let mut events = hub.events.subscribe();
     let state = hub.playback.lock().await.clone();
     let builder = match &opts.address {
-        Some(a) => zbus::connection::Builder::address(a.as_str())?,
-        None => zbus::connection::Builder::session()?,
+        Some(a) => zbus::connection::Builder::address(a.as_str()),
+        None => zbus::connection::Builder::session(),
     };
-    let conn = builder.name(BUS_NAME)?.serve_at(PATH, Root)?.serve_at(PATH, Player { hub: hub.clone(), state })?.build().await?;
+    let conn = builder.name(BUS_NAME).serve_at(PATH, Root).serve_at(PATH, Player { hub: hub.clone(), state }).build().await?;
     tracing::info!("MPRIS: {BUS_NAME}");
     let player = conn.object_server().interface::<_, Player>(PATH).await?;
     let mut notifier = Notifier { conn: conn.clone(), news: Default::default(), id: 0, on: opts.notify.clone() };
@@ -121,12 +121,12 @@ pub fn track_id(uri: &str) -> OwnedObjectPath {
     ObjectPath::try_from(path).map(Into::into).unwrap_or_else(|_| ObjectPath::from_static_str_unchecked(NO_TRACK).into())
 }
 
-fn owned<'a>(v: impl Into<Value<'a>>) -> OwnedValue {
+fn owned<'a>(v: impl Into<Variant<'a>>) -> OwnedVariant {
     v.into().try_into_owned().expect("plain values have no file descriptors")
 }
 
 /// The `Metadata` map: id, length, title, artists, album, cover, web link.
-pub fn metadata(s: &PlaybackState) -> HashMap<String, OwnedValue> {
+pub fn metadata(s: &PlaybackState) -> HashMap<String, OwnedVariant> {
     let mut m = HashMap::new();
     let Some(i) = &s.item else {
         m.insert("mpris:trackid".into(), owned(track_id("")));
@@ -314,7 +314,7 @@ impl Player {
         self.send(Command::SetShuffle { enabled }).await;
     }
     #[zbus(property)]
-    fn metadata(&self) -> HashMap<String, OwnedValue> {
+    fn metadata(&self) -> HashMap<String, OwnedVariant> {
         metadata(&self.state)
     }
     #[zbus(property)]
@@ -369,7 +369,7 @@ struct Notifier {
 #[zbus::proxy(interface = "org.freedesktop.Notifications", default_service = "org.freedesktop.Notifications", default_path = "/org/freedesktop/Notifications")]
 trait Notifications {
     #[allow(clippy::too_many_arguments)]
-    fn notify(&self, app_name: &str, replaces_id: u32, app_icon: &str, summary: &str, body: &str, actions: &[&str], hints: HashMap<&str, Value<'_>>, expire_timeout: i32) -> zbus::Result<u32>;
+    fn notify(&self, app_name: &str, replaces_id: u32, app_icon: &str, summary: &str, body: &str, actions: &[&str], hints: HashMap<&str, Variant<'_>>, expire_timeout: i32) -> zbus::Result<u32>;
 }
 
 impl Notifier {
@@ -377,12 +377,12 @@ impl Notifier {
     async fn track(&mut self, s: &PlaybackState) {
         let Some(n) = self.news.news(s, self.on.load(std::sync::atomic::Ordering::Relaxed)) else { return };
         let mut hints = HashMap::new();
-        hints.insert("desktop-entry", Value::from("singularity"));
-        hints.insert("transient", Value::from(true));
+        hints.insert("desktop-entry", Variant::from("singularity"));
+        hints.insert("transient", Variant::from(true));
         if let Some(c) = &n.cover_url
             && let Some(path) = cached_cover(c).await
         {
-            hints.insert("image-path", Value::from(format!("file://{}", path.display())));
+            hints.insert("image-path", Variant::from(format!("file://{}", path.display())));
         }
         let r = async {
             let proxy = NotificationsProxy::new(&self.conn).await?;

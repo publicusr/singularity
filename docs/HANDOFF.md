@@ -70,6 +70,9 @@ after `80aea67`. Left for #71: the soak and logged-in Engine sessions (owner: la
 `tar`, `secret-tool`, `pactl`, `parec` come from fixed system locations (never `PATH`) and the health check has a
 **Tools** row naming a missing one; #80 clippy is clean on Linux (fixes plus a few allows with reasons). 293 tests.
 The branch is `regent/T0008-audit-polish` (on T0005); nothing pushed. **macOS clippy has not run since (#80).**
+**T0011 (2026-10-24, Linux)**: #75 MPRIS moved to zbus 6 (`zbus = 6.1`, `zbus::wire` types; the three unmaintained
+zbus 5 helper crates and their `deny.toml` ignores are gone). 293 tests, clippy clean, the private-bus MPRIS test and
+pty `mpris` pass. Branch `regent/T0011-zbus6` (on T0008); nothing pushed.
 
 1. **Build and test**: `cargo test --workspace` (Linux builds now need `alsa-lib`; the release profile has thin LTO,
    so a clean release build is slower). Fix anything Linux-only that `tools/check-linux.sh` couldn't see (it only
@@ -116,7 +119,8 @@ macOS-only checks still waiting for the owner (can wait until they're back on th
 - Tests: **278 passing** on macOS (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`),
   `live_shapes` and `secrets_live`. `tools/check-linux.sh` type-checks Linux from the Mac: clean. **Nothing since the
   move to the Mac has run on Linux**: first thing back there, `cargo test --workspace`, the pty scenarios, and a
-  session per Engine (Linux builds now need `alsa-lib`). Linux 2026-10-24 (T0008): **293 passing** and clippy clean.
+  session per Engine (Linux builds now need `alsa-lib`). Linux 2026-10-24 (T0008): **293 passing** and clippy clean;
+  (T0011) still 293 after MPRIS moved to zbus 6, pty `mpris` green.
 - **T0005 (2026-10-24)**: a remote change (a phone on Connect) was undone by the Soloist updater's restart + resume;
   fixed (D63), `phone_test.py`, contract tests; **the owner's live phone check is pending** (see above). Jam: D64 asks
   the owner.
@@ -307,7 +311,8 @@ EFI vars, SSH key, pinned `bin/vfkit` + `bin/gvproxy`, logs), setup version 2, S
 - Live tests that touch the owner's account or player: read-only by default; anything audible or state-changing only
   quietly, minimally, reverted, and reported.
 - Unix socket paths < 108 bytes: `$XDG_RUNTIME_DIR/sgl-…` (also for private D-Bus sockets). Private API: metadata only,
-  no crawling, no retry loops. Prefer dependency versions that are a few weeks old (zbus 6.0 was skipped for 5.19).
+  no crawling, no retry loops. Prefer dependency versions that are a few weeks old (zbus 5.19 was used until #75 moved
+  MPRIS to zbus 6 on 2026-10-24).
 - The repo isn't rustfmt-formatted (long lines); don't run `cargo fmt` on whole files.
 - macOS: test Daemons pin their Engine (`SINGULARITY_ENGINE`, `SINGULARITY_START_APP=0`, `SINGULARITY_SOLOIST=local`
   with a stand-in Soloist, `SINGULARITY_NOWPLAYING=off`, `SINGULARITY_NO_KEYRING=1` unless the test needs the owner's

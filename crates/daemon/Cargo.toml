@@ -31,8 +31,8 @@ protobuf = "3.7"
 rustfft = "6"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream"] }
 regex = "1"
-# MPRIS and desktop notifications (5.x: 6.0 is days old)
-zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+# MPRIS and desktop notifications (6.x: zbus 5's zvariant/zbus_names helpers are unmaintained)
+zbus = { version = "6.0", default-features = false, features = ["tokio", "proxy", "service"] }
 # the listening log (bundled SQLite: no system library needed)
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 

@@ -11,10 +11,6 @@ ignore = [
     # a fix needs the librespot fork to move to >= 0.41 (ticketed)
     { id = "RUSTSEC-2026-0194", reason = "only Spotify's authenticated answers are parsed; waits on librespot" },
     { id = "RUSTSEC-2026-0195", reason = "only Spotify's authenticated answers are parsed; waits on librespot" },
-    # zbus 5's helper crates were renamed for zbus 6 (ticketed: move to zbus 6)
-    { id = "RUSTSEC-2026-0370", reason = "zbus 5 helper, unmaintained since zbus 6; upgrade ticketed" },
-    { id = "RUSTSEC-2026-0371", reason = "zbus 5 helper, unmaintained since zbus 6; upgrade ticketed" },
-    { id = "RUSTSEC-2026-0372", reason = "zbus 5 helper, unmaintained since zbus 6; upgrade ticketed" },
 ]
 
 [licenses]
