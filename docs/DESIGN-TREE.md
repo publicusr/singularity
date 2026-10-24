@@ -82,6 +82,8 @@ so it cannot be settled by talking)
 | D60 | Visuals while nothing plays | D36, #71 | superseded by D62 | Owner (2026-10-20): "slow sounds good". While nothing plays and nothing was touched for 2 s, the Client draws at most 5 frames a second (`IDLE_FPS`); a key, the mouse or music brings 30 back at once. Idle Client in the harness: pixel tier 5.5 → 2.1 %, cell tier 2.8 → 1.2 %. |
 | D61 | Soloist's cache size | #71 | settled | Owner (2026-10-21): "make the cap user customizable, I'd like to have some songs cached, we can let it go for 5 gb". `engine.cache_gb` (config schema 4, Settings page), default 5, 0 = no limit, passed as `--cache-size` (Soloist's minimum 100 MB). Linux only: the macOS VM keeps 200 MB (its disk is the small cloud image). Their cache had reached 2.8 GB in four days with no limit. |
 | D62 | Smooth Visuals always | D60, #71 | settled | Owner (2026-10-21): "I don't like the 5fps out of focus animations, they look choppy af so lets gut them". D60's 5 fps while nothing plays is gone; `visuals.unfocused_fps` defaults to 30 (was 10; config schema 5 moves an untouched 10 to 30, a chosen number stays). The rain runs at 1.6× without music (it stepped visibly slower). Measured cost on the owner's machine, playing and focused: ~3 % Client + ~5 % kitty. |
+| D63 | Playback changed elsewhere (a phone on Connect, a Jam guest) | D3, D12 | settled | Owner's report (2026-10-23, T0005): a friend's phone playing on Singularity made the previously playing song come back. **The Daemon follows a change it didn't make; it never puts its own remembered state back** (agent call, open to veto). Two defects made up the cause: the Soloist updater restarted Soloist *because of* the phone's track change and then re-played the state it remembered (and, when it came back with a track already playing, the remembered track won); and a `get_queue` answer, a snapshot from before the change, could put the old track back in what the Daemon reports. Built: the updater takes a quiet moment only for a change its own command caused (`SoloistState::change_is_ours`), the resume waits 1.5 s and is dropped if the player came back playing something, and a queue answer only fills the queue (`phone_test.py`, contract tests). |
+| D64 | Jam: hosting or joining one on a Singularity device | D3, D12, D63 | open | Question for the owner, see the round log ("T0005", 2026-10-24): Jam is Spotify's server-side shared session, hosted *by one device*; there is nothing to implement to be a good Jam host (Soloist supports Jam, and a Jam's commands arrive as ordinary Connect play/queue commands, which D63 now follows), but a guest who joins a Jam lands on the Jam's host, not on Singularity, and a headless device can't start a Jam from its own UI. ➡️ Recommendation: don't build a Jam feature now; check live that starting a Jam from the phone while it plays on Singularity works, and say in the README that a Jam can be *hosted* on Singularity but started from the phone. |
 
 ```mermaid
 flowchart LR
@@ -926,3 +928,22 @@ flowchart LR
   Client) and the Engine state machines. Fixed: Soloist's restart wait grew for the Daemon's whole life and asked-for
   restarts (Restart the player, a new key) waited it out too; the AppEngine ran `pgrep` per command. Open: the VM's
   guest clock may lag after the Mac sleeps (finding 13, a macOS check).
+
+- **T0005: a phone's play must not be undone** (2026-10-24, owner report 2026-10-23; D63, D64). Owner: "queueing a song
+  and skipping to it, or playing a song from the phone, made the previously playing song play again. Only play next
+  (or maybe queue) got around it." Reproduced with the real Daemon and a stand-in Soloist that can act as a phone
+  (`tools/pty/phone_test.py`): a plain remote change gets no command from the Daemon at all, so nothing "restores"
+  there. The cause is the updater's restart: on a remote track change with a build staged, `quiet_moment` said yes,
+  Soloist was restarted, and the state remembered at that instant was put back over Connect — starting the new track
+  again from 0, and, when the restarted player came back already playing a track (Spotify handing it the phone's
+  play), replacing that track with the remembered one. The `before` run shows exactly the owner's symptom:
+  `Fake Track 002` (remembered) instead of the phone's `Fake Track 003`. Fixed: `quiet_moment` takes a track change
+  only when `SoloistState::change_is_ours` says our own command (a Play's track or a Next/Previous/TogglePlay, 30 s
+  window) caused it, so a phone's skip is followed, not interrupted; after a restart the resume waits `RESUME_GRACE`
+  (1.5 s) and is dropped the moment the player reports a track of its own; and the answer to the Daemon's own
+  `get_queue` (a snapshot from before the change) now only updates the queue, never the track/status/position it may
+  still show. Tests: three contract tests (ours vs not, quiet moments, queue answer) and pty `phone_test.py`.
+  Jam (D64): asked the owner; what a Jam needs is a *host device* (started from a phone), and guests' plays and
+  queue additions arrive as normal Connect commands, which the Daemon now follows. Facts: `PlayerState` carries
+  `session_id`/`session_command_id` (the shared-session plumbing) and `PlayOrigin.feature_identifier`; whether either
+  names a Jam is unverified (no Jam to try). Live proof needs the owner's phone and account.

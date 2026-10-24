@@ -72,6 +72,23 @@ Spotify Connect commands sent through the Catalogue session, for what the Engine
 track N, later device transfer and quality). Registers as a hidden device that never shows in device pickers.
 _Avoid_: remote API, Connect client
 
+**Remote change**:
+Playback moved by something other than this Daemon: a phone (or another Spotify app) on Connect playing, skipping or
+queueing on this computer's device, a Jam guest's play, Spotify itself. The Daemon follows it and never puts its own
+remembered state back (D63).
+_Avoid_: external event, override
+
+**Quiet moment**:
+When the SoloistEngine may restart Soloist into a staged build: at once while paused or idle, and otherwise only
+between tracks when the Daemon's own command (Play, Next, Previous, TogglePlay) caused the change — a remote change is
+not an invitation to restart (D63).
+_Avoid_: safe restart, idle window
+
+**Jam**:
+Spotify's shared listening session: one device hosts, guests add to and skip in the host's queue. Server-side; nothing
+in Singularity starts one (a phone does), and joining one moves a guest onto the host's device (D64).
+_Avoid_: party mode, group session
+
 ### Interface
 
 **Keymap**:

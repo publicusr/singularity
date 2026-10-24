@@ -81,13 +81,69 @@ fn updates_restart_soloist_only_at_quiet_moments() {
     use singularity_proto::{Item, PlayStatus, PlaybackState};
     use singularityd::soloist::{quiet_moment, resume_point};
     let mut p = PlaybackState { status: PlayStatus::Playing, item: Some(Item { uri: "spotify:track:a".into(), duration_ms: 200_000, ..Default::default() }), context_uri: Some("spotify:album:x".into()), position_ms: 42_000, timestamp_ms: singularity_proto::now_ms(), speed: 0.0, ..Default::default() };
-    assert!(!quiet_moment(&p, false), "never in the middle of a playing track");
-    assert!(quiet_moment(&p, true), "between tracks");
+    assert!(!quiet_moment(&p, false, false), "never in the middle of a playing track");
+    assert!(quiet_moment(&p, true, true), "between tracks, when our own command made the change");
+    assert!(!quiet_moment(&p, true, false), "but not when another app (a phone on Connect) changed the track");
     let r = resume_point(&p, true).unwrap();
     assert_eq!((r.track_uri.as_str(), r.position_ms, r.paused), ("spotify:track:a", 0, false), "a track that just started starts over");
     p.status = PlayStatus::Paused;
-    assert!(quiet_moment(&p, false));
+    assert!(quiet_moment(&p, false, false));
     let r = resume_point(&p, false).unwrap();
     assert_eq!((r.context_uri.as_deref(), r.position_ms, r.paused), (Some("spotify:album:x"), 42_000, true), "paused stays paused, at the same place");
-    assert!(quiet_moment(&PlaybackState::default(), false) && resume_point(&PlaybackState::default(), false).is_none(), "idle: nothing to pick up");
+    assert!(quiet_moment(&PlaybackState::default(), false, false) && resume_point(&PlaybackState::default(), false).is_none(), "idle: nothing to pick up");
+}
+
+/// A phone (or any other app on Connect) changing the track is news to follow: the Daemon must not take it for a
+/// change of its own and restart Soloist over it (which would put its remembered state back).
+#[test]
+fn only_our_own_commands_explain_a_track_change() {
+    use serde_json::json;
+    use singularity_proto::Command;
+    let track = |uri: &str| json!({"type": "track_changed", "item": {"uri": uri, "decorations": {"identity": {"name": uri}}}});
+    let mut st = SoloistState::default();
+    // a change nobody here asked for
+    st.apply(&track("spotify:track:a"));
+    assert!(!st.change_is_ours());
+    // a next we sent: whatever the player picks is ours
+    st.to_soloist(Command::Next);
+    st.apply(&track("spotify:track:b"));
+    assert!(st.change_is_ours());
+    // (once)
+    st.apply(&track("spotify:track:c"));
+    assert!(!st.change_is_ours());
+    // the track a play asked for is ours; another one isn't
+    st.to_soloist(Command::Play { uri: Some("spotify:track:d".into()) });
+    st.apply(&track("spotify:track:e"));
+    assert!(!st.change_is_ours(), "someone else's track, even right after ours");
+    st.to_soloist(Command::Play { uri: Some("spotify:track:f".into()) });
+    st.apply(&track("spotify:track:f"));
+    assert!(st.change_is_ours());
+}
+
+/// The answer to our `get_queue` is a snapshot of the player from before the change we just heard about: taking its
+/// track would put the song that just stopped back (in the UI, MPRIS, Now Playing and the listening log).
+#[test]
+fn a_queue_answer_never_puts_the_previous_track_back() {
+    use serde_json::json;
+    let track = |uri: &str, name: &str| json!({"uri": uri, "decorations": {"identity": {"name": name}}});
+    let mut st = SoloistState::default();
+    st.apply(&json!({"type": "context_changed", "context": {"uri": "spotify:playlist:p"}}));
+    st.apply(&json!({"type": "track_changed", "item": track("spotify:track:old", "Old")}));
+    st.asking_for_queue();
+    st.apply(&json!(
+        {"type": "track_changed", "item": track("spotify:track:new", "New")}
+    ));
+    // the answer (the stand-in and the real Soloist send a playback state) still shows the old song
+    let changed = st.apply(&json!({
+        "type": "playback_state", "status": "playing", "item": track("spotify:track:old", "Old"),
+        "context": {"uri": "spotify:playlist:p"}, "position": {"position_ms": 1000, "timestamp_ms": 1, "speed": 1.0},
+        "volume": 40, "options": {}, "upcoming": [{"uid": "u1", "source": "context", "item": track("spotify:track:next", "Next")}]
+    }));
+    assert!(changed, "the queue is news");
+    assert_eq!(st.playback.item.as_ref().map(|i| i.uri.as_str()), Some("spotify:track:new"), "the new song stays");
+    assert_eq!(st.playback.queue.len(), 1);
+    assert_eq!(st.playback.context_uri.as_deref(), Some("spotify:playlist:p"));
+    // and a pushed queue change still lands
+    assert!(st.apply(&json!({"type": "queue_changed", "upcoming": []})));
+    assert!(st.playback.queue.is_empty());
 }

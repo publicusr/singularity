@@ -4,6 +4,36 @@ Read this first in a new session, then `CLAUDE.md`, `docs/SPEC.md` and `GLOSSARY
 in `docs/DESIGN-TREE.md` (round log at the bottom: one entry per ticket, with the details); verified facts about
 Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-connect.md`.
 
+## Needs the owner (2026-10-24): a phone's play was undone
+
+The owner's report (2026-10-23): a friend's phone playing on Singularity "made the previously playing song play again"
+after queueing + skipping or playing a song, and joining a Jam didn't work. **T0005 fixed the first half** (D63):
+reproduced with the real Daemon and a stand-in Soloist acting as a phone (`tools/pty/phone_test.py`), the cause was
+the Soloist updater: a remote track change counted as a quiet moment, so Soloist restarted and the state remembered at
+that instant was put back over Connect — the new track started over from 0, and when the restarted player came back
+with the phone's track already playing, the remembered one replaced it (`before`: `Fake Track 002` instead of the
+phone's `Fake Track 003`). Now a track change only counts if our own command caused it, a resume right after a restart
+is dropped when the player came back playing, and a `get_queue` answer only fills the queue.
+
+**The owner must check it live** (it needs a phone and their account; nothing was reinstalled):
+
+1. Reinstall both binaries and restart: `cargo install --locked --path crates/daemon` and `--path crates/client`, then
+   quit the Client and start it again (it replaces a running Daemon by itself).
+2. In Singularity play something from a list (a playlist or Liked Songs), and leave the Client open.
+3. On the phone: Spotify → device picker → "Singularity" → (a) play a song from another album/playlist; (b) go back
+   to a song Singularity already played; (c) queue a song and skip to it; (d) skip forward and back a few times.
+4. What should happen: the phone's song plays and keeps playing; the Client shows the same song within a second, and
+   nothing jumps back to an earlier song or restarts the phone's song from the beginning. "Play next" and queue edits
+   from the phone keep working too.
+5. If it still happens: look at `~/.local/state/singularity/daemon.log` and
+   `~/.local/share/singularity/soloist-state/soloist.log` around that moment. `restarting Soloist into the new build`
+   means Soloist was replaced at that instant (then the log line after it, `not picking up where playback was after
+   the restart`, says whether the resume was dropped); no such line means the Daemon didn't act and the replay came
+   from Spotify's side — say so and it becomes a new ticket.
+6. ...and answer the Jam question (D64, `docs/DESIGN-TREE.md`): was a Jam running while the friend tried? Does
+   starting a Jam *from the phone while it plays on Singularity* work, with the friend joining that one? That decides
+   whether Jam needs anything from us at all.
+
 ## Next session: Linux (start here)
 
 The owner is moving back to Linux (`~/src/singularity`). `git pull` first: a lot landed on the Mac.
@@ -83,7 +113,10 @@ macOS-only checks still waiting for the owner (can wait until they're back on th
   `live_shapes` and `secrets_live`. `tools/check-linux.sh` type-checks Linux from the Mac: clean. **Nothing since the
   move to the Mac has run on Linux**: first thing back there, `cargo test --workspace`, the pty scenarios, and a
   session per Engine (Linux builds now need `alsa-lib`).
-- **No known open bugs.** Audit fixes so far (D60 and the report): private `daemon.log`, socket ownership checks, a
+- **T0005 (2026-10-24)**: a remote change (a phone on Connect) was undone by the Soloist updater's restart + resume;
+  fixed (D63), `phone_test.py`, contract tests; **the owner's live phone check is pending** (see above). Jam: D64 asks
+  the owner.
+- **Known open bugs.** Audit fixes so far (D60 and the report): private `daemon.log`, socket ownership checks, a
   config crash, bounded caches, cover caps, Visuals at 5 fps while idle (undone by D62), a 5 s deadline for Clients that stop reading,
   a release profile. (2026-10-20: the #62 live check was meant to be silent but played ~4 s at 40 %: Soloist's
   updater restarted it right then and the volume asked for was lost. Fixed in `1ce954b`; the owner was told.) Fixed this session from owner reports: the AppEngine lost Connect after a wifi change;
@@ -214,7 +247,7 @@ on macOS runs the Soloist VM (a scratch `XDG_DATA_HOME` gets its own VM: ~2 min 
 
 `singularity` and `singularityd` are installed in `~/.cargo/bin` with `cargo install --locked --path crates/daemon` and
 `--path crates/client`. Reinstall both after each change the owner should test; the Client finds `singularityd` next
-to itself and replaces an older running Daemon by itself. Linux: last installed after `b21d8e6` (2026-10-21). macOS: the repo is at
+to itself and replaces an older running Daemon by itself. Linux: last installed after `b21d8e6` (2026-10-21); **T0005's fix is on disk only, not installed** (the owner reinstalls for the phone check). macOS: the repo is at
 `~/src/singularity`, Rust from Homebrew's rustup (`/opt/homebrew/opt/rustup/bin` and `~/.cargo/bin` on the
 PATH in `~/.zshrc`); last installed after `d38d2f7` (2026-10-20). Also on the Mac: zig + cargo-zigbuild + openssl@3
 and the target `x86_64-unknown-linux-gnu` (for `tools/check-linux.sh`), and `vfkit` from Homebrew (spike leftover; the
@@ -245,6 +278,8 @@ EFI vars, SSH key, pinned `bin/vfkit` + `bin/gvproxy`, logs), setup version 2, S
 
 ## Waiting on the owner
 
+- **The T0005 live check** (above): a phone playing on Singularity must not make an earlier song come back; and the
+  Jam question (D64).
 - The live checks listed under "Then".
 - Owner calls still standing (open to veto): Settings opens from Ctrl+K only; Cockpit's listening Pane packs two days
   per cell when short; delete asks again within 10 s; track notifications off by default; vim preset moves like to

@@ -21,6 +21,11 @@ under the text, as kitty does with z=-1, at pyte's cursor when the APC arrives, 
 - `update_test.py out-update` (#6): a real Daemon runs an expiring stand-in Soloist (`fake_soloist.py`: WebSocket
   protocol, `--version`, the lifetime line) from scratch dirs; a fake CDN then offers a newer build, which must be
   staged while a track plays and taken over at the next track. No key, keyring, audio tap or D-Bus of the owner's.
+- `phone_test.py out-phone` (T0005, D63): the same stand-in and fake CDN, with the stand-in acting as a phone on
+  Connect: it plays a song and queues one and skips to it by itself (a file in its data dir). With a build staged,
+  the Daemon must not restart Soloist over the phone's change and must send no play/pause/seek; and when a restart
+  into a new build happens (our own Next), a build that comes back already playing a track must keep it, not the
+  track the Daemon remembered.
 - `app_wizard_test.py out-appw [--engine librespot]` (#66, #70): the wizard and health check with the Spotify app (or
   librespot) as Engine, three Daemons in turn
   (no Catalogue; a real, logged-out one in scratch dirs; the fake one). Never starts the real app (`SINGULARITY_START_APP=0`).

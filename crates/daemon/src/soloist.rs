@@ -457,10 +457,26 @@ async fn keep_current_in_vm(v: Arc<crate::soloist_vm::VmHost>, days: watch::Rece
     }
 }
 
-/// Is now a good moment to restart into a new build? Not in the middle of a playing track.
-pub fn quiet_moment(p: &PlaybackState, track_changed: bool) -> bool {
-    track_changed || !matches!(p.status, PlayStatus::Playing | PlayStatus::Buffering)
+/// Is now a good moment to restart into a new build? Paused or idle at once. In the middle of a playing track, only
+/// between tracks, and only when a command of ours caused the change: playback someone else started (a phone on
+/// Connect) is followed, not interrupted (restarting Soloist would undo it, and the restart picks up our old state).
+pub fn quiet_moment(p: &PlaybackState, track_changed: bool, ours: bool) -> bool {
+    if matches!(p.status, PlayStatus::Playing | PlayStatus::Buffering) {
+        track_changed && ours
+    } else {
+        true
+    }
 }
+
+/// How long after one of our commands the track change it asked for can arrive (a Play names its track, a
+/// Next/Previous/TogglePlay doesn't, so its window is shorter).
+const OUR_CHANGE: Duration = Duration::from_secs(30);
+const OUR_CHANGE_UNTIL: Duration = Duration::from_secs(10);
+/// How long an answer to our `get_queue` may take (after that a playback state is news, not the answer).
+const QUEUE_ANSWER: Duration = Duration::from_secs(5);
+/// After a restart for an update, how long the new Soloist has to say what it is playing before the remembered
+/// state is put back.
+const RESUME_GRACE: Duration = Duration::from_millis(1500);
 
 /// Where to pick up after the restart (a track that just started resumes from its start).
 pub fn resume_point(p: &PlaybackState, track_changed: bool) -> Option<Resume> {
@@ -638,6 +654,9 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
     let mut active = false;
     // a build staged while this one runs waits for a quiet moment
     let mut staged = false;
+    // where playback was when we restarted for an update, and when to put it back
+    let mut pending_resume: Option<Resume> = None;
+    let mut resume_at: Option<tokio::time::Instant> = None;
 
     loop {
         tokio::select! {
@@ -663,9 +682,11 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                             ws_tx.send(Message::text(json!({"type":"command","command":"set_volume","volume":v}).to_string())).await?;
                         }
                         if let Some(a) = ev["is_active"].as_bool() { active = a; }
-                        // back after an update: pick up where playback was
+                        // back after an update: pick up where playback was, once the new Soloist has had a moment
+                        // to say whether it came back playing something already (see below)
                         if logged_in && let Some(r) = upd.resume.take() {
-                            let _ = ev_tx.send(EngineEvent::Resume(r)).await;
+                            pending_resume = Some(r);
+                            resume_at = Some(tokio::time::Instant::now() + RESUME_GRACE);
                         }
                         #[cfg(target_os = "macos")]
                         if let Some(v) = &in_vm {
@@ -700,10 +721,19 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                         if ev["type"] == "volume_changed" {
                             engine.save_volume(st.playback.volume);
                         }
+                        // the new Soloist came back playing something: someone (a phone on Connect) put it there, or
+                        // Spotify restored it, so putting our remembered state back would undo it
+                        if pending_resume.is_some() && st.playback.item.is_some() {
+                            pending_resume = None;
+                            resume_at = None;
+                            tracing::info!("not picking up where playback was after the restart: the player came back with a track of its own");
+                        }
+                        let ours = track_changed && st.change_is_ours();
                         if track_changed {
+                            st.asking_for_queue();
                             let _ = ws_tx.send(Message::text(json!({"type":"command","command":"get_queue","limit":20}).to_string())).await;
                         }
-                        if staged && quiet_moment(&st.playback, track_changed) {
+                        if staged && quiet_moment(&st.playback, track_changed, ours) {
                             return restart_for_update(&mut child, &st.playback, track_changed, upd).await;
                         }
                     }
@@ -712,8 +742,15 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
             // (a notice from before this build started may be stale: only a build still waiting counts)
             _ = upd.staged.notified(), if engine.update_waiting() => {
                 staged = true;
-                if quiet_moment(&st.playback, false) {
+                if quiet_moment(&st.playback, false, false) {
                     return restart_for_update(&mut child, &st.playback, false, upd).await;
+                }
+            }
+            // the moment has come to pick up where playback was after the restart
+            _ = tokio::time::sleep_until(resume_at.unwrap_or_else(tokio::time::Instant::now)), if resume_at.is_some() => {
+                resume_at = None;
+                if let Some(r) = pending_resume.take() {
+                    let _ = ev_tx.send(EngineEvent::Resume(r)).await;
                 }
             }
             Some(n) = news_rx.recv() => match n {
@@ -777,6 +814,12 @@ async fn restart_for_update(child: &mut Child, p: &PlaybackState, track_changed:
 #[derive(Default)]
 pub struct SoloistState {
     pub playback: PlaybackState,
+    /// the track one of our commands asked for, and when: the change that follows it is ours
+    expected: Option<(String, std::time::Instant)>,
+    /// when we sent a next/previous/play/pause: the change that follows it is ours (its target isn't known)
+    sent_at: Option<std::time::Instant>,
+    /// when we asked for the queue: its answer is a snapshot from before the change we just heard about
+    queue_asked_at: Option<std::time::Instant>,
 }
 
 fn entity(v: &Value) -> Option<Item> {
@@ -815,8 +858,55 @@ fn status_of(s: &str) -> PlayStatus {
 }
 
 impl SoloistState {
+    /// Was the track change that just arrived (`playback` already applied) caused by a command of ours? A change from
+    /// another app is news to follow, not something to restart Soloist over. (Consumes what we expected.)
+    pub fn change_is_ours(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        let by_track = match (&self.expected, self.playback.item.as_ref().map(|i| i.uri.as_str())) {
+            (Some((want, at)), Some(uri)) => want == uri && now.saturating_duration_since(*at) <= OUR_CHANGE,
+            _ => false,
+        };
+        let by_time = self.sent_at.is_some_and(|at| now.saturating_duration_since(at) <= OUR_CHANGE_UNTIL);
+        self.expected = None;
+        self.sent_at = None;
+        by_track || by_time
+    }
+
+    /// We asked Soloist for the queue: its answer shows the player as it was, which may not have the track that just
+    /// changed yet, so only the queue is taken from it.
+    pub fn asking_for_queue(&mut self) {
+        self.queue_asked_at = Some(std::time::Instant::now());
+    }
+
+    /// Apply the queue in an event's `upcoming`. True if it differs from what we had. (An event without a list
+    /// doesn't wipe the queue: it says nothing about it.)
+    fn queue(&mut self, upcoming: &Value) -> bool {
+        let Some(list) = upcoming.as_array() else { return false };
+        let q: Vec<QueueEntry> = list
+            .iter()
+            .map(|q| {
+                let item = entity(&q["item"]).unwrap_or_else(|| Item { uri: q["uid"].as_str().unwrap_or_default().into(), ..Default::default() });
+                QueueEntry { item, source: q["source"].as_str().unwrap_or("context").into(), uid: q["uid"].as_str().unwrap_or_default().into() }
+            })
+            .collect();
+        if q == self.playback.queue {
+            return false;
+        }
+        self.playback.queue = q;
+        true
+    }
+
     /// Apply one Soloist event. Returns true when our playback state changed.
     pub fn apply(&mut self, ev: &Value) -> bool {
+        // the answer to our own `get_queue`: the track it still shows may be the one that just stopped
+        if ev["type"] == "playback_state" && self.queue_asked_at.is_some_and(|at| at.elapsed() <= QUEUE_ANSWER) {
+            self.queue_asked_at = None;
+            return self.queue(&ev["upcoming"]);
+        }
+        // what plays next: nothing about the current track
+        if ev["type"] == "queue_changed" {
+            return self.queue(&ev["upcoming"]);
+        }
         let p = &mut self.playback;
         match ev["type"].as_str().unwrap_or("") {
             "playback_state" => {
@@ -843,19 +933,7 @@ impl SoloistState {
             }
             "options_changed" => self.options(&ev["options"]),
             "position_sync" => self.position(&ev["position"]),
-            "queue_changed" => {
-                p.queue = ev["upcoming"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|q| {
-                                let item = entity(&q["item"]).unwrap_or_else(|| Item { uri: q["uid"].as_str().unwrap_or_default().into(), ..Default::default() });
-                                Some(QueueEntry { item, source: q["source"].as_str().unwrap_or("context").into(), uid: q["uid"].as_str().unwrap_or_default().into() })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-            }
+            // "queue_changed" is handled above (the queue only)
             _ => return false,
         }
         true
@@ -883,8 +961,16 @@ impl SoloistState {
         };
     }
 
-    /// Our command → Soloist WebSocket command(s).
-    pub fn to_soloist(&self, cmd: Command) -> Vec<Value> {
+    /// Our command → Soloist WebSocket command(s). Notes what the command is expected to cause (see
+    /// [`SoloistState::change_is_ours`]).
+    pub fn to_soloist(&mut self, cmd: Command) -> Vec<Value> {
+        let now = std::time::Instant::now();
+        match &cmd {
+            Command::Play { uri: Some(u) } => self.expected = Some((u.clone(), now)),
+            Command::PlayFrom { track_uri: Some(u), .. } => self.expected = Some((u.clone(), now)),
+            Command::Play { uri: None } | Command::Next | Command::Previous | Command::TogglePlay => self.sent_at = Some(now),
+            _ => {}
+        }
         let c = |name: &str| json!({"type":"command","command":name});
         match cmd {
             Command::Play { uri: Some(u) } => vec![json!({"type":"command","command":"play","uri":u})],
