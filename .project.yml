@@ -1,0 +1,23 @@
+pitch: A terminal Spotify client that plays lossless and looks spectacular
+status: beta
+focus: true
+next: Codebase audit (#71)
+building: observatory
+milestones:
+  - { name: Plan, done: 2026-10-17 }
+  - { name: Spike the risky integrations, done: true }
+  - { name: Walking skeleton, done: true }
+  - { name: Core parity, done: true }
+  - { name: Eye candy (v1 done), done: 2026-10-18 }
+  - { name: Stats, done: 2026-10-18 }
+  - { name: Playlist editing, done: true }
+  - { name: Settings, done: true }
+  - { name: Podcasts and audiobooks, done: true }
+  - { name: macOS, done: 2026-10-20 }
+  - { name: Codebase audit, done: false }
+  - { name: Free tiling (parked), done: false }
+release:  # readiness for the public GitHub profile
+  - { name: README with screenshots, done: false }
+  - { name: Licence, done: false }
+  - { name: Install instructions for Linux and macOS, done: true }
+  - { name: Tagged release, done: false }
