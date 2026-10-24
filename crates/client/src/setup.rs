@@ -389,7 +389,7 @@ fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
         None => ('!', "Catalogue", "disabled in this Daemon".into()),
     });
     if let Some(h) = &app.health {
-        rows.push((if h.spotify_login == "keyring" { '✓' } else if h.spotify_login == "missing" { '!' } else { '!' }, "Spotify login", place(&h.spotify_login)));
+        rows.push((if h.spotify_login == "keyring" { '✓' } else { '!' }, "Spotify login", place(&h.spotify_login)));
     }
     let net = match &app.catalogue {
         Some(CatalogueStatus::Ready { .. }) => ('✓', "Network", "Spotify reachable".to_string()),

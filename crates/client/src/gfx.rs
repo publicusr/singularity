@@ -68,6 +68,9 @@ struct Stored {
     last_used: u64,
 }
 
+/// An animated image queued for this frame: its id, where it goes, and (when it's new) its size and pixels.
+type FrameImage = (u32, Rect, Option<(u32, u32, std::sync::Arc<Vec<u8>>)>);
+
 /// The pixel tier's bookkeeping: which images the terminal holds, and where they are placed.
 pub struct Kitty {
     /// pass pixels through POSIX shared memory (local kitty only), else inline (zlib + base64)
@@ -81,7 +84,7 @@ pub struct Kitty {
     queue: Vec<(u32, u32, Rect, Option<Crop>)>,
     uploads: Vec<(u32, RgbImage)>,
     /// animated images (Visuals) this frame: a new picture, or None to keep the one on screen
-    frames: Vec<(u32, Rect, Option<(u32, u32, std::sync::Arc<Vec<u8>>)>)>,
+    frames: Vec<FrameImage>,
     /// per Visual: which of its two image ids is on screen, and where
     animated: HashMap<u32, (u32, Rect)>,
     shm_pending: Vec<(std::time::Instant, std::ffi::CString)>,

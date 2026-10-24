@@ -295,8 +295,9 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
         let mut added: HashMap<String, Vec<String>> = HashMap::new();
         // rows taken out of each, by uid
         let mut removed: HashMap<String, Vec<String>> = HashMap::new();
-        // and moved, in order
-        let mut moves: HashMap<String, Vec<(Vec<String>, Option<String>, Option<String>)>> = HashMap::new();
+        // and moved, in order: (uids, before, after)
+        type Moved = (Vec<String>, Option<String>, Option<String>);
+        let mut moves: HashMap<String, Vec<Moved>> = HashMap::new();
         while let Some(cmd) = cmd_rx.recv().await {
             let evs = match cmd {
                 CatCmd::Home => vec![CatEvent::Home(home.clone())],

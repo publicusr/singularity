@@ -19,6 +19,9 @@ use singularity_proto::SpectrumFrame;
 const MAX_W_GPU: usize = 1280;
 const MAX_W_CPU: usize = 420;
 
+/// The last frame a Visual drew: when, its size, its pixels.
+type LastFrame = Option<(Instant, (usize, usize), Arc<Vec<u8>>)>;
+
 pub struct BlackHole {
     /// None until the first frame; `Some(None)` = no usable GPU (or not allowed)
     gpu: Option<Option<gpu::Gpu>>,
@@ -30,9 +33,9 @@ pub struct BlackHole {
     beat: f32,
     bass: f32,
     /// the last frame: when, its size, its pixels
-    last: Option<(Instant, (usize, usize), Arc<Vec<u8>>)>,
+    last: LastFrame,
     /// the same for the hole out of its well (idle takeover)
-    free_last: Option<(Instant, (usize, usize), Arc<Vec<u8>>)>,
+    free_last: LastFrame,
     /// the Theme's colours, when it tints (#33)
     tint: Option<[[f32; 3]; 4]>,
 }

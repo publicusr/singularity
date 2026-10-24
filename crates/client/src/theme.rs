@@ -149,8 +149,11 @@ impl Tint {
 
 const BLACK: Rgb = Rgb(0, 0, 0);
 
+/// A Cockpit variant: name, ramp low→high, Pane borders, accent.
+type CockpitVariant = (&'static str, &'static str, [u32; 3], [u32; 4], u32);
+
 /// Cockpit's variants: name, ramp low→high, Pane borders, accent.
-const COCKPIT: [(&str, &str, [u32; 3], [u32; 4], u32); 5] = [
+const COCKPIT: [CockpitVariant; 5] = [
     ("cockpit-btop", "Cockpit · btop", [0x77ca9b, 0xcbc06c, 0xdc4c4c], [0x556d59, 0x5c588d, 0x6c6c4b, 0x805252], 0xeeeeee),
     ("cockpit-ice", "Cockpit · ice", [0x1f4f7a, 0x5fb4ff, 0xbfe6ff], [0x1d3b57, 0x24486b, 0x1f4560, 0x2a4f73], 0xbfe6ff),
     ("cockpit-amber", "Cockpit · amber", [0x7a3d00, 0xffa031, 0xffe0a3], [0x5a3a14, 0x6b4416, 0x5e4214, 0x6e3f12], 0xffd28a),

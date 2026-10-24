@@ -27,6 +27,9 @@ pub enum ClientMsg {
 }
 
 /// Messages the Daemon sends.
+// Boxing the big variants (`Event::Playback`…) would change every construction and match site, and a message is
+// short-lived; the JSON wire doesn't care about the enum's size.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum DaemonMsg {

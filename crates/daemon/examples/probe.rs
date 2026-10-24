@@ -20,7 +20,7 @@ fn shape(v: &Value, depth: usize, out: &mut String) {
                     Value::Array(a) => format!("[{}]", a.len()),
                     Value::String(s) if k == "__typename" || k == "uri" && s.split(':').count() == 3 => {
                         // a typename, or a URI's kind (never its id)
-                        let s = if k == "uri" { s.rsplitn(2, ':').nth(1).unwrap_or("") } else { s };
+                        let s = if k == "uri" { s.rsplit_once(':').map(|(kind, _)| kind).unwrap_or("") } else { s };
                         format!(": {s:?}")
                     }
                     Value::String(_) => ": str".into(),

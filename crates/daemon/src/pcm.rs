@@ -116,7 +116,7 @@ fn run(listener: std::os::unix::net::UnixListener, feed: &Feed, stop: &AtomicBoo
                     }
                     have += n;
                     let whole = have - have % 8;
-                    let samples: Vec<f32> = raw[..whole].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                    let samples: Vec<f32> = raw[..whole].as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
                     if feed.wanted() {
                         feed.push(samples.clone());
                     }

@@ -704,7 +704,7 @@ fn palette(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
     f.render_widget(block, r);
     let buf = f.buffer_mut();
     text(buf, inner.x + 1, inner.y, inner.width.saturating_sub(2), &format!("› {query}▏"), th.s(th.fg).add_modifier(Modifier::BOLD));
-    let rows = (inner.height.saturating_sub(1) as usize).min(PALETTE_ROWS).max(1);
+    let rows = (inner.height.saturating_sub(1) as usize).clamp(1, PALETTE_ROWS);
     let first = selected.saturating_sub(rows - 1);
     for (i, a) in items.iter().enumerate().skip(first).take(rows) {
         let y = inner.y + 1 + (i - first) as u16;

@@ -4,6 +4,8 @@
 use singularity_proto::{Command, EngineStatus, PlaybackState};
 use tokio::sync::mpsc;
 
+// Boxing the big variants would change every Engine implementation and its match arms; an event is sent once.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
     Playback(PlaybackState),

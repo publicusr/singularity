@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn every_design_draws_all_its_panes() {
         let mut app = App::new(None);
-        for d in 0..DESIGNS.len() {
+        for (d, _) in DESIGNS.iter().enumerate() {
             app.set_design(d);
             app.meters.push(singularity_proto::SpectrumFrame { bands: vec![120; 64], level: 150, vu: [150, 150], beat: false, out_level: 150, out_vu: [150, 150], out_bands: [120; 3] });
             let s = screen(&render(&mut app));

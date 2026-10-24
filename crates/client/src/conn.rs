@@ -5,6 +5,8 @@ use std::time::Duration;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
+// Boxing the big variants would change every producer and consumer of these events.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum ConnEvent {
     Connecting,

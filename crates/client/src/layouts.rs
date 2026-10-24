@@ -95,7 +95,7 @@ pub fn load_dir(dir: &Path) -> (Vec<Saved>, Vec<String>) {
             Err(e) => problems.push(format!("layouts/{id}.toml: {e}")),
         }
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|s| s.name.to_lowercase());
     (out, problems)
 }
 

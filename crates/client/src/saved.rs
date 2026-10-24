@@ -52,6 +52,8 @@ pub fn savable(uri: &str) -> bool {
 
 /// A track row's ♥ at (x, y): filled when liked, outlined when not, blank until Spotify has said (#49). Returns its
 /// click target.
+// A drawing call: its arguments are the row's cell and everything the heart shows.
+#[allow(clippy::too_many_arguments)]
 pub fn heart(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, uri: &str, name: &str, liked: Option<bool>, bg: ratatui::style::Color, th: &crate::theme::Theme) -> (ratatui::layout::Rect, crate::app::Hit) {
     let (ch, col) = match liked {
         Some(true) => ("♥", th.accent),

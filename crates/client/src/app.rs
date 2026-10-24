@@ -2574,7 +2574,7 @@ impl App {
                     return;
                 }
                 if matches!(&hit, Some(Hit::Focus(s)) if s == "lyrics") && self.lyrics.as_ref().is_some_and(|l| !l.synced) {
-                    self.lyrics_scroll = (self.lyrics_scroll as i64 - sign as i64 * 3).max(0) as usize;
+                    self.lyrics_scroll = (self.lyrics_scroll as i64 - sign * 3).max(0) as usize;
                     return;
                 }
                 // the queue, like the lists: the wheel moves the highlight (Shift: a page) and the list follows it

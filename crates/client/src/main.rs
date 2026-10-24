@@ -170,13 +170,13 @@ fn apply(app: &mut App, ev: ConnEvent) {
         ConnEvent::Msg(DaemonMsg::Event(Event::Playback(p))) => app.playback_event(p),
         ConnEvent::Msg(DaemonMsg::Event(Event::Error { message })) => app.say(message),
         ConnEvent::Msg(DaemonMsg::Event(Event::Catalogue(c))) => {
-            if let singularity_proto::CatalogueStatus::LoginPending { url, .. } = &c {
-                if !matches!(app.catalogue, Some(singularity_proto::CatalogueStatus::LoginPending { .. })) {
-                    app.login_hidden = false;
-                    // open the pairing page in the user's browser (the code is also shown in the UI)
-                    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-                    let _ = std::process::Command::new(opener).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
-                }
+            if let singularity_proto::CatalogueStatus::LoginPending { url, .. } = &c
+                && !matches!(app.catalogue, Some(singularity_proto::CatalogueStatus::LoginPending { .. }))
+            {
+                app.login_hidden = false;
+                // open the pairing page in the user's browser (the code is also shown in the UI)
+                let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+                let _ = std::process::Command::new(opener).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
             }
             app.catalogue = Some(c);
         }

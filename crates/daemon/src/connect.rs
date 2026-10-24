@@ -401,6 +401,17 @@ impl ConnectRemote {
     }
 }
 
+impl Drop for ConnectRemote {
+    fn drop(&mut self) {
+        let session = self.session.clone();
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                let _ = session.spclient().delete_connect_state_request().await;
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,16 +501,5 @@ mod tests {
         assert_eq!(m.iter().filter(|t| t["provider"] == "context").count(), 1, "one context track left");
         assert!(edit_queue(&mut n, &QueueEdit::Clear));
         assert!(n.iter().all(|t| t["provider"] != "queue") && n.len() == 2, "context and autoplay stay");
-    }
-}
-
-impl Drop for ConnectRemote {
-    fn drop(&mut self) {
-        let session = self.session.clone();
-        if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            rt.spawn(async move {
-                let _ = session.spclient().delete_connect_state_request().await;
-            });
-        }
     }
 }

@@ -100,7 +100,7 @@ impl Analyzer {
     /// all-zero frame and then nothing until sound returns.
     pub fn push(&mut self, stereo: &[f32]) -> Vec<SpectrumFrame> {
         let mut out = vec![];
-        for s in stereo.chunks_exact(2) {
+        for s in stereo.as_chunks::<2>().0 {
             self.mono[self.pos] = (s[0] + s[1]) * 0.5;
             self.pos = (self.pos + 1) % N;
             self.peak[0] = self.peak[0].max(s[0].abs());
@@ -145,13 +145,14 @@ impl Analyzer {
         let env = self.env_db.unwrap_or(0.0);
         let rel = |d: f32, env: f32| ((d - (env - RANGE_DB)) / RANGE_DB).clamp(0.0, 1.0);
         let mut raw = [0.0f32; BANDS];
-        for b in 0..BANDS {
+        for (r, d) in raw.iter_mut().zip(db.iter()) {
             // the loudest band lands a little below the top, so peaks never pin
-            raw[b] = if silent { 0.0 } else { rel(db[b], env + 4.0) };
+            *r = if silent { 0.0 } else { rel(*d, env + 4.0) };
         }
         let fall = (1.0 - DT * 3.5).clamp(0.0, 1.0);
-        for b in 0..BANDS {
-            self.bands[b] = if raw[b] > self.bands[b] { self.bands[b] * 0.4 + raw[b] * 0.6 } else { self.bands[b] * fall };
+        for (band, r) in self.bands.iter_mut().zip(raw.iter()) {
+            let old = *band;
+            *band = if *r > old { old * 0.4 + *r * 0.6 } else { old * fall };
         }
         // loudness in a narrower 24 dB window, so a song's dynamics show: steady music sits near 70 % (the band
         // envelope runs ≈ 13 dB above the broadband rms)
@@ -473,7 +474,7 @@ async fn capture(hub: &crate::Hub, an: &mut Analyzer, of: StreamOf) -> anyhow::R
         }
         have += n;
         let whole = have - have % 8;
-        let samples: Vec<f32> = bytes[..whole].chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        let samples: Vec<f32> = bytes[..whole].as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
         bytes.copy_within(whole..have, 0);
         have -= whole;
         let v = hub.playback.lock().await.volume;
