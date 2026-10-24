@@ -947,3 +947,9 @@ flowchart LR
   queue additions arrive as normal Connect commands, which the Daemon now follows. Facts: `PlayerState` carries
   `session_id`/`session_command_id` (the shared-session plumbing) and `PlayOrigin.feature_identifier`; whether either
   names a Jam is unverified (no Jam to try). Live proof needs the owner's phone and account.
+- **T0008: audit polish #74, #77, #80** (2026-10-24, Linux; branch on T0005). #74: Soloist's build archive streams to
+  disk and is counted while it arrives, under a 256 MB cap (a Content-Length over it fails before writing; any failure
+  removes `soloist.new/`, the build stays). #77: `pgrep`, `pkill`, `tar`, `secret-tool`, `pactl`, `parec` are resolved
+  from fixed system locations (`programs.rs`; Homebrew's dirs last on macOS), never `PATH`; a missing one is named in
+  the error and in a new **Tools** health row. #80: clippy clean on Linux (style fixes, type aliases, three large-enum
+  allows and `heart`'s eight arguments each with a reason); macOS clippy still to run.

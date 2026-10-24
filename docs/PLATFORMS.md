@@ -32,7 +32,7 @@ asked librespot not to pursue it), hence Soloist itself in a small Linux VM (D53
 | Setup wizard per Engine (1, 2) | ✅ Soloist; 🔶 app, librespot | ✅ app (pty + live); ✅ librespot (pty); 🔶 the Soloist VM (Soloist's steps, VM setup in the status bar) | — |
 | Stay logged in (3); secrets in the OS store (63) | ✅ Secret Service | ✅ Keychain (#64, live round trip) | — |
 | Engine updates itself (4) | ✅ Soloist | ✅ the VM's Soloist (the guest fetches and swaps builds; same quiet-moment restart); ➖ the app updates itself; librespot ships with Singularity | — |
-| Health check (5) | ✅ | ✅; audio-output row now names the system output (cpal) | — |
+| Health check (5) | ✅ names missing programs (#77) | ✅; audio-output row now names the system output (cpal); names missing programs (#77) | — |
 | Lossless notice and fix (6, 26, 27) | ✅ | ✅ the VM's Soloist (its log, as on Linux); ✅ app (quality level from Connect, not the exact bitrate); librespot says "320 kbps, its best" | Stream Pane's exact bitrate: Soloist only (⚠️ the app doesn't report it) |
 | Home, search, library, pages, lyrics, devices, queue, playlists, podcasts, stats, Settings (7–25, 31–35, 68–80, 83) | ✅ | ✅ (shared code; pty scenarios pass on macOS) | — |
 | Audiobooks (84, #62): book pages, chapters, resume, library, search | ✅ Soloist (live: a chapter played, its resume point recorded); 🔶 app (Spotify's own player: expected to play, not tried); ⚠️ librespot: Spotify refuses it chapter keys, so playing one says "Audiobooks need Soloist or the Spotify app" (D57); pages, library and search work | ✅ the VM's Soloist (live check, 2026-10-20); 🔶 app as on Linux; ⚠️ librespot, the default, as on Linux | inherent (D57): DRM, not ours to get around |
@@ -63,6 +63,7 @@ asked librespot not to pursue it), hence Soloist itself in a small Linux VM (D53
 | Notifications | D-Bus | `osascript` | 🔶 #68 |
 | Autostart | systemd user unit | LaunchAgent | ✅ #69 |
 | Process lookup | `/proc` | `proc_name`, libproc | ✅ |
+| Programs the Daemon runs (pgrep, pkill, tar, secret-tool, pactl, parec; #77) | fixed locations (`/usr/bin`, `/bin`, `/usr/local/bin`), never `PATH` | the same, plus `/opt/homebrew/bin` last | ✅; only `pgrep`, `pkill`, `tar` are needed there |
 | Audio output name (health) | `pactl` (the Engine's stream → its sink) | cpal's default output device | ✅ |
 | Opening a URL | `xdg-open` | `open` | ✅ |
 | Socket dir | `$XDG_RUNTIME_DIR/singularity/` | `$TMPDIR/singularity-<uid>/singularity/` (per-user `$TMPDIR`; the uid part reads "user" without `/proc`, harmless) | ✅ |

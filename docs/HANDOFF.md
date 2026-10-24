@@ -66,6 +66,10 @@ baked in (`env!("CARGO_MANIFEST_DIR")`); `cargo clean -p` the four workspace cra
 areas, all done (audit findings 12–15): Soloist's restart backoff fixed, the AppEngine's `pgrep` per command. 284 tests.
 Step 6 done: open findings are #73–#81 (ranked in the report); #73 fixed. 285 tests; both binaries reinstalled
 after `80aea67`. Left for #71: the soak and logged-in Engine sessions (owner: later), macOS checks.
+**T0008 (2026-10-24, Linux)**: #74 Soloist build downloads stream to disk under a 256 MB cap; #77 `pgrep`, `pkill`,
+`tar`, `secret-tool`, `pactl`, `parec` come from fixed system locations (never `PATH`) and the health check has a
+**Tools** row naming a missing one; #80 clippy is clean on Linux (fixes plus a few allows with reasons). 293 tests.
+The branch is `regent/T0008-audit-polish` (on T0005); nothing pushed. **macOS clippy has not run since (#80).**
 
 1. **Build and test**: `cargo test --workspace` (Linux builds now need `alsa-lib`; the release profile has thin LTO,
    so a clean release build is slower). Fix anything Linux-only that `tools/check-linux.sh` couldn't see (it only
@@ -112,7 +116,7 @@ macOS-only checks still waiting for the owner (can wait until they're back on th
 - Tests: **278 passing** on macOS (`cargo test --workspace`), plus ignored benchmarks (`hole_cpu`, `tap_cpu`),
   `live_shapes` and `secrets_live`. `tools/check-linux.sh` type-checks Linux from the Mac: clean. **Nothing since the
   move to the Mac has run on Linux**: first thing back there, `cargo test --workspace`, the pty scenarios, and a
-  session per Engine (Linux builds now need `alsa-lib`).
+  session per Engine (Linux builds now need `alsa-lib`). Linux 2026-10-24 (T0008): **293 passing** and clippy clean.
 - **T0005 (2026-10-24)**: a remote change (a phone on Connect) was undone by the Soloist updater's restart + resume;
   fixed (D63), `phone_test.py`, contract tests; **the owner's live phone check is pending** (see above). Jam: D64 asks
   the owner.
@@ -281,6 +285,8 @@ EFI vars, SSH key, pinned `bin/vfkit` + `bin/gvproxy`, logs), setup version 2, S
 - **The T0005 live check** (above): a phone playing on Singularity must not make an earlier song come back; and the
   Jam question (D64).
 - The live checks listed under "Then".
+- **macOS clippy (#80, T0008)**: run `cargo clippy --workspace --all-targets` on the Mac (and `tools/check-linux.sh`
+  as usual). The fixes are style-only, but the `cfg(target_os = "macos")` code wasn't checked from Linux.
 - Owner calls still standing (open to veto): Settings opens from Ctrl+K only; Cockpit's listening Pane packs two days
   per cell when short; delete asks again within 10 s; track notifications off by default; vim preset moves like to
   `f`; `_example.toml` theme skipped; the rain keeps drifting (calmly) while paused.
