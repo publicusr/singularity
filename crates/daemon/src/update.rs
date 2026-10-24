@@ -127,8 +127,16 @@ pub async fn check(builds: &Builds, url: &str) -> anyhow::Result<Checked> {
     Ok(Checked::Staged(download(builds, url).await?))
 }
 
+/// The most a build archive may be (a build is ~35 MB): a few hundred MB means the CDN sent something else.
+pub const MAX_ARCHIVE: u64 = 256 * 1024 * 1024;
+
 /// Fetch, unpack and verify a build into `soloist.new/`. On any failure nothing else is touched.
 pub async fn download(builds: &Builds, url: &str) -> anyhow::Result<Build> {
+    download_with_cap(builds, url, MAX_ARCHIVE).await
+}
+
+/// [`download`] with an explicit cap (tests serve a small one).
+pub async fn download_with_cap(builds: &Builds, url: &str, cap: u64) -> anyhow::Result<Build> {
     let dir = builds.staged();
     let _ = tokio::fs::remove_dir_all(&dir).await;
     tokio::fs::create_dir_all(&dir).await?;
@@ -136,7 +144,7 @@ pub async fn download(builds: &Builds, url: &str) -> anyhow::Result<Build> {
         let resp = http()?.get(url).send().await?.error_for_status()?;
         let (etag, last_modified) = (header(&resp, "etag"), header(&resp, "last-modified"));
         let tgz = dir.join("soloist.tar.gz");
-        tokio::fs::write(&tgz, resp.bytes().await?).await?;
+        save_archive(resp, &tgz, cap).await?;
         let ok = Proc::new("tar").arg("-xzf").arg(&tgz).arg("-C").arg(&dir).status().await?.success();
         let _ = tokio::fs::remove_file(&tgz).await;
         anyhow::ensure!(ok, "couldn't unpack the build");
@@ -150,6 +158,28 @@ pub async fn download(builds: &Builds, url: &str) -> anyhow::Result<Build> {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
     r
+}
+
+/// Stream the response body to `path`, giving up once it passes `cap` bytes: a broken CDN answer must not fill the
+/// disk (and it is never held in memory whole).
+async fn save_archive(resp: reqwest::Response, path: &Path, cap: u64) -> anyhow::Result<()> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    const MB: u64 = 1024 * 1024;
+    if let Some(len) = resp.content_length() {
+        anyhow::ensure!(len <= cap, "the build is {} MB, over the {} MB cap", len.div_ceil(MB), cap.div_ceil(MB));
+    }
+    let mut file = tokio::fs::File::create(path).await?;
+    let mut body = resp.bytes_stream();
+    let mut written = 0u64;
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk?;
+        written += chunk.len() as u64;
+        anyhow::ensure!(written <= cap, "the build is over the {} MB cap", cap.div_ceil(MB));
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    Ok(())
 }
 
 /// First start: put a build in place (one already staged, else a fresh download).

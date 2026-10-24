@@ -11,6 +11,8 @@ struct Release {
     status: u16,
     etag: String,
     body: Vec<u8>,
+    /// send it without a Content-Length (chunked), as a broken or streaming CDN might
+    chunked: bool,
 }
 
 /// A build: a tarball with a `soloist` script printing `version` (and failing `--version` if `broken`).
@@ -40,15 +42,23 @@ async fn fake_cdn(release: Arc<Mutex<Release>>) -> String {
                 let n = s.read(&mut buf).await.unwrap_or(0);
                 let head = String::from_utf8_lossy(&buf[..n]).starts_with("HEAD");
                 let reason = if r.status == 200 { "OK" } else { "Server Error" };
+                let length = if r.chunked { "Transfer-Encoding: chunked\r\n".to_string() } else { format!("Content-Length: {}\r\n", r.body.len()) };
                 let hdr = format!(
-                    "HTTP/1.1 {} {reason}\r\nETag: {}\r\nLast-Modified: Fri, 16 Oct 2026 18:10:28 GMT\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    r.status,
-                    r.etag,
-                    r.body.len()
+                    "HTTP/1.1 {} {reason}\r\nETag: {}\r\nLast-Modified: Fri, 16 Oct 2026 18:10:28 GMT\r\n{length}Connection: close\r\n\r\n",
+                    r.status, r.etag
                 );
                 let _ = s.write_all(hdr.as_bytes()).await;
                 if !head {
-                    let _ = s.write_all(&r.body).await;
+                    if r.chunked {
+                        for chunk in r.body.chunks(4096) {
+                            let _ = s.write_all(format!("{:x}\r\n", chunk.len()).as_bytes()).await;
+                            let _ = s.write_all(chunk).await;
+                            let _ = s.write_all(b"\r\n").await;
+                        }
+                        let _ = s.write_all(b"0\r\n\r\n").await;
+                    } else {
+                        let _ = s.write_all(&r.body).await;
+                    }
                 }
             });
         }
@@ -62,7 +72,7 @@ fn version_on_disk(b: &Builds) -> String {
 
 #[tokio::test]
 async fn new_builds_are_staged_verified_and_installed_and_failures_keep_the_old_one() {
-    let release = Arc::new(Mutex::new(Release { status: 200, etag: "\"v1\"".into(), body: tarball("soloist 1", false) }));
+    let release = Arc::new(Mutex::new(Release { status: 200, etag: "\"v1\"".into(), body: tarball("soloist 1", false), chunked: false }));
     let url = fake_cdn(release.clone()).await;
     let root = tempfile::tempdir().unwrap();
     let builds = Builds { root: root.path().into() };
@@ -76,7 +86,7 @@ async fn new_builds_are_staged_verified_and_installed_and_failures_keep_the_old_
     assert_eq!(update::check(&builds, &url).await.unwrap(), Checked::UpToDate);
 
     // a new build appears: staged next to the running one, which stays as it is
-    *release.lock().unwrap() = Release { status: 200, etag: "\"v2\"".into(), body: tarball("soloist 2", false) };
+    *release.lock().unwrap() = Release { status: 200, etag: "\"v2\"".into(), body: tarball("soloist 2", false), chunked: false };
     match update::check(&builds, &url).await.unwrap() {
         Checked::Staged(b) => assert_eq!(b.version, "soloist 2"),
         other => panic!("expected a staged build, got {other:?}"),
@@ -90,23 +100,48 @@ async fn new_builds_are_staged_verified_and_installed_and_failures_keep_the_old_
     assert_eq!(update::check(&builds, &url).await.unwrap(), Checked::UpToDate);
 
     // the CDN fails: the build stays
-    *release.lock().unwrap() = Release { status: 500, etag: "\"v3\"".into(), body: vec![] };
+    *release.lock().unwrap() = Release { status: 500, etag: "\"v3\"".into(), body: vec![], chunked: false };
     assert!(update::check(&builds, &url).await.is_err());
     // a build that doesn't run is never staged
-    *release.lock().unwrap() = Release { status: 200, etag: "\"v3\"".into(), body: tarball("soloist 3", true) };
+    *release.lock().unwrap() = Release { status: 200, etag: "\"v3\"".into(), body: tarball("soloist 3", true), chunked: false };
     let err = update::check(&builds, &url).await.unwrap_err().to_string();
     assert!(err.contains("--version"), "{err}");
     assert!(builds.ready().is_none() && !builds.staged().exists());
     // garbage instead of a tarball
-    *release.lock().unwrap() = Release { status: 200, etag: "\"v4\"".into(), body: b"<html>not a build</html>".to_vec() };
+    *release.lock().unwrap() = Release { status: 200, etag: "\"v4\"".into(), body: b"<html>not a build</html>".to_vec(), chunked: false };
     assert!(update::check(&builds, &url).await.is_err());
     assert!(!builds.install().unwrap(), "nothing to install");
     assert_eq!(version_on_disk(&builds), "soloist 2");
 }
 
 #[tokio::test]
+async fn an_archive_over_the_cap_fails_cleanly_and_keeps_the_build() {
+    // the real cap is 256 MB; the test's is 4 KB, and the stand-in CDN serves twice that
+    let release = Arc::new(Mutex::new(Release { status: 200, etag: "\"v1\"".into(), body: tarball("soloist 1", false), chunked: false }));
+    let url = fake_cdn(release.clone()).await;
+    let root = tempfile::tempdir().unwrap();
+    let builds = Builds { root: root.path().into() };
+    update::ensure(&builds, &url).await.unwrap();
+    assert_eq!(version_on_disk(&builds), "soloist 1");
+
+    // announced with a Content-Length: refused before anything is written
+    *release.lock().unwrap() = Release { status: 200, etag: "\"huge\"".into(), body: vec![7u8; 8 * 1024], chunked: false };
+    let err = update::download_with_cap(&builds, &url, 4 * 1024).await.unwrap_err().to_string();
+    assert!(err.contains("cap"), "{err}");
+    assert_eq!(version_on_disk(&builds), "soloist 1", "the current build stays");
+    assert!(!builds.staged().exists(), "soloist.new/ is removed");
+
+    // chunked, no Content-Length: the bytes are counted as they arrive
+    *release.lock().unwrap() = Release { status: 200, etag: "\"huge\"".into(), body: vec![7u8; 8 * 1024], chunked: true };
+    let err = update::download_with_cap(&builds, &url, 4 * 1024).await.unwrap_err().to_string();
+    assert!(err.contains("cap"), "{err}");
+    assert_eq!(version_on_disk(&builds), "soloist 1");
+    assert!(!builds.staged().exists() && builds.ready().is_none());
+}
+
+#[tokio::test]
 async fn an_install_from_before_tracking_is_adopted_not_downloaded_again() {
-    let release = Arc::new(Mutex::new(Release { status: 200, etag: "\"v1\"".into(), body: vec![] }));
+    let release = Arc::new(Mutex::new(Release { status: 200, etag: "\"v1\"".into(), body: vec![], chunked: false }));
     let url = fake_cdn(release).await;
     let root = tempfile::tempdir().unwrap();
     let builds = Builds { root: root.path().into() };
