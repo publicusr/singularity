@@ -31,9 +31,14 @@ fn keyring() -> bool {
     std::env::var_os("SINGULARITY_NO_KEYRING").is_none()
 }
 
+/// Is the keyring in use? (Then its client tool is one the health check names when missing.)
+pub fn keyring_enabled() -> bool {
+    keyring()
+}
+
 /// The keyring's copy of a secret, if there is one.
 pub fn in_keyring(account: &str) -> Option<String> {
-    let o = keyring().then(|| store::lookup(account).stderr(Stdio::null()).output().ok()).flatten()?;
+    let o = keyring().then(|| store::lookup(account)?.stderr(Stdio::null()).output().ok()).flatten()?;
     let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
     (o.status.success() && !v.is_empty()).then_some(v)
 }
@@ -59,8 +64,8 @@ pub fn set(account: &str, value: &str) -> std::io::Result<Stored> {
 
 /// Remove a secret everywhere.
 pub fn clear(account: &str) {
-    if keyring() {
-        let _ = store::remove(account).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    if keyring() && let Some(mut c) = store::remove(account) {
+        let _ = c.stdout(Stdio::null()).stderr(Stdio::null()).status();
     }
     let _ = std::fs::remove_file(fallback_dir().join(account));
 }
@@ -76,23 +81,23 @@ fn feed(mut cmd: Command, input: &str) -> bool {
 mod store {
     use std::process::Command;
 
-    pub fn lookup(account: &str) -> Command {
-        let mut c = Command::new("secret-tool");
+    pub fn lookup(account: &str) -> Option<Command> {
+        let mut c = Command::new(crate::programs::Tool::SecretTool.find()?);
         c.args(["lookup", "service", "singularity", "account", account]);
-        c
+        Some(c)
     }
 
     /// The value goes over stdin, never on a command line.
     pub fn store(account: &str, value: &str) -> bool {
-        let mut c = Command::new("secret-tool");
+        let Some(mut c) = crate::programs::Tool::SecretTool.find().map(Command::new) else { return false };
         c.args(["store", "--label", &format!("Singularity: {account}"), "service", "singularity", "account", account]);
         super::feed(c, value)
     }
 
-    pub fn remove(account: &str) -> Command {
-        let mut c = Command::new("secret-tool");
+    pub fn remove(account: &str) -> Option<Command> {
+        let mut c = Command::new(crate::programs::Tool::SecretTool.find()?);
         c.args(["clear", "service", "singularity", "account", account]);
-        c
+        Some(c)
     }
 }
 
@@ -102,10 +107,10 @@ mod store {
 
     const SECURITY: &str = "/usr/bin/security";
 
-    pub fn lookup(account: &str) -> Command {
+    pub fn lookup(account: &str) -> Option<Command> {
         let mut c = Command::new(SECURITY);
         c.args(["find-generic-password", "-s", "singularity", "-a", account, "-w"]);
-        c
+        Some(c)
     }
 
     /// `security -i` reads the command from stdin, the value hex-encoded (`-X`): never on a command line, no quoting.
@@ -121,10 +126,10 @@ mod store {
         super::feed(c, &line)
     }
 
-    pub fn remove(account: &str) -> Command {
+    pub fn remove(account: &str) -> Option<Command> {
         let mut c = Command::new(SECURITY);
         c.args(["delete-generic-password", "-s", "singularity", "-a", account]);
-        c
+        Some(c)
     }
 }
 

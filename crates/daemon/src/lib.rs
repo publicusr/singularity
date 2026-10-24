@@ -16,6 +16,7 @@ pub mod pcm;
 #[cfg(target_os = "macos")]
 pub mod process_tap;
 pub mod playlists;
+pub mod programs;
 pub mod queries;
 pub mod secrets;
 pub mod soloist;

@@ -687,6 +687,9 @@ pub struct Health {
     /// when the installed Soloist build was published (`2026-10-16`)
     #[serde(default)]
     pub engine_build: Option<String>,
+    /// programs the Daemon needs on this OS but couldn't find at fixed system locations (`tar`, `pactl`…)
+    #[serde(default)]
+    pub missing_tools: Vec<String>,
 }
 
 /// What the AudioTap heard in the last ~33 ms. `bands`, `level` and `vu` are relative to the track's own recent

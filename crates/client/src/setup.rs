@@ -402,6 +402,9 @@ fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
             Some(o) => ('✓', "Audio output", o.clone()),
             None => ('·', "Audio output", "nothing playing right now".into()),
         });
+        if !h.missing_tools.is_empty() {
+            rows.push(('!', "Tools", format!("missing: {}", h.missing_tools.join(", "))));
+        }
     }
     rows.push(match &app.stream {
         Some(s) if s.lossless() => ('✓', "Stream", describe(s)),
@@ -536,6 +539,19 @@ mod tests {
         let stream = rows.iter().find(|r| r.1 == "Stream").unwrap();
         assert_eq!(stream.0, '✓', "320 kbps is as good as librespot gets: {stream:?}");
         assert_eq!(lossless_fix(&app), LIBRESPOT_LOSSLESS);
+    }
+
+    #[test]
+    fn the_health_check_names_a_missing_tool() {
+        let mut app = App::new(None);
+        app.link = Link::Connected { version: "t".into() };
+        app.health = Some(singularity_proto::Health { soloist_key: "keyring".into(), spotify_login: "keyring".into(), missing_tools: vec!["pactl".into(), "tar".into()], ..Default::default() });
+        let rows = health_rows(&app);
+        let tools = rows.iter().find(|r| r.1 == "Tools").expect("a Tools row");
+        assert_eq!((tools.0, tools.2.as_str()), ('!', "missing: pactl, tar"));
+        // nothing missing: no row at all
+        app.health = Some(singularity_proto::Health { soloist_key: "keyring".into(), spotify_login: "keyring".into(), ..Default::default() });
+        assert!(health_rows(&app).iter().all(|r| r.1 != "Tools"));
     }
 
     pub fn vorbis() -> StreamInfo {

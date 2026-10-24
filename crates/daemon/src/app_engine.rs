@@ -134,7 +134,8 @@ pub fn installed() -> Option<App> {
 
 /// Is the app running already?
 fn running() -> bool {
-    std::process::Command::new("pgrep").args(["-x", if cfg!(target_os = "macos") { "Spotify" } else { "spotify" }]).stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
+    let Some(pgrep) = crate::programs::Tool::Pgrep.find() else { return false };
+    std::process::Command::new(pgrep).args(["-x", if cfg!(target_os = "macos") { "Spotify" } else { "spotify" }]).stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
 /// Start the app without showing it.
@@ -157,7 +158,9 @@ fn start() -> std::io::Result<()> {
 /// Quit the app (SIGTERM: it shuts down as from its menu), wait up to 5 s for it to go, and start it again hidden.
 async fn restart() -> std::io::Result<()> {
     let name = if cfg!(target_os = "macos") { "Spotify" } else { "spotify" };
-    let _ = std::process::Command::new("pkill").args(["-TERM", "-x", name]).status();
+    if let Some(pkill) = crate::programs::Tool::Pkill.find() {
+        let _ = std::process::Command::new(pkill).args(["-TERM", "-x", name]).status();
+    }
     for _ in 0..50 {
         if !running() {
             break;

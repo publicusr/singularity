@@ -145,7 +145,8 @@ pub async fn download_with_cap(builds: &Builds, url: &str, cap: u64) -> anyhow::
         let (etag, last_modified) = (header(&resp, "etag"), header(&resp, "last-modified"));
         let tgz = dir.join("soloist.tar.gz");
         save_archive(resp, &tgz, cap).await?;
-        let ok = Proc::new("tar").arg("-xzf").arg(&tgz).arg("-C").arg(&dir).status().await?.success();
+        let tar = crate::programs::Tool::Tar.path()?;
+        let ok = Proc::new(tar).arg("-xzf").arg(&tgz).arg("-C").arg(&dir).status().await?.success();
         let _ = tokio::fs::remove_file(&tgz).await;
         anyhow::ensure!(ok, "couldn't unpack the build");
         let version = version_of(&dir.join("soloist")).await?;

@@ -443,10 +443,10 @@ pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
 async fn capture(hub: &crate::Hub, an: &mut Analyzer, of: StreamOf) -> anyhow::Result<()> {
     use std::sync::atomic::Ordering;
     use tokio::io::AsyncReadExt;
-    let out = tokio::process::Command::new("pactl").args(["-f", "json", "list", "sink-inputs"]).output().await?;
+    let out = tokio::process::Command::new(crate::programs::Tool::Pactl.path()?).args(["-f", "json", "list", "sink-inputs"]).output().await?;
     let idx = find_engine_stream(&serde_json::from_slice(&out.stdout)?, of).ok_or_else(|| anyhow::anyhow!("no Engine stream in PipeWire yet"))?;
     tracing::info!("audio tap on PipeWire stream #{idx}");
-    let mut child = tokio::process::Command::new("parec")
+    let mut child = tokio::process::Command::new(crate::programs::Tool::Parec.path()?)
         .args([&format!("--monitor-stream={idx}"), "--format=float32le", "--rate=44100", "--channels=2", "--raw", "--latency-msec=30", "--client-name=singularity-tap"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
