@@ -63,9 +63,11 @@ asked librespot not to pursue it), hence Soloist itself in a small Linux VM (D53
 | Notifications | D-Bus | `osascript` | 🔶 #68 |
 | Autostart | systemd user unit | LaunchAgent | ✅ #69 |
 | Process lookup | `/proc` | `proc_name`, libproc | ✅ |
-| Programs the Daemon runs (pgrep, pkill, tar, secret-tool, pactl, parec; #77) | fixed locations (`/usr/bin`, `/bin`, `/usr/local/bin`), never `PATH` | the same, plus `/opt/homebrew/bin` last | ✅; only `pgrep`, `pkill`, `tar` are needed there |
+| Programs the Daemon runs (pgrep, pkill, tar, secret-tool, pactl, parec; #77, audit S3) | fixed locations (`/usr/bin`, `/bin`, `/usr/local/bin`; Spotify also `/snap/bin`), never `PATH` | the same, plus `/opt/homebrew/bin` last; `scutil` in `/usr/sbin` | ✅; only `pgrep`, `pkill`, `tar` are needed there |
+| The Spotify app's launcher | `spotify --minimized` from `/usr/bin`, `/bin`, `/usr/local/bin` or `/snap/bin` | `open -gj -a Spotify` from `/usr/bin` | ✅; the health view's **Tools** row names it only with `kind = "spotify-app"` |
 | Audio output name (health) | `pactl` (the Engine's stream → its sink) | cpal's default output device | ✅ |
-| Opening a URL | `xdg-open` | `open` | ✅ |
+| Opening a URL | `xdg-open` from `/usr/bin`, `/bin` or `/usr/local/bin` | `open` | ✅ |
+| The Client starting the Daemon | `singularityd` next to the Client (never `PATH`) | the same | ✅ |
 | Socket dir | `$XDG_RUNTIME_DIR/singularity/` | `$TMPDIR/singularity-<uid>/singularity/` (per-user `$TMPDIR`; the uid part reads "user" without `/proc`, harmless) | ✅ |
 
 ## Not yet run on Linux

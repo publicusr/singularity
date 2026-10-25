@@ -57,6 +57,12 @@ Suggested fix: create the state directory 0700 (and `data`/`cache` below it), op
 characters before writing log lines (the parser already has `strip_ansi`, broaden it to remove `\x00..\x1f\x7f`).
 Effort: **S**.
 
+Fixed (T0028): `soloist.rs` creates `soloist-state/` and its `data`/`cache` 0700 and opens `soloist.log` with
+`mode(0600)` plus `set_permissions` (and tightens the renamed `.log.1`); `strip_ansi` now drops every control
+character and whole CSI/OSC sequences, and the log writer uses it. Tests:
+`crates/daemon/src/soloist.rs::tests::the_state_directory_and_logs_are_owner_only` and
+`::log_lines_carry_no_control_characters`.
+
 ### S2 — security — `ExportLocalData` follows a symlink planted in the Downloads folder
 
 `crates/daemon/src/store.rs:279-309` (`export`, `write_private`).
@@ -76,6 +82,10 @@ the victim file replaced with the export JSON (the test fails when un-ignored).
 Suggested fix: write a random temp file in the destination with `create_new(true)` plus `O_NOFOLLOW` (or use
 `tempfile::NamedTempFile::new_in`), and reject/replace a symlink with `symlink_metadata` before the rename. Effort:
 **S**.
+
+Fixed (T0028): `store::write_private` writes a random `.<name>.<pid>.<nanos>.tmp` with `create_new` (which refuses a
+planted link) next to the destination, tightens it to 0600 and renames it over the final name (a link there is
+replaced, not followed). Proof un-ignored: `store::tests::export_does_not_follow_a_planted_temp_symlink`.
 
 ### S10 — security — children inherit the secret-bearing environment
 
@@ -101,6 +111,12 @@ Suggested fix: `.env_remove("SOLOIST_API_KEY")` on every child that does not nee
 and the client’s opener), or build children with `.env_clear()` plus the few variables they need; for Soloist, pass the
 key only via argv (already) and remove it from the child env too. Effort: **S**.
 
+Fixed (T0028): `programs::command`/`programs::tokio_command` remove `SOLOIST_API_KEY`, and every child goes through
+them: the app and `open`, `pgrep`/`pkill`, Soloist itself (still `--api-key`), `tar`/`shasum`/`ssh`/`vfkit`/`gvproxy`/
+`hdiutil`/`ssh-keygen`, `python3`/`dns-sd`/`ipconfig`, `secret-tool`/`security`, `pactl`/`parec`, `osascript`; the
+Client's opener and its `singularityd` start too. Test: `programs::tests::a_child_does_not_inherit_the_secret`.
+(`tap.rs` and `nowplaying.rs` needed a one-line call change; neither belongs to a phase-2 worker.)
+
 ### S3 — security (hardening) — several children still come from `PATH`
 
 `crates/daemon/src/app_engine.rs:131,145,155,180`; `crates/client/src/main.rs:178-179`;
@@ -124,6 +140,15 @@ Suggested fix: extend `programs::Tool` with `Open`, `Spotify` (Linux: a short al
 `/usr/local/bin`, and perhaps the user’s known install dirs — but not arbitrary PATH), `Defaults`, `Scutil`,
 `Hostname`, `XdgOpen`; use absolute paths for the client opener; if the client cannot find `singularityd` next to
 itself, report it instead of falling back to PATH. Effort: **M**.
+
+Fixed (T0028): `programs::Tool` has `Open`, `Spotify`, `Defaults`, `Scutil`, `Hostname`, `XdgOpen`; Spotify is looked
+up in `/usr/bin`, `/bin`, `/usr/local/bin` and (snap) `/snap/bin`, `scutil` in `/usr/sbin`, `hostname` in the fixed
+dirs; the Client's opener is `/usr/bin/open` or `xdg-open` from the fixed dirs. `start_daemon` no longer falls back to
+`PATH`: both binaries are installed side by side (`cargo install`, `target/debug`), and otherwise the UI says
+`can't find singularityd next to …: install or build both together`. The health **Tools** row names `spotify`/`open`
+only when the app is the Engine (`health::required_tools`). Tests: `programs::tests::the_new_programs_have_fixed_locations`,
+`health::tests::missing_tools_are_named`; checked in the pty (`tools/pty/app_wizard_test.py`, where the health view
+shows `! Tools  missing: spotify` on a machine without the app).
 
 ### S4 — security (hardening) — the Soloist build archive is trusted after extraction
 
@@ -151,6 +176,16 @@ Suggested fix: extract with a Rust `tar` reader (or verify the tree afterwards) 
 `..`/absolute members, non-regular entries and files owned by anyone but the user; cap the **unpacked** byte count and
 entry count; require `soloist` to be a regular executable file and `build.json` not to exist (or be a regular file)
 before writing; do the same with `curl --max-filesize`/a checked `tar` in the guest script. Effort: **M**.
+
+Fixed (T0028): `update::unpack` (the `tar` + `flate2` crates, not a child `tar`) accepts only regular files and
+directories, refuses absolute/`..` paths, writes each member with `create_new` and the archive's mode masked to 0755,
+caps members at 64 and unpacked bytes at 512 MB, and requires a regular, executable, own `soloist`; `build.json` is
+written as a new regular file (a link there is removed, never followed) and `version_of` runs only a regular file of
+ours. The guest script caps `curl` (`--max-filesize`, `--max-time`) and checks the unpacked tree. Proof un-ignored:
+`crates/daemon/tests/update.rs::an_archive_cannot_write_outside_its_directory_through_a_symlink`; unit tests
+`update::tests::{an_archive_with_links_or_escape_paths_is_refused, an_archive_that_unpacks_to_too_much_is_refused,
+build_json_is_never_written_through_a_link}` and the guest-script assertions in
+`vm::tests::the_setup_names_the_ports_the_daemon_uses`.
 
 ### S5 — security (low) / correctness — the socket directory check only looks at the last component
 
@@ -211,6 +246,11 @@ Evidence: **confirmed by code path**.
 Suggested fix: reuse `save_archive`-style counting for `vm::download`, add a `reqwest` timeout, cap `get` bodies
 (web-player chunks are small) and the guest `curl`/`tar`; delete partial files on failure. Effort: **S**.
 
+Fixed (T0028): `vm::download` streams under a per-file cap (128 MB helpers, 1 GB Debian image) with a 600 s / 15 s
+`reqwest` timeout and removes the partial file on failure, `vm::fetch_text` caps `SHA512SUMS`, the web-player files
+are capped at 16 MB each with a 120 s whole-refresh budget, and the guest script caps its `curl`. Tests:
+`vm::tests::a_download_over_its_cap_leaves_no_file` and the guest-script assertions above.
+
 ### S8 — resources — both Hub description maps are unbounded
 
 `crates/daemon/src/lib.rs:381-395,405-417`; `crates/daemon/src/catalogue.rs:1448-1478`.
@@ -243,6 +283,10 @@ open).
 
 Suggested fix: `set_permissions(path, 0600)` after opening (or `fchmod` the handle) in both helpers, as
 `Store::open` already does. Effort: **S**.
+
+Fixed (T0028): both helpers `fchmod` the open handle to 0600 (`secrets::write_private`) or `fchmod` the temp file
+before the rename (`store::write_private`). Tests: `secrets::tests::an_existing_loose_file_is_tightened`,
+`store::tests::the_store_sums_up_exports_and_deletes_with_private_files`.
 
 ## Checked, fine
 

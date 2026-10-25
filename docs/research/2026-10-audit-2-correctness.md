@@ -111,6 +111,10 @@ wants saturation (a stamp saturates at `u64::MAX`), which also keeps the `sort_b
 Fix: `m.saturating_mul(60_000).saturating_add(...)`, with the seconds part clamped/saturated too (and skip
 non-finite seconds). Effort S.
 
+Fixed (T0028): `parse_lrc` saturates (`saturating_mul`/`saturating_add`) and skips a stamp whose seconds are not a
+finite, non-negative number. Proof un-ignored: `a_hostile_lrc_timestamp_does_not_overflow` (its ordering assertions
+assumed a descending sort; the test now checks the saturated stamp stays last in the ascending order).
+
 ### 4. (C4) Search handling can deadlock the whole Catalogue — **correctness**, suspected, effort S
 
 `crates/daemon/src/catalogue.rs:262-281`.
@@ -163,6 +167,11 @@ engine identity is `Identity::default()` on Linux, consistent with the ignored v
 Fix: `SoloistEngine { device_name: choice.device.trim() or default, ..from_env() }` on Linux, and pass the
 same name into the identity (`crates/daemon/src/main.rs:86-92`). Effort S.
 
+Fixed (T0028): `SoloistEngine::named` turns `[engine] device` into the name (empty: "Singularity"), and the
+Daemon's `main.rs` passes it to the Linux SoloistEngine and to the Catalogue identity (a small change in that file,
+which belongs to another worker). Test: `soloist::tests::the_configured_device_names_soloist`; seeing the name in a
+phone's device picker needs the owner's phone.
+
 ### 7. (C9) The D63 queue-answer rule can swallow a real playback state — **correctness**, suspected, effort S
 
 `crates/daemon/src/soloist.rs:877-903`.
@@ -180,6 +189,10 @@ playing until something else happens. Verified by reading `apply`; not reproduce
 Fix: mark the request with a nonce/timestamp and only treat an answer that arrives *after* it as the queue
 answer, or at least apply everything except `item`/`status` from that event (keep only the queue's track
 protection). Effort S.
+
+Fixed (T0028): the queue-answer window only takes a `playback_state` that actually carries the queue (`upcoming`);
+any other state inside the window — a phone's pause reaching us first — is applied normally. Test:
+`crates/daemon/tests/soloist_contract.rs::a_state_without_the_queue_is_applied_normally_inside_the_window`.
 
 ### 8. (C7) Dragging a queue row while the queue changes: underflow (debug panic) — **crash (debug) / correctness**, suspected, effort S
 
@@ -222,6 +235,10 @@ later, logs nothing today.
 Fix: in `observe`, when the same URI arrives with a position that went backwards (by more than a couple of
 seconds) and a timestamp later than the last one, finish the current play and start a new one. Effort S.
 
+Fixed (T0028): `Recorder::observe` remembers the last position anchor (position, timestamp, speed) and, when the same
+track arrives with a later timestamp and a position well behind where it should be (more than 5 s), finishes that play
+and starts a new one. Proof un-ignored: `a_repeated_track_is_logged_as_a_second_play`.
+
 ### 10. (C8) A query-registry refresh blocks all browsing for minutes — **correctness (availability)**, suspected, effort S. Size cap: see T0024 S7
 
 `crates/daemon/src/queries.rs:78-113`.
@@ -236,6 +253,11 @@ each Client's session task blocks sending. The size cap on those downloads is T0
 
 Fix: do the crawl off the command task (a separate task with its own timeout budget) and keep serving from
 the old hashes until it finishes, or cap the whole refresh (e.g. 60 s) and fail the one query. Effort M.
+
+Fixed (T0028): a stale cache is now refreshed by a task of its own (`QueryRegistry::start_refresh`), so browsing keeps
+using the hashes it has; only a hash the cache never had (and the 412 retry, bounded by `REFRESH_BUDGET` = 120 s)
+waits. Progress goes to the log (start, per-batch `debug`, the final count). Body sizes are capped (S7). Test:
+`queries::tests::a_stale_cache_does_not_block_a_hash_it_has`.
 
 ### 11. (C11) Commands can be dropped with a misleading "Not connected" message — **polish / correctness**, suspected, effort S
 
