@@ -693,6 +693,10 @@ pub struct Health {
     /// programs the Daemon needs on this OS but couldn't find at fixed system locations (`tar`, `pactl`…)
     #[serde(default)]
     pub missing_tools: Vec<String>,
+    /// background tasks that stopped and haven't been back for a while: MPRIS, the audio tap, the listening log…
+    /// (A1; the Daemon starts them again, and a name disappears once one has run for a while)
+    #[serde(default)]
+    pub stopped_tasks: Vec<String>,
 }
 
 /// What the AudioTap heard in the last ~33 ms. `bands`, `level` and `vu` are relative to the track's own recent

@@ -396,29 +396,63 @@ impl Notifier {
 }
 
 /// The cover as a local file (notification servers don't fetch URLs): `~/.cache/singularity/notify-cover.jpg`.
+/// Only `https://`, and only a picture the Client's own cover path would accept (B9/S6): the notification server
+/// decodes this file, so a hostile answer must not hand it an `http://127.0.0.1` request or a huge image.
 async fn cached_cover(url: &str) -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+    match cover_file(url).await {
+        Ok(path) => Some(path),
+        Err(e) => {
+            // Q11: a missing notification cover is fine, but the log should say why it's missing
+            tracing::debug!("notification cover: {e}");
+            None
+        }
+    }
+}
+
+/// A cover URL the notification path will fetch: `https://` only (B9/S6).
+fn fetchable_cover(url: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(url.starts_with("https://"), "not fetching {url:?}: a cover must be https");
+    Ok(())
+}
+
+async fn cover_file(url: &str) -> anyhow::Result<std::path::PathBuf> {
+    fetchable_cover(url)?;
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else { anyhow::bail!("no HOME for the cache") };
     let dir = std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".cache")).join("singularity");
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build().ok()?;
-    let mut resp = client.get(url).send().await.ok()?.error_for_status().ok()?;
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build()?;
+    let mut resp = client.get(url).send().await?.error_for_status()?;
     // (#71) a cover is tens of KB: nothing past 8 MB is read, whether or not the server says its length
     const MAX: usize = 8 << 20;
-    if resp.content_length().is_some_and(|n| n > MAX as u64) {
-        return None;
-    }
+    anyhow::ensure!(!resp.content_length().is_some_and(|n| n > MAX as u64), "the cover claims to be over {MAX} bytes");
     let mut bytes = Vec::new();
-    while let Some(c) = resp.chunk().await.ok()? {
-        if bytes.len() + c.len() > MAX {
-            return None;
-        }
+    while let Some(c) = resp.chunk().await? {
+        anyhow::ensure!(bytes.len() + c.len() <= MAX, "the cover is over {MAX} bytes");
         bytes.extend_from_slice(&c);
     }
-    tokio::fs::create_dir_all(&dir).await.ok()?;
+    // decode limits, like the Client's covers: refused before anything is decoded when the header says it's huge
+    let check = bytes.clone();
+    anyhow::ensure!(tokio::task::spawn_blocking(move || cover_fits(&check)).await?, "the cover doesn't decode within the limits");
+    tokio::fs::create_dir_all(&dir).await?;
     // written aside, then moved, so the notification server never reads half a file
     let (tmp, path) = (dir.join("notify-cover.jpg.part"), dir.join("notify-cover.jpg"));
-    tokio::fs::write(&tmp, &bytes).await.ok()?;
-    tokio::fs::rename(&tmp, &path).await.ok()?;
-    Some(path)
+    tokio::fs::write(&tmp, &bytes).await?;
+    tokio::fs::rename(&tmp, &path).await?;
+    Ok(path)
+}
+
+/// The most a decoded cover may be: the same limits as the Client's covers (`client/src/covers.rs`), applied to the
+/// header so a picture claiming 12000×12000 is refused before anything is allocated for it.
+const MAX_COVER_SIDE: u32 = 4096;
+const MAX_COVER_ALLOC: u64 = 256 << 20;
+
+fn cover_fits(bytes: &[u8]) -> bool {
+    let Ok(mut reader) = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format() else { return false };
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_COVER_SIDE);
+    limits.max_image_height = Some(MAX_COVER_SIDE);
+    limits.max_alloc = Some(MAX_COVER_ALLOC);
+    reader.limits(limits);
+    reader.into_dimensions().is_ok()
 }
 
 #[cfg(test)]
@@ -463,6 +497,41 @@ mod tests {
         assert_eq!(<Vec<String>>::try_from(m["xesam:artist"].clone()).unwrap(), vec!["A", "B"]);
         assert_eq!(i64::try_from(m["mpris:length"].clone()).unwrap(), 200_000_000);
         assert_eq!(metadata(&PlaybackState::default()).len(), 1, "only the NoTrack id when nothing plays");
+    }
+
+    #[test]
+    fn only_https_covers_are_fetched() {
+        assert!(fetchable_cover("http://127.0.0.1:8080/x.jpg").is_err(), "a local HTTP GET must not follow a hostile cover URL");
+        assert!(fetchable_cover("file:///etc/passwd").is_err());
+        assert!(fetchable_cover("https://i.scdn.co/image/x").is_ok());
+    }
+
+    #[test]
+    fn a_cover_outside_the_decode_limits_is_refused() {
+        // (#71's PNG trick) a header claiming 12000×12000: refused before the pixels are read
+        fn crc(data: &[u8]) -> u32 {
+            let mut c = !0u32;
+            for &b in data {
+                c ^= b as u32;
+                for _ in 0..8 {
+                    c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+                }
+            }
+            !c
+        }
+        let mut ihdr = b"IHDR".to_vec();
+        ihdr.extend(12_000u32.to_be_bytes());
+        ihdr.extend(12_000u32.to_be_bytes());
+        ihdr.extend([8, 2, 0, 0, 0]);
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend(13u32.to_be_bytes());
+        png.extend(&ihdr);
+        png.extend(crc(&ihdr).to_be_bytes());
+        assert!(!cover_fits(&png));
+        // an ordinary cover fits
+        let mut ok = vec![];
+        image::RgbImage::new(64, 64).write_to(&mut std::io::Cursor::new(&mut ok), image::ImageFormat::Png).unwrap();
+        assert!(cover_fits(&ok));
     }
 
     #[test]

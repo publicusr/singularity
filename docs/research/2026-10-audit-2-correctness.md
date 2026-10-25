@@ -49,6 +49,14 @@ or on another program's behaviour.
 
 ### 1. (C2) A dead Engine or Catalogue task is silent: playback control stays dead, Clients are never told — **correctness**, confirmed, effort M
 
+**Fixed (T0027, A1):** a dead Engine reports `Engine(Failed)` and an `Event::Error`, is named in the health view
+(`Health.stopped_tasks`) and is built again with a backoff (`Engine::respawn`); a command sent meanwhile gets an
+error answer. The Catalogue task runs under a catch-unwind supervisor (same backoff, its command channel survives),
+and the other spawned tasks (listening log, backups, tap, MPRIS, Now Playing, config follower, Soloist update
+checker) are supervised the same way. Proof un-ignored:
+`an_engine_that_dies_is_reported_and_playback_commands_do_not_vanish`; unit test
+`a_background_task_that_panics_is_restarted_and_named`. `transport`/`on_engine_event` no longer drop failed sends.
+
 `crates/daemon/src/lib.rs:227-250` (`run_engine`), `:717` (`transport`), `catalogue.rs:167`.
 
 `run_engine` owns the only receiver of `hub.commands`. Its `select!` breaks as soon as the Engine's event
@@ -73,6 +81,12 @@ patterns or refuse commands loudly (`transport` must not ignore a failed send). 
 Catalogue has no restart path today; a "report it" fix alone is S.
 
 ### 2. (C1) A track description that never comes back wedges those URIs: blank queue rows forever — **correctness**, confirmed, effort S; see also T0024 S8
+
+**Fixed (T0027, A8; also the memory half, T0024 S8):** `describe` answers every URI of a batch (no `take(20)`),
+sends `CatEvent::DescribeFailed` for the ones it couldn't look up, and remembers a failure for five minutes so the
+same track isn't asked about on every playback update. The Hub clears `describing` on that event and both maps are
+bounded (`MAX_DESCRIBED`). Proof un-ignored: `a_description_that_never_arrives_is_asked_for_again`; unit test
+`a_describe_batch_covers_every_uri` (51 URIs, cached, recently failed, retried later).
 
 `crates/daemon/src/lib.rs:381-395` (`fill_queue`), `catalogue.rs:1448-1472` (`State::describe`).
 
@@ -116,6 +130,10 @@ finite, non-negative number. Proof un-ignored: `a_hostile_lrc_timestamp_does_not
 assumed a descending sort; the test now checks the saturated stamp stays last in the ascending order).
 
 ### 4. (C4) Search handling can deadlock the whole Catalogue — **correctness**, suspected, effort S
+
+**Fixed (T0027, A2):** the commands drained behind a search go into a local queue that runs them next, in their
+original order, instead of being re-sent into the channel this task alone reads. Unit test:
+`a_search_drains_the_commands_behind_it_in_order`.
 
 `crates/daemon/src/catalogue.rs:262-281`.
 
@@ -285,6 +303,11 @@ message that matches ("singularityd is busy — try again"), or coalesce volume 
 
 ### 12. (C12) The initial snapshot can miss a change made while it is being sent — **correctness (narrow)**, confirmed by reading, effort S
 
+**Fixed (T0027, B6):** the subscription is made before the snapshot is built, and a playback event older than the
+snapshot's anchor isn't forwarded (it's already in the snapshot). Unit test:
+`playback_older_than_the_snapshot_is_superseded`. The change in the window can't be triggered deterministically from
+the protocol (it's microseconds between reading the Hub and subscribing); the unit test pins the ordering rule.
+
 `crates/daemon/src/lib.rs:554-570`: the snapshot is read from the Hub's mutexes and sent, and only *then*
 `hub.events.subscribe()`. A Playback/Engine/Catalogue event in that window is in neither the snapshot nor the
 subscription; with a paused/idle Daemon no later event corrects it, so the Client shows the old track/status
@@ -296,6 +319,9 @@ Fix: subscribe before building the snapshot, and skip the events the snapshot al
 
 ### 13. (C15) `library_level` has no page cap — **correctness (low)**, suspected, effort S
 
+**Fixed (T0027, B10):** the walk stops at the same item cap as the track lists (`library_page_continues`). Unit
+test: `the_library_walk_has_a_page_cap`.
+
 `crates/daemon/src/catalogue.rs:932-948`: `loop { … offset += LIBRARY_PAGE; if n == 0 || offset >= page.total { return } }`.
 Unlike the track lists (`MAX_TRACKS`) and the backup (`MAX_TRACKS`), the library walk has no cap: a broken
 `totalCount` near `u32::MAX` with non-empty pages means up to ~85 M sequential requests (and an unbounded
@@ -304,6 +330,11 @@ also flagged `fetch_pages`; that one is already bounded by `until` = `MAX_TRACKS
 finding there.) Fix: cap the pages as `fetch_pages` does. Effort S.
 
 ### 14. (C13) Every background task but the Engine's is unsupervised, and they die quietly — **polish / correctness (feature silently gone)**, confirmed by reading, effort M
+
+**Fixed (T0027, A1):** `lib::supervise` runs each one, names a stop in the log, in `Event::Error` and in
+`Health.stopped_tasks` (a row goes after the task has run 60 s again), and starts it again with a growing backoff;
+the Soloist update checker gets the same inside `soloist.rs` (`EngineEvent::TaskStopped`/`TaskStarted`). Unit test:
+`a_background_task_that_panics_is_restarted_and_named`.
 
 `crates/daemon/src/lib.rs:185-201` (the `tokio::spawn`s whose `JoinHandle`s are dropped), `main.rs:166`,
 `soloist.rs:286,339`, `mpris.rs:28-32`.

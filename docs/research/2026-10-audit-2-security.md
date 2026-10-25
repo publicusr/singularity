@@ -189,6 +189,12 @@ build_json_is_never_written_through_a_link}` and the guest-script assertions in
 
 ### S5 — security (low) / correctness — the socket directory check only looks at the last component
 
+**Fixed (T0027, A10):** every existing component of the way to the socket must be a real directory, checked before
+anything is created (creating directories follows a symlink); a missing directory is made 0700 with `DirBuilder`
+(no umask window), and an existing one is never chmod'ed. Proof un-ignored:
+`the_socket_never_goes_through_an_intermediate_symlink`; new tests `a_socket_directory_that_already_exists_keeps_its_mode`,
+`a_new_socket_directory_is_owner_only_from_the_start`.
+
 `crates/daemon/src/lib.rs:92-113`.
 
 `bind` calls `create_dir_all(dir)`, checks `symlink_metadata(dir)` (final component), then `set_permissions(dir,
@@ -214,6 +220,10 @@ creation) and verify every component with `symlink_metadata` (no symlinks, owned
 under the runtime dir. Effort: **S/M**.
 
 ### S6 — security (low) — the MPRIS notification cover fetch accepts any URL
+
+**Fixed (T0027, B9):** `https://` only, the 8 MB body cap kept, and the picture must decode within the Client's own
+limits (4096 px side, 256 MB) — checked from the header before anything is allocated. Tests:
+`only_https_covers_are_fetched`, `a_cover_outside_the_decode_limits_is_refused`.
 
 `crates/daemon/src/mpris.rs:399-410`.
 
@@ -252,6 +262,10 @@ are capped at 16 MB each with a 120 s whole-refresh budget, and the guest script
 `vm::tests::a_download_over_its_cap_leaves_no_file` and the guest-script assertions above.
 
 ### S8 — resources — both Hub description maps are unbounded
+
+**Fixed (T0027, A8):** `Hub::described` is trimmed with the Catalogue's `MAX_DESCRIBED`, `Hub::describing` is capped,
+and failed lookups are cleared from `describing` by `CatEvent::DescribeFailed` (with the five-minute retry window).
+See the C1 test and `a_describe_batch_covers_every_uri`.
 
 `crates/daemon/src/lib.rs:381-395,405-417`; `crates/daemon/src/catalogue.rs:1448-1478`.
 

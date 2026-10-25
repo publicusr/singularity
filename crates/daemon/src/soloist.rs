@@ -15,7 +15,7 @@
 
 use crate::engine::{Engine, EngineEvent, Resume};
 use crate::update::{self, Builds, Checked};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde_json::{Value, json};
 use singularity_proto::{Command, EngineStatus, Item, PlayStatus, PlaybackState, QueueEntry, RepeatMode};
 use std::path::PathBuf;
@@ -27,6 +27,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 pub const DEVICE_NAME: &str = "Singularity";
 
+#[derive(Clone)]
 pub struct SoloistEngine {
     pub data_dir: PathBuf,
     /// its name on Connect
@@ -255,12 +256,41 @@ fn strip_ansi(s: &str) -> String {
 }
 
 impl Engine for SoloistEngine {
+    fn respawn(&self) -> Option<Box<dyn Engine>> {
+        Some(Box::new(self.clone()))
+    }
+
     fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>) {
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let (ev_tx, ev_rx) = mpsc::channel(256);
         tokio::spawn(supervise(*self, cmd_rx, ev_tx));
         (cmd_tx, ev_rx)
     }
+}
+
+/// Run an update checker and keep it running: it loops forever, so only a panic ends it. The health view names it
+/// while it's down (A1: it used to be a bare `tokio::spawn`, so a panic silently meant no Soloist updates again).
+fn keep_checking<F, Fut>(name: &'static str, ev: mpsc::Sender<EngineEvent>, mut start: F) -> tokio::task::JoinHandle<()>
+where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send,
+{
+    tokio::spawn(async move {
+        loop {
+            // the health row goes once the checker has run for a while (one that keeps dying keeps its row)
+            let back = tokio::spawn({
+                let ev = ev.clone();
+                async move {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    let _ = ev.send(EngineEvent::TaskStarted(name)).await;
+                }
+            });
+            let failed = std::panic::AssertUnwindSafe(start()).catch_unwind().await.is_err();
+            back.abort();
+            let _ = ev.send(EngineEvent::TaskStopped(name, if failed { "it panicked" } else { "it stopped" }.into())).await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+    })
 }
 
 async fn status(tx: &mpsc::Sender<EngineEvent>, s: EngineStatus) {
@@ -311,7 +341,8 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
                 continue;
             }
             if updater.is_none() {
-                updater = Some(tokio::spawn(keep_current_in_vm(v.clone(), upd.days.subscribe(), upd.staged.clone())));
+                let (days, staged, ev, vm) = (upd.days.clone(), upd.staged.clone(), ev_tx.clone(), v.clone());
+                updater = Some(keep_checking("the Soloist update checker", ev, move || keep_current_in_vm(vm.clone(), days.subscribe(), staged.clone())));
             }
             let started = std::time::Instant::now();
             let exit = run_once(&engine, &key, &mut cmd_rx, &ev_tx, &mut upd).await;
@@ -364,7 +395,9 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
         }
         // there's a build: from now on keep it current
         if updater.is_none() {
-            updater = Some(tokio::spawn(keep_current(builds.clone(), url.clone(), upd.days.subscribe(), upd.staged.clone())));
+            let (days, staged, ev) = (upd.days.clone(), upd.staged.clone(), ev_tx.clone());
+            let (b, u) = (builds.clone(), url.clone());
+            updater = Some(keep_checking("the Soloist update checker", ev, move || keep_current(b.clone(), u.clone(), days.subscribe(), staged.clone())));
         }
         let started = std::time::Instant::now();
         match run_once(&engine, &key, &mut cmd_rx, &ev_tx, &mut upd).await {

@@ -82,6 +82,10 @@ impl Engine for LibrespotEngine {
         singularity_proto::EngineKind::Librespot
     }
 
+    fn respawn(&self) -> Option<Box<dyn Engine>> {
+        Some(Box::new(LibrespotEngine { identity: self.identity.clone(), catalogue: self.catalogue.clone(), dirs: self.dirs.clone(), feed: self.feed.clone() }))
+    }
+
     fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>) {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>(16);
         let (ev_tx, ev_rx) = mpsc::channel(16);

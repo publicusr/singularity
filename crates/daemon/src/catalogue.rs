@@ -6,7 +6,7 @@
 //! Rules: metadata only, no crawling, back off on errors, never retry in a loop.
 
 use crate::queries::QueryRegistry;
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use librespot_core::{authentication::Credentials, cache::Cache, config::SessionConfig, error::ErrorKind, session::Session};
 use librespot_oauth::DeviceAuthClientBuilder;
 use serde_json::{Value, json};
@@ -14,7 +14,7 @@ use crate::connect::{ConnectRemote, QueueEdit};
 use crate::engine::Identity;
 use crate::library;
 use singularity_proto::{Card, CatalogueStatus, Command, EngineStatus, HomeFeed, Library, Shelf, TrackPage};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
@@ -112,6 +112,13 @@ pub enum CatEvent {
     EpisodeShow { episode: String, show: singularity_proto::Link },
     /// what the Engine does, when it's the Spotify app (D51): read from the Connect cluster
     Engine(crate::engine::EngineEvent),
+    /// these URIs couldn't be looked up: the Daemon clears its "being asked" marks so they're asked for again later
+    /// (A8: a failed lookup used to wedge them for the Daemon's life)
+    DescribeFailed(Vec<String>),
+    /// a background task inside the Catalogue stopped, or has been running again for a while (the health view
+    /// names it in between, A1)
+    TaskStopped(&'static str, String),
+    TaskStarted(&'static str),
     Error(String),
 }
 
@@ -122,7 +129,7 @@ const SEARCH_TTL: Duration = Duration::from_secs(300);
 /// big ones (a long playlist is a few MB); names and lyrics are small.
 const MAX_LISTS: usize = 40;
 const MAX_PAGES: usize = 60;
-const MAX_DESCRIBED: usize = 2000;
+pub const MAX_DESCRIBED: usize = 2000;
 const MAX_LYRICS: usize = 300;
 
 /// Make room for one more entry in a timed cache: what has expired goes, then the oldest, down to `max - 1`.
@@ -130,6 +137,39 @@ pub fn trim_timed<V>(map: &mut HashMap<String, (Instant, V)>, ttl: Duration, max
     map.retain(|_, (at, _)| at.elapsed() < ttl);
     while map.len() >= max {
         let Some(oldest) = map.iter().min_by_key(|(_, (at, _))| *at).map(|(k, _)| k.clone()) else { break };
+        map.remove(&oldest);
+    }
+}
+
+/// What a `Describe` batch does, decided before any request (A8): names already known are answered at once, URIs
+/// that failed a moment ago are reported failed again (so the Daemon clears its "being asked" mark and can ask later),
+/// and every other URI is looked up — all of them, however big the batch (it used to stop at 20, silently).
+fn describe_plan(uris: Vec<String>, described: &HashMap<String, singularity_proto::Item>, failed: &HashMap<String, Instant>) -> (Vec<singularity_proto::Item>, Vec<String>, Vec<String>) {
+    let (mut known, mut ask, mut bad) = (vec![], vec![], vec![]);
+    for uri in uris {
+        if let Some(item) = described.get(&uri) {
+            known.push(item.clone());
+        } else if failed.get(&uri).is_some_and(|at| at.elapsed() < DESCRIBE_RETRY) {
+            bad.push(uri);
+        } else {
+            ask.push(uri);
+        }
+    }
+    (known, ask, bad)
+}
+
+/// Whether the library walk asks for another page (B10/C15). `totalCount` comes from Spotify, so it isn't trusted:
+/// a broken one near `u32::MAX` with non-empty pages used to mean millions of sequential requests.
+fn library_page_continues(page_len: usize, offset: u32, total: u32, have: usize) -> bool {
+    page_len > 0 && offset < total && have < MAX_TRACKS as usize
+}
+
+/// Make room for one more entry in a cache of timestamps (a negative cache): what's older than `ttl` goes, then the
+/// oldest.
+pub fn trim_ages(map: &mut HashMap<String, Instant>, ttl: Duration, max: usize) {
+    map.retain(|_, at| at.elapsed() < ttl);
+    while map.len() >= max {
+        let Some(oldest) = map.iter().min_by_key(|(_, at)| **at).map(|(k, _)| k.clone()) else { break };
         map.remove(&oldest);
     }
 }
@@ -146,6 +186,11 @@ pub fn trim_any<V>(map: &mut HashMap<String, V>, max: usize) {
 /// Longest track list fetched (Liked Songs can be huge; pages are sequential and never retried in a loop).
 const MAX_TRACKS: u32 = 10_000;
 
+/// A track Spotify couldn't describe isn't asked about again for this long: a queue full of them must not mean a
+/// lookup on every playback update, and the track gets another chance later (A8's retry limit).
+const DESCRIBE_RETRY: Duration = Duration::from_secs(300);
+
+#[derive(Clone)]
 pub struct Dirs {
     pub credentials: PathBuf,
     pub queries: PathBuf,
@@ -164,8 +209,54 @@ impl Dirs {
 pub fn spawn(dirs: Dirs, engine: Identity) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
     let (cmd_tx, cmd_rx) = mpsc::channel(16);
     let (ev_tx, ev_rx) = mpsc::channel(64);
-    tokio::spawn(run(dirs, engine, cmd_rx, ev_tx, cmd_tx.clone()));
+    tokio::spawn(supervise(dirs, engine, cmd_rx, ev_tx, cmd_tx.clone()));
     (cmd_tx, ev_rx)
+}
+
+/// Run the Catalogue, and keep it running: a panic would otherwise leave a Daemon that browses nothing, says
+/// "logged in" and never answers again (A1/C2). The command channel survives a restart, so Clients keep working.
+async fn supervise(dirs: Dirs, engine: Identity, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
+    let mut backoff = Duration::from_secs(2);
+    loop {
+        let began = Instant::now();
+        // the health row goes once the Catalogue has run for a while (one that keeps dying keeps its row)
+        let back = tokio::spawn({
+            let ev = ev.clone();
+            async move {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                let _ = ev.send(CatEvent::TaskStarted("the Catalogue")).await;
+            }
+        });
+        let done = std::panic::AssertUnwindSafe(run(dirs.clone(), engine.clone(), &mut cmds, ev.clone(), self_tx.clone())).catch_unwind().await;
+        back.abort();
+        match done {
+            // the Daemon dropped its end: we're shutting down
+            Ok(()) => return,
+            Err(_) => {
+                if began.elapsed() >= Duration::from_secs(60) {
+                    backoff = Duration::from_secs(2);
+                }
+                let _ = ev.send(CatEvent::Status(CatalogueStatus::Unavailable { message: "the Catalogue stopped; it's starting again".into() })).await;
+                let _ = ev.send(CatEvent::TaskStopped("the Catalogue", "it panicked".into())).await;
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(300));
+            }
+        }
+    }
+}
+
+/// The commands that arrived behind a search: the newest search replaces this one, everything else waits its turn.
+/// (A2/C4: they used to be sent back into the channel this task alone reads, which deadlocked it when it was full
+/// and ran them after the search in any case.)
+fn drain_for_search(mut q: String, cmds: &mut mpsc::Receiver<CatCmd>) -> (String, VecDeque<CatCmd>) {
+    let mut later = VecDeque::new();
+    while let Ok(c) = cmds.try_recv() {
+        match c {
+            CatCmd::Search(n) => q = n,
+            other => later.push_back(other),
+        }
+    }
+    (q, later)
 }
 
 struct State {
@@ -180,6 +271,8 @@ struct State {
     /// shows found to be audiobooks (#62): their pages come from `queryBookChapters`
     books: std::collections::HashSet<String>,
     described: HashMap<String, singularity_proto::Item>,
+    /// URIs whose lookup failed, and when: not asked about again for `DESCRIBE_RETRY` (A8)
+    describe_failed: HashMap<String, Instant>,
     lyrics: HashMap<String, singularity_proto::Lyrics>,
     artists: HashMap<String, (Instant, singularity_proto::ArtistPage)>,
     searches: HashMap<String, (Instant, singularity_proto::SearchResults)>,
@@ -189,9 +282,9 @@ struct State {
     cluster_changed: std::sync::Arc<tokio::sync::Notify>,
 }
 
-async fn run(dirs: Dirs, engine: Identity, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
+async fn run(dirs: Dirs, engine: Identity, cmds: &mut mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
     let registry = QueryRegistry::new(dirs.queries.clone());
-    let mut st = State { dirs, engine, session: None, registry, ev, remote: None, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), lyrics: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default(), cluster_changed: Default::default() };
+    let mut st = State { dirs, engine, session: None, registry, ev, remote: None, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default(), cluster_changed: Default::default() };
     // resume a previous login
     if saved_credentials(&st.dirs).is_some() {
         if st.connect(None).await {
@@ -202,79 +295,86 @@ async fn run(dirs: Dirs, engine: Identity, mut cmds: mpsc::Receiver<CatCmd>, ev:
     } else {
         st.status(CatalogueStatus::LoggedOut).await;
     }
-    while let Some(cmd) = cmds.recv().await {
-        match cmd {
-            CatCmd::Login => {
-                if st.login().await {
-                    let _ = self_tx.send(CatCmd::Home).await;
-                    let _ = self_tx.send(CatCmd::Library).await;
-                    let _ = self_tx.send(CatCmd::Devices).await;
-                }
-            }
-            CatCmd::Logout => st.logout().await,
-            CatCmd::Home => st.home().await,
-            CatCmd::Library => st.library().await,
-            CatCmd::Tracks(uri) => st.track_list(uri).await,
-            CatCmd::MoreTracks { uri, offset } => st.more_tracks(uri, offset).await,
-            CatCmd::FindShow(uri) => st.find_show(uri).await,
-            CatCmd::PlayFrom { context_uri, index, track_uri } => st.play_from(context_uri, index, track_uri).await,
-            CatCmd::Queue(edit) => st.queue(edit).await,
-            CatCmd::Describe(uris) => st.describe(uris).await,
-            CatCmd::Lyrics { uri, meta } => st.lyrics(uri, meta).await,
-            CatCmd::Artist(uri) => st.artist(uri).await,
-            CatCmd::Devices => st.devices().await,
-            CatCmd::Transfer(id) => st.transfer(id).await,
-            CatCmd::Resume(r) => st.resume(r).await,
-            CatCmd::Remote(cmd) => st.remote_command(cmd).await,
-            CatCmd::Engine(cmd) => st.engine_command(cmd).await,
-            CatCmd::SetSaved { uri, saved } => {
-                // the library changed: the sidebar and Liked Songs follow (Liked Songs from its next open)
-                if st.set_saved(uri.clone(), saved).await && !uri.starts_with("spotify:track:") {
-                    let _ = self_tx.send(CatCmd::Library).await;
-                }
-            }
-            CatCmd::CheckSaved(uris) => st.check_saved(uris).await,
-            // either way the sidebar shows the truth afterwards
-            CatCmd::CreatePlaylist { name, uris } => {
-                st.create_playlist(name, uris).await;
+    // commands drained from behind a search, in their original order
+    let mut waiting: VecDeque<CatCmd> = VecDeque::new();
+    loop {
+        let cmd = match waiting.pop_front() {
+            Some(c) => c,
+            None => match cmds.recv().await {
+                Some(c) => c,
+                None => return,
+            },
+        };
+        if let CatCmd::Search(q) = cmd {
+            // while typing, only the newest search matters; whatever else waited ran before the search was asked for
+            let (q, later) = drain_for_search(q, cmds);
+            st.search(q).await;
+            waiting.extend(later);
+            continue;
+        }
+        handle(&mut st, cmd, &self_tx).await;
+    }
+}
+
+async fn handle(st: &mut State, cmd: CatCmd, self_tx: &mpsc::Sender<CatCmd>) {
+    match cmd {
+        CatCmd::Login => {
+            if st.login().await {
+                let _ = self_tx.send(CatCmd::Home).await;
                 let _ = self_tx.send(CatCmd::Library).await;
-            }
-            CatCmd::AddToPlaylist { playlist, name, uris, anyway } => st.add_to_playlist(playlist, name, uris, anyway).await,
-            CatCmd::RemoveFromPlaylist { playlist, uids } => st.remove_from_playlist(playlist, uids).await,
-            CatCmd::MoveInPlaylist { playlist, uids, before, after } => st.move_in_playlist(playlist, uids, before, after).await,
-            CatCmd::SetCover { playlist, jpeg } => {
-                if st.set_cover(playlist, jpeg).await {
-                    let _ = self_tx.send(CatCmd::Library).await;
-                }
-            }
-            CatCmd::DeletePlaylist(uri) => {
-                st.delete_playlist(uri).await;
-                let _ = self_tx.send(CatCmd::Library).await;
-            }
-            CatCmd::EditPlaylist { uri, name, description } => {
-                if st.edit_playlist(uri, name, description).await {
-                    let _ = self_tx.send(CatCmd::Library).await;
-                }
-            }
-            CatCmd::Query { op, vars, reply } => {
-                let _ = reply.send(st.query(&op, vars).await);
-            }
-            CatCmd::Search(q) => {
-                // while typing, only the newest search matters: skip any already superseded
-                let mut q = q;
-                let mut later = vec![];
-                while let Ok(c) = cmds.try_recv() {
-                    match c {
-                        CatCmd::Search(n) => q = n,
-                        other => later.push(other),
-                    }
-                }
-                st.search(q).await;
-                for c in later {
-                    let _ = self_tx.send(c).await;
-                }
+                let _ = self_tx.send(CatCmd::Devices).await;
             }
         }
+        CatCmd::Logout => st.logout().await,
+        CatCmd::Home => st.home().await,
+        CatCmd::Library => st.library().await,
+        CatCmd::Tracks(uri) => st.track_list(uri).await,
+        CatCmd::MoreTracks { uri, offset } => st.more_tracks(uri, offset).await,
+        CatCmd::FindShow(uri) => st.find_show(uri).await,
+        CatCmd::PlayFrom { context_uri, index, track_uri } => st.play_from(context_uri, index, track_uri).await,
+        CatCmd::Queue(edit) => st.queue(edit).await,
+        CatCmd::Describe(uris) => st.describe(uris).await,
+        CatCmd::Lyrics { uri, meta } => st.lyrics(uri, meta).await,
+        CatCmd::Artist(uri) => st.artist(uri).await,
+        CatCmd::Devices => st.devices().await,
+        CatCmd::Transfer(id) => st.transfer(id).await,
+        CatCmd::Resume(r) => st.resume(r).await,
+        CatCmd::Remote(cmd) => st.remote_command(cmd).await,
+        CatCmd::Engine(cmd) => st.engine_command(cmd).await,
+        CatCmd::SetSaved { uri, saved } => {
+            // the library changed: the sidebar and Liked Songs follow (Liked Songs from its next open)
+            if st.set_saved(uri.clone(), saved).await && !uri.starts_with("spotify:track:") {
+                let _ = self_tx.send(CatCmd::Library).await;
+            }
+        }
+        CatCmd::CheckSaved(uris) => st.check_saved(uris).await,
+        // either way the sidebar shows the truth afterwards
+        CatCmd::CreatePlaylist { name, uris } => {
+            st.create_playlist(name, uris).await;
+            let _ = self_tx.send(CatCmd::Library).await;
+        }
+        CatCmd::AddToPlaylist { playlist, name, uris, anyway } => st.add_to_playlist(playlist, name, uris, anyway).await,
+        CatCmd::RemoveFromPlaylist { playlist, uids } => st.remove_from_playlist(playlist, uids).await,
+        CatCmd::MoveInPlaylist { playlist, uids, before, after } => st.move_in_playlist(playlist, uids, before, after).await,
+        CatCmd::SetCover { playlist, jpeg } => {
+            if st.set_cover(playlist, jpeg).await {
+                let _ = self_tx.send(CatCmd::Library).await;
+            }
+        }
+        CatCmd::DeletePlaylist(uri) => {
+            st.delete_playlist(uri).await;
+            let _ = self_tx.send(CatCmd::Library).await;
+        }
+        CatCmd::EditPlaylist { uri, name, description } => {
+            if st.edit_playlist(uri, name, description).await {
+                let _ = self_tx.send(CatCmd::Library).await;
+            }
+        }
+        CatCmd::Query { op, vars, reply } => {
+            let _ = reply.send(st.query(&op, vars).await);
+        }
+        // handled by `run` itself (it drains what came behind a search)
+        CatCmd::Search(_) => {}
     }
 }
 
@@ -801,6 +901,20 @@ fn cache(dirs: &Dirs) -> anyhow::Result<Cache> {
 }
 
 impl State {
+    /// An event for the Daemon; if its channel is gone the event is lost, and at least the log says so (Q11).
+    async fn emit(&self, ev: CatEvent) {
+        if self.ev.send(ev).await.is_err() {
+            tracing::debug!("the Daemon is gone; an event was dropped");
+        }
+    }
+
+    /// An error for the Clients; when even that can't be delivered, the log keeps the message (Q11).
+    async fn fail(&self, message: String) {
+        if self.ev.send(CatEvent::Error(message.clone())).await.is_err() {
+            tracing::warn!("no one heard: {message}");
+        }
+    }
+
     async fn status(&self, s: CatalogueStatus) {
         let _ = self.ev.send(CatEvent::Status(s)).await;
     }
@@ -825,7 +939,7 @@ impl State {
             Ok(token) => self.connect(Some(Credentials::with_access_token(token.access_token))).await,
             Err(e) => {
                 self.status(CatalogueStatus::LoggedOut).await;
-                let _ = self.ev.send(CatEvent::Error(format!("Spotify login failed: {e}"))).await;
+                self.fail(format!("Spotify login failed: {e}")).await;
                 false
             }
         }
@@ -909,7 +1023,7 @@ impl State {
                 let _ = self.ev.send(CatEvent::Library(Library { items })).await;
             }
             Err(e) => {
-                let _ = self.ev.send(CatEvent::Error(format!("Library unavailable: {e}"))).await;
+                self.fail(format!("Library unavailable: {e}")).await;
             }
         }
     }
@@ -937,8 +1051,8 @@ impl State {
             let page = library::parse_library(&self.query("libraryV3", library::library_vars(offset, folder)).await?, depth, &me);
             let n = page.items.len();
             items.extend(page.items);
-            offset += library::LIBRARY_PAGE;
-            if n == 0 || offset >= page.total {
+            offset = offset.saturating_add(library::LIBRARY_PAGE);
+            if !library_page_continues(n, offset, page.total, items.len()) {
                 return Ok(items);
             }
         }
@@ -989,7 +1103,7 @@ impl State {
         loop {
             let asked = if self.books.contains(uri) { Some(library::chapters_query(uri, offset)) } else { library::tracks_query(uri, offset) };
             let Some((mut op, vars)) = asked else {
-                let _ = self.ev.send(CatEvent::Error(format!("can't list the tracks of {uri}"))).await;
+                self.fail(format!("can't list the tracks of {uri}")).await;
                 return None;
             };
             let mut answer = self.query(op, vars).await;
@@ -1005,7 +1119,7 @@ impl State {
             let v = match answer {
                 Ok(v) => v,
                 Err(e) => {
-                    let _ = self.ev.send(CatEvent::Error(format!("Track list unavailable: {e}"))).await;
+                    self.fail(format!("Track list unavailable: {e}")).await;
                     return None;
                 }
             };
@@ -1106,7 +1220,7 @@ impl State {
             }
         } else {
             let why = result.err().map(|e| e.to_string()).unwrap_or_else(|| "Spotify refused it".into());
-            let _ = self.ev.send(CatEvent::Error(format!("Couldn't {} it: {why}", if saved { "save" } else { "remove" }))).await;
+            self.fail(format!("Couldn't {} it: {why}", if saved { "save" } else { "remove" })).await;
         }
         // on failure this carries the old value back, so the Client rolls back
         let _ = self.ev.send(CatEvent::Saved(vec![singularity_proto::SavedFlag { uri, saved: if ok { saved } else { !saved } }])).await;
@@ -1132,7 +1246,7 @@ impl State {
                 }
             }
             Err(e) => {
-                let _ = self.ev.send(CatEvent::Error(format!("Couldn't create the playlist: {e}"))).await;
+                self.fail(format!("Couldn't create the playlist: {e}")).await;
             }
         }
     }
@@ -1142,7 +1256,7 @@ impl State {
         match crate::playlists::post(&session, &crate::playlists::rootlist_path(&session.username()), &crate::playlists::rootlist_remove(&uri)).await {
             Ok(_) => tracing::info!("deleted playlist {uri}"),
             Err(e) => {
-                let _ = self.ev.send(CatEvent::Error(format!("Couldn't delete the playlist: {e}"))).await;
+                self.fail(format!("Couldn't delete the playlist: {e}")).await;
             }
         }
     }
@@ -1169,12 +1283,12 @@ impl State {
                     AddOutcome::Added
                 }
                 Some(e) => {
-                    let _ = self.ev.send(CatEvent::Error(format!("Couldn't add to {name}: {e}"))).await;
+                    self.fail(format!("Couldn't add to {name}: {e}")).await;
                     AddOutcome::Failed
                 }
             },
             Err(e) => {
-                let _ = self.ev.send(CatEvent::Error(format!("Couldn't add to {name}: {e}"))).await;
+                self.fail(format!("Couldn't add to {name}: {e}")).await;
                 AddOutcome::Failed
             }
         };
@@ -1203,7 +1317,7 @@ impl State {
                 true
             }
             Err(e) => {
-                let _ = self.ev.send(CatEvent::Error(format!("Couldn't change the cover: {e}"))).await;
+                self.fail(format!("Couldn't change the cover: {e}")).await;
                 false
             }
         };
@@ -1217,12 +1331,12 @@ impl State {
             Ok(v) => match crate::playlists::graphql_error(&v) {
                 None => true,
                 Some(e) => {
-                    let _ = self.ev.send(CatEvent::Error(format!("Couldn't move it: {e}"))).await;
+                    self.fail(format!("Couldn't move it: {e}")).await;
                     false
                 }
             },
             Err(e) => {
-                let _ = self.ev.send(CatEvent::Error(format!("Couldn't move it: {e}"))).await;
+                self.fail(format!("Couldn't move it: {e}")).await;
                 false
             }
         };
@@ -1237,12 +1351,12 @@ impl State {
             Ok(v) => match crate::playlists::graphql_error(&v) {
                 None => true,
                 Some(e) => {
-                    let _ = self.ev.send(CatEvent::Error(format!("Couldn't remove it from the playlist: {e}"))).await;
+                    self.fail(format!("Couldn't remove it from the playlist: {e}")).await;
                     false
                 }
             },
             Err(e) => {
-                let _ = self.ev.send(CatEvent::Error(format!("Couldn't remove it from the playlist: {e}"))).await;
+                self.fail(format!("Couldn't remove it from the playlist: {e}")).await;
                 false
             }
         };
@@ -1266,7 +1380,7 @@ impl State {
                 true
             }
             Err(e) => {
-                let _ = self.ev.send(CatEvent::Error(format!("Couldn't save the playlist's details: {e}"))).await;
+                self.fail(format!("Couldn't save the playlist's details: {e}")).await;
                 false
             }
         };
@@ -1311,7 +1425,7 @@ impl State {
             if let Some(r) = self.remote.as_mut() {
                 r.forget_ids();
             }
-            let _ = self.ev.send(CatEvent::Error(format!("Couldn't move playback: {e}"))).await;
+            self.fail(format!("Couldn't move playback: {e}")).await;
         }
     }
 
@@ -1352,7 +1466,7 @@ impl State {
         }
         .await;
         if let Err(e) = result {
-            let _ = self.ev.send(CatEvent::Error(format!("Couldn't control the other device: {e}"))).await;
+            self.fail(format!("Couldn't control the other device: {e}")).await;
         }
     }
 
@@ -1391,7 +1505,7 @@ impl State {
             let player = self.engine.player;
             let mut player = player.strip_prefix("the ").unwrap_or(player).to_string();
             player[..1].make_ascii_uppercase();
-            let _ = self.ev.send(CatEvent::Error(format!("{player}: {e}"))).await;
+            self.fail(format!("{player}: {e}")).await;
         }
     }
 
@@ -1434,43 +1548,56 @@ impl State {
                 // Soloist can at least append it
                 QueueEdit::PlayNext(uri) => {
                     let _ = self.ev.send(CatEvent::ToEngine(Command::AddToQueue { uri })).await;
-                    let _ = self.ev.send(CatEvent::Error("Couldn't put it first; added it to the end of the queue".into())).await;
+                    self.fail("Couldn't put it first; added it to the end of the queue".into()).await;
                 }
                 _ => {
-                    let _ = self.ev.send(CatEvent::Error(format!("Couldn't change the queue: {e}"))).await;
+                    self.fail(format!("Couldn't change the queue: {e}")).await;
                     let _ = self.ev.send(CatEvent::Resync).await;
                 }
             }
         }
     }
 
-    /// Names for bare track URIs, from `getTrack` (cached; at most 20 a time, one by one).
+    /// Names for bare track URIs, from `getTrack` (cached; one request at a time). Every URI in the batch is
+    /// answered one way or the other (A8: the Hub asks about a whole queue at once, and used to stop at 20 without
+    /// telling anyone, which left those rows blank for the Daemon's life).
     async fn describe(&mut self, uris: Vec<String>) {
-        let mut out = vec![];
-        for uri in uris.into_iter().take(20) {
-            if let Some(i) = self.described.get(&uri) {
-                out.push(i.clone());
-                continue;
-            }
+        let (mut out, ask, mut failed) = describe_plan(uris, &self.described, &self.describe_failed);
+        for uri in ask {
             let episode = uri.starts_with("spotify:episode:");
-            let asked = if episode { self.query("getEpisodeOrChapter", json!({ "uri": uri, "includeEpisodeContentRatingsV2": false })).await } else { self.query("getTrack", json!({ "uri": uri })).await };
-            match asked {
-                Ok(v) => {
-                    let item = if episode { library::parse_episode(&v).map(|(i, _)| i) } else { library::parse_track(&v) };
-                    if let Some(item) = item {
-                        trim_any(&mut self.described, MAX_DESCRIBED);
-                        self.described.insert(uri, item.clone());
-                        out.push(item);
-                    }
-                }
+            let answer = if episode {
+                self.query("getEpisodeOrChapter", json!({ "uri": uri, "includeEpisodeContentRatingsV2": false })).await
+            } else {
+                self.query("getTrack", json!({ "uri": uri })).await
+            };
+            let item = match answer {
+                Ok(v) => if episode { library::parse_episode(&v).map(|(i, _)| i) } else { library::parse_track(&v) },
                 Err(e) => {
                     tracing::debug!("getTrack {uri}: {e}");
-                    break; // back off: no retry loop
+                    None
+                }
+            };
+            match item {
+                Some(item) => {
+                    self.describe_failed.remove(&uri);
+                    trim_any(&mut self.described, MAX_DESCRIBED);
+                    self.described.insert(uri, item.clone());
+                    out.push(item);
+                }
+                None => {
+                    // not asked about again for a while; the rest of the batch still is (a track Spotify can't
+                    // describe must not block the queue behind it)
+                    self.describe_failed.insert(uri.clone(), Instant::now());
+                    failed.push(uri);
                 }
             }
         }
+        trim_ages(&mut self.describe_failed, DESCRIBE_RETRY, MAX_DESCRIBED);
         if !out.is_empty() {
-            let _ = self.ev.send(CatEvent::Described(out)).await;
+            self.emit(CatEvent::Described(out)).await;
+        }
+        if !failed.is_empty() {
+            self.emit(CatEvent::DescribeFailed(failed)).await;
         }
     }
 
@@ -1483,10 +1610,10 @@ impl State {
                 let _ = self.ev.send(CatEvent::EpisodeShow { episode: uri, show }).await;
             }
             Ok(None) => {
-                let _ = self.ev.send(CatEvent::Error("That episode isn't available".into())).await;
+                self.fail("That episode isn't available".into()).await;
             }
             Err(e) => {
-                let _ = self.ev.send(CatEvent::Error(format!("Episode unavailable: {e}"))).await;
+                self.fail(format!("Episode unavailable: {e}")).await;
             }
         }
     }
@@ -1509,7 +1636,7 @@ impl State {
                 let _ = self.ev.send(CatEvent::Search(r)).await;
             }
             Err(e) => {
-                let _ = self.ev.send(CatEvent::Error(format!("Search unavailable: {e}"))).await;
+                self.fail(format!("Search unavailable: {e}")).await;
             }
         }
     }
@@ -1529,11 +1656,11 @@ impl State {
                     let _ = self.ev.send(CatEvent::Artist(p)).await;
                 }
                 None => {
-                    let _ = self.ev.send(CatEvent::Error("Spotify answered, but the artist page had an unexpected shape".into())).await;
+                    self.fail("Spotify answered, but the artist page had an unexpected shape".into()).await;
                 }
             },
             Err(e) => {
-                let _ = self.ev.send(CatEvent::Error(format!("Artist page unavailable: {e}"))).await;
+                self.fail(format!("Artist page unavailable: {e}")).await;
             }
         }
     }
@@ -1634,12 +1761,12 @@ impl State {
             Ok(v) => {
                 let feed = parse_home(&v);
                 if feed.shelves.is_empty() {
-                    let _ = self.ev.send(CatEvent::Error("Spotify answered, but the Home feed had an unexpected shape".into())).await;
+                    self.fail("Spotify answered, but the Home feed had an unexpected shape".into()).await;
                 }
                 let _ = self.ev.send(CatEvent::Home(feed)).await;
             }
             Err(e) => {
-                let _ = self.ev.send(CatEvent::Error(format!("Home feed unavailable: {e}"))).await;
+                self.fail(format!("Home feed unavailable: {e}")).await;
             }
         }
     }
@@ -1763,6 +1890,55 @@ mod tests {
         {"content":{"__typename":"PlaylistResponseWrapper","data":{"__typename":"Playlist","uri":"spotify:playlist:q","name":"Night Drive","description":"","images":{"items":[]}}}}]}},
       {"data":{"__typename":"HomeGenericSectionData","title":{"text":"Empty"}},"sectionItems":{"items":[]}}
     ]}}}}}"#;
+
+    /// A8: a 51-URI queue is all asked about (no `take(20)`), cached names come for free, and a URI that just failed
+    /// is left out (and reported failed) until its retry window is over.
+    #[test]
+    fn a_describe_batch_covers_every_uri() {
+        use std::collections::HashMap;
+        use std::time::{Duration, Instant};
+        let mut described: HashMap<String, singularity_proto::Item> = HashMap::new();
+        let mut failed: HashMap<String, Instant> = HashMap::new();
+        described.insert("spotify:track:known".into(), singularity_proto::Item { uri: "spotify:track:known".into(), name: "Known".into(), ..Default::default() });
+        failed.insert("spotify:track:broken".into(), Instant::now());
+        let mut uris: Vec<String> = (0..51).map(|i| format!("spotify:track:q{i}")).collect();
+        uris.push("spotify:track:known".into());
+        uris.push("spotify:track:broken".into());
+        let (known, ask, bad) = describe_plan(uris, &described, &failed);
+        assert_eq!(ask.len(), 51, "every URI of a queue-sized batch is looked up: {ask:?}");
+        assert_eq!(known.len(), 1);
+        assert_eq!(bad, vec!["spotify:track:broken".to_string()], "a failed lookup is reported failed, so the Hub asks again later");
+        // ... and after the retry window it gets another chance
+        failed.insert("spotify:track:broken".into(), Instant::now() - Duration::from_secs(super::DESCRIBE_RETRY.as_secs() + 1));
+        let (_, ask, bad) = describe_plan(vec!["spotify:track:broken".into()], &described, &failed);
+        assert_eq!((ask.len(), bad.len()), (1, 0));
+    }
+
+    /// B10/C15: a broken `totalCount` from Spotify can't walk the library for millions of pages.
+    #[test]
+    fn the_library_walk_has_a_page_cap() {
+        assert!(library_page_continues(50, 50, u32::MAX, 50), "an ordinary full page continues");
+        assert!(!library_page_continues(0, 50, u32::MAX, 50), "an empty page is the end");
+        assert!(!library_page_continues(50, 100, 100, 50), "the reported total is reached");
+        assert!(!library_page_continues(50, 10_000, u32::MAX, super::MAX_TRACKS as usize), "the cap stops a lying totalCount");
+    }
+
+    /// A2/C4: commands that arrived behind a search are kept, in order, and run after it — not sent back into this
+    /// task's own full channel (a deadlock) and not lost.
+    #[tokio::test]
+    async fn a_search_drains_the_commands_behind_it_in_order() {
+        let (tx, mut rx) = mpsc::channel(16);
+        for c in [CatCmd::Search("a".into()), CatCmd::Library, CatCmd::Devices, CatCmd::Search("b".into())] {
+            tx.send(c).await.unwrap();
+        }
+        let first = match rx.recv().await.unwrap() {
+            CatCmd::Search(q) => q,
+            other => panic!("unexpected {other:?}"),
+        };
+        let (q, later) = drain_for_search(first, &mut rx);
+        assert_eq!(q, "b", "only the newest of a burst of searches is made");
+        assert!(matches!(later.iter().collect::<Vec<_>>().as_slice(), [CatCmd::Library, CatCmd::Devices]), "the others wait their turn, in order: {later:?}");
+    }
 
     #[test]
     fn parses_shelves_cards_and_kinds() {

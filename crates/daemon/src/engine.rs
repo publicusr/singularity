@@ -18,6 +18,10 @@ pub enum EngineEvent {
     Notice(String),
     /// the Engine restarted (a Soloist update): pick up where playback was
     Resume(Resume),
+    /// a task inside the Engine stopped (the health view names it until it's back, A1)
+    TaskStopped(&'static str, String),
+    /// ... and has been running again for a while
+    TaskStarted(&'static str),
 }
 
 /// Where playback was when the Engine restarted.
@@ -56,6 +60,11 @@ pub trait Engine: Send + 'static {
     fn kind(&self) -> singularity_proto::EngineKind {
         singularity_proto::EngineKind::Soloist
     }
+    /// A fresh Engine of the same kind, for the Daemon's supervisor to start after this one's task ended (A1).
+    /// `None`: this one can't be built again (a stand-in in a test): the Daemon only reports it.
+    fn respawn(&self) -> Option<Box<dyn Engine>> {
+        None
+    }
 }
 
 /// Used until an Engine is configured: reports why, refuses commands politely.
@@ -64,6 +73,10 @@ pub struct NoEngine {
 }
 
 impl Engine for NoEngine {
+    fn respawn(&self) -> Option<Box<dyn Engine>> {
+        Some(Box::new(NoEngine { reason: self.reason.clone() }))
+    }
+
     fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>) {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(16);
         let (ev_tx, ev_rx) = mpsc::channel(16);
@@ -83,6 +96,10 @@ pub struct FakeEngine;
 impl Engine for FakeEngine {
     fn kind(&self) -> singularity_proto::EngineKind {
         singularity_proto::EngineKind::Fake
+    }
+
+    fn respawn(&self) -> Option<Box<dyn Engine>> {
+        Some(Box::new(FakeEngine))
     }
 
     fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>) {

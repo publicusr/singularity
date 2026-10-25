@@ -3827,6 +3827,7 @@ dependencies = [
  "cpal",
  "flate2",
  "futures-util",
+ "image",
  "libc",
  "objc2",
  "objc2-app-kit",

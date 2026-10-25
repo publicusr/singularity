@@ -44,6 +44,10 @@ impl Engine for AppEngine {
         singularity_proto::EngineKind::SpotifyApp
     }
 
+    fn respawn(&self) -> Option<Box<dyn Engine>> {
+        Some(Box::new(AppEngine { identity: self.identity.clone(), catalogue: self.catalogue.clone(), start_app: self.start_app }))
+    }
+
     fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>) {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(16);
         let (ev_tx, ev_rx) = mpsc::channel(16);

@@ -1,5 +1,5 @@
-//! T0025 audit (correctness): tests that show real defects, kept `#[ignore]` so `main` stays green.
-//! Removing the `#[ignore = "..."]` line makes the named test fail against today's code.
+//! T0025 audit (correctness): the bug-proving tests. The ones T0027 fixed (C2/A1, C1/A8) run for real; C10 and C14
+//! belong to other tickets and stay `#[ignore]`d until they are fixed.
 
 use singularity_proto::{self as proto, ClientMsg, Command, DaemonMsg, EngineKind, Event, Item, PlayStatus, PlaybackState, QueueEntry, PROTOCOL_VERSION};
 use singularityd::catalogue::{CatCmd, CatEvent};
@@ -8,15 +8,30 @@ use std::time::Duration;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
-// ── C2: a dead Engine task is silent; the Daemon never reports it ─────────────────────────────────────
+// ── C2/A1: a dead Engine task is silent; the Daemon never reports it ────────────────────────────────
+
+/// Counts how many Engine tasks were started, so a restart can be seen.
+#[derive(Clone, Default)]
+struct Started(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Started {
+    fn count(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
 
 /// An Engine whose task has already ended (a panic or an error path in the real ones): its event channel's
-/// sender is dropped before `serve` even starts the command pump.
-struct DeadEngine;
+/// sender is dropped before `serve` even starts the command pump. It can be built again, as the real ones can.
+struct DeadEngine(Started);
 
 impl Engine for DeadEngine {
     fn kind(&self) -> EngineKind {
         EngineKind::Fake
+    }
+
+    fn respawn(&self) -> Option<Box<dyn Engine>> {
+        self.0.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(Box::new(RevivedEngine))
     }
 
     fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>) {
@@ -27,6 +42,33 @@ impl Engine for DeadEngine {
     }
 }
 
+/// The Engine after the restart: alive, ready, and it answers commands.
+struct RevivedEngine;
+
+impl Engine for RevivedEngine {
+    fn kind(&self) -> EngineKind {
+        EngineKind::Fake
+    }
+
+    fn respawn(&self) -> Option<Box<dyn Engine>> {
+        Some(Box::new(RevivedEngine))
+    }
+
+    fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>) {
+        let (commands, mut cmd_rx) = mpsc::channel(16);
+        let (events, ev_rx) = mpsc::channel(16);
+        tokio::spawn(async move {
+            let _ = events.send(EngineEvent::Status(singularity_proto::EngineStatus::Ready { device_name: "Revived".into(), active: true, version: "test".into(), expires_in_days: None })).await;
+            while let Some(cmd) = cmd_rx.recv().await {
+                if cmd == (Command::Play { uri: None }) {
+                    let _ = events.send(EngineEvent::Playback(PlaybackState { status: PlayStatus::Playing, timestamp_ms: singularity_proto::now_ms(), ..Default::default() })).await;
+                }
+            }
+        });
+        (commands, ev_rx)
+    }
+}
+
 async fn connect(path: &std::path::Path) -> UnixStream {
     let mut s = UnixStream::connect(path).await.unwrap();
     proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "audit".into() }).await.unwrap();
@@ -34,35 +76,52 @@ async fn connect(path: &std::path::Path) -> UnixStream {
     s
 }
 
-/// `cargo test -p singularityd --test audit_correctness an_engine_that_dies -- --ignored`
-///
-/// Today: the Engine's task ending makes `run_engine` return, which drops the command receiver; `transport()`
-/// then throws every player command away (`let _ = hub.commands.send(..)`) and nobody tells the Client, restarts
-/// the Engine or shows a status. The Daemon looks alive and ignores play/pause forever.
-#[tokio::test]
-#[ignore = "audit C2: a dead Engine task is silent (commands dropped, no status, no restart)"]
-async fn an_engine_that_dies_is_reported_and_playback_commands_do_not_vanish() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("d.sock");
-    let listener = singularityd::bind(&path).unwrap();
-    tokio::spawn(singularityd::serve(listener, Box::new(DeadEngine), None, None));
-    let mut s = connect(&path).await;
-    // let the engine pump notice its channel closed
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    proto::write_msg(&mut s, &ClientMsg::Command(Command::Play { uri: Some("spotify:track:x".into()) })).await.unwrap();
-    // the Daemon should say something: the Engine failed, or the command couldn't be delivered
-    let told = tokio::time::timeout(Duration::from_secs(2), async {
+/// The next event that is one of `wanted`, within `wait`.
+async fn next_of(s: &mut UnixStream, wait: Duration, mut wanted: impl FnMut(&Event) -> bool) -> bool {
+    tokio::time::timeout(wait, async {
         loop {
-            match proto::read_msg::<_, DaemonMsg>(&mut s).await {
-                Ok(Some(DaemonMsg::Event(Event::Error { .. }))) => return true,
-                Ok(Some(DaemonMsg::Event(Event::Engine(singularity_proto::EngineStatus::Failed { .. })))) => return true,
+            match proto::read_msg::<_, DaemonMsg>(s).await {
+                Ok(Some(DaemonMsg::Event(ev))) if wanted(&ev) => return true,
                 Ok(Some(_)) => continue,
                 _ => return false,
             }
         }
     })
-    .await;
-    assert_eq!(told, Ok(true), "a dead Engine was never reported: the command went nowhere, silently");
+    .await
+    .unwrap_or(false)
+}
+
+/// `cargo test -p singularityd --test audit_correctness an_engine_that_dies`
+///
+/// Today (before the fix): the Engine's task ending makes `run_engine` return, which drops the command receiver;
+/// `transport()` then threw every player command away and nobody told the Client, restarted the Engine or showed a
+/// status. Now: the Client hears `Engine(Failed)` and an error, commands fail loudly instead of vanishing, and the
+/// Engine is built again — after which playback works.
+#[tokio::test]
+async fn an_engine_that_dies_is_reported_and_playback_commands_do_not_vanish() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("d.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    let restarts = Started::default();
+    tokio::spawn(singularityd::serve(listener, Box::new(DeadEngine(restarts.clone())), None, None));
+    let mut s = connect(&path).await;
+    // the failing status (the Engine is reported dead as soon as its task is seen to be gone)
+    assert!(
+        next_of(&mut s, Duration::from_secs(2), |e| matches!(e, Event::Engine(singularity_proto::EngineStatus::Failed { .. }))).await,
+        "a dead Engine was never reported: the UI keeps saying it's fine"
+    );
+    // while it's down, a command fails loudly rather than vanishing
+    proto::write_msg(&mut s, &ClientMsg::Command(Command::Play { uri: Some("spotify:track:x".into()) })).await.unwrap();
+    assert!(next_of(&mut s, Duration::from_secs(2), |e| matches!(e, Event::Error { .. })).await, "the command went nowhere, silently");
+    // ... and the Engine is started again (its fresh status says so)
+    assert!(
+        next_of(&mut s, Duration::from_secs(10), |e| matches!(e, Event::Engine(singularity_proto::EngineStatus::Ready { device_name, .. }) if device_name == "Revived")).await,
+        "the dead Engine was never started again"
+    );
+    assert!(restarts.count() >= 1, "no new Engine was built");
+    // playback works again
+    proto::write_msg(&mut s, &ClientMsg::Command(Command::Play { uri: None })).await.unwrap();
+    assert!(next_of(&mut s, Duration::from_secs(2), |e| matches!(e, Event::Playback(p) if p.status == PlayStatus::Playing)).await, "commands still don't reach the restarted Engine");
 }
 
 // ── C1: a description that never comes back wedges those URIs for the Daemon's life ───────────────────
@@ -97,14 +156,14 @@ impl Engine for BareQueueEngine {
     }
 }
 
-/// `cargo test -p singularityd --test audit_correctness a_description_that -- --ignored`
+/// `cargo test -p singularityd --test audit_correctness a_description_that`
 ///
-/// Today: `fill_queue` marks all 25 URIs as being asked; the Catalogue answers for the first one only (as the
-/// real one does for the 21st+ of a batch, and after the first `getTrack` failure), and nothing ever clears the
-/// other 24 from `Hub::describing`. A later playback state showing them bare doesn't ask again, so those queue
-/// rows keep an empty name for the rest of the Daemon's life.
+/// Before the fix: `fill_queue` marked all 25 URIs as being asked; the Catalogue answered for the first one only (as
+/// the real one did for the 21st+ of a batch, and after the first `getTrack` failure), and nothing ever cleared the
+/// other 24 from `Hub::describing`, so a later playback state showing them bare didn't ask again and those queue rows
+/// kept an empty name for the rest of the Daemon's life. Now the Catalogue reports what it couldn't look up
+/// (`DescribeFailed`, which the real one sends too), and the Hub asks again.
 #[tokio::test]
-#[ignore = "audit C1: URIs whose description failed are never asked for again (blank queue rows forever)"]
 async fn a_description_that_never_arrives_is_asked_for_again() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("d.sock");
@@ -118,9 +177,18 @@ async fn a_description_that_never_arrives_is_asked_for_again() {
         while let Some(cmd) = cat_rx.recv().await {
             if let CatCmd::Describe(uris) = cmd {
                 counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if let Some(first) = uris.first() {
-                    let item = Item { uri: first.clone(), name: "Described".into(), artists: vec!["A".into()], ..Default::default() };
-                    let _ = cat_events.send(CatEvent::Described(vec![item])).await;
+                let mut rest = vec![];
+                for (i, uri) in uris.into_iter().enumerate() {
+                    if i == 0 {
+                        let item = Item { uri: uri.clone(), name: "Described".into(), artists: vec!["A".into()], ..Default::default() };
+                        let _ = cat_events.send(CatEvent::Described(vec![item])).await;
+                    } else {
+                        // what the real Catalogue says about the URIs it couldn't look up (A8)
+                        rest.push(uri);
+                    }
+                }
+                if !rest.is_empty() {
+                    let _ = cat_events.send(CatEvent::DescribeFailed(rest)).await;
                 }
             }
         }

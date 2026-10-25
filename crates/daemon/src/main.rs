@@ -164,11 +164,10 @@ async fn run() -> anyhow::Result<i32> {
     };
     // MPRIS is D-Bus: Linux's (a macOS session has no session bus)
     let mpris = mpris.filter(|_| !cfg!(target_os = "macos"));
-    // config.toml: what the Daemon uses of it now, and again whenever it's saved
-    tokio::spawn(follow_config(notify));
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = tokio::select! {
-        r = singularityd::serve_with(listener, engine, catalogue, tap, singularityd::Extras { mpris, now_playing, store }) => r.map(Some),
+        // `notify`: the Daemon's config follower keeps notifications.track_change current (A1: supervised like the rest)
+        r = singularityd::serve_with(listener, engine, catalogue, tap, singularityd::Extras { mpris, now_playing, store, notify: Some(notify) }) => r.map(Some),
         _ = tokio::signal::ctrl_c() => Ok(None),
         _ = term.recv() => Ok(None),
     };
@@ -176,22 +175,4 @@ async fn run() -> anyhow::Result<i32> {
     tracing::info!("singularityd stopped");
     // replaced by a newer build: EX_TEMPFAIL
     result.map(|r| if matches!(r, Some(singularityd::Served::Replaced)) { 75 } else { 0 })
-}
-
-/// Apply `config.toml` (desktop notifications) and re-read it whenever it's saved.
-async fn follow_config(notify: std::sync::Arc<std::sync::atomic::AtomicBool>) {
-    let path = singularity_config::config_path();
-    let mut watched = singularity_config::Watched::new(path.clone());
-    let mut first = true;
-    loop {
-        if first || watched.changed() {
-            first = false;
-            let r = singularity_config::load_config(&path);
-            for p in &r.problems {
-                tracing::warn!("{p}");
-            }
-            notify.store(r.value.notifications.track_change, std::sync::atomic::Ordering::Relaxed);
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
 }
