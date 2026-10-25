@@ -103,6 +103,8 @@ macOS-only checks still waiting for the owner (can wait until they're back on th
   half next**.
 - **Audit phase 1 (2026-10-25)**: the security angle (T0024) is written up in `docs/research/2026-10-audit-2-security.md`
   (top: Soloist log/state permissions, export symlink, archive links; tests in the daemon crates are `#[ignore]`d).
+- **Audit phase 1, code quality (T0026)**: `docs/research/2026-10-audit-2-quality.md` (findings only; one `#[ignore]`d
+  proof in `crates/client/src/app.rs`).
 - **macOS (batch 8, D48–D56)**: the owner works on an M2 Air (macOS 15.7) for a while. Rule D49: Linux and macOS keep
   the same features; OS code only behind the platform seams; **`docs/PLATFORMS.md` is the exact status**, feature by
   feature, and the README has build/run steps and the macOS quirks for users.

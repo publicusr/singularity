@@ -2791,6 +2791,21 @@ mod tests {
         assert!(!again.config.idle.enabled && again.idle_secs().is_none());
     }
 
+    /// Audit Q2: `send` drops the command when the queue is full and says the Daemon is gone, which is untrue and
+    /// sends the user to restart a Daemon that is running fine. The test asserts what the user should be told; it is
+    /// ignored so `main` stays green. Remove the `#[ignore]` to see it fail (`Not connected to singularityd`).
+    #[test]
+    #[ignore = "audit Q2: a full command queue is reported as \"Not connected to singularityd\""]
+    fn a_busy_command_queue_is_not_reported_as_a_missing_daemon() {
+        let (tx, _rx) = mpsc::channel(1);
+        tx.try_send(Command::GetState).expect("the queue took one command");
+        let mut app = App::new(Some(tx));
+        app.link = Link::Connected { version: "t".into() };
+        app.send(Command::Next);
+        let said = app.toast.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
+        assert!(!said.contains("Not connected"), "a full queue isn't a missing Daemon, but the toast was {said:?}");
+    }
+
     #[test]
     fn deleting_listening_data_takes_a_second_go() {
         let (tx, mut rx) = mpsc::channel(8);
