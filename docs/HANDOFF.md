@@ -126,6 +126,8 @@ macOS-only checks still waiting for the owner (can wait until they're back on th
 - **T0005 (2026-10-24)**: a remote change (a phone on Connect) was undone by the Soloist updater's restart + resume;
   fixed (D63), `phone_test.py`, contract tests; **the owner's live phone check is pending** (see above). Jam: D64 asks
   the owner.
+- **Audit 2, correctness (T0025, 2026-10-25, findings only)**: `docs/research/2026-10-audit-2-correctness.md` — ranked
+  findings with 4 bug-proving `#[ignore]`d tests in `crates/daemon/tests/audit_correctness.rs`; no product code changed.
 - **Known open bugs.** Audit fixes so far (D60 and the report): private `daemon.log`, socket ownership checks, a
   config crash, bounded caches, cover caps, Visuals at 5 fps while idle (undone by D62), a 5 s deadline for Clients that stop reading,
   a release profile. (2026-10-20: the #62 live check was meant to be silent but played ~4 s at 40 %: Soloist's
