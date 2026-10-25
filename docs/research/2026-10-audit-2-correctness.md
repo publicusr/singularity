@@ -137,6 +137,8 @@ Fix: don't re-send through the same bounded channel — process `later` in this 
 
 ### 5. (C6) The Settings page can silently overwrite an edit made in an editor — **correctness (lost setting)**, suspected, effort S
 
+- **Fixed (T0029):** `config::set` takes the `Watched` stamp `(mtime, len)` before reading and writes the temp file first; if the stamp changed before the rename, it re-reads and applies the one change to the saved file (up to three tries, then an error rather than an overwrite). `toggle_idle` and `toggle_notifications` write through `set`, so they get the same guard. Test: `a_save_from_an_editor_during_a_setting_is_not_overwritten`.
+
 `crates/config/src/lib.rs:410-416` (`set`), `crates/client/src/settings.rs:146` (`settings_write`).
 
 `set()` reads `config.toml`, edits the document in memory and `rename`s a temp file over it. There is no

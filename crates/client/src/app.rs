@@ -762,6 +762,7 @@ impl App {
         {
             return self.say(format!("Couldn't change config.toml: {e}"));
         }
+        self.config_written();
         self.config.notifications.track_change = on;
         self.say(if on { "Track notifications on" } else { "Track notifications off" });
     }
@@ -808,6 +809,7 @@ impl App {
         {
             return self.say(format!("Couldn't change config.toml: {e}"));
         }
+        self.config_written();
         self.config.idle.enabled = on;
         let mins = self.config.idle.minutes;
         self.say(if on { format!("Idle takeover on (after {mins} min)") } else { "Idle takeover off".into() });
