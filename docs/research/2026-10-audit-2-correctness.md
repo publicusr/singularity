@@ -276,12 +276,19 @@ item list) before the `u32` wraps. Requires a hostile/broken Spotify answer, so 
 also flagged `fetch_pages`; that one is already bounded by `until` = `MAX_TRACKS`/`SHOW_BATCH`, so no
 finding there.) Fix: cap the pages as `fetch_pages` does. Effort S.
 
-### 14. (C13) MPRIS is never retried after a failure — **polish**, confirmed by reading, effort M
+### 14. (C13) Every background task but the Engine's is unsupervised, and they die quietly — **polish / correctness (feature silently gone)**, confirmed by reading, effort M
 
-`crates/daemon/src/mpris.rs:28-32`: `run` calls `serve`; an error (no session bus, a name already taken, the
-bus going away) is logged once ("MPRIS is off: …") and the task ends. Media keys and the desktop's media
-widget then stay dead for the Daemon's life, and the health view has no MPRIS row to say so. The same class
-as finding 1, but harmless. Fix: reconnect with a backoff, and add a health row. Effort M.
+`crates/daemon/src/lib.rs:185-201` (the `tokio::spawn`s whose `JoinHandle`s are dropped), `main.rs:166`,
+`soloist.rs:286,339`, `mpris.rs:28-32`.
+
+The Daemon spawns the play logger, the backup runner, the tap, the catalogue pump, MPRIS/Now Playing, the
+config follower and the Soloist update checker, and keeps none of the handles. If any of them ends or panics
+(the tap has no error path at all, the others log at most one line), the feature is silently gone for the
+daemon's life: media keys and the desktop widget (MPRIS), frozen audio meters (the tap), no nightly library
+backups, `notifications.track_change` no longer followed, no Soloist updates. Only the Engine and the
+Catalogue pumps matter more (finding 1); the health view names none of them. Fix: report an ended task in
+`tracing` and an `Event::Error`, with the existing backoff restart where it makes sense (backup, MPRIS, the
+tap), and add rows to the health view. Effort M.
 
 ## Checked, fine (and how)
 
