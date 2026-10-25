@@ -296,7 +296,10 @@ EFI vars, SSH key, pinned `bin/vfkit` + `bin/gvproxy`, logs), setup version 2, S
 - **Jam (D64)**: research is in `docs/research/2026-10-jam.md` (T0033). It answers the API (social-connect, the
   session fields, the dealer topic, the link/QR forms), who can host and the fit with our sessions. The design waits
   on the owner; the one live check that scopes it is whether a Jam started from the Catalogue session can name
-  *Soloist's* device as `local_device_id`, or whether start belongs to the librespot Engine only.
+  *Soloist's* device as `local_device_id`, or whether start belongs to the librespot Engine only. The probe for that
+  check is `crates/daemon/examples/jam_probe.rs` (T0034): `cargo run -p singularityd --example jam_probe -- --help`
+  lists `current`, `devices`, `start`, `end`, `kick`, `perm` and `watch`; §6 of the research note is the owner's
+  checklist and how to read each line.
 - The live checks listed under "Then".
 - **macOS clippy (#80, T0008)**: run `cargo clippy --workspace --all-targets` on the Mac (and `tools/check-linux.sh`
   as usual). The fixes are style-only, but the `cfg(target_os = "macos")` code wasn't checked from Linux.
