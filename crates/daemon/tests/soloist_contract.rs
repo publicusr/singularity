@@ -120,6 +120,34 @@ fn only_our_own_commands_explain_a_track_change() {
     assert!(st.change_is_ours());
 }
 
+/// C9: the queue-answer window only takes a state that actually answers `get_queue` (one carrying the queue). A phone
+/// pausing inside the window is real news: its status and position must land.
+#[test]
+fn a_state_without_the_queue_is_applied_normally_inside_the_window() {
+    use serde_json::json;
+    let track = |uri: &str| json!({"uri": uri, "decorations": {"identity": {"name": uri}}});
+    let mut st = SoloistState::default();
+    st.apply(&json!({"type": "track_changed", "item": track("spotify:track:a")}));
+    assert_eq!(st.playback.status, singularity_proto::PlayStatus::Idle);
+    st.asking_for_queue();
+    // a phone's pause arrives first: no queue in it, so it is a normal playback state
+    let changed = st.apply(&json!({
+        "type": "playback_state", "status": "paused", "item": track("spotify:track:a"),
+        "position": {"position_ms": 30_000, "timestamp_ms": 1, "speed": 0.0}, "volume": 40, "options": {}
+    }));
+    assert!(changed);
+    assert_eq!(st.playback.status, singularity_proto::PlayStatus::Paused, "the pause was dropped");
+    assert_eq!(st.playback.position_ms, 30_000);
+    // the real answer, with the queue, still only fills the queue
+    assert!(st.apply(&json!({
+        "type": "playback_state", "status": "playing", "item": track("spotify:track:old"),
+        "position": {"position_ms": 1000, "timestamp_ms": 1, "speed": 1.0}, "volume": 40, "options": {},
+        "upcoming": [{"uid": "u1", "source": "context", "item": track("spotify:track:next")}]
+    })));
+    assert_eq!(st.playback.status, singularity_proto::PlayStatus::Paused, "an answer with the queue still leaves the state alone");
+    assert_eq!(st.playback.queue.len(), 1);
+}
+
 /// The answer to our `get_queue` is a snapshot of the player from before the change we just heard about: taking its
 /// track would put the song that just stopped back (in the UI, MPRIS, Now Playing and the listening log).
 #[test]

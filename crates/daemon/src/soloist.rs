@@ -21,7 +21,7 @@ use singularity_proto::{Command, EngineStatus, Item, PlayStatus, PlaybackState, 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::process::{Child, Command as Proc};
+use tokio::process::Child;
 use tokio::sync::{Notify, mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -39,6 +39,12 @@ pub struct SoloistEngine {
 }
 
 impl SoloistEngine {
+    /// The name `[engine] device` asks for, else the default ("Singularity"). On Linux this is the name in Spotify's
+    /// device pickers: without it the setting did nothing there (audit C5).
+    pub fn named(device: &str) -> String {
+        if device.trim().is_empty() { DEVICE_NAME.into() } else { device.trim().to_string() }
+    }
+
     pub fn from_env() -> SoloistEngine {
         let base = std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
@@ -214,12 +220,34 @@ impl LogParser {
 
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut esc = false;
-    for c in s.chars() {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
         match c {
-            '\x1b' => esc = true,
-            c if esc => esc = !c.is_ascii_alphabetic(),
-            '\0' => {}
+            '\x1b' => match chars.peek() {
+                // CSI: parameters and private markers, then one final byte in 0x40..0x7e (colour, cursor moves)
+                Some('[') => {
+                    chars.next();
+                    for c in chars.by_ref() {
+                        if ('\x40'..='\x7e').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC (a window title, OSC 52, a hyperlink): runs to BEL or ST (ESC \)
+                Some(']') => {
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' || (c == '\x1b' && chars.peek() == Some(&'\\')) {
+                            break;
+                        }
+                    }
+                }
+                _ => {
+                    chars.next();
+                }
+            },
+            // every other control character (NUL, BEL, tab, CR…): a log line is text, not a terminal script
+            c if c.is_control() => {}
             c => out.push(c),
         }
     }
@@ -485,6 +513,30 @@ pub fn resume_point(p: &PlaybackState, track_changed: bool) -> Option<Resume> {
     Some(Resume { context_uri: p.context_uri.clone(), track_uri: item.uri.clone(), position_ms, paused: p.status == PlayStatus::Paused })
 }
 
+/// Soloist's state directory and the two below it, owner-only (it holds its pairing and cache: audit S1).
+fn private_state_dirs(state: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    for dir in [state.to_path_buf(), state.join("data"), state.join("cache")] {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// This run's `soloist.log`, owner-only, with the previous one kept as `soloist.log.1` (a Soloist that's still running
+/// keeps writing to its old file, so it's never cut short). `mode(0600)` only applies on creation: an older build's
+/// log is tightened as well.
+fn open_log(state: &std::path::Path) -> std::io::Result<tokio::fs::File> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let path = state.join("soloist.log");
+    let previous = state.join("soloist.log.1");
+    let _ = std::fs::rename(&path, &previous);
+    let _ = std::fs::set_permissions(&previous, std::fs::Permissions::from_mode(0o600));
+    let f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&path)?;
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    Ok(tokio::fs::File::from_std(f))
+}
+
 enum Exit {
     Quit,
     Died,
@@ -512,13 +564,9 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
     {
         anyhow::bail!("Soloist is already running (pid {pid}) with Singularity's data: is a second singularityd running?");
     }
-    tokio::fs::create_dir_all(state.join("data")).await?;
-    tokio::fs::create_dir_all(state.join("cache")).await?;
+    private_state_dirs(&state)?;
     let _ = tokio::fs::remove_file(state.join("data/ws.port")).await;
-    // keep the previous log (a Soloist that's still running keeps writing to it, so it's never cut short)
-    let log_path = state.join("soloist.log");
-    let _ = std::fs::rename(&log_path, state.join("soloist.log.1"));
-    let mut log = tokio::fs::File::create(&log_path).await?;
+    let mut log = open_log(&state)?;
     // (the VM's Soloist session: closing its stdin stops Soloist, so it's held for this run)
     #[allow(unused_mut, unused_assignments)]
     let mut session_stdin: Option<tokio::process::ChildStdin> = None;
@@ -536,7 +584,7 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
         #[allow(unreachable_patterns)]
         Some(_) => unreachable!(),
         None => {
-            let mut cmd = Proc::new(engine.binary());
+            let mut cmd = crate::programs::tokio_command(engine.binary());
             cmd.args(["--device-name", &engine.device_name, "--api-key", key, "--ws", "127.0.0.1:0", "--verbose"])
                 .args(engine.saved_volume().map(|v| ["--initial-volume".to_string(), v.to_string()]).into_iter().flatten())
                 .arg("--data-dir")
@@ -580,7 +628,8 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
         use tokio::io::AsyncWriteExt;
         let mut parser = LogParser::default();
         while let Some(l) = line_rx.recv().await {
-            let _ = log.write_all(l.as_bytes()).await;
+            // written raw, the log would be a terminal-escape sink for hostile track names (audit S1)
+            let _ = log.write_all(strip_ansi(&l).as_bytes()).await;
             let _ = log.write_all(b"\n").await;
             if let Some(n) = parser.line(&l) {
                 let _ = news_tx.send(n).await;
@@ -590,10 +639,10 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
     #[cfg(target_os = "macos")]
     let version = match &in_vm {
         Some(v) => v.version().await,
-        None => Proc::new(engine.binary()).arg("--version").output().await.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default(),
+        None => crate::programs::tokio_command(engine.binary()).arg("--version").output().await.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default(),
     };
     #[cfg(not(target_os = "macos"))]
-    let version = Proc::new(engine.binary()).arg("--version").output().await.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let version = crate::programs::tokio_command(engine.binary()).arg("--version").output().await.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
     // the VM's Soloist: its WebSocket through the forwarded port, and its ZeroConf port for pairing
     #[cfg(target_os = "macos")]
     let vm_ws = in_vm.as_ref().map(|v| format!("ws://127.0.0.1:{}", v.ws_port));
@@ -898,8 +947,10 @@ impl SoloistState {
 
     /// Apply one Soloist event. Returns true when our playback state changed.
     pub fn apply(&mut self, ev: &Value) -> bool {
-        // the answer to our own `get_queue`: the track it still shows may be the one that just stopped
-        if ev["type"] == "playback_state" && self.queue_asked_at.is_some_and(|at| at.elapsed() <= QUEUE_ANSWER) {
+        // the answer to our own `get_queue`: the track it still shows may be the one that just stopped. Only a state
+        // that actually carries the queue we asked for is that answer: any other state in the window (a phone's
+        // pause reaching us first) is real news and is applied as usual (audit C9).
+        if ev["type"] == "playback_state" && ev["upcoming"].is_array() && self.queue_asked_at.is_some_and(|at| at.elapsed() <= QUEUE_ANSWER) {
             self.queue_asked_at = None;
             return self.queue(&ev["upcoming"]);
         }
@@ -1012,6 +1063,46 @@ impl SoloistState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S1: the state directory (pairing, cache) and both logs are owner-only, and an older build's 0644 log is
+    /// tightened in place.
+    #[test]
+    fn the_state_directory_and_logs_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("soloist-state");
+        std::fs::create_dir_all(state.join("cache")).unwrap();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // an older build's log, loose
+        std::fs::write(state.join("soloist.log"), "old").unwrap();
+        std::fs::set_permissions(state.join("soloist.log"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        private_state_dirs(&state).unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!((mode(&state), mode(&state.join("data")), mode(&state.join("cache"))), (0o700, 0o700, 0o700));
+        drop(open_log(&state).unwrap());
+        assert_eq!(mode(&state.join("soloist.log")), 0o600);
+        assert_eq!(mode(&state.join("soloist.log.1")), 0o600, "the previous log is tightened too");
+        assert_eq!(std::fs::read_to_string(state.join("soloist.log.1")).unwrap(), "old");
+    }
+
+    /// S1: Soloist's lines are third-party text (track names, another person's playlist): no control characters reach
+    /// the log or a terminal showing it.
+    #[test]
+    fn log_lines_carry_no_control_characters() {
+        let hostile = "\u{1b}]0;pwned\u{7}\u{1b}]52;c;ZXZpbA==\u{7}\u{1b}[2Jtrack\u{0}\tname";
+        assert_eq!(strip_ansi(hostile), "trackname");
+        // the parser still reads the lines it needs
+        assert!(strip_ansi("Streaming: a\tb").contains("Streaming"));
+    }
+
+    /// C5: `[engine] device` names Soloist on Linux too, and an empty setting keeps "Singularity".
+    #[test]
+    fn the_configured_device_names_soloist() {
+        assert_eq!(SoloistEngine::named("Kitchen"), "Kitchen");
+        assert_eq!(SoloistEngine::named("  Kitchen  "), "Kitchen");
+        assert_eq!(SoloistEngine::named(""), DEVICE_NAME);
+        assert_eq!(SoloistEngine::named("   "), DEVICE_NAME);
+    }
 
     #[test]
     fn restart_waits_grow_while_failing_and_start_over_after_a_healthy_run() {
