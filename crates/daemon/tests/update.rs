@@ -29,6 +29,20 @@ fn tarball(version: &str, broken: bool) -> Vec<u8> {
     std::fs::read(out).unwrap()
 }
 
+/// A build whose `build.json` is a symlink: an archive can carry links that point outside the directory it is
+/// unpacked into.
+fn tarball_with_linked_build_json(target: &std::path::Path) -> Vec<u8> {
+    let dir = tempfile::tempdir().unwrap();
+    let exe = dir.path().join("soloist");
+    std::fs::write(&exe, "#!/bin/sh\necho 'soloist 1'\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o555)).unwrap();
+    std::os::unix::fs::symlink(target, dir.path().join("build.json")).unwrap();
+    let out = dir.path().join("b.tar.gz");
+    assert!(std::process::Command::new("tar").arg("-czf").arg(&out).arg("-C").arg(dir.path()).args(["soloist", "build.json"]).status().unwrap().success());
+    std::fs::read(out).unwrap()
+}
+
 /// Serve `release` on 127.0.0.1 (HEAD and GET, ETag, a fixed Last-Modified); returns the URL.
 async fn fake_cdn(release: Arc<Mutex<Release>>) -> String {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -137,6 +151,20 @@ async fn an_archive_over_the_cap_fails_cleanly_and_keeps_the_build() {
     assert!(err.contains("cap"), "{err}");
     assert_eq!(version_on_disk(&builds), "soloist 1");
     assert!(!builds.staged().exists() && builds.ready().is_none());
+}
+
+#[tokio::test]
+#[ignore = "audit S4: an archive's build.json symlink writes outside soloist.new/"]
+async fn an_archive_cannot_write_outside_its_directory_through_a_symlink() {
+    let victim_dir = tempfile::tempdir().unwrap();
+    let victim = victim_dir.path().join("victim");
+    std::fs::write(&victim, "not to be touched").unwrap();
+    let release = Arc::new(Mutex::new(Release { status: 200, etag: "\"v1\"".into(), body: tarball_with_linked_build_json(&victim), chunked: false }));
+    let url = fake_cdn(release).await;
+    let root = tempfile::tempdir().unwrap();
+    let builds = Builds { root: root.path().into() };
+    let _ = update::download_with_cap(&builds, &url, 1 << 20).await;
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "not to be touched", "the archive's build.json symlink was followed outside soloist.new/");
 }
 
 #[tokio::test]

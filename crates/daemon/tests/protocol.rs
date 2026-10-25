@@ -94,6 +94,19 @@ async fn the_socket_never_goes_through_a_symlinked_directory() {
     assert_eq!(std::fs::metadata(dir.path().join("own")).unwrap().permissions().mode() & 0o777, 0o700);
 }
 
+/// S5: the check looks at the last directory only; `create_dir_all` (and the socket) follow an intermediate
+/// symlink, so the socket can still be placed wherever that link points. (Remove the ignore to watch it fail.)
+#[tokio::test]
+#[ignore = "audit S5: an intermediate symlink in the socket path is followed"]
+async fn the_socket_never_goes_through_an_intermediate_symlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = dir.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, dir.path().join("sgl")).unwrap();
+    let err = singularityd::bind(&dir.path().join("sgl/inside/d.sock"));
+    assert!(err.is_err(), "the socket was put inside the directory an intermediate symlink points at");
+}
+
 async fn connect(path: &std::path::Path) -> UnixStream {
     let mut s = UnixStream::connect(path).await.unwrap();
     proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() }).await.unwrap();

@@ -676,6 +676,25 @@ mod tests {
         assert!(Store::open(dir.path()).is_ok());
     }
 
+    /// S2: `export` writes `<name>.tmp` in the Downloads folder and follows it if it is a symlink. A shared
+    /// Downloads folder lets another local user point that name at a file of ours: the export then truncates and
+    /// overwrites it. (Remove the ignore to watch it fail.)
+    #[test]
+    #[ignore = "audit S2: export follows a planted symlink in a shared Downloads folder"]
+    fn export_does_not_follow_a_planted_temp_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("store")).unwrap();
+        let now = 1_792_000_000_000u64;
+        let out = dir.path().join("downloads");
+        std::fs::create_dir_all(&out).unwrap();
+        let victim = out.join("victim");
+        std::fs::write(&victim, "not to be touched").unwrap();
+        let tmp = out.join(format!("singularity-listening-{}.tmp", date(local_day(now))));
+        std::os::unix::fs::symlink(&victim, &tmp).unwrap();
+        let _ = store.export(&out, now);
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "not to be touched", "the export followed a symlink planted in the Downloads folder");
+    }
+
     #[test]
     fn the_store_sums_up_exports_and_deletes_with_private_files() {
         let dir = tempfile::tempdir().unwrap();
