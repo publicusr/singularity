@@ -292,8 +292,11 @@ EFI vars, SSH key, pinned `bin/vfkit` + `bin/gvproxy`, logs), setup version 2, S
 
 ## Waiting on the owner
 
-- **The T0005 live check** (above): a phone playing on Singularity must not make an earlier song come back; and the
-  Jam question (D64).
+- **The T0005 live check** (above): a phone playing on Singularity must not make an earlier song come back.
+- **Jam (D64)**: research is in `docs/research/2026-10-jam.md` (T0033). It answers the API (social-connect, the
+  session fields, the dealer topic, the link/QR forms), who can host and the fit with our sessions. The design waits
+  on the owner; the one live check that scopes it is whether a Jam started from the Catalogue session can name
+  *Soloist's* device as `local_device_id`, or whether start belongs to the librespot Engine only.
 - The live checks listed under "Then".
 - **macOS clippy (#80, T0008)**: run `cargo clippy --workspace --all-targets` on the Mac (and `tools/check-linux.sh`
   as usual). The fixes are style-only, but the `cfg(target_os = "macos")` code wasn't checked from Linux.
