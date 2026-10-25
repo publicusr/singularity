@@ -14,6 +14,11 @@
 - Spotify's platform rules change often. Re-verify facts in `docs/research/` that are more than ~3 months old before
   building on them.
 - Never commit secrets (Soloist API key, tokens).
+- **Never write the owner's personal data into the repo** (code, docs, comments, fixtures, pty scenarios or commit
+  messages): no real name, device or host names, account names, e-mail addresses, or absolute local paths
+  (`/home/…`, `/Users/…`, `~/…`, `~/…`). Write "the owner", "the PC", "the Mac", "a phone",
+  `$HOME`, `~/src/singularity`. Fixtures recorded from live answers get fake values, not the owner's. The scrub and
+  its history plan are in `docs/research/2026-10-history-scrub.md`.
 - Verify user-visible changes in a pseudo-terminal (pyte + PIL screenshots) before closing a ticket.
 - Only kill processes you started; test sockets go in `$XDG_RUNTIME_DIR/sgl-*`, on macOS
   `/tmp/sgl-<uid>/` (Unix socket paths must be short).
@@ -23,3 +28,17 @@
   "macOS quirks" sections are the user-facing version: keep them true too.
 - Test Daemons pin their Engine and stay in scratch dirs (`SINGULARITY_ENGINE`, `SINGULARITY_SOLOIST=local`,
   `SINGULARITY_START_APP=0`, `SINGULARITY_NOWPLAYING=off`, `SINGULARITY_NO_KEYRING=1`, scratch `XDG_*`): see HANDOFF.
+
+## Before publishing
+
+Singularity is heading for a public release. These are the owner's decisions when the time comes; do not do them
+unasked:
+
+- [ ] Scrub personal data from git history (`docs/research/2026-10-history-scrub.md`): every SHA changes, every
+  branch must be re-cloned, and it ends in a force push. **Never run it or force-push without the owner's go-ahead.**
+- [ ] Add a `LICENSE` file (`Cargo.toml` says MIT; the tree has none).
+- [ ] Add CI (`.github/workflows/`) running what we run by hand: `cargo test --workspace`, clippy, `cargo deny check`.
+- [ ] Add `rust-version` (MSRV) and settle crate metadata (`authors`, `publish = false` is fine for a binary app).
+- [ ] Decide what stays of `prototypes/`, `spikes/` and `.claude/`: they are committed today and a visitor sees them
+  beside `crates/`.
+- [ ] Screenshots for the README (`docs/screenshots/` is git-ignored: it holds personal data).
