@@ -145,7 +145,7 @@ fn running() -> bool {
 #[cfg(target_os = "macos")]
 fn start() -> std::io::Result<()> {
     // -g: don't bring it to the foreground; -j: launch it hidden
-    let open = Tool::Open.find().ok_or_else(|| std::io::Error::other(format!("`open` is missing ({SEARCHED})")))?;
+    let open = Tool::Open.find().ok_or_else(|| std::io::Error::other("`open` is missing (looked in /usr/bin)"))?;
     let s = command(open).args(["-gj", "-a", "Spotify"]).status()?;
     if s.success() { Ok(()) } else { Err(std::io::Error::other(format!("`open -gj -a Spotify` failed ({s})"))) }
 }
