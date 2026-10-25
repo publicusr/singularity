@@ -154,7 +154,6 @@ async fn an_archive_over_the_cap_fails_cleanly_and_keeps_the_build() {
 }
 
 #[tokio::test]
-#[ignore = "audit S4: an archive's build.json symlink writes outside soloist.new/"]
 async fn an_archive_cannot_write_outside_its_directory_through_a_symlink() {
     let victim_dir = tempfile::tempdir().unwrap();
     let victim = victim_dir.path().join("victim");
