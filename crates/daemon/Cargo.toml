@@ -31,6 +31,8 @@ protobuf = "3.7"
 rustfft = "6"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream"] }
 regex = "1"
+# the notification cover's decode limits, the same ones the Client's covers use (B9)
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 # MPRIS and desktop notifications (6.x: zbus 5's zvariant/zbus_names helpers are unmaintained)
 zbus = { version = "6.0", default-features = false, features = ["tokio", "proxy", "service"] }
 # the listening log (bundled SQLite: no system library needed)
