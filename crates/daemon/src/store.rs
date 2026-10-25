@@ -300,13 +300,46 @@ impl Store {
     }
 }
 
-/// Write `data` to `path` with owner-only permissions, atomically (temp file + rename).
+/// Write `data` to `path` with owner-only permissions, atomically (a fresh temp file + rename).
+///
+/// The temp name is random and created with `create_new` (which refuses an existing path, a symlink included): in a
+/// shared folder such as the Downloads folder a predictable `<name>.tmp` could be planted by another local user as a
+/// symlink to a file of ours, and a plain `open` would follow it (S2). `rename` replaces a link at the final name
+/// itself, never its target.
 fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
-    f.write_all(data)?;
-    f.sync_all()?;
-    std::fs::rename(&tmp, path)
+    use std::io::ErrorKind;
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "export".into());
+    let (tmp, mut f) = loop {
+        let candidate = dir.join(format!(".{name}.{}.{}.tmp", std::process::id(), temp_suffix()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&candidate) {
+            Ok(f) => break (candidate, f),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    };
+    let written = (|| {
+        f.write_all(data)?;
+        f.sync_all()?;
+        // a file an older build copied in with loose permissions comes out owner-only too
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))
+    })();
+    drop(f);
+    match written.and_then(|_| std::fs::rename(&tmp, path)) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// A suffix for a temp name: the clock's nanoseconds and a counter, enough that two writers can't collide.
+fn temp_suffix() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos() as u64).unwrap_or(0);
+    nanos.rotate_left(16) ^ COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 /// The Downloads folder: `$XDG_DOWNLOAD_DIR`, else `user-dirs.dirs`, else `~/Downloads` (or home if that's missing).
@@ -342,6 +375,27 @@ struct Current {
     played_ms: u64,
     /// playing since (Unix ms); None while paused
     since: Option<u64>,
+    /// the position anchor of the last state seen (position at timestamp, advancing at speed), to spot the same track
+    /// starting over
+    position_ms: u64,
+    timestamp_ms: u64,
+    speed: f32,
+}
+
+/// How far behind its own progress a state's position may be before it means the track started over (a seek back to
+/// the start, repeat one, a replay): Soloist's reports can lag by a second or so.
+const RESTART_TOLERANCE_MS: u64 = 5_000;
+
+/// Did `s` go back to the start of the same track? Only a state with a later timestamp can say so (an out-of-order
+/// one, or one without a position anchor as some Engines send, says nothing about the track). The position the last
+/// state implies at `s`'s timestamp is compared with the position `s` actually reports.
+fn restarted(c: &Current, s: &PlaybackState) -> bool {
+    if s.timestamp_ms <= c.timestamp_ms {
+        return false;
+    }
+    let elapsed = (s.timestamp_ms - c.timestamp_ms) as f64 * c.speed as f64;
+    let expected = c.position_ms as f64 + elapsed.max(0.0);
+    (s.position_ms as f64) + RESTART_TOLERANCE_MS as f64 + 1.0 < expected
 }
 
 impl Recorder {
@@ -352,9 +406,15 @@ impl Recorder {
             c.played_ms += now_ms.saturating_sub(t);
         }
         let same = matches!((&self.cur, &s.item), (Some(c), Some(i)) if c.item.uri == i.uri) && s.status != PlayStatus::Idle;
-        if same {
+        // the same track again, at a position well behind its progress: it started over (repeat one, a replay, a seek
+        // back), so the run so far is one play and this is the next
+        let again = same && self.cur.as_ref().is_some_and(|c| restarted(c, s));
+        if same && !again {
             let c = self.cur.as_mut().expect("same track");
             c.since = (s.status == PlayStatus::Playing).then_some(now_ms);
+            c.position_ms = s.position_ms;
+            c.timestamp_ms = s.timestamp_ms;
+            c.speed = s.speed;
             return None;
         }
         let done = self.cur.take().and_then(Current::finish);
@@ -366,6 +426,9 @@ impl Recorder {
                 started_ms: now_ms,
                 played_ms: 0,
                 since: (s.status == PlayStatus::Playing).then_some(now_ms),
+                position_ms: s.position_ms,
+                timestamp_ms: s.timestamp_ms,
+                speed: s.speed,
             });
         }
         done
@@ -680,7 +743,6 @@ mod tests {
     /// Downloads folder lets another local user point that name at a file of ours: the export then truncates and
     /// overwrites it. (Remove the ignore to watch it fail.)
     #[test]
-    #[ignore = "audit S2: export follows a planted symlink in a shared Downloads folder"]
     fn export_does_not_follow_a_planted_temp_symlink() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("store")).unwrap();

@@ -29,7 +29,13 @@ pub fn parse_lrc(text: &str) -> Vec<LyricLine> {
             rest = r[end + 1..].trim_start();
             let mut p = tag.split(':');
             let (Some(m), Some(s)) = (p.next().and_then(|m| m.parse::<u64>().ok()), p.next().and_then(|s| s.parse::<f64>().ok())) else { continue };
-            stamps.push(m * 60_000 + (s * 1000.0).round() as u64);
+            // third-party text: `inf`, negative and enormous seconds must not panic a counting arithmetic (debug) or
+            // wrap to an arbitrary time (release). A non-finite or negative stamp is skipped; an overflowing one
+            // saturates at `u64::MAX`, which keeps its line last in the sort below.
+            if !s.is_finite() || s < 0.0 {
+                continue;
+            }
+            stamps.push(m.saturating_mul(60_000).saturating_add((s * 1000.0).round() as u64));
         }
         for t in stamps {
             out.push(LyricLine { start_ms: t, text: rest.to_string() });
