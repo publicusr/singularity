@@ -108,6 +108,9 @@ that didn't go through" (or await the send with a short timeout on the connectio
 
 ### Q3 · correctness (latent) · `daemon/src/lib.rs:648-702` · S
 
+**Fixed (T0027, Q3):** one `fn catalogue_cmd(&Command) -> Option<Result<CatCmd, &'static str>>`; `GetHome` is its
+own arm and nothing falls through to Home. Test: `catalogue_commands_map_one_to_one`.
+
 `client_session` routes commands to the Catalogue with **two hand-maintained lists of the same 25 commands**: one big
 or-pattern in the match guard (`Command::Login | Command::Logout | …`) and one match arm each inside, ending in
 `_ => CatCmd::Home`. A command added to the guard but forgotten in the inner match compiles fine and silently answers
@@ -280,6 +283,10 @@ impl Host {
 also deletes the `Infallible` hack and the `allow(unused_*)`.
 
 ### Q11 · maintainability · `daemon/src/catalogue.rs` (14×), `r#12` elsewhere; `daemon/src/mpris.rs:402-420` · S
+
+**Fixed (T0027, Q11):** `State::fail` logs an error event that can't be delivered instead of dropping it silently
+(27 sites), `Hub::report` logs when no Client can hear an error, and the notification cover's `.ok()?` chain is a
+`Result` logged with its reason at debug (see B9/S6).
 
 Errors are dropped without a trace in places where the failure matters:
 
