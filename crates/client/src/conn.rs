@@ -1,6 +1,7 @@
 //! Connection to the Daemon: start it if needed, handshake, forward messages, reconnect forever.
 
-/// The variable the Daemon reads the Soloist key from: a child the Client starts never inherits it (audit S10).
+/// The variable the Daemon reads the Soloist key from. The Daemon itself is started with it (it is the one program
+/// that needs it); no other child of the Client inherits it (audit S10).
 pub const SECRET_ENV: &str = "SOLOIST_API_KEY";
 
 use singularity_proto::{self as proto, ClientMsg, Command, DaemonMsg, PROTOCOL_VERSION};
@@ -202,7 +203,8 @@ fn start_daemon() -> Result<(), String> {
     // (one made by an older build is 0644)
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     let mut cmd = std::process::Command::new(&exe);
-    cmd.env_remove(SECRET_ENV).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null());
+    // the Daemon keeps SOLOIST_API_KEY: it reads the key from there first (soloist.rs)
+    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null());
     match log {
         Some(f) => cmd.stderr(f),
         None => cmd.stderr(std::process::Stdio::null()),
