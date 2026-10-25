@@ -88,13 +88,10 @@ pub enum Served {
 /// A running Catalogue task (see `catalogue::spawn`); `None` disables it (tests, offline use).
 pub type CatalogueHandle = (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>);
 
-/// Bind the socket (replacing a stale one) with owner-only permissions on its directory.
+/// Bind the socket (replacing a stale one), in a directory that is ours and owner-only.
 pub fn bind(path: &Path) -> std::io::Result<UnixListener> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-        private_dir(dir)?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        socket_dir(dir)?;
     }
     if path.exists() {
         // A live Daemon answers; a dead one leaves a stale socket file behind.
@@ -106,8 +103,42 @@ pub fn bind(path: &Path) -> std::io::Result<UnixListener> {
     UnixListener::bind(path)
 }
 
-/// The socket's directory must be ours (not a symlink), and so must the one holding it (or root's): in a shared
-/// directory like `/tmp`, another user who made either first could swap in a socket of their own.
+/// The socket's directory: created owner-only from the start when it's missing, and never created or reached through
+/// a symlink (A10/S5: a link anywhere on the way could put the socket where someone else chose). A directory that is
+/// already there is accepted if it's ours, but its mode is left alone: the Daemon only tightens what it made itself.
+fn socket_dir(dir: &Path) -> std::io::Result<()> {
+    // before creating anything: creating directories follows a symlink, so it would end up behind one
+    no_symlinks(dir)?;
+    if !dir.exists() {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        builder.create(dir)?;
+    }
+    private_dir(dir)
+}
+
+/// Every component of the way to `dir` that exists must be a real directory: a symlink anywhere could put the
+/// socket (and its directory) where someone else chose.
+fn no_symlinks(dir: &Path) -> std::io::Result<()> {
+    let mut cur = PathBuf::new();
+    for part in dir.components() {
+        cur.push(part);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("{} is a symlink: refusing to put the socket there", cur.display())));
+            }
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("{} isn't a directory: refusing to put the socket there", cur.display()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// The socket's directory must be ours, and so must the one holding it (or root's): in a shared directory like
+/// `/tmp`, another user who made either first could swap in a socket of their own.
 fn private_dir(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::MetadataExt;
     let me = unsafe { libc::getuid() }; // SAFETY: getuid has no preconditions and can't fail

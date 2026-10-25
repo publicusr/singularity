@@ -94,10 +94,9 @@ async fn the_socket_never_goes_through_a_symlinked_directory() {
     assert_eq!(std::fs::metadata(dir.path().join("own")).unwrap().permissions().mode() & 0o777, 0o700);
 }
 
-/// S5: the check looks at the last directory only; `create_dir_all` (and the socket) follow an intermediate
-/// symlink, so the socket can still be placed wherever that link points. (Remove the ignore to watch it fail.)
+/// S5/A10: the check used to look at the last directory only; `create_dir_all` (and the socket) followed an
+/// intermediate symlink, so the socket could be placed wherever that link pointed.
 #[tokio::test]
-#[ignore = "audit S5: an intermediate symlink in the socket path is followed"]
 async fn the_socket_never_goes_through_an_intermediate_symlink() {
     let dir = tempfile::tempdir().unwrap();
     let elsewhere = dir.path().join("elsewhere");
@@ -105,6 +104,32 @@ async fn the_socket_never_goes_through_an_intermediate_symlink() {
     std::os::unix::fs::symlink(&elsewhere, dir.path().join("sgl")).unwrap();
     let err = singularityd::bind(&dir.path().join("sgl/inside/d.sock"));
     assert!(err.is_err(), "the socket was put inside the directory an intermediate symlink points at");
+    assert!(!elsewhere.join("inside").exists(), "a directory was created behind the symlink");
+}
+
+/// A10: only the directory the Daemon created for the socket is made owner-only; an existing one keeps its mode
+/// (`SINGULARITY_SOCKET=$HOME/daemon.sock` used to chmod `$HOME` to 0700).
+#[tokio::test]
+async fn a_socket_directory_that_already_exists_keeps_its_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let own = dir.path().join("shared");
+    std::fs::create_dir(&own).unwrap();
+    std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o755)).unwrap();
+    singularityd::bind(&own.join("d.sock")).unwrap();
+    assert_eq!(std::fs::metadata(&own).unwrap().permissions().mode() & 0o777, 0o755, "the Daemon chmod'ed a directory it didn't create");
+}
+
+/// A10: a new socket directory is 0700 from the moment it exists (no umask window for another user to slip a file in).
+#[tokio::test]
+async fn a_new_socket_directory_is_owner_only_from_the_start() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("a/b");
+    singularityd::bind(&nested.join("d.sock")).unwrap();
+    for p in [dir.path().join("a"), nested.clone()] {
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o700, "{} isn't owner-only", p.display());
+    }
 }
 
 async fn connect(path: &std::path::Path) -> UnixStream {
