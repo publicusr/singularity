@@ -323,8 +323,8 @@ Suggested fix: `set_permissions(path, 0600)` after opening (or `fchmod` the hand
 
 ## Not filed / left for the other angles
 
-- T0025 already has C1/C3 (the description wedge) and C14 (LRC overflow from my handoff); C8 (refresh blocks browsing)
-  is the correctness side of S7. My S8 adds the Hub-side unbounded maps.
+- T0025 already has C1/C3 (the description wedge), C14 (LRC overflow from my handoff) and C15 (the page-counter
+  wrap); C8 (refresh blocks browsing) is the correctness side of S7. My S8 adds the Hub-side unbounded maps.
 - T0026 has the PATH/`Tool` cleanup (S3) and the `tar`-reader suggestion (S4) in its handoffs.
 - Residual, not filed: a same-uid process can ask the Daemon to `Shutdown` or open many protocol connections; both are
   within that user’s authority and the socket dir is 0700. The 16 MiB frame allocation is reached only after the peer
