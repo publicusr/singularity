@@ -82,20 +82,20 @@ mod store {
     use std::process::Command;
 
     pub fn lookup(account: &str) -> Option<Command> {
-        let mut c = Command::new(crate::programs::Tool::SecretTool.find()?);
+        let mut c = crate::programs::command(crate::programs::Tool::SecretTool.find()?);
         c.args(["lookup", "service", "singularity", "account", account]);
         Some(c)
     }
 
     /// The value goes over stdin, never on a command line.
     pub fn store(account: &str, value: &str) -> bool {
-        let Some(mut c) = crate::programs::Tool::SecretTool.find().map(Command::new) else { return false };
+        let Some(mut c) = crate::programs::Tool::SecretTool.find().map(crate::programs::command) else { return false };
         c.args(["store", "--label", &format!("Singularity: {account}"), "service", "singularity", "account", account]);
         super::feed(c, value)
     }
 
     pub fn remove(account: &str) -> Option<Command> {
-        let mut c = Command::new(crate::programs::Tool::SecretTool.find()?);
+        let mut c = crate::programs::command(crate::programs::Tool::SecretTool.find()?);
         c.args(["clear", "service", "singularity", "account", account]);
         Some(c)
     }
@@ -108,7 +108,7 @@ mod store {
     const SECURITY: &str = "/usr/bin/security";
 
     pub fn lookup(account: &str) -> Option<Command> {
-        let mut c = Command::new(SECURITY);
+        let mut c = crate::programs::command(SECURITY);
         c.args(["find-generic-password", "-s", "singularity", "-a", account, "-w"]);
         Some(c)
     }
@@ -121,19 +121,22 @@ mod store {
         }
         let hex: String = value.bytes().map(|b| format!("{b:02x}")).collect();
         let line = format!("add-generic-password -U -s singularity -a {account} -l \"Singularity: {account}\" -X {hex}\n");
-        let mut c = Command::new(SECURITY);
+        let mut c = crate::programs::command(SECURITY);
         c.arg("-i");
         super::feed(c, &line)
     }
 
     pub fn remove(account: &str) -> Option<Command> {
-        let mut c = Command::new(SECURITY);
+        let mut c = crate::programs::command(SECURITY);
         c.args(["delete-generic-password", "-s", "singularity", "-a", account]);
         Some(c)
     }
 }
 
 /// Write `value` to `path`, readable by its owner only (directory 0700, file 0600).
+///
+/// `mode(0600)` only applies when the file is created: a loose file from an older build (or a copied backup) keeps its
+/// mode. Tightening the open handle also closes the window between creating a file and chmod'ing it by path.
 pub fn write_private(path: &std::path::Path, value: &str) -> std::io::Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     if let Some(dir) = path.parent() {
@@ -141,6 +144,7 @@ pub fn write_private(path: &std::path::Path, value: &str) -> std::io::Result<()>
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
     let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(path)?;
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     f.write_all(value.as_bytes())
 }
 
@@ -156,5 +160,19 @@ mod tests {
         write_private(&p, "x").unwrap();
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(std::fs::metadata(p.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
+    /// S9: an existing loose file (an older build's, a copied backup) is tightened, not left readable.
+    #[test]
+    fn an_existing_loose_file_is_tightened() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("s/secret");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "old").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&p, "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "new");
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
     }
 }

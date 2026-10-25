@@ -10,6 +10,7 @@
 
 use crate::catalogue::CatCmd;
 use crate::engine::{Engine, EngineEvent, Identity};
+use crate::programs::{Tool, command};
 use singularity_proto::{Command, EngineStatus};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
@@ -114,35 +115,38 @@ impl Engine for AppEngine {
 #[cfg(target_os = "macos")]
 const SEARCHED: &str = "looked in /Applications and ~/Applications";
 #[cfg(not(target_os = "macos"))]
-const SEARCHED: &str = "looked for `spotify` on the PATH";
+const SEARCHED: &str = "looked in /usr/bin, /bin, /usr/local/bin and /snap/bin";
 
 /// The app, if it's installed.
 #[cfg(target_os = "macos")]
 pub fn installed() -> Option<App> {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let path = [PathBuf::from("/Applications/Spotify.app"), home.join("Applications/Spotify.app")].into_iter().find(|p| p.join("Contents/Info.plist").exists())?;
-    let version = output("defaults", &["read", &path.join("Contents/Info.plist").to_string_lossy(), "CFBundleShortVersionString"]).unwrap_or_default();
+    let plist = path.join("Contents/Info.plist");
+    let version = Tool::Defaults.find().and_then(|d| output(&d, &["read", &plist.to_string_lossy(), "CFBundleShortVersionString"])).unwrap_or_default();
     Some(App { path, version })
 }
 
 /// The app, if it's installed.
 #[cfg(not(target_os = "macos"))]
 pub fn installed() -> Option<App> {
-    let path = std::env::var_os("PATH").into_iter().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).map(|d| d.join("spotify")).find(|p| p.is_file())?;
+    // a fixed location, never `PATH` (S3): a planted `spotify` would run with the Daemon's privileges
+    let path = Tool::Spotify.find()?;
     Some(App { path, version: String::new() })
 }
 
 /// Is the app running already?
 fn running() -> bool {
-    let Some(pgrep) = crate::programs::Tool::Pgrep.find() else { return false };
-    std::process::Command::new(pgrep).args(["-x", if cfg!(target_os = "macos") { "Spotify" } else { "spotify" }]).stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
+    let Some(pgrep) = Tool::Pgrep.find() else { return false };
+    command(pgrep).args(["-x", if cfg!(target_os = "macos") { "Spotify" } else { "spotify" }]).stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
 /// Start the app without showing it.
 #[cfg(target_os = "macos")]
 fn start() -> std::io::Result<()> {
     // -g: don't bring it to the foreground; -j: launch it hidden
-    let s = std::process::Command::new("open").args(["-gj", "-a", "Spotify"]).status()?;
+    let open = Tool::Open.find().ok_or_else(|| std::io::Error::other("`open` is missing (looked in /usr/bin)"))?;
+    let s = command(open).args(["-gj", "-a", "Spotify"]).status()?;
     if s.success() { Ok(()) } else { Err(std::io::Error::other(format!("`open -gj -a Spotify` failed ({s})"))) }
 }
 
@@ -151,15 +155,16 @@ fn start() -> std::io::Result<()> {
 fn start() -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
     let null = || std::process::Stdio::null();
+    let spotify = Tool::Spotify.find().ok_or_else(|| std::io::Error::other(format!("the Spotify app is missing ({SEARCHED})")))?;
     // its own process group, so it outlives the Daemon like the desktop app it is
-    std::process::Command::new("spotify").arg("--minimized").stdin(null()).stdout(null()).stderr(null()).process_group(0).spawn().map(|_| ())
+    command(spotify).arg("--minimized").stdin(null()).stdout(null()).stderr(null()).process_group(0).spawn().map(|_| ())
 }
 
 /// Quit the app (SIGTERM: it shuts down as from its menu), wait up to 5 s for it to go, and start it again hidden.
 async fn restart() -> std::io::Result<()> {
     let name = if cfg!(target_os = "macos") { "Spotify" } else { "spotify" };
-    if let Some(pkill) = crate::programs::Tool::Pkill.find() {
-        let _ = std::process::Command::new(pkill).args(["-TERM", "-x", name]).status();
+    if let Some(pkill) = Tool::Pkill.find() {
+        let _ = command(pkill).args(["-TERM", "-x", name]).status();
     }
     for _ in 0..50 {
         if !running() {
@@ -172,13 +177,17 @@ async fn restart() -> std::io::Result<()> {
 
 /// This computer's name, as the Spotify app registers on Connect.
 pub fn this_computer() -> String {
-    let name = if cfg!(target_os = "macos") { output("scutil", &["--get", "ComputerName"]) } else { std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| output("hostname", &[])) };
+    let name = if cfg!(target_os = "macos") {
+        Tool::Scutil.find().and_then(|s| output(&s, &["--get", "ComputerName"]))
+    } else {
+        std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| Tool::Hostname.find().and_then(|h| output(&h, &[])))
+    };
     name.unwrap_or_else(|| "this computer".into())
 }
 
 /// A command's trimmed output, if it worked.
-fn output(cmd: &str, args: &[&str]) -> Option<String> {
-    let o = std::process::Command::new(cmd).args(args).stderr(std::process::Stdio::null()).output().ok()?;
+fn output(exe: &std::path::Path, args: &[&str]) -> Option<String> {
+    let o = command(exe).args(args).stderr(std::process::Stdio::null()).output().ok()?;
     let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
     (o.status.success() && !s.is_empty()).then_some(s)
 }

@@ -89,8 +89,10 @@ async fn run() -> anyhow::Result<i32> {
     });
     #[cfg(not(target_os = "macos"))]
     let soloist_vm: Option<(SoloistEngine, std::sync::Arc<singularityd::tap::Feed>)> = None;
-    let soloist_identity = soloist_vm.as_ref().map(|(s, _)| singularityd::engine::Identity { device_name: s.device_name.clone(), ..Default::default() });
-    let identity = app.as_ref().map(|a| a.identity.clone()).or_else(|| librespot.as_ref().map(|l| l.identity.clone())).or(soloist_identity).unwrap_or_default();
+    // `[engine] device` names Soloist too, on Linux as in the VM (audit C5): the same name in Connect and in the identity
+    let local_soloist = SoloistEngine { cache_mb: choice.soloist_cache_mb(), device_name: SoloistEngine::named(&choice.device), ..SoloistEngine::from_env() };
+    let soloist_identity = soloist_vm.as_ref().map(|(s, _)| s.device_name.clone()).unwrap_or_else(|| local_soloist.device_name.clone());
+    let identity = app.as_ref().map(|a| a.identity.clone()).or_else(|| librespot.as_ref().map(|l| l.identity.clone())).or_else(|| (kind == Some(Kind::Soloist)).then(|| singularityd::engine::Identity { device_name: soloist_identity, ..Default::default() })).unwrap_or_default();
     // --no-catalogue: playback only (no Spotify login / private API)
     // --fake-catalogue <home.json>: a recorded Home feed instead of Spotify (UI work, screenshots)
     let fake_home = args.iter().position(|a| a == "--fake-catalogue").and_then(|i| args.get(i + 1));
@@ -131,7 +133,7 @@ async fn run() -> anyhow::Result<i32> {
                 tracing::info!("Engine: Soloist in the Soloist VM, {:?} on Connect", s.device_name);
                 Box::new(s)
             }
-            None => Box::new(SoloistEngine { cache_mb: choice.soloist_cache_mb(), ..SoloistEngine::from_env() }),
+            None => Box::new(local_soloist),
         },
     };
     // MPRIS on the session bus (SINGULARITY_DBUS=<address> picks another bus, =off none). A fake Engine stays off the

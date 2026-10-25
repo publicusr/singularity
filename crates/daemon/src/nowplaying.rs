@@ -210,7 +210,7 @@ mod mac {
 
     /// A macOS notification through `osascript` (title and body passed as arguments, never as script text).
     async fn notify(n: News) {
-        let r = tokio::process::Command::new("/usr/bin/osascript")
+        let r = crate::programs::tokio_command("/usr/bin/osascript")
             .args(["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", &n.title, &n.body])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

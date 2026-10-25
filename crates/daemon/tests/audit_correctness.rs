@@ -149,13 +149,10 @@ fn playing(uri: &str, position_ms: u64, now_ms: u64) -> PlaybackState {
     }
 }
 
-/// `cargo test -p singularityd --test audit_correctness a_repeated_track -- --ignored`
-///
-/// Today: a play is identified by track URI only, so a track that starts over (repeat one, or a replay) is
-/// taken for the same play; when it finally ends, one play is logged with `played_ms` clamped to the track's
-/// length. "played N times", the listening minutes and the streak undercount every looped track.
+/// C10: before the fix a play was identified by track URI only, so a track that started over (repeat one, a replay)
+/// was taken for the same play; when it finally ended, one play was logged with `played_ms` clamped to the track's
+/// length. "played N times", the listening minutes and the streak undercounted every looped track.
 #[test]
-#[ignore = "audit C10: repeat-one is a single play in the listening log"]
 fn a_repeated_track_is_logged_as_a_second_play() {
     let mut r = singularityd::store::Recorder::default();
     assert_eq!(r.observe(&playing("spotify:track:a", 0, 0), "here", 0), None, "nothing to log yet");
@@ -167,18 +164,15 @@ fn a_repeated_track_is_logged_as_a_second_play() {
 
 // ── C14: an LRC timestamp's minutes overflow (handed over by T0024) ──────────────────────────────────
 
-/// `cargo test -p singularityd --test audit_correctness a_hostile_lrc -- --ignored`
-///
-/// Today: `parse_lrc` computes `m * 60_000 + …` on a `u64` parsed straight out of the text LRCLIB sent. A
-/// minute field of 20 digits overflows: debug builds panic (in the Catalogue task: with C2 that is a dead
-/// Catalogue), release builds wrap to an arbitrary time and the line is shown at the wrong moment.
+/// C14: before the fix `parse_lrc` computed `m * 60_000 + …` on a `u64` parsed straight out of the text LRCLIB sent.
+/// A minute field of 20 digits overflowed: debug builds panicked (in the Catalogue task), release builds wrapped to
+/// an arbitrary time and the line was shown at the wrong moment. Now it saturates (still the latest line) and a
+/// non-finite or negative stamp is skipped.
 #[test]
-#[ignore = "audit C14: an LRC timestamp's minutes overflow (panic in debug, a wrong time in release)"]
 fn a_hostile_lrc_timestamp_does_not_overflow() {
-    let lines = singularityd::lyrics::parse_lrc("[18446744073709551615:59.99] words\n[00:01.00] fine\n");
-    assert_eq!(lines.len(), 2);
+    let lines = singularityd::lyrics::parse_lrc("[18446744073709551615:59.99] words\n[00:01.00] fine\n[00:inf] no\n[00:-2.5] no\n");
+    assert_eq!(lines.len(), 2, "the non-finite and negative stamps are skipped");
     // saturated, in time order, and the sane line is untouched
-    assert_eq!(lines[1].text, "fine");
-    assert_eq!(lines[1].start_ms, 1000);
-    assert!(lines[0].start_ms >= lines[1].start_ms, "the overflowing stamp stays the latest, not a wrapped one: {:?}", lines[0].start_ms);
+    assert_eq!((lines[0].text.as_str(), lines[0].start_ms), ("fine", 1000));
+    assert_eq!((lines[1].text.as_str(), lines[1].start_ms), ("words", u64::MAX), "the overflowing stamp stays the latest, not a wrapped one");
 }

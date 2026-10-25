@@ -7,9 +7,9 @@
 //! - A failed check or download keeps the old build and retries with backoff.
 
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::process::Command as Proc;
 
 pub const CDN: &str = "https://soloist-builds.spotifycdn.com/soloist_release_x86_64.tar.gz";
 
@@ -130,6 +130,13 @@ pub async fn check(builds: &Builds, url: &str) -> anyhow::Result<Checked> {
 /// The most a build archive may be (a build is ~35 MB): a few hundred MB means the CDN sent something else.
 pub const MAX_ARCHIVE: u64 = 256 * 1024 * 1024;
 
+/// The most the *unpacked* build may be (a build is ~100 MB on disk): a gzip bomb under the compressed cap must not
+/// fill the disk while it is unpacked.
+pub const MAX_UNPACKED: u64 = 512 * 1024 * 1024;
+
+/// How many members a build archive may have (the real one has a few: `soloist`, its licence and changelog).
+pub const MAX_MEMBERS: usize = 64;
+
 /// Fetch, unpack and verify a build into `soloist.new/`. On any failure nothing else is touched.
 pub async fn download(builds: &Builds, url: &str) -> anyhow::Result<Build> {
     download_with_cap(builds, url, MAX_ARCHIVE).await
@@ -145,11 +152,11 @@ pub async fn download_with_cap(builds: &Builds, url: &str, cap: u64) -> anyhow::
         let (etag, last_modified) = (header(&resp, "etag"), header(&resp, "last-modified"));
         let tgz = dir.join("soloist.tar.gz");
         save_archive(resp, &tgz, cap).await?;
-        let tar = crate::programs::Tool::Tar.path()?;
-        let ok = Proc::new(tar).arg("-xzf").arg(&tgz).arg("-C").arg(&dir).status().await?.success();
+        // unpacking off the async runtime: it reads a whole archive, capped (audit S4)
+        let (from, to) = (tgz.clone(), dir.clone());
+        let unpacked = tokio::task::spawn_blocking(move || unpack(&from, &to)).await??;
         let _ = tokio::fs::remove_file(&tgz).await;
-        anyhow::ensure!(ok, "couldn't unpack the build");
-        let version = version_of(&dir.join("soloist")).await?;
+        let version = version_of(&unpacked).await?;
         let build = Build { etag, last_modified, version };
         write_build(&dir, &build)?;
         anyhow::Ok(build)
@@ -183,6 +190,62 @@ async fn save_archive(resp: reqwest::Response, path: &Path, cap: u64) -> anyhow:
     Ok(())
 }
 
+/// Unpack `archive` into `dir`, which must be a fresh directory: only regular files and directories, no links, no
+/// absolute or `..` paths, and at most [`MAX_UNPACKED`] bytes in [`MAX_MEMBERS`] members. Returns the binary's path.
+///
+/// The archive comes from Spotify's CDN over TLS, which is already trusted to supply the binary; this keeps a broken
+/// or hostile answer from turning into an arbitrary write outside `dir` (a `build.json` symlink) or a disk-filling
+/// gzip bomb (audit S4).
+pub fn unpack(archive: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
+    unpack_with_cap(archive, dir, MAX_UNPACKED)
+}
+
+/// [`unpack`] with an explicit unpacked-size cap (tests serve a small one).
+pub fn unpack_with_cap(archive: &Path, dir: &Path, cap: u64) -> anyhow::Result<PathBuf> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let file = std::fs::File::open(archive)?;
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(std::io::BufReader::new(file)));
+    tar.set_overwrite(true);
+    let mut members = 0usize;
+    let mut unpacked = 0u64;
+    for entry in tar.entries()? {
+        let mut entry = entry?;
+        members += 1;
+        anyhow::ensure!(members <= MAX_MEMBERS, "the build archive has more than {MAX_MEMBERS} members");
+        let kind = entry.header().entry_type();
+        let path = entry.path()?.into_owned();
+        anyhow::ensure!(!path.is_absolute() && !path.components().any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_))), "the build archive has an unsafe path: {}", path.display());
+        anyhow::ensure!(!path.as_os_str().is_empty(), "the build archive has an empty member name");
+        let size = entry.size();
+        unpacked = unpacked.saturating_add(size);
+        anyhow::ensure!(unpacked <= cap, "the build archive unpacks to more than {} MB", (cap / (1024 * 1024)).max(1));
+        match kind {
+            tar::EntryType::Directory => {
+                std::fs::create_dir_all(dir.join(&path))?;
+            }
+            tar::EntryType::Regular | tar::EntryType::Continuous => {
+                let target = dir.join(&path);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                // `create_new`: never write through a link (there are none, having refused them all, but the check
+                // is what makes that true), and never over another member
+                let mut out = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&target)?;
+                std::io::copy(&mut entry, &mut out)?;
+                // the archive's mode, without setuid/setgid/sticky and without making it world-writable
+                let mode = entry.header().mode().unwrap_or(0o644) & 0o755;
+                std::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode))?;
+            }
+            // symlinks, hard links, devices, FIFOs: nothing a build needs, everything an escape wants
+            other => anyhow::bail!("the build archive has a member of an unexpected kind ({other:?}): {}", path.display()),
+        }
+    }
+    let binary = dir.join("soloist");
+    let meta = std::fs::symlink_metadata(&binary).map_err(|_| anyhow::anyhow!("the build archive has no soloist binary"))?;
+    anyhow::ensure!(meta.is_file() && meta.permissions().mode() & 0o111 != 0, "the build's soloist is not an executable file");
+    Ok(binary)
+}
+
 /// First start: put a build in place (one already staged, else a fresh download).
 pub async fn ensure(builds: &Builds, url: &str) -> anyhow::Result<()> {
     if builds.binary().exists() {
@@ -197,16 +260,32 @@ pub async fn ensure(builds: &Builds, url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `soloist --version`, which a build must answer before it's used.
+/// `soloist --version`, which a build must answer before it's used. Only a regular file of ours is run: a link in the
+/// archive could otherwise point at another program (audit S4).
 async fn version_of(exe: &Path) -> anyhow::Result<String> {
-    let out = tokio::time::timeout(Duration::from_secs(15), Proc::new(exe).arg("--version").kill_on_drop(true).output()).await??;
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(exe)?;
+    anyhow::ensure!(meta.is_file() && meta.uid() == unsafe { libc::getuid() }, "the build's soloist is not a regular file of ours");
+    let out = tokio::time::timeout(Duration::from_secs(15), crate::programs::tokio_command(exe).arg("--version").kill_on_drop(true).output()).await??;
     let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
     anyhow::ensure!(out.status.success() && !v.is_empty(), "the new build doesn't run (`--version` failed)");
     Ok(v)
 }
 
+/// Write `build.json` as a new regular file: a link at that name (left by an archive, or an older build) is removed,
+/// never written through (audit S4).
 fn write_build(dir: &Path, b: &Build) -> std::io::Result<()> {
-    std::fs::write(dir.join("build.json"), serde_json::to_vec_pretty(b).expect("plain struct"))
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = dir.join("build.json");
+    // (a stale or broken `build.json`, or a link an archive carried: removed as a name, so a link's target is never
+    // written through; then a fresh regular file)
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => std::fs::remove_file(&path)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o644).open(&path)?;
+    f.write_all(&serde_json::to_vec_pretty(b).expect("plain struct"))
 }
 
 /// Was the untracked install made after the CDN's build appeared? (Then it is that build.)
@@ -278,6 +357,96 @@ mod tests {
         assert_eq!(next_check(1, None), Duration::from_secs(15 * 60));
         assert_eq!(next_check(3, None), Duration::from_secs(60 * 60));
         assert_eq!(next_check(30, None), Duration::from_secs(6 * 3600), "capped");
+    }
+
+    /// A `.tar.gz` from `(name, kind, body)` members, as a hostile or broken archive could carry them.
+    fn archive(members: &[(&str, tar::EntryType, &[u8])]) -> Vec<u8> {
+        let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut b = tar::Builder::new(gz);
+        for (name, kind, body) in members {
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(*kind);
+            h.set_size(body.len() as u64);
+            h.set_mode(0o755);
+            h.set_mtime(0);
+            if matches!(*kind, tar::EntryType::Link | tar::EntryType::Symlink) {
+                h.set_link_name("/etc/passwd").unwrap();
+            }
+            b.append_data(&mut h, name, *body).unwrap_or_else(|e| panic!("test archive {name}: {e}"));
+        }
+        b.into_inner().unwrap().finish().unwrap()
+    }
+
+    /// Unpack `members` into a fresh directory, with the real cap.
+    fn unpack_members(members: &[(&str, tar::EntryType, &[u8])]) -> anyhow::Result<(tempfile::TempDir, PathBuf)> {
+        let dir = tempfile::tempdir().unwrap();
+        let tgz = dir.path().join("build.tar.gz");
+        std::fs::write(&tgz, archive(members)).unwrap();
+        let out = dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let binary = unpack(&tgz, &out)?;
+        Ok((dir, binary))
+    }
+
+    #[test]
+    fn a_good_archive_unpacks_with_its_binary_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, binary) = unpack_members(&[("soloist", tar::EntryType::Regular, b"#!/bin/sh\necho 1\n"), ("CHANGELOG.md", tar::EntryType::Regular, b"x")]).unwrap();
+        assert_eq!(binary.file_name().unwrap(), "soloist");
+        assert!(binary.metadata().unwrap().permissions().mode() & 0o111 != 0, "the binary stays executable");
+    }
+
+    /// S4: links (the escape that writes outside `soloist.new/`) and `..` paths are refused, before anything is written.
+    #[test]
+    fn an_archive_with_links_or_escape_paths_is_refused() {
+        let cases: Vec<Vec<(&str, tar::EntryType, &[u8])>> = vec![
+            vec![("soloist", tar::EntryType::Regular, b"#!/bin/sh\n"), ("build.json", tar::EntryType::Symlink, b"")],
+            vec![("soloist", tar::EntryType::Regular, b"#!/bin/sh\n"), ("hard", tar::EntryType::Link, b"")],
+            // (the tar crate's safe builder refuses a `..` member name itself; `unpack` checks the path as well)
+            vec![("sub/soloist", tar::EntryType::Regular, b"#!/bin/sh\n")],
+        ];
+        for members in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let tgz = dir.path().join("build.tar.gz");
+            std::fs::write(&tgz, archive(&members)).unwrap();
+            let out = dir.path().join("out");
+            std::fs::create_dir_all(&out).unwrap();
+            let err = unpack(&tgz, &out).unwrap_err().to_string();
+            assert!(err.contains("build archive") || err.contains("soloist"), "{err}");
+            // nothing landed outside the staging directory (`download_with_cap` removes it on failure)
+            assert!(!dir.path().join("victim").exists(), "the archive wrote outside its directory: {err}");
+            assert!(!out.join("victim").exists(), "the archive wrote outside its directory: {err}");
+        }
+    }
+
+    /// S4: an archive that unpacks to far more than a build (a gzip bomb inside the compressed cap) is refused on its
+    /// declared sizes, before the bytes are written.
+    #[test]
+    fn an_archive_that_unpacks_to_too_much_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let tgz = dir.path().join("bomb.tar.gz");
+        std::fs::write(&tgz, archive(&[("big", tar::EntryType::Regular, &[0u8; 8 * 1024])])).unwrap();
+        let out = dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let err = unpack_with_cap(&tgz, &out, 4 * 1024).unwrap_err().to_string();
+        assert!(err.contains("unpacks to more than"), "{err}");
+        assert!(!out.join("big").exists());
+    }
+
+    /// S4: `build.json` is written as a new regular file, never through a link left at that name.
+    #[test]
+    fn build_json_is_never_written_through_a_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "not to be touched").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join("build.json")).unwrap();
+        write_build(dir.path(), &Build { version: "v".into(), ..Default::default() }).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "not to be touched");
+        assert!(std::fs::symlink_metadata(dir.path().join("build.json")).unwrap().is_file());
+        // a stale or broken build.json is replaced, not a reason to fail
+        std::fs::write(dir.path().join("build.json"), "{not json").unwrap();
+        write_build(dir.path(), &Build { version: "v2".into(), ..Default::default() }).unwrap();
+        assert!(dir.path().join("build.json").is_file());
     }
 
     #[test]

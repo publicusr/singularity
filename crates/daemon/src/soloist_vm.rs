@@ -13,7 +13,7 @@ use crate::tap::Feed;
 use crate::vm::{self, Vm};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 
 pub struct VmHost {
     pub vm: Vm,
@@ -108,9 +108,9 @@ wait $p"#;
         self.vm.expose(&format!("127.0.0.1:{local}"), port).await?;
         let lan_port = vm::free_port().ok_or_else(|| anyhow::anyhow!("no free port"))?;
         let ip = lan_ip().await.ok_or_else(|| anyhow::anyhow!("this Mac isn't on a network (wifi or ethernet)"))?;
-        let relay = Command::new("/usr/bin/python3").args(["-c", RELAY, &lan_port.to_string(), &local.to_string()]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true).spawn()?;
+        let relay = crate::programs::tokio_command("/usr/bin/python3").args(["-c", RELAY, &lan_port.to_string(), &local.to_string()]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true).spawn()?;
         let host = format!("singularity-{}.local", std::process::id());
-        let dns = Command::new("/usr/bin/dns-sd")
+        let dns = crate::programs::tokio_command("/usr/bin/dns-sd")
             .args(["-P", name, "_spotify-connect._tcp", "local", &lan_port.to_string(), &host, &ip, "CPath=/zc", "VERSION=1.0", "Stack=SP"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -129,7 +129,7 @@ pub struct Announcement {
 /// The Mac's address on its LAN (wifi or ethernet; a VPN's tunnel can be the default route, so not that).
 async fn lan_ip() -> Option<String> {
     for ifc in ["en0", "en1", "en2", "en3"] {
-        let out = Command::new("/usr/sbin/ipconfig").args(["getifaddr", ifc]).output().await.ok()?;
+        let out = crate::programs::tokio_command("/usr/sbin/ipconfig").args(["getifaddr", ifc]).output().await.ok()?;
         let ip = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if !ip.is_empty() {
             return Some(ip);

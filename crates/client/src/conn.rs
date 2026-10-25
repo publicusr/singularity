@@ -1,5 +1,8 @@
 //! Connection to the Daemon: start it if needed, handshake, forward messages, reconnect forever.
 
+/// The variable the Daemon reads the Soloist key from: a child the Client starts never inherits it (audit S10).
+pub const SECRET_ENV: &str = "SOLOIST_API_KEY";
+
 use singularity_proto::{self as proto, ClientMsg, Command, DaemonMsg, PROTOCOL_VERSION};
 use std::time::Duration;
 use tokio::net::UnixStream;
@@ -37,7 +40,10 @@ async fn run(mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>
             Err(_) => {
                 if !started_daemon {
                     started_daemon = true;
-                    start_daemon();
+                    if let Err(message) = start_daemon() {
+                        // say it once, where the UI shows Daemon errors (retried on the next disconnect)
+                        let _ = ev_tx.send(ConnEvent::Msg(DaemonMsg::Event(singularity_proto::Event::Error { message }))).await;
+                    }
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 continue;
@@ -175,9 +181,14 @@ fn built_after(binary: &std::path::Path, started_unix_ms: u64) -> bool {
     mtime_ms > started_unix_ms + 2000
 }
 
-/// Start `singularityd` detached (next to this binary, else from PATH). Its log goes to the state dir.
-fn start_daemon() {
-    let exe = daemon_binary().unwrap_or_else(|| "singularityd".into());
+/// Start `singularityd` detached (next to this binary). Its log goes to the state dir.
+///
+/// The two are installed together (`cargo install` puts both in `~/.cargo/bin`, a build puts both in `target/…`), so
+/// the Daemon is never looked up on `PATH`: a planted `singularityd` there would run as the user (audit S3).
+fn start_daemon() -> Result<(), String> {
+    let Some(exe) = daemon_binary() else {
+        return Err(format!("can't find `singularityd` next to {}: install or build both together", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "singularity".into())));
+    };
     let log_dir = std::env::var_os("XDG_STATE_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/state")))
@@ -190,15 +201,15 @@ fn start_daemon() {
     let log = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&path).ok();
     // (one made by an older build is 0644)
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    let mut cmd = std::process::Command::new(exe);
-    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null());
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.env_remove(SECRET_ENV).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null());
     match log {
         Some(f) => cmd.stderr(f),
         None => cmd.stderr(std::process::Stdio::null()),
     };
     // own process group: closing the terminal must not take the Daemon (and the music) with it
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-    let _ = cmd.spawn();
+    cmd.spawn().map(|_| ()).map_err(|e| format!("couldn't start {}: {e}", exe.display()))
 }
 
 #[cfg(test)]

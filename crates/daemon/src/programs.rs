@@ -1,4 +1,5 @@
-//! The programs the Daemon runs (#77), found at fixed system locations instead of on `PATH`.
+//! The programs the Daemon runs (#77, audit S3/S10), found at fixed system locations instead of on `PATH`, and
+//! started without the secrets the Daemon read from its own environment.
 //!
 //! `PATH` belongs to whoever started the Daemon (a shell with the user's `~/bin` first, a wrapper script, an
 //! editor's terminal): `pkill -x spotify` or `tar -xzf` must not run a program from there. The directories below
@@ -7,7 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// A program the Daemon runs.
+/// The one variable the Daemon reads a secret from (`soloist.rs::api_key`). Children have no use for it (S10).
+pub const SECRET_ENV: &str = "SOLOIST_API_KEY";
+
+/// A program the Daemon runs, or one the Client starts for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     /// looks a process up by name (the Spotify app's)
@@ -21,6 +25,17 @@ pub enum Tool {
     /// PipeWire's control tool and recorder (the audio tap, and the health check's output name)
     Pactl,
     Parec,
+    /// macOS: starts the Spotify app hidden (`open -gj -a Spotify`)
+    Open,
+    /// the Spotify app's own binary (Linux; on macOS the app is a bundle in /Applications)
+    Spotify,
+    /// macOS: reads the app's `Info.plist` and this Mac's name
+    Defaults,
+    Scutil,
+    /// Linux: this computer's name, when `/etc/hostname` doesn't say it
+    Hostname,
+    /// Linux: the Client's browser opener for the Spotify login page
+    XdgOpen,
 }
 
 impl Tool {
@@ -38,12 +53,28 @@ impl Tool {
             Tool::SecretTool => "secret-tool",
             Tool::Pactl => "pactl",
             Tool::Parec => "parec",
+            Tool::Open => "open",
+            Tool::Spotify => "spotify",
+            Tool::Defaults => "defaults",
+            Tool::Scutil => "scutil",
+            Tool::Hostname => "hostname",
+            Tool::XdgOpen => "xdg-open",
+        }
+    }
+
+    /// Where this tool is looked for. Most are in [`Tool::DIRS`]; `scutil` is in `/usr/sbin`, and a Linux Spotify is
+    /// also installed by snap (still a fixed, root-owned location, not a user's `PATH`).
+    pub fn dirs(self) -> &'static [&'static str] {
+        match self {
+            Tool::Scutil => &["/usr/sbin"],
+            Tool::Spotify if !cfg!(target_os = "macos") => LINUX_SPOTIFY_DIRS,
+            _ => Self::DIRS,
         }
     }
 
     /// The first fixed location that has an executable of this name.
     pub fn find(self) -> Option<PathBuf> {
-        self.find_in(Self::DIRS)
+        self.find_in(self.dirs())
     }
 
     /// [`Tool::find`] in the given directories (tests pass a scratch one).
@@ -53,12 +84,35 @@ impl Tool {
 
     /// The program's path, or an error that names it and where it was looked for.
     pub fn path(self) -> anyhow::Result<PathBuf> {
-        self.path_in(Self::DIRS)
+        self.path_in(self.dirs())
     }
 
-    fn path_in(self, dirs: &[&str]) -> anyhow::Result<PathBuf> {
+    /// [`Tool::path`] with an explicit list (tests pass an empty scratch directory).
+    pub fn path_in(self, dirs: &[&str]) -> anyhow::Result<PathBuf> {
         self.find_in(dirs).ok_or_else(|| anyhow::anyhow!("`{}` is missing (looked in {})", self.name(), dirs.join(", ")))
     }
+}
+
+/// Linux: the system locations a Spotify install uses (a `.deb`/`.rpm` puts it in `/usr/bin`, snap in `/snap/bin`).
+const LINUX_SPOTIFY_DIRS: &[&str] = &["/usr/bin", "/bin", "/usr/local/bin", "/snap/bin"];
+
+/// The engine-specific tool the health view should name when it's missing: the app's own launcher.
+pub fn app_tool() -> Tool {
+    if cfg!(target_os = "macos") { Tool::Open } else { Tool::Spotify }
+}
+
+/// A child process that never inherits the Daemon's secret (S10: the app, `pactl` and the rest have no use for it).
+pub fn command(prog: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut c = std::process::Command::new(prog);
+    c.env_remove(SECRET_ENV);
+    c
+}
+
+/// [`command`] for the daemon's async spawns (Soloist, the VM's helpers, `tar`).
+pub fn tokio_command(prog: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
+    let mut c = tokio::process::Command::new(prog);
+    c.env_remove(SECRET_ENV);
+    c
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -94,5 +148,29 @@ mod tests {
         let err = Tool::Parec.path_in(&dirs).unwrap_err().to_string();
         assert!(err.contains("parec") && err.contains(dirs[0]), "{err}");
         assert!(!is_executable(&empty.path().join("nope")));
+    }
+
+    /// S3: the rest of the programs are fixed locations too, and none of them is a bare name.
+    #[test]
+    fn the_new_programs_have_fixed_locations() {
+        for t in [Tool::Open, Tool::Spotify, Tool::Defaults, Tool::Scutil, Tool::Hostname, Tool::XdgOpen] {
+            assert!(t.dirs().iter().all(|d| d.starts_with('/')), "{} is looked up in {:?}", t.name(), t.dirs());
+            assert!(t.find().is_none_or(|p| p.is_absolute()));
+        }
+        if cfg!(target_os = "macos") {
+            assert_eq!(Tool::Scutil.dirs(), ["/usr/sbin"]);
+        } else {
+            assert!(Tool::Spotify.dirs().contains(&"/snap/bin"));
+        }
+    }
+
+    /// S10: a child starts without the secret its parent may carry.
+    #[test]
+    fn a_child_does_not_inherit_the_secret() {
+        let c = command("/bin/sh");
+        let env = c.get_envs().find(|(k, _)| *k == SECRET_ENV);
+        assert_eq!(env, Some((std::ffi::OsStr::new(SECRET_ENV), None)), "the secret is removed from the child's environment");
+        let c = tokio_command("/bin/sh");
+        assert!(c.as_std().get_envs().any(|(k, v)| k == SECRET_ENV && v.is_none()));
     }
 }
