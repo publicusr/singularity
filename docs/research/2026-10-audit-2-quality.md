@@ -389,11 +389,11 @@ What a public repo would still be missing or exposing. Lists only; these are the
 - **Crate metadata gaps:** no `rust-version` (MSRV) anywhere, though the code uses edition 2024 and recent APIs
   (`is_multiple_of`, let-chains in `if` guards); no `authors` field; all four crates `publish = false` (fine for a binary
   app — a fact, not a finding); `description` present for all four.
-- **Personal data in the tree:** `docs/HANDOFF.md:279-281` names the owner and their machines ("Singularity on
-  the Mac", the app's device name, the Linux hostname); `docs/HANDOFF.md:331` and `README.md` mention
-  the private GitHub repo; local paths (`~/src/singularity`, `~/src/singularity`) appear
-  throughout the docs. `crates/client/src/cover.rs`'s tests use `/home/u/…` (fine). No secrets found (see "Checked,
-  fine").
+- **Personal data in the tree:** the handoff named the owner and their machines (device names on the Connect
+  account, the Linux hostname); it and `README.md` mention the private GitHub repo; personal local paths appeared
+  throughout the docs. T0030 scrubbed the tree and planned the history rewrite (`docs/research/2026-10-history-scrub.md`);
+  this report now names the categories, not the values. `crates/client/src/cover.rs`'s tests use `/home/u/…` (fine).
+  No secrets found (see "Checked, fine").
 - **Non-product trees committed:** `prototypes/`, `spikes/`, `.claude/` (agent instructions), `.project.yml`, and
   `CLAUDE.md`'s working agreements — all fine to keep, but they are what a visitor sees beside `crates/`.
 - **Build steps:** `README.md`'s Linux section is accurate against `crates/*/Cargo.toml` (needs `alsa-lib`,

@@ -44,7 +44,7 @@ fixed: the osc held its height ~3 s after a pause (owner report), kitty shared-m
 (most fell back to zlib), two TLS advisories patched. Clippy and cargo audit done on Linux; nightly installed (miri,
 rust-src, llvm-tools). `tools/soak.sh` is the Linux soak sampler. Next: step 3 onwards.
 Then (2026-10-21): the owner restarted on the new build; Soloist's updater ran live at Daemon start (1.3.10.1, clean).
-Step 3: librespot started on Linux in a scratch test Daemon (logged in, on Connect as "Singularity on host",
+Step 3: librespot started on Linux in a scratch test Daemon (logged in, on Connect as "Singularity on <host name>",
 ALSA default), but the session was stopped: the tool permission check refused copying the owner's Spotify login out
 of the keyring into a scratch dir (the scratch copy was deleted at once). **Logged-in test Daemons need the owner's
 say** (a permission rule, or the owner switches `[engine] kind` on their own Daemon). The app Engine is blocked the
@@ -105,6 +105,9 @@ macOS-only checks still waiting for the owner (can wait until they're back on th
   (top: Soloist log/state permissions, export symlink, archive links; tests in the daemon crates are `#[ignore]`d).
 - **Audit phase 1, code quality (T0026)**: `docs/research/2026-10-audit-2-quality.md` (findings only; one `#[ignore]`d
   proof in `crates/client/src/app.rs`).
+- **Publish scrub (T0030, 2026-10-25)**: personal data removed from the tree (this file, the audit report, two spike
+  READMEs, one test string); the rule for agents and a "Before publishing" checklist are in `CLAUDE.md`; the git
+  history rewrite is planned, not run (`docs/research/2026-10-history-scrub.md`).
 - **macOS (batch 8, D48–D56)**: the owner works on an M2 Air (macOS 15.7) for a while. Rule D49: Linux and macOS keep
   the same features; OS code only behind the platform seams; **`docs/PLATFORMS.md` is the exact status**, feature by
   feature, and the README has build/run steps and the macOS quirks for users.
@@ -282,9 +285,9 @@ A new Client replaces an outdated Daemon by itself (and, since #25, stops one th
 On the Mac: no native Soloist. Spotify.app 1.2.94 in `/Applications`, logged in (the AppEngine starts it hidden and
 leaves it running). Secrets in the login Keychain (`service=singularity`: `spotify`, and `soloist` since 2026-10-20,
 added by the owner with `security add-generic-password -U`). Same `~/.config`/`~/.local` paths as Linux (D50). The
-owner's `config.toml` has `[engine] kind = "auto"` (librespot). Devices on the account: "Singularity on the owner’s
-MacBook Air" (librespot), "Singularity on the Mac (lossless)" (the VM's Soloist, paired),
-"the Mac" (the app), "Singularity" (Linux Soloist, offline). librespot's last volume:
+owner's `config.toml` has `[engine] kind = "auto"` (librespot). Devices on the account: "Singularity on <the Mac's
+name>" (librespot), "Singularity on <the Mac's name> (lossless)" (the VM's Soloist, paired),
+"<the Mac's name>" (the app), "Singularity" (Linux Soloist, offline). librespot's last volume:
 `~/.local/share/singularity/catalogue/librespot-volume`. **The Soloist VM**: `~/.local/share/singularity/vm/` (disk,
 EFI vars, SSH key, pinned `bin/vfkit` + `bin/gvproxy`, logs), setup version 2, Soloist paired and logged in inside it
 (state in the guest's `/home/singularity/state`); Soloist's volume in `…/soloist-state/volume`; sockets in
@@ -333,8 +336,8 @@ EFI vars, SSH key, pinned `bin/vfkit` + `bin/gvproxy`, logs), setup version 2, S
 
 ## Prompt for the next session
 
-> You're continuing **Singularity**, a terminal Spotify client in Rust (ratatui) at `~/src/singularity` on
-> Linux, `~/src/singularity` on the owner's Mac (GitHub: `publicusr/singularity`, private). Read
+> You're continuing **Singularity**, a terminal Spotify client in Rust (ratatui) at `~/src/singularity` on Linux and
+> on the owner's Mac (GitHub: `publicusr/singularity`, private). Read
 > `docs/HANDOFF.md` first, then `CLAUDE.md`, `docs/PLATFORMS.md`, `docs/SPEC.md` (v1, "v1.x" and "Batch 9"),
 > `GLOSSARY.md`, the ADRs in `docs/adr/`, and the end of the round log in `docs/DESIGN-TREE.md`.
 >
