@@ -73,7 +73,8 @@ pub fn clean_path(s: &str) -> String {
 /// A picture (PNG, JPEG or WebP) cropped square from the centre, at most 640 px, as a JPEG of at most 256 KB:
 /// the quality steps down until it fits, then the size.
 pub fn prepare(bytes: &[u8]) -> Result<Prepared, String> {
-    let img = image::load_from_memory(bytes).map_err(|_| "Not a picture this can read (PNG, JPEG or WebP)".to_string())?.to_rgb8();
+    // a dropped file gets the same limits as a downloaded cover: a header can claim more pixels than there is memory
+    let img = crate::covers::decode(bytes).ok_or_else(|| "Not a picture this can read (PNG, JPEG or WebP), or far too large".to_string())?;
     let (w, h) = img.dimensions();
     let side = w.min(h);
     if side == 0 {
@@ -287,6 +288,12 @@ mod tests {
         assert!(p.image.width() <= 640 && p.image.width() == p.image.height());
         assert!(p.jpeg.len() <= MAX_BYTES, "{} bytes", p.jpeg.len());
         assert!(prepare(b"not a picture").is_err());
+    }
+
+    #[test]
+    fn a_dropped_picture_claiming_to_be_huge_is_refused_like_a_downloaded_one() {
+        // a 12000×12000 header would allocate ~430 MB; the same 4096²/256 MB limits as a download stop it first
+        assert!(prepare(&crate::covers::huge_png_header(12_000, 12_000)).is_err());
     }
 
     #[test]

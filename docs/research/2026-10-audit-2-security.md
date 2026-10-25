@@ -280,8 +280,10 @@ Suggested fix: `set_permissions(path, 0600)` after opening (or `fchmod` the hand
   `serde_json`’s limit; string slicing positions come from `find`/fixed ASCII; the previous audit’s `hostile_input`
   test (20 000 random JSON/LRC/frames) plus `cargo fuzz` corpora still apply. Download bodies are capped for Client
   covers (8 MB, decode 4096²/256 MB) and MPRIS covers (8 MB); image URLs from Home/library are fetched only when drawn
-  and only if `https://` (Client); S6 is the MPRIS exception. URLs taken from answers are used in JSON bodies or fixed
-  hosts (`spclient.wg.spotify.com`, `image-upload.spotify.com`, `lrclib.net`, `open.spotify.com`), not
+  and only if `https://` (Client); S6 is the MPRIS exception. **Fixed (T0029):** a picture dropped or typed for a
+  playlist cover (`client/cover.rs` `prepare`) decoded without those limits; it now goes through `covers::decode`, and
+  a test checks that a 12000×12000 header is refused before anything is allocated. URLs taken from answers are used in
+  JSON bodies or fixed hosts (`spclient.wg.spotify.com`, `image-upload.spotify.com`, `lrclib.net`, `open.spotify.com`), not
   `file://`/local paths.
 - **Terminal output.** All Client text goes through `Buffer::set_stringn`/ratatui, which filters `char::is_control`
   (checked in `ratatui-core`’s `buffer.rs`); the raw writes are kitty graphics built from numeric ids/crops and
