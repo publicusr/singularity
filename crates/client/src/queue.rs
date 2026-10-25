@@ -29,18 +29,37 @@ impl QueueView {
 
 /// A song being dragged: where it was, where it would land (an index into the queue as it would then be), and
 /// whether it would land in your queue (a context song dragged up there, #50).
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// The queue can change during the drag (a track change, a phone editing it), so `from` is only where the song was:
+/// its `uid` (or, where the player gives none, its URI) finds it again when the drag ends.
+#[derive(Clone, Debug, PartialEq)]
 pub struct QueueDrag {
     pub from: usize,
     pub to: usize,
     pub into_queue: bool,
+    pub uid: String,
+    pub uri: String,
 }
 
 impl QueueDrag {
     /// Start dragging entry `i`; None if it can't move (autoplay).
     pub fn start(app: &App, i: usize) -> Option<QueueDrag> {
         section(app, i)?;
-        Some(QueueDrag { from: i, to: i, into_queue: false })
+        let e = &app.playback.queue[i];
+        Some(QueueDrag { from: i, to: i, into_queue: false, uid: e.uid.clone(), uri: e.item.uri.clone() })
+    }
+
+    /// The dragged song's place in the queue as it is now, found by uid (or URI), not by the index it had.
+    pub fn index_in(&self, queue: &[QueueEntry]) -> Option<usize> {
+        // with a uid, only that entry is the song: a same-URI duplicate is a different one
+        if !self.uid.is_empty() {
+            return queue.iter().position(|e| e.uid == self.uid);
+        }
+        // no uid: the same URI, preferring the old place while it still holds that song
+        if queue.get(self.from).is_some_and(|e| e.item.uri == self.uri) {
+            return Some(self.from);
+        }
+        queue.iter().position(|e| e.item.uri == self.uri)
     }
 }
 
@@ -65,6 +84,8 @@ pub fn section(app: &App, i: usize) -> Option<(usize, usize)> {
 /// included). A queued song stays among the queued; a context song stays among the context's, or goes up into your
 /// queue: onto a queued row it takes that place, onto the "Next from" heading it goes last of them.
 pub fn target(app: &App, d: QueueDrag, y: u16) -> QueueDrag {
+    let Some(from) = d.index_in(&app.playback.queue) else { return d };
+    let d = QueueDrag { from, ..d };
     let Some((start, len)) = section(app, d.from) else { return d };
     let nq = queued(app);
     let from_context = app.playback.queue[d.from].source != "queue";
@@ -170,7 +191,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
     y += 2;
     // while dragging, the list as it would be after the drop
-    let q = preview(&app.playback.queue, app.queue_drag);
+    let q = preview(&app.playback.queue, app.queue_drag.clone());
     let all = lines_of(&q, app.playback.context_name.as_deref());
     if all.is_empty() {
         if y < r.bottom() {
@@ -198,7 +219,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             Line::Heading(h) => text(buf, x, y, w, &clip(h, w as usize), th.s(th.dim).add_modifier(Modifier::BOLD)),
             Line::Entry(i) => {
                 let e = &q[*i];
-                let dragged = app.queue_drag.is_some_and(|d| d.to == *i);
+                let dragged = app.queue_drag.as_ref().is_some_and(|d| d.to == *i);
                 let selected = (focused && *i == view.sel && app.queue_drag.is_none()) || dragged;
                 let bg = if selected { th.selection.color() } else { th.bg.color() };
                 text(buf, x, y, w, &" ".repeat(w as usize), th.base().bg(bg));
@@ -250,13 +271,29 @@ mod tests {
     fn a_drag_previews_the_new_order_and_sections() {
         let q = vec![entry("a", "queue"), entry("b", "queue"), entry("x", "context"), entry("y", "context")];
         let names = |v: &[QueueEntry]| v.iter().map(|e| format!("{}{}", e.item.name, if e.source == "queue" { "q" } else { "" })).collect::<Vec<_>>().join(" ");
+        let drag = |from, to, into_queue| QueueDrag { from, to, into_queue, uid: String::new(), uri: String::new() };
         assert_eq!(names(&preview(&q, None)), "aq bq x y");
-        assert_eq!(names(&preview(&q, Some(QueueDrag { from: 1, to: 0, into_queue: false }))), "bq aq x y");
-        assert_eq!(names(&preview(&q, Some(QueueDrag { from: 3, to: 2, into_queue: false }))), "aq bq y x");
+        assert_eq!(names(&preview(&q, Some(drag(1, 0, false)))), "bq aq x y");
+        assert_eq!(names(&preview(&q, Some(drag(3, 2, false)))), "aq bq y x");
         // a context song up into your queue becomes queued there
-        assert_eq!(names(&preview(&q, Some(QueueDrag { from: 3, to: 1, into_queue: true }))), "aq yq bq x");
-        assert_eq!(names(&preview(&q, Some(QueueDrag { from: 2, to: 2, into_queue: true }))), "aq bq xq y", "last of the queued");
-        let l = lines_of(&preview(&q, Some(QueueDrag { from: 2, to: 2, into_queue: true })), Some("Orbits"));
+        assert_eq!(names(&preview(&q, Some(drag(3, 1, true)))), "aq yq bq x");
+        assert_eq!(names(&preview(&q, Some(drag(2, 2, true)))), "aq bq xq y", "last of the queued");
+        let l = lines_of(&preview(&q, Some(drag(2, 2, true))), Some("Orbits"));
         assert_eq!(l[4], Line::Heading("Next from Orbits".into()), "the moved song shows under Next in queue");
+    }
+
+    #[test]
+    fn a_dragged_song_is_found_again_when_the_queue_changes_under_it() {
+        let q = vec![entry("a", "queue"), entry("x", "context"), entry("y", "context")];
+        let d = QueueDrag { from: 2, to: 1, into_queue: false, uid: "u-y".into(), uri: "spotify:track:y".into() };
+        // queued songs appeared and one context song left: the index is another song now, the uid is not
+        let now = vec![entry("a", "queue"), entry("b", "queue"), entry("c", "queue"), entry("x", "context"), entry("y", "context")];
+        assert_eq!(d.index_in(&now), Some(4));
+        assert_eq!(d.index_in(&q), Some(2));
+        // a player that gives no uid: the URI, and the old place while it still has it
+        let no_uid = QueueDrag { uid: String::new(), ..d.clone() };
+        assert_eq!(no_uid.index_in(&now), Some(4));
+        let gone = vec![entry("a", "queue")];
+        assert_eq!(d.index_in(&gone), None);
     }
 }

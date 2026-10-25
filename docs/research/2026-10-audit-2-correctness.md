@@ -185,6 +185,8 @@ protection). Effort S.
 
 ### 8. (C7) Dragging a queue row while the queue changes: underflow (debug panic) — **crash (debug) / correctness**, suspected, effort S
 
+- **Fixed (T0029):** `QueueDrag` carries the dragged entry's uid and URI; `drop_queued` (and `target` while dragging) find it again with `index_in`, then clamp the landing index into its current section and use `saturating_sub` for the section offset. Tests: `a_queue_drag_survives_the_queue_changing_under_it`, `a_dragged_song_is_found_again_when_the_queue_changes_under_it`.
+
 `crates/client/src/app.rs:1843-1856` (`drop_queued`).
 
 ```rust

@@ -1848,17 +1848,29 @@ impl App {
     /// A dragged song let go: shown in its new place at once, then moved on Spotify (if Spotify refuses, the Daemon
     /// sends the real queue back).
     fn drop_queued(&mut self, d: crate::queue::QueueDrag) {
-        let Some((start, _)) = crate::queue::section(self, d.from) else { return };
+        // the queue can have changed during the drag, so find the song again by its uid/URI and never subtract a
+        // stale index from another (a track change, or a phone editing the queue, shifts both)
+        let Some(from) = d.index_in(&self.playback.queue) else { return };
+        let Some((start, len)) = crate::queue::section(self, from) else { return };
+        let d = crate::queue::QueueDrag { from, ..d };
         if d.to == d.from && !d.into_queue {
             return;
         }
-        let e = &self.playback.queue[d.from];
+        let e = &self.playback.queue[from];
         let (uri, uid) = (e.item.uri.clone(), (!e.uid.is_empty()).then(|| e.uid.clone()));
-        // `to` for Spotify: the place among the queued songs (into your queue), else among its own section
-        let to = if d.into_queue { d.to } else { d.to - start };
-        self.playback.queue = crate::queue::preview(&self.playback.queue, Some(d));
-        self.queue_view.sel = d.to;
-        self.send(Command::MoveInQueue { uri, uid, to, into_queue: d.into_queue });
+        // where it lands: the place among the queued songs (into your queue), else among its own section; `to` is
+        // Spotify's section-relative place, `at` the index in the queue as it is after the song is taken out
+        let (to, at) = if d.into_queue {
+            let at = d.to.min(crate::queue::queued(self));
+            (at, at)
+        } else {
+            let at = d.to.clamp(start, start + len - 1);
+            (at.saturating_sub(start), at)
+        };
+        let into_queue = d.into_queue;
+        self.playback.queue = crate::queue::preview(&self.playback.queue, Some(crate::queue::QueueDrag { to: at, ..d }));
+        self.queue_view.sel = at.min(self.playback.queue.len().saturating_sub(1));
+        self.send(Command::MoveInQueue { uri, uid, to, into_queue });
     }
 
     pub fn open_queue_menu(&mut self, i: usize, at: Option<(u16, u16)>) {
@@ -2479,7 +2491,7 @@ impl App {
                         let v = s.value as u8;
                         self.set_volume(v);
                     }
-                } else if let Some(d) = self.queue_drag {
+                } else if let Some(d) = self.queue_drag.clone() {
                     self.queue_drag = Some(crate::queue::target(self, d, m.row));
                 } else if self.playlists.press.is_some() {
                     self.drag_row_to(m.row);

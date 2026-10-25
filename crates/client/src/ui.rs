@@ -1924,6 +1924,27 @@ mod tests {
     }
 
     #[test]
+    fn a_queue_drag_survives_the_queue_changing_under_it() {
+        use singularity_proto::{Command, Item, QueueEntry};
+        let (mut app, mut rx) = playing_app(200_000);
+        let e = |n: &str, source: &str| QueueEntry { item: Item { uri: format!("spotify:track:{n}"), name: format!("Song {n}"), ..Default::default() }, source: source.into(), uid: format!("u{n}") };
+        app.playback.queue = vec![e("a", "queue"), e("x", "context"), e("y", "context")];
+        render(&mut app, 160, 48);
+        let row = |app: &App, i: usize| app.hits.iter().find_map(|(r, h)| (*h == Hit::QueueRow(i)).then_some(*r)).unwrap();
+        let mouse = |app: &mut App, kind, r: Rect| app.mouse(MouseEvent { kind, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
+        let (y, x) = (row(&app, 2), row(&app, 1));
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), y);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x);
+        // a Playback event lands mid-drag: two queued songs appear above, so the index the drag started from is a
+        // different song now and the context's section starts after the place the drop would have used
+        app.playback.queue = vec![e("a", "queue"), e("b", "queue"), e("c", "queue"), e("x", "context"), e("y", "context")];
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x);
+        assert_eq!(sent(&mut rx), vec![Command::MoveInQueue { uri: "spotify:track:y".into(), uid: Some("uy".into()), to: 0, into_queue: false }], "the dragged song moves, found by its uid");
+        let order: String = app.playback.queue.iter().map(|q| q.item.uri.rsplit(':').next().unwrap()).collect();
+        assert_eq!(order, "abcyx", "shown at once, before x");
+    }
+
+    #[test]
     fn every_row_has_a_heart_asked_about_in_batches() {
         use singularity_proto::{Command, SavedFlag, TrackPage, TrackRow};
         let (mut app, mut rx) = playing_app(200_000);
