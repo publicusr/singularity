@@ -81,6 +81,8 @@ skip the image upload".
 
 ### Q2 · correctness · `client/src/app.rs:931-938` · S
 
+- **Fixed (T0029):** the command channel's `Full` now says "singularityd is busy — that didn't go through; try again"; `Closed` keeps "Not connected". The proof test `a_busy_command_queue_is_not_reported_as_a_missing_daemon` is un-ignored and passes.
+
 When the Client's command channel is full, `App::send` drops the command and tells the user **"Not connected to
 singularityd"**, which is false and sends them off to restart a Daemon that is running fine.
 

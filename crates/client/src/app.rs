@@ -929,12 +929,16 @@ impl App {
     }
 
     pub(crate) fn send(&mut self, c: Command) {
-        let ok = match (&self.link, &self.commands) {
-            (Link::Connected { .. }, Some(tx)) => tx.try_send(c).is_ok(),
-            _ => false,
+        // A full queue is the connection task being busy, not the Daemon being gone: say the true thing, so a Play or
+        // Pause isn't thrown away under a message that sends the user to restart a Daemon that runs fine.
+        let sent = match (&self.link, &self.commands) {
+            (Link::Connected { .. }, Some(tx)) => Some(tx.try_send(c)),
+            _ => None,
         };
-        if !ok {
-            self.say("Not connected to singularityd");
+        match sent {
+            Some(Ok(())) => {}
+            Some(Err(mpsc::error::TrySendError::Full(_))) => self.say("singularityd is busy — that didn't go through; try again"),
+            Some(Err(mpsc::error::TrySendError::Closed(_))) | None => self.say("Not connected to singularityd"),
         }
     }
 
@@ -1357,7 +1361,8 @@ impl App {
                 self.pending_episode = Some(uri.to_string());
                 return self.send(Command::FindShow { uri: uri.into() });
             }
-            _ => return,
+            // a card or link the Client has no page for: say so rather than leave the click unanswered
+            _ => return self.say("Can't open that here"),
         };
         self.navigate(page);
     }
@@ -2791,11 +2796,9 @@ mod tests {
         assert!(!again.config.idle.enabled && again.idle_secs().is_none());
     }
 
-    /// Audit Q2: `send` drops the command when the queue is full and says the Daemon is gone, which is untrue and
-    /// sends the user to restart a Daemon that is running fine. The test asserts what the user should be told; it is
-    /// ignored so `main` stays green. Remove the `#[ignore]` to see it fail (`Not connected to singularityd`).
+    /// Audit Q2 / C11: `send` dropped the command when the queue was full and said the Daemon was gone, which is
+    /// untrue and sends the user to restart a Daemon that is running fine.
     #[test]
-    #[ignore = "audit Q2: a full command queue is reported as \"Not connected to singularityd\""]
     fn a_busy_command_queue_is_not_reported_as_a_missing_daemon() {
         let (tx, _rx) = mpsc::channel(1);
         tx.try_send(Command::GetState).expect("the queue took one command");
@@ -2804,6 +2807,28 @@ mod tests {
         app.send(Command::Next);
         let said = app.toast.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
         assert!(!said.contains("Not connected"), "a full queue isn't a missing Daemon, but the toast was {said:?}");
+        assert!(said.contains("busy"), "a full queue says it's busy: {said:?}");
+    }
+
+    #[test]
+    fn a_closed_command_queue_is_a_missing_daemon() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let mut app = App::new(Some(tx));
+        app.link = Link::Connected { version: "t".into() };
+        app.send(Command::Next);
+        let said = app.toast.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
+        assert!(said.contains("Not connected"), "a closed queue is a missing Daemon: {said:?}");
+    }
+
+    #[test]
+    fn a_card_the_client_cannot_open_says_so() {
+        let mut app = App::new(None);
+        app.open("spotify:genre:metal", "Metal", "", "genre");
+        let said = app.toast.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
+        assert!(said.contains("Can't open"), "an unknown kind is answered, not swallowed: {said:?}");
+        app.open("spotify:album:a1", "An Album", "", "album");
+        assert!(matches!(app.current_page(), Page::List { .. }), "a known kind still opens");
     }
 
     #[test]

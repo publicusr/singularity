@@ -239,6 +239,8 @@ the old hashes until it finishes, or cap the whole refresh (e.g. 60 s) and fail 
 
 ### 11. (C11) Commands can be dropped with a misleading "Not connected" message — **polish / correctness**, suspected, effort S
 
+- **Fixed (T0029):** `App::send` tells `Full` ("singularityd is busy — that didn't go through; try again") apart from `Closed`/not connected. The proof test is un-ignored and passes; `a_closed_command_queue_is_a_missing_daemon` covers the other side.
+
 `crates/client/src/app.rs:931-941` (`send`).
 
 ```rust
