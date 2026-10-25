@@ -53,7 +53,7 @@ or on another program's behaviour.
 
 `run_engine` owns the only receiver of `hub.commands`. Its `select!` breaks as soon as the Engine's event
 channel closes — i.e. when the Engine task ends, for any reason (a panic, or one of the real Engines' error
-paths: `librespot.rs:150` and `app_engine.rs:104` return when `cat.send(CatCmd::Engine(..))` fails). The
+paths: `librespot.rs:152` and `app_engine.rs:105` return when `cat.send(CatCmd::Engine(..))` fails). The
 receiver is dropped with the task, so afterwards every `hub.commands.send(cmd)` returns `Err`, and every
 caller throws it away: `transport()` (`let _ = hub.commands.send(cmd).await`), `on_engine_event`'s Resume
 path, `client_session`. Nothing restarts the Engine, sends `Event::Engine(Failed …)` or answers the Client
@@ -126,9 +126,9 @@ CatCmd::Search(q) => {
 `self_tx` sends into the channel this very task is the only reader of. While `search` awaits, the Hub keeps
 sending (each Client's session task blocks in `tx.send(c).await`), so the 16 slots can fill; the first
 `self_tx.send(c).await` then waits for capacity that only this task can free → permanent deadlock of the
-Catalogue: no browsing, no queue edits, no resume, no backups (and, with finding 1, no report). With a
-64-slot-ish burst (several Clients, a Backfill `Query`, `Describe`, `CheckSaved` batches) it is reachable;
-with one Client it needs a 16-command burst during one search, which is why this is *suspected*. A second,
+Catalogue: no browsing, no queue edits, no resume, no backups (and, with finding 1, no report). With several Clients (or the backup's `Query` stream, `Describe`
+batches and `CheckSaved`) sending while a search runs, the 16 slots fill; with one Client it needs a
+16-command burst during one search, which is why this is *suspected*. A second,
 certain effect: commands that arrived **before** the search are re-queued **after** it (e.g. a `PlayFrom`
 waits for a slow search).
 
@@ -171,9 +171,8 @@ D63's three parts are right in the main cases (a track change only counts as our
 a resume after a restart is dropped when the player came back playing; a `get_queue` answer only fills the
 queue). The third one is unconditional: for 5 s (`QUEUE_ANSWER`) after any `track_changed`, the **first**
 `playback_state` event is taken as the queue answer and only `upcoming` is applied, whatever else it says —
-status, volume, options, position, item. If Soloist never answers the `get_queue` (it is a WebSocket send
-that may be dropped by a reconnect, and a restart can consume it), or another app's `playback_state` arrives
-first, that update is lost: the Hub's playback (and with it MPRIS, Now Playing, the listening log and every
+status, volume, options, position, item. If the answer is slower than the window, or another app's
+`playback_state` (a phone pausing) is the first to arrive, that update is lost: the Hub's playback (and with it MPRIS, Now Playing, the listening log and every
 Client) keeps the old status until the next event. Concrete case: a phone pauses within 5 s of a track
 change; the pause is in a `playback_state`, gets dropped, and the listening log keeps counting the pause as
 playing until something else happens. Verified by reading `apply`; not reproduced against a real Soloist.
@@ -212,9 +211,9 @@ recompute `from`/`to` from it at drop time; use `saturating_sub` for the section
 `Recorder.observe` decides "same play" from the track URI and "not idle" only. A track that starts over —
 repeat one, or the user replaying it — is therefore still the same `Current`; `played_ms` keeps accumulating
 until the track finally changes and is then clamped to `item.duration_ms`. Consequences: "played N times"
-(`StatsRow.all_time_plays`), the per-track plays in stats, the listening minutes and `plays/lib.rs`'s
-`summary` undercount every looped track (a repeat-one track played ten times logs one play of one duration),
-and a long repeat-one session never logs a play at all until the track changes. The `PlaybackState` carries
+(`StatsRow.all_time_plays`), the per-track plays in stats, the listening minutes and the play counts in
+`ListeningSummary` undercount every looped track (a repeat-one track played ten times logs one play of one
+duration), and a long repeat-one session never logs a play at all until the track changes. The `PlaybackState` carries
 enough to see it (`position_ms`/`timestamp_ms` going back to the start).
 
 Evidence: `a_repeated_track_is_logged_as_a_second_play` (`--ignored`): the same track at position 0, 200 s
