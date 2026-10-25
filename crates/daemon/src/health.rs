@@ -17,15 +17,34 @@ fn location(account: &str, env: Option<&str>) -> String {
     }
 }
 
+/// The tools this Daemon needs for `kind`: its own, plus the app's launcher when the app is the Engine (a Soloist or
+/// librespot setup has no use for `spotify`/`open`).
+fn required_tools(kind: singularity_proto::EngineKind) -> Vec<crate::programs::Tool> {
+    let mut tools = crate::programs::Tool::REQUIRED.to_vec();
+    if kind == singularity_proto::EngineKind::SpotifyApp {
+        tools.push(crate::programs::app_tool());
+    }
+    tools
+}
+
 /// The tools this Daemon needs but can't find at their fixed locations (`pactl`, `tar`…). The keyring's client
 /// counts only while the keyring is enabled.
-fn missing_tools_in(dirs: &[&str]) -> Vec<String> {
+fn missing_tools(kind: singularity_proto::EngineKind) -> Vec<String> {
+    missing_tools_with(kind, |t| t.find())
+}
+
+/// [`missing_tools`] looking in `dirs` instead (tests pass an empty scratch directory).
+#[cfg(test)]
+fn missing_tools_in(dirs: &[&str], kind: singularity_proto::EngineKind) -> Vec<String> {
+    missing_tools_with(kind, |t| t.find_in(dirs))
+}
+
+fn missing_tools_with(kind: singularity_proto::EngineKind, find: impl Fn(crate::programs::Tool) -> Option<std::path::PathBuf>) -> Vec<String> {
     let keyring = crate::secrets::keyring_enabled();
-    crate::programs::Tool::REQUIRED
-        .iter()
-        .copied()
+    required_tools(kind)
+        .into_iter()
         .filter(|t| *t != crate::programs::Tool::SecretTool || keyring)
-        .filter(|t| t.find_in(dirs).is_none())
+        .filter(|t| find(*t).is_none())
         .map(|t| t.name().to_string())
         .collect()
 }
@@ -43,10 +62,10 @@ pub fn audio_output(sink_inputs: &serde_json::Value, sinks: &serde_json::Value, 
 #[cfg(not(target_os = "macos"))]
 fn engine_output(kind: singularity_proto::EngineKind) -> Option<String> {
     use crate::tap::StreamOf;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     let pactl = |what: &str| -> serde_json::Value {
         let Some(exe) = crate::programs::Tool::Pactl.find() else { return serde_json::Value::default() };
-        Command::new(exe)
+        crate::programs::command(exe)
             .args(["-f", "json", "list", what])
             .stderr(Stdio::null())
             .output()
@@ -78,7 +97,7 @@ pub fn report(kind: singularity_proto::EngineKind) -> Health {
         audio_output: engine_output(kind),
         engine_expires_in_days: None,
         engine_build: crate::update::Builds { root: crate::soloist::SoloistEngine::from_env().data_dir }.installed().and_then(|b| b.date()),
-        missing_tools: missing_tools_in(crate::programs::Tool::DIRS),
+        missing_tools: missing_tools(kind),
     }
 }
 
@@ -88,15 +107,20 @@ mod tests {
 
     #[test]
     fn missing_tools_are_named() {
+        use singularity_proto::EngineKind;
         let empty = tempfile::tempdir().unwrap();
         let dirs = [empty.path().to_str().unwrap()];
-        let missing = missing_tools_in(&dirs);
+        let missing = missing_tools_in(&dirs, EngineKind::Soloist);
         for t in crate::programs::Tool::REQUIRED {
             if *t == crate::programs::Tool::SecretTool && !crate::secrets::keyring_enabled() {
                 continue;
             }
             assert!(missing.contains(&t.name().to_string()), "{} not named in {missing:?}", t.name());
         }
+        // the app's launcher is named only for the app (a Soloist setup has no use for it)
+        assert!(!missing.contains(&crate::programs::app_tool().name().to_string()));
+        let with_app = missing_tools_in(&dirs, EngineKind::SpotifyApp);
+        assert!(with_app.contains(&crate::programs::app_tool().name().to_string()), "{} not named in {with_app:?}", crate::programs::app_tool().name());
     }
 
     #[test]
