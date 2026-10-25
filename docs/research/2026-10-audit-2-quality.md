@@ -81,6 +81,8 @@ skip the image upload".
 
 ### Q2 · correctness · `client/src/app.rs:931-938` · S
 
+- **Fixed (T0029):** the command channel's `Full` now says "singularityd is busy — that didn't go through; try again"; `Closed` keeps "Not connected". The proof test `a_busy_command_queue_is_not_reported_as_a_missing_daemon` is un-ignored and passes.
+
 When the Client's command channel is full, `App::send` drops the command and tells the user **"Not connected to
 singularityd"**, which is false and sends them off to restart a Daemon that is running fine.
 
@@ -502,5 +504,7 @@ The shared folder was empty when I started (16:15) and by the time I wrote this 
 - Nothing else of mine is in either file, and none of their findings touches my structure/API/test items (Q1, Q3–Q10,
   Q12–Q16). Their `S3` (tools from PATH) and my Q16 (publish readiness) do not overlap.
 - My two handoff notes for T0025 — `MIN_H = 3` leaving a 1-row Pane body (are all `bottom() - 1` draws safe?), and
-  `App::open`'s silent `_ => return` for an unknown card kind — are not addressed in `correctness.md`, so they stand
-  as open questions for phase 2.
+  `App::open`'s silent `_ => return` for an unknown card kind — are now **fixed in T0029**: a regression test draws
+  every design at sizes that squeeze Panes to a one-row body and a worst-case stack of every Widget down to no body,
+  without a panic (the `bottom() - 1` sites are guarded by their Pane's height), and `App::open` says "Can't open that
+  here" for an unknown kind. `App::open` test: `a_card_the_client_cannot_open_says_so`.

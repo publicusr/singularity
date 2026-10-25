@@ -209,6 +209,30 @@ fn prune(dir: &Path, budget: u64) {
     }
 }
 
+/// A PNG header (and nothing else) claiming `w`×`h`: enough for the decoder's limits to refuse it.
+#[cfg(test)]
+pub(crate) fn huge_png_header(w: u32, h: u32) -> Vec<u8> {
+    fn crc(data: &[u8]) -> u32 {
+        let mut c = !0u32;
+        for &b in data {
+            c ^= b as u32;
+            for _ in 0..8 {
+                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            }
+        }
+        !c
+    }
+    let mut ihdr = b"IHDR".to_vec();
+    ihdr.extend(w.to_be_bytes());
+    ihdr.extend(h.to_be_bytes());
+    ihdr.extend([8, 2, 0, 0, 0]);
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend(13u32.to_be_bytes());
+    png.extend(&ihdr);
+    png.extend(crc(&ihdr).to_be_bytes());
+    png
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,24 +240,7 @@ mod tests {
     #[test]
     fn a_picture_claiming_to_be_huge_is_refused_before_it_is_decoded() {
         // (#71) a PNG whose header says 12000×12000 (~430 MB of pixels, under the library's own 512 MB limit): refused, nothing allocated
-        fn crc(data: &[u8]) -> u32 {
-            let mut c = !0u32;
-            for &b in data {
-                c ^= b as u32;
-                for _ in 0..8 {
-                    c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
-                }
-            }
-            !c
-        }
-        let mut ihdr = b"IHDR".to_vec();
-        ihdr.extend(12_000u32.to_be_bytes());
-        ihdr.extend(12_000u32.to_be_bytes());
-        ihdr.extend([8, 2, 0, 0, 0]);
-        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
-        png.extend(13u32.to_be_bytes());
-        png.extend(&ihdr);
-        png.extend(crc(&ihdr).to_be_bytes());
+        let png = huge_png_header(12_000, 12_000);
         assert!(decode(&png).is_none());
         // an ordinary cover decodes
         let mut ok = vec![];

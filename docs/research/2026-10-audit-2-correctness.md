@@ -137,6 +137,8 @@ Fix: don't re-send through the same bounded channel — process `later` in this 
 
 ### 5. (C6) The Settings page can silently overwrite an edit made in an editor — **correctness (lost setting)**, suspected, effort S
 
+- **Fixed (T0029):** `config::set` takes the `Watched` stamp `(mtime, len)` before reading and writes the temp file first; if the stamp changed before the rename, it re-reads and applies the one change to the saved file (up to three tries, then an error rather than an overwrite). `toggle_idle` and `toggle_notifications` write through `set`, so they get the same guard. Test: `a_save_from_an_editor_during_a_setting_is_not_overwritten`.
+
 `crates/config/src/lib.rs:410-416` (`set`), `crates/client/src/settings.rs:146` (`settings_write`).
 
 `set()` reads `config.toml`, edits the document in memory and `rename`s a temp file over it. There is no
@@ -182,6 +184,8 @@ answer, or at least apply everything except `item`/`status` from that event (kee
 protection). Effort S.
 
 ### 8. (C7) Dragging a queue row while the queue changes: underflow (debug panic) — **crash (debug) / correctness**, suspected, effort S
+
+- **Fixed (T0029):** `QueueDrag` carries the dragged entry's uid and URI; `drop_queued` (and `target` while dragging) find it again with `index_in`, then clamp the landing index into its current section and use `saturating_sub` for the section offset. Tests: `a_queue_drag_survives_the_queue_changing_under_it`, `a_dragged_song_is_found_again_when_the_queue_changes_under_it`.
 
 `crates/client/src/app.rs:1843-1856` (`drop_queued`).
 
@@ -238,6 +242,8 @@ Fix: do the crawl off the command task (a separate task with its own timeout bud
 the old hashes until it finishes, or cap the whole refresh (e.g. 60 s) and fail the one query. Effort M.
 
 ### 11. (C11) Commands can be dropped with a misleading "Not connected" message — **polish / correctness**, suspected, effort S
+
+- **Fixed (T0029):** `App::send` tells `Full` ("singularityd is busy — that didn't go through; try again") apart from `Closed`/not connected. The proof test is un-ignored and passes; `a_closed_command_queue_is_a_missing_daemon` covers the other side.
 
 `crates/client/src/app.rs:931-941` (`send`).
 

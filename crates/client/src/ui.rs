@@ -821,6 +821,46 @@ mod tests {
     }
 
     #[test]
+    fn every_design_draws_a_one_row_pane_body_without_panicking() {
+        // `layout::MIN_H` is 3: a Pane squeezed to its minimum leaves one row inside its frame, and smaller
+        // terminals give some Panes no body at all. Nothing in a Pane's drawing may subtract below zero there.
+        use crate::layout::{Axis, Node, Size};
+        use singularity_proto::{Item, QueueEntry};
+        let queue = || vec![
+            QueueEntry { item: Item { uri: "spotify:track:a".into(), name: "A".into(), duration_ms: 90_000, ..Default::default() }, source: "queue".into(), uid: "ua".into() },
+            QueueEntry { item: Item { uri: "spotify:track:b".into(), name: "B".into(), duration_ms: 90_000, ..Default::default() }, source: "context".into(), uid: "ub".into() },
+        ];
+        let sizes = [(50u16, 14u16), (60, 14), (80, 14), (120, 14), (50, 15), (80, 16), (100, 18), (80, 20), (120, 24)];
+        let mut one_row = false;
+        for d in 0..crate::design::DESIGNS.len() {
+            for (w, h) in sizes {
+                let (mut app, _rx) = playing_app(200_000);
+                app.set_design(d);
+                app.playback.queue = queue();
+                // the Panes this design leaves: are any of them down to one row of body (borders included)?
+                let body = Rect::new(0, 1, w, h.saturating_sub(5));
+                one_row |= app.layout.compute_shaped(body, 2.0).slots.iter().any(|(_, r)| r.height <= 3);
+                let _ = render(&mut app, w, h);
+            }
+        }
+        assert!(one_row, "the sizes above squeeze a Pane to its minimum");
+        // and the worst layouts: every Widget in one Pane after another, nested halving, so most of them are one
+        // row high or none at all
+        let names = ["library", "home", "queue", "lyrics", "fft", "loudness", "well", "nowplaying", "levels", "listening", "rain", "scope", "top", "today", "topweek", "starfield", "marquee", "glow", "hole", "stream"];
+        let mut stack = Node::Slot(names[0].into());
+        for name in &names[1..] {
+            stack = Node::Split { axis: Axis::Vertical, first: Size::Ratio(0.5), a: Box::new(stack), b: Box::new(Node::Slot((*name).into())) };
+        }
+        for (w, h) in [(60, 14), (80, 20), (120, 40)] {
+            let (mut app, _rx) = playing_app(200_000);
+            app.layout = stack.clone();
+            app.playback.queue = queue();
+            assert!(app.layout.compute(Rect::new(0, 1, w, h - 5)).slots.iter().any(|(_, r)| r.height <= 1), "{w}x{h}: the stack squeezes a Pane below two rows");
+            let _ = render(&mut app, w, h);
+        }
+    }
+
+    #[test]
     fn a_tiny_terminal_is_a_mini_player() {
         use singularity_proto::Command;
         let (mut app, mut rx) = playing_app(200_000);
@@ -1921,6 +1961,27 @@ mod tests {
         mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), top);
         mouse(&mut app, MouseEventKind::Up(MouseButton::Left), top);
         assert!(sent(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn a_queue_drag_survives_the_queue_changing_under_it() {
+        use singularity_proto::{Command, Item, QueueEntry};
+        let (mut app, mut rx) = playing_app(200_000);
+        let e = |n: &str, source: &str| QueueEntry { item: Item { uri: format!("spotify:track:{n}"), name: format!("Song {n}"), ..Default::default() }, source: source.into(), uid: format!("u{n}") };
+        app.playback.queue = vec![e("a", "queue"), e("x", "context"), e("y", "context")];
+        render(&mut app, 160, 48);
+        let row = |app: &App, i: usize| app.hits.iter().find_map(|(r, h)| (*h == Hit::QueueRow(i)).then_some(*r)).unwrap();
+        let mouse = |app: &mut App, kind, r: Rect| app.mouse(MouseEvent { kind, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
+        let (y, x) = (row(&app, 2), row(&app, 1));
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), y);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x);
+        // a Playback event lands mid-drag: two queued songs appear above, so the index the drag started from is a
+        // different song now and the context's section starts after the place the drop would have used
+        app.playback.queue = vec![e("a", "queue"), e("b", "queue"), e("c", "queue"), e("x", "context"), e("y", "context")];
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x);
+        assert_eq!(sent(&mut rx), vec![Command::MoveInQueue { uri: "spotify:track:y".into(), uid: Some("uy".into()), to: 0, into_queue: false }], "the dragged song moves, found by its uid");
+        let order: String = app.playback.queue.iter().map(|q| q.item.uri.rsplit(':').next().unwrap()).collect();
+        assert_eq!(order, "abcyx", "shown at once, before x");
     }
 
     #[test]

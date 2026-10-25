@@ -353,12 +353,30 @@ pub fn load<T: Default + for<'de> Deserialize<'de>>(path: &Path, name: &str, def
 
 /// Write via a temporary file and a rename, so readers never see half a file.
 pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    let tmp = write_tmp(path, text)?;
+    std::fs::rename(tmp, path)
+}
+
+/// Write `text` to the temporary file next to `path`; the rename is the caller's.
+fn write_tmp(path: &Path, text: &str) -> std::io::Result<PathBuf> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, text)?;
-    std::fs::rename(tmp, path)
+    Ok(tmp)
+}
+
+/// Write-and-rename, unless `path`'s stamp changed from `before` while the temporary file was written: an editor
+/// saved in that window, so the caller must re-read instead of replacing the save. False means nothing was written.
+fn write_atomic_checked(path: &Path, text: &str, before: Option<(SystemTime, u64)>) -> std::io::Result<bool> {
+    let tmp = write_tmp(path, text)?;
+    if stamp(path) != before {
+        let _ = std::fs::remove_file(&tmp);
+        return Ok(false);
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(true)
 }
 
 /// Set `dotted` (`visuals.gpu`) in the document, creating tables as needed; the rest of the file is untouched.
@@ -408,10 +426,24 @@ pub fn rename(table: &mut toml_edit::Table, from: &str, to: &str) -> bool {
 
 /// Change one setting in a file the way a Settings screen would: comments and layout stay.
 pub fn set(path: &Path, default: &str, dotted: &str, v: Value) -> std::io::Result<()> {
-    let text = std::fs::read_to_string(path).unwrap_or_else(|_| default.to_string());
-    let mut doc = text.parse::<DocumentMut>().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-    set_value(&mut doc, dotted, v);
-    write_atomic(path, &doc.to_string())
+    set_watched(path, default, dotted, v, |_| {})
+}
+
+/// `set`, but `after_read` runs between the read and the rename: a test plays the user's editor saving in that
+/// window. The change then lands on the saved file instead of replacing it (the `Watched` stamp is `(mtime, size)`).
+fn set_watched(path: &Path, default: &str, dotted: &str, v: Value, mut after_read: impl FnMut(&Path)) -> std::io::Result<()> {
+    for _ in 0..3 {
+        let before = stamp(path);
+        let text = std::fs::read_to_string(path).unwrap_or_else(|_| default.to_string());
+        let mut doc = text.parse::<DocumentMut>().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        set_value(&mut doc, dotted, v.clone());
+        after_read(path);
+        if write_atomic_checked(path, &doc.to_string(), before)? {
+            return Ok(());
+        }
+    }
+    // saves landed in every window: don't guess which one to overwrite
+    Err(std::io::Error::other("config.toml kept changing while it was being written"))
 }
 
 /// `keys.toml` as written: a preset and bindings by action name (checked against the actions by the Client).
@@ -739,6 +771,44 @@ minutes = 3
         assert_eq!((r.value, r.problems.len()), (Config::default(), 1));
         let r = parse::<Config>("config.toml", "schema = 9\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert!(r.problems[0].contains("newer Singularity"));
+    }
+
+    #[test]
+    fn a_save_from_an_editor_during_a_setting_is_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, DEFAULT_CONFIG).unwrap();
+        // the editor's save lands between our read and our rename, once
+        let mut saves = 0;
+        set_watched(&p, DEFAULT_CONFIG, "notifications.track_change", Value::from(true), |path| {
+            if saves == 0 {
+                saves += 1;
+                let text = std::fs::read_to_string(path).unwrap().replace("unfocused_fps = 30", "unfocused_fps = 15 # saved by the editor");
+                std::fs::write(path, text).unwrap();
+            }
+        })
+        .unwrap();
+        assert_eq!(saves, 1, "the editor saved once");
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("track_change = true"), "our change landed:\n{text}");
+        assert!(text.contains("unfocused_fps = 15 # saved by the editor"), "the editor's change survived:\n{text}");
+        assert!(text.contains("# a desktop notification when a new track starts"), "comments stayed:\n{text}");
+    }
+
+    #[test]
+    fn a_file_that_keeps_changing_is_refused_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, DEFAULT_CONFIG).unwrap();
+        let mut saves = 0;
+        let err = set_watched(&p, DEFAULT_CONFIG, "notifications.track_change", Value::from(true), |path| {
+            saves += 1;
+            let text = std::fs::read_to_string(path).unwrap().replace("unfocused_fps = 30", &format!("unfocused_fps = 30 # save {saves}"));
+            std::fs::write(path, text).unwrap();
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("kept changing"), "{err}");
+        assert!(saves >= 2, "it re-read and tried again");
     }
 
     #[test]
