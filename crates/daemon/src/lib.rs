@@ -397,6 +397,8 @@ async fn run_engine(engine: Box<dyn Engine>, hub: Arc<Hub>, mut commands: mpsc::
             tokio::select! {
                 _ = tokio::time::sleep_until(at) => match spare.take() {
                     Some(next) => {
+                        // another spare: an Engine that dies twice is started again as well
+                        spare = next.respawn();
                         up = Some(next.spawn());
                         restart_at = None;
                         back_soon(hub.clone(), "the player");
