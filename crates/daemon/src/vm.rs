@@ -31,8 +31,16 @@ pub const GUEST: &str = "192.168.127.2";
 /// Soloist's WebSocket inside the guest, and the vsock port its audio comes to the Mac on
 pub const GUEST_WS: u16 = 7700;
 pub const GUEST_PCM: u16 = 5005;
-/// bump when the guest's setup changes: a new instance id makes cloud-init run again (2: the pipe sink over vsock)
-const SETUP_VERSION: u32 = 2;
+/// bump when the guest's setup changes: a new instance id makes cloud-init run again (2: the pipe sink over vsock,
+/// and #S7's size caps on the guest's `curl`: 3)
+const SETUP_VERSION: u32 = 3;
+
+/// The most each download may be: the two helpers are tens of MB, Debian's image ~210 MB (a few hundred MB means the
+/// server sent something else).
+const MAX_HELPER: u64 = 128 * 1024 * 1024;
+const MAX_IMAGE: u64 = 1024 * 1024 * 1024;
+/// Debian's `SHA512SUMS` and a checksum tool's output are lines of text.
+const MAX_TEXT: u64 = 1024 * 1024;
 
 /// The VM's files: `$XDG_DATA_HOME/singularity/vm/` (owner-only).
 pub struct Vm {
@@ -68,7 +76,7 @@ impl Vm {
             }
             say(format!("Downloading {name} (runs the Soloist VM)…"));
             let part = self.bin(&format!("{name}.part"));
-            download(url, &part).await?;
+            download(url, &part, MAX_HELPER).await?;
             let got = sha256(&part).await?;
             if got != sha {
                 let _ = std::fs::remove_file(&part);
@@ -80,8 +88,8 @@ impl Vm {
         if !self.dir.join("disk.raw").exists() {
             say("Downloading a small Debian Linux for Soloist (~210 MB, once)…".into());
             let xz = self.dir.join(IMAGE);
-            download(&format!("{IMAGE_DIR}/{IMAGE}"), &xz).await?;
-            let sums = reqwest::get(format!("{IMAGE_DIR}/SHA512SUMS")).await?.error_for_status()?.text().await?;
+            download(&format!("{IMAGE_DIR}/{IMAGE}"), &xz, MAX_IMAGE).await?;
+            let sums = fetch_text(&format!("{IMAGE_DIR}/SHA512SUMS")).await?;
             let want = sums.lines().find(|l| l.ends_with(IMAGE)).and_then(|l| l.split_whitespace().next()).ok_or_else(|| anyhow::anyhow!("Debian's SHA512SUMS doesn't list {IMAGE}"))?.to_string();
             let got = shasum(&xz, "512").await?;
             if got != want {
@@ -89,7 +97,7 @@ impl Vm {
                 anyhow::bail!("the Debian image didn't match Debian's checksum");
             }
             say("Unpacking it…".into());
-            let ok = Command::new("/usr/bin/tar").arg("-xJf").arg(&xz).arg("-C").arg(&self.dir).status().await?.success();
+            let ok = Command::new(crate::programs::Tool::Tar.path()?).env_remove(crate::programs::SECRET_ENV).arg("-xJf").arg(&xz).arg("-C").arg(&self.dir).status().await?.success();
             let _ = std::fs::remove_file(&xz);
             if !ok {
                 anyhow::bail!("couldn't unpack the Debian image");
@@ -99,7 +107,7 @@ impl Vm {
             tokio::task::spawn_blocking(move || sparse_copy(&dir.join("disk.raw"), &dir.join("disk.sparse")).and_then(|_| std::fs::rename(dir.join("disk.sparse"), dir.join("disk.raw")))).await??;
         }
         if !self.dir.join("id_ed25519").exists() {
-            let ok = Command::new("/usr/bin/ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-C", "singularity-vm", "-f"]).arg(self.dir.join("id_ed25519")).status().await?.success();
+            let ok = Command::new("/usr/bin/ssh-keygen").env_remove(crate::programs::SECRET_ENV).args(["-q", "-t", "ed25519", "-N", "", "-C", "singularity-vm", "-f"]).arg(self.dir.join("id_ed25519")).status().await?.success();
             if !ok {
                 anyhow::bail!("couldn't make the VM's SSH key");
             }
@@ -111,7 +119,7 @@ impl Vm {
         std::fs::write(seed.join("user-data"), user_data(key.trim()))?;
         let iso = self.dir.join("seed.iso");
         let _ = std::fs::remove_file(&iso);
-        let ok = Command::new("/usr/bin/hdiutil").args(["makehybrid", "-quiet", "-iso", "-joliet", "-default-volume-name", "cidata", "-o"]).arg(&iso).arg(&seed).status().await?.success();
+        let ok = Command::new("/usr/bin/hdiutil").env_remove(crate::programs::SECRET_ENV).args(["makehybrid", "-quiet", "-iso", "-joliet", "-default-volume-name", "cidata", "-o"]).arg(&iso).arg(&seed).status().await?.success();
         if !ok {
             anyhow::bail!("couldn't write the VM's setup disk");
         }
@@ -126,7 +134,7 @@ impl Vm {
         }
         let first = !self.dir.join("efi.vars").exists() || !self.dir.join(format!("setup-{SETUP_VERSION}")).exists();
         let log = |name: &str| std::fs::File::create(self.dir.join(name)).map(std::process::Stdio::from).unwrap_or_else(|_| std::process::Stdio::null());
-        let gv = Command::new(self.bin("gvproxy"))
+        let gv = crate::programs::tokio_command(self.bin("gvproxy"))
             .arg("-listen-vfkit")
             .arg(format!("unixgram://{}", self.run.join("gv.sock").display()))
             .arg("-listen")
@@ -145,7 +153,7 @@ impl Vm {
         let efi = format!("efi,variable-store={}{}", self.dir.join("efi.vars").display(), if self.dir.join("efi.vars").exists() { "" } else { ",create" });
         // first setup: 2 CPUs and 512 MB for apt; then 1 and 256 (each idle vCPU costs the Mac timer ticks)
         let (cpus, memory) = if first { ("2", "512") } else { ("1", "256") };
-        let vm = Command::new(self.bin("vfkit"))
+        let vm = crate::programs::tokio_command(self.bin("vfkit"))
             .args(["--cpus", cpus, "--memory", memory, "--bootloader", &efi])
             .arg("--device")
             .arg(format!("virtio-blk,path={}", self.dir.join("disk.raw").display()))
@@ -200,7 +208,7 @@ impl Vm {
 
     /// SSH into the guest: the base command (add the remote command, stdin, pipes).
     pub fn ssh_command(&self) -> Command {
-        let mut c = Command::new("/usr/bin/ssh");
+        let mut c = crate::programs::tokio_command("/usr/bin/ssh");
         c.arg("-i")
             .arg(self.dir.join("id_ed25519"))
             .args(["-p", &self.ssh_port.to_string(), "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=10", "singularity@127.0.0.1"])
@@ -247,15 +255,53 @@ pub fn free_port() -> Option<u16> {
     std::net::TcpListener::bind("127.0.0.1:0").ok()?.local_addr().ok().map(|a| a.port())
 }
 
-async fn download(url: &str, to: &Path) -> anyhow::Result<()> {
+/// An HTTP client with timeouts (a stalled answer must not wait forever).
+fn http() -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder().timeout(Duration::from_secs(600)).connect_timeout(Duration::from_secs(15)).user_agent(concat!("singularityd/", env!("CARGO_PKG_VERSION"))).build()?)
+}
+
+/// Stream `url` to `to`, giving up past `cap` bytes and leaving no partial file behind (audit S7: before this, a
+/// broken answer could fill the disk and the checksum was only compared afterwards).
+async fn download(url: &str, to: &Path, cap: u64) -> anyhow::Result<()> {
+    use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
-    let mut r = reqwest::get(url).await?.error_for_status()?;
-    let mut f = tokio::fs::File::create(to).await?;
-    while let Some(chunk) = r.chunk().await? {
-        f.write_all(&chunk).await?;
+    let r = async {
+        const MB: u64 = 1024 * 1024;
+        let resp = http()?.get(url).send().await?.error_for_status()?;
+        if let Some(len) = resp.content_length() {
+            anyhow::ensure!(len <= cap, "the download is {} MB, over the {} MB cap", len.div_ceil(MB), cap.div_ceil(MB));
+        }
+        let mut f = tokio::fs::File::create(to).await?;
+        let mut body = resp.bytes_stream();
+        let mut written = 0u64;
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk?;
+            written += chunk.len() as u64;
+            anyhow::ensure!(written <= cap, "the download is over the {} MB cap", cap.div_ceil(MB));
+            f.write_all(&chunk).await?;
+        }
+        f.flush().await?;
+        anyhow::Ok(())
     }
-    f.flush().await?;
-    Ok(())
+    .await;
+    if r.is_err() {
+        let _ = tokio::fs::remove_file(to).await;
+    }
+    r
+}
+
+/// A small text answer (Debian's `SHA512SUMS`), capped too.
+async fn fetch_text(url: &str) -> anyhow::Result<String> {
+    use futures_util::StreamExt;
+    let resp = http()?.get(url).send().await?.error_for_status()?;
+    let mut body = resp.bytes_stream();
+    let mut buf = Vec::new();
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk?;
+        anyhow::ensure!((buf.len() + chunk.len()) as u64 <= MAX_TEXT, "the answer is over the {} KB cap", MAX_TEXT / 1024);
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 async fn sha256(p: &Path) -> anyhow::Result<String> {
@@ -264,7 +310,7 @@ async fn sha256(p: &Path) -> anyhow::Result<String> {
 
 /// `shasum -a <bits>` (macOS's own) of a file.
 async fn shasum(p: &Path, bits: &str) -> anyhow::Result<String> {
-    let out = Command::new("/usr/bin/shasum").args(["-a", bits]).arg(p).output().await?;
+    let out = crate::programs::tokio_command("/usr/bin/shasum").args(["-a", bits]).arg(p).output().await?;
     Ok(String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap_or_default().to_string())
 }
 
@@ -341,7 +387,11 @@ write_files:
         etag=$(curl -sfI "$url" | tr -d '\r' | awk 'tolower($1)=="etag:"{{print $2}}')
         [ -n "$etag" ] && [ "$etag" = "$(cat soloist/etag 2>/dev/null)" ] && {{ echo current; return; }}
         rm -rf soloist.new && mkdir soloist.new
-        curl -sf "$url" | tar -xz -C soloist.new
+        # capped like the Daemon's update (update.rs): a broken or hostile CDN answer must not fill the guest's disk
+        curl -sf --max-filesize 268435456 --max-time 900 "$url" | tar -xz -C soloist.new
+        # a regular executable and a build-sized tree, never a link or a bomb
+        [ -f soloist.new/soloist ] && [ ! -L soloist.new/soloist ] || {{ rm -rf soloist.new; return 1; }}
+        [ "$(du -sb soloist.new | cut -f1)" -le 536870912 ] || {{ rm -rf soloist.new; return 1; }}
         soloist.new/soloist --version > soloist.new/version
         echo "$etag" > soloist.new/etag
         echo staged
@@ -380,10 +430,45 @@ mod tests {
         assert_eq!(std::fs::read(&b).unwrap(), data);
     }
 
+    /// S7: a download over its cap fails, and no partial file is left behind (before the fix `vm::download` had no
+    /// cap and no timeout, and the checksum came only after the whole body was on disk).
+    #[tokio::test]
+    async fn a_download_over_its_cap_leaves_no_file() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/x", l.local_addr().unwrap());
+        let announce = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let a = announce.clone();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf).await;
+                let body = vec![7u8; 4096];
+                // first a Content-Length over the cap, then (no length) the bytes counted as they arrive
+                let hdr = if a.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())
+                } else {
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_string()
+                };
+                let _ = s.write_all(hdr.as_bytes()).await;
+                let _ = s.write_all(&body).await;
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        for attempt in 0..3 {
+            let to = dir.path().join(format!("part{attempt}"));
+            let err = download(&url, &to, 1024).await.unwrap_err().to_string();
+            assert!(err.contains("cap"), "{err}");
+            assert!(!to.exists(), "a partial file is left behind");
+        }
+    }
+
     #[test]
     fn the_setup_names_the_ports_the_daemon_uses() {
         let u = user_data("ssh-ed25519 AAAA test");
         assert!(u.starts_with("#cloud-config\n") && u.contains("ssh-ed25519 AAAA test") && u.contains("VSOCK-CONNECT:2:5005") && u.contains("module-pipe-sink") && u.contains("soloist_release_arm64"));
         assert!(!u.contains("{{") && !u.contains("}}"), "format escapes resolved");
+        // S4/S7: the guest's own download is capped and its tar output checked
+        assert!(u.contains("--max-filesize") && u.contains("--max-time") && u.contains("[ ! -L soloist.new/soloist ]"), "the guest script caps what it downloads and unpacks");
     }
 }
