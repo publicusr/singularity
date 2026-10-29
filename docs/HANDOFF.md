@@ -4,7 +4,13 @@ Read this first in a new session, then `CLAUDE.md`, `docs/SPEC.md` and `GLOSSARY
 in `docs/DESIGN-TREE.md` (round log at the bottom: one entry per ticket, with the details); verified facts about
 Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-connect.md`.
 
-## Needs the owner (2026-10-24): a phone's play was undone
+## Release plan (2026-10-29)
+
+The owner settled the public release in three rounds: **D65** in `docs/DESIGN-TREE.md` has the scope and the
+order of the work. T0005's phone fix holds live (2026-10-28 log: the resume was dropped after an updater restart).
+The installed binaries predate T0027–T0029: reinstall both.
+
+## Done (2026-10-29): a phone's play was undone
 
 The owner's report (2026-10-23): a friend's phone playing on Singularity "made the previously playing song play again"
 after queueing + skipping or playing a song, and joining a Jam didn't work. **T0005 fixed the first half** (D63):
