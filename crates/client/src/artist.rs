@@ -4,7 +4,7 @@
 use crate::app::{App, Hit};
 use crate::home::HomeView;
 use crate::theme::Theme;
-use crate::ui::text;
+use crate::ui::{text, blank};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -79,7 +79,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         for (i, t) in page.top_tracks.iter().take(n).enumerate() {
             let selected = focused && i == v.top_sel;
             let bg = if selected { th.selection.color() } else { th.bg.color() };
-            text(buf, x, y, w, &" ".repeat(w as usize), th.base().bg(bg));
+            blank(buf, x, y, w, th.base().bg(bg));
             let now = playing.as_deref() == Some(t.uri.as_str());
             let num = if now { "  ♪".to_string() } else { format!("{:>3}", i + 1) };
             text(buf, x, y, 4, &num, th.s(if now { th.accent } else { th.dim }).bg(bg));

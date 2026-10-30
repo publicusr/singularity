@@ -7,7 +7,7 @@
 use crate::app::{App, Hit};
 use crate::gfx::{self, ImageKey};
 use crate::theme::Theme;
-use crate::ui::text;
+use crate::ui::{text, blank};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -307,7 +307,7 @@ pub fn draw_feed(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, feed: Hom
                     if on(cy + dy) {
                         let ly = (cy + dy) as u16;
                         if selected {
-                            text(buf, x + cw, ly, tw + 1, &" ".repeat(tw as usize + 1), th.base().bg(bg));
+                            blank(buf, x + cw, ly, tw + 1, th.base().bg(bg));
                         }
                         text(buf, x + cw + 1, ly, tw, &line, st.bg(bg));
                     }
@@ -381,7 +381,7 @@ pub fn cover_at(buf: &mut Buffer, x: u16, y: i32, w: u16, h: u16, pane: Rect, ur
         return;
     }
     for yy in r.top()..r.bottom() {
-        text(buf, r.x, yy, r.width, &" ".repeat(r.width as usize), th.base().bg(th.selection.color()));
+        blank(buf, r.x, yy, r.width, th.base().bg(th.selection.color()));
     }
     text(buf, r.x + r.width / 2, r.y + r.height / 2, 1, glyph, th.s(th.border).bg(th.selection.color()));
 }

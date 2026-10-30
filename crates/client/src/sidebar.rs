@@ -2,7 +2,7 @@
 
 use crate::app::{App, Hit};
 use crate::theme::Theme;
-use crate::ui::text;
+use crate::ui::{text, blank};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -70,7 +70,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         };
         let selected = focused && row == side.sel;
         let bg = if selected { th.selection.color() } else { th.bg.color() };
-        text(buf, r.x, y, r.width, &" ".repeat(r.width as usize), th.base().bg(bg));
+        blank(buf, r.x, y, r.width, th.base().bg(bg));
         let x = r.x + 1 + depth * 2;
         let st = if current { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.fg) };
         // a miniature of the cover where there is one and it has arrived (two cells: about square), else the glyph

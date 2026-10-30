@@ -6,7 +6,7 @@
 
 use crate::app::{App, Hit};
 use crate::theme::Theme;
-use crate::ui::text;
+use crate::ui::{text, blank};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -385,7 +385,7 @@ pub fn top_week(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 fn row(buf: &mut Buffer, r: Rect, sec: Section, i: usize, s: &Stats, peak: u32, selected: bool, th: &Theme) {
     let it = &sec.rows(s)[i];
     let bg = if selected { th.selection.color() } else { th.bg.color() };
-    text(buf, r.x, r.y, r.width, &" ".repeat(r.width as usize), th.base().bg(bg));
+    blank(buf, r.x, r.y, r.width, th.base().bg(bg));
     let w = r.width as usize;
     // the right side, as wide as there's room for
     let plays = if sec == Section::Tracks && s.period != StatsPeriod::All && it.all_time_plays > it.plays {

@@ -8,7 +8,7 @@
 
 use crate::app::{App, Hit, MenuAct, Naming, Page, Target};
 use crate::theme::Theme;
-use crate::ui::text;
+use crate::ui::{text, blank};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
@@ -432,7 +432,7 @@ impl App {
             return self.say("Only your own playlists can lose songs");
         };
         let order = self.view_order();
-        let Some(row) = order.get(vi).and_then(|&i| self.lists.get(&playlist)?.rows.get(i)).cloned() else { return };
+        let Some(row) = order.get(vi).and_then(|&i| self.lists.get(&playlist)?.rows().get(i)).cloned() else { return };
         let Some(uid) = row.uid.clone() else {
             return self.say("Spotify didn't say which row this is; open the playlist again");
         };
@@ -536,13 +536,12 @@ impl App {
     fn move_row(&mut self, from: usize, to: usize) {
         let Some(playlist) = self.view.as_ref().map(|v| v.uri.clone()) else { return };
         let Some(list) = self.lists.get_mut(&playlist) else { return };
-        let Some(uid) = list.rows.get(from).and_then(|r| r.uid.clone()) else {
+        let Some(uid) = list.rows().get(from).and_then(|r| r.uid.clone()) else {
             return self.say("Spotify didn't say which row this is; open the playlist again");
         };
-        let row = list.rows.remove(from);
-        list.rows.insert(to.min(list.rows.len()), row);
-        let before = list.rows.get(to + 1).and_then(|r| r.uid.clone());
-        let after = if before.is_none() { to.checked_sub(1).and_then(|i| list.rows.get(i)).and_then(|r| r.uid.clone()) } else { None };
+        list.move_row(from, to);
+        let before = list.rows().get(to + 1).and_then(|r| r.uid.clone());
+        let after = if before.is_none() { to.checked_sub(1).and_then(|i| list.rows().get(i)).and_then(|r| r.uid.clone()) } else { None };
         self.playlists.moving.entry((playlist.clone(), uid.clone())).or_insert((from, 0)).1 += 1;
         if let Some(v) = self.view.as_mut() {
             v.sel = to;
@@ -566,10 +565,9 @@ impl App {
             match (mine, ok) {
                 (Some(was), false) => {
                     if let Some(l) = self.lists.get_mut(playlist)
-                        && let Some(i) = l.rows.iter().position(|r| r.uid.as_deref() == Some(uid.as_str()))
+                        && let Some(i) = l.rows().iter().position(|r| r.uid.as_deref() == Some(uid.as_str()))
                     {
-                        let row = l.rows.remove(i);
-                        l.rows.insert(was.min(l.rows.len()), row);
+                        l.move_row(i, was);
                     }
                     self.say("Spotify didn't take the move; it's back where it was");
                 }
@@ -607,7 +605,7 @@ pub fn draw_adding(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
         let y = inner.y + 1 + n as u16;
         let on = i == a.sel;
         let bg = if on { th.selection.color() } else { th.bg.color() };
-        text(buf, inner.x, y, w, &" ".repeat(w as usize), th.base().bg(bg));
+        blank(buf, inner.x, y, w, th.base().bg(bg));
         text(buf, inner.x + 1, y, 2, if on { "›" } else { " " }, th.s(th.accent).bg(bg));
         let style = if uri.is_none() { th.s(th.accent) } else if on { th.title() } else { th.s(th.fg) };
         text(buf, inner.x + 3, y, w.saturating_sub(4), name, style.bg(bg));
@@ -876,7 +874,7 @@ mod tests {
         let at = labels.iter().position(|l| l == "Remove from this playlist").expect("offered on your own");
         app.menu_run(at);
         assert_eq!(sent(&mut rx), vec![Command::RemoveFromPlaylist { playlist: "spotify:playlist:mine".into(), uids: vec!["u1".into()] }]);
-        let uids = |app: &App| app.lists["spotify:playlist:mine"].rows.iter().map(|r| r.uid.clone().unwrap()).collect::<Vec<_>>();
+        let uids = |app: &App| app.lists["spotify:playlist:mine"].rows().iter().map(|r| r.uid.clone().unwrap()).collect::<Vec<_>>();
         assert_eq!(uids(&app), vec!["u0", "u2", "u3"], "one copy goes at once, the other stays");
         // refused: back where it was
         app.removed_from_playlist("spotify:playlist:mine", &["u1".into()], false);
@@ -918,7 +916,7 @@ mod tests {
             t.draw(|f| crate::ui::draw(f, app)).unwrap();
             t.backend().buffer().clone()
         };
-        let uids = |app: &App| app.lists["spotify:playlist:mine"].rows.iter().map(|r| r.uid.clone().unwrap()).collect::<Vec<_>>();
+        let uids = |app: &App| app.lists["spotify:playlist:mine"].rows().iter().map(|r| r.uid.clone().unwrap()).collect::<Vec<_>>();
         draw(&mut app);
         let y = |app: &App, k: usize| app.hit_rect(&Hit::Track(k)).unwrap().y;
         // press row 0, drag down onto row 3: the preview shows it there before the drop

@@ -79,6 +79,14 @@ straight into the `Buffer` (`for x in .. { cell.set_char(' ') }` and a `truncate
 This is also the lever the old audit named for the Mac's frame cost (#79): "a frame that changed nothing could still
 skip the image upload".
 
+**Fixed (release step 4, Q1):** a view's display order is cached (`TrackView::order`, an `Rc<[usize]>`) and computed
+again only when the list's version, the filter or the sort changes; `TrackList.rows` is private, so every change goes
+through a method that bumps the version (`move_row` replaced the two hand-written moves). The Theme is an `Rc<Theme>`
+the frame shares; `player_bar` copies what it shows instead of the whole `PlaybackState` and its queue; row
+backgrounds use `ui::blank` instead of a string of spaces (all 15 sites); `tracks::clip` borrows when the text fits.
+Left as they are: the `format!` for a row's number and time and `artists.join` per *visible* row (bounded by the
+pane's height, not the list).
+
 ### Q2 · correctness · `client/src/app.rs:931-938` · S
 
 - **Fixed (T0029):** the command channel's `Full` now says "singularityd is busy — that didn't go through; try again"; `Closed` keeps "Not connected". The proof test `a_busy_command_queue_is_not_reported_as_a_missing_daemon` is un-ignored and passes.

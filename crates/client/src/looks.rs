@@ -4,7 +4,7 @@
 use crate::app::{App, Hit};
 use crate::design::DESIGNS;
 use crate::theme::{self, Theme};
-use crate::ui::{centered, popup, text};
+use crate::ui::{centered, popup, text, blank};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
@@ -61,7 +61,7 @@ impl App {
         self.layout = (DESIGNS[d].layout)();
         self.hole.look = DESIGNS[d].look;
         self.focus = "home".into();
-        self.theme = theme::builtin(DESIGNS[d].themes[0]).expect("built in");
+        self.theme = theme::builtin(DESIGNS[d].themes[0]).expect("built in").into();
         self.want_widget_data();
     }
 
@@ -70,7 +70,7 @@ impl App {
         let t = self.user_themes.iter().find(|t| t.id == id).cloned().or_else(|| theme::builtin(id));
         match t {
             Some(t) => {
-                self.theme = t;
+                self.theme = t.into();
                 true
             }
             None => false,
@@ -153,7 +153,7 @@ impl App {
         let (themes, problems) = theme::load_dir(&dir.path);
         self.user_themes = themes;
         if let Some(t) = self.user_themes.iter().find(|t| t.id == self.theme.id).cloned() {
-            self.theme = t;
+            self.theme = t.into();
         }
         if let Some(p) = self.picker.as_mut().filter(|p| p.kind == PickerKind::Theme) {
             let sel = p.items.get(p.sel).map(|i| i.0.clone());
@@ -350,7 +350,7 @@ pub fn draw_picker(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
             break;
         }
         let bg = if i == sel { th.selection.color() } else { th.bg.color() };
-        text(buf, inner.x, y, inner.width, &" ".repeat(inner.width as usize), th.base().bg(bg));
+        blank(buf, inner.x, y, inner.width, th.base().bg(bg));
         text(buf, inner.x + 1, y, 2, if i == sel { "›" } else { " " }, th.s(th.accent).bg(bg));
         text(buf, inner.x + 3, y, 26, name, (if i == sel { th.title() } else { th.s(th.fg) }).bg(bg));
         text(buf, inner.x + 30, y, inner.width.saturating_sub(31), what, th.s(th.dim).bg(bg));

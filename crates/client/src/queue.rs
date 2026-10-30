@@ -7,7 +7,7 @@
 use crate::app::{App, Hit};
 use singularity_proto::QueueEntry;
 use crate::theme::Theme;
-use crate::ui::text;
+use crate::ui::{text, blank};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -222,7 +222,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                 let dragged = app.queue_drag.as_ref().is_some_and(|d| d.to == *i);
                 let selected = (focused && *i == view.sel && app.queue_drag.is_none()) || dragged;
                 let bg = if selected { th.selection.color() } else { th.bg.color() };
-                text(buf, x, y, w, &" ".repeat(w as usize), th.base().bg(bg));
+                blank(buf, x, y, w, th.base().bg(bg));
                 let auto = e.source == "autoplay";
                 let name = if e.item.name.is_empty() { "…".to_string() } else { e.item.name.clone() };
                 let dur = if e.item.duration_ms > 0 { fmt_ms(e.item.duration_ms) } else { String::new() };

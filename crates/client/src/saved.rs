@@ -220,7 +220,7 @@ impl App {
 
     /// A track's row from anywhere on screen (lists, search, the artist page, what's playing).
     fn find_row(&self, uri: &str) -> Option<TrackRow> {
-        let lists = self.lists.values().flat_map(|l| l.rows.iter());
+        let lists = self.lists.values().flat_map(|l| l.rows().iter());
         let search = self.search.iter().filter_map(|s| s.results.as_ref()).flat_map(|r| r.tracks.iter());
         let artist = self.artist.iter().filter_map(|a| a.page.as_ref()).flat_map(|p| p.top_tracks.iter());
         if let Some(r) = lists.chain(search).chain(artist).find(|r| r.uri == uri) {

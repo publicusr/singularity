@@ -8,7 +8,7 @@
 
 use crate::app::{Action, App, Hit};
 use crate::theme::Theme;
-use crate::ui::text;
+use crate::ui::{text, blank};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
@@ -391,7 +391,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                 let e = &es[*i];
                 let selected = focused && !view.on_tabs && *i == view.sel;
                 let bg = if selected { th.selection.color() } else { th.bg.color() };
-                text(buf, x, y, w, &" ".repeat(w as usize), th.base().bg(bg));
+                blank(buf, x, y, w, th.base().bg(bg));
                 text(buf, x + 1, y, NAME_W - 1, e.name(), th.s(th.fg).bg(bg));
                 hits.push((Rect::new(x, y, w, 1), Hit::Setting(*i)));
                 let typing = view.typing.as_ref().filter(|_| *i == view.sel);
@@ -457,7 +457,7 @@ fn draw_keys(buf: &mut Buffer, r: Rect, app: &App, th: &Theme, view: &mut Settin
     for (i, a) in Action::ALL.iter().enumerate().skip(view.key_top).take(view.visible) {
         let selected = focused && !view.on_tabs && i == view.key_sel;
         let bg = if selected { th.selection.color() } else { th.bg.color() };
-        text(buf, x, y, w, &" ".repeat(w as usize), th.base().bg(bg));
+        blank(buf, x, y, w, th.base().bg(bg));
         let keys = keys_of(*a);
         let (keys, kst) = if keys.is_empty() { ("—".to_string(), th.s(th.border)) } else { (keys, th.s(th.accent).add_modifier(Modifier::BOLD)) };
         text(buf, x + 1, y, kw - 2, &keys, kst.bg(bg));

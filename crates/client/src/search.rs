@@ -4,7 +4,7 @@
 use crate::app::{App, Hit};
 use crate::home::HomeView;
 use crate::theme::Theme;
-use crate::ui::text;
+use crate::ui::{text, blank};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -209,7 +209,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                 }
                 let sel = focused && v.track_sel == Some(i);
                 let bg = if sel { th.selection.color() } else { th.bg.color() };
-                text(buf, x, y, w, &" ".repeat(w as usize), th.base().bg(bg));
+                blank(buf, x, y, w, th.base().bg(bg));
                 let now = playing.as_deref() == Some(t.uri.as_str());
                 hits.push((Rect::new(x, y, w, 1), Hit::SearchTrack(i)));
                 let nw = w.saturating_sub(8) / 2;

@@ -5,7 +5,7 @@
 
 use crate::app::{App, Hit};
 use crate::theme::Theme;
-use crate::ui::text;
+use crate::ui::{text, blank};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -40,17 +40,39 @@ impl Col {
 #[derive(Default, Clone)]
 pub struct TrackList {
     pub total: u32,
-    pub rows: Vec<TrackRow>,
+    /// changed only through the methods below, which bump `version` (the views' cached order depends on it)
+    rows: Vec<TrackRow>,
     pub header: Option<singularity_proto::ListHeader>,
+    version: u64,
+}
+
+/// Every list change gets a number of its own, so a list removed and fetched again never repeats an old one.
+fn next_version() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl TrackList {
+    pub fn rows(&self) -> &[TrackRow] {
+        &self.rows
+    }
+
+    /// Move the row at `from` to `to` (a drag in a playlist, or its rollback).
+    pub fn move_row(&mut self, from: usize, to: usize) {
+        if from < self.rows.len() {
+            self.version = next_version();
+            let row = self.rows.remove(from);
+            self.rows.insert(to.min(self.rows.len()), row);
+        }
+    }
+
     pub fn complete(&self) -> bool {
         self.rows.len() as u32 >= self.total
     }
 
     /// Add a page; pages may repeat (a cache replay) and are placed by offset.
     pub fn add(&mut self, p: &TrackPage) {
+        self.version = next_version();
         self.total = p.total;
         if p.header.is_some() {
             self.header = p.header.clone();
@@ -65,6 +87,7 @@ impl TrackList {
 
     /// Put a row at `at` (a like lands on top of Liked Songs; a rollback puts it back where it was).
     pub fn insert(&mut self, at: usize, row: TrackRow) {
+        self.version = next_version();
         if self.rows.iter().any(|r| r.uri == row.uri) {
             return;
         }
@@ -75,12 +98,14 @@ impl TrackList {
     /// Take one row out by its playlist uid (a duplicate stays); where it was and the row.
     pub fn take_uid(&mut self, uid: &str) -> Option<(usize, TrackRow)> {
         let i = self.rows.iter().position(|r| r.uid.as_deref() == Some(uid))?;
+        self.version = next_version();
         self.total = self.total.saturating_sub(1);
         Some((i, self.rows.remove(i)))
     }
 
     /// Put a row taken out back where it was (duplicates allowed: it's the same row).
     pub fn put_back(&mut self, at: usize, row: TrackRow) {
+        self.version = next_version();
         self.rows.insert(at.min(self.rows.len()), row);
         self.total += 1;
     }
@@ -88,6 +113,7 @@ impl TrackList {
     /// Take a track out; returns where it was and the row.
     pub fn remove(&mut self, uri: &str) -> Option<(usize, TrackRow)> {
         let i = self.rows.iter().position(|r| r.uri == uri)?;
+        self.version = next_version();
         self.total = self.total.saturating_sub(1);
         Some((i, self.rows.remove(i)))
     }
@@ -114,15 +140,49 @@ pub struct TrackView {
     pub reveal_uri: Option<String>,
     /// a show's rows when its next episodes were last asked for (#59)
     pub more_for: Option<usize>,
+    order: OrderCache,
+}
+
+/// The last display order and what it was made from: a list's version, the filter and the sort. Drawing asks for the
+/// order every frame; a 10 000-song list is filtered and sorted again only when one of those changes (audit Q1).
+#[derive(Clone, Default)]
+struct OrderCache(std::cell::RefCell<Option<(OrderKey, std::rc::Rc<[usize]>)>>);
+
+/// A list's version, the filter and the sort.
+type OrderKey = (u64, String, Option<(Col, bool)>);
+
+impl PartialEq for OrderCache {
+    fn eq(&self, _: &Self) -> bool {
+        true // a cache: two views that look the same are the same
+    }
+}
+
+impl std::fmt::Debug for OrderCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OrderCache")
+    }
 }
 
 impl TrackView {
     pub fn new(uri: &str, title: &str) -> TrackView {
-        TrackView { uri: uri.into(), title: title.into(), subtitle: String::new(), sort: None, filter: String::new(), filtering: false, sel: 0, top: 0, visible: 1, reveal_uri: None, more_for: None }
+        TrackView { uri: uri.into(), title: title.into(), subtitle: String::new(), sort: None, filter: String::new(), filtering: false, sel: 0, top: 0, visible: 1, reveal_uri: None, more_for: None, order: OrderCache::default() }
+    }
+
+    /// Indexes into `list`'s rows in display order (cached until the list, the filter or the sort changes).
+    pub fn order(&self, list: &TrackList) -> std::rc::Rc<[usize]> {
+        let mut cache = self.order.0.borrow_mut();
+        if let Some(((version, filter, sort), order)) = &*cache
+            && (*version, filter.as_str(), *sort) == (list.version, self.filter.as_str(), self.sort)
+        {
+            return order.clone();
+        }
+        let order: std::rc::Rc<[usize]> = self.compute_order(list.rows()).into();
+        *cache = Some(((list.version, self.filter.clone(), self.sort), order.clone()));
+        order
     }
 
     /// Indexes into `rows` in display order.
-    pub fn order(&self, rows: &[TrackRow]) -> Vec<usize> {
+    fn compute_order(&self, rows: &[TrackRow]) -> Vec<usize> {
         let words: Vec<String> = self.filter.to_lowercase().split_whitespace().map(String::from).collect();
         let mut idx: Vec<usize> = (0..rows.len())
             .filter(|&i| {
@@ -250,14 +310,15 @@ pub fn grouped(n: u64) -> String {
     out
 }
 
-fn clip(s: &str, w: u16) -> String {
+/// `s` in `w` cells less a gutter, with `…` when cut; borrowed when it fits (most rows, every frame).
+fn clip(s: &str, w: u16) -> std::borrow::Cow<'_, str> {
     let w = w.saturating_sub(1) as usize; // one cell of gutter
     if s.chars().count() <= w {
-        return s.to_string();
+        return s.into();
     }
     let mut out: String = s.chars().take(w.saturating_sub(1)).collect();
     out.push('…');
-    out
+    out.into()
 }
 
 fn fmt_dur(ms: u64) -> String {
@@ -275,7 +336,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     // an audiobook (#62): a show of chapters
     let book = list.header.as_ref().is_some_and(|h| h.book);
     let unit = if book { "chapter" } else { "episode" };
-    let mut order = view.order(&list.rows);
+    let mut order = view.order(list);
     // an episode we were asked to show: highlighted once it's here
     if let Some(want) = view.reveal_uri.clone()
         && let Some(vi) = order.iter().position(|&ri| list.rows[ri].uri == want)
@@ -286,8 +347,10 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
     // a row being dragged shows where it would land (#55)
     if let Some(d) = app.playlists.row_drag.filter(|d| d.from < order.len() && d.to < order.len()) {
-        let x = order.remove(d.from);
-        order.insert(d.to, x);
+        let mut moved = order.to_vec();
+        let x = moved.remove(d.from);
+        moved.insert(d.to, x);
+        order = moved.into();
     }
     // hit-boxes are registered once the list is no longer borrowed
     let mut hits: Vec<(Rect, Hit)> = vec![];
@@ -399,7 +462,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         // the row first, so the links inside it win
         hits.push((Rect::new(x0, y, w, 1), Hit::Track(vi)));
         let fg = if !row.playable { th.border } else if now { th.accent } else { th.fg };
-        text(buf, x0, y, w, &" ".repeat(w as usize), th.base().bg(bg));
+        blank(buf, x0, y, w, th.base().bg(bg));
         let num = if now { "  ♪".to_string() } else { format!("{:>3}", ri + 1) };
         text(buf, x0 + cols[0].0, y, cols[0].1, &num, th.s(if now { th.accent } else { th.dim }).bg(bg));
         let title_st = th.s(fg).bg(bg).add_modifier(if selected { Modifier::BOLD } else { Modifier::empty() });
@@ -489,28 +552,48 @@ mod tests {
     }
 
     #[test]
+    fn the_order_is_cached_until_the_list_filter_or_sort_changes() {
+        let mut list = TrackList::default();
+        list.add(&TrackPage { uri: "u".into(), offset: 0, total: 3, tracks: rows(), header: None });
+        let mut v = TrackView::new("u", "t");
+        let first = v.order(&list);
+        assert!(std::rc::Rc::ptr_eq(&first, &v.order(&list)), "the next frame reuses it");
+        v.cycle_sort(Col::Title);
+        assert_eq!(*v.order(&list), [1, 2, 0], "a sort");
+        v.filter = "nova".into();
+        assert_eq!(*v.order(&list), [2, 0], "a filter");
+        list.move_row(2, 0);
+        assert_eq!(*v.order(&list), [0, 1], "a moved row: Corona is row 0 now");
+        list.remove("spotify:track:0");
+        assert_eq!(*v.order(&list), [0], "a removed row");
+        let mut again = TrackList::default();
+        again.add(&TrackPage { uri: "u".into(), offset: 0, total: 3, tracks: rows(), header: None });
+        assert_eq!(*v.order(&again), [2, 0], "a list fetched again is a new version");
+    }
+
+    #[test]
     fn sorting_cycles_and_is_case_insensitive() {
         let mut v = TrackView::new("u", "t");
-        assert_eq!(v.order(&rows()), [0, 1, 2]);
+        assert_eq!(v.compute_order(&rows()), [0, 1, 2]);
         v.cycle_sort(Col::Title);
-        assert_eq!(v.order(&rows()), [1, 2, 0]);
+        assert_eq!(v.compute_order(&rows()), [1, 2, 0]);
         v.cycle_sort(Col::Title);
-        assert_eq!(v.order(&rows()), [0, 2, 1]);
+        assert_eq!(v.compute_order(&rows()), [0, 2, 1]);
         v.cycle_sort(Col::Title);
-        assert_eq!(v.order(&rows()), [0, 1, 2]);
+        assert_eq!(v.compute_order(&rows()), [0, 1, 2]);
         v.cycle_sort(Col::Duration);
-        assert_eq!(v.order(&rows()), [1, 0, 2]);
+        assert_eq!(v.compute_order(&rows()), [1, 0, 2]);
         v.cycle_sort(Col::Added);
-        assert_eq!(v.order(&rows()), [2, 1, 0]);
+        assert_eq!(v.compute_order(&rows()), [2, 1, 0]);
     }
 
     #[test]
     fn filter_matches_all_words_across_fields() {
         let mut v = TrackView::new("u", "t");
         v.set_filter("nova cor".into());
-        assert_eq!(v.order(&rows()), [2]);
+        assert_eq!(v.compute_order(&rows()), [2]);
         v.set_filter("MIRA".into());
-        assert_eq!(v.order(&rows()), [1]);
+        assert_eq!(v.compute_order(&rows()), [1]);
     }
 
     #[test]

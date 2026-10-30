@@ -44,6 +44,15 @@ pub fn text(buf: &mut Buffer, x: u16, y: u16, max: u16, s: &str, st: Style) {
     }
 }
 
+/// `w` blank cells in style `st` from (`x`, `y`): a row's background, without a string of spaces each frame (Q1).
+pub fn blank(buf: &mut Buffer, x: u16, y: u16, w: u16, st: Style) {
+    for x in x..x.saturating_add(w) {
+        if let Some(c) = buf.cell_mut((x, y)) {
+            c.set_char(' ').set_style(st);
+        }
+    }
+}
+
 fn fill(buf: &mut Buffer, r: Rect, th: &Theme) {
     for y in r.top()..r.bottom() {
         for x in r.left()..r.right() {
@@ -234,7 +243,7 @@ fn devices(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
         let sel = i == app.devices_sel;
         let st = if d.active { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.fg) };
         let bg = if sel { th.selection.color() } else { th.bg.color() };
-        text(buf, inner.x, y, inner.width, &" ".repeat(inner.width as usize), th.base().bg(bg));
+        blank(buf, inner.x, y, inner.width, th.base().bg(bg));
         let icon = match d.kind.as_str() {
             "smartphone" | "tablet" => "▯",
             "computer" => "▭",
@@ -495,7 +504,9 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
 }
 
 fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
-    let pb = app.playback.clone();
+    // what the bar shows, without the queue it doesn't (the whole state, queue and all, was cloned every frame: Q1)
+    let p = &app.playback;
+    let pb = singularity_proto::PlaybackState { status: p.status, item: p.item.clone(), context_name: p.context_name.clone(), shuffle: p.shuffle, repeat: p.repeat, ..Default::default() };
     let buf = f.buffer_mut();
     let now = pb.item.as_ref().map(|i| format!("{} — {}", i.name, i.artists.join(", "))).unwrap_or_else(|| "nothing playing".into());
     match crate::design::DESIGNS[app.design].prompt {
@@ -721,7 +732,7 @@ fn palette(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
         let row = Rect::new(inner.x, y, inner.width, 1);
         let st = if i == selected { th.s(th.accent).bg(th.selection.color()) } else { th.s(th.fg) };
         let buf = f.buffer_mut();
-        text(buf, inner.x, y, inner.width, &" ".repeat(inner.width as usize), st);
+        blank(buf, inner.x, y, inner.width, st);
         text(buf, inner.x + 2, y, inner.width.saturating_sub(12), a.label(), st);
         let k = app.keymap.label(*a);
         text(buf, inner.right().saturating_sub(k.chars().count() as u16 + 2), y, 10, &k, th.s(th.dim));
@@ -2616,7 +2627,7 @@ mod tests {
     }
 
     fn liked_uris(app: &App) -> Vec<String> {
-        app.lists["spotify:collection"].rows.iter().map(|r| r.uri.clone()).collect()
+        app.lists["spotify:collection"].rows().iter().map(|r| r.uri.clone()).collect()
     }
 
     #[test]

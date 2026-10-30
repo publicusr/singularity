@@ -9,7 +9,7 @@ use singularity_proto::Jam;
 
 use crate::app::{App, Hit};
 use crate::theme::Theme;
-use crate::ui::text;
+use crate::ui::{text, blank};
 
 /// Guests listed under the QR; more are counted.
 const GUESTS_SHOWN: usize = 4;
@@ -62,7 +62,7 @@ pub fn draw(buf: &mut Buffer, inner: Rect, mut y: u16, row: usize, app: &mut App
     y += 1;
     let sel = app.devices_sel == row;
     let bg = if sel { th.selection.color() } else { th.bg.color() };
-    text(buf, inner.x, y, inner.width, &" ".repeat(inner.width as usize), th.base().bg(bg));
+    blank(buf, inner.x, y, inner.width, th.base().bg(bg));
     let engine = app.devices.iter().find(|d| d.is_engine).map(|d| d.name.clone()).unwrap_or_else(|| "this device".into());
     let (label, tag) = match &app.jam {
         None => (format!("✚ Start a Jam on {engine}"), "friends join with a link".to_string()),

@@ -434,7 +434,8 @@ struct ConfigFiles {
 
 
 pub struct App {
-    pub theme: Theme,
+    /// shared with each frame, which holds it while it draws (a clone per frame was the whole Theme: audit Q1)
+    pub theme: std::rc::Rc<Theme>,
     pub layout: Node,
     pub link: Link,
     pub engine: Option<EngineStatus>,
@@ -582,7 +583,7 @@ pub struct App {
 impl App {
     pub fn new(commands: Option<mpsc::Sender<Command>>) -> App {
         App {
-            theme: Theme::singularity(),
+            theme: std::rc::Rc::new(Theme::singularity()),
             layout: Node::singularity(),
             link: Link::Connecting,
             engine: None,
@@ -1698,10 +1699,10 @@ impl App {
     }
 
     /// The view's visible order and the list length.
-    pub(crate) fn view_order(&self) -> Vec<usize> {
+    pub(crate) fn view_order(&self) -> std::rc::Rc<[usize]> {
         match (&self.view, self.view.as_ref().and_then(|v| self.lists.get(&v.uri))) {
-            (Some(v), Some(l)) => v.order(&l.rows),
-            _ => vec![],
+            (Some(v), Some(l)) => v.order(l),
+            _ => std::rc::Rc::new([]),
         }
     }
 
@@ -1709,7 +1710,7 @@ impl App {
     fn play_row(&mut self, vi: usize) {
         let order = self.view_order();
         let (Some(v), Some(&ri)) = (self.view.as_ref(), order.get(vi)) else { return };
-        let Some(row) = self.lists.get(&v.uri).and_then(|l| l.rows.get(ri)) else { return };
+        let Some(row) = self.lists.get(&v.uri).and_then(|l| l.rows().get(ri)) else { return };
         if !row.playable {
             return self.say("This track isn't available");
         }
@@ -1965,7 +1966,7 @@ impl App {
             Target::Row(vi) => {
                 let order = self.view_order();
                 let v = self.view.as_ref()?;
-                let row = self.lists.get(&v.uri)?.rows.get(*order.get(*vi)?)?;
+                let row = self.lists.get(&v.uri)?.rows().get(*order.get(*vi)?)?;
                 Some((row.uri.clone(), row.name.clone(), "track".into()))
             }
             Target::Queued { uri, name, .. } | Target::Track { uri, name } => Some((uri.clone(), name.clone(), "track".into())),
