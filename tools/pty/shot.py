@@ -1078,7 +1078,9 @@ def main():
     env = dict(os.environ, SINGULARITY_ENGINE="soloist", SINGULARITY_SOLOIST="local", SINGULARITY_START_APP="0", SINGULARITY_SOCKET=sock, TERM="xterm-256color", COLORTERM="truecolor",
                # scratch config and state: test runs never write the owner's files
                XDG_CONFIG_HOME=f"{os.path.abspath(out)}/config", XDG_STATE_HOME=f"{os.path.abspath(out)}/state",
-               XDG_DATA_HOME=f"{os.path.abspath(out)}/data")
+               XDG_DATA_HOME=f"{os.path.abspath(out)}/data",
+               # never the owner's Spotify login (keyring) or session bus (MPRIS); `mpris` gets a private bus below
+               SINGULARITY_NO_KEYRING="1", SINGULARITY_NOWPLAYING="off")
     for k in ("KITTY_WINDOW_ID", "TERM_PROGRAM", "GHOSTTY_RESOURCES_DIR", "TMUX"):
         env.pop(k, None)
     if scenario == "pixel":
@@ -1110,9 +1112,13 @@ def main():
     if scenario == "mpris":
         bus, addr = private_bus(out)
         env["SINGULARITY_DBUS"] = env["DBUS_SESSION_BUS_ADDRESS"] = addr
+        env.pop("SINGULARITY_NOWPLAYING")
     d = subprocess.Popen([f"{BIN}/singularityd", "--fake-engine", *cat], env=env, stdout=subprocess.DEVNULL, stderr=open(f"{out}/daemon.log", "w"))
     try:
         time.sleep(0.4)
+        if d.poll() is not None:
+            # a Client would start a Daemon of its own: stop here instead
+            sys.exit(f"the Daemon exited ({open(f'{out}/daemon.log').read().strip().splitlines()[-1:]}); built with `cargo build -p singularityd --features fake`?")
         t = Term(env)
         t.pump(1.5)
         if scenario == "home-scroll":

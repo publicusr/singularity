@@ -142,6 +142,12 @@ fake`, depending on how far `--fake-catalogue` should survive publication); `rem
 `app_engine_events` move next to `ConnectRemote` in `connect.rs`. Mechanical, no behaviour change; it makes the next
 two findings half the work.
 
+**Fixed (release step 4, Q4):** the fake Catalogue is `daemon/src/catalogue/fake.rs` behind the `fake` feature
+(off by default, so `cargo install` leaves it out). The tests turn it on with a dev-dependency on the crate itself; the
+pty harness needs `cargo build -p singularityd --features fake`, and a build without it refuses `--fake-catalogue`
+with that command. `remote_cluster`, `emit_cluster` and `app_engine_events` stayed in `catalogue.rs`: with the fake
+gone they sit right after `handle`, next to the Connect code.
+
 ### Q5 · maintainability · `daemon/src/catalogue.rs:803-1647` · M
 
 `impl State` is **845 lines, 33 methods**, holding six concerns: login/session (`login`, `connect`, `logout`,

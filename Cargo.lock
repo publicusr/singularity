@@ -3853,6 +3853,7 @@ dependencies = [
  "serde_json",
  "singularity-config",
  "singularity-proto",
+ "singularityd",
  "spotatui-librespot-connect",
  "spotatui-librespot-core",
  "spotatui-librespot-oauth",

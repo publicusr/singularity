@@ -94,10 +94,10 @@ async fn run() -> anyhow::Result<i32> {
     let soloist_identity = soloist_vm.as_ref().map(|(s, _)| s.device_name.clone()).unwrap_or_else(|| local_soloist.device_name.clone());
     let identity = app.as_ref().map(|a| a.identity.clone()).or_else(|| librespot.as_ref().map(|l| l.identity.clone())).or_else(|| (kind == Some(Kind::Soloist)).then(|| singularityd::engine::Identity { device_name: soloist_identity, ..Default::default() })).unwrap_or_default();
     // --no-catalogue: playback only (no Spotify login / private API)
-    // --fake-catalogue <home.json>: a recorded Home feed instead of Spotify (UI work, screenshots)
+    // --fake-catalogue <home.json>: a recorded Home feed instead of Spotify (UI work, screenshots; `fake` feature)
     let fake_home = args.iter().position(|a| a == "--fake-catalogue").and_then(|i| args.get(i + 1));
     let catalogue = if let Some(path) = fake_home {
-        Some(singularityd::catalogue::spawn_fake(serde_json::from_str(&std::fs::read_to_string(path)?)?))
+        Some(fake_catalogue(path)?)
     } else {
         (!args.iter().any(|a| a == "--no-catalogue")).then(|| singularityd::catalogue::spawn(singularityd::catalogue::Dirs::from_env(), identity.clone()))
     };
@@ -175,4 +175,14 @@ async fn run() -> anyhow::Result<i32> {
     tracing::info!("singularityd stopped");
     // replaced by a newer build: EX_TEMPFAIL
     result.map(|r| if matches!(r, Some(singularityd::Served::Replaced)) { 75 } else { 0 })
+}
+
+#[cfg(feature = "fake")]
+fn fake_catalogue(path: &str) -> anyhow::Result<(tokio::sync::mpsc::Sender<singularityd::catalogue::CatCmd>, tokio::sync::mpsc::Receiver<singularityd::catalogue::CatEvent>)> {
+    Ok(singularityd::catalogue::spawn_fake(serde_json::from_str(&std::fs::read_to_string(path)?)?))
+}
+
+#[cfg(not(feature = "fake"))]
+fn fake_catalogue(_: &str) -> anyhow::Result<(tokio::sync::mpsc::Sender<singularityd::catalogue::CatCmd>, tokio::sync::mpsc::Receiver<singularityd::catalogue::CatEvent>)> {
+    anyhow::bail!("--fake-catalogue is only in builds with the `fake` feature: cargo build -p singularityd --features fake")
 }

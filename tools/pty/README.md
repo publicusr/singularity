@@ -6,7 +6,7 @@ on a short test socket (`$XDG_RUNTIME_DIR/sgl-<pid>.sock`; on macOS, which has n
 ```sh
 cd tools/pty
 python3 -m venv venv && venv/bin/pip install pyte pillow websockets
-cargo build                                    # debug binaries are what it runs
+cargo build && cargo build -p singularityd --features fake   # debug binaries, the Daemon with the fake Catalogue
 venv/bin/python seed_covers.py ../../crates/client/tests/fixtures/home.json xdgcache/singularity/covers
 venv/bin/python shot.py <scenario> out-<scenario>   # writes PNGs + text dumps (PTY_COLS/PTY_ROWS: size, default 140×40)
 ```
