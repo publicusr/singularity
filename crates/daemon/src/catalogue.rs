@@ -52,6 +52,9 @@ pub enum CatCmd {
     Search(String),
     Devices,
     Transfer(String),
+    /// Jam (D64): start one hosted on the Engine's device, end the one this account runs
+    StartJam,
+    EndJam,
     /// a transport command for the device that's playing (not our Engine)
     Remote(Command),
     SetSaved { uri: String, saved: bool },
@@ -93,6 +96,8 @@ pub enum CatEvent {
     Artist(singularity_proto::ArtistPage),
     Search(singularity_proto::SearchResults),
     Devices(Vec<singularity_proto::Device>),
+    /// the account's Jam, or none (D64)
+    Jam(Option<singularity_proto::Jam>),
     /// another device's playback (None: our Engine is the active device again)
     Remote(Option<singularity_proto::PlaybackState>),
     Saved(Vec<singularity_proto::SavedFlag>),
@@ -338,6 +343,8 @@ async fn handle(st: &mut State, cmd: CatCmd, self_tx: &mpsc::Sender<CatCmd>) {
         CatCmd::Artist(uri) => st.artist(uri).await,
         CatCmd::Devices => st.devices().await,
         CatCmd::Transfer(id) => st.transfer(id).await,
+        CatCmd::StartJam => st.start_jam().await,
+        CatCmd::EndJam => st.end_jam().await,
         CatCmd::Resume(r) => st.resume(r).await,
         CatCmd::Remote(cmd) => st.remote_command(cmd).await,
         CatCmd::Engine(cmd) => st.engine_command(cmd).await,
@@ -398,6 +405,9 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
         // and moved, in order: (uids, before, after)
         type Moved = (Vec<String>, Option<String>, Option<String>);
         let mut moves: HashMap<String, Vec<Moved>> = HashMap::new();
+        // a Jam started here (D64): hosted on the fake Engine, one fake guest
+        let mut jam: Option<singularity_proto::Jam> = None;
+        let _ = ev_tx.send(CatEvent::Jam(None)).await;
         while let Some(cmd) = cmd_rx.recv().await {
             let evs = match cmd {
                 CatCmd::Home => vec![CatEvent::Home(home.clone())],
@@ -530,7 +540,15 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 CatCmd::MoreTracks { uri, offset } => fake_tracks(&uri).into_iter().filter(|e| matches!(e, CatEvent::Tracks(p) if p.offset >= offset)).collect(),
                 CatCmd::FindShow(uri) => vec![CatEvent::EpisodeShow { episode: uri, show: singularity_proto::Link { name: "Fake Show".into(), uri: "spotify:show:fakeshow".into() } }],
                 CatCmd::Search(q) => vec![CatEvent::Search(fake_search(&q, &home))],
-                CatCmd::Devices => vec![CatEvent::Devices(fake_devices(None))],
+                CatCmd::Devices => vec![CatEvent::Devices(fake_devices(None)), CatEvent::Jam(jam.clone())],
+                CatCmd::StartJam => {
+                    jam.get_or_insert_with(fake_jam);
+                    vec![CatEvent::Jam(jam.clone())]
+                }
+                CatCmd::EndJam => match jam.take() {
+                    Some(_) => vec![CatEvent::Jam(None)],
+                    None => vec![CatEvent::Error("There's no Jam to end".into()), CatEvent::Jam(None)],
+                },
                 CatCmd::Transfer(id) => vec![CatEvent::Devices(fake_devices(Some(&id)))],
                 // the fake has no Connect: the Engine plays the track and seeks
                 CatCmd::Resume(r) => {
@@ -595,6 +613,14 @@ fn remote_cluster(c: &std::sync::Mutex<Option<librespot_protocol::connect::Clust
     c.lock().expect("cluster lock").clone().ok_or_else(|| anyhow::anyhow!("no Connect state yet"))
 }
 
+/// The latest cluster's device names by id, for naming a Jam's host, and the Engine's own id.
+fn jam_devices(latest: &std::sync::Mutex<Option<librespot_protocol::connect::Cluster>>, engine: &Identity) -> (HashMap<String, String>, Option<String>) {
+    let latest = latest.lock().expect("cluster lock");
+    let names: HashMap<String, String> = latest.iter().flat_map(|c| c.device.iter()).map(|(id, d)| (id.clone(), d.name.clone())).collect();
+    let engine_id = names.iter().find(|(_, n)| **n == engine.device_name).map(|(id, _)| id.clone());
+    (names, engine_id)
+}
+
 /// Tell the Daemon what a cluster says: the devices, and whether another device is the one playing. For the Spotify
 /// app as Engine (D51), also the Engine's own state: whether its device is there and active, what it plays, how well.
 async fn emit_cluster(ev: &mpsc::Sender<CatEvent>, c: &librespot_protocol::connect::Cluster, engine: &Identity) {
@@ -636,6 +662,23 @@ pub fn app_engine_events(c: &librespot_protocol::connect::Cluster, engine: &Iden
 }
 
 /// The Engine, a phone and a speaker; `active` moves when transferred to.
+/// The fake Catalogue's Jam: on the fake Engine, with a made-up invite link and one guest.
+fn fake_jam() -> singularity_proto::Jam {
+    use singularity_proto::JamMember;
+    singularity_proto::Jam {
+        session_id: "fakejam".into(),
+        owner: true,
+        host: Some("Singularity".into()),
+        host_is_engine: true,
+        invite: Some("https://open.spotify.com/socialsession/FakeJamToken123".into()),
+        queue_only: false,
+        members: vec![
+            JamMember { id: "m-fake".into(), name: "fake".into(), owner: true, listening: true },
+            JamMember { id: "m-guest".into(), name: "Guest Friend".into(), owner: false, listening: true },
+        ],
+    }
+}
+
 fn fake_devices(active: Option<&str>) -> Vec<singularity_proto::Device> {
     let active = active.unwrap_or("engine");
     [("engine", "Singularity", "speaker"), ("phone", "Pixel", "smartphone"), ("kitchen", "Kitchen", "speaker")]
@@ -1159,9 +1202,24 @@ impl State {
             // change) it has a new connection id, which must be registered again, or the pushes stop.
             let (latest, ev, engine, changed) = (self.cluster.clone(), self.ev.clone(), self.engine.clone(), self.cluster_changed.clone());
             let session = session.clone();
+            // every change to the account's Jam (D64): read it again, the update itself is loose JSON
+            let mut jam_updates = session.dealer().listen_for(crate::jam::UPDATE_TOPIC, |_| -> Result<(), librespot_core::Error> { Ok(()) })?;
             tokio::spawn(async move {
                 loop {
                     let c = tokio::select! {
+                        u = jam_updates.next() => match u {
+                            Some(_) => {
+                                let (names, engine_id) = jam_devices(&latest, &engine);
+                                match crate::jam::current(&session, &names, engine_id.as_deref()).await {
+                                    Ok(jam) => {
+                                        let _ = ev.send(CatEvent::Jam(jam)).await;
+                                    }
+                                    Err(e) => tracing::debug!("Jam: couldn't read it after an update: {e}"),
+                                }
+                                continue;
+                            }
+                            None => return,
+                        },
                         u = updates.next() => match u {
                             Some(Ok(u)) => match u.cluster.into_option() {
                                 Some(c) => c,
@@ -1412,6 +1470,7 @@ impl State {
         if let Some(c) = c {
             emit_cluster(&self.ev, &c, &self.engine).await;
         }
+        self.refresh_jam().await;
     }
 
     async fn transfer(&mut self, to: String) {
@@ -1426,6 +1485,59 @@ impl State {
                 r.forget_ids();
             }
             self.fail(format!("Couldn't move playback: {e}")).await;
+        }
+    }
+
+    /// Start a Jam hosted on the Engine's own device (D64; verified to work for Soloist's, 2026-10-30).
+    async fn start_jam(&mut self) {
+        let result = async {
+            let (session, _, to) = self.remote().await?;
+            let (names, _) = jam_devices(&self.cluster, &self.engine);
+            crate::jam::start(&session, &to, &names).await
+        }
+        .await;
+        match result {
+            Ok(Some(jam)) => {
+                tracing::info!("Jam started on {}", jam.host.as_deref().unwrap_or("an unlisted device"));
+                let _ = self.ev.send(CatEvent::Jam(Some(jam))).await;
+            }
+            Ok(None) => self.fail("Spotify didn't start a Jam (Premium is needed to host one)".into()).await,
+            Err(e) => self.fail(format!("Couldn't start a Jam: {e}")).await,
+        }
+    }
+
+    /// End the Jam this account runs, for everyone; the music keeps playing.
+    async fn end_jam(&mut self) {
+        let result = async {
+            let (session, _, _) = self.remote().await?;
+            let (names, engine_id) = jam_devices(&self.cluster, &self.engine);
+            match crate::jam::current(&session, &names, engine_id.as_deref()).await? {
+                None => Ok(None),
+                Some(jam) if !jam.owner => anyhow::bail!("only the one who started it can end it"),
+                Some(jam) => crate::jam::end(&session, &jam.session_id).await.map(|()| Some(jam)),
+            }
+        }
+        .await;
+        match result {
+            Ok(ended) => {
+                if ended.is_some() {
+                    tracing::info!("Jam ended");
+                }
+                let _ = self.ev.send(CatEvent::Jam(None)).await;
+            }
+            Err(e) => self.fail(format!("Couldn't end the Jam: {e}")).await,
+        }
+    }
+
+    /// Read the account's Jam (on login and when the Devices list is asked for).
+    async fn refresh_jam(&mut self) {
+        let Some(session) = self.session.clone() else { return };
+        let (names, engine_id) = jam_devices(&self.cluster, &self.engine);
+        match crate::jam::current(&session, &names, engine_id.as_deref()).await {
+            Ok(jam) => {
+                let _ = self.ev.send(CatEvent::Jam(jam)).await;
+            }
+            Err(e) => tracing::debug!("Jam: couldn't read it: {e}"),
         }
     }
 

@@ -8,6 +8,7 @@ pub mod catalogue;
 pub mod connect;
 pub mod engine;
 pub mod health;
+pub mod jam;
 pub mod library;
 pub mod lyrics;
 pub mod mpris;
@@ -65,6 +66,8 @@ pub struct Hub {
     pub engine_playback: Mutex<PlaybackState>,
     pub remote: Mutex<Option<PlaybackState>>,
     pub devices: Mutex<Option<Vec<proto::Device>>>,
+    /// the account's Jam (D64): `None` until the Catalogue has looked
+    pub jam: Mutex<Option<Option<proto::Jam>>>,
     /// track metadata the Catalogue filled in, for queue entries Soloist sent bare; and what's being asked for
     pub described: Mutex<std::collections::HashMap<String, proto::Item>>,
     pub describing: Mutex<std::collections::HashSet<String>>,
@@ -246,6 +249,7 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
         engine_playback: Mutex::new(PlaybackState::default()),
         remote: Mutex::new(None),
         devices: Mutex::new(None),
+        jam: Mutex::new(None),
         described: Default::default(),
         describing: Default::default(),
         events,
@@ -677,6 +681,13 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                 *hub.devices.lock().await = Some(d.clone());
                 let _ = hub.events.send(Event::Devices { devices: d });
             }
+            CatEvent::Jam(jam) => {
+                let mut known = hub.jam.lock().await;
+                if known.as_ref() != Some(&jam) {
+                    *known = Some(jam.clone());
+                    let _ = hub.events.send(Event::Jam { jam });
+                }
+            }
             CatEvent::Remote(r) => {
                 let state = match r {
                     Some(mut s) => {
@@ -784,6 +795,8 @@ fn catalogue_cmd(cmd: &Command) -> Option<Result<CatCmd, &'static str>> {
         Command::Search { query } => CatCmd::Search(query.clone()),
         Command::GetDevices => CatCmd::Devices,
         Command::Transfer { device_id } => CatCmd::Transfer(device_id.clone()),
+        Command::StartJam => CatCmd::StartJam,
+        Command::EndJam => CatCmd::EndJam,
         Command::SetSaved { uri, saved } => CatCmd::SetSaved { uri: uri.clone(), saved: *saved },
         Command::CheckSaved { uris } => CatCmd::CheckSaved(uris.clone()),
         Command::CreatePlaylist { name, uris } => CatCmd::CreatePlaylist { name: name.clone(), uris: uris.clone() },
@@ -850,6 +863,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     snapshot.extend(hub.home.lock().await.clone().map(Event::Home));
     snapshot.extend(hub.library.lock().await.clone().map(Event::Library));
     snapshot.extend(hub.devices.lock().await.clone().map(|devices| Event::Devices { devices }));
+    snapshot.extend(hub.jam.lock().await.clone().map(|jam| Event::Jam { jam }));
     snapshot.extend(hub.stream.lock().await.clone().map(Event::Stream));
     snapshot.extend(hub.delivery.lock().await.clone().map(Event::Delivery));
     for ev in snapshot {
@@ -1043,6 +1057,7 @@ mod tests {
             engine_playback: Mutex::new(PlaybackState::default()),
             remote: Mutex::new(None),
             devices: Mutex::new(None),
+            jam: Mutex::new(None),
             described: Default::default(),
             describing: Default::default(),
             events,

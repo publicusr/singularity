@@ -110,6 +110,9 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 - Ctrl+K → "Health check" shows what's working (player, login, network, audio output, stream quality).
 - **Browsing**: Ctrl+K → "Log in to Spotify" (approve the code at spotify.com/pair). Home, the library sidebar and
   track lists appear once logged in.
+- **Jam**: `d` opens the device picker; its last row starts a Jam on this device (`j` there too). Friends scan the QR
+  or open the link to add songs and skip; Enter on the row twice ends it, and the music keeps playing. Hosting needs
+  Premium.
 - Keys worth knowing: Space play/pause, Shift+←/→ seek, Ctrl+K palette, Ctrl+L search, `d` devices, `v` Disk look,
   Alt+←/→ back/forward, `l` like, `?` help. Everything is clickable too. `q` (or Esc) quits the Client; the music
   keeps playing.

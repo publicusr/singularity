@@ -8,6 +8,7 @@ mod covers;
 mod design;
 mod gfx;
 mod home;
+mod jam;
 mod keymap;
 mod layout;
 mod layouts;
@@ -206,6 +207,7 @@ fn apply(app: &mut App, ev: ConnEvent) {
         ConnEvent::Msg(DaemonMsg::Event(Event::Artist(p))) => app.artist_page(p),
         ConnEvent::Msg(DaemonMsg::Event(Event::EpisodeShow { episode, show })) => app.episode_show(episode, show),
         ConnEvent::Msg(DaemonMsg::Event(Event::Devices { devices })) => app.devices = devices,
+        ConnEvent::Msg(DaemonMsg::Event(Event::Jam { jam })) => app.jam = jam,
         ConnEvent::Msg(DaemonMsg::Event(Event::Search(r))) => {
             if let Some(s) = app.search.as_mut() {
                 s.set_results(r);

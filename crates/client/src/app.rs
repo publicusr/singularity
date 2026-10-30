@@ -69,6 +69,7 @@ pub enum Action {
     SortDuration,
     NextLook,
     Devices,
+    Jam,
     ClearQueue,
     Health,
     Stats,
@@ -84,7 +85,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 52] = [
+    pub const ALL: [Action; 53] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -125,6 +126,7 @@ impl Action {
         Action::SortDuration,
         Action::NextLook,
         Action::Devices,
+        Action::Jam,
         Action::ClearQueue,
         Action::Health,
         Action::Stats,
@@ -181,6 +183,7 @@ impl Action {
             Action::NextLook => "Swap this Pane's Widget (the black hole: next Disk look)",
             Action::ClearQueue => "Clear the queue",
             Action::Devices => "Devices: play on another speaker or phone",
+            Action::Jam => "Jam: start one on this device, show its invite, or end it",
             Action::Health => "Health check (Engine, login, audio, stream quality)",
             Action::Stats => "Stats: your listening, a live Wrapped (top artists, tracks, albums)",
             Action::Settings => "Settings: every setting in config.toml, explained and changeable",
@@ -237,6 +240,7 @@ impl Action {
             Action::SortDuration => "sort_duration",
             Action::NextLook => "next_look",
             Action::Devices => "devices",
+            Action::Jam => "jam",
             Action::ClearQueue => "clear_queue",
             Action::Health => "health",
             Action::Stats => "stats",
@@ -279,7 +283,7 @@ pub enum Hit {
     PlayView,
     /// a search filter chip
     Chip(usize),
-    /// a device in the picker
+    /// a row in the device picker; the one after the last device is the Jam's
     DeviceRow(usize),
     /// a recent search
     Recent(usize),
@@ -502,6 +506,10 @@ pub struct App {
     pub top_week_tracks: bool,
     pub recent: Vec<String>,
     pub devices: Vec<singularity_proto::Device>,
+    /// the account's Jam (D64)
+    pub jam: Option<singularity_proto::Jam>,
+    /// ending a Jam asks again within 10 s
+    confirm_end_jam: Option<Instant>,
     pub devices_open: bool,
     pub devices_sel: usize,
     artist_pages: HashMap<String, singularity_proto::ArtistPage>,
@@ -623,6 +631,8 @@ impl App {
             top_week_tracks: false,
             recent: vec![],
             devices: vec![],
+            jam: None,
+            confirm_end_jam: None,
             devices_open: false,
             devices_sel: 0,
             artist_pages: HashMap::new(),
@@ -1001,9 +1011,9 @@ impl App {
             Action::SortAlbum => self.sort(Col::Album),
             Action::SortAdded => self.sort(Col::Added),
             Action::SortDuration => self.sort(Col::Duration),
-            Action::Devices => {
+            Action::Devices | Action::Jam => {
                 self.devices_open = true;
-                self.devices_sel = self.devices.iter().position(|d| d.active).unwrap_or(0);
+                self.devices_sel = if a == Action::Jam { self.devices.len() } else { self.devices.iter().position(|d| d.active).unwrap_or(0) };
                 if matches!(self.link, Link::Connected { .. }) {
                     self.send(Command::GetDevices);
                 }
@@ -1114,7 +1124,9 @@ impl App {
         if self.devices_open {
             match k.code {
                 KeyCode::Up => self.devices_sel = self.devices_sel.saturating_sub(1),
-                KeyCode::Down => self.devices_sel = (self.devices_sel + 1).min(self.devices.len().saturating_sub(1)),
+                // the row after the devices is the Jam's
+                KeyCode::Down => self.devices_sel = (self.devices_sel + 1).min(self.devices.len()),
+                KeyCode::Char('j') => self.jam_row(),
                 KeyCode::Enter => {
                     let i = self.devices_sel;
                     self.transfer_to(i);
@@ -1570,8 +1582,34 @@ impl App {
         true
     }
 
-    /// Move playback to device `i` of the list (and close the picker).
+    /// The Jam row: start a Jam on this device, or (asking again within 10 s) end the one this account runs.
+    fn jam_row(&mut self) {
+        match &self.jam {
+            None => {
+                if !matches!(self.link, Link::Connected { .. }) {
+                    return self.say("Not connected to singularityd");
+                }
+                self.send(Command::StartJam);
+                self.say("Starting a Jam…");
+            }
+            Some(j) if !j.owner => self.say("This Jam is someone else's: leave it from the phone that joined"),
+            Some(_) => {
+                if self.confirm_end_jam.take().is_some_and(|t| t.elapsed() < Duration::from_secs(10)) {
+                    self.send(Command::EndJam);
+                    self.say("Ending the Jam (the music keeps playing)");
+                } else {
+                    self.confirm_end_jam = Some(Instant::now());
+                    self.say("Press Enter again to end the Jam for everyone");
+                }
+            }
+        }
+    }
+
+    /// Move playback to device `i` of the list (and close the picker); the row after the devices is the Jam's.
     fn transfer_to(&mut self, i: usize) {
+        if i == self.devices.len() {
+            return self.jam_row();
+        }
         self.devices_open = false;
         let Some(d) = self.devices.get(i).cloned() else { return };
         if d.active {

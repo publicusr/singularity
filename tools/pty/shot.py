@@ -277,6 +277,27 @@ def history(t, out):
     t.send(b"q", 0.5)
 
 
+def jam(t, out):
+    """D64: the device picker's Jam row: start one (`j`), its invite link, QR and guest, the bar's Jam chip; end it."""
+    t.pump(1.0)
+    t.send(b"d", 0.8)
+    t.shot(f"{out}/0-picker.png")
+    print("start row:", t.find("Start a Jam on Singularity") is not None)
+    t.send(b"j", 1.0)
+    t.shot(f"{out}/1-jam.png")
+    print("jam row:", t.find("Jam on Singularity · 1 guest") is not None, "link:", t.find("socialsession/FakeJamToken123") is not None,
+          "qr:", t.find("█▀▀▀▀▀█") is not None, "guest:", t.find("Guest Friend") is not None)
+    t.send(b"\x1b", 0.5)
+    print("bar chip:", t.find("◎ Jam · 1") is not None)
+    t.shot(f"{out}/2-bar.png")
+    t.send(b"d", 0.6)
+    t.send(b"j", 0.4)  # asks again
+    t.send(b"j", 1.0)
+    t.shot(f"{out}/3-ended.png")
+    print("ended:", t.find("Start a Jam on Singularity") is not None)
+    t.send(b"\x1b", 0.4)
+
+
 def meters(t, out):
     """#29: the loudness and levels meters follow the volume (the fake Engine's audio is post-volume, like Soloist's)."""
     t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
@@ -1067,7 +1088,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "ambient", "popup") else "0"
@@ -1152,6 +1173,8 @@ def main():
             return history(t, out)
         if scenario == "meters":
             return meters(t, out)
+        if scenario == "jam":
+            return jam(t, out)
         if scenario == "config":
             return config(t, out, env)
         if scenario == "designs":

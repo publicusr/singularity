@@ -980,3 +980,15 @@ flowchart LR
   `end` answered 2xx and the music kept playing. Cluster `player_state.session_id` ≠ the Jam id (not a re-encoding
   either), so a Jam is read from social-connect only. Guest steps (join, permissions, dealer capture) wait for a
   second phone. Next: build Jam (D65 step 3).
+- **Jam built** (2026-10-30, D64, D65 step 3). Protocol: `Command::StartJam`/`EndJam`, `Event::Jam { jam }` (additive,
+  no version bump), kept in the Hub's snapshot. Daemon: `jam.rs` (loose-JSON parse, snake or camel case; start
+  `current_or_new` on the Engine's device id; end by DELETE v2, then v3; a dormant record is no Jam); the Catalogue's
+  dealer task listens on `social-connect/v2/session_update` and reads `current` again on each; the Devices list asks
+  too. The fake Catalogue runs a fake Jam with one guest. Client: the device picker's last row (`j`, Enter, a click)
+  starts one; the row then shows host and guests, the whole invite link (the picker widens for it), a black-on-white
+  half-block QR when there's room, and the guests; ending asks again within 10 s (as deleting does); someone else's
+  Jam can't be ended here. The player bar shows `◎ Jam · <guests>`. Ctrl+K "Jam" opens the picker on that row. The
+  vim preset's `j` stays ↓ (translated first), and the hint drops "j: Jam" then. Tests: `jam::tests` (parse, dormant,
+  camel case, token fallback, paths), protocol `a_jam_starts_reaches_late_clients_and_ends`, Client picker test and a
+  test that the half blocks are exactly the QR's modules; pty `jam`. Not tried yet: a real guest joining (a second
+  phone) and a phone scanning the QR off a real terminal.

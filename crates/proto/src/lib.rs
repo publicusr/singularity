@@ -109,6 +109,10 @@ pub enum Command {
     GetDevices,
     /// Move playback to another Connect device.
     Transfer { device_id: String },
+    /// Start a Jam hosted on Singularity's own device (D64); answered by `Event::Jam`.
+    StartJam,
+    /// End the Jam this account runs, for everyone; answered by `Event::Jam { jam: None }`.
+    EndJam,
     /// Search everything; arrives as `Event::Search`.
     Search { query: String },
     /// Fetch an artist page; arrives as `Event::Artist`.
@@ -217,6 +221,8 @@ pub enum Event {
     Saved { entries: Vec<SavedFlag> },
     /// The account's Connect devices. (A struct variant: the tagged encoding can't hold a bare list.)
     Devices { devices: Vec<Device> },
+    /// The account's Jam (D64), or none; sent again whenever it changes (a guest joins or leaves, it ends).
+    Jam { jam: Option<Jam> },
     /// Search results (answer to `Search`).
     Search(SearchResults),
     /// An artist page (answer to `GetArtist`).
@@ -483,6 +489,32 @@ pub struct Link {
 pub struct SavedFlag {
     pub uri: String,
     pub saved: bool,
+}
+
+/// A Jam: Spotify's shared listening session, hosted by one Connect device (D64).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Jam {
+    pub session_id: String,
+    /// this account runs it (may end it); otherwise it joined someone else's
+    pub owner: bool,
+    /// the hosting device's name, when it is on the account's Connect list
+    pub host: Option<String>,
+    /// the host is Singularity's own Engine
+    pub host_is_engine: bool,
+    /// `https://open.spotify.com/socialsession/<token>`: the invitation itself (only the owner gets one)
+    pub invite: Option<String>,
+    /// guests may only add to the queue
+    pub queue_only: bool,
+    pub members: Vec<JamMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct JamMember {
+    pub id: String,
+    pub name: String,
+    /// the one who runs the Jam
+    pub owner: bool,
+    pub listening: bool,
 }
 
 /// A Spotify Connect device.

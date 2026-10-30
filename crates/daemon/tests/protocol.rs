@@ -349,6 +349,33 @@ async fn devices_and_transfer() {
     assert!(d.iter().any(|d| d.id == "phone" && d.active));
 }
 
+/// D64: a Jam starts on the Engine's device, a Client that connects later gets it in the snapshot, and it ends.
+#[tokio::test]
+async fn a_jam_starts_reaches_late_clients_and_ends() {
+    use singularity_proto::{Command, HomeFeed, Jam};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("jm.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
+    async fn jam(s: &mut UnixStream, want: fn(&Option<Jam>) -> bool) -> Option<Jam> {
+        loop {
+            if let DaemonMsg::Event(Event::Jam { jam }) = proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap()
+                && want(&jam)
+            {
+                return jam;
+            }
+        }
+    }
+    let mut a = connect(&path).await;
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::StartJam)).await.unwrap();
+    let started = jam(&mut a, Option::is_some).await.unwrap();
+    assert!(started.owner && started.host_is_engine && started.invite.is_some());
+    let mut b = connect(&path).await;
+    assert_eq!(jam(&mut b, Option::is_some).await, Some(started), "a later Client sees the running Jam at once");
+    proto::write_msg(&mut b, &ClientMsg::Command(Command::EndJam)).await.unwrap();
+    assert_eq!(jam(&mut a, Option::is_none).await, None);
+}
+
 #[tokio::test]
 async fn saving_settles_on_spotifys_answer_and_failures_carry_the_old_value() {
     use singularity_proto::{Command, HomeFeed, SavedFlag};

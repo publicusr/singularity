@@ -87,8 +87,9 @@ _Avoid_: safe restart, idle window
 **Jam**:
 Spotify's shared listening session ("social session" internally): one device hosts, guests add to and skip in the
 host's queue. Server-side, through `social-connect`; a host needs Premium, and any listed Connect player can host.
-Nothing in Singularity starts one yet (a phone does), and joining one moves a guest onto the host's device (D64;
-`docs/research/2026-10-jam.md`).
+Singularity starts one hosted on its own device (the device picker's Jam row), shows the invite link, its QR and the
+guests, and ends it; the Jam is read from `social-connect`, never from the Connect cluster. Joining someone else's
+moves a guest onto the host's device, so Singularity doesn't join (D64; `docs/research/2026-10-jam.md`).
 _Avoid_: party mode, group session
 
 ### Interface

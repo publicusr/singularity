@@ -51,6 +51,7 @@ asked librespot not to pursue it), hence Soloist itself in a small Linux VM (D53
 | "Restart the player" | ✅ Soloist; 🔶 app, librespot | ✅ app; 🔶 librespot, the VM's Soloist | — |
 | Local data, backups, config, paths (58–62, D50) | ✅ | ✅ same XDG-style paths | — |
 | Mini-player, mouse, palette, layouts, themes (44–57, 67) | ✅ | ✅ | — |
+| Jam: start on this device, invite link + QR, guests, end (D64) | ✅ Soloist (live: start and end, 2026-10-30; a guest joining not yet tried); 🔶 librespot, app (same Connect code, not tried) | 🔶 same code (Connect, no OS part); not tried | a guest's join and the dealer updates: a second phone |
 
 ## The seams (where OS-specific code lives)
 

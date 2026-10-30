@@ -215,7 +215,9 @@ fn naming_rect(area: Rect) -> Rect {
 }
 
 fn devices_rect(area: Rect, app: &App) -> Rect {
-    centered(area, 56, app.devices.len().max(1) as u16 + 5)
+    let list = app.devices.len().max(1) as u16 + 5;
+    let jam = if app.devices.is_empty() { 0 } else { crate::jam::height(app, area.height.saturating_sub(list)) };
+    centered(area, crate::jam::width(app).max(56).min(area.width), list + jam)
 }
 
 /// The device picker: where music plays. Click (or Enter) moves it there.
@@ -247,7 +249,11 @@ fn devices(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
         text(buf, inner.right().saturating_sub(tw + 2), y, tw, &tag, th.s(if d.active { th.accent } else { th.dim }).bg(bg));
         app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::DeviceRow(i));
     }
-    text(buf, inner.x + 2, inner.bottom().saturating_sub(1), inner.width.saturating_sub(4), "Enter or click: play there · Esc: close", th.s(th.dim));
+    crate::jam::draw(buf, inner, inner.y + 1 + list.len() as u16, list.len(), app, th);
+    // the vim preset makes j a ↓: then the Jam row is reached like the others
+    let j_is_jam = app.keymap.nav(ratatui::crossterm::event::KeyEvent::new(ratatui::crossterm::event::KeyCode::Char('j'), ratatui::crossterm::event::KeyModifiers::NONE)).is_none();
+    let hint = if j_is_jam { "Enter or click: play there · j: Jam · Esc: close" } else { "Enter or click: play there · Esc: close" };
+    text(buf, inner.x + 2, inner.bottom().saturating_sub(1), inner.width.saturating_sub(4), hint, th.s(th.dim));
 }
 
 fn toast_rect(area: Rect, msg: &str) -> Rect {
@@ -508,13 +514,14 @@ fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     // which device plays: a click opens the picker
     let device = match app.remote_device() {
         Some(d) => format!(" ⧉ playing on {} ", d.name),
+        None if app.jam.is_some() => format!(" ◎ Jam · {} ", app.jam.as_ref().map(crate::jam::guests).unwrap_or(0)),
         None if app.devices.len() > 1 => " ⧉ devices ".to_string(),
         None => String::new(),
     };
     if !device.is_empty() {
         let dw = device.chars().count() as u16;
         let dx = r.right().saturating_sub(dw + 1);
-        let st = if app.remote_device().is_some() { th.chip(th.accent2) } else { th.s(th.dim) };
+        let st = if app.remote_device().is_some() || app.jam.is_some() { th.chip(th.accent2) } else { th.s(th.dim) };
         text(buf, dx, r.y, dw, &device, st);
         app.hit(Rect::new(dx, r.y, dw, 1), Hit::Action(Action::Devices));
     }
@@ -2545,6 +2552,49 @@ mod tests {
         // now the phone plays: the bar says so
         app.devices = vec![dev("solo", "Singularity", false, true), dev("phone", "Pixel", true, false)];
         assert!(render(&mut app, 160, 48).contains("⧉ playing on Pixel"));
+    }
+
+    // ── Jam (D64) ──
+
+    fn jam(owner: bool, guests: &[&str]) -> singularity_proto::Jam {
+        use singularity_proto::JamMember;
+        let mut members = vec![JamMember { id: "m0".into(), name: "me".into(), owner: true, listening: true }];
+        members.extend(guests.iter().enumerate().map(|(i, g)| JamMember { id: format!("m{}", i + 1), name: g.to_string(), owner: false, listening: true }));
+        singularity_proto::Jam { session_id: "s".into(), owner, host: Some("Singularity".into()), host_is_engine: true, invite: owner.then(|| "https://open.spotify.com/socialsession/FakeJamToken123".into()), queue_only: false, members }
+    }
+
+    #[test]
+    fn a_jam_starts_from_the_picker_shows_its_invite_and_ends_on_a_second_enter() {
+        use singularity_proto::{Command, Device};
+        let (mut app, mut rx) = playing_app(1);
+        let dev = |id: &str, name: &str, active: bool, engine: bool| Device { id: id.into(), name: name.into(), kind: "speaker".into(), active, volume: Some(50), is_engine: engine };
+        app.devices = vec![dev("solo", "Singularity", true, true), dev("phone", "Pixel", false, false)];
+        app.run(Action::Jam);
+        sent(&mut rx);
+        let s = render(&mut app, 160, 60);
+        assert!(s.contains("✚ Start a Jam on Singularity"), "{s}");
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(sent(&mut rx), vec![Command::StartJam]);
+        assert!(app.devices_open, "the picker stays open for the invite");
+        // the Daemon answers: the invite, its QR and the guest show, and the bar says a Jam runs
+        app.jam = Some(jam(true, &["Guest Friend"]));
+        let s = render(&mut app, 160, 60);
+        assert!(s.contains("◎ Jam on Singularity · 1 guest") && s.contains("socialsession/FakeJamToken123") && s.contains("♪ Guest Friend"), "{s}");
+        // the QR's finder pattern (the visuals draw half blocks too)
+        assert!(s.contains("█▀▀▀▀▀█"), "the QR is drawn when there's room: {s}");
+        assert!(s.contains("◎ Jam · 1"), "{s}");
+        // a short terminal: no room for the QR, the link stays
+        let s = render(&mut app, 160, 24);
+        assert!(s.contains("socialsession/FakeJamToken123") && !s.contains("█▀▀▀▀▀█"), "{s}");
+        // ending asks again
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(sent(&mut rx), vec![]);
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(sent(&mut rx), vec![Command::EndJam]);
+        // someone else's Jam can't be ended from here
+        app.jam = Some(jam(false, &[]));
+        app.key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(sent(&mut rx), vec![]);
     }
 
     // ── Like/follow (#22) ──
