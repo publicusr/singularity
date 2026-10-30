@@ -33,7 +33,7 @@ Two programs: `singularityd`, the Daemon (it plays the music and keeps playing w
 
 ### Linux
 
-Needs: Rust (stable, via rustup), a C toolchain, `pkg-config`, the OpenSSL and ALSA development files, PipeWire (or
+Needs: Rust 1.89 or newer (stable, via rustup), a C toolchain, `pkg-config`, the OpenSSL and ALSA development files, PipeWire (or
 PulseAudio) with `pactl`/`parec`, and a Secret Service keyring (`secret-tool`: GNOME Keyring, KWallet, KeePassXC).
 Arch: `pacman -S rustup base-devel pkgconf openssl alsa-lib libpulse libsecret`; Debian/Ubuntu:
 `apt install build-essential pkg-config libssl-dev libasound2-dev pulseaudio-utils libsecret-tools`.

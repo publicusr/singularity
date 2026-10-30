@@ -37,8 +37,10 @@ unasked:
 - [ ] Scrub personal data from git history (`docs/research/2026-10-history-scrub.md`): every SHA changes, every
   branch must be re-cloned, and it ends in a force push. **Never run it or force-push without the owner's go-ahead.**
 - [x] Add a `LICENSE` file (MIT, "the Singularity contributors"; 2026-10-30).
-- [ ] Add CI (`.github/workflows/`) running what we run by hand: `cargo test --workspace`, clippy, `cargo deny check`.
-- [ ] Add `rust-version` (MSRV) and settle crate metadata (`authors`, `publish = false` is fine for a binary app).
+- [x] Add CI (`.github/workflows/`) running what we run by hand: `cargo test --workspace`, clippy, `cargo deny check`
+  (`ci.yml`, plus an MSRV check; `release.yml` drafts a release with binaries on a `v*` tag).
+- [x] Add `rust-version` (MSRV) and settle crate metadata (`authors`, `publish = false` is fine for a binary app).
+  MSRV 1.89 (measured: the dependencies need it); no `authors`; every crate `publish = false`.
 - [x] Decide what stays of `prototypes/`, `spikes/` and `.claude/` (D65: the public tree drops them and
   `docs/HANDOFF.md`, and keeps `.claude/skills`; the drop happens when the mirror is cut).
 - [x] Screenshots for the README (`docs/screenshots/` is git-ignored: it holds personal data). Done: `docs/media/`,

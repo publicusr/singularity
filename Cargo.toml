@@ -6,6 +6,8 @@ exclude = ["prototypes", "spikes", "fuzz"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# measured: the dependencies need 1.89 (zbus 6, uuid), and the workspace checks on 1.89
+rust-version = "1.89"
 license = "MIT"
 repository = "https://github.com/publicusr/singularity"
 

@@ -4,6 +4,7 @@ publish = false
 description = "Singularity's config files: schema versions, migrations, comment-preserving edits, hot reload"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
