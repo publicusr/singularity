@@ -1023,6 +1023,30 @@ def designs(t, out):
     t.send(b"q", 0.5)
 
 
+def readme(t, out):
+    """The README's pictures (docs/media/): each design with a track playing and no popup, then the Jam picker."""
+    t.pump(1.0)
+    t.send(b" ", 2.5)
+    for i, name in enumerate(["singularity", "event-horizon", "classic", "cockpit", "terminal"]):
+        t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
+        for _ in range(4):
+            t.send(b"\x1b[A", 0.2)  # the picker opens on the current design: back to the top first (↑ stops there)
+        for _ in range(i):
+            t.send(b"\x1b[B", 0.2)
+        t.send(b"\r", 2.5)  # keep it; the visuals settle
+        t.shot(f"{out}/{i}-{name}.png")
+    t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
+    for _ in range(4):
+        t.send(b"\x1b[A", 0.2)
+    t.send(b"\r", 1.5)  # back to Singularity
+    t.send(b"d", 0.6); t.send(b"j", 1.5)
+    t.shot(f"{out}/5-jam.png")
+    print("jam:", t.find("Guest Friend") is not None)
+    t.send(b"\x1b", 0.4); t.send(b"d", 0.6); t.send(b"j", 0.4); t.send(b"j", 0.8); t.send(b"\x1b", 0.4)
+    t.send(b" ", 0.4)
+    t.send(b"q", 0.5)
+
+
 def mini(t, out):
     """#47: a tiny terminal is a mini-player; play, then show it. (Restored: it went with the waveform scenario, D46.)"""
     t.pump(1.0)
@@ -1090,10 +1114,10 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "home-scroll", "ambient", "popup") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup") else "0"
         # kitty's layer under cell backgrounds (#41); the harness composites it as kitty does
         env["SINGULARITY_BELOW_BG"] = "1" if scenario in ("popup", "ambient") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
@@ -1185,6 +1209,8 @@ def main():
             return config(t, out, env)
         if scenario == "designs":
             return designs(t, out)
+        if scenario == "readme":
+            return readme(t, out)
         if scenario == "layouts":
             return layouts(t, out, env)
         if scenario == "artist":

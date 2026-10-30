@@ -36,9 +36,10 @@ unasked:
 
 - [ ] Scrub personal data from git history (`docs/research/2026-10-history-scrub.md`): every SHA changes, every
   branch must be re-cloned, and it ends in a force push. **Never run it or force-push without the owner's go-ahead.**
-- [ ] Add a `LICENSE` file (`Cargo.toml` says MIT; the tree has none).
+- [x] Add a `LICENSE` file (MIT, "the Singularity contributors"; 2026-10-30).
 - [ ] Add CI (`.github/workflows/`) running what we run by hand: `cargo test --workspace`, clippy, `cargo deny check`.
 - [ ] Add `rust-version` (MSRV) and settle crate metadata (`authors`, `publish = false` is fine for a binary app).
-- [ ] Decide what stays of `prototypes/`, `spikes/` and `.claude/`: they are committed today and a visitor sees them
-  beside `crates/`.
-- [ ] Screenshots for the README (`docs/screenshots/` is git-ignored: it holds personal data).
+- [x] Decide what stays of `prototypes/`, `spikes/` and `.claude/` (D65: the public tree drops them and
+  `docs/HANDOFF.md`, and keeps `.claude/skills`; the drop happens when the mirror is cut).
+- [x] Screenshots for the README (`docs/screenshots/` is git-ignored: it holds personal data). Done: `docs/media/`,
+  from the pty `readme` scenario on the fake Daemon.

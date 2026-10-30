@@ -4,12 +4,27 @@ A terminal Spotify client for Linux and macOS that feels like the desktop app, p
 and looks spectacular: a Home feed, Made For You, full library, mouse *and* keyboard, btop-grade themes, and
 built-in audio-reactive visuals (yes, including a black hole).
 
-**Status:** v1 is done; v1.x is being built in batches (stats, playlist editing, Settings, podcasts, audiobooks and
-the macOS version are in; free tiling is parked; the codebase audit is under way). Spec in `docs/SPEC.md`, tickets are GitHub issues, the current state is in `docs/HANDOFF.md`.
-Product code lives in `crates/`; throwaway code in `prototypes/` and `spikes/`.
+![Singularity: the Home feed, the library, lyrics, audio meters and the black hole, a track playing](docs/media/singularity.png)
+
+| Event Horizon | Cockpit | Jam |
+|---|---|---|
+| ![The Event Horizon design](docs/media/event-horizon.png) | ![The Cockpit design: instruments first](docs/media/cockpit.png) | ![The device picker with a Jam running: its invite link, QR code and a guest](docs/media/jam.png) |
+
+(Screenshots from the test harness: made-up music, covers and account.)
+
+**Status:** `v0.1.0`. **Linux** is the supported platform; **macOS is a beta**: everything is there, but some of it
+hasn't been checked by hand on a Mac yet (see the issues). Spec in `docs/SPEC.md`.
 
 Linux and macOS have the same features (the rule is D49); `docs/PLATFORMS.md` lists every feature's exact status on
 each, and the few real differences.
+
+## Not affiliated with Spotify
+
+Singularity is an independent project. It is **not affiliated with, endorsed by or connected to Spotify**. It needs
+a **Spotify Premium** account, and it talks to Spotify through **private, undocumented APIs**, the ones Spotify's own
+apps use. That is against Spotify's Terms of Use, and Spotify may change those APIs, and break Singularity, at any
+time. Spotify could also restrict or close an account that uses them. **Use it with your own account, at your own
+risk.** Singularity never sees your password (you log in on spotify.com) and plays only what your account may play.
 
 ## Build and run
 
@@ -40,7 +55,7 @@ Singularity → Change quality settings → Lossless (once).
 Start at login (optional): `cp packaging/systemd/singularityd.service ~/.config/systemd/user/ && systemctl --user
 enable --now singularityd`.
 
-### macOS
+### macOS (beta)
 
 Needs macOS 14.2 or later (15 tested, on an M2 Air), Apple's Command Line Tools (`xcode-select --install`), and Rust:
 `brew install rustup && rustup default stable` (Homebrew's rustup is keg-only: put
@@ -168,3 +183,7 @@ Planning follows Matt Pocock's [skills](https://github.com/mattpocock/skills):
 `grill-with-docs` (interview in rounds over a design tree, write glossary + ADRs as we go), then
 `to-spec`, then tickets, then implementation. The grilling skills are vendored in `.claude/skills/`,
 so `/grill-with-docs` works in any Claude Code session opened here.
+
+## Licence
+
+MIT: see [LICENSE](LICENSE).
