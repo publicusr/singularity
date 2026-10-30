@@ -1,4 +1,4 @@
-# Session handoff (2026-10-20, end of the first macOS session; next session is on Linux)
+# Session handoff (updated 2026-10-30: public release, steps 1–6 done)
 
 Read this first in a new session, then `CLAUDE.md`, `docs/SPEC.md` and `GLOSSARY.md`. Decisions and their history are
 in `docs/DESIGN-TREE.md` (round log at the bottom: one entry per ticket, with the details); verified facts about
@@ -8,10 +8,49 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 
 The owner settled the public release in three rounds: **D65** in `docs/DESIGN-TREE.md` has the scope and the
 order of the work. T0005's phone fix holds live (2026-10-28 log: the resume was dropped after an updater restart).
-Progress: steps 1–3 done (2026-10-30). The Jam probe is merged; the live check passed (a Jam hosted on Soloist's
-device; D64 settled); **Jam is built** (`020a6da`) and both binaries were reinstalled after it. Waiting on the owner:
-a guest joining from a second phone, and a phone scanning the QR off the real terminal. Next: step 4 (Q4 the fake
-Catalogue into its own module, Q1 per-frame allocations).
+**Progress (2026-10-30): steps 1–6 done, step 7 half done.** Both binaries reinstalled after `c5eb1cd`.
+
+1–3. Jam probe merged; live check passed (a Jam hosted on Soloist's device; D64 settled); **Jam built** (`020a6da`).
+   Waiting on the owner: a guest joining from a second phone (do they show up in the picker within a second or two?
+   do their songs and skips land on Singularity?), and a phone scanning the QR off the real terminal.
+4. **Q4** (`33d895c`): the fake Catalogue is `daemon/src/catalogue/fake.rs` behind the `fake` feature (off by
+   default; tests turn it on with a self dev-dependency). The pty harness needs
+   `cargo build && cargo build -p singularityd --features fake` (`--features singularityd/fake` at the workspace root
+   silently does nothing). **Q1** (`c5eb1cd`): cached view order (`TrackList` rows private + version), `Rc<Theme>`,
+   no queue clone in the bar, `ui::blank`, borrowing `clip`. Details in the audit note's "Fixed" paragraphs.
+5. `d5218eb`: `LICENSE` (MIT, "the Singularity contributors"), README (screenshots, status: Linux supported / macOS
+   beta, "Not affiliated with Spotify"), `docs/media/*.png` from the new pty `readme` scenario.
+6. `ba0dfd7`: `.github/workflows/ci.yml` (test + clippy `-D warnings` on Linux and macOS, MSRV 1.89 check,
+   `cargo deny`; macOS only by hand while the repo is private: 10× minutes) and `release.yml` (`v*` tag → Linux
+   x86_64 + macOS arm64 archives on a **draft** release). `rust-version = "1.89"` (measured: zbus 6/uuid need it;
+   the workspace checks on 1.89). First run: all green.
+7. **History scrub, tried on a scratch clone only** (nothing pushed, nothing renamed). The replace-text file,
+   mailmap and message callback were rebuilt (the T0030 worktree is gone) in the session scratchpad, *not* the repo;
+   rebuild them from `docs/research/2026-10-history-scrub.md` if the scratchpad is gone. Changes to that plan (D65):
+   every identity maps to the owning account's no-reply address (`<id>+publicusr@users.noreply.github.com`), the clone
+   is `--bare --single-branch --branch main` (no checkpoints, no regent branches). Result: 190 → 189 commits (the
+   path-move commit became empty), one identity, 0 hits for the owner's name, the PC's host name, the old project
+   paths, the e-mail. **Unfinished:** the history has `spak_…`, `sk-…` and `192.168.…` strings: confirm each is a
+   placeholder or doc example, not a real key/address, before anything is pushed. Also zsh: `$(git rev-list --all)`
+   doesn't word-split; use `git rev-list --all | xargs git grep …`.
+
+**Next, in order** (the owner games on this PC: ask before heavy commands — builds, tests, history-wide greps):
+finish the `spak_`/`sk-`/IP check → build and test the scrubbed clone → in the scrubbed clone, a last commit that
+drops `prototypes/`, `spikes/`, `.project.yml`, `docs/HANDOFF.md` and fixes the README/CLAUDE.md lines that point at
+them → **owner's go-ahead** → rename this repo to `publicusr/singularity-archive`, create a new private
+`publicusr/singularity`, push the scrubbed `main` → fresh public issues (open private ones closed with links;
+macOS live checks and #71's soak numbers become issues) → owner reviews while private → owner makes it public and
+tags `v0.1.0` (that draft release gets published by hand).
+
+**Open small items:** the Terminal design's prompt reads `singularity@spotify` (uses Spotify's name; suggest a
+neutral host — owner's call). The pty `stats` scenario's "back on stats" check prints False, already before Q1
+(harness check, not a regression). `playerctl` isn't installed on this PC, so the `mpris` scenario can't run here.
+
+**Incident (2026-10-30), fixed:** a pty run against a build without the `fake` feature: the fake Daemon exited, the
+Client started a real one, which used the keyring login and started a real Jam on the owner's account (no guests;
+ended within minutes with `jam_probe end`, then `current` → 404). `shot.py` now always sets
+`SINGULARITY_NO_KEYRING=1` and `SINGULARITY_NOWPLAYING=off` (`mpris` keeps its private bus) and stops if its Daemon
+exits before the Client starts.
 
 ## Done (2026-10-29): a phone's play was undone
 

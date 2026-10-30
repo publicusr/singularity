@@ -992,3 +992,8 @@ flowchart LR
   camel case, token fallback, paths), protocol `a_jam_starts_reaches_late_clients_and_ends`, Client picker test and a
   test that the half blocks are exactly the QR's modules; pty `jam`. Not tried yet: a real guest joining (a second
   phone) and a phone scanning the QR off a real terminal.
+- **Release steps 4–6, step 7 tried** (2026-10-30, D65). Q4: the fake Catalogue behind a `fake` feature; Q1: cached
+  list order and fewer per-frame copies; LICENSE (MIT), README for the release, `docs/media/` screenshots; CI (Linux +
+  macOS tests/clippy, MSRV 1.89, `cargo deny`) and a tag-driven draft release with binaries. The history scrub ran on
+  a scratch clone only (one no-reply identity, 0 personal hits); a check of `spak_`/`sk-`/IP strings and the owner's
+  go-ahead for the repo rename and push are next (`docs/HANDOFF.md`, "Release plan").

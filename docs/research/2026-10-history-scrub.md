@@ -1,5 +1,11 @@
 # Personal data in git history: what is there, and how to scrub it
 
+**Update (2026-10-30, D65):** the release doesn't force-push this repo: a scrubbed clone of `main` becomes a new
+repo and this one is renamed `singularity-archive`. Identities now map to the owning account's no-reply address
+(`<id>+<login>@users.noreply.github.com`), not `contributor@example.invalid`, and the clone is
+`git clone --no-local --bare --single-branch --branch main` (no checkpoint refs, no agent branches). A run on a
+scratch clone passed the checks below; the state is in `docs/HANDOFF.md`, "Release plan".
+
 **Status: plan only.** Nothing in this document has been run on the real repository. T0030 scrubbed the
 *current tree* (`docs/HANDOFF.md`, the audit report, two spike READMEs, one test fixture) and tested the
 commands below on a throwaway mirror clone in `$TMPDIR`, then deleted the clone. **Never force-push or
