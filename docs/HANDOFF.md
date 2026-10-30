@@ -8,7 +8,10 @@ Spotify's private APIs and Connect are in `docs/research/2026-10-library-and-con
 
 The owner settled the public release in three rounds: **D65** in `docs/DESIGN-TREE.md` has the scope and the
 order of the work. T0005's phone fix holds live (2026-10-28 log: the resume was dropped after an updater restart).
-The installed binaries predate T0027–T0029: reinstall both.
+Progress: steps 1–3 done (2026-10-30). The Jam probe is merged; the live check passed (a Jam hosted on Soloist's
+device; D64 settled); **Jam is built** (`020a6da`) and both binaries were reinstalled after it. Waiting on the owner:
+a guest joining from a second phone, and a phone scanning the QR off the real terminal. Next: step 4 (Q4 the fake
+Catalogue into its own module, Q1 per-frame allocations).
 
 ## Done (2026-10-29): a phone's play was undone
 
