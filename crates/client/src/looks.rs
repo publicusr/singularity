@@ -195,11 +195,15 @@ impl App {
         self.picker = Some(Picker { kind, items, sel, before: (self.design, self.theme.id.clone(), self.layout.clone(), self.layout_name.clone()) });
     }
 
-    /// Put saved layout `s` on screen (with its design's colours, unless the theme was chosen apart).
+    /// Put saved layout `s` on screen (with the colours it was saved with, or its design's).
     pub fn use_layout(&mut self, s: &crate::layouts::Saved) {
         let d = crate::design::by_id(&s.design).unwrap_or(self.design);
         if d != self.design {
             self.set_design(d);
+        }
+        // the colours it was saved with (a theme that has since gone keeps the design's own)
+        if let Some(t) = s.theme.as_deref() {
+            self.set_theme(t);
         }
         self.layout = s.tree.clone();
         self.layout_name = Some(s.id.clone());
@@ -219,7 +223,7 @@ impl App {
     /// Save what's on screen under `name`; it shows up in the Design picker.
     pub fn save_layout(&mut self, name: &str) {
         let Some(dir) = self.layouts_dir.clone() else { return self.say("No config folder to save layouts in") };
-        match crate::layouts::save(&dir, name, DESIGNS[self.design].id, &self.layout) {
+        match crate::layouts::save(&dir, name, DESIGNS[self.design].id, &self.theme.id, &self.layout) {
             Ok(s) => {
                 self.layout_name = Some(s.id.clone());
                 self.reload_layouts();
@@ -539,6 +543,44 @@ mod tests {
         assert_eq!(again.layout, crate::layout::Node::singularity());
         key(&mut again, KeyCode::Esc);
         assert_eq!(again.layout, mine, "Esc puts the saved layout back");
+    }
+
+    #[test]
+    fn a_saved_design_keeps_its_colours() {
+        let (mut app, dir) = with_dirs();
+        app.set_theme("terminal-amber");
+        app.run(crate::app::Action::SaveLayout);
+        for c in "Warm".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Enter);
+        let text = std::fs::read_to_string(dir.path().join("layouts/warm.toml")).unwrap();
+        assert!(text.contains("theme = \"terminal-amber\""), "{text}");
+        // somewhere else, then pick it: the preview already has its colours
+        let mut again = App::new(None);
+        again.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
+        again.set_design(2);
+        assert_eq!(again.theme.id, "classic");
+        again.run(crate::app::Action::PickDesign);
+        key(&mut again, KeyCode::End);
+        assert_eq!(again.theme.id, "terminal-amber", "live preview");
+        key(&mut again, KeyCode::Esc);
+        assert_eq!(again.theme.id, "classic", "Esc puts the colours back");
+        again.run(crate::app::Action::PickDesign);
+        key(&mut again, KeyCode::End);
+        key(&mut again, KeyCode::Enter);
+        assert_eq!(again.theme.id, "terminal-amber");
+        // saving over the name again takes the new colours
+        again.set_theme("cockpit-ice");
+        again.save_layout("Warm");
+        assert_eq!(again.saved_layouts[0].theme.as_deref(), Some("cockpit-ice"));
+        // an old file (no theme) keeps today's behaviour: the design's own colours
+        let old: String = std::fs::read_to_string(dir.path().join("layouts/warm.toml")).unwrap().lines().filter(|l| !l.starts_with("theme")).collect::<Vec<_>>().join("\n");
+        std::fs::write(dir.path().join("layouts/warm.toml"), old).unwrap();
+        again.set_design(2);
+        again.run(crate::app::Action::PickDesign);
+        key(&mut again, KeyCode::End);
+        assert_eq!(again.theme.id, DESIGNS[again.design].themes[0]);
     }
 
     #[test]
