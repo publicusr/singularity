@@ -137,6 +137,13 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   preview; `t` cycles a design's palettes. Your own themes go in `~/.config/singularity/themes/` (see `_example.toml`).
 - **Layouts**: drag Pane borders; `v` (or a Pane's ◂ ▸) swaps its Widget; Ctrl+K → "Save design as…" keeps it, and it
   comes back, colours included, in Ctrl+K → Pick a design.
+- **Tiling**: drag a Pane by its title bar: onto another Pane's middle to swap, onto its edge to split it, onto the
+  screen's edge for a full-height column or full-width row (the layout reflows as you drag; Esc cancels). `×` in a
+  title closes a Pane, right-click a title to split or close, Ctrl+K has Split right / Split down / Close pane / Move
+  pane / Reset design. `m` moves the focused Pane from the keyboard: arrows swap with the neighbour, ⇧arrows split
+  beside it, `+` `-` size it, `x` closes it, Enter or Esc ends. Home, the library, the queue and lyrics can move but
+  never close, and nothing can be dropped where a Pane would get too small. The first edit of a built-in Design asks
+  what to call your Design (Esc keeps one unnamed "Singularity (edited)"); after that it saves itself.
 - **Idle**: after 3 minutes without input the black hole drifts over the screen; any key wakes it (and does nothing
   else). Shift+I or `[idle]` in config.toml switches it off or changes the delay.
 - **Listening log** (private, local): every track you hear for 30 s is logged in `~/.local/share/singularity/`, and
@@ -166,7 +173,7 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phased plan, spikes first |
 | [docs/research/2026-10-platform-constraints.md](docs/research/2026-10-platform-constraints.md) | What Spotify does and doesn't allow in 2026, with sources |
 | [docs/ideas/visuals-and-widgets.md](docs/ideas/visuals-and-widgets.md) | Brainstorm of visuals, widgets and layout modes |
-| [docs/ideas/layout.md](docs/ideas/layout.md) | Free tiling, parked as an idea (D59) |
+| [docs/ideas/layout.md](docs/ideas/layout.md) | Free tiling: the idea bank it started from (built, D66) |
 | [GLOSSARY.md](GLOSSARY.md) | The project's vocabulary (Engine, Catalogue, Shelf, Widget, Pane, …) |
 | [docs/adr/](docs/adr/) | Hard-to-reverse decisions: Soloist Engine, private-API Catalogue, Daemon + Client, GPU visuals |
 | [docs/research/2026-10-private-api-risk.md](docs/research/2026-10-private-api-risk.md) | How risky the private API is for a one-person client |

@@ -266,8 +266,13 @@ audio, and looks spectacular.
 84. As a listener, I want audiobooks the same way (book pages, chapters, resume, library, search), if Soloist plays chapters (checked first).
 
 ### Layout (batch 7, D37) and macOS (batch 8, D38)
-85. As a user, I want a free-tiling edit mode (split, close, swap Panes) on the existing layout tree, as a trial.
-    **Parked (D59, 2026-10-20):** the owner is happy with the layouts as they are; kept as an idea (`ideas/layout.md`).
+85. As a user, I want to tile my Panes freely: drag a Pane by its title to swap it, split another with it or give it a
+    screen edge (the layout reflows live; Esc cancels), close and split Panes (`×`, right-click a title, Ctrl+K), and do
+    the same from the keyboard (Move mode, `m`). No drop may leave a Pane under its minimum; Home, the library, the
+    queue and lyrics can move but never close. **Built (D66, 2026-10-31):** reopened from the parked state (D59). An edit
+    never overwrites a built-in Design: the first one asks for a name (Enter saves a Design of your own, Esc keeps one
+    unnamed "<Design> (edited)"); a Design of your own saves itself as you edit; "Reset design" goes back to the
+    built-in one (a Design of your own stays in the picker).
 86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready. Started 2026-10-19 (D48),
     tickets #63–#70, parity rule D49; the light librespot Engine on both OSes (D52, #70).
 

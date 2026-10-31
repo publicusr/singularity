@@ -13,6 +13,9 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 BIN = os.environ.get("PTY_BIN") or f"{ROOT}/target/debug"
 WRAP = os.environ.get("PTY_WRAP", "").split()
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
+# the tiling scenario wants room for the whole Singularity layout
+if sys.argv[1:2] == ["tiling"]:
+    COLS, ROWS = int(os.environ.get("PTY_COLS", 160)), int(os.environ.get("PTY_ROWS", 48))
 
 
 def first_font(*paths):
@@ -1175,6 +1178,104 @@ def layouts(t, out, env):
     t2.send(b"\x1b", 0.3); t2.send(b"q", 0.5)
 
 
+def tiling(t, out, env):
+    """D66, free tiling: drag a Pane by its title to a swap zone, an edge zone and the screen's edge (a shot while the
+    pointer is still down: the whole layout reflowed, the moved Pane highlighted, its title following; another after
+    the release), the naming prompt on the first edit, Esc cancelling a drag, a close with the x, a split from the
+    right-click menu with the Widget list, and Move mode. Run it at PTY_COLS=160 PTY_ROWS=48 (the default here)."""
+    t.pump(1.0)
+    t.send(b" ", 0.5)
+
+    def title_at(title):
+        # a spot on the title bar, left of the buttons
+        # (a Pane the hole bends has braille in front of its title: look for the words alone)
+        at = t.find("\u250c " + title)
+        if at:
+            return at[0] + 3, at[1]
+        x, y = t.find(title)
+        return x + 2, y
+
+    def pane_at(title, dx, dy):
+        x, y = title_at(title)
+        return x - 3 + dx, y + dy
+
+    def pull(title, to, shot=None, steps=6, hold=False):
+        x0, y0 = title_at(title)
+        mouse(t, 0, x0, y0)
+        for i in range(1, steps + 1):
+            mouse(t, 32, x0 + (to[0] - x0) * i // steps, y0 + (to[1] - y0) * i // steps, wait=0.12)
+        t.pump(0.3)
+        if shot:
+            t.shot(f"{out}/{shot}")
+        if not hold:
+            mouse(t, 0, to[0], to[1], release=True, wait=0.5)
+
+    t.shot(f"{out}/00-start.png")
+    # 1. a centre: stream swaps with the queue
+    qx, qy = t.find("\u250c queue")
+    pull("stream", (qx + 25, qy + 6), "01-swap-drag.png")
+    t.shot(f"{out}/02-swap-done-naming.png")
+    # the first edit of a built-in Design asks what to call it
+    t.send(b"\x7f" * 14, 0.2)
+    t.send(b"Mine", 0.3)
+    t.shot(f"{out}/03-naming-typed.png")
+    t.send(b"\r", 0.6)
+    # 2. an edge band: lyrics goes left of home (a split)
+    hx, hy = t.find("\u250c home")
+    pull("tail -f lyrics.log", (hx + 2, hy + 10), "04-edge-drag.png")
+    t.shot(f"{out}/05-edge-done.png")
+    # 3. the screen's left edge: fft becomes a full-height column
+    pull("fft", (0, 22), "06-screen-edge-drag.png")
+    t.shot(f"{out}/07-screen-edge-done.png")
+    # 4. Esc puts a held Pane back
+    x0, y0 = title_at("home")
+    mouse(t, 0, x0, y0)
+    for i in range(1, 5):
+        mouse(t, 32, x0 + 8 * i, y0 + 3 * i, wait=0.12)
+    t.pump(0.3)
+    t.shot(f"{out}/08-esc-held.png")
+    t.send(b"\x1b", 0.4)
+    mouse(t, 0, x0 + 32, y0 + 12, release=True, wait=0.4)
+    t.shot(f"{out}/09-esc-after.png")
+    # 5. close the loudness Pane with its x
+    lx, ly = t.find("loudness")
+    row = t.screen.display[ly]
+    cx = row.index("\u00d7", lx)
+    t.shot(f"{out}/10-before-close.png")
+    mouse(t, 0, cx, ly); mouse(t, 0, cx, ly, release=True, wait=0.6)
+    t.shot(f"{out}/11-closed.png")
+    # 6. split: right-click a title, Split down (the second row), pick a Widget
+    x0, y0 = title_at("~/library")
+    mouse(t, 2, x0, y0); mouse(t, 2, x0, y0, release=True, wait=0.4)
+    t.shot(f"{out}/12-title-menu.png")
+    t.send(b"\x1b[B", 0.2)
+    t.send(b"\r", 0.5)
+    t.shot(f"{out}/13-widget-list.png")
+    t.send(b"\x1b[B", 0.2)
+    t.send(b"\r", 0.6)
+    t.shot(f"{out}/14-split-done.png")
+    # 7. Move mode on the focused Pane: arrows swap, Shift+arrows split beside, + - size
+    t.send(b"m", 0.4)
+    t.shot(f"{out}/15-move-mode.png")
+    t.send(b"\x1b[1;2D", 0.4)
+    t.shot(f"{out}/16-move-shift-left.png")
+    t.send(b"\x1b[A", 0.4)
+    t.send(b"+", 0.3); t.send(b"+", 0.3)
+    t.shot(f"{out}/17-move-grown.png")
+    t.send(b"\r", 0.4)
+    # 8. the design list has your design, and the file is on disk
+    t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
+    t.shot(f"{out}/18-picker.png")
+    t.send(b"\x1b", 0.3)
+    import glob
+    files = sorted(glob.glob(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/*.toml"))
+    print("layout files:", [os.path.basename(f) for f in files])
+    # 9. Reset design
+    t.send(b"\x0b", 0.3); t.send(b"reset design", 0.3); t.send(b"\r", 0.6)
+    t.shot(f"{out}/19-reset.png")
+    t.send(b"q", 0.5)
+
+
 def main():
     scenario, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
@@ -1195,10 +1296,10 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling") else "0"
         # kitty's layer under cell backgrounds (#41); the harness composites it as kitty does
         env["SINGULARITY_BELOW_BG"] = "1" if scenario in ("popup", "ambient") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
@@ -1298,6 +1399,8 @@ def main():
             return readme(t, out)
         if scenario == "layouts":
             return layouts(t, out, env)
+        if scenario == "tiling":
+            return tiling(t, out, env)
         if scenario == "artist":
             t.pump(1.0)
             x, y = t.find("♥  Liked Songs")
