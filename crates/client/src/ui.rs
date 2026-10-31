@@ -2615,7 +2615,9 @@ mod tests {
     fn the_wheel_and_the_mouse_never_reach_the_panes_behind_a_popup() {
         use singularity_proto::{Item, QueueEntry};
         let feed: singularity_proto::HomeFeed = serde_json::from_str(include_str!("../tests/fixtures/home.json")).unwrap();
-        let opens: [(&str, fn(&mut App)); 6] = [
+        // each popup by name, and how to open it
+        type Open = (&'static str, fn(&mut App));
+        let opens: [Open; 6] = [
             ("devices", |a| a.run(Action::Devices)),
             ("palette", |a| a.run(Action::Palette)),
             ("help", |a| a.run(Action::Help)),
