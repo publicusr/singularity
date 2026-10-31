@@ -48,6 +48,18 @@ order of the work. T0005's phone fix holds live (2026-10-28 log: the resume was 
    scrubbed tree builds and passes `cargo test --workspace` (356 passed, 0 failed, 5 ignored). The pty `designs`
    shot shows `you@singularity:~$` on the Terminal design.
 
+**Owner's second retest round (2026-10-31), the release waits for it.** Built and merged on `main`:
+- DJ from Home: Soloist rejects the context ("current track is unplayable", AdvanceStuck); no verified way to play
+  DJ, so an unplayable context is now a Notice. The meters died afterwards because the tap's `parec` sat on the dead
+  PipeWire stream: a quiet tap rechecks every 2 s and re-attaches (`tap.rs`). Both need the owner's live check.
+- Wheel/clicks behind popups: one gate in `App::pointer` (`App::modal()`); pty `popup-wheel`.
+- Saved designs keep their Theme (`theme =` in `layouts/*.toml`); ten shared themes (ember, sunset, terracotta,
+  honey, rose, peach, sandstone, paper, lagoon, moss; contrast-tested); short palette labels with
+  `Action::keywords()` for old words; pty `themes`.
+- **Free tiling is back (reopens D59)**: grilling round 1 (Q1–Q9: drag by title with live reflow, drop zones
+  swap/split/screen edge, never below minimum sizes, close + split, edits fork into "<design> (edited)", keyboard move
+  mode, well keeps its shape, ships in v0.1.0) was put to the owner; waiting for answers.
+
 **Next, in order** (the owner games on this PC: ask before heavy commands — builds, tests, history-wide greps):
 the owner retests (reinstall both binaries first) and says go → redo the scrub from the then-current `main` (the
 scratch clone is session-only; seconds) → **owner's go-ahead** → rename this repo to `publicusr/singularity-archive`, create a new private
