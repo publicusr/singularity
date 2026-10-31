@@ -146,6 +146,7 @@ const STANDARD: &[(Action, &[&str])] = &[
     (Action::ToggleIdle, &["I"]),
     (Action::Devices, &["d"]),
     (Action::FocusNext, &["Tab"]),
+    (Action::MovePane, &["m"]),
     (Action::Palette, &["Ctrl+K", ":"]),
     (Action::Help, &["?"]),
     (Action::Quit, &["q", "Esc"]),

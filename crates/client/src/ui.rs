@@ -11,6 +11,11 @@ use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Clear};
 use singularity_proto::{CatalogueStatus, EngineStatus, PlayStatus};
 
+/// A Pane's title as the Design on screen words it (not the main Pane's, which follows the page).
+pub fn pane_name(design: usize, slot: &str) -> String {
+    crate::design::title(design, slot, slot_info(slot).0).to_string()
+}
+
 /// Pane titles, and which ticket brings each Pane's real Widget.
 fn slot_info(slot: &str) -> (&'static str, &'static str) {
     match slot {
@@ -100,6 +105,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.devices_open.then(|| devices_rect(area, app)),
         app.picker.as_ref().map(|p| crate::looks::picker_rect(area, p)),
         app.naming.is_some().then(|| naming_rect(area)),
+        app.widget_pick.as_ref().map(|p| crate::arrange::widgets_rect(area, p)),
+        crate::arrange::ghost_rect(body, app),
         app.playlists.details.is_some().then(|| crate::playlists::details_rect(area)),
         app.playlists.adding.is_some().then(|| crate::playlists::adding_rect(area, app.adding_rows().len())),
         app.cover_form.is_some().then(|| crate::cover::rect(area)),
@@ -114,7 +121,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     crate::visual::idle::draw(f.buffer_mut(), body, app, &th);
     player_bar(f, player, app, &th);
-    hint_bar(f.buffer_mut(), hints, &th, &app.keymap);
+    match app.move_mode.clone() {
+        Some(slot) => crate::arrange::draw_move_hint(f.buffer_mut(), hints, &pane_name(app.design, &slot), &th),
+        None => hint_bar(f.buffer_mut(), hints, &th, &app.keymap),
+    }
     if let (Some(r), Some(CatalogueStatus::LoginPending { url, code })) = (login_r, app.catalogue.clone()) {
         login(f, r, &th, &url, &code);
     }
@@ -133,9 +143,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.picker.is_some() {
         crate::looks::draw_picker(f.buffer_mut(), area, app, &th);
     }
+    if app.widget_pick.is_some() {
+        crate::arrange::draw_widgets(f.buffer_mut(), area, app, &th);
+    }
     if let Some(n) = app.naming.clone() {
+        let edited = format!("Enter save · Esc keep it as “{} (edited)”",crate::design::DESIGNS[app.design].name);
         let (title, hint) = match n.purpose {
             crate::app::NameFor::Layout => ("Save design as", "Enter save · Esc cancel · find it in Ctrl+K → Pick a design"),
+            crate::app::NameFor::Fork => ("Keep your changes as a design", edited.as_str()),
             crate::app::NameFor::NewPlaylist => ("New playlist", "Enter create · Esc cancel"),
         };
         let inner = popup(f.buffer_mut(), naming_rect(area), &th, title);
@@ -165,6 +180,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         let r = toast_rect(area, &msg);
         text(f.buffer_mut(), r.x, r.y, r.width, &format!("  {msg}  "), th.chip(th.accent));
     }
+    crate::arrange::draw_ghost(f.buffer_mut(), body, app, &th);
     if app.config.ui.transparent {
         transparent(f.buffer_mut(), area, &th);
     }
@@ -336,11 +352,25 @@ fn superscript(n: usize) -> String {
     n.to_string().chars().map(|c| ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'][c as usize - '0' as usize]).collect()
 }
 
+/// The × that closes a Pane, in the last cells of its title bar.
+fn close_button(buf: &mut Buffer, rect: Rect, th: &Theme, focused: bool, slot: &str, hits: &mut Vec<(Rect, Hit)>) {
+    let x = rect.right().saturating_sub(5);
+    text(buf, x, rect.y, 3, " × ", th.s(if focused { th.accent } else { th.dim }));
+    hits.push((Rect::new(x, rect.y, 3, 1), Hit::Close(slot.into())));
+}
+
 fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
-    let computed = app.layout.compute_shaped(body, app.cell_px.map(|(w, h)| h / w).unwrap_or(2.0));
+    app.body = body;
+    // while a Pane is held over a drop zone, the whole layout is drawn as dropping there would make it
+    let tree = app.shown_layout().into_owned();
+    let moving = app.moving().map(String::from);
+    let computed = tree.compute_shaped(body, app.cell_aspect());
     // the ◂ ▸ swaps sit on a border a divider's grip may cover: registered after the grips, so they win
     let mut swaps: Vec<(Rect, Hit)> = vec![];
     for (i, (slot, rect)) in computed.slots.iter().enumerate() {
+        // its title bar: drag it to move the Pane (registered with the ◂ ▸ after the dividers' grips, so it wins over
+        // them on the row below a horizontal divider; the buttons are registered after it and win in turn)
+        swaps.push((Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(2), 1), Hit::Title(slot.clone())));
         let (title, todo) = slot_info(slot);
         let title = crate::design::title(app.design, slot, title);
         // the main Pane is titled after what it shows
@@ -357,7 +387,11 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         };
         let number = if th.numbered { superscript(i + 1) } else { String::new() };
         let focused = *slot == app.focus;
-        let title_st = if focused { th.title() } else { th.s(th.accent) };
+        let held = moving.as_deref() == Some(slot.as_str());
+        let title_st = if focused || held { th.title() } else { th.s(th.accent) };
+        // a Pane that can close has a × at the right end of its title (the four every Design keeps don't)
+        let closable = !crate::tiling::CORE.contains(&slot.as_str()) && computed.slots.len() > 1 && rect.width >= 14;
+        let tail: u16 = if closable { 3 } else { 0 };
         let mut spans = vec![Span::styled(format!(" {number}"), title_st)];
         // the main Pane: ← → through the pages seen, while there are any, at the right end of its title like every
         // Pane's arrows (D44); dim when there's nowhere to go that way
@@ -365,7 +399,7 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         // a Slot that can show other Widgets always keeps its ◂ ▸ (7 cells at the right): a long title gives way
         let can_swap = (!crate::layouts::options(slot).is_empty() && slot != "well") || history;
         let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-        let room = (rect.width as usize).saturating_sub(2 + used + if can_swap { 8 } else { 0 });
+        let room = (rect.width as usize).saturating_sub(2 + used + if can_swap { 8 } else { 0 } + tail as usize);
         let title = if title.chars().count() + 1 > room && room > 1 { title.chars().take(room - 2).collect::<String>() + "…" } else { title };
         spans.push(Span::styled(format!("{title} "), title_st));
         if slot == "topweek" {
@@ -375,7 +409,7 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(th.borders)
-            .border_style(th.s(if focused { th.border_focus } else { th.pane_border(i) }))
+            .border_style(if held { th.s(th.accent2).add_modifier(Modifier::BOLD) } else { th.s(if focused { th.border_focus } else { th.pane_border(i) }) })
             .title(ratatui::text::Line::from(spans))
             .style(th.base());
         let inner = block.inner(*rect);
@@ -386,6 +420,9 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
         if slot == "well" {
             // the well draws its own (sagging) frame
             crate::visual::well::draw(f.buffer_mut(), *rect, app, th);
+            if closable {
+                close_button(f.buffer_mut(), *rect, th, focused, slot, &mut swaps);
+            }
             continue;
         }
         f.render_widget(block, *rect);
@@ -401,11 +438,14 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
             swaps.push((Rect::new(x, y, 2, 1), Hit::History(-1)));
             swaps.push((Rect::new(x + 2, y, 3, 1), Hit::History(1)));
         } else if swappable {
-            let (x, y) = (rect.right().saturating_sub(7), rect.y);
+            let (x, y) = (rect.right().saturating_sub(7 + tail), rect.y);
             let buf = f.buffer_mut();
             text(buf, x, y, 5, " ◂ ▸ ", th.s(if focused { th.accent } else { th.dim }));
             swaps.push((Rect::new(x, y, 2, 1), Hit::Swap(slot.clone(), -1)));
             swaps.push((Rect::new(x + 2, y, 3, 1), Hit::Swap(slot.clone(), 1)));
+        }
+        if closable {
+            close_button(f.buffer_mut(), *rect, th, focused, slot, &mut swaps);
         }
         match slot.as_str() {
             "hole" => crate::visual::well::draw_plain(f.buffer_mut(), *rect, inner, app, th),
@@ -782,6 +822,8 @@ fn help_rows(m: &crate::keymap::Keymap) -> Vec<(String, String)> {
         (m.nav_label().into(), "move through Home, play · right-click or Menu key: more".into()),
         (m.pair(A::Back, A::Forward), "back / forward (Esc and Backspace go back too)".into()),
         (m.label(A::FocusNext), "focus the next pane".into()),
+        ("Panes".into(), "drag a title to move it · × closes · right-click: split".into()),
+        (m.label(A::MovePane), "move pane: arrows swap · ⇧arrows split · + − size · x close".into()),
         (m.label(A::ToggleIdle), "idle takeover on / off (any key wakes the screen)".into()),
         (m.label(A::Quit), "quit the Client (music keeps playing)".into()),
         ("keys.toml".into(), format!("{} keys · all of them in {} → Settings", m.preset, m.label(A::Palette))),

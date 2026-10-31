@@ -35,6 +35,9 @@ pub struct Saved {
     #[serde(default)]
     pub theme: Option<String>,
     pub tree: Node,
+    /// the unnamed "<Design> (edited)" a first edit leaves when the user doesn't name it (D66): one per built-in Design
+    #[serde(default)]
+    pub edited: bool,
     /// file name without `.toml`
     #[serde(skip)]
     pub id: String,
@@ -51,17 +54,34 @@ pub fn save(dir: &Path, name: &str, design: &str, theme: &str, tree: &Node) -> R
     if id.is_empty() {
         return Err("a layout needs a name".into());
     }
-    let saved = Saved { name: name.trim().into(), design: design.into(), theme: Some(theme.into()).filter(|t: &String| !t.is_empty()), tree: tree.clone(), id: id.clone() };
+    write(dir, &id, name, design, theme, tree, false)
+}
+
+/// The file an unnamed edit of built-in Design `design` lives in.
+pub fn edited_id(design: &str) -> String {
+    format!("{design}-edited")
+}
+
+/// Write `<id>.toml`; `edited` marks the unnamed edit of a built-in Design.
+pub fn write(dir: &Path, id: &str, name: &str, design: &str, theme: &str, tree: &Node, edited: bool) -> Result<Saved, String> {
+    let saved = Saved { name: name.trim().into(), design: design.into(), theme: Some(theme.into()).filter(|t: &String| !t.is_empty()), tree: tree.clone(), edited, id: id.into() };
     let q = |s: &str| singularity_config::toml_edit::Value::from(s).to_string();
     let text = format!(
-        "# A Singularity layout. Pick it with Ctrl+K → Pick a design; delete this file to forget it.\n# Each split puts `a` left of (or above) `b`; `first` sizes `a` (cells, or a ratio), `last` sizes `b`.\nname = {}\ndesign = {}\n{}tree = {}\n",
+        "# A Singularity layout. Pick it with Ctrl+K → Pick a design; delete this file to forget it.\n# Each split puts `a` left of (or above) `b`; `first` sizes `a` (cells, or a ratio), `last` sizes `b`.\nname = {}\ndesign = {}\n{}{}tree = {}\n",
         q(saved.name.trim()),
         q(design),
         saved.theme.as_deref().map(|t| format!("theme = {}\n", q(t))).unwrap_or_default(),
+        if edited { "edited = true\n" } else { "" },
         tree_text(tree, 0)
     );
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     singularity_config::write_atomic(&dir.join(format!("{id}.toml")), &text).map_err(|e| e.to_string())?;
     Ok(saved)
+}
+
+/// All the Widgets a new Pane can show (before leaving out what's on screen).
+pub fn all_widgets() -> impl Iterator<Item = &'static str> {
+    GROUPS.iter().flat_map(|g| g.iter().copied())
 }
 
 /// The tree as TOML, one split per line (inline tables may span lines since TOML 1.1).

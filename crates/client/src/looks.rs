@@ -183,7 +183,7 @@ impl App {
             PickerKind::Design => DESIGNS
                 .iter()
                 .map(|d| (d.id.to_string(), d.name.to_string(), d.blurb.to_string()))
-                .chain(self.saved_layouts.iter().map(|s| (format!("layout:{}", s.id), s.name.clone(), format!("yours · layouts/{}.toml", s.id))))
+                .chain(self.saved_layouts.iter().map(|s| (format!("layout:{}", s.id), s.name.clone(), if s.edited { format!("your changes, unnamed · layouts/{}.toml", s.id) } else { format!("yours · layouts/{}.toml", s.id) })))
                 .collect(),
             PickerKind::Theme => theme_items(&self.user_themes),
         };
@@ -238,14 +238,30 @@ impl App {
     /// Typing a name: for "Save design as…" (#19) or a new playlist (#51).
     pub fn naming_key(&mut self, k: KeyEvent) {
         let Some(n) = self.naming.as_mut() else { return };
-        let max = if n.purpose == crate::app::NameFor::Layout { 40 } else { 100 };
+        let max = if matches!(n.purpose, crate::app::NameFor::Layout | crate::app::NameFor::Fork) { 40 } else { 100 };
         match k.code {
-            KeyCode::Esc => self.naming = None,
+            KeyCode::Esc => {
+                // the first edit of a built-in Design, left unnamed: kept as its one "(edited)" Design
+                if self.naming.take().is_some_and(|n| n.purpose == crate::app::NameFor::Fork) {
+                    self.keep_edited();
+                }
+            }
             KeyCode::Enter => {
                 let Some(n) = self.naming.take() else { return };
                 match n.purpose {
                     crate::app::NameFor::Layout if !n.text.trim().is_empty() => self.save_layout(&n.text),
                     crate::app::NameFor::Layout => {}
+                    crate::app::NameFor::Fork if n.text.trim().is_empty() => self.keep_edited(),
+                    // never over another Design of the user's
+                    crate::app::NameFor::Fork => {
+                        let id = crate::layouts::file_id(&n.text);
+                        if self.saved_layouts.iter().any(|s| s.id == id && !s.edited) {
+                            self.say(format!("There is already a design called \"{}\"", n.text.trim()));
+                            self.naming = Some(n);
+                        } else {
+                            self.save_layout(&n.text);
+                        }
+                    }
                     crate::app::NameFor::NewPlaylist => self.create_playlist(&n.text),
                 }
             }

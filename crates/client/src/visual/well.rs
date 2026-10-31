@@ -66,8 +66,9 @@ fn remember_origin(inner: Rect, app: &mut App) {
 fn look_label(buf: &mut Buffer, outer: Rect, app: &App, th: &Theme) {
     let label = format!(" ◂ {} ▸ ", app.hole.look().name);
     let w = label.chars().count() as u16;
-    if outer.width > w + 18 {
-        text(buf, outer.right() - w - 2, outer.y, w, &label, th.s(th.dim));
+    // the × that closes the Pane takes the last cells of the title
+    if outer.width > w + 21 {
+        text(buf, outer.right() - w - 5, outer.y, w, &label, th.s(th.dim));
     }
 }
 

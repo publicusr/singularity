@@ -78,6 +78,10 @@ pub enum Action {
     DeleteListening,
     Setup,
     FocusNext,
+    SplitRight,
+    SplitDown,
+    ClosePane,
+    MovePane,
     ResetLayout,
     Palette,
     Help,
@@ -85,7 +89,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 53] = [
+    pub const ALL: [Action; 57] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -135,6 +139,10 @@ impl Action {
         Action::DeleteListening,
         Action::Setup,
         Action::FocusNext,
+        Action::SplitRight,
+        Action::SplitDown,
+        Action::ClosePane,
+        Action::MovePane,
         Action::ResetLayout,
         Action::Palette,
         Action::Help,
@@ -191,7 +199,11 @@ impl Action {
             Action::DeleteListening => "Delete listening data…",
             Action::Setup => "Run setup",
             Action::FocusNext => "Focus next pane",
-            Action::ResetLayout => "Reset layout",
+            Action::SplitRight => "Split right",
+            Action::SplitDown => "Split down",
+            Action::ClosePane => "Close pane",
+            Action::MovePane => "Move pane",
+            Action::ResetLayout => "Reset design",
             Action::Palette => "Command palette",
             Action::Help => "Help",
             Action::Quit => "Quit",
@@ -204,6 +216,11 @@ impl Action {
             Action::PickDesign => "layout colours colors look",
             Action::PickTheme => "palette colours colors",
             Action::SaveLayout => "layout keep",
+            Action::SplitRight => "tile add pane widget beside",
+            Action::SplitDown => "tile add pane widget below",
+            Action::ClosePane => "tile remove delete widget",
+            Action::MovePane => "tile arrange swap drag layout keyboard",
+            Action::ResetLayout => "layout tiling undo original default",
             Action::EditPlaylist => "name description rename",
             Action::DeletePlaylist => "remove",
             Action::AddPlayingToPlaylist => "current playing track",
@@ -281,6 +298,10 @@ impl Action {
             Action::DeleteListening => "delete_listening",
             Action::Setup => "setup",
             Action::FocusNext => "focus_next",
+            Action::SplitRight => "split_right",
+            Action::SplitDown => "split_down",
+            Action::ClosePane => "close_pane",
+            Action::MovePane => "move_pane",
             Action::ResetLayout => "reset_layout",
             Action::Palette => "palette",
             Action::Help => "help",
@@ -341,6 +362,12 @@ pub enum Hit {
     Swap(String, i32),
     /// the main Pane's ◂ ▸: back / forward through the pages seen
     History(i32),
+    /// a Pane's title bar (D66): drag it to move the Pane
+    Title(String),
+    /// a Pane's ×
+    Close(String),
+    /// a row of the Widget picker for a new Pane
+    WidgetItem(usize),
     /// a period tab on the Stats page
     StatsPeriod(singularity_proto::StatsPeriod),
     /// a ranked row on the Stats page, by its place in `stats::entries`
@@ -383,6 +410,11 @@ pub enum MenuAct {
     ChangeCover,
     RemoveCover,
     DeletePlaylist,
+    /// the Pane menu (right-click on a title)
+    SplitRight,
+    SplitDown,
+    MovePane,
+    ClosePane,
 }
 
 /// What a context menu is about.
@@ -397,6 +429,8 @@ pub enum Target {
     Track { uri: String, name: String },
     /// a sidebar row: a playlist, album, artist or folder of the library
     Library { uri: String, name: String },
+    /// a Pane, by its Slot
+    Pane(String),
 }
 
 /// The naming popup: a name being typed, and what it's for.
@@ -412,11 +446,17 @@ pub enum NameFor {
     Layout,
     /// "New playlist…" (#51)
     NewPlaylist,
+    /// the first edit of a built-in Design asks what to call the Design it makes (D66)
+    Fork,
 }
 
 impl Naming {
     pub fn layout() -> Naming {
         Naming { text: String::new(), purpose: NameFor::Layout }
+    }
+    /// Prefilled with a free suggestion.
+    pub fn fork(text: String) -> Naming {
+        Naming { text, purpose: NameFor::Fork }
     }
     pub fn playlist() -> Naming {
         Naming { text: String::new(), purpose: NameFor::NewPlaylist }
@@ -595,6 +635,14 @@ pub struct App {
     pub layout_name: Option<String>,
     pub saved_layouts: Vec<crate::layouts::Saved>,
     pub naming: Option<Naming>,
+    /// free tiling (D66): a Pane being dragged by its title, the Pane in Move mode, the Widget list for a new Pane,
+    /// and the area the Panes were last drawn in
+    pub tile: Option<crate::arrange::TileDrag>,
+    pub move_mode: Option<String>,
+    pub widget_pick: Option<crate::arrange::WidgetPick>,
+    pub body: Rect,
+    /// the layout as it was when a divider was grabbed (a changed one counts as an edit on release)
+    pub(crate) divider_from: Option<Node>,
     /// the "Change cover" popup (#56), and covers shown before Spotify answered: (library's, header's) to put back
     pub cover_form: Option<crate::cover::CoverForm>,
     pub covers_was: HashMap<String, (Option<String>, Option<String>)>,
@@ -704,6 +752,11 @@ impl App {
             layout_name: None,
             saved_layouts: vec![],
             naming: None,
+            tile: None,
+            move_mode: None,
+            widget_pick: None,
+            body: Rect::default(),
+            divider_from: None,
             cover_form: None,
             covers_was: HashMap::new(),
             layouts_dir: None,
@@ -816,6 +869,7 @@ impl App {
             || (crate::setup::wanted(self) && crate::setup::step(self) == crate::setup::Step::Key)
             || self.picker.is_some()
             || self.naming.is_some()
+            || self.widget_pick.is_some()
             || self.playlists.details.is_some()
             || self.playlists.adding.is_some()
             || self.cover_form.is_some()
@@ -1089,15 +1143,14 @@ impl App {
                 let i = slots.iter().position(|s| *s == self.focus).map(|i| (i + 1) % slots.len()).unwrap_or(0);
                 self.focus = slots[i].clone();
             }
-            Action::ResetLayout => {
-                let d = self.design;
-                let theme = self.theme.id.clone();
-                self.set_design(d);
-                self.set_theme(&theme);
-                self.layout_name = None;
-                self.save_ui();
-                self.say("Layout reset");
+            Action::SplitRight => self.split_focused(crate::tiling::Side::Right),
+            Action::SplitDown => self.split_focused(crate::tiling::Side::Bottom),
+            Action::ClosePane => {
+                let slot = self.focused_slot();
+                self.close_pane(&slot);
             }
+            Action::MovePane => self.start_move(),
+            Action::ResetLayout => self.reset_design(),
             Action::Palette => self.palette = Some(Palette { query: String::new(), selected: 0 }),
             Action::Help => self.help = true,
             Action::Quit => self.quit = true,
@@ -1141,6 +1194,16 @@ impl App {
         }
         if self.naming.is_some() {
             return self.naming_key(k);
+        }
+        if self.widget_pick.is_some() {
+            return self.widget_key(k);
+        }
+        // a Pane being dragged: Esc puts it back, nothing else gets through
+        if self.tile.is_some() {
+            if k.code == KeyCode::Esc {
+                self.tile = None;
+            }
+            return;
         }
         if self.playlists.details.is_some() {
             return self.details_key(k);
@@ -1191,6 +1254,9 @@ impl App {
             && let Some(a) = self.keymap.action(k)
         {
             return self.run(a);
+        }
+        if self.move_mode.is_some() {
+            return self.move_key(k);
         }
         if self.focus == "home" && self.search.is_some() && self.search_key(k) {
             return;
@@ -2003,12 +2069,16 @@ impl App {
             }
             Target::Queued { uri, name, .. } | Target::Track { uri, name } => Some((uri.clone(), name.clone(), "track".into())),
             Target::Library { uri, name } => Some((uri.clone(), name.clone(), uri.split(':').nth(1).unwrap_or("").into())),
+            Target::Pane(_) => None,
         }
     }
 
     pub(crate) fn menu_run(&mut self, i: usize) {
         let Some(m) = self.menu.take() else { return };
         let Some((_, act)) = m.items.get(i).cloned() else { return };
+        if let Target::Pane(slot) = &m.target {
+            return self.pane_menu_run(slot, act);
+        }
         let Some((uri, name, kind)) = self.target_track(&m.target) else { return };
         let name = if name.is_empty() { "it".to_string() } else { name };
         match act {
@@ -2059,6 +2129,7 @@ impl App {
             MenuAct::ChangeCover => self.ask_cover(&uri),
             MenuAct::RemoveCover => self.remove_cover(&uri),
             MenuAct::DeletePlaylist => self.delete_playlist(&uri),
+            MenuAct::SplitRight | MenuAct::SplitDown | MenuAct::MovePane | MenuAct::ClosePane => {}
         }
     }
 
@@ -2317,6 +2388,10 @@ impl App {
         if let Some(modal) = self.modal() {
             return self.modal_pointer(modal, m, coarse);
         }
+        // a Pane held by its title: the pointer is the Pane's until it lets go
+        if self.tile.is_some() {
+            return self.tile_pointer(m);
+        }
         // the Settings page owns the wheel wherever the pointer is: drifting off it must not scroll a Pane behind
         if self.settings_view.is_some() && matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) {
             if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
@@ -2369,6 +2444,8 @@ impl App {
                             self.open_track_menu(t.uri, t.name, at);
                         }
                     }
+                    // a Pane's title bar: split, move, close
+                    Some(Hit::Title(s) | Hit::Swap(s, _)) => self.open_pane_menu(s, at),
                     _ => {}
                 }
             }
@@ -2512,7 +2589,11 @@ impl App {
                     Some(Hit::History(d)) if d < 0 => self.go_back(),
                     Some(Hit::History(_)) => self.go_forward(),
                     Some(Hit::Focus(s)) => self.focus = s,
+                    Some(Hit::Title(s)) => self.tile_down(s, m.column, m.row),
+                    Some(Hit::Close(s)) => self.close_pane(&s),
+                    Some(Hit::WidgetItem(_)) => {}
                     Some(Hit::Divider(i)) => {
+                        self.divider_from = Some(self.layout.clone());
                         if let Some(d) = self.dividers.get(i) {
                             let (boundary, grab) = match d.axis {
                                 crate::layout::Axis::Horizontal => (d.grip.x + 1, m.column),
@@ -2558,11 +2639,13 @@ impl App {
                     && let Some(d) = self.dividers.get(i).cloned()
                 {
                     let pos = if d.axis == crate::layout::Axis::Vertical { m.row } else { m.column };
-                    self.layout.drag(&d, (pos as i32 + self.drag_offset).max(0) as u16);
+                    self.drag_divider(&d, (pos as i32 + self.drag_offset).max(0) as u16);
                 }
             }
             MouseEventKind::Up(_) => {
-                self.drag = None;
+                if self.drag.take().is_some() {
+                    self.divider_released();
+                }
                 if let Some(d) = self.queue_drag.take() {
                     self.drop_queued(d);
                 }
@@ -2680,6 +2763,7 @@ enum Modal {
     Palette,
     Picker,
     Naming,
+    Widgets,
     Details,
     Adding,
     Cover,
@@ -2688,6 +2772,8 @@ enum Modal {
     Health,
     Menu,
     Help,
+    /// Move mode: the keyboard has the Pane, so a click only ends it
+    Move,
     /// the pairing popup: not a keyboard modal, but it covers the screen and so takes the wheel
     Login,
 }
@@ -2702,6 +2788,8 @@ impl App {
             Modal::Picker
         } else if self.naming.is_some() {
             Modal::Naming
+        } else if self.widget_pick.is_some() {
+            Modal::Widgets
         } else if self.playlists.details.is_some() {
             Modal::Details
         } else if self.playlists.adding.is_some() {
@@ -2718,6 +2806,8 @@ impl App {
             Modal::Menu
         } else if self.help {
             Modal::Help
+        } else if self.move_mode.is_some() {
+            Modal::Move
         } else if matches!(self.catalogue, Some(singularity_proto::CatalogueStatus::LoginPending { .. })) && !self.login_hidden {
             Modal::Login
         } else {
@@ -2788,6 +2878,11 @@ impl App {
                         _ => {}
                     },
                     Modal::Help => self.help = false,
+                    Modal::Move => self.move_mode = None,
+                    Modal::Widgets => match hit {
+                        Some(Hit::WidgetItem(i)) => self.widget_chosen(i),
+                        _ => self.widget_pick = None,
+                    },
                     // forms and the wizard are typed into; a click on or around them does nothing
                     Modal::Naming | Modal::Details | Modal::Cover | Modal::Wizard | Modal::Health | Modal::Login => {}
                 }
@@ -2799,6 +2894,8 @@ impl App {
                 self.scrub = None;
                 self.playlists.press = None;
                 self.playlists.row_drag = None;
+                self.tile = None;
+                self.divider_from = None;
             }
             _ => {}
         }

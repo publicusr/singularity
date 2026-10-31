@@ -1,6 +1,7 @@
 //! `singularity`: the terminal Client.
 
 mod app;
+mod arrange;
 mod artist;
 mod conn;
 mod ambient;
@@ -28,6 +29,7 @@ mod sidebar;
 mod stats;
 mod term;
 mod theme;
+mod tiling;
 mod tracks;
 mod ui;
 mod visual;
