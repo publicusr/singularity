@@ -124,18 +124,19 @@ impl App {
         }
     }
 
-    /// `t`: the design's next palette, then the user's themes, round again.
+    /// `t`: the design's next palette, then the shared ones, then the user's themes, round again.
     pub fn next_variant(&mut self) {
         let mut ids: Vec<String> = DESIGNS[self.design].themes.iter().map(|s| s.to_string()).collect();
+        ids.extend(theme::extra_ids().map(String::from));
         ids.extend(self.user_themes.iter().map(|t| t.id.clone()));
         if ids.len() < 2 {
-            return self.say(format!("{} has one palette · Ctrl+K → Theme for the others", DESIGNS[self.design].name));
+            return self.say(format!("{} has one palette · Ctrl+K → Pick a theme for the others", DESIGNS[self.design].name));
         }
         let i = ids.iter().position(|id| *id == self.theme.id).map(|i| (i + 1) % ids.len()).unwrap_or(0);
         self.set_theme(&ids[i]);
         let name = self.theme.name.clone();
         self.save_ui();
-        self.say(format!("Palette: {name}"));
+        self.say(format!("Theme: {name}"));
     }
 
     /// Read the user's themes again if the folder changed (about once a second); a theme being edited applies live.
@@ -182,7 +183,7 @@ impl App {
             PickerKind::Design => DESIGNS
                 .iter()
                 .map(|d| (d.id.to_string(), d.name.to_string(), d.blurb.to_string()))
-                .chain(self.saved_layouts.iter().map(|s| (format!("layout:{}", s.id), s.name.clone(), format!("your layout · layouts/{}.toml", s.id))))
+                .chain(self.saved_layouts.iter().map(|s| (format!("layout:{}", s.id), s.name.clone(), format!("yours · layouts/{}.toml", s.id))))
                 .collect(),
             PickerKind::Theme => theme_items(&self.user_themes),
         };
@@ -195,11 +196,15 @@ impl App {
         self.picker = Some(Picker { kind, items, sel, before: (self.design, self.theme.id.clone(), self.layout.clone(), self.layout_name.clone()) });
     }
 
-    /// Put saved layout `s` on screen (with its design's colours, unless the theme was chosen apart).
+    /// Put saved layout `s` on screen (with the colours it was saved with, or its design's).
     pub fn use_layout(&mut self, s: &crate::layouts::Saved) {
         let d = crate::design::by_id(&s.design).unwrap_or(self.design);
         if d != self.design {
             self.set_design(d);
+        }
+        // the colours it was saved with (a theme that has since gone keeps the design's own)
+        if let Some(t) = s.theme.as_deref() {
+            self.set_theme(t);
         }
         self.layout = s.tree.clone();
         self.layout_name = Some(s.id.clone());
@@ -219,18 +224,18 @@ impl App {
     /// Save what's on screen under `name`; it shows up in the Design picker.
     pub fn save_layout(&mut self, name: &str) {
         let Some(dir) = self.layouts_dir.clone() else { return self.say("No config folder to save layouts in") };
-        match crate::layouts::save(&dir, name, DESIGNS[self.design].id, &self.layout) {
+        match crate::layouts::save(&dir, name, DESIGNS[self.design].id, &self.theme.id, &self.layout) {
             Ok(s) => {
                 self.layout_name = Some(s.id.clone());
                 self.reload_layouts();
                 self.save_ui();
-                self.say(format!("Saved layout \"{}\" (Ctrl+K → Design)", s.name));
+                self.say(format!("Saved design \"{}\" (Ctrl+K → Pick a design)", s.name));
             }
             Err(e) => self.say(format!("Couldn't save the layout: {e}")),
         }
     }
 
-    /// Typing a name: for "Save layout as…" (#19) or a new playlist (#51).
+    /// Typing a name: for "Save design as…" (#19) or a new playlist (#51).
     pub fn naming_key(&mut self, k: KeyEvent) {
         let Some(n) = self.naming.as_mut() else { return };
         let max = if n.purpose == crate::app::NameFor::Layout { 40 } else { 100 };
@@ -344,11 +349,11 @@ pub fn draw_picker(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     let inner = popup(buf, r, th, title);
     let items = p.items.clone();
     let sel = p.sel;
-    for (i, (_, name, what)) in items.iter().enumerate() {
-        let y = inner.y + i as u16;
-        if y >= inner.bottom().saturating_sub(2) {
-            break;
-        }
+    // a long list scrolls with the selection
+    let rows = inner.height.saturating_sub(2).max(1) as usize;
+    let first = sel.saturating_sub(rows - 1).min(items.len().saturating_sub(rows));
+    for (i, (_, name, what)) in items.iter().enumerate().skip(first).take(rows) {
+        let y = inner.y + (i - first) as u16;
         let bg = if i == sel { th.selection.color() } else { th.bg.color() };
         blank(buf, inner.x, y, inner.width, th.base().bg(bg));
         text(buf, inner.x + 1, y, 2, if i == sel { "›" } else { " " }, th.s(th.accent).bg(bg));
@@ -539,6 +544,44 @@ mod tests {
         assert_eq!(again.layout, crate::layout::Node::singularity());
         key(&mut again, KeyCode::Esc);
         assert_eq!(again.layout, mine, "Esc puts the saved layout back");
+    }
+
+    #[test]
+    fn a_saved_design_keeps_its_colours() {
+        let (mut app, dir) = with_dirs();
+        app.set_theme("terminal-amber");
+        app.run(crate::app::Action::SaveLayout);
+        for c in "Warm".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Enter);
+        let text = std::fs::read_to_string(dir.path().join("layouts/warm.toml")).unwrap();
+        assert!(text.contains("theme = \"terminal-amber\""), "{text}");
+        // somewhere else, then pick it: the preview already has its colours
+        let mut again = App::new(None);
+        again.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
+        again.set_design(2);
+        assert_eq!(again.theme.id, "classic");
+        again.run(crate::app::Action::PickDesign);
+        key(&mut again, KeyCode::End);
+        assert_eq!(again.theme.id, "terminal-amber", "live preview");
+        key(&mut again, KeyCode::Esc);
+        assert_eq!(again.theme.id, "classic", "Esc puts the colours back");
+        again.run(crate::app::Action::PickDesign);
+        key(&mut again, KeyCode::End);
+        key(&mut again, KeyCode::Enter);
+        assert_eq!(again.theme.id, "terminal-amber");
+        // saving over the name again takes the new colours
+        again.set_theme("cockpit-ice");
+        again.save_layout("Warm");
+        assert_eq!(again.saved_layouts[0].theme.as_deref(), Some("cockpit-ice"));
+        // an old file (no theme) keeps today's behaviour: the design's own colours
+        let old: String = std::fs::read_to_string(dir.path().join("layouts/warm.toml")).unwrap().lines().filter(|l| !l.starts_with("theme")).collect::<Vec<_>>().join("\n");
+        std::fs::write(dir.path().join("layouts/warm.toml"), old).unwrap();
+        again.set_design(2);
+        again.run(crate::app::Action::PickDesign);
+        key(&mut again, KeyCode::End);
+        assert_eq!(again.theme.id, DESIGNS[again.design].themes[0]);
     }
 
     #[test]

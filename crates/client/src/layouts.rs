@@ -31,6 +31,9 @@ pub struct Saved {
     pub name: String,
     /// the Design it was made from (its colours and Disk look come along)
     pub design: String,
+    /// the Theme in use when it was saved (built-in id or a file in `themes/`); None in older files: the design's own
+    #[serde(default)]
+    pub theme: Option<String>,
     pub tree: Node,
     /// file name without `.toml`
     #[serde(skip)]
@@ -43,17 +46,18 @@ pub fn file_id(name: &str) -> String {
     id.to_lowercase()
 }
 
-pub fn save(dir: &Path, name: &str, design: &str, tree: &Node) -> Result<Saved, String> {
+pub fn save(dir: &Path, name: &str, design: &str, theme: &str, tree: &Node) -> Result<Saved, String> {
     let id = file_id(name);
     if id.is_empty() {
         return Err("a layout needs a name".into());
     }
-    let saved = Saved { name: name.trim().into(), design: design.into(), tree: tree.clone(), id: id.clone() };
+    let saved = Saved { name: name.trim().into(), design: design.into(), theme: Some(theme.into()).filter(|t: &String| !t.is_empty()), tree: tree.clone(), id: id.clone() };
     let q = |s: &str| singularity_config::toml_edit::Value::from(s).to_string();
     let text = format!(
-        "# A Singularity layout. Pick it with Ctrl+K → Design; delete this file to forget it.\n# Each split puts `a` left of (or above) `b`; `first` sizes `a` (cells, or a ratio), `last` sizes `b`.\nname = {}\ndesign = {}\ntree = {}\n",
+        "# A Singularity layout. Pick it with Ctrl+K → Pick a design; delete this file to forget it.\n# Each split puts `a` left of (or above) `b`; `first` sizes `a` (cells, or a ratio), `last` sizes `b`.\nname = {}\ndesign = {}\n{}tree = {}\n",
         q(saved.name.trim()),
         q(design),
+        saved.theme.as_deref().map(|t| format!("theme = {}\n", q(t))).unwrap_or_default(),
         tree_text(tree, 0)
     );
     singularity_config::write_atomic(&dir.join(format!("{id}.toml")), &text).map_err(|e| e.to_string())?;
@@ -122,13 +126,19 @@ mod tests {
             tree.drag(&d, pos);
         }
         tree.swap("fft", "scope");
-        let s = save(dir.path(), "Night Shift!", "cockpit", &tree).unwrap();
+        let s = save(dir.path(), "Night Shift!", "cockpit", "cockpit-amber", &tree).unwrap();
         assert_eq!(s.id, "night-shift");
         let text = std::fs::read_to_string(dir.path().join("night-shift.toml")).unwrap();
         assert!(text.lines().count() > 10 && text.contains("{ slot = \"scope\" }"), "readable, one split per line:\n{text}");
         let (all, problems) = load_dir(dir.path());
         assert!(problems.is_empty(), "{problems:?}");
-        assert_eq!(all, vec![s]);
+        assert_eq!(all, vec![s.clone()]);
+        assert_eq!(all[0].theme.as_deref(), Some("cockpit-amber"));
+        // an old file has no theme line and still loads
+        let old = text.lines().filter(|l| !l.starts_with("theme")).collect::<Vec<_>>().join("\n");
+        std::fs::write(dir.path().join("night-shift.toml"), old).unwrap();
+        assert_eq!(load_dir(dir.path()).0[0].theme, None);
+        std::fs::write(dir.path().join("night-shift.toml"), text).unwrap();
         assert_eq!(all[0].tree.compute(area), tree.compute(area));
         std::fs::write(dir.path().join("broken.toml"), "name = 1").unwrap();
         assert_eq!(load_dir(dir.path()).1.len(), 1, "a broken file is reported, the rest still load");

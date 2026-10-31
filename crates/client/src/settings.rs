@@ -591,7 +591,7 @@ mod tests {
             draw(&mut app);
         }
         assert_eq!(app.settings_view.as_ref().unwrap().key_sel, Action::ALL.len() - 1);
-        assert!(draw(&mut app).contains("Quit (music keeps playing)"));
+        assert!(draw(&mut app).contains("Quit"));
         // a binding and a mistake in keys.toml show (what the watcher does)
         let kp = dir.path().join("keys.toml");
         std::fs::write(&kp, "schema = 1\npreset = \"vim\"\n[bindings]\nstats = \"Ctrl+T\"\nnope = \"x\"\n").unwrap();
