@@ -56,9 +56,12 @@ order of the work. T0005's phone fix holds live (2026-10-28 log: the resume was 
 - Saved designs keep their Theme (`theme =` in `layouts/*.toml`); ten shared themes (ember, sunset, terracotta,
   honey, rose, peach, sandstone, paper, lagoon, moss; contrast-tested); short palette labels with
   `Action::keywords()` for old words; pty `themes`.
-- **Free tiling is back (reopens D59)**: grilling round 1 (Q1–Q9: drag by title with live reflow, drop zones
-  swap/split/screen edge, never below minimum sizes, close + split, edits fork into "<design> (edited)", keyboard move
-  mode, well keeps its shape, ships in v0.1.0) was put to the owner; waiting for answers.
+- **Free tiling built (D66)**: `tiling.rs` (pure tree edits, drop zones, `Node::valid`; property test: 1,320
+  random 60-step sequences over every Design and 7 sizes) and `arrange.rs` (title drag with live reflow, `×`, title
+  menu, split + Widget list, Move mode on `m`, Designs fork on the first edit with a naming prompt, one unnamed
+  `<design>-edited.toml` per built-in). Reset design on your own Design goes back to the built-in it came from.
+  Every commit path goes through `fits`. pty `tiling` (160×48, pixel tier). Known limits: a top-row Pane's top band
+  is the screen edge; validity is checked at the current size only. Needs the owner's hands-on test.
 
 **Next, in order** (the owner games on this PC: ask before heavy commands — builds, tests, history-wide greps):
 the owner retests (reinstall both binaries first) and says go → redo the scrub from the then-current `main` (the
