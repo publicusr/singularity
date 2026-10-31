@@ -113,7 +113,8 @@ impl App {
             }
             return;
         }
-        if let Some(tree) = t.preview {
+        // checked again: the terminal can have changed size since the last move
+        if let Some(tree) = t.preview.filter(|c| self.fits(c)) {
             self.focus = t.slot;
             self.commit_layout(tree);
         }
