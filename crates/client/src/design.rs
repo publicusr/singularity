@@ -66,7 +66,7 @@ pub const DESIGNS: [Design; 5] = [
         layout: Node::terminal,
         themes: &["terminal-green", "terminal-amber", "terminal-ice"],
         look: 1,
-        prompt: Some("singularity@spotify"),
+        prompt: Some("you@singularity"),
         titles: &[("library", "tree"), ("rain", "rain --audio")],
     },
 ];

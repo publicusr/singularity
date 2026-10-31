@@ -11,8 +11,8 @@ order of the work. T0005's phone fix holds live (2026-10-28 log: the resume was 
 **Progress (2026-10-30): steps 1–6 done, step 7 half done.** Both binaries reinstalled after `c5eb1cd`.
 
 1–3. Jam probe merged; live check passed (a Jam hosted on Soloist's device; D64 settled); **Jam built** (`020a6da`).
-   Waiting on the owner: a guest joining from a second phone (do they show up in the picker within a second or two?
-   do their songs and skips land on Singularity?), and a phone scanning the QR off the real terminal.
+   Owner (2026-10-31): "tested the jam and songs worked" (a guest's songs land on Singularity). The Terminal
+   design's prompt is now `you@singularity` (owner: swap the Spotify name if it's a grey area; it is).
 4. **Q4** (`33d895c`): the fake Catalogue is `daemon/src/catalogue/fake.rs` behind the `fake` feature (off by
    default; tests turn it on with a self dev-dependency). The pty harness needs
    `cargo build && cargo build -p singularityd --features fake` (`--features singularityd/fake` at the workspace root
@@ -50,8 +50,7 @@ build and test the scrubbed clone (with the drop commit) → **owner's go-ahead*
 macOS live checks and #71's soak numbers become issues) → owner reviews while private → owner makes it public and
 tags `v0.1.0` (that draft release gets published by hand).
 
-**Open small items:** the Terminal design's prompt reads `singularity@spotify` (uses Spotify's name; suggest a
-neutral host — owner's call). The pty `stats` scenario's "back on stats" check prints False, already before Q1
+**Open small items:** the pty `stats` scenario's "back on stats" check prints False, already before Q1
 (harness check, not a regression). `playerctl` isn't installed on this PC, so the `mpris` scenario can't run here.
 
 **Incident (2026-10-30), fixed:** a pty run against a build without the `fake` feature: the fake Daemon exited, the
