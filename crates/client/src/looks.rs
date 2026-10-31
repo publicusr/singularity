@@ -129,13 +129,13 @@ impl App {
         let mut ids: Vec<String> = DESIGNS[self.design].themes.iter().map(|s| s.to_string()).collect();
         ids.extend(self.user_themes.iter().map(|t| t.id.clone()));
         if ids.len() < 2 {
-            return self.say(format!("{} has one palette · Ctrl+K → Theme for the others", DESIGNS[self.design].name));
+            return self.say(format!("{} has one palette · Ctrl+K → Pick a theme for the others", DESIGNS[self.design].name));
         }
         let i = ids.iter().position(|id| *id == self.theme.id).map(|i| (i + 1) % ids.len()).unwrap_or(0);
         self.set_theme(&ids[i]);
         let name = self.theme.name.clone();
         self.save_ui();
-        self.say(format!("Palette: {name}"));
+        self.say(format!("Theme: {name}"));
     }
 
     /// Read the user's themes again if the folder changed (about once a second); a theme being edited applies live.
@@ -182,7 +182,7 @@ impl App {
             PickerKind::Design => DESIGNS
                 .iter()
                 .map(|d| (d.id.to_string(), d.name.to_string(), d.blurb.to_string()))
-                .chain(self.saved_layouts.iter().map(|s| (format!("layout:{}", s.id), s.name.clone(), format!("your layout · layouts/{}.toml", s.id))))
+                .chain(self.saved_layouts.iter().map(|s| (format!("layout:{}", s.id), s.name.clone(), format!("yours · layouts/{}.toml", s.id))))
                 .collect(),
             PickerKind::Theme => theme_items(&self.user_themes),
         };
@@ -228,13 +228,13 @@ impl App {
                 self.layout_name = Some(s.id.clone());
                 self.reload_layouts();
                 self.save_ui();
-                self.say(format!("Saved layout \"{}\" (Ctrl+K → Design)", s.name));
+                self.say(format!("Saved design \"{}\" (Ctrl+K → Pick a design)", s.name));
             }
             Err(e) => self.say(format!("Couldn't save the layout: {e}")),
         }
     }
 
-    /// Typing a name: for "Save layout as…" (#19) or a new playlist (#51).
+    /// Typing a name: for "Save design as…" (#19) or a new playlist (#51).
     pub fn naming_key(&mut self, k: KeyEvent) {
         let Some(n) = self.naming.as_mut() else { return };
         let max = if n.purpose == crate::app::NameFor::Layout { 40 } else { 100 };

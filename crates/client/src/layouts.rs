@@ -54,7 +54,7 @@ pub fn save(dir: &Path, name: &str, design: &str, theme: &str, tree: &Node) -> R
     let saved = Saved { name: name.trim().into(), design: design.into(), theme: Some(theme.into()).filter(|t: &String| !t.is_empty()), tree: tree.clone(), id: id.clone() };
     let q = |s: &str| singularity_config::toml_edit::Value::from(s).to_string();
     let text = format!(
-        "# A Singularity layout. Pick it with Ctrl+K → Design; delete this file to forget it.\n# Each split puts `a` left of (or above) `b`; `first` sizes `a` (cells, or a ratio), `last` sizes `b`.\nname = {}\ndesign = {}\n{}tree = {}\n",
+        "# A Singularity layout. Pick it with Ctrl+K → Pick a design; delete this file to forget it.\n# Each split puts `a` left of (or above) `b`; `first` sizes `a` (cells, or a ratio), `last` sizes `b`.\nname = {}\ndesign = {}\n{}tree = {}\n",
         q(saved.name.trim()),
         q(design),
         saved.theme.as_deref().map(|t| format!("theme = {}\n", q(t))).unwrap_or_default(),

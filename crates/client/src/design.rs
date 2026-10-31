@@ -22,7 +22,7 @@ pub const DESIGNS: [Design; 5] = [
     Design {
         id: "singularity",
         name: "Singularity",
-        blurb: "terminal layout and instruments around a gravity well",
+        blurb: "terminal look, gravity well",
         layout: Node::singularity,
         themes: &["singularity"],
         look: 0,
@@ -32,7 +32,7 @@ pub const DESIGNS: [Design; 5] = [
     Design {
         id: "event-horizon",
         name: "Event Horizon",
-        blurb: "cream and ice; the black hole owns a quadrant",
+        blurb: "cream and ice, big black hole",
         layout: Node::event_horizon,
         themes: &["event-horizon"],
         look: 6,
@@ -42,7 +42,7 @@ pub const DESIGNS: [Design; 5] = [
     Design {
         id: "classic",
         name: "Classic+",
-        blurb: "the desktop app on OLED black",
+        blurb: "the desktop app, on black",
         layout: Node::classic,
         themes: &["classic"],
         look: 0,
@@ -52,7 +52,7 @@ pub const DESIGNS: [Design; 5] = [
     Design {
         id: "cockpit",
         name: "Cockpit",
-        blurb: "btop energy: instruments first (t: btop, ice, amber, violet, mono)",
+        blurb: "btop style, instruments first",
         layout: Node::cockpit,
         themes: &["cockpit-btop", "cockpit-ice", "cockpit-amber", "cockpit-violet", "cockpit-mono"],
         look: 4,
@@ -62,7 +62,7 @@ pub const DESIGNS: [Design; 5] = [
     Design {
         id: "terminal",
         name: "Terminal",
-        blurb: "phosphor on black, rain and a lyrics log (t: green, amber, ice)",
+        blurb: "phosphor on black, rain",
         layout: Node::terminal,
         themes: &["terminal-green", "terminal-amber", "terminal-ice"],
         look: 1,

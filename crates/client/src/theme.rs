@@ -361,7 +361,7 @@ pub fn load_dir(dir: &std::path::Path) -> (Vec<Theme>, Vec<String>) {
 
 /// Written next to the user's themes the first time the folder is made, as a starting point.
 pub const EXAMPLE_THEME: &str = r##"# A theme for Singularity. Copy this file to a name without the "_" (files starting with "_" are skipped), change
-# it, and pick it with Ctrl+K → "Theme" or t. Saved changes show at once.
+# it, and pick it with Ctrl+K → "Pick a theme" or t. Saved changes show at once.
 # Anything you leave out comes from `base`, a built-in theme:
 # singularity, event-horizon, classic, cockpit-btop, cockpit-ice, cockpit-amber, cockpit-violet, cockpit-mono,
 # terminal-green, terminal-amber, terminal-ice.

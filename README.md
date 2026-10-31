@@ -133,10 +133,10 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   keeps playing.
 - **Settings**: Ctrl+K → "Settings", or `~/.config/singularity/config.toml` and `keys.toml` (written with comments on
   first start; saves apply at once). `preset = "vim"` in keys.toml adds h/j/k/l movement.
-- **Designs**: Ctrl+K → "Design" (Singularity, Event Horizon, Classic+, Cockpit, Terminal) and "Theme", both with a live
+- **Designs**: Ctrl+K → "Pick a design" (Singularity, Event Horizon, Classic+, Cockpit, Terminal) and "Pick a theme", both with a live
   preview; `t` cycles a design's palettes. Your own themes go in `~/.config/singularity/themes/` (see `_example.toml`).
-- **Layouts**: drag Pane borders; `v` (or a Pane's ◂ ▸) swaps its Widget; Ctrl+K → "Save layout as…" keeps it, and it
-  comes back in Ctrl+K → Design.
+- **Layouts**: drag Pane borders; `v` (or a Pane's ◂ ▸) swaps its Widget; Ctrl+K → "Save design as…" keeps it, and it
+  comes back, colours included, in Ctrl+K → Pick a design.
 - **Idle**: after 3 minutes without input the black hole drifts over the screen; any key wakes it (and does nothing
   else). Shift+I or `[idle]` in config.toml switches it off or changes the delay.
 - **Listening log** (private, local): every track you hear for 30 s is logged in `~/.local/share/singularity/`, and

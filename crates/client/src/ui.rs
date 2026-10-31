@@ -135,7 +135,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if let Some(n) = app.naming.clone() {
         let (title, hint) = match n.purpose {
-            crate::app::NameFor::Layout => ("Save layout as", "Enter save · Esc cancel · it comes back in Ctrl+K → Design"),
+            crate::app::NameFor::Layout => ("Save design as", "Enter save · Esc cancel · find it in Ctrl+K → Pick a design"),
             crate::app::NameFor::NewPlaylist => ("New playlist", "Enter create · Esc cancel"),
         };
         let inner = popup(f.buffer_mut(), naming_rect(area), &th, title);
@@ -784,7 +784,7 @@ fn help_rows(m: &crate::keymap::Keymap) -> Vec<(String, String)> {
         (m.label(A::FocusNext), "focus the next pane".into()),
         (m.label(A::ToggleIdle), "idle takeover on / off (any key wakes the screen)".into()),
         (m.label(A::Quit), "quit the Client (music keeps playing)".into()),
-        ("keys.toml".into(), format!("{} keys · all of them: {} settings · change them in keys.toml", m.preset, m.label(A::Palette))),
+        ("keys.toml".into(), format!("{} keys · all of them in {} → Settings", m.preset, m.label(A::Palette))),
     ]
 }
 
@@ -935,6 +935,28 @@ mod tests {
     }
 
     #[test]
+    fn palette_labels_are_short_and_old_words_still_find_things() {
+        for a in Action::ALL {
+            assert!(a.label().chars().count() <= 28, "{:?}: {:?} is too long", a, a.label());
+            assert!(!a.label().contains('('), "{:?}: no explanations in the palette", a);
+        }
+        let (mut app, _rx) = home_app();
+        let found = |app: &mut App, q: &str| {
+            app.palette = Some(crate::app::Palette { query: q.into(), selected: 0 });
+            app.palette_items()
+        };
+        assert_eq!(found(&mut app, "palette")[0], Action::NextVariant, "the old word still finds it");
+        assert!(found(&mut app, "colours").contains(&Action::PickTheme));
+        assert!(found(&mut app, "layout").contains(&Action::SaveLayout));
+        assert!(found(&mut app, "wrapped").contains(&Action::Stats));
+        assert!(found(&mut app, "rename").contains(&Action::EditPlaylist));
+        // the help screen's lines fit 80 columns
+        for (k, d) in help_rows(&app.keymap) {
+            assert!(k.chars().count() <= 12 && d.chars().count() <= 62, "{k:?} {d:?}");
+        }
+    }
+
+    #[test]
     fn palette_filters_and_runs_actions() {
         let mut app = App::new(None);
         app.key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
@@ -955,7 +977,7 @@ mod tests {
         let quit_idx = app.palette_items().iter().position(|a| *a == Action::Quit).unwrap();
         // palette rows start one line below the query line inside the box
         let s = render(&mut app, 120, 40);
-        let row = s.lines().position(|l| l.contains("Quit (music keeps playing)")).unwrap() as u16;
+        let row = s.lines().position(|l| l.contains("Quit")).unwrap() as u16;
         let col = s.lines().nth(row as usize).unwrap().chars().position(|c| c == 'Q').unwrap() as u16;
         let _ = quit_idx;
         click(&mut app, col, row);

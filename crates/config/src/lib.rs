@@ -164,13 +164,13 @@ pub const DEFAULT_CONFIG: &str = r#"# Singularity settings. Changes apply as soo
 schema = 5
 
 [ui]
-# the design: "singularity", "event-horizon", "classic", "cockpit" or "terminal" (Ctrl+K → Design shows them)
+# the design: "singularity", "event-horizon", "classic", "cockpit" or "terminal" (Ctrl+K → Pick a design)
 design = "singularity"
-# colours: empty for the design's own, else a built-in theme or a file in themes/ (Ctrl+K → Theme, or t)
+# colours: empty for the design's own, else a built-in theme or a file in themes/ (Ctrl+K → Pick a theme, or t)
 theme = ""
 # let the terminal's own background (and its transparency) show instead of black
 transparent = false
-# a layout you saved (Ctrl+K → "Save layout as…"), by file name in layouts/; empty for the design's own
+# a layout you saved (Ctrl+K → "Save design as…"), by file name in layouts/; empty for the design's own
 layout = ""
 # covers and the black hole in the theme's colours, for themes that tint (Cockpit's and Terminal's); false: real colours
 tint_art = true
@@ -677,13 +677,13 @@ mod tests {
 schema = 1
 
 [ui]
-# the design: "singularity", "event-horizon", "classic", "cockpit" or "terminal" (Ctrl+K → Design shows them)
+# the design: "singularity", "event-horizon", "classic", "cockpit" or "terminal" (Ctrl+K → Pick a design)
 design = "singularity"
-# colours: empty for the design's own, else a built-in theme or a file in themes/ (Ctrl+K → Theme, or t)
+# colours: empty for the design's own, else a built-in theme or a file in themes/ (Ctrl+K → Pick a theme, or t)
 theme = ""
 # let the terminal's own background (and its transparency) show instead of black
 transparent = false
-# a layout you saved (Ctrl+K → "Save layout as…"), by file name in layouts/; empty for the design's own
+# a layout you saved (Ctrl+K → "Save design as…"), by file name in layouts/; empty for the design's own
 layout = ""
 
 [notifications]
