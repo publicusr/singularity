@@ -849,7 +849,7 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                     let _ = ev_tx.send(EngineEvent::Delivery(delivery.clone())).await;
                 }
                 LogNews::Unplayable => {
-                    let _ = ev_tx.send(EngineEvent::Notice("Spotify can't play that here (Spotify's DJ, for one, has nothing Soloist can play)".into())).await;
+                    let _ = ev_tx.send(EngineEvent::Notice("Spotify won't play that here (DJ isn't supported yet)".into())).await;
                 }
                 LogNews::Stall => {
                     let now = singularity_proto::now_ms();
