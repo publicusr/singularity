@@ -1023,6 +1023,40 @@ def designs(t, out):
     t.send(b"q", 0.5)
 
 
+def themes(t, out):
+    """The shared palettes: the theme picker (scrolling list, live preview), then every new one with `t` on
+    Singularity and on Cockpit (the black hole and the meters in the theme's colours)."""
+    names = ["ember", "sunset", "terracotta", "honey", "rose", "peach", "sandstone", "paper", "lagoon", "moss"]
+    t.pump(1.0)
+    t.send(b" ", 2.0)
+    t.send(b"\x0b", 0.5)
+    t.shot(f"{out}/0-palette.png")  # every label whole, none cut off
+    t.send(b"palette", 0.4)
+    t.shot(f"{out}/0-palette-old-word.png")  # the old word still finds "Next theme" and "Pick a theme"
+    t.send(b"\x1b", 0.4)
+    t.send(b"\x0b", 0.3); t.send(b"pick a theme", 0.3); t.send(b"\r", 0.6)
+    t.shot(f"{out}/0-picker.png")
+    for _ in range(12):
+        t.send(b"\x1b[B", 0.3)  # past the built-ins: the list scrolls
+    t.shot(f"{out}/0-picker-scrolled.png")
+    t.send(b"\x1b", 0.5)
+    for design, own, tag in [(b"design", 0, "singularity"), (b"design", 3, "cockpit")]:
+        t.send(b"\x0b", 0.3); t.send(design, 0.3); t.send(b"\r", 0.6)
+        for _ in range(5):
+            t.send(b"\x1b[A", 0.2)
+        for _ in range(own):
+            t.send(b"\x1b[B", 0.2)
+        t.send(b"\r", 2.0)
+        # `t` goes through the design's own palettes first
+        for _ in range({"singularity": 1, "cockpit": 5}[tag] - 1):
+            t.send(b"t", 0.3)
+        for i, n in enumerate(names):
+            t.send(b"t", 1.0)
+            t.shot(f"{out}/{tag}-{i + 1:02d}-{n}.png")
+    t.send(b" ", 0.4)
+    t.send(b"q", 0.5)
+
+
 def readme(t, out):
     """The README's pictures (docs/media/): each design with a track playing and no popup, then the Jam picker."""
     t.pump(1.0)
@@ -1114,7 +1148,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "settings", "themes", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup") else "0"
@@ -1177,6 +1211,8 @@ def main():
             return book(t, out)
         if scenario == "settings":
             return settings(t, out, env)
+        if scenario == "themes":
+            return themes(t, out)
         if scenario == "queue-wheel":
             return queue_wheel(t, out)
         if scenario == "queue-lift":

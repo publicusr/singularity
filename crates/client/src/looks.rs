@@ -124,9 +124,10 @@ impl App {
         }
     }
 
-    /// `t`: the design's next palette, then the user's themes, round again.
+    /// `t`: the design's next palette, then the shared ones, then the user's themes, round again.
     pub fn next_variant(&mut self) {
         let mut ids: Vec<String> = DESIGNS[self.design].themes.iter().map(|s| s.to_string()).collect();
+        ids.extend(theme::extra_ids().map(String::from));
         ids.extend(self.user_themes.iter().map(|t| t.id.clone()));
         if ids.len() < 2 {
             return self.say(format!("{} has one palette · Ctrl+K → Pick a theme for the others", DESIGNS[self.design].name));
@@ -348,11 +349,11 @@ pub fn draw_picker(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     let inner = popup(buf, r, th, title);
     let items = p.items.clone();
     let sel = p.sel;
-    for (i, (_, name, what)) in items.iter().enumerate() {
-        let y = inner.y + i as u16;
-        if y >= inner.bottom().saturating_sub(2) {
-            break;
-        }
+    // a long list scrolls with the selection
+    let rows = inner.height.saturating_sub(2).max(1) as usize;
+    let first = sel.saturating_sub(rows - 1).min(items.len().saturating_sub(rows));
+    for (i, (_, name, what)) in items.iter().enumerate().skip(first).take(rows) {
+        let y = inner.y + (i - first) as u16;
         let bg = if i == sel { th.selection.color() } else { th.bg.color() };
         blank(buf, inner.x, y, inner.width, th.base().bg(bg));
         text(buf, inner.x + 1, y, 2, if i == sel { "›" } else { " " }, th.s(th.accent).bg(bg));

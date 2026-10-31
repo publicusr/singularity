@@ -206,6 +206,7 @@ _Avoid_: profile, workspace, scene
 **Design**:
 A Layout preset shipped together with the Themes made for it: Singularity (default), Event Horizon, Classic+, Cockpit,
 Terminal. Picking a Design sets the layout, its own Theme and its Disk look; its Palette variants are a `t` away.
+A layout you saved ("Save design as…") is a Design of your own: it remembers the Theme it was saved with.
 _Avoid_: skin, mode, look (that's the Disk look)
 
 **Design direction**:
@@ -215,7 +216,7 @@ _Avoid_: mockup, skin
 
 **Theme**:
 A set of named colours that styles the whole UI and the colour ramps of Visuals: built in (each Design's Palette
-variants) or a TOML file in `themes/`, which may start from a built-in one.
+variants, and the shared ones every Design can wear: Ember, Sunset, Honey, Paper…) or a TOML file in `themes/`, which may start from a built-in one.
 _Avoid_: colorscheme, skin, palette
 
 **Render tier**:

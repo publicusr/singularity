@@ -168,11 +168,34 @@ const TERMINAL: [(&str, &str, u32, u32, u32); 3] = [
     ("terminal-ice", "Terminal · ice", 0x5fd7ff, 0xa8ecff, 0x123a4a),
 ];
 
+/// Palettes any design can wear (the Theme picker lists them for every design; `t` goes through them after the design's
+/// own): id, name, fg, dim, accent, accent2, ramp low→high. Pure black behind, like every theme; borders and the
+/// selection are shades of the accent. Warm ones first.
+type Extra = (&'static str, &'static str, u32, u32, u32, u32, [u32; 4]);
+const EXTRAS: [Extra; 10] = [
+    ("ember", "Ember", 0xf4dcc8, 0x9a7860, 0xff7a2f, 0xffb347, [0x3a1206, 0xb8400f, 0xff7a2f, 0xffc88a]),
+    ("sunset", "Sunset", 0xf6dccf, 0x9c7a78, 0xff6f61, 0xffb86b, [0x3b1230, 0xc2415c, 0xff7a4d, 0xffd08a]),
+    ("terracotta", "Terracotta", 0xeedacb, 0x987a68, 0xe07f55, 0xecb98f, [0x35160c, 0x9c4a2c, 0xd9774f, 0xf0c4a0]),
+    ("honey", "Honey", 0xf1e2c0, 0x9a8660, 0xf5b835, 0xffd978, [0x3a2606, 0xa86f0a, 0xf5b835, 0xffe4a0]),
+    ("rose", "Rosé", 0xf3dde2, 0x9a7f88, 0xeea5b9, 0xf5c7b0, [0x3a1824, 0xa14a68, 0xe58aa5, 0xf8cbd6]),
+    ("peach", "Peach", 0xfbe4d6, 0xa08674, 0xffab8a, 0xffd3a3, [0x3d1a10, 0xc4623f, 0xff9a76, 0xffd9bf]),
+    ("sandstone", "Sandstone", 0xe9dcc8, 0x9a8c76, 0xd9b383, 0xc99567, [0x2e2214, 0x8a6a42, 0xc9a06e, 0xecd8b4]),
+    ("paper", "Paper", 0xf3ecdf, 0x948d7e, 0xe0d2b0, 0xbfae88, [0x2b2820, 0x6e684f, 0xb8ab86, 0xece3cd]),
+    ("lagoon", "Lagoon", 0xd4ecea, 0x70908e, 0x3fd0c0, 0x7fe3d6, [0x06302d, 0x108f88, 0x3fd0c0, 0xaaf0e8]),
+    ("moss", "Moss", 0xdbe6d0, 0x7f9272, 0x9bc77d, 0xc7dc8f, [0x16301a, 0x4c8a45, 0x9bc77d, 0xd6ecb8]),
+];
+
+/// The ids of those shared palettes.
+pub fn extra_ids() -> impl Iterator<Item = &'static str> {
+    EXTRAS.iter().map(|e| e.0)
+}
+
 /// Every built-in theme's id, in picker order.
 pub fn builtin_ids() -> Vec<&'static str> {
     let mut v = vec!["singularity", "event-horizon", "classic"];
     v.extend(COCKPIT.iter().map(|c| c.0));
     v.extend(TERMINAL.iter().map(|t| t.0));
+    v.extend(extra_ids());
     v
 }
 
@@ -238,6 +261,22 @@ pub fn builtin(id: &str) -> Option<Theme> {
                     borders: border::ROUNDED,
                     boxes: boxes.iter().map(|c| h(*c)).collect(),
                     numbered: true,
+                    tint: true,
+                    ..plain(id, name)
+                });
+            }
+            if let Some((id, name, fg, dim, acc, acc2, ramp)) = EXTRAS.iter().find(|e| e.0 == id) {
+                let a = h(*acc);
+                return Some(Theme {
+                    fg: h(*fg),
+                    dim: h(*dim),
+                    accent: a,
+                    accent2: h(*acc2),
+                    border: a.scale(0.22),
+                    border_focus: a.scale(0.6),
+                    selection: a.scale(0.14),
+                    ramp: ramp.iter().map(|c| h(*c)).collect(),
+                    borders: border::ROUNDED,
                     tint: true,
                     ..plain(id, name)
                 });
@@ -364,7 +403,8 @@ pub const EXAMPLE_THEME: &str = r##"# A theme for Singularity. Copy this file to
 # it, and pick it with Ctrl+K → "Pick a theme" or t. Saved changes show at once.
 # Anything you leave out comes from `base`, a built-in theme:
 # singularity, event-horizon, classic, cockpit-btop, cockpit-ice, cockpit-amber, cockpit-violet, cockpit-mono,
-# terminal-green, terminal-amber, terminal-ice.
+# terminal-green, terminal-amber, terminal-ice, ember, sunset, terracotta, honey, rose, peach, sandstone, paper,
+# lagoon, moss.
 name = "Example (rose)"
 base = "singularity"
 borders = "rounded"     # plain, rounded, double or thick
@@ -392,6 +432,33 @@ mod tests {
         }
     }
 
+    /// WCAG contrast ratio of two colours.
+    fn contrast(a: Rgb, b: Rgb) -> f64 {
+        let lum = |c: Rgb| {
+            let f = |v: u8| {
+                let v = v as f64 / 255.0;
+                if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * f(c.0) + 0.7152 * f(c.1) + 0.0722 * f(c.2)
+        };
+        let (a, b) = (lum(a), lum(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn the_shared_palettes_are_readable_on_black_and_on_the_selection() {
+        assert!(extra_ids().count() >= 8);
+        for id in extra_ids() {
+            let t = builtin(id).unwrap();
+            for (what, c, min) in [("fg", t.fg, 4.5), ("accent", t.accent, 4.5), ("accent2", t.accent2, 4.5), ("dim", t.dim, 3.0)] {
+                assert!(contrast(c, t.bg) >= min, "{id}: {what} {:.1}", contrast(c, t.bg));
+                assert!(contrast(c, t.selection) >= min, "{id}: {what} on the selection {:.1}", contrast(c, t.selection));
+            }
+            assert!(t.ramp.windows(2).all(|w| w[0].0 as u32 + w[0].1 as u32 + w[0].2 as u32 <= w[1].0 as u32 + w[1].1 as u32 + w[1].2 as u32), "{id}: the ramp rises");
+            assert_ne!(*t.ramp.last().unwrap(), Rgb(255, 255, 255), "{id}");
+        }
+    }
+
     #[test]
     fn a_theme_file_starts_from_its_base() {
         let t = parse_file("mine", "name = \"Mine\"\nbase = \"cockpit-ice\"\nborders = \"double\"\n[colors]\naccent = \"#ff0000\"\n").unwrap();
@@ -404,9 +471,10 @@ mod tests {
 
     #[test]
     fn tints_map_brightness_onto_the_ramp() {
-        // Cockpit and Terminal tint; Singularity, Event Horizon and Classic+ keep real colours
+        // Cockpit, Terminal and the shared palettes tint; Singularity, Event Horizon and Classic+ keep real colours
         for id in builtin_ids() {
-            assert_eq!(builtin(id).unwrap().art_tint(true).is_some(), id.starts_with("cockpit") || id.starts_with("terminal"), "{id}");
+            let tints = id.starts_with("cockpit") || id.starts_with("terminal") || extra_ids().any(|e| e == id);
+            assert_eq!(builtin(id).unwrap().art_tint(true).is_some(), tints, "{id}");
         }
         let th = builtin("terminal-green").unwrap();
         assert!(th.art_tint(false).is_none(), "ui.tint_art = false: real colours");
