@@ -2280,23 +2280,19 @@ impl App {
             return;
         }
         let coarse = m.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT);
+        // the one gate: while a popup is open the mouse belongs to it, and nothing behind it ever sees an event
+        // (decided from state, not from last frame's hit rectangles, which a burst or a key in the same batch outdates)
+        if let Some(modal) = self.modal() {
+            return self.modal_pointer(modal, m, coarse);
+        }
+        // the Settings page owns the wheel wherever the pointer is: drifting off it must not scroll a Pane behind
+        if self.settings_view.is_some() && matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) {
+            if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+                self.settings_wheel(if m.kind == MouseEventKind::ScrollUp { -1 } else { 1 }, coarse);
+            }
+            return;
+        }
         match m.kind {
-            MouseEventKind::Down(MouseButton::Left) if self.playlists.adding.is_some() => match self.hit_at(m.column, m.row) {
-                Some(Hit::AddPick(i)) => self.add_pick(i),
-                _ => self.playlists.adding = None,
-            },
-            MouseEventKind::Down(MouseButton::Left) if self.picker.is_some() => match self.hit_at(m.column, m.row) {
-                Some(Hit::PickerItem(i)) => {
-                    self.picker_select(i);
-                    self.picker_keep();
-                }
-                _ => self.picker_cancel(),
-            },
-            MouseEventKind::Down(MouseButton::Left) if self.menu.is_some() => match self.hit_at(m.column, m.row) {
-                Some(Hit::MenuItem(i)) => self.menu_run(i),
-                // a click elsewhere only closes the menu
-                _ => self.menu = None,
-            },
             MouseEventKind::Down(MouseButton::Right) => {
                 self.menu = None;
                 let at = Some((m.column, m.row));
@@ -2345,14 +2341,6 @@ impl App {
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if self.help {
-                    self.help = false;
-                    return;
-                }
-                if self.devices_open && !matches!(self.hit_at(m.column, m.row), Some(Hit::DeviceRow(_))) {
-                    self.devices_open = false;
-                    return;
-                }
                 match self.hit_at(m.column, m.row) {
                     Some(Hit::Side(row)) => {
                         self.focus = "library".into();
@@ -2563,18 +2551,9 @@ impl App {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let up = matches!(m.kind, MouseEventKind::ScrollUp);
                 let sign = if up { 1 } else { -1 };
-                // the "Add to playlist" picker takes the wheel wherever the pointer is (Shift: a page)
-                if self.playlists.adding.is_some() {
-                    return self.adding_move(-(sign as i32) * if coarse { 10 } else { 1 });
-                }
-                // the details form has nothing to scroll; what's under it stays put
-                if self.playlists.details.is_some() || self.naming.is_some() || self.cover_form.is_some() {
-                    return;
-                }
                 let hit = self.hit_at(m.column, m.row);
-                let popup = self.menu.is_some() || self.palette.is_some() || self.picker.is_some();
                 // the Pane under the pointer, whatever's in it (a row's artist and album names are links of their own)
-                let pane = if popup { None } else { self.pane_at(m.column, m.row) };
+                let pane = self.pane_at(m.column, m.row);
                 // track lists and the library: the wheel moves the highlight (Shift: a page) and the list follows it
                 // (wheeling a list focuses its Pane, as a click does, so its highlight shows)
                 if pane.as_deref() == Some("home") && self.view.is_some() {
@@ -2653,25 +2632,141 @@ impl App {
                     return;
                 }
                 match hit {
-                    Some(Hit::MenuItem(_)) => {
-                        if let Some(menu) = self.menu.as_mut() {
-                            menu.selected = if up { menu.selected.saturating_sub(1) } else { (menu.selected + 1).min(menu.items.len().saturating_sub(1)) };
-                        }
-                    }
                     Some(Hit::Bar(Bar::Seek, _)) => self.nudge_seek(sign * if coarse { 5000 } else { 1000 }),
                     Some(Hit::Bar(Bar::Volume, _)) => self.nudge_volume(sign * if coarse { 5 } else { 1 }),
-                    Some(Hit::PickerItem(_)) => {
-                        let sel = self.picker.as_ref().map(|p| p.sel).unwrap_or(0);
-                        self.picker_select(if up { sel.saturating_sub(1) } else { sel + 1 });
-                    }
-                    Some(Hit::PaletteItem(_)) => {
-                        let n = self.palette_items().len();
-                        if let Some(p) = self.palette.as_mut() {
-                            p.selected = if up { p.selected.saturating_sub(1) } else { (p.selected + 1).min(n.saturating_sub(1)) };
-                        }
-                    }
                     _ => {}
                 }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A popup that owns the mouse (and the keyboard) while it's open, in the order `key` offers them input.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Modal {
+    Palette,
+    Picker,
+    Naming,
+    Details,
+    Adding,
+    Cover,
+    Wizard,
+    Devices,
+    Health,
+    Menu,
+    Help,
+    /// the pairing popup: not a keyboard modal, but it covers the screen and so takes the wheel
+    Login,
+}
+
+impl App {
+    /// The popup on top, if any. Every popup the UI draws over the Panes must be listed here: this is what keeps
+    /// mouse events from reaching what's behind it.
+    fn modal(&self) -> Option<Modal> {
+        Some(if self.palette.is_some() {
+            Modal::Palette
+        } else if self.picker.is_some() {
+            Modal::Picker
+        } else if self.naming.is_some() {
+            Modal::Naming
+        } else if self.playlists.details.is_some() {
+            Modal::Details
+        } else if self.playlists.adding.is_some() {
+            Modal::Adding
+        } else if self.cover_form.is_some() {
+            Modal::Cover
+        } else if crate::setup::wanted(self) {
+            Modal::Wizard
+        } else if self.devices_open {
+            Modal::Devices
+        } else if self.health_open {
+            Modal::Health
+        } else if self.menu.is_some() {
+            Modal::Menu
+        } else if self.help {
+            Modal::Help
+        } else if matches!(self.catalogue, Some(singularity_proto::CatalogueStatus::LoginPending { .. })) && !self.login_hidden {
+            Modal::Login
+        } else {
+            return None;
+        })
+    }
+
+    /// A mouse event while `modal` is open. The wheel scrolls the popup wherever the pointer is (so a burst, a
+    /// pointer past the popup's edge or a stale rectangle can't hand it to the Pane behind), clicks work inside it
+    /// (outside, they close the popups that can be closed by a click), and drags, right clicks and sideways wheels
+    /// do nothing.
+    fn modal_pointer(&mut self, modal: Modal, m: MouseEvent, coarse: bool) {
+        let up = m.kind == MouseEventKind::ScrollUp;
+        match m.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => match modal {
+                Modal::Adding => self.adding_move(if up { -1 } else { 1 } * if coarse { 10 } else { 1 }),
+                Modal::Picker => {
+                    let sel = self.picker.as_ref().map(|p| p.sel).unwrap_or(0);
+                    self.picker_select(if up { sel.saturating_sub(1) } else { sel + 1 });
+                }
+                Modal::Palette => {
+                    let n = self.palette_items().len();
+                    if let Some(p) = self.palette.as_mut() {
+                        p.selected = if up { p.selected.saturating_sub(1) } else { (p.selected + 1).min(n.saturating_sub(1)) };
+                    }
+                }
+                Modal::Menu => {
+                    if let Some(menu) = self.menu.as_mut() {
+                        menu.selected = if up { menu.selected.saturating_sub(1) } else { (menu.selected + 1).min(menu.items.len().saturating_sub(1)) };
+                    }
+                }
+                // the row after the devices is the Jam's
+                Modal::Devices => self.devices_sel = if up { self.devices_sel.saturating_sub(1) } else { (self.devices_sel + 1).min(self.devices.len()) },
+                _ => {}
+            },
+            MouseEventKind::Down(MouseButton::Left) => {
+                let hit = self.hit_at(m.column, m.row);
+                match modal {
+                    Modal::Adding => match hit {
+                        Some(Hit::AddPick(i)) => self.add_pick(i),
+                        _ => self.playlists.adding = None,
+                    },
+                    Modal::Picker => match hit {
+                        Some(Hit::PickerItem(i)) => {
+                            self.picker_select(i);
+                            self.picker_keep();
+                        }
+                        _ => self.picker_cancel(),
+                    },
+                    // a click elsewhere only closes the menu
+                    Modal::Menu => match hit {
+                        Some(Hit::MenuItem(i)) => self.menu_run(i),
+                        _ => self.menu = None,
+                    },
+                    Modal::Devices => match hit {
+                        Some(Hit::DeviceRow(i)) => self.transfer_to(i),
+                        _ => self.devices_open = false,
+                    },
+                    Modal::Palette => match hit {
+                        Some(Hit::PaletteItem(i)) => {
+                            if let Some(a) = self.palette_items().get(i).copied() {
+                                self.palette = None;
+                                self.run(a);
+                            }
+                        }
+                        // outside the popup closes it; inside, between items, nothing
+                        _ if !self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom()) => self.palette = None,
+                        _ => {}
+                    },
+                    Modal::Help => self.help = false,
+                    // forms and the wizard are typed into; a click on or around them does nothing
+                    Modal::Naming | Modal::Details | Modal::Cover | Modal::Wizard | Modal::Health | Modal::Login => {}
+                }
+            }
+            // a press that started before the popup opened ends without doing anything
+            MouseEventKind::Up(_) => {
+                self.drag = None;
+                self.queue_drag = None;
+                self.scrub = None;
+                self.playlists.press = None;
+                self.playlists.row_drag = None;
             }
             _ => {}
         }

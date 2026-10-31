@@ -357,6 +357,53 @@ def wheel_burst(t, out):
     t.send(b"q", 0.5)
 
 
+def popup_wheel(t, out):
+    """Wheel events never reach the Panes behind a popup: Devices and Settings are opened over an open list, and a
+    notch (three reports, as Ghostty sends) goes inside the popup, on its border and outside it, over the library,
+    the list, the queue and the bars. The highlights behind must not move; the popup's own must."""
+    t.pump(1.0)
+    x, y = t.find("♥  Liked Songs")
+    mouse(t, 0, x + 2, y)
+    mouse(t, 0, x + 2, y, release=True, wait=0.8)
+    rx, ry = t.find("Fake Track 001")
+    mouse(t, 0, rx + 2, ry)
+    mouse(t, 0, rx + 2, ry, release=True, wait=0.3)
+
+    def notch(px, py, down=True):
+        t.send(f"\x1b[<{65 if down else 64};{px + 1};{py + 1}M".encode() * 3, 0.1)
+
+    def look():
+        # the highlight is a background: the library column and the list's name column, as colours
+        b = t.screen.buffer
+        return [(yy, b[yy][2].bg, b[yy][2].reverse, b[yy][rx + 1].bg, b[yy][rx + 1].reverse) for yy in range(3, ROWS - 4)]
+
+    before = look()
+    t.send(b"d", 0.8)
+    t.shot(f"{out}/0-devices.png")
+    px, py = t.find("Play on")
+    spots = [("inside", px + 3, py + 2), ("border", px - 1, py + 1), ("top border", px + 3, py - 1), ("off the edge", px + 60, py + 1),
+             ("library", 2, 12), ("list", rx + 3, ry + 4), ("corner", COLS - 2, ROWS - 6), ("bar", COLS // 2, ROWS - 3)]
+    for name, sx, sy in spots:
+        for down in (True, True, False):
+            notch(min(sx, COLS - 1), min(sy, ROWS - 1), down)
+    t.shot(f"{out}/1-devices-wheeled.png")
+    t.send(b"\x1b", 0.6)
+    t.shot(f"{out}/2-devices-closed.png")
+    print("devices: background unchanged:", look() == before)
+    # Settings: a page of the main Pane, which keeps the wheel when the pointer is off it
+    t.send(b"\x0b", 0.3); t.send(b"settings", 0.3); t.send(b"\r", 0.8)
+    t.shot(f"{out}/3-settings.png")
+    page0 = [l for l in t.screen.display[3:ROWS - 4]]
+    lib0 = [r[:3] for r in look()]
+    for name, sx, sy in [("library", 2, 12), ("library low", 4, ROWS - 8), ("bar", COLS // 2, ROWS - 3)] * 2:
+        for down in (True, True, True):
+            notch(sx, sy, down)
+    t.shot(f"{out}/4-settings-wheeled.png")
+    lib1 = [r[:3] for r in look()]
+    print("settings: library unchanged:", lib0 == lib1, "| page scrolled:", page0 != list(t.screen.display[3:ROWS - 4]))
+    t.send(b"q", 0.5)
+
+
 def like(t, out):
     """#22: the ♥ in the player bar, `l`, unliking from a row's menu, Follow on an artist page."""
     t.pump(1.0)
@@ -1114,7 +1161,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup") else "0"
@@ -1199,6 +1246,8 @@ def main():
             return wheel(t, out)
         if scenario == "wheel-burst":
             return wheel_burst(t, out)
+        if scenario == "popup-wheel":
+            return popup_wheel(t, out)
         if scenario == "history":
             return history(t, out)
         if scenario == "meters":
