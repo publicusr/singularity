@@ -1,4 +1,4 @@
-# Session handoff (updated 2026-10-30: public release, steps 1–6 done)
+# Session handoff (updated 2026-10-31: public release, steps 1–6 done, step 7 nearly)
 
 Read this first in a new session, then `CLAUDE.md`, `docs/SPEC.md` and `GLOSSARY.md`. Decisions and their history are
 in `docs/DESIGN-TREE.md` (round log at the bottom: one entry per ticket, with the details); verified facts about
@@ -34,10 +34,18 @@ order of the work. T0005's phone fix holds live (2026-10-28 log: the resume was 
    placeholder or doc example, not a real key/address, before anything is pushed. Also zsh: `$(git rev-list --all)`
    doesn't word-split; use `git rev-list --all | xargs git grep …`.
 
+   **2026-10-31:** the `spak_`/`sk-`/IP check is done: `spak_TESTKEY_not_real` and `spak_secret123` are test
+   fixtures, `sk-` is "disk-filling", `192.168.127.2` is the VM guest's fixed gvproxy address; a sweep for GitHub/AWS
+   tokens, bearer tokens, Spotify-shaped tokens, private keys and private IPs found nothing else (lockfile hashes
+   only). The scrub was re-run on a fresh scratch clone (191 → 190 commits, one identity `publicusr` no-reply, 0 hits);
+   the rebuilt replace list also covers the curly-apostrophe form of the Mac's device name and the bare
+   `Files/…`/`Main/…` folder paths. The drop commit is written in that clone: removes `prototypes/`, `spikes/`,
+   `.project.yml`, `docs/HANDOFF.md`; CLAUDE.md loses "Before publishing" and reads the handoff as a local,
+   git-ignored file (`.gitignore` gains `docs/HANDOFF.md`); README/SPEC lines point at history; `Cargo.toml`'s
+   `exclude` keeps only `fuzz`. The clone lives in the session scratchpad: if it's gone, redo it (seconds).
+
 **Next, in order** (the owner games on this PC: ask before heavy commands — builds, tests, history-wide greps):
-finish the `spak_`/`sk-`/IP check → build and test the scrubbed clone → in the scrubbed clone, a last commit that
-drops `prototypes/`, `spikes/`, `.project.yml`, `docs/HANDOFF.md` and fixes the README/CLAUDE.md lines that point at
-them → **owner's go-ahead** → rename this repo to `publicusr/singularity-archive`, create a new private
+build and test the scrubbed clone (with the drop commit) → **owner's go-ahead** → rename this repo to `publicusr/singularity-archive`, create a new private
 `publicusr/singularity`, push the scrubbed `main` → fresh public issues (open private ones closed with links;
 macOS live checks and #71's soak numbers become issues) → owner reviews while private → owner makes it public and
 tags `v0.1.0` (that draft release gets published by hand).
