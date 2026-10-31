@@ -37,6 +37,13 @@ pub enum Node {
 /// Smallest Pane we will ever produce, per axis (borders + one line of content).
 pub const MIN_W: u16 = 12;
 pub const MIN_H: u16 = 3;
+/// The gravity well and the black hole need more height than other Panes to stay a picture (D66).
+pub const WELL_MIN_H: u16 = 5;
+
+/// Panes that hold the hole: the gravity well (its own frame) and Event Horizon's plain black hole.
+pub fn is_hole(slot: &str) -> bool {
+    matches!(slot, "well" | "hole")
+}
 
 /// The gravity well's widest shape, width over height in pixels (4:3, owner round 2; was 16:10); a little wider is let
 /// be. Dragging the divider can still make it narrower.
@@ -60,10 +67,10 @@ pub struct Computed {
 }
 
 impl Node {
-    fn split(axis: Axis, first: Size, a: Node, b: Node) -> Node {
+    pub(crate) fn split(axis: Axis, first: Size, a: Node, b: Node) -> Node {
         Node::Split { axis, first, a: Box::new(a), b: Box::new(b) }
     }
-    fn slot(name: &str) -> Node {
+    pub(crate) fn slot(name: &str) -> Node {
         Node::Slot(name.into())
     }
 
@@ -117,10 +124,11 @@ impl Node {
     }
 
     /// The least room this subtree needs along `axis`: a Slot's minimum, summed along a split's own axis.
-    fn min_len(&self, axis: Axis) -> u16 {
+    pub(crate) fn min_len(&self, axis: Axis) -> u16 {
         match self {
-            Node::Slot(_) => match axis {
+            Node::Slot(s) => match axis {
                 Axis::Horizontal => MIN_W,
+                Axis::Vertical if is_hole(s) => WELL_MIN_H,
                 Axis::Vertical => MIN_H,
             },
             Node::Split { axis: own, a, b, .. } if *own == axis => a.min_len(axis) + b.min_len(axis),
@@ -180,7 +188,7 @@ impl Node {
     }
 
     /// Where Slot `name` is: child indices from the root (0 = a, 1 = b).
-    fn path_of(&self, name: &str) -> Option<Vec<u8>> {
+    pub(crate) fn path_of(&self, name: &str) -> Option<Vec<u8>> {
         match self {
             Node::Slot(s) => (s == name).then(Vec::new),
             Node::Split { a, b, .. } => [a, b].into_iter().enumerate().find_map(|(i, c)| {
@@ -191,7 +199,7 @@ impl Node {
         }
     }
 
-    fn at_path(&self, path: &[u8]) -> Option<&Node> {
+    pub(crate) fn at_path(&self, path: &[u8]) -> Option<&Node> {
         match (path.split_first(), self) {
             (None, n) => Some(n),
             (Some((0, rest)), Node::Split { a, .. }) => a.at_path(rest),
@@ -245,7 +253,7 @@ impl Node {
         }
     }
 
-    fn at_path_mut(&mut self, path: &[u8]) -> Option<&mut Node> {
+    pub(crate) fn at_path_mut(&mut self, path: &[u8]) -> Option<&mut Node> {
         match (path.split_first(), self) {
             (None, n) => Some(n),
             (Some((0, rest)), Node::Split { a, .. }) => a.at_path_mut(rest),
