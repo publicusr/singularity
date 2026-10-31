@@ -44,8 +44,13 @@ order of the work. T0005's phone fix holds live (2026-10-28 log: the resume was 
    git-ignored file (`.gitignore` gains `docs/HANDOFF.md`); README/SPEC lines point at history; `Cargo.toml`'s
    `exclude` keeps only `fuzz`. The clone lives in the session scratchpad: if it's gone, redo it (seconds).
 
+   Later the same day: re-scrubbed with `c9df66d` in (193 → 192 commits, 0 hits), drop commit on top, and the
+   scrubbed tree builds and passes `cargo test --workspace` (356 passed, 0 failed, 5 ignored). The pty `designs`
+   shot shows `you@singularity:~$` on the Terminal design.
+
 **Next, in order** (the owner games on this PC: ask before heavy commands — builds, tests, history-wide greps):
-build and test the scrubbed clone (with the drop commit) → **owner's go-ahead** → rename this repo to `publicusr/singularity-archive`, create a new private
+the owner retests (reinstall both binaries first) and says go → redo the scrub from the then-current `main` (the
+scratch clone is session-only; seconds) → **owner's go-ahead** → rename this repo to `publicusr/singularity-archive`, create a new private
 `publicusr/singularity`, push the scrubbed `main` → fresh public issues (open private ones closed with links;
 macOS live checks and #71's soak numbers become issues) → owner reviews while private → owner makes it public and
 tags `v0.1.0` (that draft release gets published by hand).
