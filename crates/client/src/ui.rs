@@ -2565,6 +2565,85 @@ mod tests {
         assert!(render(&mut app, 160, 48).contains("⧉ playing on Pixel"));
     }
 
+    // ── popups own the mouse ──
+
+    /// What a stray event could move behind a popup.
+    fn behind(app: &App) -> String {
+        format!("{:?} {:?} {} {} {} {:?}", app.sidebar.sel, app.queue_view.sel, app.focus, app.playback.volume, app.home_view.offset, app.playback.position_ms)
+    }
+
+    /// Every mouse event the terminal can send, at points all over the screen: nothing behind the popup moves.
+    fn sweep(app: &mut App, w: u16, h: u16, what: &str) {
+        // Settings is a page, not a popup: its Panes beside it still take clicks, but the wheel stays on the page
+        let wheel_only = what == "settings";
+        let before = behind(app);
+        for y in (0..h).step_by(2) {
+            for x in (0..w).step_by(3) {
+                for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+                    for kind in [MouseEventKind::ScrollDown, MouseEventKind::ScrollUp, MouseEventKind::ScrollLeft, MouseEventKind::ScrollRight, MouseEventKind::Drag(MouseButton::Left), MouseEventKind::Down(MouseButton::Right), MouseEventKind::Moved].into_iter().filter(|k| !wheel_only || matches!(k, MouseEventKind::ScrollDown | MouseEventKind::ScrollUp | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight)) {
+                        app.pointer(MouseEvent { kind, column: x, row: y, modifiers }, x as f64 + 0.5, false);
+                        assert_eq!(behind(app), before, "{what}: {kind:?} at ({x},{y}) moved something behind the popup");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_wheel_and_the_mouse_never_reach_the_panes_behind_a_popup() {
+        use singularity_proto::{Item, QueueEntry};
+        let feed: singularity_proto::HomeFeed = serde_json::from_str(include_str!("../tests/fixtures/home.json")).unwrap();
+        let opens: [(&str, fn(&mut App)); 6] = [
+            ("devices", |a| a.run(Action::Devices)),
+            ("palette", |a| a.run(Action::Palette)),
+            ("help", |a| a.run(Action::Help)),
+            ("health", |a| a.run(Action::Health)),
+            ("menu", |a| a.open_queue_menu(0, Some((20, 10)))),
+            ("settings", |a| a.run(Action::Settings)),
+        ];
+        for (name, open) in opens {
+            for (w, h) in [(200u16, 60u16), (90, 30)] {
+                let (mut app, _rx) = library_app();
+                app.catalogue = Some(CatalogueStatus::Ready { username: "u".into(), country: "SE".into(), premium: true });
+                app.home = Some(feed.clone());
+                app.playback.queue = (0..8).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:q{i}"), name: format!("Song {i}"), duration_ms: 150_000, ..Default::default() }, source: "queue".into(), uid: format!("u{i}") }).collect();
+                app.devices = vec![singularity_proto::Device { id: "a".into(), name: "Speaker".into(), kind: "speaker".into(), active: true, volume: Some(50), is_engine: true }];
+                render(&mut app, w, h);
+                open(&mut app);
+                render(&mut app, w, h);
+                sweep(&mut app, w, h, name);
+                // and after another frame of the popup, still
+                render(&mut app, w, h);
+                sweep(&mut app, w, h, name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_wheel_drives_the_popup_even_off_its_edge() {
+        let (mut app, _rx) = library_app();
+        app.devices = (0..3).map(|i| singularity_proto::Device { id: format!("d{i}"), name: format!("Dev {i}"), kind: "speaker".into(), active: i == 0, volume: Some(50), is_engine: false }).collect();
+        render(&mut app, 160, 48);
+        app.run(Action::Devices);
+        render(&mut app, 160, 48);
+        assert_eq!(app.devices_sel, 0);
+        // far outside the popup, on the Library, the wheel still moves the popup's highlight and nothing else
+        mouse(&mut app, MouseEventKind::ScrollDown, 1.5, 10, false);
+        mouse(&mut app, MouseEventKind::ScrollDown, 1.5, 10, false);
+        assert_eq!((app.devices_sel, app.sidebar.sel), (2, 0));
+        // a click outside only closes it
+        click(&mut app, 1, 10);
+        assert!(!app.devices_open);
+        assert_eq!(app.sidebar.sel, 0, "the click that closed the popup didn't open a library row");
+        // the Settings page keeps the wheel when the pointer drifts onto the Library
+        app.run(Action::Settings);
+        render(&mut app, 160, 48);
+        mouse(&mut app, MouseEventKind::ScrollDown, 1.5, 10, false);
+        assert_eq!(app.sidebar.sel, 0);
+        let v = app.settings_view.as_ref().unwrap();
+        assert!(v.sel > 0 || v.on_tabs, "the Settings page scrolled");
+    }
+
     // ── Jam (D64) ──
 
     fn jam(owner: bool, guests: &[&str]) -> singularity_proto::Jam {
