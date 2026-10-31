@@ -440,13 +440,26 @@ pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
     }
 }
 
+/// How often a quiet tap checks that its stream is still the Engine's current one.
+const RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// `pactl -f json list sink-inputs`, or None when pactl can't be run or answers something else.
+async fn list_sink_inputs() -> Option<serde_json::Value> {
+    // (no child inherits the Daemon's secret: audit S10)
+    let out = crate::programs::tokio_command(crate::programs::Tool::Pactl.path().ok()?).args(["-f", "json", "list", "sink-inputs"]).output().await.ok()?;
+    serde_json::from_slice(&out.stdout).ok()
+}
+
+/// Is `idx` still the stream a fresh look would pick? False once it's gone or a newer one has replaced it.
+pub fn is_current_stream(sink_inputs: &serde_json::Value, of: StreamOf, idx: u64) -> bool {
+    find_engine_stream(sink_inputs, of) == Some(idx)
+}
+
 /// Capture the Engine's stream until it ends or nobody listens any more.
 async fn capture(hub: &crate::Hub, an: &mut Analyzer, of: StreamOf) -> anyhow::Result<()> {
     use std::sync::atomic::Ordering;
     use tokio::io::AsyncReadExt;
-    // (no child inherits the Daemon's secret: audit S10)
-    let out = crate::programs::tokio_command(crate::programs::Tool::Pactl.path()?).args(["-f", "json", "list", "sink-inputs"]).output().await?;
-    let idx = find_engine_stream(&serde_json::from_slice(&out.stdout)?, of).ok_or_else(|| anyhow::anyhow!("no Engine stream in PipeWire yet"))?;
+    let idx = find_engine_stream(&list_sink_inputs().await.ok_or_else(|| anyhow::anyhow!("pactl gave no sink-inputs"))?, of).ok_or_else(|| anyhow::anyhow!("no Engine stream in PipeWire yet"))?;
     tracing::info!("audio tap on PipeWire stream #{idx}");
     let mut child = crate::programs::tokio_command(crate::programs::Tool::Parec.path()?)
         .args([&format!("--monitor-stream={idx}"), "--format=float32le", "--rate=44100", "--channels=2", "--raw", "--latency-msec=30", "--client-name=singularity-tap"])
@@ -458,6 +471,7 @@ async fn capture(hub: &crate::Hub, an: &mut Analyzer, of: StreamOf) -> anyhow::R
     let mut bytes = vec![0u8; HOP * 8];
     let mut have = 0;
     let mut volume = hub.playback.lock().await.volume;
+    let mut last_check = std::time::Instant::now();
     while hub.spectrum_listeners.load(Ordering::SeqCst) > 0 {
         let wait = if an.is_quiet() { std::time::Duration::from_secs(1) } else { std::time::Duration::from_secs_f32(DT) };
         let n = match tokio::time::timeout(wait, stdout.read(&mut bytes[have..])).await {
@@ -466,6 +480,18 @@ async fn capture(hub: &crate::Hub, an: &mut Analyzer, of: StreamOf) -> anyhow::R
             Err(_) => {
                 for f in an.silence() {
                     let _ = hub.spectrum.send(f);
+                }
+                // The Engine drops its PipeWire stream when a play fails (Soloist's "Destroyed audio driver") and
+                // opens a new one for the next track, but parec on the old, dead one never ends: it just goes
+                // quiet. So while it's quiet, look for a newer stream now and then and re-attach to it.
+                if last_check.elapsed() >= RECHECK {
+                    last_check = std::time::Instant::now();
+                    if let Some(list) = list_sink_inputs().await
+                        && !is_current_stream(&list, of, idx)
+                    {
+                        tracing::info!("audio tap: stream #{idx} is gone, looking again");
+                        return Ok(());
+                    }
                 }
                 continue;
             }
@@ -616,6 +642,11 @@ mod tests {
         assert_eq!(find_engine_stream(&v, StreamOf::SpotifyApp), Some(5), "the desktop app as Engine (D51 on Linux)");
         assert_eq!(find_engine_stream(&v, StreamOf::Daemon), None);
         assert_eq!(find_engine_stream(&serde_json::json!([]), StreamOf::Soloist), None);
+        // a failed play drops the stream and the next track opens another: the tap must notice, not stay on #9
+        assert!(is_current_stream(&v, StreamOf::Soloist, 9));
+        assert!(!is_current_stream(&serde_json::json!([]), StreamOf::Soloist, 9), "gone");
+        let newer = serde_json::json!([{"index": 12, "properties": {"application.name": "Spotify", "application.process.binary": "soloist"}}]);
+        assert!(!is_current_stream(&newer, StreamOf::Soloist, 9), "replaced by #12");
     }
 
     #[tokio::test]

@@ -160,6 +160,9 @@ pub enum LogNews {
     Bandwidth(u32),
     /// playback ran dry
     Stall,
+    /// the context it was told to play has nothing it can play (Spotify's DJ, a podcast-only or blocked context;
+    /// verified 2026-10-31: `AdvanceStuck detected, reason: unplayable`, after which it stays silent)
+    Unplayable,
     /// its ZeroConf endpoint (pairing from a phone) listens on this port
     ZeroConf(u16),
 }
@@ -194,6 +197,9 @@ impl LogParser {
         // (the recovery line, "updateInternalDriverToPlaying: underrun", isn't a new stall)
         if line.contains("audioThreadMain: underrun") {
             return Some(LogNews::Stall);
+        }
+        if line.contains("AdvanceStuck detected, reason: unplayable") {
+            return Some(LogNews::Unplayable);
         }
         if let Some(rest) = after("client expires in") {
             return num(rest).map(LogNews::Lifetime);
@@ -710,7 +716,7 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                 LogNews::Locked => anyhow::bail!("another Soloist is already running with Singularity's data (is a second singularityd running?)"),
                 LogNews::BadKey => return Err(BadKey.into()),
                 LogNews::ZeroConf(p) => zeroconf = Some(p),
-                LogNews::Stream(_) | LogNews::Bandwidth(_) | LogNews::Stall => {}
+                LogNews::Stream(_) | LogNews::Bandwidth(_) | LogNews::Stall | LogNews::Unplayable => {}
             }
         }
         // the VM's Soloist: ready once its WebSocket answers through the forward
@@ -841,6 +847,9 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                     delivery.bandwidth_kbps = Some(k);
                     delivery.measured_ms = singularity_proto::now_ms();
                     let _ = ev_tx.send(EngineEvent::Delivery(delivery.clone())).await;
+                }
+                LogNews::Unplayable => {
+                    let _ = ev_tx.send(EngineEvent::Notice("Spotify can't play that here (Spotify's DJ, for one, has nothing Soloist can play)".into())).await;
                 }
                 LogNews::Stall => {
                     let now = singularity_proto::now_ms();
@@ -1096,6 +1105,13 @@ impl SoloistState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unplayable_context_is_news() {
+        let mut p = LogParser::default();
+        assert_eq!(p.line("19:48:31.990 I [f:2197] AdvanceStuck detected, reason: unplayable"), Some(LogNews::Unplayable));
+        assert_eq!(p.line("19:48:31.990 I [f:289] Prefetch: looks like new context"), None);
+    }
 
     /// S1: the state directory (pairing, cache) and both logs are owner-only, and an older build's 0644 log is
     /// tightened in place.
