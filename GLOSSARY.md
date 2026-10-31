@@ -209,6 +209,20 @@ Terminal. Picking a Design sets the layout, its own Theme and its Disk look; its
 A layout you saved ("Save design as…") is a Design of your own: it remembers the Theme it was saved with.
 _Avoid_: skin, mode, look (that's the Disk look)
 
+**Free tiling**:
+Rearranging a Design's Panes by hand: drag a Pane by its title (or use Move mode) to swap it, split another Pane
+with it, or give it a whole screen edge; close Panes and split new ones in (D66).
+_Avoid_: edit mode, window manager
+
+**Drop zone**:
+Where a dragged Pane would land: another Pane's centre (swap), one of its edges (split), or a screen edge.
+Only zones that keep every Pane above its minimum size are offered.
+_Avoid_: target, dock
+
+**Move mode**:
+The keyboard way to tile: arrows swap the focused Pane with a neighbour, Shift+arrows split it in beside one.
+_Avoid_: edit mode, layout mode
+
 **Design direction**:
 One complete visual identity under evaluation (layout, palette, and Visual choices together).
 It is a prototyping term; the shipped app has Designs.
