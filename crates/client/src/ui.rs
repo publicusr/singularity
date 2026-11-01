@@ -135,7 +135,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         palette(f, area, app, &th);
     }
     if app.help {
-        help(f, area, &th, &app.keymap);
+        help(f, area, &th, &app.keymap, &app.help_scroll);
     }
     if app.devices_open {
         devices(f.buffer_mut(), area, app, &th);
@@ -310,8 +310,10 @@ fn menu(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
     let block = Block::default().borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED).border_style(th.s(th.accent)).style(th.base());
     let inner = block.inner(r);
     f.render_widget(block, r);
-    for (i, (label, _)) in items.iter().enumerate() {
-        let y = inner.y + i as u16;
+    // a menu taller than the screen scrolls with its selection
+    let first = crate::scroll::window(selected, inner.height as usize, items.len());
+    for (i, (label, _)) in items.iter().enumerate().skip(first).take(inner.height as usize) {
+        let y = inner.y + (i - first) as u16;
         let st = if i == selected { th.s(th.accent).bg(th.selection.color()) } else { th.s(th.fg) };
         text(f.buffer_mut(), inner.x, y, inner.width, &format!(" {label:<w$}", w = inner.width.saturating_sub(1) as usize), st);
         app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::MenuItem(i));
@@ -763,7 +765,7 @@ fn palette(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
     let buf = f.buffer_mut();
     text(buf, inner.x + 1, inner.y, inner.width.saturating_sub(2), &format!("› {query}▏"), th.s(th.fg).add_modifier(Modifier::BOLD));
     let rows = (inner.height.saturating_sub(1) as usize).clamp(1, PALETTE_ROWS);
-    let first = selected.saturating_sub(rows - 1);
+    let first = crate::scroll::window(selected, rows, items.len());
     for (i, a) in items.iter().enumerate().skip(first).take(rows) {
         let y = inner.y + 1 + (i - first) as u16;
         if y >= inner.bottom() {
@@ -834,7 +836,7 @@ fn help_rect(area: Rect, rows: usize) -> Rect {
     centered(area, 80, rows as u16 + 4)
 }
 
-fn help(f: &mut Frame, area: Rect, th: &Theme, m: &crate::keymap::Keymap) {
+fn help(f: &mut Frame, area: Rect, th: &Theme, m: &crate::keymap::Keymap, scroll: &crate::scroll::TextScroll) {
     let rows = help_rows(m);
     let r = help_rect(area, rows.len());
     f.render_widget(Clear, r);
@@ -842,8 +844,10 @@ fn help(f: &mut Frame, area: Rect, th: &Theme, m: &crate::keymap::Keymap) {
     let inner = block.inner(r);
     f.render_widget(block, r);
     let buf = f.buffer_mut();
-    for (i, (k, d)) in rows.iter().enumerate() {
-        let y = inner.y + 1 + i as u16;
+    // a blank line above the rows; on a short screen the wheel or ↑↓ scrolls them
+    let first = scroll.window(rows.len() + 1, inner.height as usize);
+    for (i, (k, d)) in rows.iter().enumerate().skip(first.saturating_sub(1)).take((inner.height as usize).saturating_sub(usize::from(first == 0))) {
+        let y = inner.y + 1 + i as u16 - first as u16;
         text(buf, inner.x + 2, y, 12, k, th.title());
         text(buf, inner.x + 14, y, inner.width.saturating_sub(15), d, th.s(th.fg));
     }
@@ -2708,6 +2712,167 @@ mod tests {
         assert_eq!(app.sidebar.sel, 0);
         let v = app.settings_view.as_ref().unwrap();
         assert!(v.sel > 0 || v.on_tabs, "the Settings page scrolled");
+    }
+
+    /// Open popup `m` with more in it than fits (a list longer than its box, text taller than a short screen).
+    fn open_modal(app: &mut App, m: crate::app::Modal) {
+        use crate::app::Modal;
+        use singularity_proto::{Device, EngineKind, LibraryItem};
+        match m {
+            Modal::Palette => app.run(Action::Palette),
+            Modal::Picker => app.open_picker(crate::looks::PickerKind::Theme),
+            Modal::Naming => app.naming = Some(crate::app::Naming::playlist()),
+            Modal::Widgets => {
+                let items = crate::layouts::all_widgets().take(8).collect();
+                app.widget_pick = Some(crate::arrange::WidgetPick { target: "home".into(), side: crate::tiling::Side::Right, items, sel: 0 });
+            }
+            Modal::Details => {
+                let description = (0..40).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+                app.playlists.details = Some(crate::playlists::Details { uri: "spotify:playlist:p".into(), name: "Night Drive".into(), description, on_description: true, known: true, scroll: Default::default() });
+            }
+            Modal::Adding => {
+                let own = (0..30).map(|i| LibraryItem { uri: format!("spotify:playlist:o{i}"), name: format!("Mine {i}"), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: true });
+                app.library.as_mut().unwrap().items.extend(own);
+                app.ask_add(vec!["spotify:track:x".into()], "Song");
+            }
+            Modal::Cover => app.cover_form = Some(crate::cover::CoverForm { playlist: "spotify:playlist:p".into(), name: "Night Drive".into(), path: String::new(), ready: None, error: None }),
+            Modal::Wizard => {
+                app.engine_kind = EngineKind::Soloist;
+                app.setup.rekey = true;
+                app.setup.forced = true;
+            }
+            Modal::Devices => {
+                app.devices = (0..6).map(|i| Device { id: format!("d{i}"), name: format!("Dev {i}"), kind: "speaker".into(), active: i == 0, volume: Some(50), is_engine: i == 0 }).collect();
+                app.run(Action::Devices);
+            }
+            Modal::Health => {
+                app.health = Some(singularity_proto::Health { missing_tools: vec!["tar".into()], audio_output: Some("speakers".into()), ..Default::default() });
+                app.stream = Some(singularity_proto::StreamInfo { codec: "vorbis".into(), bitrate: 320_000, average_bitrate: None, sample_rate: 44_100, sample_format: "f32".into() });
+                app.run(Action::Health);
+            }
+            Modal::Menu => app.open_queue_menu(0, Some((20, 3))),
+            Modal::Help => app.run(Action::Help),
+            Modal::Move => app.start_move(),
+            Modal::Login => app.catalogue = Some(CatalogueStatus::LoginPending { url: "https://example.com/pair".into(), code: "ABCD".into() }),
+        }
+    }
+
+    /// Where popup `m` is scrolled to: its selection or its text's offset; None where there's nothing to scroll.
+    fn modal_at(app: &App, m: crate::app::Modal) -> Option<usize> {
+        use crate::app::Modal;
+        match m {
+            Modal::Palette => app.palette.as_ref().map(|p| p.selected),
+            Modal::Picker => app.picker.as_ref().map(|p| p.sel),
+            Modal::Widgets => app.widget_pick.as_ref().map(|p| p.sel),
+            Modal::Details => app.playlists.details.as_ref().map(|d| d.scroll.offset()),
+            Modal::Adding => app.playlists.adding.as_ref().map(|a| a.sel),
+            Modal::Wizard => Some(app.wizard_scroll.offset()),
+            Modal::Devices => Some(app.devices_sel),
+            Modal::Health => Some(app.health_scroll.offset()),
+            Modal::Menu => app.menu.as_ref().map(|m| m.selected),
+            Modal::Help => Some(app.help_scroll.offset()),
+            Modal::Naming | Modal::Cover | Modal::Move | Modal::Login => None,
+        }
+    }
+
+    /// Every popup there is (`Modal::ALL`), at a roomy and at the smallest full-size screen: the wheel, in
+    /// Ghostty's bursts of three, inside it, on its border and far outside, moves it one row a notch and stops at
+    /// its ends; nothing behind it moves.
+    #[test]
+    fn the_wheel_scrolls_every_popup_and_nothing_else() {
+        use crate::app::Modal;
+        use singularity_proto::{Item, QueueEntry};
+        use std::time::{Duration, Instant};
+        assert!(Modal::ALL.len() >= 14);
+        for &m in Modal::ALL {
+            for (w, h) in [(160u16, 48u16), (crate::mini::MIN_W + 30, crate::mini::MIN_H)] {
+                let what = format!("{m:?} at {w}x{h}");
+                let (mut app, _rx) = library_app();
+                app.playback.queue = (0..8).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:q{i}"), name: format!("Song {i}"), duration_ms: 150_000, ..Default::default() }, source: "queue".into(), uid: format!("u{i}") }).collect();
+                render(&mut app, w, h);
+                open_modal(&mut app, m);
+                assert_eq!(app.modal(), Some(m), "{what}: the opener opens it, on top");
+                app.toast = None;
+                render(&mut app, w, h);
+                let before = behind(&app);
+                let start = modal_at(&app, m);
+                // the popup's box (Move mode has none: the Pane is the thing)
+                let r = app.overlays.first().copied().unwrap_or(Rect::new(w / 4, h / 4, w / 2, h / 2));
+                let points = [(r.x + r.width / 2, r.y + r.height / 2), (r.x, r.y + r.height / 2), (r.right().saturating_sub(1), r.y), (0, 0), (w - 1, h - 1)];
+                let (mut wheel, mut t) = (crate::term::WheelBursts::default(), Instant::now());
+                // one notch: three reports a microsecond apart, as the terminal sends them
+                let mut notch = |app: &mut App, kind: MouseEventKind, n: usize| {
+                    let (x, y) = points[n % points.len()];
+                    t += Duration::from_millis(40);
+                    for i in 0..3 {
+                        if wheel.keep(kind, t + Duration::from_micros(i)) {
+                            app.pointer(MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE }, x as f64 + 0.5, false);
+                        }
+                    }
+                };
+                let mut spin = |app: &mut App, kind: MouseEventKind, notches: std::ops::Range<usize>| {
+                    for n in notches {
+                        notch(app, kind, n);
+                        assert_eq!(behind(app), before, "{what}: the wheel moved something behind the popup");
+                        assert_eq!(app.modal(), Some(m), "{what}: the wheel closed the popup");
+                    }
+                };
+                // up to one end, a notch back, on to the other end; an end it stops at is a real one (the next
+                // frame doesn't pull it back)
+                spin(&mut app, MouseEventKind::ScrollUp, 0..60);
+                let top = modal_at(&app, m);
+                render(&mut app, w, h);
+                assert_eq!(modal_at(&app, m), top, "{what}: scrolled past its top");
+                spin(&mut app, MouseEventKind::ScrollDown, 0..1);
+                let one = modal_at(&app, m);
+                spin(&mut app, MouseEventKind::ScrollDown, 1..60);
+                let end = modal_at(&app, m);
+                render(&mut app, w, h);
+                assert_eq!(modal_at(&app, m), end, "{what}: scrolled past its end");
+                let (Some(top), Some(one), Some(end)) = (top, one, end) else {
+                    assert_eq!((start, top, one, end), (None, None, None, None), "{what}: nothing to scroll");
+                    continue;
+                };
+                // lists scroll at any size; text where it's taller than the screen
+                let text = matches!(m, Modal::Help | Modal::Health | Modal::Wizard);
+                if !text || h == crate::mini::MIN_H {
+                    assert_eq!(one.abs_diff(top), 1, "{what}: one notch, one row");
+                    assert!(end.abs_diff(top) >= if text { 1 } else { 2 }, "{what}: it scrolls on to its other end ({top} → {end})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tall_popups_show_their_last_lines_when_scrolled() {
+        let (mut app, _rx) = library_app();
+        let (w, h) = (crate::mini::MIN_W + 30, crate::mini::MIN_H);
+        app.run(Action::Help);
+        let s = render(&mut app, w, h);
+        assert!(s.contains("command palette") && !s.contains("quit the Client"), "{s}");
+        // ↓ scrolls the help rather than closing it; the wheel takes it to its end
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(app.help && app.help_scroll.offset() == 1);
+        for _ in 0..20 {
+            app.mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column: 0, row: 0, modifiers: KeyModifiers::NONE });
+        }
+        let s = render(&mut app, w, h);
+        assert!(s.contains("quit the Client") && s.contains("keys.toml"), "{s}");
+        app.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(!app.help);
+        // a long playlist description shows its end; the wheel backs up to its start
+        let description = (0..40).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        app.playlists.details = Some(crate::playlists::Details { uri: "spotify:playlist:p".into(), name: "Night Drive".into(), description, on_description: true, known: true, scroll: Default::default() });
+        let s = render(&mut app, w, h);
+        assert!(s.contains("word39") && !s.contains("word0 "), "{s}");
+        for _ in 0..10 {
+            app.mouse(MouseEvent { kind: MouseEventKind::ScrollUp, column: 0, row: 0, modifiers: KeyModifiers::NONE });
+        }
+        let s = render(&mut app, w, h);
+        assert!(s.contains("› word0 ") && !s.contains("word39"), "{s}");
+        // typing comes back to the end
+        app.key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+        assert!(render(&mut app, w, h).contains("word39!"));
     }
 
     // ── Jam (D64) ──

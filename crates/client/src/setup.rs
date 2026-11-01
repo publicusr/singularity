@@ -145,6 +145,15 @@ pub fn rect(area: Rect) -> Rect {
 
 pub fn draw_wizard(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     let inner = crate::ui::popup(buf, r, th, "Set up Singularity");
+    // on a short screen the steps scroll above the hint, which stays
+    let body = Rect { height: inner.height.saturating_sub(1), ..inner };
+    app.wizard_scroll.draw(buf, body, |buf, body| wizard_body(buf, body, app, th));
+    let (x, w) = (inner.x + 2, inner.width.saturating_sub(4));
+    text(buf, x, inner.bottom().saturating_sub(1), w, "Enter: continue · Esc: later (palette → \"Setup\" brings this back)", th.s(th.dim));
+}
+
+/// The wizard's text from the top of `inner`; returns the rows it took.
+fn wizard_body(buf: &mut Buffer, inner: Rect, app: &App, th: &Theme) -> u16 {
     let (x, w) = (inner.x + 2, inner.width.saturating_sub(4));
     let mut y = inner.y;
     let need = match app.engine_kind {
@@ -253,7 +262,7 @@ pub fn draw_wizard(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
             }
         }
     }
-    text(buf, x, inner.bottom().saturating_sub(1), w, "Enter: continue · Esc: later (palette → \"Setup\" brings this back)", th.s(th.dim));
+    y - inner.y
 }
 
 fn mbit(bps: u32) -> String {
@@ -422,6 +431,17 @@ pub fn health_rect(area: Rect) -> Rect {
 pub fn draw_health(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     let inner = crate::ui::popup(buf, r, th, "Health check");
     let (x, w) = (inner.x + 2, inner.width.saturating_sub(4));
+    // on a short screen the rows scroll above the two footer lines, which stay
+    let body = Rect { height: inner.height.saturating_sub(2), ..inner };
+    app.health_scroll.draw(buf, body, |buf, body| health_body(buf, body, app, th));
+    let foot = "Soloist takes its key only on its command line: `ps` shows it to local users.";
+    text(buf, x, inner.bottom().saturating_sub(2), w, foot, th.s(th.border));
+    text(buf, x, inner.bottom().saturating_sub(1), w, "Esc closes · refreshes every few seconds", th.s(th.dim));
+}
+
+/// The health rows from the top of `inner`; returns the rows they took.
+fn health_body(buf: &mut Buffer, inner: Rect, app: &App, th: &Theme) -> u16 {
+    let (x, w) = (inner.x + 2, inner.width.saturating_sub(4));
     let mut y = inner.y;
     for (mark, k, v) in health_rows(app) {
         let col = match mark {
@@ -438,10 +458,9 @@ pub fn draw_health(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     if app.stream.as_ref().is_some_and(|s| !s.lossless()) {
         y += 1;
         text(buf, x, y, w, LOSSLESS_FIX, th.s(th.accent));
+        y += 1;
     }
-    let foot = "Soloist takes its key only on its command line: `ps` shows it to local users.";
-    text(buf, x, inner.bottom().saturating_sub(2), w, foot, th.s(th.border));
-    text(buf, x, inner.bottom().saturating_sub(1), w, "Esc closes · refreshes every few seconds", th.s(th.dim));
+    y - inner.y
 }
 
 #[cfg(test)]
