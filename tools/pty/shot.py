@@ -404,6 +404,45 @@ def popup_wheel(t, out):
     t.shot(f"{out}/4-settings-wheeled.png")
     lib1 = [r[:3] for r in look()]
     print("settings: library unchanged:", lib0 == lib1, "| page scrolled:", page0 != list(t.screen.display[3:ROWS - 4]))
+    t.send(b"\x1b", 0.6)
+
+    def chosen(title):
+        # the popup's highlighted row: below its title, the one whose background isn't the popup's
+        tx, ty = t.find(title)
+        b = t.screen.buffer
+        rows = list(range(ty + 1, min(ty + 20, ROWS - 1)))
+        bgs = [b[yy][tx + 1].bg for yy in rows]
+        usual = max(set(bgs), key=bgs.count)
+        return next((t.screen.display[yy][tx:tx + 28].strip(" ›") for yy, c in zip(rows, bgs) if c != usual), None)
+
+    def wheel_popup(title, shot, spots_down, spots_up):
+        px, py = t.find(title)
+        first = chosen(title)
+        bg = look()
+        for sx, sy in spots_down(px, py):
+            notch(min(sx, COLS - 1), min(sy, ROWS - 1))
+        t.shot(f"{out}/{shot}-down.png")
+        down = chosen(title)
+        for sx, sy in spots_up(px, py):
+            notch(min(sx, COLS - 1), min(sy, ROWS - 1), down=False)
+        t.shot(f"{out}/{shot}-up.png")
+        print(f"{title}: {first!r} → wheel down → {down!r} → up → {chosen(title)!r} | background unchanged:", look() == bg)
+
+    # "add a pane": right-click a Pane's title → Split right → the Widget list
+    at = t.find("┌ ~/library") or t.find("~/library")
+    mouse(t, 2, at[0] + 3, at[1]); mouse(t, 2, at[0] + 3, at[1], release=True, wait=0.4)
+    t.shot(f"{out}/5-title-menu.png")
+    t.send(b"\r", 0.6)  # Split right
+    t.shot(f"{out}/6-widget-list.png")
+    # three notches: inside, on the border, far off it; then two back, over the library and the bar
+    wheel_popup("New pane", "7-widget-list", lambda px, py: [(px + 4, py + 3), (px - 2, py + 2), (2, ROWS - 6)],
+                lambda px, py: [(2, 12), (COLS // 2, ROWS - 3)])
+    t.send(b"\x1b", 0.5)
+    # the palette: a long list that scrolls with its selection
+    t.send(b"\x0b", 0.6)
+    wheel_popup("Command palette", "8-palette", lambda px, py: [(px + 4, py + 4)] * 4 + [(2, 12)] * 16 + [(COLS - 2, 2)] * 4,
+                lambda px, py: [(px + 4, py + 4)] * 2)
+    t.send(b"\x1b", 0.5)
     t.send(b"q", 0.5)
 
 

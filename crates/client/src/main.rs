@@ -20,6 +20,7 @@ mod mini;
 mod cover;
 mod playlists;
 mod queue;
+mod scroll;
 mod scrub;
 mod saved;
 mod search;

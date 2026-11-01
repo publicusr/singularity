@@ -52,6 +52,8 @@ pub struct Details {
     pub on_description: bool,
     /// the description has arrived (until then saving could clear it by mistake)
     pub known: bool,
+    /// lines back from the description's end (the wheel; typing comes back to the end)
+    pub scroll: crate::scroll::TextScroll,
 }
 
 #[derive(Default)]
@@ -219,11 +221,12 @@ impl App {
             self.send(Command::GetTracks { uri: uri.into() });
         }
         let description = self.description_of(uri);
-        self.playlists.details = Some(Details { uri: uri.into(), name, description, on_description: false, known });
+        self.playlists.details = Some(Details { uri: uri.into(), name, description, on_description: false, known, scroll: Default::default() });
     }
 
     pub fn details_key(&mut self, k: KeyEvent) {
         let Some(d) = self.playlists.details.as_mut() else { return };
+        d.scroll.reset();
         let field = if d.on_description { &mut d.description } else { &mut d.name };
         let max = if d.on_description { DESCRIPTION_MAX } else { NAME_MAX };
         match k.code {
@@ -246,6 +249,7 @@ impl App {
     /// Pasted text goes into the field being typed (line breaks become spaces).
     pub fn details_paste(&mut self, s: &str) {
         let Some(d) = self.playlists.details.as_mut() else { return };
+        d.scroll.reset();
         let (field, max) = if d.on_description { (&mut d.description, DESCRIPTION_MAX) } else { (&mut d.name, NAME_MAX) };
         let room = max.saturating_sub(field.chars().count());
         field.extend(s.chars().map(|c| if c.is_control() { ' ' } else { c }).take(room));
@@ -600,7 +604,7 @@ pub fn draw_adding(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     // the filter above, the hint below
     let room = inner.height.saturating_sub(2) as usize;
     // keep the selection in view
-    let top = a.sel.saturating_sub(room.saturating_sub(1));
+    let top = crate::scroll::window(a.sel, room, rows.len());
     for (n, (i, (uri, name))) in rows.iter().enumerate().skip(top).take(room).enumerate() {
         let y = inner.y + 1 + n as u16;
         let on = i == a.sel;
@@ -657,10 +661,11 @@ pub fn draw_details(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
     let shown: String = d.name.chars().skip(d.name.chars().count().saturating_sub(fw.saturating_sub(1))).collect();
     text(buf, x, inner.y + 1, w, &format!("› {shown}{}", cursor(!d.on_description)), th.s(th.fg).add_modifier(Modifier::BOLD));
     text(buf, x, inner.y + 2, w, if d.known { "Description" } else { "Description (fetching…)" }, label(d.on_description));
-    let mut lines = wrap(&format!("{}{}", d.description, cursor(d.on_description)), fw);
-    let skip = lines.len().saturating_sub(DESCRIPTION_LINES);
-    lines.drain(..skip);
-    for (i, l) in lines.iter().enumerate() {
+    let lines = wrap(&format!("{}{}", d.description, cursor(d.on_description)), fw);
+    // the end shows, or as far back as the wheel took it
+    let back = d.scroll.window(lines.len(), DESCRIPTION_LINES);
+    let skip = lines.len().saturating_sub(DESCRIPTION_LINES + back);
+    for (i, l) in lines.iter().skip(skip).take(DESCRIPTION_LINES).enumerate() {
         let lead = if i == 0 && skip == 0 { "› " } else { "  " };
         text(buf, x, inner.y + 3 + i as u16, w, &format!("{lead}{l}"), th.s(th.fg));
     }

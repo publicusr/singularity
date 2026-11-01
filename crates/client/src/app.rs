@@ -522,6 +522,10 @@ pub struct App {
     pub focus: String,
     pub palette: Option<Palette>,
     pub help: bool,
+    /// how far the help, the health check and the wizard are scrolled (when taller than the screen)
+    pub help_scroll: crate::scroll::TextScroll,
+    pub health_scroll: crate::scroll::TextScroll,
+    pub wizard_scroll: crate::scroll::TextScroll,
     pub toast: Option<(String, Instant)>,
     pub quit: bool,
     /// the user dismissed the login overlay (the login itself keeps waiting)
@@ -679,6 +683,9 @@ impl App {
             focus: "home".into(),
             palette: None,
             help: false,
+            help_scroll: Default::default(),
+            health_scroll: Default::default(),
+            wizard_scroll: Default::default(),
             toast: None,
             quit: false,
             login_hidden: false,
@@ -1131,6 +1138,7 @@ impl App {
             }
             Action::Health => {
                 self.health_open = true;
+                self.health_scroll.reset();
                 self.health_asked = None;
             }
             Action::Setup => {
@@ -1158,7 +1166,10 @@ impl App {
             Action::MovePane => self.start_move(),
             Action::ResetLayout => self.reset_design(),
             Action::Palette => self.palette = Some(Palette { query: String::new(), selected: 0 }),
-            Action::Help => self.help = true,
+            Action::Help => {
+                self.help = true;
+                self.help_scroll.reset();
+            }
             Action::Quit => self.quit = true,
         }
     }
@@ -1239,16 +1250,21 @@ impl App {
             return;
         }
         if self.health_open {
-            if matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
-                self.health_open = false;
+            match k.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => self.health_open = false,
+                code => self.health_scroll.by(text_rows(code)),
             }
             return;
         }
         if self.menu.is_some() {
             return self.menu_key(k);
         }
+        // any key closes the help, but the ones that scroll it when it's taller than the screen
         if self.help {
-            self.help = false;
+            match text_rows(k.code) {
+                0 => self.help = false,
+                rows => self.help_scroll.by(rows),
+            }
             return;
         }
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
@@ -2792,12 +2808,31 @@ impl App {
     }
 }
 
-/// A popup that owns the mouse (and the keyboard) while it's open, in the order `key` offers them input.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Modal {
+/// Declares `Modal` and `Modal::ALL` from one list, so a test can open every popup there is.
+macro_rules! modals {
+    ($($(#[$doc:meta])* $v:ident,)*) => {
+        /// A popup that owns the mouse (and the keyboard) while it's open, in the order `key` offers them input.
+        ///
+        /// Adding a popup? Make it a variant here and give it a place in `App::modal`; the compiler then asks for its
+        /// arm in `App::modal_scroll` (what the wheel does in it), and the popup test in `ui.rs` opens it with every
+        /// wheel there is. Lists scroll with `scroll::moved`, tall text with a `scroll::TextScroll`.
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub(crate) enum Modal {
+            $($(#[$doc])* $v,)*
+        }
+
+        impl Modal {
+            #[cfg_attr(not(test), allow(dead_code))]
+            pub(crate) const ALL: &[Modal] = &[$(Modal::$v),*];
+        }
+    };
+}
+
+modals! {
     Palette,
     Picker,
     Naming,
+    /// the Widget list for a new Pane ("Split right" and the like)
     Widgets,
     Details,
     Adding,
@@ -2816,7 +2851,7 @@ enum Modal {
 impl App {
     /// The popup on top, if any. Every popup the UI draws over the Panes must be listed here: this is what keeps
     /// mouse events from reaching what's behind it.
-    fn modal(&self) -> Option<Modal> {
+    pub(crate) fn modal(&self) -> Option<Modal> {
         Some(if self.palette.is_some() {
             Modal::Palette
         } else if self.picker.is_some() {
@@ -2850,6 +2885,53 @@ impl App {
         })
     }
 
+    /// The wheel in `modal`, `rows` rows down (negative: up), wherever the pointer is. Every popup decides here: no
+    /// catch-all arm, so a new one can't be added without saying what scrolling does in it.
+    pub(crate) fn modal_scroll(&mut self, modal: Modal, rows: i32) {
+        use crate::scroll::moved;
+        match modal {
+            Modal::Palette => {
+                let n = self.palette_items().len();
+                if let Some(p) = self.palette.as_mut() {
+                    p.selected = moved(p.selected, rows, n);
+                }
+            }
+            // each step previews: only when the selection really moves
+            Modal::Picker => {
+                if let Some(p) = self.picker.as_ref() {
+                    let to = moved(p.sel, rows, p.items.len());
+                    if to != p.sel {
+                        self.picker_select(to);
+                    }
+                }
+            }
+            Modal::Widgets => {
+                if let Some(p) = self.widget_pick.as_mut() {
+                    p.sel = moved(p.sel, rows, p.items.len());
+                }
+            }
+            Modal::Adding => self.adding_move(rows),
+            // the row after the devices is the Jam's
+            Modal::Devices => self.devices_sel = moved(self.devices_sel, rows, self.devices.len() + 1),
+            Modal::Menu => {
+                if let Some(m) = self.menu.as_mut() {
+                    m.selected = moved(m.selected, rows, m.items.len());
+                }
+            }
+            Modal::Help => self.help_scroll.by(rows),
+            Modal::Health => self.health_scroll.by(rows),
+            Modal::Wizard => self.wizard_scroll.by(rows),
+            // a long description: back up through it (it shows its end, where you type)
+            Modal::Details => {
+                if let Some(d) = self.playlists.details.as_ref() {
+                    d.scroll.by(-rows);
+                }
+            }
+            // one line to type in, a short notice, or the Pane itself (Move mode): nothing to scroll
+            Modal::Naming | Modal::Cover | Modal::Login | Modal::Move => {}
+        }
+    }
+
     /// A mouse event while `modal` is open. The wheel scrolls the popup wherever the pointer is (so a burst, a
     /// pointer past the popup's edge or a stale rectangle can't hand it to the Pane behind), clicks work inside it
     /// (outside, they close the popups that can be closed by a click), and drags, right clicks and sideways wheels
@@ -2857,27 +2939,8 @@ impl App {
     fn modal_pointer(&mut self, modal: Modal, m: MouseEvent, coarse: bool) {
         let up = m.kind == MouseEventKind::ScrollUp;
         match m.kind {
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => match modal {
-                Modal::Adding => self.adding_move(if up { -1 } else { 1 } * if coarse { 10 } else { 1 }),
-                Modal::Picker => {
-                    let sel = self.picker.as_ref().map(|p| p.sel).unwrap_or(0);
-                    self.picker_select(if up { sel.saturating_sub(1) } else { sel + 1 });
-                }
-                Modal::Palette => {
-                    let n = self.palette_items().len();
-                    if let Some(p) = self.palette.as_mut() {
-                        p.selected = if up { p.selected.saturating_sub(1) } else { (p.selected + 1).min(n.saturating_sub(1)) };
-                    }
-                }
-                Modal::Menu => {
-                    if let Some(menu) = self.menu.as_mut() {
-                        menu.selected = if up { menu.selected.saturating_sub(1) } else { (menu.selected + 1).min(menu.items.len().saturating_sub(1)) };
-                    }
-                }
-                // the row after the devices is the Jam's
-                Modal::Devices => self.devices_sel = if up { self.devices_sel.saturating_sub(1) } else { (self.devices_sel + 1).min(self.devices.len()) },
-                _ => {}
-            },
+            // one row a notch (a burst is one notch by now), ten with a modifier
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => self.modal_scroll(modal, if up { -1 } else { 1 } * if coarse { 10 } else { 1 }),
             MouseEventKind::Down(MouseButton::Left) => {
                 let hit = self.hit_at(m.column, m.row);
                 match modal {
@@ -2961,6 +3024,17 @@ pub fn web_link(uri: &str) -> String {
     match parts.as_slice() {
         ["spotify", rest @ ..] if rest.len() >= 2 => format!("https://open.spotify.com/{}", rest.join("/")),
         _ => uri.to_string(),
+    }
+}
+
+/// How far a key scrolls a popup's text: ↑↓ a row, PgUp/PgDn ten; 0 for the rest.
+fn text_rows(code: KeyCode) -> i32 {
+    match code {
+        KeyCode::Up => -1,
+        KeyCode::Down => 1,
+        KeyCode::PageUp => -10,
+        KeyCode::PageDown => 10,
+        _ => 0,
     }
 }
 

@@ -367,7 +367,7 @@ pub fn draw_picker(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     let sel = p.sel;
     // a long list scrolls with the selection
     let rows = inner.height.saturating_sub(2).max(1) as usize;
-    let first = sel.saturating_sub(rows - 1).min(items.len().saturating_sub(rows));
+    let first = crate::scroll::window(sel, rows, items.len());
     for (i, (_, name, what)) in items.iter().enumerate().skip(first).take(rows) {
         let y = inner.y + (i - first) as u16;
         let bg = if i == sel { th.selection.color() } else { th.bg.color() };
