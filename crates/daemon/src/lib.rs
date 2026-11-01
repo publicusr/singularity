@@ -995,6 +995,19 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     result
 }
 
+/// How long one request to Spotify may take. librespot's HTTP client has no timeout of its own: a request on a
+/// connection that died quietly (the dealer's "Websocket peer does not respond") waits minutes for the OS, and holds
+/// whatever awaits it — for the Catalogue, every search, page and Connect command queued behind it.
+pub(crate) const SPOTIFY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// A call to Spotify, given up after [`SPOTIFY_DEADLINE`] (as librespot's "deadline exceeded").
+pub(crate) async fn spotify<T>(call: impl std::future::Future<Output = Result<T, librespot_core::Error>>) -> Result<T, librespot_core::Error> {
+    match tokio::time::timeout(SPOTIFY_DEADLINE, call).await {
+        Ok(r) => r,
+        Err(_) => Err(librespot_core::Error::deadline_exceeded(format!("Spotify didn't answer within {} s", SPOTIFY_DEADLINE.as_secs()))),
+    }
+}
+
 /// How long a Client may take to accept one message before its session is closed.
 const WRITE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 

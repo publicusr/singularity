@@ -1045,6 +1045,26 @@ mod tests {
         assert_eq!((app.frame_rate(true), app.frame_rate(false)), (30, 2));
     }
 
+    #[test]
+    fn space_shows_play_or_pause_at_once_and_holds_it_until_the_player_agrees() {
+        let (mut app, mut rx) = playing_app(200_000);
+        app.playback.status = PlayStatus::Playing;
+        app.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert_eq!(sent(&mut rx), vec![singularity_proto::Command::TogglePlay]);
+        assert_eq!(app.playback.status, PlayStatus::Paused, "the bar flips before the answer");
+        // a state from before the press (still playing) doesn't flip it back
+        let mut stale = app.playback.clone();
+        stale.status = PlayStatus::Playing;
+        app.playback_event(stale.clone());
+        assert_eq!(app.playback.status, PlayStatus::Paused);
+        // the player's answer ends the hold; after that its word is final again
+        let mut paused = stale.clone();
+        paused.status = PlayStatus::Paused;
+        app.playback_event(paused);
+        app.playback_event(stale);
+        assert_eq!(app.playback.status, PlayStatus::Playing);
+    }
+
     /// What the App sent, without the background `CheckSaved` questions (`sent_all` keeps them).
     fn sent(rx: &mut tokio::sync::mpsc::Receiver<singularity_proto::Command>) -> Vec<singularity_proto::Command> {
         sent_all(rx).into_iter().filter(|c| !matches!(c, singularity_proto::Command::CheckSaved { .. })).collect()
@@ -2580,7 +2600,7 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::Search { query: "nova".into() }]);
         let card = |n: &str, k: &str| Card { uri: format!("spotify:{k}:{n}"), name: n.into(), subtitle: k.into(), image_url: None, kind: k.into() };
         let tracks = (0..8).map(|i| TrackRow { uri: format!("spotify:track:n{i}"), name: format!("Nova song {i}"), artists: vec!["Nova Drift".into()], artist_uris: vec!["spotify:artist:nova".into()], duration_ms: 200_000, playable: true, ..Default::default() }).collect();
-        app.search.as_mut().unwrap().set_results(SearchResults { query: "nova".into(), top: vec![card("Nova Drift", "artist")], tracks, artists: vec![card("Nova Drift", "artist")], albums: vec![card("Event Horizon", "album")], playlists: vec![], podcasts: vec![], episodes: vec![], audiobooks: vec![] });
+        app.search.as_mut().unwrap().set_results(SearchResults { query: "nova".into(), top: vec![card("Nova Drift", "artist")], tracks, artists: vec![card("Nova Drift", "artist")], albums: vec![card("Event Horizon", "album")], playlists: vec![], podcasts: vec![], episodes: vec![], audiobooks: vec![], error: None });
         let s = render(&mut app, 200, 64);
         assert!(s.contains("Songs") && s.contains("Nova song 4") && !s.contains("Nova song 5"), "All shows five songs:\n{s}");
         assert!(s.contains("Top results") && s.contains("Albums"));
@@ -2604,6 +2624,26 @@ mod tests {
         }
         let s = render(&mut app, 200, 64);
         assert!(s.contains("Recent searches") && s.contains("  nova"), "{s}");
+    }
+
+    #[test]
+    fn a_failed_search_says_so_and_enter_asks_again() {
+        use singularity_proto::{Command, SearchResults};
+        let (mut app, mut rx) = playing_app(1);
+        app.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        for c in "nova".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        std::thread::sleep(crate::search::DEBOUNCE + std::time::Duration::from_millis(20));
+        app.tick();
+        assert_eq!(sent(&mut rx), vec![Command::Search { query: "nova".into() }]);
+        app.search.as_mut().unwrap().set_results(SearchResults { query: "nova".into(), error: Some("Spotify didn't answer within 12 s".into()), ..Default::default() });
+        let s = render(&mut app, 120, 40);
+        assert!(s.contains("search failed: Spotify didn't answer") && !s.contains("searching…"), "{s}");
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.tick();
+        assert_eq!(sent(&mut rx), vec![Command::Search { query: "nova".into() }], "the same words go out again");
+        assert!(render(&mut app, 120, 40).contains("searching…"));
     }
 
     // ── Devices (#13) ──

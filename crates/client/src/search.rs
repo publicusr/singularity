@@ -30,10 +30,20 @@ pub struct SearchView {
     /// selected song row (None: the selection is in the Shelves)
     pub track_sel: Option<usize>,
     pub recent_sel: usize,
+    /// the last search failed: why
+    pub failed: Option<String>,
 }
 
 impl SearchView {
+    /// Ask again after a failed search, now.
+    pub fn retry(&mut self) {
+        self.failed = None;
+        self.sent.clear();
+        self.typed_at = Instant::now().checked_sub(DEBOUNCE);
+    }
+
     pub fn typed(&mut self) {
+        self.failed = None;
         self.typed_at = Some(Instant::now());
         self.track_sel = None;
     }
@@ -53,6 +63,13 @@ impl SearchView {
         if r.query.trim() != self.query.trim() {
             return; // an older answer: the user has typed on
         }
+        if let Some(e) = r.error {
+            // shown instead of "searching…"; the same words may go out again (Enter, or typing)
+            self.failed = Some(e);
+            self.sent.clear();
+            return;
+        }
+        self.failed = None;
         self.results = Some(r);
         self.rebuild();
     }
@@ -262,6 +279,8 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             }
             return;
         }
+    } else if let Some(e) = &v.failed {
+        text(buf, x, y, w, &format!("search failed: {e} · Enter tries again"), th.s(th.dim));
     } else {
         text(buf, x, y, w, "searching…", th.s(th.dim));
     }

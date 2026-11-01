@@ -26,6 +26,9 @@ pub enum Link {
     Incompatible(String),
 }
 
+/// How long a pressed play/pause is shown before the player has said so.
+const PLAY_HOLD: Duration = Duration::from_millis(1500);
+
 /// Everything a user can do. The palette lists these; keys and buttons trigger them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -536,6 +539,8 @@ pub struct App {
     /// the volume just set here, until the player confirms it (a Connect device reports its new volume ~0.5 s late:
     /// updates meanwhile would snap the slider back)
     volume_hold: Option<(u8, Instant)>,
+    /// play/pause as pressed, shown at once and held until the Daemon agrees (or [`PLAY_HOLD`] passes)
+    play_hold: Option<(singularity_proto::PlayStatus, Instant)>,
     pub home_view: HomeView,
     pub menu: Option<Menu>,
     pub covers: Covers,
@@ -685,6 +690,7 @@ impl App {
             scrub: None,
             nudge: Nudge::default(),
             volume_hold: None,
+            play_hold: None,
             home_view: HomeView::default(),
             menu: None,
             covers: Covers::offline(),
@@ -1045,7 +1051,7 @@ impl App {
 
     pub fn run(&mut self, a: Action) {
         match a {
-            Action::TogglePlay => self.send(Command::TogglePlay),
+            Action::TogglePlay => self.toggle_play(),
             Action::Next => self.send(Command::Next),
             Action::Previous => self.send(Command::Previous),
             Action::SeekForward => self.nudge_seek(5000),
@@ -1656,6 +1662,7 @@ impl App {
             }
             KeyCode::Down if s.query.trim().is_empty() => s.recent_sel = (s.recent_sel + 1).min(self.recent.len().saturating_sub(1)),
             KeyCode::Up if s.query.trim().is_empty() => s.recent_sel = s.recent_sel.saturating_sub(1),
+            KeyCode::Enter if s.failed.is_some() => s.retry(),
             KeyCode::Enter if s.query.trim().is_empty() => {
                 if let Some(q) = self.recent.get(s.recent_sel).cloned() {
                     s.query = q;
@@ -2357,7 +2364,35 @@ impl App {
 
     /// The Daemon's playback, keeping a volume just set here until the player says so too (or 2.5 s pass: then the
     /// player's word stands, so a refused change shows as refused).
+    /// Space: the bar flips at once, not when the player's answer arrives (up to a second later, which read as "Space
+    /// did nothing" and invited a second press that undid the first).
+    fn toggle_play(&mut self) {
+        use singularity_proto::PlayStatus::*;
+        self.send(Command::TogglePlay);
+        let p = &mut self.playback;
+        let now = singularity_proto::now_ms();
+        let to = match p.status {
+            Playing | Buffering => Paused,
+            Paused if p.item.is_some() => Playing,
+            _ => return,
+        };
+        p.position_ms = p.position_at(now);
+        p.timestamp_ms = now;
+        p.speed = if to == Playing { 1.0 } else { 0.0 };
+        p.status = to;
+        self.play_hold = Some((to, Instant::now()));
+    }
+
     pub fn playback_event(&mut self, mut p: singularity_proto::PlaybackState) {
+        if let Some((s, at)) = self.play_hold {
+            let same_track = p.item.as_ref().map(|i| &i.uri) == self.playback.item.as_ref().map(|i| &i.uri);
+            if p.status == s || at.elapsed() > PLAY_HOLD || !same_track {
+                self.play_hold = None;
+            } else {
+                // an answer from before the press: keep what was pressed
+                (p.status, p.position_ms, p.timestamp_ms, p.speed) = (s, self.playback.position_ms, self.playback.timestamp_ms, self.playback.speed);
+            }
+        }
         if let Some((v, at)) = self.volume_hold {
             if p.volume == v || at.elapsed() > Duration::from_millis(2500) {
                 self.volume_hold = None;

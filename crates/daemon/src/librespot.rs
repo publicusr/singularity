@@ -55,7 +55,7 @@ async fn is_chapter(session: &Session, uri: &librespot_core::SpotifyUri) -> bool
     if !matches!(uri, librespot_core::SpotifyUri::Episode { .. }) {
         return false;
     }
-    let Ok(bytes) = session.spclient().get_episode_metadata(uri).await else { return false };
+    let Ok(bytes) = crate::spotify(session.spclient().get_episode_metadata(uri)).await else { return false };
     librespot_protocol::metadata::Episode::parse_from_bytes(&bytes).is_ok_and(|e| e.is_audiobook_chapter())
 }
 

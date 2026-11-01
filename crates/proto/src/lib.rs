@@ -549,6 +549,9 @@ pub struct SearchResults {
     /// audiobooks (#62): shows that are books, "Audiobook · authors · Spotify's access line"
     #[serde(default)]
     pub audiobooks: Vec<Card>,
+    /// the search failed, and why (everything else is empty)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// An artist page: header, popular tracks, and Shelves of releases and related artists.

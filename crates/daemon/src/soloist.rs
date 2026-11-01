@@ -911,7 +911,13 @@ pub struct SoloistState {
     sent_at: Option<std::time::Instant>,
     /// when we asked for the queue: its answer is a snapshot from before the change we just heard about
     queue_asked_at: Option<std::time::Instant>,
+    /// what our last play/pause asked for, and when: a toggle right after it goes from there, not from a state
+    /// Soloist hasn't reported yet (two quick presses sent "pause" twice)
+    toggled: Option<(PlayStatus, std::time::Instant)>,
 }
+
+/// How long our own play/pause outranks Soloist's last report for the next toggle.
+const TOGGLE_FRESH: Duration = Duration::from_secs(2);
 
 fn entity(v: &Value) -> Option<Item> {
     let uri = v["uri"].as_str().filter(|u| !u.is_empty())?.to_string();
@@ -1067,9 +1073,24 @@ impl SoloistState {
         let c = |name: &str| json!({"type":"command","command":name});
         match cmd {
             Command::Play { uri: Some(u) } => vec![json!({"type":"command","command":"play","uri":u})],
-            Command::Play { uri: None } => vec![c("play")],
-            Command::Pause => vec![c("pause")],
-            Command::TogglePlay => vec![c(if self.playback.status == PlayStatus::Playing { "pause" } else { "play" })],
+            Command::Play { uri: None } => {
+                self.toggled = Some((PlayStatus::Playing, now));
+                vec![c("play")]
+            }
+            Command::Pause => {
+                self.toggled = Some((PlayStatus::Paused, now));
+                vec![c("pause")]
+            }
+            Command::TogglePlay => {
+                let now_status = match self.toggled {
+                    Some((s, at)) if now.saturating_duration_since(at) < TOGGLE_FRESH => s,
+                    _ => self.playback.status,
+                };
+                // buffering is playing too: "play" then was a no-op
+                let pause = matches!(now_status, PlayStatus::Playing | PlayStatus::Buffering);
+                self.toggled = Some((if pause { PlayStatus::Paused } else { PlayStatus::Playing }, now));
+                vec![c(if pause { "pause" } else { "play" })]
+            }
             Command::Next => vec![c("skip_next")],
             Command::Previous => vec![c("skip_prev")],
             Command::Seek { position_ms } => vec![json!({"type":"command","command":"seek","position_ms":position_ms})],
@@ -1105,6 +1126,19 @@ impl SoloistState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quick_second_toggle_goes_from_the_first_not_from_a_stale_state() {
+        let cmd = |v: &Vec<Value>| v[0]["command"].as_str().unwrap().to_string();
+        let mut s = SoloistState::default();
+        s.playback.status = PlayStatus::Playing;
+        assert_eq!(cmd(&s.to_soloist(Command::TogglePlay)), "pause");
+        // Soloist hasn't said "paused" yet: the second press still means play
+        assert_eq!(cmd(&s.to_soloist(Command::TogglePlay)), "play");
+        let mut s = SoloistState::default();
+        s.playback.status = PlayStatus::Buffering;
+        assert_eq!(cmd(&s.to_soloist(Command::TogglePlay)), "pause", "buffering counts as playing");
+    }
 
     #[test]
     fn an_unplayable_context_is_news() {

@@ -100,7 +100,7 @@ impl ConnectRemote {
                 "player_options_override": {},
             },
         });
-        self.session.spclient().send_player_command(to, cmd).await?;
+        crate::spotify(self.session.spclient().send_player_command(to, cmd)).await?;
         Ok(())
     }
 
@@ -137,7 +137,7 @@ impl ConnectRemote {
     /// Put `uri` at the end of what's queued on device `to`.
     pub async fn add_to_queue(&self, to: &str, uri: &str) -> anyhow::Result<()> {
         let cmd = json!({ "endpoint": "add_to_queue", "track": { "uri": uri, "metadata": { "is_queued": "true" }, "provider": "queue" } });
-        self.session.spclient().send_player_command(to, cmd).await?;
+        crate::spotify(self.session.spclient().send_player_command(to, cmd)).await?;
         Ok(())
     }
 
@@ -153,7 +153,7 @@ impl ConnectRemote {
             "play_origin": { "feature_identifier": "singularity", "feature_version": crate::VERSION },
             "options": { "skip_to": skip, "license": "premium", "player_options_override": {} },
         });
-        self.session.spclient().send_player_command(to, cmd).await?;
+        crate::spotify(self.session.spclient().send_player_command(to, cmd)).await?;
         Ok(())
     }
 }
@@ -181,7 +181,7 @@ async fn register(session: &Session) -> anyhow::Result<Cluster> {
     req.member_type = MemberType::CONNECT_STATE.into();
     req.put_state_reason = PutStateReason::NEW_DEVICE.into();
     req.device = Some(dev).into();
-    let bytes = session.spclient().put_connect_state_request(&req).await?;
+    let bytes = crate::spotify(session.spclient().put_connect_state_request(&req)).await?;
     Ok(Cluster::parse_from_bytes(&bytes)?)
 }
 
@@ -396,7 +396,7 @@ impl ConnectRemote {
         anyhow::ensure!(edit_queue(&mut next, edit), "that track isn't in the queue any more");
         let prev: Vec<serde_json::Value> = ps.prev_tracks.iter().map(as_json).collect();
         let cmd = json!({ "endpoint": "set_queue", "next_tracks": next, "prev_tracks": prev, "queue_revision": ps.queue_revision });
-        self.session.spclient().send_player_command(to, cmd).await?;
+        crate::spotify(self.session.spclient().send_player_command(to, cmd)).await?;
         Ok(())
     }
 }
@@ -406,7 +406,7 @@ impl Drop for ConnectRemote {
         let session = self.session.clone();
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             rt.spawn(async move {
-                let _ = session.spclient().delete_connect_state_request().await;
+                let _ = crate::spotify(session.spclient().delete_connect_state_request()).await;
             });
         }
     }

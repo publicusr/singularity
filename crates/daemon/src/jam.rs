@@ -49,7 +49,7 @@ pub async fn end(session: &Session, session_id: &str) -> anyhow::Result<()> {
 async fn get(session: &Session, method: reqwest::Method, path: &str) -> Result<Value, librespot_core::Error> {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-    let bytes = session.spclient().request(&method, path, Some(headers), None).await?;
+    let bytes = crate::spotify(session.spclient().request(&method, path, Some(headers), None)).await?;
     if bytes.is_empty() {
         return Ok(Value::Null);
     }

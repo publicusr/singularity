@@ -176,7 +176,7 @@ pub async fn post(session: &Session, path: &str, body: &Value) -> anyhow::Result
         .header("accept", "application/json")
         .header("content-type", "application/json;charset=UTF-8")
         .body(body.to_string());
-    if let Ok(t) = session.spclient().client_token().await {
+    if let Ok(t) = crate::spotify(session.spclient().client_token()).await {
         req = req.header("client-token", t);
     }
     let resp = req.send().await?;

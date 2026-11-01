@@ -451,6 +451,7 @@ pub fn parse_search(query: &str, v: &Value) -> singularity_proto::SearchResults 
         playlists: cards("playlists", "items"),
         podcasts: cards("podcasts", "items"),
         audiobooks: cards("audiobooks", "items"),
+        error: None,
     }
 }
 

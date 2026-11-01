@@ -577,12 +577,20 @@ impl State {
     async fn query(&mut self, op: &str, vars: Value) -> anyhow::Result<Value> {
         let session = self.session().await.ok_or_else(|| anyhow::anyhow!("not logged in to Spotify"))?;
         let hash = self.registry.hash(op).await?;
-        match session.spclient().pathfinder_query(op, &hash, vars.clone()).await {
+        // a request that hangs is asked once more: the stuck connection went with the abandoned request
+        let first = match crate::spotify(session.spclient().pathfinder_query(op, &hash, vars.clone())).await {
+            Err(e) if e.kind == ErrorKind::DeadlineExceeded => {
+                tracing::warn!("`{op}`: {e}; asking again");
+                crate::spotify(session.spclient().pathfinder_query(op, &hash, vars.clone())).await
+            }
+            r => r,
+        };
+        match first {
             Err(e) if e.kind == ErrorKind::FailedPrecondition => {
                 tracing::warn!("`{op}` hash retired; refreshing the query registry");
                 self.registry.refresh().await?;
                 let hash = self.registry.hash(op).await?;
-                Ok(session.spclient().pathfinder_query(op, &hash, vars).await?)
+                Ok(crate::spotify(session.spclient().pathfinder_query(op, &hash, vars)).await?)
             }
             r => Ok(r?),
         }
@@ -1276,7 +1284,9 @@ impl State {
                 let _ = self.ev.send(CatEvent::Search(r)).await;
             }
             Err(e) => {
-                self.fail(format!("Search unavailable: {e}")).await;
+                // with the search, so the Client stops waiting on "searching…"
+                let r = singularity_proto::SearchResults { query, error: Some(e.to_string()), ..Default::default() };
+                let _ = self.ev.send(CatEvent::Search(r)).await;
             }
         }
     }
@@ -1315,7 +1325,7 @@ impl State {
         }
         let mut found = None;
         let spotify = match (self.session().await, librespot_core::SpotifyId::from_base62(uri.rsplit(':').next().unwrap_or(""))) {
-            (Some(session), Ok(id)) => match session.spclient().get_lyrics(&id).await {
+            (Some(session), Ok(id)) => match crate::spotify(session.spclient().get_lyrics(&id)).await {
                 Ok(bytes) => {
                     found = serde_json::from_slice(&bytes).ok().and_then(|v| crate::lyrics::parse_spotify(&uri, &v));
                     if found.is_some() { Outcome::Found } else { Outcome::Nothing }
