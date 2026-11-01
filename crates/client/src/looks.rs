@@ -6,7 +6,7 @@ use crate::design::DESIGNS;
 use crate::theme::{self, Theme};
 use crate::ui::{centered, popup, text, blank};
 use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime};
@@ -239,6 +239,14 @@ impl App {
     pub fn naming_key(&mut self, k: KeyEvent) {
         let Some(n) = self.naming.as_mut() else { return };
         let max = if matches!(n.purpose, crate::app::NameFor::Layout | crate::app::NameFor::Fork) { 40 } else { 100 };
+        // the first edit of a built-in Design can still be undone (or, undone, redone) from its naming prompt
+        if n.purpose == crate::app::NameFor::Fork && k.modifiers.contains(KeyModifiers::CONTROL) {
+            match self.keymap.action(k) {
+                Some(crate::app::Action::UndoLayout) if !k.modifiers.contains(KeyModifiers::SHIFT) => return self.undo_layout(),
+                Some(crate::app::Action::UndoLayout | crate::app::Action::RedoLayout) => return self.redo_layout(),
+                _ => {}
+            }
+        }
         match k.code {
             KeyCode::Esc => {
                 // the first edit of a built-in Design, left unnamed: kept as its one "(edited)" Design
@@ -309,7 +317,11 @@ impl App {
 
     /// Enter: keep what's shown.
     pub fn picker_keep(&mut self) {
-        if self.picker.take().is_some() {
+        if let Some(p) = self.picker.take() {
+            // another Design: the layout undo history was the last one's
+            if p.before.0 != self.design || p.before.2 != self.layout || p.before.3 != self.layout_name {
+                self.history.clear();
+            }
             self.save_ui();
         }
     }

@@ -215,8 +215,9 @@ with it, or give it a whole screen edge; close Panes and split new ones in (D66)
 _Avoid_: edit mode, window manager
 
 **Drop zone**:
-Where a dragged Pane would land: another Pane's centre (swap), one of its edges (split), or a screen edge.
-Only zones that keep every Pane above its minimum size are offered.
+Where a dragged Pane would land: another Pane's centre (swap), one of its edges (split), or a screen edge (the
+outermost column, or past the top or bottom of the Panes). Only zones that change the arrangement (not just sizes)
+and keep every Pane above its minimum size are offered.
 _Avoid_: target, dock
 
 **Move mode**:

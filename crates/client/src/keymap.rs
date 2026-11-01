@@ -147,6 +147,9 @@ const STANDARD: &[(Action, &[&str])] = &[
     (Action::Devices, &["d"]),
     (Action::FocusNext, &["Tab"]),
     (Action::MovePane, &["m"]),
+    // (Ctrl+Shift+Z redoes too, where the terminal reports it apart from Ctrl+Z: see App::key)
+    (Action::UndoLayout, &["Ctrl+Z"]),
+    (Action::RedoLayout, &["Ctrl+Y"]),
     (Action::Palette, &["Ctrl+K", ":"]),
     (Action::Help, &["?"]),
     (Action::Quit, &["q", "Esc"]),
@@ -304,6 +307,12 @@ mod tests {
         assert_eq!(m.pair(Action::SeekBack, Action::SeekForward), "⇧←→");
         assert_eq!(m.pair(Action::Next, Action::Previous), "n/b");
         assert!(m.problems.is_empty() && m.nav(ev(KeyCode::Char('j'), KeyModifiers::NONE)).is_none());
+        assert_eq!(m.action(ev(KeyCode::Char('z'), KeyModifiers::CONTROL)), Some(Action::UndoLayout));
+        assert_eq!(m.action(ev(KeyCode::Char('y'), KeyModifiers::CONTROL)), Some(Action::RedoLayout));
+        // the vim preset moves with Ctrl+D/U, not Z/Y: undo and redo are the same there
+        let vim = Keymap::from_keys(&singularity_config::Keys { preset: "vim".into(), ..Default::default() });
+        assert_eq!(vim.action(ev(KeyCode::Char('z'), KeyModifiers::CONTROL)), Some(Action::UndoLayout));
+        assert_eq!(vim.nav(ev(KeyCode::Char('z'), KeyModifiers::CONTROL)), None);
     }
 
     #[test]

@@ -10,9 +10,10 @@ pub const CORE: [&str; 4] = ["home", "library", "queue", "lyrics"];
 
 /// A Pane's edge bands: this share of its width and height at each side (the rest is the centre, which swaps).
 pub const EDGE_FRAC: f32 = 0.28;
-/// The band along the outer edge of the whole layout that gives a full-height column / full-width row.
-pub const SCREEN_COLS: u16 = 2;
-pub const SCREEN_ROWS: u16 = 1;
+/// The outermost column at each side of the layout gives a full-height column; above and below the layout (the top
+/// bar, the player) a full-width row. The top row of the layout itself is the top Panes' title bars, where a drag
+/// starts: an edge zone there would turn a drag along the titles into a whole row (owner, 2026-11-01).
+pub const SCREEN_COLS: u16 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -61,20 +62,21 @@ pub fn edge_ratio(side: Side, slot: &str, pane: Rect, body: Rect) -> f32 {
 
 /// The drop zone under (x, y) while `dragged` is being moved, from the layout as it stands (not the preview, so the
 /// zone under the pointer never changes because of what the preview did). None over the Pane itself and outside.
+/// Above the layout (the top bar) and below it (the player) are the screen's top and bottom edges.
 pub fn zone_at(slots: &[(String, Rect)], body: Rect, dragged: &str, x: u16, y: u16) -> Option<Zone> {
     let inside = |r: Rect| x >= r.x && x < r.right() && y >= r.y && y < r.bottom();
     let me = slots.iter().find(|(s, _)| s == dragged)?.1;
-    if !inside(body) || inside(me) {
+    if x < body.x || x >= body.right() || inside(me) {
         return None;
     }
-    let screen = if x < body.x + SCREEN_COLS {
+    let screen = if y < body.y {
+        Some(Side::Top)
+    } else if y >= body.bottom() {
+        Some(Side::Bottom)
+    } else if x < body.x + SCREEN_COLS {
         Some(Side::Left)
     } else if x + SCREEN_COLS >= body.right() {
         Some(Side::Right)
-    } else if y < body.y + SCREEN_ROWS {
-        Some(Side::Top)
-    } else if y + SCREEN_ROWS >= body.bottom() {
-        Some(Side::Bottom)
     } else {
         None
     };
@@ -232,13 +234,44 @@ impl Node {
         Some(go(self, x, y))
     }
 
-    /// Pane `name` dropped on `to`.
+    /// Pane `name` dropped on `to`. None if it can't go there, or if the drop would only change sizes: the Panes in
+    /// the same rows and columns, in the same order (dropped on the near edge of its own neighbour, or on the screen
+    /// edge it already spans). Such a drop looked like a bug: one Pane just grew or shrank (owner, 2026-11-01).
     pub fn moved(&self, name: &str, to: &Zone) -> Option<Node> {
+        self.moved_any(name, to).filter(|n| !n.same_arrangement(self))
+    }
+
+    /// `moved`, size-only results included.
+    pub fn moved_any(&self, name: &str, to: &Zone) -> Option<Node> {
         match to {
             Zone::Swap(t) => self.swapped(name, t),
             Zone::Beside(t, side) if t != name => self.without(name)?.beside(t, name, *side),
             Zone::Beside(..) => None,
             Zone::Edge(side, ratio) => self.without(name)?.at_edge(name, *side, *ratio),
+        }
+    }
+
+    /// Whether the two trees put the same Panes in the same rows and columns, in the same order, whatever the sizes
+    /// and however the splits nest (`a | (b | c)` is `(a | b) | c`).
+    pub fn same_arrangement(&self, other: &Node) -> bool {
+        fn flat<'a>(n: &'a Node, axis: Axis, out: &mut Vec<&'a Node>) {
+            match n {
+                Node::Split { axis: own, a, b, .. } if *own == axis => {
+                    flat(a, axis, out);
+                    flat(b, axis, out);
+                }
+                _ => out.push(n),
+            }
+        }
+        match (self, other) {
+            (Node::Slot(x), Node::Slot(y)) => x == y,
+            (Node::Split { axis: x, .. }, Node::Split { axis: y, .. }) if x == y => {
+                let (mut p, mut q) = (vec![], vec![]);
+                flat(self, *x, &mut p);
+                flat(other, *y, &mut q);
+                p.len() == q.len() && p.iter().zip(&q).all(|(m, n)| m.same_arrangement(n))
+            }
+            _ => false,
         }
     }
 
@@ -426,23 +459,61 @@ mod tests {
         // over the Pane itself: nothing
         let l = rect(&n, AREA, "fft");
         assert_eq!(zone(l.x + 3, l.y + 2), None);
-        // outside the layout: nothing
-        assert_eq!(zone(cx, 0), None);
+        // beside the layout: nothing
+        assert_eq!(zone_at(&slots, Rect::new(10, 1, 140, 43), "fft", 5, cy), None);
     }
 
     #[test]
-    fn the_screen_edge_wins_over_the_pane_there() {
+    fn the_screen_edges_are_the_outer_columns_and_past_the_top_and_bottom() {
         let n = Node::classic();
         let slots = slots_of(&n);
         let zone = |x, y| zone_at(&slots, AREA, "queue", x, y);
         assert!(matches!(zone(0, 20), Some(Zone::Edge(Left, _))));
-        assert!(matches!(zone(1, 20), Some(Zone::Edge(Left, _))));
-        assert!(matches!(zone(2, 20), Some(Zone::Beside(ref l, Left)) if l == "library"));
+        assert!(matches!(zone(1, 20), Some(Zone::Beside(ref l, Left)) if l == "library"), "one column, not two");
         assert!(matches!(zone(AREA.right() - 1, 10), Some(Zone::Edge(Right, _))));
-        assert!(matches!(zone(60, AREA.y), Some(Zone::Edge(Top, _))));
-        assert!(matches!(zone(10, AREA.bottom() - 1), Some(Zone::Edge(Bottom, _))));
+        assert!(matches!(zone(AREA.right() - 2, 10), Some(Zone::Beside(ref n, Right)) if n == "nowplaying"));
+        // the top row is the top Panes' titles: dragging along them is not the screen's edge; the top bar above is
+        assert!(matches!(zone(60, AREA.y), Some(Zone::Beside(ref h, Top)) if h == "home"));
+        assert!(matches!(zone(60, AREA.y - 1), Some(Zone::Edge(Top, _))));
+        // the last row is a bottom border; the player below it is the bottom edge
+        assert!(matches!(zone(10, AREA.bottom() - 1), Some(Zone::Beside(ref l, Bottom)) if l == "library"));
+        assert!(matches!(zone(10, AREA.bottom()), Some(Zone::Edge(Bottom, _))));
+        assert!(matches!(zone(10, AREA.bottom() + 3), Some(Zone::Edge(Bottom, _))));
         let Some(Zone::Edge(_, r)) = zone(0, 20) else { panic!() };
         assert!((0.15..=0.35).contains(&r), "{r}");
+    }
+
+    /// The owner's "near the edge it just extends one of the panes like 15%" (2026-11-01): Classic's queue held a
+    /// little way up into Home's bottom band, or a Pane pushed against the screen edge it already spans. Both made a
+    /// tree with the same Panes in the same places and only the sizes changed (Home 66% to 50%), shown and committed
+    /// as if it were a move. Neither is a drop now.
+    #[test]
+    fn a_drop_that_only_changes_sizes_is_not_a_drop() {
+        let n = Node::classic();
+        let slots = slots_of(&n);
+        let (h, q) = (rect(&n, AREA, "home"), rect(&n, AREA, "queue"));
+        // just over the border, in Home's bottom band: the zone is there...
+        let z = zone_at(&slots, AREA, "queue", h.x + 20, h.bottom() - 2).unwrap();
+        assert_eq!(z, Zone::Beside("home".into(), Bottom));
+        // ...and before, dropping there re-split home/queue 50/50: home lost 16% of its height
+        let any = n.moved_any("queue", &z).unwrap();
+        assert!(any.same_arrangement(&n) && rect(&any, AREA, "home").height < h.height - 5, "{:?} vs {h:?}", rect(&any, AREA, "home"));
+        assert_eq!(n.moved("queue", &z), None, "not a move");
+        // Home's top band puts the queue above it, which is a move
+        assert!(n.moved("queue", &Zone::Beside("home".into(), Top)).is_some());
+        assert!(q.y > h.y);
+        // the library already spans the left edge: Edge(Left) would only change its width (Cells(30) to a ratio)
+        assert_eq!(n.moved("library", &Zone::Edge(Left, 0.2)), None);
+        assert!(n.moved_any("library", &Zone::Edge(Left, 0.2)).is_some());
+        // a nesting that differs but shows the same row of three is the same arrangement
+        use crate::layout::Size::Ratio;
+        let s = |x| Node::slot(x);
+        let l = Node::split(Axis::Horizontal, Ratio(0.3), s("a"), Node::split(Axis::Horizontal, Ratio(0.5), s("b"), s("c")));
+        let r = Node::split(Axis::Horizontal, Ratio(0.6), Node::split(Axis::Horizontal, Ratio(0.5), s("a"), s("b")), s("c"));
+        assert!(l.same_arrangement(&r));
+        assert!(!l.same_arrangement(&l.swapped("a", "b").unwrap()));
+        let v = Node::split(Axis::Vertical, Ratio(0.3), s("a"), Node::split(Axis::Horizontal, Ratio(0.5), s("b"), s("c")));
+        assert!(!l.same_arrangement(&v));
     }
 
     #[test]
@@ -521,14 +592,15 @@ mod tests {
         }
     }
 
-    /// Thousands of random edits (moves to random drop zones, swaps, splits, closes, resizes, divider drags) on every
-    /// built-in Design at terminal sizes from 60x20 to 300x90. Every edit is offered only when its tree is valid, as
-    /// the UI does; every tree that gets committed must then be sound.
+    /// Thousands of random edits (moves to random drop zones, swaps, splits, closes, resizes, divider drags, undo and
+    /// redo) on every built-in Design at terminal sizes from 60x20 to 300x90. Every edit is offered only when its tree
+    /// is valid, as the UI does; every tree that gets committed must then be sound; a drop always changes the
+    /// arrangement, never just sizes; undo and redo walk back and forth through exactly the trees committed.
     #[test]
     fn random_edits_never_break_a_layout() {
         let designs = [("singularity", Node::singularity()), ("event-horizon", Node::event_horizon()), ("classic", Node::classic()), ("cockpit", Node::cockpit()), ("terminal", Node::terminal())];
         let sizes = [(60u16, 20u16), (80, 24), (100, 30), (120, 40), (160, 48), (200, 60), (300, 90)];
-        let (mut sequences, mut committed, mut refused, mut skipped) = (0, 0, 0, 0);
+        let (mut sequences, mut committed, mut refused, mut skipped, mut undone) = (0, 0, 0, 0, 0);
         for (name, base) in &designs {
             for &(w, h) in &sizes {
                 let body = Rect::new(0, 1, w, h - 5);
@@ -541,16 +613,36 @@ mod tests {
                     sequences += 1;
                     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((w as u64) << 32 | h as u64));
                     let mut tree = base.clone();
+                    // the undo history, and a plain model of what it must hold
+                    let mut hist: crate::arrange::history::History<Node> = Default::default();
+                    let (mut back, mut fwd): (Vec<Node>, Vec<Node>) = (vec![], vec![]);
                     for step in 0..60 {
                         let ctx = format!("{name} {w}x{h} seed {seed} step {step}");
                         let slots = tree.compute_shaped(body, aspect).slots;
                         let pick = |rng: &mut Rng| slots[rng.below(slots.len())].0.clone();
-                        let cand: Option<Node> = match rng.below(7) {
-                            // drag a Pane to a random place on screen, as the mouse would
+                        let roll = rng.below(9);
+                        if roll >= 7 {
+                            let undo = roll == 7;
+                            let ok = |t: &Node| t.valid(body, aspect);
+                            let got = if undo { hist.undo(tree.clone(), ok) } else { hist.redo(tree.clone(), ok) };
+                            let want = if undo { back.pop() } else { fwd.pop() };
+                            assert_eq!(got, want, "{ctx}: {}", if undo { "undo" } else { "redo" });
+                            if let Some(t) = got {
+                                if undo { fwd.push(tree.clone()) } else { back.push(tree.clone()) }
+                                assert_sound(&t, body, aspect, false, &ctx);
+                                tree = t;
+                                undone += 1;
+                            }
+                            continue;
+                        }
+                        let cand: Option<Node> = match roll {
+                            // drag a Pane to a random place on screen (the bars above and below too), as the mouse would
                             0..=2 => {
                                 let who = pick(&mut rng);
-                                let (x, y) = (rng.below(w as usize) as u16, body.y + rng.below(body.height as usize) as u16);
-                                zone_at(&slots, body, &who, x, y).and_then(|z| tree.moved(&who, &z))
+                                let (x, y) = (rng.below(w as usize) as u16, rng.below(h as usize) as u16);
+                                let m = zone_at(&slots, body, &who, x, y).and_then(|z| tree.moved(&who, &z));
+                                assert!(m.as_ref().is_none_or(|m| !m.same_arrangement(&tree)), "{ctx}: a drop that only changes sizes");
+                                m
                             }
                             3 => {
                                 let (a, b) = (pick(&mut rng), pick(&mut rng));
@@ -582,6 +674,12 @@ mod tests {
                         match cand {
                             Some(c) if c != tree && c.valid(body, aspect) => {
                                 assert_sound(&c, body, aspect, committed % 6 == 0, &ctx);
+                                hist.push(tree.clone());
+                                back.push(tree.clone());
+                                if back.len() > crate::arrange::history::CAP {
+                                    back.remove(0);
+                                }
+                                fwd.clear();
                                 tree = c;
                                 committed += 1;
                             }
@@ -597,7 +695,7 @@ mod tests {
                 }
             }
         }
-        eprintln!("{sequences} sequences ({skipped} skipped: the Design itself doesn't fit), {committed} edits committed, {refused} refused");
-        assert!(sequences >= 1000 && committed >= 20_000, "{sequences} {committed}");
+        eprintln!("{sequences} sequences ({skipped} skipped: the Design itself doesn't fit), {committed} edits committed, {refused} refused, {undone} undos and redos");
+        assert!(sequences >= 1000 && committed >= 15_000 && undone >= 5_000, "{sequences} {committed} {undone}");
     }
 }

@@ -83,13 +83,15 @@ pub enum Action {
     ClosePane,
     MovePane,
     ResetLayout,
+    UndoLayout,
+    RedoLayout,
     Palette,
     Help,
     Quit,
 }
 
 impl Action {
-    pub const ALL: [Action; 57] = [
+    pub const ALL: [Action; 59] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -144,6 +146,8 @@ impl Action {
         Action::ClosePane,
         Action::MovePane,
         Action::ResetLayout,
+        Action::UndoLayout,
+        Action::RedoLayout,
         Action::Palette,
         Action::Help,
         Action::Quit,
@@ -204,6 +208,8 @@ impl Action {
             Action::ClosePane => "Close pane",
             Action::MovePane => "Move pane",
             Action::ResetLayout => "Reset design",
+            Action::UndoLayout => "Undo layout",
+            Action::RedoLayout => "Redo layout",
             Action::Palette => "Command palette",
             Action::Help => "Help",
             Action::Quit => "Quit",
@@ -221,6 +227,8 @@ impl Action {
             Action::ClosePane => "tile remove delete widget",
             Action::MovePane => "tile arrange swap drag layout keyboard",
             Action::ResetLayout => "layout tiling undo original default",
+            Action::UndoLayout => "tiling pane change back revert move drop close split",
+            Action::RedoLayout => "tiling pane change again forward",
             Action::EditPlaylist => "name description rename",
             Action::DeletePlaylist => "remove",
             Action::AddPlayingToPlaylist => "current playing track",
@@ -303,6 +311,8 @@ impl Action {
             Action::ClosePane => "close_pane",
             Action::MovePane => "move_pane",
             Action::ResetLayout => "reset_layout",
+            Action::UndoLayout => "undo_layout",
+            Action::RedoLayout => "redo_layout",
             Action::Palette => "palette",
             Action::Help => "help",
             Action::Quit => "quit",
@@ -643,6 +653,14 @@ pub struct App {
     pub body: Rect,
     /// the layout as it was when a divider was grabbed (a changed one counts as an edit on release)
     pub(crate) divider_from: Option<Node>,
+    /// Panes easing to new places and the one held up (owner, 2026-11-01); this frame's rects, reused
+    pub motion: crate::arrange::motion::Motion,
+    pub(crate) drawn: Vec<Rect>,
+    /// drawing the held Pane: its images stay in cells
+    pub(crate) floating: bool,
+    /// layout undo / redo, and when the last edit offered its "undo"
+    pub(crate) history: crate::arrange::history::History<crate::arrange::Snapshot>,
+    pub(crate) undo_offer: Option<(Instant, Action)>,
     /// the "Change cover" popup (#56), and covers shown before Spotify answered: (library's, header's) to put back
     pub cover_form: Option<crate::cover::CoverForm>,
     pub covers_was: HashMap<String, (Option<String>, Option<String>)>,
@@ -757,6 +775,11 @@ impl App {
             widget_pick: None,
             body: Rect::default(),
             divider_from: None,
+            motion: crate::arrange::motion::Motion::new(!cfg!(test)),
+            drawn: vec![],
+            floating: false,
+            history: Default::default(),
+            undo_offer: None,
             cover_form: None,
             covers_was: HashMap::new(),
             layouts_dir: None,
@@ -943,6 +966,9 @@ impl App {
     /// The pixel tier's cell size, if `r` can be drawn with it this frame.
     pub fn pixel_tier_for(&self, r: Rect) -> Option<(f64, f64)> {
         let px = self.cell_px?;
+        if self.floating {
+            return None;
+        }
         // under cell backgrounds (kitty), a popup simply covers an image; elsewhere the image steps down to cells
         let k = self.kitty.as_ref()?;
         (k.below_backgrounds || !self.overlays.iter().any(|o| o.intersects(r))).then_some(px)
@@ -1151,6 +1177,8 @@ impl App {
             }
             Action::MovePane => self.start_move(),
             Action::ResetLayout => self.reset_design(),
+            Action::UndoLayout => self.undo_layout(),
+            Action::RedoLayout => self.redo_layout(),
             Action::Palette => self.palette = Some(Palette { query: String::new(), selected: 0 }),
             Action::Help => self.help = true,
             Action::Quit => self.quit = true,
@@ -1201,7 +1229,7 @@ impl App {
         // a Pane being dragged: Esc puts it back, nothing else gets through
         if self.tile.is_some() {
             if k.code == KeyCode::Esc {
-                self.tile = None;
+                self.tile_cancel();
             }
             return;
         }
@@ -1248,6 +1276,10 @@ impl App {
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         if self.view.as_ref().is_some_and(|v| v.filtering) {
             return self.filter_key(k);
+        }
+        // Ctrl+Shift+Z redoes, where the terminal tells it from Ctrl+Z (the keymap reads both as Ctrl+Z)
+        if ctrl && matches!(k.code, KeyCode::Char('z' | 'Z')) && (shift || k.code == KeyCode::Char('Z')) && self.keymap.action(k) == Some(Action::UndoLayout) {
+            return self.run(Action::RedoLayout);
         }
         // shortcuts with Ctrl or Alt work everywhere (a Pane's own keys are plain)
         if k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -2274,7 +2306,8 @@ impl App {
     /// Frames a second: 30, or `visuals.unfocused_fps` while the terminal isn't focused. (D62: no slower rate while
     /// nothing plays; the owner found 5 fps choppy.)
     pub fn frame_rate(&self, focused: bool) -> u64 {
-        if focused { 30 } else { self.config.visuals.unfocused_fps.clamp(1, 30) as u64 }
+        // Panes on their way somewhere move smoothly even in a window without focus
+        if focused || self.motion.busy(Instant::now()) { 30 } else { self.config.visuals.unfocused_fps.clamp(1, 30) as u64 }
     }
 
     /// Called every frame: sends nudges once they've settled.
@@ -2878,7 +2911,11 @@ impl App {
                         _ => {}
                     },
                     Modal::Help => self.help = false,
-                    Modal::Move => self.move_mode = None,
+                    // the bar's "undo" works in Move mode; any other click ends it
+                    Modal::Move => match hit {
+                        Some(Hit::Action(a @ (Action::UndoLayout | Action::RedoLayout))) => self.run(a),
+                        _ => self.move_mode = None,
+                    },
                     Modal::Widgets => match hit {
                         Some(Hit::WidgetItem(i)) => self.widget_chosen(i),
                         _ => self.widget_pick = None,
