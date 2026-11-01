@@ -272,7 +272,15 @@ audio, and looks spectacular.
     queue and lyrics can move but never close. **Built (D66, 2026-10-31):** reopened from the parked state (D59). An edit
     never overwrites a built-in Design: the first one asks for a name (Enter saves a Design of your own, Esc keeps one
     unnamed "<Design> (edited)"); a Design of your own saves itself as you edit; "Reset design" goes back to the
-    built-in one (a Design of your own stays in the picker).
+    built-in one (a Design of your own stays in the picker). **Polished (owner round, 2026-11-01):** a held Pane is
+    lifted and floats live under the pointer (its own Widget, at most ~45% of the screen each way, with a shadow)
+    while the others ease into place around a dashed "drop here" slot; on release it lands there (Esc: everything
+    goes back). A drop that would only change sizes is no drop (it looked like one Pane "just extended 15%"); the
+    screen's edges are the outermost columns and past the top or bottom of the Panes. Shift+arrows in Move mode
+    always move the Pane that way or say in the bar why not. Layout undo / redo: Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z),
+    `u` / `U` in Move mode, the bar's "undo" after an edit, and Ctrl+K → "Undo layout" / "Redo layout"; 50 steps per
+    session, the Design files follow, and undoing the first edit of a built-in Design returns to it (its unnamed
+    "(edited)" file goes again; a Design you named stays in the picker).
 86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready. Started 2026-10-19 (D48),
     tickets #63–#70, parity rule D49; the light librespot Engine on both OSes (D52, #70).
 

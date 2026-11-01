@@ -90,6 +90,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
     let [top, body, player, hints] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(3), Constraint::Length(1)]).areas(area);
+    // the Pane held by the mouse (or landing after a release) floats over the rest: images under it step aside
+    let now = std::time::Instant::now();
+    let float = app.float_rect(body, now);
     // popups are known up front, so pixel images under them can step down to cells this frame
     let login_r = match &app.catalogue {
         // the wizard shows the code itself
@@ -106,25 +109,30 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.picker.as_ref().map(|p| crate::looks::picker_rect(area, p)),
         app.naming.is_some().then(|| naming_rect(area)),
         app.widget_pick.as_ref().map(|p| crate::arrange::widgets_rect(area, p)),
-        crate::arrange::ghost_rect(body, app),
+        float.map(|r| crate::arrange::with_shadow(r, area)),
         app.playlists.details.is_some().then(|| crate::playlists::details_rect(area)),
         app.playlists.adding.is_some().then(|| crate::playlists::adding_rect(area, app.adding_rows().len())),
         app.cover_form.is_some().then(|| crate::cover::rect(area)),
         app.menu.as_ref().map(|m| menu_rect(area, m)),
-        app.toast.as_ref().map(|(msg, _)| toast_rect(area, msg)),
+        app.toast.as_ref().filter(|_| app.move_mode.is_none()).map(|(msg, _)| toast_rect(area, msg)),
     ];
     app.overlays = overlays.into_iter().flatten().collect();
     top_bar(f, top, app, &th);
-    panes(f, body, app, &th);
+    panes(f, body, app, &th, float, now);
     if th.scanlines {
         scanlines(f.buffer_mut(), body);
     }
     crate::visual::idle::draw(f.buffer_mut(), body, app, &th);
     player_bar(f, player, app, &th);
     match app.move_mode.clone() {
-        Some(slot) => crate::arrange::draw_move_hint(f.buffer_mut(), hints, &pane_name(app.design, &slot), &th),
+        // Move mode's notices ("no room…") go in its bar, where the eye is
+        Some(slot) => {
+            let said = app.toast.as_ref().map(|(m, _)| m.as_str());
+            crate::arrange::draw_move_hint(f.buffer_mut(), hints, &pane_name(app.design, &slot), said, &th);
+        }
         None => hint_bar(f.buffer_mut(), hints, &th, &app.keymap),
     }
+    crate::arrange::draw_undo_chip(f.buffer_mut(), hints, app, &th);
     if let (Some(r), Some(CatalogueStatus::LoginPending { url, code })) = (login_r, app.catalogue.clone()) {
         login(f, r, &th, &url, &code);
     }
@@ -147,7 +155,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         crate::arrange::draw_widgets(f.buffer_mut(), area, app, &th);
     }
     if let Some(n) = app.naming.clone() {
-        let edited = format!("Enter save · Esc keep it as “{} (edited)”",crate::design::DESIGNS[app.design].name);
+        let mut edited = format!("Enter save · Esc keep it as “{} (edited)”", crate::design::DESIGNS[app.design].name);
+        // the edit can still be undone from here, where there's room to say so
+        let undo = app.keymap.label(Action::UndoLayout);
+        if !undo.is_empty() && edited.chars().count() + undo.chars().count() + 8 <= naming_rect(area).width.saturating_sub(4) as usize {
+            edited += &format!(" · {undo} undo");
+        }
         let (title, hint) = match n.purpose {
             crate::app::NameFor::Layout => ("Save design as", "Enter save · Esc cancel · find it in Ctrl+K → Pick a design"),
             crate::app::NameFor::Fork => ("Keep your changes as a design", edited.as_str()),
@@ -176,11 +189,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if crate::setup::wanted(app) {
         crate::setup::draw_wizard(f.buffer_mut(), crate::setup::rect(area), app, &th);
     }
-    if let Some((msg, _)) = app.toast.clone() {
+    if let Some((msg, _)) = app.toast.clone().filter(|_| app.move_mode.is_none()) {
         let r = toast_rect(area, &msg);
         text(f.buffer_mut(), r.x, r.y, r.width, &format!("  {msg}  "), th.chip(th.accent));
     }
-    crate::arrange::draw_ghost(f.buffer_mut(), body, app, &th);
     if app.config.ui.transparent {
         transparent(f.buffer_mut(), area, &th);
     }
@@ -370,175 +382,34 @@ fn close_button(buf: &mut Buffer, rect: Rect, th: &Theme, focused: bool, slot: &
     hits.push((Rect::new(x, rect.y, 3, 1), Hit::Close(slot.into())));
 }
 
-fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
+fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme, float: Option<Rect>, now: std::time::Instant) {
     app.body = body;
     // while a Pane is held over a drop zone, the whole layout is drawn as dropping there would make it
     let tree = app.shown_layout().into_owned();
     let moving = app.moving().map(String::from);
     let computed = tree.compute_shaped(body, app.cell_aspect());
+    // where each Pane is drawn this frame: on its way to where the layout puts it (a divider being dragged follows the
+    // pointer at once)
+    let mut drawn = std::mem::take(&mut app.drawn);
+    let snap = app.divider_from.is_some();
+    app.motion.step(&computed.slots, body, now, snap, &mut drawn);
+    // the Pane held by the mouse leaves an empty slot where it would land; one landing is drawn over the rest
+    let lifted = app.tile.as_ref().filter(|t| t.live).map(|t| t.slot.clone());
+    let raised = lifted.clone().or_else(|| app.motion.landing.clone().filter(|_| float.is_some()));
+    let landing_ok = app.tile.as_ref().is_some_and(|t| t.zone.is_some());
     // the ◂ ▸ swaps sit on a border a divider's grip may cover: registered after the grips, so they win
     let mut swaps: Vec<(Rect, Hit)> = vec![];
-    for (i, (slot, rect)) in computed.slots.iter().enumerate() {
-        // its title bar: drag it to move the Pane (registered with the ◂ ▸ after the dividers' grips, so it wins over
-        // them on the row below a horizontal divider; the buttons are registered after it and win in turn)
-        swaps.push((Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(2), 1), Hit::Title(slot.clone())));
-        let (title, todo) = slot_info(slot);
-        let title = crate::design::title(app.design, slot, title);
-        // the main Pane is titled after what it shows
-        let title = match (slot.as_str(), &app.view, &app.artist) {
-            ("home", _, _) if app.search.is_some() => "search".to_string(),
-            ("home", _, _) if app.stats_view.is_some() => "stats".to_string(),
-            ("home", _, _) if app.settings_view.is_some() => "settings".to_string(),
-            ("home", _, Some(a)) => a.name.clone(),
-            ("home", Some(v), _) => v.title.clone(),
-            // its title is the switch between artists and tracks
-            ("topweek", _, _) if app.top_week_tracks => "top tracks · week ⇄".to_string(),
-            ("topweek", _, _) => "top artists · week ⇄".to_string(),
-            _ => title.to_string(),
-        };
-        let number = if th.numbered { superscript(i + 1) } else { String::new() };
-        let focused = *slot == app.focus;
-        let held = moving.as_deref() == Some(slot.as_str());
-        let title_st = if focused || held { th.title() } else { th.s(th.accent) };
-        // a Pane that can close has a × at the right end of its title (the four every Design keeps don't)
-        let closable = !crate::tiling::CORE.contains(&slot.as_str()) && computed.slots.len() > 1 && rect.width >= 14;
-        let tail: u16 = if closable { 3 } else { 0 };
-        let mut spans = vec![Span::styled(format!(" {number}"), title_st)];
-        // the main Pane: ← → through the pages seen, while there are any, at the right end of its title like every
-        // Pane's arrows (D44); dim when there's nowhere to go that way
-        let history = slot == "home" && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20;
-        // a Slot that can show other Widgets always keeps its ◂ ▸ (7 cells at the right): a long title gives way
-        let can_swap = (!crate::layouts::options(slot).is_empty() && slot != "well") || history;
-        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-        let room = (rect.width as usize).saturating_sub(2 + used + if can_swap { 8 } else { 0 } + tail as usize);
-        let title = if title.chars().count() + 1 > room && room > 1 { title.chars().take(room - 2).collect::<String>() + "…" } else { title };
-        spans.push(Span::styled(format!("{title} "), title_st));
-        if slot == "topweek" {
-            let tw = spans.iter().map(|s| s.content.chars().count()).sum::<usize>() as u16;
-            swaps.push((Rect::new(rect.x + 1, rect.y, tw.min(rect.width.saturating_sub(2)), 1), Hit::TopWeekToggle));
-        }
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_set(th.borders)
-            .border_style(if held { th.s(th.accent2).add_modifier(Modifier::BOLD) } else { th.s(if focused { th.border_focus } else { th.pane_border(i) }) })
-            .title(ratatui::text::Line::from(spans))
-            .style(th.base());
-        let inner = block.inner(*rect);
-        // the Pane's own hit first, so the things inside it win
-        app.hit(*rect, Hit::Focus(slot.clone()));
-        // a Slot that can show other Widgets says so: ◂ ▸ in its title swap them (so does v)
-        let swappable = can_swap && rect.width >= 12;
-        if slot == "well" {
-            // the well draws its own (sagging) frame
-            crate::visual::well::draw(f.buffer_mut(), *rect, app, th);
-            if closable {
-                close_button(f.buffer_mut(), *rect, th, focused, slot, &mut swaps);
+    let n = computed.slots.len();
+    for (i, ((slot, target), rect)) in computed.slots.iter().zip(drawn.iter().copied()).enumerate() {
+        if raised.as_deref() == Some(slot.as_str()) {
+            app.hit(*target, Hit::Focus(slot.clone()));
+            swaps.push((Rect::new(target.x + 1, target.y, target.width.saturating_sub(2), 1), Hit::Title(slot.clone())));
+            if lifted.is_some() {
+                crate::arrange::draw_slot(f.buffer_mut(), rect, landing_ok, float, th);
             }
             continue;
         }
-        f.render_widget(block, *rect);
-        if history {
-            let (x, y) = (rect.right().saturating_sub(7), rect.y);
-            let buf = f.buffer_mut();
-            let on = |b: bool| th.s(if b { th.fg } else { th.border });
-            text(buf, x, y, 1, " ", title_st);
-            text(buf, x + 1, y, 1, "←", on(!app.back.is_empty()));
-            text(buf, x + 2, y, 1, " ", title_st);
-            text(buf, x + 3, y, 1, "→", on(!app.forward.is_empty()));
-            text(buf, x + 4, y, 1, " ", title_st);
-            swaps.push((Rect::new(x, y, 2, 1), Hit::History(-1)));
-            swaps.push((Rect::new(x + 2, y, 3, 1), Hit::History(1)));
-        } else if swappable {
-            let (x, y) = (rect.right().saturating_sub(7 + tail), rect.y);
-            let buf = f.buffer_mut();
-            text(buf, x, y, 5, " ◂ ▸ ", th.s(if focused { th.accent } else { th.dim }));
-            swaps.push((Rect::new(x, y, 2, 1), Hit::Swap(slot.clone(), -1)));
-            swaps.push((Rect::new(x + 2, y, 3, 1), Hit::Swap(slot.clone(), 1)));
-        }
-        if closable {
-            close_button(f.buffer_mut(), *rect, th, focused, slot, &mut swaps);
-        }
-        match slot.as_str() {
-            "hole" => crate::visual::well::draw_plain(f.buffer_mut(), *rect, inner, app, th),
-            "nowplaying" => crate::widgets::nowplaying(f.buffer_mut(), inner, app, th),
-            "levels" => crate::widgets::levels(f.buffer_mut(), inner, app, th),
-            "listening" => {
-                crate::widgets::listening(f.buffer_mut(), inner, app, th);
-                // a click opens the whole story
-                app.hit(inner, Hit::Action(Action::Stats));
-            }
-            "rain" => crate::widgets::rain(f.buffer_mut(), inner, app, th),
-            "scope" => crate::widgets::scope(f.buffer_mut(), inner, app, th),
-            "top" => crate::widgets::top(f.buffer_mut(), inner, app, th),
-            "today" => {
-                crate::stats::today(f.buffer_mut(), inner, app, th);
-                app.hit(inner, Hit::Action(Action::Stats));
-            }
-            "topweek" => crate::stats::top_week(f.buffer_mut(), inner, app, th),
-            "starfield" => crate::ambient::starfield(f.buffer_mut(), inner, app, th),
-            "marquee" => crate::ambient::marquee(f.buffer_mut(), inner, app, th),
-            "glow" => crate::ambient::glow(f.buffer_mut(), inner, app, th),
-            _ => {}
-        }
-        if matches!(slot.as_str(), "hole" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top" | "today" | "topweek" | "starfield" | "marquee" | "glow") {
-            continue;
-        }
-        if slot == "library" {
-            crate::sidebar::draw(f.buffer_mut(), inner, app, th);
-            continue;
-        }
-        if slot == "lyrics" {
-            crate::lyrics::draw(f.buffer_mut(), inner, app, th);
-            continue;
-        }
-        if slot == "queue" {
-            crate::queue::draw(f.buffer_mut(), inner, app, th);
-            continue;
-        }
-        if slot == "stream" {
-            crate::setup::draw_stream(f.buffer_mut(), inner, app, th);
-            continue;
-        }
-        if slot == "fft" {
-            crate::meters::spectrum(f.buffer_mut(), inner, &app.meters, th);
-            continue;
-        }
-        if slot == "loudness" {
-            crate::meters::loudness(f.buffer_mut(), inner, &app.meters, th);
-            continue;
-        }
-        if slot == "home" && app.search.is_some() {
-            crate::search::draw(f.buffer_mut(), inner, app, th);
-            continue;
-        }
-        if slot == "home" && app.stats_view.is_some() {
-            crate::stats::draw(f.buffer_mut(), inner, app, th);
-            continue;
-        }
-        if slot == "home" && app.settings_view.is_some() {
-            crate::settings::draw(f.buffer_mut(), inner, app, th);
-            continue;
-        }
-        if slot == "home" && app.artist.is_some() {
-            crate::artist::draw(f.buffer_mut(), inner, app, th);
-            continue;
-        }
-        if slot == "home" && app.view.is_some() {
-            crate::tracks::draw(f.buffer_mut(), inner, app, th);
-            continue;
-        }
-        if slot == "home" {
-            if !home_status(f.buffer_mut(), inner, app, th) {
-                crate::home::draw(f.buffer_mut(), inner, app, th);
-            }
-            continue;
-        }
-        if inner.height > 0 {
-            let y = inner.y + inner.height / 2;
-            let w = todo.chars().count() as u16;
-            let x = inner.x + inner.width.saturating_sub(w) / 2;
-            text(f.buffer_mut(), x, y, inner.width, todo, th.s(th.dim));
-        }
+        pane(f, app, th, (i, n), slot, rect, *target, moving.as_deref(), false, &mut swaps);
     }
     // space bends around the hole: neighbouring border lines curve toward it
     if let Some(hole) = app.hole_at {
@@ -548,11 +419,211 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
     for (i, d) in computed.dividers.iter().enumerate() {
         app.hit(d.grip, Hit::Divider(i));
     }
-    for (r, h) in swaps {
+    for (r, h) in swaps.drain(..) {
         app.hit(r, h);
     }
     app.dividers = computed.dividers;
+    // the held (or landing) Pane floats over everything, its own Widget drawn live in cells (pixels under a Pane that
+    // moves every frame would smear), with no hit boxes: the pointer is the drag's
+    if let (Some(r), Some(slot)) = (float, raised) {
+        let i = computed.slots.iter().position(|(s, _)| *s == slot).unwrap_or(0);
+        let keep = app.hits.len();
+        app.floating = true;
+        let area = f.area();
+        crate::arrange::draw_shadow(f.buffer_mut(), r, area, th);
+        pane(f, app, th, (i, n), &slot, r, r, None, true, &mut swaps);
+        app.floating = false;
+        app.hits.truncate(keep);
+    }
+    app.drawn = drawn;
 }
+
+/// One Pane over `rect` (where it is drawn this frame; `target` is where the layout puts it, which is what a click
+/// finds). `raised`: the Pane held by the mouse, drawn in the accent without its buttons. Smaller than a Pane can be
+/// (on its way somewhere), it is just its frame.
+#[allow(clippy::too_many_arguments)]
+fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), slot: &str, rect: Rect, target: Rect, moving: Option<&str>, raised: bool, swaps: &mut Vec<(Rect, Hit)>) {
+    let rect = &rect;
+    // whatever was drawn here (a Pane it passes over on its way, or the one it floats over) goes
+    if raised || rect != &target {
+        fill(f.buffer_mut(), *rect, th);
+    }
+    // its title bar: drag it to move the Pane (registered with the ◂ ▸ after the dividers' grips, so it wins over
+    // them on the row below a horizontal divider; the buttons are registered after it and win in turn)
+    swaps.push((Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(2), 1), Hit::Title(slot.to_string())));
+    let (title, todo) = slot_info(slot);
+    let title = crate::design::title(app.design, slot, title);
+    // the main Pane is titled after what it shows
+    let title = match (slot, &app.view, &app.artist) {
+        ("home", _, _) if app.search.is_some() => "search".to_string(),
+        ("home", _, _) if app.stats_view.is_some() => "stats".to_string(),
+        ("home", _, _) if app.settings_view.is_some() => "settings".to_string(),
+        ("home", _, Some(a)) => a.name.clone(),
+        ("home", Some(v), _) => v.title.clone(),
+        // its title is the switch between artists and tracks
+        ("topweek", _, _) if app.top_week_tracks => "top tracks · week ⇄".to_string(),
+        ("topweek", _, _) => "top artists · week ⇄".to_string(),
+        _ => title.to_string(),
+    };
+    let number = if th.numbered { superscript(i + 1) } else { String::new() };
+    let focused = slot == app.focus;
+    let held = moving == Some(slot);
+    let title_st = if focused || held || raised { th.title() } else { th.s(th.accent) };
+    // a Pane that can close has a × at the right end of its title (the four every Design keeps don't)
+    let closable = !raised && !crate::tiling::CORE.contains(&slot) && total > 1 && rect.width >= 14;
+    let tail: u16 = if closable { 3 } else { 0 };
+    // held up: the grip says it moves
+    let mut spans = vec![Span::styled(if raised { " ⠿ ".to_string() } else { format!(" {number}") }, title_st)];
+    // the main Pane: ← → through the pages seen, while there are any, at the right end of its title like every
+    // Pane's arrows (D44); dim when there's nowhere to go that way
+    let history = !raised && slot == "home" && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20;
+    // a Slot that can show other Widgets always keeps its ◂ ▸ (7 cells at the right): a long title gives way
+    let can_swap = !raised && ((!crate::layouts::options(slot).is_empty() && slot != "well") || history);
+    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    let room = (rect.width as usize).saturating_sub(2 + used + if can_swap { 8 } else { 0 } + tail as usize);
+    let title = if title.chars().count() + 1 > room && room > 1 { title.chars().take(room - 2).collect::<String>() + "…" } else { title };
+    spans.push(Span::styled(format!("{title} "), title_st));
+    if slot == "topweek" {
+        let tw = spans.iter().map(|s| s.content.chars().count()).sum::<usize>() as u16;
+        swaps.push((Rect::new(rect.x + 1, rect.y, tw.min(rect.width.saturating_sub(2)), 1), Hit::TopWeekToggle));
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(th.borders)
+        .border_style(if raised {
+            th.s(th.accent).add_modifier(Modifier::BOLD)
+        } else if held {
+            th.s(th.accent2).add_modifier(Modifier::BOLD)
+        } else {
+            th.s(if focused { th.border_focus } else { th.pane_border(i) })
+        })
+        .title(ratatui::text::Line::from(spans))
+        .style(th.base());
+    let inner = block.inner(*rect);
+    // the Pane's own hit first, so the things inside it win (where it is going: mid-way, a click lands there)
+    app.hit(target, Hit::Focus(slot.to_string()));
+    // a Slot that can show other Widgets says so: ◂ ▸ in its title swap them (so does v)
+    let swappable = can_swap && rect.width >= 12;
+    // on its way somewhere and smaller than a Pane can be: just its frame
+    let min_h = if crate::layout::is_hole(slot) { crate::layout::WELL_MIN_H } else { crate::layout::MIN_H };
+    if rect.width < crate::layout::MIN_W || rect.height < min_h {
+        f.render_widget(block, *rect);
+        return;
+    }
+    // the well draws its own (sagging) frame; held up, it is a plain Pane round the hole
+    if slot == "well" && !raised {
+        crate::visual::well::draw(f.buffer_mut(), *rect, app, th);
+        if closable {
+            close_button(f.buffer_mut(), *rect, th, focused, slot, swaps);
+        }
+        return;
+    }
+    f.render_widget(block, *rect);
+    if history {
+        let (x, y) = (rect.right().saturating_sub(7), rect.y);
+        let buf = f.buffer_mut();
+        let on = |b: bool| th.s(if b { th.fg } else { th.border });
+        text(buf, x, y, 1, " ", title_st);
+        text(buf, x + 1, y, 1, "←", on(!app.back.is_empty()));
+        text(buf, x + 2, y, 1, " ", title_st);
+        text(buf, x + 3, y, 1, "→", on(!app.forward.is_empty()));
+        text(buf, x + 4, y, 1, " ", title_st);
+        swaps.push((Rect::new(x, y, 2, 1), Hit::History(-1)));
+        swaps.push((Rect::new(x + 2, y, 3, 1), Hit::History(1)));
+    } else if swappable {
+        let (x, y) = (rect.right().saturating_sub(7 + tail), rect.y);
+        let buf = f.buffer_mut();
+        text(buf, x, y, 5, " ◂ ▸ ", th.s(if focused { th.accent } else { th.dim }));
+        swaps.push((Rect::new(x, y, 2, 1), Hit::Swap(slot.to_string(), -1)));
+        swaps.push((Rect::new(x + 2, y, 3, 1), Hit::Swap(slot.to_string(), 1)));
+    }
+    if closable {
+        close_button(f.buffer_mut(), *rect, th, focused, slot, swaps);
+    }
+    match slot {
+        "hole" | "well" => crate::visual::well::draw_plain(f.buffer_mut(), *rect, inner, app, th),
+        "nowplaying" => crate::widgets::nowplaying(f.buffer_mut(), inner, app, th),
+        "levels" => crate::widgets::levels(f.buffer_mut(), inner, app, th),
+        "listening" => {
+            crate::widgets::listening(f.buffer_mut(), inner, app, th);
+            // a click opens the whole story
+            app.hit(inner, Hit::Action(Action::Stats));
+        }
+        "rain" => crate::widgets::rain(f.buffer_mut(), inner, app, th),
+        "scope" => crate::widgets::scope(f.buffer_mut(), inner, app, th),
+        "top" => crate::widgets::top(f.buffer_mut(), inner, app, th),
+        "today" => {
+            crate::stats::today(f.buffer_mut(), inner, app, th);
+            app.hit(inner, Hit::Action(Action::Stats));
+        }
+        "topweek" => crate::stats::top_week(f.buffer_mut(), inner, app, th),
+        "starfield" => crate::ambient::starfield(f.buffer_mut(), inner, app, th),
+        "marquee" => crate::ambient::marquee(f.buffer_mut(), inner, app, th),
+        "glow" => crate::ambient::glow(f.buffer_mut(), inner, app, th),
+        _ => {}
+    }
+    if matches!(slot, "hole" | "well" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top" | "today" | "topweek" | "starfield" | "marquee" | "glow") {
+        return;
+    }
+    if slot == "library" {
+        crate::sidebar::draw(f.buffer_mut(), inner, app, th);
+        return;
+    }
+    if slot == "lyrics" {
+        crate::lyrics::draw(f.buffer_mut(), inner, app, th);
+        return;
+    }
+    if slot == "queue" {
+        crate::queue::draw(f.buffer_mut(), inner, app, th);
+        return;
+    }
+    if slot == "stream" {
+        crate::setup::draw_stream(f.buffer_mut(), inner, app, th);
+        return;
+    }
+    if slot == "fft" {
+        crate::meters::spectrum(f.buffer_mut(), inner, &app.meters, th);
+        return;
+    }
+    if slot == "loudness" {
+        crate::meters::loudness(f.buffer_mut(), inner, &app.meters, th);
+        return;
+    }
+    if slot == "home" && app.search.is_some() {
+        crate::search::draw(f.buffer_mut(), inner, app, th);
+        return;
+    }
+    if slot == "home" && app.stats_view.is_some() {
+        crate::stats::draw(f.buffer_mut(), inner, app, th);
+        return;
+    }
+    if slot == "home" && app.settings_view.is_some() {
+        crate::settings::draw(f.buffer_mut(), inner, app, th);
+        return;
+    }
+    if slot == "home" && app.artist.is_some() {
+        crate::artist::draw(f.buffer_mut(), inner, app, th);
+        return;
+    }
+    if slot == "home" && app.view.is_some() {
+        crate::tracks::draw(f.buffer_mut(), inner, app, th);
+        return;
+    }
+    if slot == "home" {
+        if !home_status(f.buffer_mut(), inner, app, th) {
+            crate::home::draw(f.buffer_mut(), inner, app, th);
+        }
+        return;
+    }
+    if inner.height > 0 {
+        let y = inner.y + inner.height / 2;
+        let w = todo.chars().count() as u16;
+        let x = inner.x + inner.width.saturating_sub(w) / 2;
+        text(f.buffer_mut(), x, y, inner.width, todo, th.s(th.dim));
+    }
+}
+
+
 
 fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     // what the bar shows, without the queue it doesn't (the whole state, queue and all, was cloned every frame: Q1)
@@ -835,6 +906,7 @@ fn help_rows(m: &crate::keymap::Keymap) -> Vec<(String, String)> {
         (m.label(A::FocusNext), "focus the next pane".into()),
         ("Panes".into(), "drag a title to move it · × closes · right-click: split".into()),
         (m.label(A::MovePane), "move pane: arrows swap · ⇧arrows split · + − size · x close".into()),
+        (format!("{} {}", m.label(A::UndoLayout), m.label(A::RedoLayout)).trim().to_string(), "undo / redo a layout change (u in Move mode)".into()),
         (m.label(A::ToggleIdle), "idle takeover on / off (any key wakes the screen)".into()),
         (m.label(A::Quit), "quit the Client (music keeps playing)".into()),
         ("keys.toml".into(), format!("{} keys · all of them in {} → Settings", m.preset, m.label(A::Palette))),
