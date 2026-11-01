@@ -63,6 +63,17 @@ order of the work. T0005's phone fix holds live (2026-10-28 log: the resume was 
   Every commit path goes through `fits`. pty `tiling` (160×48, pixel tier). Known limits: a top-row Pane's top band
   is the screen edge; validity is checked at the current size only. Needs the owner's hands-on test.
 
+**Owner's third round (2026-11-01), merged:** search hang (no timeout in librespot's HTTP client: every Spotify
+call now has a 12 s deadline, `lib.rs::spotify`; a failed search shows in place of "searching…", Enter retries);
+Space (the bar flips at once and holds 1.5 s; Soloist's toggle goes from our last play/pause for 2 s; buffering =
+playing); every popup scrolls by construction (`Modal` + exhaustive `App::modal_scroll`, `scroll.rs`, CLAUDE.md rule);
+Devices scrolls; tiling polish: the dragged Pane lifts and floats with live content over a dashed "drop here" slot,
+every Pane eases into place (`arrange/motion.rs`, 180 ms), size-only drops are refused (the owner's "extends 15%":
+a drop on its own neighbour's edge, `same_arrangement`), screen-edge zones only on the outermost cells, Move mode's
+Shift+arrow moves or says why not, undo/redo (Ctrl+Z / Ctrl+Y, `u`/`U` in Move mode, a clickable chip; 50 steps;
+undoing a built-in's first edit removes its "(edited)" file). Owner preference: Opus agents or me, not Sonnet.
+Needs the owner's hands-on test: all of it, and DJ once it's back on their Home.
+
 **Next, in order** (the owner games on this PC: ask before heavy commands — builds, tests, history-wide greps):
 the owner retests (reinstall both binaries first) and says go → redo the scrub from the then-current `main` (the
 scratch clone is session-only; seconds) → **owner's go-ahead** → rename this repo to `publicusr/singularity-archive`, create a new private
