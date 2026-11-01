@@ -239,8 +239,14 @@ fn naming_rect(area: Rect) -> Rect {
     centered(area, 64, 4)
 }
 
+/// How many device rows the picker shows at once: all of them, unless the screen is too short (then they scroll).
+fn device_rows(area: Rect, app: &App) -> usize {
+    // borders, the gaps, the hint, and the Jam's gap and row
+    app.devices.len().max(1).min(area.height.saturating_sub(7).max(1) as usize)
+}
+
 fn devices_rect(area: Rect, app: &App) -> Rect {
-    let list = app.devices.len().max(1) as u16 + 5;
+    let list = device_rows(area, app) as u16 + 5;
     let jam = if app.devices.is_empty() { 0 } else { crate::jam::height(app, area.height.saturating_sub(list)) };
     centered(area, crate::jam::width(app).max(56).min(area.width), list + jam)
 }
@@ -254,8 +260,11 @@ fn devices(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
         return;
     }
     let list = app.devices.clone();
-    for (i, d) in list.iter().enumerate() {
-        let y = inner.y + 1 + i as u16;
+    let shown = device_rows(area, app);
+    // the selection stays in view (on the Jam row, the last devices show)
+    let first = crate::scroll::window(app.devices_sel.min(list.len() - 1), shown, list.len());
+    for (i, d) in list.iter().enumerate().skip(first).take(shown) {
+        let y = inner.y + 1 + (i - first) as u16;
         let sel = i == app.devices_sel;
         let st = if d.active { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.fg) };
         let bg = if sel { th.selection.color() } else { th.bg.color() };
@@ -274,7 +283,7 @@ fn devices(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
         text(buf, inner.right().saturating_sub(tw + 2), y, tw, &tag, th.s(if d.active { th.accent } else { th.dim }).bg(bg));
         app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::DeviceRow(i));
     }
-    crate::jam::draw(buf, inner, inner.y + 1 + list.len() as u16, list.len(), app, th);
+    crate::jam::draw(buf, inner, inner.y + 1 + shown as u16, list.len(), app, th);
     // the vim preset makes j a ↓: then the Jam row is reached like the others
     let j_is_jam = app.keymap.nav(ratatui::crossterm::event::KeyEvent::new(ratatui::crossterm::event::KeyCode::Char('j'), ratatui::crossterm::event::KeyModifiers::NONE)).is_none();
     let hint = if j_is_jam { "Enter or click: play there · j: Jam · Esc: close" } else { "Enter or click: play there · Esc: close" };
@@ -2651,6 +2660,22 @@ mod tests {
     }
 
     // ── Devices (#13) ──
+
+    #[test]
+    fn a_long_device_list_scrolls_with_its_selection() {
+        use singularity_proto::Device;
+        let (mut app, _rx) = playing_app(1);
+        app.devices = (0..30).map(|i| Device { id: format!("d{i}"), name: format!("Speaker {i:02}"), kind: "speaker".into(), active: i == 0, volume: None, is_engine: i == 0 }).collect();
+        app.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let s = render(&mut app, 100, 20);
+        assert!(s.contains("Speaker 00") && !s.contains("Speaker 29") && s.contains("Start a Jam"), "{s}");
+        for _ in 0..29 {
+            app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        let s = render(&mut app, 100, 20);
+        assert!(s.contains("Speaker 29") && !s.contains("◉ Speaker 00") && s.contains("Start a Jam"), "the selection stays in view: {s}");
+        assert!(app.hits.iter().any(|(_, h)| *h == Hit::DeviceRow(29)), "rows keep their own index");
+    }
 
     #[test]
     fn device_picker_moves_playback_and_the_bar_says_where() {
