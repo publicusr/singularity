@@ -138,10 +138,13 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 - **Layouts**: drag Pane borders; `v` (or a Pane's ◂ ▸) swaps its Widget; Ctrl+K → "Save design as…" keeps it, and it
   comes back, colours included, in Ctrl+K → Pick a design.
 - **Tiling**: drag a Pane by its title bar: onto another Pane's middle to swap, onto its edge to split it, onto the
-  screen's edge for a full-height column or full-width row (the layout reflows as you drag; Esc cancels). `×` in a
+  screen's edge (the outermost column, or past the top or bottom of the Panes) for a full-height column or
+  full-width row. The Pane floats under the pointer and the others make room around where it would land; Esc
+  cancels. `×` in a
   title closes a Pane, right-click a title to split or close, Ctrl+K has Split right / Split down / Close pane / Move
   pane / Reset design. `m` moves the focused Pane from the keyboard: arrows swap with the neighbour, ⇧arrows split
-  beside it, `+` `-` size it, `x` closes it, Enter or Esc ends. Home, the library, the queue and lyrics can move but
+  beside it, `+` `-` size it, `x` closes it, `u` undoes, Enter or Esc ends. Ctrl+Z undoes a layout change and
+  Ctrl+Y (or Ctrl+Shift+Z) redoes it; the bar offers "undo" for a few seconds after each one. Home, the library, the queue and lyrics can move but
   never close, and nothing can be dropped where a Pane would get too small. The first edit of a built-in Design asks
   what to call your Design (Esc keeps one unnamed "Singularity (edited)"); after that it saves itself.
 - **Idle**: after 3 minutes without input the black hole drifts over the screen; any key wakes it (and does nothing

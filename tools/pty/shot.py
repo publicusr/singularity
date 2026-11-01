@@ -14,7 +14,7 @@ BIN = os.environ.get("PTY_BIN") or f"{ROOT}/target/debug"
 WRAP = os.environ.get("PTY_WRAP", "").split()
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
 # the tiling scenario wants room for the whole Singularity layout
-if sys.argv[1:2] == ["tiling"]:
+if sys.argv[1:2] in (["tiling"], ["tiling-lift"]):
     COLS, ROWS = int(os.environ.get("PTY_COLS", 160)), int(os.environ.get("PTY_ROWS", 48))
 
 
@@ -1276,6 +1276,105 @@ def tiling(t, out, env):
     t.send(b"q", 0.5)
 
 
+def tiling_lift(t, out, env):
+    """The owner's 2026-11-01 round on free tiling: a drop that would only resize a neighbour is no drop; a held Pane
+    is lifted (it shrinks to its floating size) and floats live with a shadow while the others ease into place around
+    a dashed slot (shots at several moments of each animation); the screen's edges; the landing; undo from the naming
+    prompt, redo; Move mode's Shift+arrow refusals in the bar, a whole column and `u`; a top-edge row and Ctrl+Z
+    mid-animation. Pixel tier, 160x48; start from an empty output folder."""
+    t.pump(1.0)
+    t.send(b" ", 0.5)
+
+    def title_at(title):
+        at = t.find("┌ " + title)
+        if at:
+            return at[0] + 3, at[1]
+        x, y = t.find(title)
+        return x + 2, y
+
+    def glide(x0, y0, x1, y1, steps=5):
+        for i in range(1, steps + 1):
+            mouse(t, 32, x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps, wait=0.0)
+
+    def moments(name, times=(0.03, 0.06, 0.4)):
+        for i, dt in enumerate(times):
+            t.pump(dt)
+            t.shot(f"{out}/{name}-{'abc'[i]}.png")
+
+    t.shot(f"{out}/00-start.png")
+    # 1. the owner's bug: the stream held a little way up over its border, into the library's bottom band. That used
+    # to re-split the two 50/50 (the library shrank, nothing else happened); now it's no drop: the slot says "back"
+    sx, sy = title_at("stream")
+    lx, ly = title_at("~/library")
+    mouse(t, 0, sx, sy, wait=0.05)
+    glide(sx, sy, sx + 4, sy - 3)
+    t.pump(0.5)
+    t.shot(f"{out}/01-near-own-neighbour.png")
+    mouse(t, 0, sx + 4, sy - 3, release=True, wait=0.5)
+    t.shot(f"{out}/02-near-own-neighbour-released.png")
+    # 2. lift Home: it comes up from its place, shrinking to its floating size
+    hx, hy = title_at("home")
+    mouse(t, 0, hx, hy, wait=0.05)
+    mouse(t, 32, hx + 4, hy + 2, wait=0.0)
+    moments("03-lift")
+    # 3. over the library's middle: the others make room (a swap), an empty slot where it would land
+    glide(hx + 4, hy + 2, 12, 14)
+    moments("04-over-library")
+    # 4. the queue's left band: a split beside it
+    qx, qy = 31, 33
+    glide(12, 14, qx, qy)
+    t.pump(0.4)
+    t.shot(f"{out}/05-queue-left-band.png")
+    # 5. the screen's right edge (the outermost column): a whole column
+    glide(qx, qy, 159, 26)
+    t.pump(0.4)
+    t.shot(f"{out}/06-right-edge.png")
+    # 6. below the Panes (the player): a whole row at the bottom
+    glide(159, 26, 80, 45)
+    t.pump(0.4)
+    t.shot(f"{out}/07-bottom-edge.png")
+    # 7. let go in the queue's left band: it lands in its slot
+    glide(80, 45, qx, qy)
+    t.pump(0.4)
+    mouse(t, 0, qx, qy, release=True, wait=0.0)
+    moments("08-landing")
+    # 8. the first edit asks for a name; Ctrl+Z from there goes back to the built-in Design, Ctrl+Y redoes (and asks)
+    t.shot(f"{out}/09-naming.png")
+    t.send(b"\x1a", 0.0)
+    moments("10-undone-from-prompt", (0.05, 0.4))
+    t.send(b"\x19", 0.5)
+    t.shot(f"{out}/11-redone-asks-again.png")
+    t.send(b"\x1b", 0.5)
+    t.shot(f"{out}/12-kept-edited-undo-chip.png")
+    # 9. Move mode on lyrics: Shift+Up has no room above the well (said in the bar); Shift+Right makes a whole column;
+    # again, it already is one; u undoes
+    x, y = title_at("lyrics")
+    mouse(t, 0, x, y); mouse(t, 0, x, y, release=True, wait=0.3)
+    t.send(b"m", 0.3)
+    t.send(b"\x1b[1;2A", 0.3)
+    t.shot(f"{out}/13-move-no-room.png")
+    t.send(b"\x1b[1;2C", 0.0)
+    moments("14-move-column", (0.05, 0.4))
+    t.send(b"\x1b[1;2C", 0.3)
+    t.shot(f"{out}/15-move-already-spans.png")
+    t.send(b"u", 0.0)
+    moments("16-move-undo", (0.05, 0.4))
+    t.send(b"\r", 0.3)
+    # 10. fft pushed up past the Panes (the top bar): a whole row at the top; dropped; Ctrl+Z mid-way back
+    fx, fy = title_at("fft")
+    mouse(t, 0, fx, fy, wait=0.05)
+    glide(fx, fy, 70, 0)
+    t.pump(0.4)
+    t.shot(f"{out}/17-top-edge.png")
+    mouse(t, 0, 70, 0, release=True, wait=0.5)
+    t.shot(f"{out}/18-top-edge-done.png")
+    t.send(b"\x1a", 0.0)
+    moments("19-ctrl-z", (0.04, 0.08, 0.4))
+    t.send(b"\x19", 0.5)
+    t.shot(f"{out}/20-ctrl-y.png")
+    t.send(b"q", 0.5)
+
+
 def main():
     scenario, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
@@ -1296,10 +1395,10 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift") else "0"
         # kitty's layer under cell backgrounds (#41); the harness composites it as kitty does
         env["SINGULARITY_BELOW_BG"] = "1" if scenario in ("popup", "ambient") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
@@ -1401,6 +1500,8 @@ def main():
             return layouts(t, out, env)
         if scenario == "tiling":
             return tiling(t, out, env)
+        if scenario == "tiling-lift":
+            return tiling_lift(t, out, env)
         if scenario == "artist":
             t.pump(1.0)
             x, y = t.find("♥  Liked Songs")
