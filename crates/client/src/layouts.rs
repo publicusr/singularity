@@ -9,7 +9,7 @@ use std::path::Path;
 /// Widgets that can take each other's place. Panes outside these (Home, the library, the black hole) keep theirs.
 const GROUPS: [&[&str]; 2] = [
     &["fft", "loudness", "levels", "scope", "rain", "starfield"],
-    &["lyrics", "queue", "nowplaying", "stream", "top", "listening", "today", "topweek", "marquee", "glow"],
+    &["lyrics", "queue", "nowplaying", "stream", "top", "listening", "today", "topweek", "marquee", "glow", "vinyl", "waterfall", "aurora", "ripples"],
 ];
 
 /// What a Slot showing `widget` can show instead (itself included), if anything.
