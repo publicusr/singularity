@@ -62,7 +62,7 @@ fn verbose_log_gives_lifetime_and_stream_format() {
 }
 
 /// Lines from a real stall episode (2026-10-18, the connection saturated by another program): speed samples and
-/// underruns. The recovery line ("updateInternalDriverToPlaying: underrun") isn't a new stall.
+/// underruns. The recovery line ("updateInternalDriverToPlaying: underrun") isn't a new stall: audio flows again.
 #[test]
 fn verbose_log_gives_download_speed_and_stalls() {
     use singularityd::soloist::{LogNews, LogParser};
@@ -73,7 +73,7 @@ fn verbose_log_gives_download_speed_and_stalls() {
 16:59:55.638 I [f:1118                          ] FileStreamer bandwidth sample: 43.717687 kBps\x1b[0m";
     let mut p = LogParser::default();
     let news: Vec<LogNews> = log.lines().filter_map(|l| p.line(l)).collect();
-    assert_eq!(news, vec![LogNews::Bandwidth(224), LogNews::Stall, LogNews::Bandwidth(122), LogNews::Bandwidth(44)]);
+    assert_eq!(news, vec![LogNews::Bandwidth(224), LogNews::Stall, LogNews::Bandwidth(122), LogNews::Flowing, LogNews::Bandwidth(44)]);
 }
 
 #[test]
