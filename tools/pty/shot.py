@@ -1061,6 +1061,56 @@ def stats_widgets(t, out):
     t.send(b"q", 0.5)
 
 
+BIG_LAYOUT = """name = "Big widgets"
+design = "singularity"
+tree = { split = { axis = "vertical", first = { cells = 5 },
+    a = { slot = "home" },
+    b = { split = { axis = "vertical", first = { ratio = 0.5 },
+        a = { split = { axis = "horizontal", first = { ratio = 0.333 }, a = { slot = "stream" },
+            b = { split = { axis = "horizontal", first = { ratio = 0.5 }, a = { slot = "top" }, b = { slot = "listening" } } } } },
+        b = { split = { axis = "horizontal", first = { ratio = 0.333 }, a = { slot = "today" },
+            b = { split = { axis = "horizontal", first = { ratio = 0.5 }, a = { slot = "topweek" }, b = { slot = "queue" } } } } } } } } }
+"""
+
+
+def seed_today(data):
+    """A morning's plays today (fake tracks) on top of `seed_listening`, so "today" and "top this week" have this week."""
+    import random, sqlite3
+    db = sqlite3.connect(f"{data}/listening.db")
+    rnd = random.Random(11)
+    now = time.time()
+    off = time.localtime(now).tm_gmtoff
+    day = int((now + off) // 86400)
+    start = (day * 86400 - off) + 7 * 3600
+    for i in range(18):
+        a = rnd.choice(["Nova Drift", "Mira Vale", "Lumen Fields", "Glass Harbour", "Saffron Echo", "The Quiet Orbit"])
+        n = rnd.randint(1, 12)
+        t = min(start + i * 600, now - 60)
+        db.execute("INSERT INTO plays (started_ms, day, track_uri, name, artists, album, duration_ms, played_ms, device) VALUES (?,?,?,?,?,?,?,?,?)",
+                   (int(t * 1000), day, f"spotify:track:fake{n}", f"Fake Track {n:03}", f'["{a}"]', f"{a} · Album {n % 3 + 1}", 200000, rnd.randint(90, 200) * 1000, "here"))
+    db.commit()
+    db.close()
+
+
+def widgets_large(t, out):
+    """The tiling Widgets (stream, top, listening, today, top this week) each in a big Pane of a saved layout, a
+    track playing on a healthy fake stream; then top this week switched to tracks. Try PTY_COLS=240 PTY_ROWS=70 (Panes
+    about 80×32) and 140×40 (about 46×17)."""
+    t.send(b" ", 0.5)  # play: the stream and the processes have something to show
+    t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
+    for _ in range(5):
+        t.send(b"\x1b[B", 0.3)  # past the five designs to the saved layout
+    t.send(b"\r", 1.0)
+    t.pump(20.0)  # a graph's worth of seconds
+    t.shot(f"{out}/0-widgets.png")
+    print("panes:", [n for n in ("stream", "top · system", "listening", "today", "top artists") if t.find(n)])
+    x, y = t.find("top artists")
+    mouse(t, 0, x + 1, y); mouse(t, 0, x + 1, y, release=True, wait=0.8)
+    t.shot(f"{out}/1-top-tracks.png")
+    t.send(b" ", 0.3)
+    t.send(b"q", 0.5)
+
+
 def listening(t, out, env):
     """#23: Cockpit's listening Pane from a seeded log; a 31 s play is logged live; a backup is taken; export; delete."""
     data = env["SINGULARITY_DATA"]
@@ -1434,7 +1484,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift") else "0"
@@ -1449,9 +1499,14 @@ def main():
         seed_listening(env["SINGULARITY_DATA"])
     if scenario == "stalls":
         env["SINGULARITY_FAKE_STALLS"] = "1"
-    if scenario in ("stats", "stats-widgets"):
+    if scenario in ("stats", "stats-widgets", "widgets-large"):
         env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
         seed_listening(env["SINGULARITY_DATA"])
+    if scenario == "widgets-large":
+        env["SINGULARITY_FAKE_STALLS"] = "fine"
+        seed_today(env["SINGULARITY_DATA"])
+        os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity/layouts", exist_ok=True)
+        open(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/big.toml", "w").write(BIG_LAYOUT)
     bus = None
     if scenario == "mpris":
         bus, addr = private_bus(out)
@@ -1483,6 +1538,8 @@ def main():
             return stats(t, out)
         if scenario == "stats-widgets":
             return stats_widgets(t, out)
+        if scenario == "widgets-large":
+            return widgets_large(t, out)
         if scenario == "ambient":
             return ambient(t, out)
         if scenario == "arrows":

@@ -61,7 +61,13 @@ impl BlackHole {
     }
 
     pub fn next_look(&mut self) {
-        self.look = (self.look + 1) % LOOKS.len();
+        // pixel-art looks are only the CPU fallback, never part of the rotation
+        for _ in 0..LOOKS.len() {
+            self.look = (self.look + 1) % LOOKS.len();
+            if LOOKS[self.look].pixel == 0 {
+                break;
+            }
+        }
         self.last = None;
     }
 
@@ -148,6 +154,13 @@ impl BlackHole {
     /// `free`: the shadow radius and centre for a hole out of its well (no stars); None fits it in the middle.
     fn render_at(&mut self, w: usize, h: usize, free: Option<(f32, (f32, f32))>) -> Vec<u8> {
         let mut look = *self.look();
+        // no GPU: the cheap pixel-art look (1/5 the pixels) keeps the CPU load down
+        if look.pixel == 0
+            && !self.gpu_ready()
+            && let Some(px) = LOOKS.iter().find(|l| l.pixel > 0)
+        {
+            look = *px;
+        }
         if free.is_some() {
             look.star = 0.0;
         }
@@ -178,6 +191,15 @@ impl BlackHole {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cycling_looks_never_lands_on_pixel_art() {
+        let mut bh = BlackHole::default();
+        for _ in 0..LOOKS.len() * 3 {
+            bh.next_look();
+            assert_eq!(bh.look().pixel, 0, "{}", bh.look().name);
+        }
+    }
 
     /// GPU and CPU trace the same model: their images agree within tolerance (skipped without a GPU).
     #[test]

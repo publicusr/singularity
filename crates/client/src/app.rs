@@ -566,6 +566,8 @@ pub struct App {
     pub overlays: Vec<Rect>,
     /// the Engine's download speed and stalls (#45), and when we last said it's too slow
     pub delivery: Option<singularity_proto::Delivery>,
+    /// the download speeds measured while this Client ran (kB/s, the newest last), for the stream Pane's graph
+    pub delivery_hist: std::collections::VecDeque<u32>,
     delivery_warned: Option<Instant>,
     /// text to put on the system clipboard (OSC 52), written by the main loop
     pub clipboard: Option<String>,
@@ -725,6 +727,7 @@ impl App {
             cell_px: None,
             overlays: vec![],
             delivery: None,
+            delivery_hist: Default::default(),
             delivery_warned: None,
             clipboard: None,
             library: None,
@@ -1015,6 +1018,14 @@ impl App {
                 (Some(k), Some(n)) => format!("Connection too slow for {what} right now: {k} kB/s, about {n} needed; is something else using it?"),
                 _ => "Playback keeps running dry: the connection is too slow right now; is something else using it?".to_string(),
             });
+        }
+        if let Some(k) = d.bandwidth_kbps
+            && self.delivery.as_ref().is_none_or(|p| p.measured_ms != d.measured_ms)
+        {
+            if self.delivery_hist.len() == 120 {
+                self.delivery_hist.pop_front();
+            }
+            self.delivery_hist.push_back(k);
         }
         self.delivery = Some(d);
     }

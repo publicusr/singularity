@@ -27,8 +27,15 @@ pub struct State {
     /// eased beat brightness, 0..1
     marquee_glow: f32,
     /// the glow's colour now, easing toward the cover's
-    glow_now: Option<Rgb>,
+    glow_now: Option<[[f32; 3]; 16]>,
     glow_last: Option<Instant>,
+    /// the glow's clock, its eased (normalised) bass, the beat pulse, and the loudest bass lately
+    glow_t: f32,
+    glow_lvl: f32,
+    glow_pulse: f32,
+    /// the beat that drives the pulse (the pulse eases toward it, so a beat swells in rather than flashing)
+    glow_kick: f32,
+    glow_peak: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -253,7 +260,8 @@ pub fn marquee(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 
 // ── glow ──────────────────────────────────────────────────────────────
 
-/// The cover in the middle, its average colour (saturated a little) bleeding out into the Pane and fading to black.
+/// The cover in the middle, its colours bleeding out into the Pane as smooth solid fields (half-block resolution,
+/// exponential falloff from the cover's edge) and fading into the Theme's background. Bass swells it, a beat pulses it.
 pub fn glow(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     if r.width < 6 || r.height < 3 {
         return;
@@ -268,40 +276,137 @@ pub fn glow(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let cw = ((ch as f64 * aspect).round() as u16).min(r.width.saturating_sub(2));
     let cover = Rect::new(r.x + (r.width - cw) / 2, r.y + (r.height - ch) / 2, cw, ch);
     let tint = app.art_tint.clone();
-    let avg = app.covers.scaled(&url, 4, 4, tint.as_ref()).map(|img| {
-        let n = img.pixels().len() as f32;
-        let sum = img.pixels().fold([0f32; 3], |a, p| [a[0] + p[0] as f32, a[1] + p[1] as f32, a[2] + p[2] as f32]);
-        let mean = sum.map(|v| v / n);
-        // a little more colour than the average, so a muddy cover still glows
-        let grey = (mean[0] + mean[1] + mean[2]) / 3.0;
-        let sat = mean.map(|v| (grey + (v - grey) * 1.6).clamp(0.0, 255.0) as u8);
-        Rgb(sat[0], sat[1], sat[2])
+    // a 4x4 grid of the cover's colours (a little more saturated, so a muddy cover still glows)
+    let target = app.covers.scaled(&url, 4, 4, tint.as_ref()).map(|img| {
+        let mut g = [[0f32; 3]; 16];
+        for (i, p) in img.pixels().take(16).enumerate() {
+            let m = [p[0] as f32, p[1] as f32, p[2] as f32];
+            let grey = (m[0] + m[1] + m[2]) / 3.0;
+            g[i] = m.map(|v| (grey + (v - grey) * 1.6).clamp(0.0, 255.0));
+        }
+        g
     });
-    // the colour eases toward the cover's (a new song fades over, it doesn't jump)
+    let (level, beat) = app
+        .meters
+        .frame
+        .as_ref()
+        .map(|f| (f.out_bands[0].max(f.out_level / 2) as f32, f.beat))
+        .unwrap_or((0.0, false));
     let s = &mut app.ambient;
     let dt = s.glow_last.map(|l| l.elapsed().as_secs_f32().min(0.1)).unwrap_or(1.0);
     s.glow_last = Some(Instant::now());
-    let avg = avg.map(|target| match s.glow_now {
-        Some(now) => now.lerp(target, (dt * 2.5).min(1.0)),
-        None => target,
-    });
-    s.glow_now = avg;
-    if let Some(c) = avg {
-        let bass = app.hole.bass();
-        let (mx, my) = (cover.x as f32 + cover.width as f32 / 2.0, cover.y as f32 + cover.height as f32 / 2.0);
-        let reach = (r.width as f32 / 2.0).max(r.height as f32 * aspect as f32 / 2.0);
-        for yy in r.top()..r.bottom() {
-            for xx in r.left()..r.right() {
-                let d = ((xx as f32 - mx).powi(2) + ((yy as f32 - my) * aspect as f32).powi(2)).sqrt() / reach;
-                // breathes gently with the bass
-                let k = ((1.0 - d).clamp(0.0, 1.0).powf(2.2) * (0.55 + 0.25 * bass)).clamp(0.0, 1.0);
-                if let Some(cell) = buf.cell_mut((xx, yy)) {
-                    cell.set_char(' ').set_bg(th.bg.lerp(c, k).color());
+    s.glow_t += dt;
+    // normalise against the loudest lately, so a quiet volume still moves it (the peak forgets over ~10 s)
+    s.glow_peak = (s.glow_peak * (1.0 - dt * 0.1)).max(level).max(40.0);
+    let norm = (level / s.glow_peak).clamp(0.0, 1.0);
+    // eased both ways, never a flash: the level follows over ~200 ms, a beat swells in over ~80 ms and fades over ~400 ms
+    // (the owner: "too bright and epilepsy-inducing sometimes, depending on the song")
+    s.glow_lvl += (norm - s.glow_lvl) * (dt * 5.0).min(1.0);
+    s.glow_kick = if beat { 1.0 } else { s.glow_kick * (-dt / 0.15).exp() };
+    s.glow_pulse += (s.glow_kick - s.glow_pulse) * (dt / 0.08).min(1.0);
+    // the colours ease toward the cover's (a new song fades over, it doesn't jump)
+    if let Some(t) = target {
+        let k = (dt * 2.5).min(1.0);
+        s.glow_now = Some(match s.glow_now {
+            Some(mut now) => {
+                for (n, t) in now.iter_mut().zip(&t) {
+                    for c in 0..3 {
+                        n[c] += (t[c] - n[c]) * k;
+                    }
+                }
+                now
+            }
+            None => t,
+        });
+    }
+    if let Some(grid) = s.glow_now {
+        let (lvl, pulse, t) = (s.glow_lvl, s.glow_pulse, s.glow_t);
+        // everything in cell-width units: a cell is 1 wide and `aspect` tall, a half-block row `aspect / 2`
+        let ar = aspect as f32;
+        let half = ar / 2.0;
+        let (mx, my) = (cover.x as f32 + cover.width as f32 / 2.0, (cover.y as f32 + cover.height as f32 / 2.0) * ar);
+        let (hw, hh) = (cover.width as f32 / 2.0, cover.height as f32 * half);
+        // the room around the cover on each axis: the glow is measured against it, so it fades out before every edge
+        // of the Pane, however loud (the owner: the whole Pane should never be filled with colour)
+        let (rx, ry) = ((r.width as f32 / 2.0 - hw).max(1.0), (r.height as f32 * half - hh).max(1.0));
+        let radius = 0.3 * (0.85 + 0.35 * lvl + 0.2 * pulse);
+        let gain = (0.42 + 0.18 * lvl + 0.1 * pulse).min(0.7);
+        let bg = [th.bg.0 as f32, th.bg.1 as f32, th.bg.2 as f32];
+        let shade = |px: f32, py: f32| -> Rgb {
+            let (dx, dy) = (((px - mx).abs() - hw).max(0.0) / rx, ((py - my).abs() - hh).max(0.0) / ry);
+            // 0 at the cover, 1 at the Pane's edge
+            let d = (dx * dx + dy * dy).sqrt();
+            // a slow wobble of the reach, different on each side
+            let wob = 1.0 + 0.05 * (t * 0.6 + (px - mx) * 0.12).sin() * (t * 0.4 + (py - my) * 0.08).cos();
+            let fall = (-(d / (radius * wob))).exp();
+            // gone by 85 % of the way to the edge
+            let e = (d / 0.85).clamp(0.0, 1.0);
+            let edge = 1.0 - e * e * (3.0 - 2.0 * e);
+            let k = (fall * edge * gain).clamp(0.0, 1.0);
+            // the colour of the cover's nearest edge point
+            let u = ((px - (mx - hw)) / (2.0 * hw)).clamp(0.0, 1.0) * 3.0;
+            let v = ((py - (my - hh)) / (2.0 * hh)).clamp(0.0, 1.0) * 3.0;
+            let (x0, y0) = (u.floor().min(2.0), v.floor().min(2.0));
+            let (fx, fy) = (u - x0, v - y0);
+            let at = |x: f32, y: f32| grid[y as usize * 4 + x as usize];
+            let (a, b, c, e) = (at(x0, y0), at(x0 + 1.0, y0), at(x0, y0 + 1.0), at(x0 + 1.0, y0 + 1.0));
+            let chan = |i: usize| {
+                let col = (a[i] * (1.0 - fx) + b[i] * fx) * (1.0 - fy) + (c[i] * (1.0 - fx) + e[i] * fx) * fy;
+                (bg[i] + (col - bg[i]) * k).round().clamp(0.0, 255.0) as u8
+            };
+            Rgb(chan(0), chan(1), chan(2))
+        };
+        // the pixel tier: one smooth image (the terminal scales it), with the cover painted into it
+        if let Some((cpw, cph)) = app.pixel_tier_for(r) {
+            // one image pixel per 2 screen pixels: smooth once scaled, still cheap
+            let (w, h) = (((r.width as f64 * cpw) / 2.0).round().max(8.0) as u32, ((r.height as f64 * cph) / 2.0).round().max(8.0) as u32);
+            let (cx0, cy0) = (((cover.x - r.x) as f64 * cpw / 2.0).round() as u32, ((cover.y - r.y) as f64 * cph / 2.0).round() as u32);
+            let (ccw, cch) = ((cover.width as f64 * cpw / 2.0).round().max(1.0) as u32, (cover.height as f64 * cph / 2.0).round().max(1.0) as u32);
+            let art = app.covers.scaled(&url, ccw, cch, tint.as_ref());
+            let (sx, sy) = (r.width as f32 / w as f32, r.height as f32 * ar / h as f32);
+            let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h {
+                for x in 0..w {
+                    let inside = x >= cx0 && y >= cy0 && x < cx0 + ccw && y < cy0 + cch;
+                    let c = match (&art, inside) {
+                        (Some(a), true) => {
+                            let p = a.get_pixel((x - cx0).min(a.width() - 1), (y - cy0).min(a.height() - 1));
+                            Rgb(p[0], p[1], p[2])
+                        }
+                        _ => shade(r.x as f32 + (x as f32 + 0.5) * sx, r.y as f32 * ar + (y as f32 + 0.5) * sy),
+                    };
+                    rgba.extend_from_slice(&[c.0, c.1, c.2, 255]);
+                }
+            }
+            if let Some(k) = app.kitty.as_mut() {
+                k.frame(GLOW_ID, r, w, h, std::sync::Arc::new(rgba));
+            }
+            app.under_image(buf, r, th);
+            if art.is_some() {
+                glow_label(buf, r, cover, &item, th);
+                return;
+            }
+        } else {
+            for yy in r.top()..r.bottom() {
+                for xx in r.left()..r.right() {
+                    let px = xx as f32 + 0.5;
+                    let (top, bot) = (shade(px, yy as f32 * ar + half * 0.5), shade(px, yy as f32 * ar + half * 1.5));
+                    if let Some(cell) = buf.cell_mut((xx, yy)) {
+                        cell.set_char('\u{2580}').set_fg(top.color()).set_bg(bot.color());
+                    }
                 }
             }
         }
     }
     crate::home::cover(buf, cover, &url, "♪", app, th);
+    glow_label(buf, r, cover, &item, th);
+}
+
+/// Glow's Visual id on the pixel tier (the hole is 1, the idle takeover 2).
+const GLOW_ID: u32 = 3;
+
+/// The song under the cover.
+fn glow_label(buf: &mut Buffer, r: Rect, cover: Rect, item: &singularity_proto::Item, th: &Theme) {
     let label = format!("{} · {}", item.name, item.artists.join(", "));
     let ly = cover.bottom() + 1;
     if ly < r.bottom() {

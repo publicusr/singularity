@@ -160,6 +160,8 @@ pub enum LogNews {
     Bandwidth(u32),
     /// playback ran dry
     Stall,
+    /// playback runs again after running dry
+    Flowing,
     /// the context it was told to play has nothing it can play (Spotify's DJ, a podcast-only or blocked context;
     /// verified 2026-10-31: `AdvanceStuck detected, reason: unplayable`, after which it stays silent)
     Unplayable,
@@ -194,9 +196,12 @@ impl LogParser {
         if let Some(rest) = after("FileStreamer bandwidth sample:") {
             return rest.split_whitespace().next().and_then(|n| n.parse::<f64>().ok()).map(|k| LogNews::Bandwidth(k.round() as u32));
         }
-        // (the recovery line, "updateInternalDriverToPlaying: underrun", isn't a new stall)
         if line.contains("audioThreadMain: underrun") {
             return Some(LogNews::Stall);
+        }
+        // the recovery line: audio reaches the sink again
+        if line.contains("updateInternalDriverToPlaying: underrun") {
+            return Some(LogNews::Flowing);
         }
         if line.contains("AdvanceStuck detected, reason: unplayable") {
             return Some(LogNews::Unplayable);
@@ -311,13 +316,57 @@ struct Updates {
     days: watch::Sender<Option<u32>>,
     /// where playback was when we restarted for an update
     resume: Option<Resume>,
+    /// when Soloist was last restarted because its stream was stuck (one try per `DRY_RETRY`)
+    unstuck_at: Option<std::time::Instant>,
+}
+
+/// How long playback may sit dry, with no data arriving, before Soloist's connections count as stuck.
+const DRY_STUCK: Duration = Duration::from_secs(20);
+/// At most one restart per this long for a stuck stream: a connection that is really down isn't fixed by restarting.
+const DRY_RETRY: Duration = Duration::from_secs(180);
+
+/// Is playback dry and staying dry? Verified 2026-11-02: after the VPN's tunnel was re-established, Soloist's
+/// requests for audio failed for 16 minutes (`CURL error: 42`, no bandwidth samples) while it kept reporting
+/// "playing" at the same second; new connections worked, so a fresh Soloist gets the music back. Data arriving
+/// (a bandwidth sample) or audio flowing again ends a dry spell; so does anything but playing.
+#[derive(Default)]
+pub struct DryWatch {
+    since: Option<tokio::time::Instant>,
+}
+
+impl DryWatch {
+    pub fn news(&mut self, n: &LogNews, now: tokio::time::Instant) {
+        match n {
+            LogNews::Stall => {
+                self.since.get_or_insert(now);
+            }
+            LogNews::Bandwidth(_) | LogNews::Flowing => self.since = None,
+            _ => {}
+        }
+    }
+
+    /// Only playing (or buffering) can be dry: a pause or a stop ends it.
+    pub fn status(&mut self, s: PlayStatus) {
+        if !matches!(s, PlayStatus::Playing | PlayStatus::Buffering) {
+            self.since = None;
+        }
+    }
+
+    /// When the current dry spell becomes stuck.
+    pub fn deadline(&self) -> Option<tokio::time::Instant> {
+        self.since.map(|t| t + DRY_STUCK)
+    }
+
+    pub fn clear(&mut self) {
+        self.since = None;
+    }
 }
 
 /// Keep Soloist running: start, connect, pump; on exit wait (with backoff) and start again.
 async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<EngineEvent>) {
     let mut backoff = Duration::from_secs(2);
     let (builds, url) = (engine.builds(), update::cdn_url());
-    let mut upd = Updates { staged: Arc::new(Notify::new()), days: watch::channel(None).0, resume: None };
+    let mut upd = Updates { staged: Arc::new(Notify::new()), days: watch::channel(None).0, resume: None, unstuck_at: None };
     let mut updater = None;
     loop {
         let Some(key) = api_key().await else {
@@ -716,7 +765,7 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                 LogNews::Locked => anyhow::bail!("another Soloist is already running with Singularity's data (is a second singularityd running?)"),
                 LogNews::BadKey => return Err(BadKey.into()),
                 LogNews::ZeroConf(p) => zeroconf = Some(p),
-                LogNews::Stream(_) | LogNews::Bandwidth(_) | LogNews::Stall | LogNews::Unplayable => {}
+                LogNews::Stream(_) | LogNews::Bandwidth(_) | LogNews::Stall | LogNews::Flowing | LogNews::Unplayable => {}
             }
         }
         // the VM's Soloist: ready once its WebSocket answers through the forward
@@ -745,6 +794,7 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
     // where playback was when we restarted for an update, and when to put it back
     let mut pending_resume: Option<Resume> = None;
     let mut resume_at: Option<tokio::time::Instant> = None;
+    let mut dry = DryWatch::default();
 
     loop {
         tokio::select! {
@@ -803,6 +853,7 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                     _ => {
                         let track_changed = ev["type"] == "track_changed";
                         if st.apply(&ev) {
+                            dry.status(st.playback.status);
                             let _ = ev_tx.send(EngineEvent::Playback(st.playback.clone())).await;
                         }
                         // (every change: one to 0 looks like no change from the state's default)
@@ -841,7 +892,22 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                     let _ = ev_tx.send(EngineEvent::Resume(r)).await;
                 }
             }
-            Some(n) = news_rx.recv() => match n {
+            // playback has been dry too long: Soloist's connections to Spotify are stuck
+            _ = tokio::time::sleep_until(dry.deadline().unwrap_or_else(tokio::time::Instant::now)), if dry.deadline().is_some() => {
+                dry.clear();
+                if upd.unstuck_at.is_some_and(|t| t.elapsed() < DRY_RETRY) {
+                    tracing::warn!("playback is still stuck without audio data after restarting Soloist");
+                    let _ = ev_tx.send(EngineEvent::Notice("Spotify still isn't sending audio: is the connection (or a VPN) down?".into())).await;
+                } else {
+                    tracing::warn!("no audio data for {} s while playing: restarting Soloist to reconnect", DRY_STUCK.as_secs());
+                    let _ = ev_tx.send(EngineEvent::Notice("No audio from Spotify for 20 s: reconnecting the player…".into())).await;
+                    upd.unstuck_at = Some(std::time::Instant::now());
+                    upd.resume = resume_point(&st.playback, false);
+                    let _ = child.kill().await;
+                    return Ok(Exit::Restart);
+                }
+            }
+            Some(n) = news_rx.recv() => { dry.news(&n, tokio::time::Instant::now()); match n {
                 LogNews::Stream(info) => { let _ = ev_tx.send(EngineEvent::Stream(info)).await; }
                 LogNews::Bandwidth(k) => {
                     delivery.bandwidth_kbps = Some(k);
@@ -865,8 +931,8 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
                     }
                 }
                 LogNews::ZeroConf(p) => zeroconf = Some(p),
-                LogNews::Locked | LogNews::BadKey => {}
-            },
+                LogNews::Flowing | LogNews::Locked | LogNews::BadKey => {}
+            }},
             cmd = cmd_rx.recv() => {
                 let Some(cmd) = cmd else { let _ = child.kill().await; return Ok(Exit::Quit) };
                 if cmd == Command::RestartEngine {
@@ -1145,6 +1211,32 @@ mod tests {
         let mut p = LogParser::default();
         assert_eq!(p.line("19:48:31.990 I [f:2197] AdvanceStuck detected, reason: unplayable"), Some(LogNews::Unplayable));
         assert_eq!(p.line("19:48:31.990 I [f:289] Prefetch: looks like new context"), None);
+    }
+
+    /// 2026-11-02: Soloist sat "playing" at 0:09 for minutes with no data arriving; the watch calls that stuck.
+    #[test]
+    fn a_dry_spell_without_data_becomes_stuck() {
+        let mut p = LogParser::default();
+        let stall = p.line("01:41:05.291 I [f:776                           ] audioThreadMain: underrun, _is_processing_audio now false").unwrap();
+        assert_eq!(stall, LogNews::Stall);
+        let flowing = p.line("01:42:46.421 I [f:972                           ] updateInternalDriverToPlaying: underrun, _is_processing_audio now true").unwrap();
+        assert_eq!(flowing, LogNews::Flowing);
+        let t0 = tokio::time::Instant::now();
+        let mut w = DryWatch::default();
+        assert_eq!(w.deadline(), None);
+        w.news(&stall, t0);
+        w.news(&stall, t0 + Duration::from_secs(5));
+        assert_eq!(w.deadline(), Some(t0 + DRY_STUCK), "the spell counts from its first stall");
+        w.news(&LogNews::Bandwidth(900), t0);
+        assert_eq!(w.deadline(), None, "data arriving ends it");
+        w.news(&stall, t0);
+        w.news(&flowing, t0);
+        assert_eq!(w.deadline(), None, "audio flowing again ends it");
+        w.news(&stall, t0);
+        w.status(PlayStatus::Buffering);
+        assert!(w.deadline().is_some(), "buffering is still trying to play");
+        w.status(PlayStatus::Paused);
+        assert_eq!(w.deadline(), None, "a pause isn't a stuck stream");
     }
 
     /// S1: the state directory (pairing, cache) and both logs are owner-only, and an older build's 0644 log is

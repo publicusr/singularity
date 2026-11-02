@@ -113,18 +113,28 @@ impl Engine for FakeEngine {
             let mut idx = 0usize;
             let mut st = PlaybackState { volume: 50, ..Default::default() };
             let _ = ev_tx.send(EngineEvent::Status(EngineStatus::Ready { device_name: "Fake".into(), active: true, version: "fake".into(), expires_in_days: Some(90) })).await;
-            // SINGULARITY_FAKE_STALLS=1: a lossless stream on a starving connection, for the stream Pane (#45)
-            if std::env::var("SINGULARITY_FAKE_STALLS").is_ok_and(|v| v == "1") {
+            // SINGULARITY_FAKE_STALLS=1: a lossless stream on a starving connection, for the stream Pane (#45);
+            // =fine: the same stream on a healthy connection whose speed wanders (a measurement a second)
+            if let Some(mode) = std::env::var("SINGULARITY_FAKE_STALLS").ok().filter(|v| v == "1" || v == "fine") {
+                let starving = mode == "1";
                 let ev = ev_tx.clone();
                 tokio::spawn(async move {
                     let info = singularity_proto::StreamInfo { codec: "flac".into(), bitrate: 1_400_000, average_bitrate: Some(1_643_334), sample_rate: 44_100, sample_format: "32-bit-float-pcm".into() };
                     let _ = ev.send(EngineEvent::Stream(info)).await;
                     let mut d = singularity_proto::Delivery::default();
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                    for i in 0u32.. {
+                        tokio::time::sleep(std::time::Duration::from_secs(if starving { 4 } else { 1 })).await;
                         let now = singularity_proto::now_ms();
-                        d.bandwidth_kbps = Some(44);
                         d.measured_ms = now;
+                        if !starving {
+                            // 250..910 kB/s, with a dip below the stream's need now and then
+                            d.bandwidth_kbps = Some(if i % 17 == 9 { 150 } else { 250 + (i * 7919 % 13) * 55 });
+                            if ev.send(EngineEvent::Delivery(d.clone())).await.is_err() {
+                                return;
+                            }
+                            continue;
+                        }
+                        d.bandwidth_kbps = Some(44);
                         d.stalls_ms.retain(|t| now.saturating_sub(*t) <= 120_000);
                         d.stalls_ms.push(now);
                         if ev.send(EngineEvent::Delivery(d.clone())).await.is_err() {

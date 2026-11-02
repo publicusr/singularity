@@ -543,6 +543,24 @@ mod tests {
         assert_ne!(app.hole.look, look);
     }
 
+    /// The owner clicked ▸ over and over and the Pane went back and forth between two Widgets: the queue has no ×, so
+    /// its ◂ ▸ sat three cells further right and the click landed on ◂. They stay put now.
+    #[test]
+    fn the_swap_arrows_stay_put_whatever_the_widget() {
+        let mut app = App::new(None);
+        let arrows = |app: &mut App, slot: &str| {
+            render(app);
+            app.hits.iter().filter(|(_, h)| matches!(h, Hit::Swap(s, _) if s == slot)).map(|(r, _)| r.x).collect::<Vec<_>>()
+        };
+        let slot = app.layout.slot_names().into_iter().find(|s| s == "stream" || s == "listening").expect("a swappable side Pane");
+        let before = arrows(&mut app, &slot);
+        assert_eq!(before.len(), 2);
+        // put the queue there (no × on it) and the queue's own Pane gets this one's Widget
+        app.layout.swap("queue", "marquee");
+        app.layout.swap(&slot, "queue");
+        assert_eq!(arrows(&mut app, "queue"), before, "the ◂ ▸ moved");
+    }
+
     #[test]
     fn a_saved_layout_survives_a_restart_and_esc_puts_a_dragged_one_back() {
         let (mut app, dir) = with_dirs();
