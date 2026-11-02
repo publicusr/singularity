@@ -28,6 +28,7 @@ mod sidebar;
 mod stats;
 mod term;
 mod theme;
+mod tile;
 mod tracks;
 mod ui;
 mod visual;

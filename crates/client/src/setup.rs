@@ -266,29 +266,207 @@ pub fn describe(s: &StreamInfo) -> String {
     format!("{} · {}{avg} · {:.1} kHz", s.codec.to_uppercase(), mbit(s.bitrate), s.sample_rate as f64 / 1000.0)
 }
 
-/// The stream stats Pane.
+/// The stream stats Pane: big Panes get the large layout, small ones lines of text.
 pub fn draw_stream(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
+    match &app.stream {
+        Some(s) if r.width >= 36 && r.height >= 14 => draw_stream_large(buf, r, app, s, th),
+        _ => draw_stream_compact(buf, r, app, th),
+    }
+}
+
+/// The quality badge: its text and colour.
+fn badge(app: &App, s: &StreamInfo, th: &Theme) -> (&'static str, crate::theme::Rgb) {
+    if s.lossless() {
+        (" LOSSLESS ", th.accent2)
+    } else if !app.engine_kind.lossless() {
+        (" 320 KBPS ", th.dim)
+    } else {
+        (" NOT LOSSLESS ", th.error)
+    }
+}
+
+/// What to do about a stream that isn't lossless, for this Engine.
+fn fix_text(app: &App) -> &'static str {
+    match app.engine_kind {
+        EngineKind::SpotifyApp => APP_LOSSLESS_FIX,
+        EngineKind::Librespot => LIBRESPOT_LOSSLESS,
+        _ => "Fix it once from your phone: device picker → Singularity → Change quality settings → Lossless",
+    }
+}
+
+/// `words` wrapped to `w` from row `y`, until `bottom`. Returns the next row.
+fn wrapped(buf: &mut Buffer, x: u16, mut y: u16, w: u16, bottom: u16, words: &str, st: ratatui::style::Style) -> u16 {
+    let mut line = String::new();
+    for word in words.split(' ') {
+        if !line.is_empty() && line.chars().count() + word.chars().count() + 1 > w as usize {
+            if y >= bottom {
+                return y;
+            }
+            text(buf, x, y, w, &line, st);
+            y += 1;
+            line.clear();
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if y < bottom && !line.is_empty() {
+        text(buf, x, y, w, &line, st);
+        y += 1;
+    }
+    y
+}
+
+/// The stream Pane with room: the badge, the bitrate as a figure, a gauge against lossy's best and a CD, the format
+/// in columns, the download speed with a graph of it against what the stream needs, and the device at the bottom.
+fn draw_stream_large(buf: &mut Buffer, r: Rect, app: &App, s: &StreamInfo, th: &Theme) {
+    let (x, w) = (r.x + 1, r.width.saturating_sub(2));
+    let bottom = r.bottom();
+    let mut y = r.y;
+    // the badge, and the format beside it
+    let (label, col) = badge(app, s, th);
+    let bw = label.chars().count() as u16;
+    text(buf, x, y, bw, label, th.chip(col));
+    let fmt = format!("{} · {:.1} kHz", s.codec.to_uppercase(), s.sample_rate as f64 / 1000.0);
+    text(buf, x + bw + 2, y, w.saturating_sub(bw + 2), &fmt, th.s(th.fg).add_modifier(Modifier::BOLD));
+    y += 2;
+    // the bitrate (the file's average when known) as a figure
+    let kbps = s.average_bitrate.unwrap_or(s.bitrate) / 1000;
+    let fig = format!("{kbps}kbps");
+    let fw = crate::tile::figure(buf, x, y, w, &fig, th.s(th.accent).add_modifier(Modifier::BOLD), th.s(th.dim));
+    let side = x + fw + 3;
+    if side + 14 <= x + w {
+        let sw = x + w - side;
+        text(buf, side, y, sw, if s.average_bitrate.is_some() { "average bitrate" } else { "bitrate" }, th.s(th.dim));
+        if s.average_bitrate.is_some() {
+            text(buf, side, y + 1, sw, &format!("nominal {} kbps", s.bitrate / 1000), th.s(th.fg));
+        }
+        let need = app.need_kbps().unwrap_or(0);
+        if need > 0 {
+            text(buf, side, y + 2, sw, &format!("needs {need} kB/s"), th.s(th.border));
+        }
+    }
+    y += 4;
+    // the gauge: 0 to a bit past CD quality, ticks at lossy's best (320) and a CD (1411)
+    let scale = (kbps.max(1411) as f32 * 1.12).max(1.0);
+    crate::tile::gauge(buf, x, y, w, kbps as f32 / scale, th);
+    for (at, name) in [(320u32, "320 lossy"), (1411, "1411 CD")] {
+        let tx = x + ((at as f32 / scale) * w as f32) as u16;
+        if tx < x + w {
+            text(buf, tx, y + 1, 1, "╵", th.s(th.border));
+            let nw = name.chars().count() as u16;
+            let lx = tx.saturating_sub(nw / 2).max(x).min((x + w).saturating_sub(nw));
+            text(buf, lx, y + 2, nw, name, th.s(th.border));
+        }
+    }
+    y += 4;
+    // the format in columns
+    if y + 1 < bottom {
+        let decoded = s.sample_format.replace("-pcm", "").replace('-', " ");
+        let rate = format!("{:.1} kHz", s.sample_rate as f64 / 1000.0);
+        let nominal = format!("{} kbps", s.bitrate / 1000);
+        let cols: [(&str, &str); 4] = [("codec", &s.codec), ("sample rate", &rate), ("nominal", &nominal), ("decoded", &decoded)];
+        let n = if w >= 64 { 4 } else if w >= 44 { 3 } else { 2 };
+        let cw = w / n;
+        for (i, (k, v)) in cols.iter().take(n as usize).enumerate() {
+            let v = if *k == "codec" { v.to_uppercase() } else { v.to_string() };
+            crate::tile::stat(buf, x + i as u16 * cw, y, cw.saturating_sub(1), k, &v, th.s(th.fg), th);
+        }
+        y += 3;
+    }
+    // the download: now, against the need, and a graph of the speeds seen
+    let now = singularity_proto::now_ms();
+    let footer = 2u16;
+    if let Some(d) = &app.delivery
+        && y + 2 < bottom.saturating_sub(footer)
+    {
+        crate::tile::rule(buf, x, y, w, th);
+        y += 1;
+        let need = app.need_kbps().unwrap_or(0);
+        let fresh = d.bandwidth_kbps.filter(|_| now.saturating_sub(d.measured_ms) < 180_000);
+        text(buf, x, y, 9, "download", th.s(th.dim));
+        if let Some(k) = fresh {
+            let short = need > 0 && k < need;
+            let v = if short { format!("{k} kB/s, need {need}") } else { format!("{k} kB/s") };
+            text(buf, x + 9, y, w.saturating_sub(9), &v, th.s(if short { th.error } else { th.fg }).add_modifier(Modifier::BOLD));
+        } else {
+            text(buf, x + 9, y, w.saturating_sub(9), "not measured lately", th.s(th.border));
+        }
+        let stalls = d.stalls_last_minute(now);
+        if stalls > 0 {
+            let st = format!("{stalls} in the last 60s");
+            let sw = st.chars().count() as u16 + 8;
+            if sw + 30 <= w {
+                text(buf, x + w - sw, y, 8, "stalls ", th.s(th.dim));
+                text(buf, x + w - sw + 7, y, sw - 7, &st, th.s(th.error));
+            } else {
+                y += 1;
+                text(buf, x, y, 9, "stalls", th.s(th.dim));
+                text(buf, x + 9, y, w.saturating_sub(9), &st, th.s(th.error));
+            }
+        }
+        y += 1;
+        let gh = bottom.saturating_sub(footer + y).min(14);
+        if gh >= 2 && app.delivery_hist.len() > 1 {
+            let peak = app.delivery_hist.iter().copied().max().unwrap_or(1).max(need * 2).max(1) as f32;
+            let gw = w.saturating_sub(7);
+            let gr = Rect::new(x, y, gw, gh);
+            crate::tile::area(buf, gr, app.delivery_hist.iter().map(|k| *k as f32), peak, th, |v| if (v as u32) < need { th.error } else { th.ramp_at(0.3 + 0.7 * v / peak) });
+            // what the stream needs, as a dotted line across the graph
+            if need > 0 {
+                let ny = gr.bottom() - 1 - ((need as f32 / peak) * gh as f32).floor().min(gh as f32 - 1.0) as u16;
+                for gx in gr.left()..gr.right() {
+                    if buf.cell((gx, ny)).is_some_and(|c| c.symbol() == " ") {
+                        text(buf, gx, ny, 1, "┄", th.s(th.border));
+                    }
+                }
+                text(buf, gr.right() + 1, ny, 6, "need", th.s(th.border));
+            }
+            text(buf, gr.right() + 1, y, 6, &format!("{}", peak as u32), th.s(th.border));
+            y += gh;
+        }
+    }
+    // the device, at the bottom
+    if let Some(EngineStatus::Ready { device_name, active, version, .. }) = &app.engine {
+        let by = bottom.saturating_sub(1).max(y);
+        if by < bottom {
+            let dev = format!("{device_name}{}", if *active { " · active" } else { "" });
+            text(buf, x, by, 7, "device", th.s(th.dim));
+            text(buf, x + 7, by, w.saturating_sub(7), &dev, th.s(th.fg));
+            let dw = dev.chars().count() as u16 + 7;
+            if !version.is_empty() && dw + version.chars().count() as u16 + 9 <= w {
+                let vw = version.chars().count() as u16;
+                text(buf, x + w - vw - 6, by, 6, "build ", th.s(th.dim));
+                text(buf, x + w - vw, by, vw, version, th.s(th.border));
+            }
+        }
+    }
+    // the fix, under the graph, when the stream could be lossless and isn't
+    if !s.lossless() && y + 2 < bottom.saturating_sub(1) {
+        wrapped(buf, x, y + 1, w, bottom.saturating_sub(2), fix_text(app), th.s(th.fg));
+    }
+}
+
+/// The stream stats Pane in a small Pane: a badge and a row per fact.
+fn draw_stream_compact(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     let mut y = r.y;
     let row = |buf: &mut Buffer, y: &mut u16, k: &str, v: &str, st| {
         if *y < r.bottom() {
-            text(buf, x, *y, 9, k, th.s(th.dim));
+            text(buf, x, *y, w.min(9), k, th.s(th.dim));
             text(buf, x + 9, *y, w.saturating_sub(9), v, st);
             *y += 1;
         }
     };
     match &app.stream {
         Some(s) => {
-            if s.lossless() {
-                text(buf, x, y, 10, " LOSSLESS ", th.chip(th.accent2));
-            } else if !app.engine_kind.lossless() {
-                text(buf, x, y, 11, " 320 KBPS ", th.chip(th.dim));
-            } else {
-                text(buf, x, y, 14, " NOT LOSSLESS ", th.chip(th.error));
-            }
+            let (label, col) = badge(app, s, th);
+            let bw = label.chars().count() as u16;
+            text(buf, x, y, bw.min(w), label, th.chip(col));
+            text(buf, x + bw + 1, y, w.saturating_sub(bw + 1), &s.codec.to_uppercase(), th.s(th.fg).add_modifier(Modifier::BOLD));
             y += 2;
-            row(buf, &mut y, "codec", &s.codec.to_uppercase(), th.s(th.fg));
-            row(buf, &mut y, "bitrate", &mbit(s.bitrate), th.s(th.fg));
+            row(buf, &mut y, "bitrate", &mbit(s.bitrate), th.s(th.accent).add_modifier(Modifier::BOLD));
             if let Some(a) = s.average_bitrate {
                 row(buf, &mut y, "average", &mbit(a), th.s(th.fg));
             }
@@ -325,29 +503,7 @@ pub fn draw_stream(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     if app.stream.as_ref().is_some_and(|s| !s.lossless()) && y + 1 < r.bottom() {
         y += 1;
         // the fix, wrapped to the Pane
-        let mut line = String::new();
-        let fix = match app.engine_kind {
-            EngineKind::SpotifyApp => APP_LOSSLESS_FIX,
-            EngineKind::Librespot => LIBRESPOT_LOSSLESS,
-            _ => "Fix it once from your phone: device picker → Singularity → Change quality settings → Lossless",
-        };
-        for word in fix.split(' ') {
-            if line.chars().count() + word.chars().count() + 1 > w as usize {
-                if y >= r.bottom() {
-                    return;
-                }
-                text(buf, x, y, w, &line, th.s(th.fg));
-                y += 1;
-                line.clear();
-            }
-            if !line.is_empty() {
-                line.push(' ');
-            }
-            line.push_str(word);
-        }
-        if y < r.bottom() {
-            text(buf, x, y, w, &line, th.s(th.fg));
-        }
+        wrapped(buf, x, y, w, r.bottom(), fix_text(app), th.s(th.fg));
     }
 }
 

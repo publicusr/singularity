@@ -99,6 +99,9 @@ pub fn listening(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     if r.width < 4 || r.height < 2 {
         return;
     }
+    if let Some(s) = app.listening.as_ref().filter(|s| s.plays > 0 && r.width >= 40 && r.height >= 12) {
+        return listening_large(buf, r, s, th);
+    }
     let sum = app.listening.as_ref();
     let weeks = (r.width / 2).min(26) as i64;
     let today_wd = sum.map(|s| s.today_weekday as i64).unwrap_or(6);
@@ -144,6 +147,182 @@ pub fn listening(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
         }
     };
     text(buf, r.x + 1, r.y + rows + (r.height > 8) as u16, r.width.saturating_sub(2), &line, th.s(th.dim));
+}
+
+/// The listening Pane when it has room: month names over the weeks, weekday names beside them, square-ish cells as
+/// big as the Pane allows, a less → more legend, and the year's numbers under the grid (the hours as a figure when
+/// there are rows for it).
+fn listening_large(buf: &mut Buffer, r: Rect, s: &singularity_proto::ListeningSummary, th: &Theme) {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const DAYS: [&str; 7] = ["Mon", "", "Wed", "", "Fri", "", "Sun"];
+    let figure_footer = r.height >= 22 && r.width >= 56;
+    let footer = if figure_footer { 4 } else { 3 };
+    let (x0, w) = (r.x + 1, r.width.saturating_sub(2));
+    let label_w = 4;
+    let avail_h = r.height.saturating_sub(1 + footer);
+    let weeks: u16 = 26;
+    // a cell's pitch: square cells (a column is half a row in pixels), as big as the Pane allows; each cell's last
+    // row is an upper half-block, so cells keep a half-row gap under them and a column's gap beside them
+    let px_max = ((w - label_w) / weeks).max(2);
+    let py = (avail_h / 7).min(px_max / 2).max(1);
+    let px = (2 * py).min(px_max).max(2);
+    let weeks = ((w - label_w) / px).min(weeks).max(1) as i64;
+    let grid_w = weeks as u16 * px;
+    let gx = x0 + label_w + (w - label_w).saturating_sub(grid_w) / 2;
+    let gy = r.y + 1;
+    let cw = px - 1;
+    let today_wd = s.today_weekday as i64;
+    let max = s.minutes.iter().copied().max().unwrap_or(0).max(1) as f32;
+    let quiet = th.bg.lerp(th.dim, 0.25);
+    let today_day = (singularity_proto::now_ms() / 86_400_000) as i64;
+    let mut last_month = 0;
+    let mut label_end = 0u16;
+    for c in 0..weeks {
+        // the column's Monday, days before today
+        let monday_back = (weeks - 1 - c) * 7 + today_wd;
+        let (_, month, _) = crate::stats::civil(today_day - monday_back);
+        let mx = gx + c as u16 * px;
+        if month != last_month && c + 3 < weeks && mx >= label_end {
+            text(buf, mx, r.y, 3, MONTHS[(month - 1) as usize], th.s(th.dim));
+            label_end = mx + 4;
+        }
+        last_month = month;
+        for d in 0..7i64 {
+            let back = monday_back - d;
+            if back < 0 {
+                continue;
+            }
+            let m = usize::try_from(s.minutes.len() as i64 - 1 - back).ok().and_then(|i| s.minutes.get(i)).copied().unwrap_or(0);
+            let col = if m == 0 { quiet } else { th.ramp_at(0.15 + 0.85 * (m as f32 / max).sqrt()) };
+            let (cx, cy) = (gx + c as u16 * px, gy + d as u16 * py);
+            for yy in 0..py {
+                let glyph = if yy + 1 == py { "▀" } else { "█" };
+                for xx in 0..cw {
+                    text(buf, cx + xx, cy + yy, 1, glyph, th.s(col));
+                }
+            }
+            // today: marked in its cell
+            if back == 0
+                && cw >= 3
+                && py >= 2
+                && let Some(cell) = buf.cell_mut((cx + cw / 2, cy + (py - 1) / 2))
+            {
+                cell.set_char('•').set_fg(th.bg.color()).set_bg(col.color());
+            }
+        }
+    }
+    for (d, name) in DAYS.iter().enumerate() {
+        text(buf, x0, gy + d as u16 * py + (py - 1) / 2, label_w - 1, name, th.s(th.border));
+    }
+    // the legend, right-aligned under the grid
+    let ly = gy + 7 * py;
+    let legend_w = 4 + 1 + 5 * 2 + 4;
+    if grid_w >= legend_w + 10 && ly < r.bottom() {
+        let lx = gx + grid_w - 1 - legend_w;
+        text(buf, lx, ly, 4, "less", th.s(th.border));
+        for i in 0..5u16 {
+            let col = if i == 0 { quiet } else { th.ramp_at(0.15 + 0.85 * (i as f32 / 4.0)) };
+            text(buf, lx + 5 + i * 2, ly, 1, "■", th.s(col));
+        }
+        text(buf, lx + 5 + 10, ly, 4, "more", th.s(th.border));
+    }
+    // rows to spare between the grid and the numbers: the average day by weekday, and the months, side by side
+    let spare_y = ly + 2;
+    let spare = r.bottom().saturating_sub(footer + 1).saturating_sub(spare_y);
+    if spare >= 8 {
+        listening_breakdown(buf, Rect::new(x0, spare_y, w, spare.min(9)), s, today_day, th);
+    }
+    // the numbers: hours this year (as a figure when tall), the streak, the last 7 days, all plays, the top artist
+    let fy = r.bottom() - footer;
+    let hours = if s.hours_this_year < 10.0 { format!("{:.1}", s.hours_this_year) } else { format!("{:.0}", s.hours_this_year) };
+    let week: u32 = s.minutes.iter().rev().take(7).sum();
+    let week_s = if week >= 60 { format!("{} h {:02} min", week / 60, week % 60) } else { format!("{week} min") };
+    let streak = format!("{} day{}", s.streak_days, if s.streak_days == 1 { "" } else { "s" });
+    let plays = s.plays.to_string();
+    let mut tx = x0;
+    let ty = if figure_footer {
+        let fig = format!("{hours}h");
+        let fw = crate::tile::figure(buf, x0, fy + 1, w, &fig, th.s(th.accent).add_modifier(Modifier::BOLD), th.s(th.dim));
+        text(buf, x0, fy, fw.max(10), "this year", th.s(th.dim));
+        tx += fw + 3;
+        fy + 1
+    } else {
+        fy + 1
+    };
+    let year = format!("{hours} h");
+    let mut tiles: Vec<(&str, &str, Rgb)> = vec![];
+    if !figure_footer {
+        tiles.push(("this year", &year, th.accent));
+    }
+    tiles.push(("last 7 days", &week_s, th.fg));
+    tiles.push(("streak", &streak, if s.streak_days > 1 { th.accent2 } else { th.fg }));
+    tiles.push(("plays", &plays, th.fg));
+    if let Some(a) = &s.top_artist {
+        tiles.push(("top artist", a, th.fg));
+    }
+    for (label, value, col) in tiles {
+        let tw = label.chars().count().max(value.chars().count()) as u16 + 3;
+        if tx + tw - 2 > x0 + w {
+            break;
+        }
+        crate::tile::stat(buf, tx, ty, tw - 2, label, value, th.s(col), th);
+        tx += tw;
+    }
+}
+
+/// Under a big listening grid: the average day for each weekday, and the minutes of each month, as bars.
+fn listening_breakdown(buf: &mut Buffer, r: Rect, s: &singularity_proto::ListeningSummary, today_day: i64, th: &Theme) {
+    const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let n = s.minutes.len();
+    // by weekday: the average over the days logged
+    let mut sums = [0u32; 7];
+    let mut counts = [0u32; 7];
+    for (i, m) in s.minutes.iter().enumerate() {
+        let back = (n - 1 - i) as i64;
+        let wd = (s.today_weekday as i64 - back).rem_euclid(7) as usize;
+        sums[wd] += m;
+        counts[wd] += 1;
+    }
+    // by month: the last six months, the oldest first (the oldest may hold only its logged days)
+    let mut months: [(u32, u32); 6] = [(0, 0); 6];
+    let (ty, tm, _) = crate::stats::civil(today_day);
+    let month_index = |y: i64, m: u32| y * 12 + m as i64 - 1;
+    let now_idx = month_index(ty, tm);
+    for (i, m) in s.minutes.iter().enumerate() {
+        let (y, mo, _) = crate::stats::civil(today_day - (n - 1 - i) as i64);
+        let k = now_idx - month_index(y, mo);
+        if (0..6).contains(&k) {
+            let slot = &mut months[5 - k as usize];
+            *slot = (mo, slot.1 + m);
+        }
+    }
+    let two = r.width >= 70;
+    let colw = if two { r.width / 2 - 2 } else { r.width };
+    let short = |m: u32| if m >= 60 { format!("{}h{:02}", m / 60, m % 60) } else { format!("{m}m") };
+    let bars = |buf: &mut Buffer, x: u16, title: &str, rows: &mut dyn Iterator<Item = (&str, u32, String)>, peak: u32| {
+        text(buf, x, r.y, colw, title, th.s(th.dim));
+        let peak = peak.max(1);
+        for (i, (name, v, val)) in rows.enumerate() {
+            let y = r.y + 1 + i as u16;
+            if y >= r.bottom() {
+                break;
+            }
+            text(buf, x, y, 4, name, th.s(th.border));
+            let bw = colw.saturating_sub(5 + 7);
+            let t = v as f32 / peak as f32;
+            let fill = if v == peak { th.accent } else { th.ramp_at(0.3 + 0.6 * t) };
+            crate::tile::hbar(buf, x + 4, y, bw, t, fill, Some(th.bg.lerp(th.border, 0.4)), th);
+            text(buf, x + 5 + bw, y, 7, &val, th.s(if v == peak { th.accent } else { th.dim }));
+        }
+    };
+    let avg = |d: usize| sums[d] / counts[d].max(1);
+    let peak = (0..7).map(avg).max().unwrap_or(0);
+    bars(buf, r.x, "the average day", &mut (0..7).map(|d| (DAYS[d], avg(d), short(avg(d)))), peak);
+    if two {
+        let peak = months.iter().map(|m| m.1).max().unwrap_or(0);
+        bars(buf, r.x + colw + 4, "by month", &mut months.iter().filter(|m| m.0 > 0).map(|(mo, m)| (MONTHS[(*mo - 1) as usize], *m, format!("{} h", m / 60))), peak);
+    }
 }
 
 // ── rain (Terminal) ───────────────────────────────────────────────────
@@ -286,6 +465,20 @@ struct Top {
     /// pid → CPU time (ns) at the last sample
     cpu_ns: HashMap<u32, u64>,
     at: Option<Instant>,
+    /// CPU % of all the watched processes together, a sample a second, the newest last
+    total: std::collections::VecDeque<f32>,
+    /// pid → its CPU % history, the same way
+    hist: HashMap<u32, std::collections::VecDeque<f32>>,
+}
+
+/// Seconds of CPU history kept for the graphs.
+const HISTORY: usize = 240;
+
+fn push_capped(q: &mut std::collections::VecDeque<f32>, v: f32) {
+    if q.len() == HISTORY {
+        q.pop_front();
+    }
+    q.push_back(v);
 }
 
 const WATCHED: [&str; 5] = ["soloist", "singularityd", "singularity", "pipewire", "spotify"];
@@ -301,6 +494,7 @@ impl Top {
             return;
         }
         let dt = self.at.map(|a| a.elapsed().as_secs_f32()).unwrap_or(1.0);
+        let had_one = self.at.is_some();
         self.at = Some(Instant::now());
         let mut rows = vec![];
         let mut cpu_ns = HashMap::new();
@@ -310,6 +504,14 @@ impl Top {
             rows.push((pid, cpu, rss, name));
         }
         rows.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        // (the first sample has no rates yet)
+        if had_one {
+            push_capped(&mut self.total, rows.iter().map(|r| r.1).sum());
+            for (pid, cpu, ..) in &rows {
+                push_capped(self.hist.entry(*pid).or_default(), *cpu);
+            }
+        }
+        self.hist.retain(|pid, _| cpu_ns.contains_key(pid));
         self.rows = rows;
         self.cpu_ns = cpu_ns;
     }
@@ -379,17 +581,119 @@ fn processes() -> Vec<(u32, String, u64, u64)> {
     }
 }
 
+/// "1.2G", "245M"
+fn mem(rss: u64) -> String {
+    if rss >= 1 << 30 { format!("{:.1}G", rss as f32 / (1u64 << 30) as f32) } else { format!("{}M", rss >> 20) }
+}
+
+/// `top` for the music's processes. A row each: the name, a CPU bar, CPU %, memory and the pid as width allows. Tall
+/// Panes put the processes' CPU together on top, a graph of the last minutes under it, and give each process a
+/// sparkline of its own when there are rows for it.
 pub fn top(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let s = &mut app.widgets.top;
     s.sample();
-    text(buf, r.x, r.y, r.width, &format!("{:<7}{:>6} {:>6}  CMD", "PID", "CPU%", "MEM"), th.s(th.dim).add_modifier(Modifier::BOLD));
-    for (i, (pid, cpu, rss, cmd)) in s.rows.iter().enumerate() {
-        let y = r.y + 1 + i as u16;
+    let (x, w) = (r.x + 1, r.width.saturating_sub(2));
+    if w < 8 || r.height == 0 {
+        return;
+    }
+    let n = s.rows.len() as u16;
+    let mut y = r.y;
+    if n == 0 {
+        text(buf, x, y, w, "no music processes running", th.s(th.dim));
+        return;
+    }
+    // the summary and graph when there's room for them and every process
+    let summary = w >= 36 && r.height >= n + 9;
+    if summary {
+        let total: f32 = s.rows.iter().map(|r| r.1).sum();
+        let rss: u64 = s.rows.iter().map(|r| r.2).sum();
+        let cores = std::thread::available_parallelism().map(|c| c.get()).unwrap_or(1);
+        let head = format!("{total:.1}%");
+        text(buf, x, y, w, "cpu ", th.s(th.dim));
+        text(buf, x + 4, y, w.saturating_sub(4), &head, th.s(th.accent).add_modifier(Modifier::BOLD));
+        let hw = head.len() as u16 + 5;
+        text(buf, x + hw, y, w.saturating_sub(hw), &format!("of {cores} cores"), th.s(th.border));
+        let m = format!("{} resident", mem(rss));
+        let mw = m.len() as u16;
+        if hw + 12 + mw < w {
+            text(buf, x + w - mw, y, mw, &m, th.s(th.dim));
+        }
+        y += 1;
+        // the graph: the last minutes of the processes' CPU, scaled to their peak (at least 5 %)
+        let gh = ((r.height - n - 4) / 2).clamp(2, 10);
+        let peak = s.total.iter().copied().fold(5.0f32, f32::max);
+        let gw = w.saturating_sub(6);
+        crate::tile::area(buf, Rect::new(x, y, gw, gh), s.total.iter().copied(), peak, th, |v| th.ramp_at(0.3 + 0.7 * (v / peak)));
+        let top_label = format!("{peak:.0}%");
+        text(buf, x + gw + 1, y, 5, &top_label, th.s(th.border));
+        text(buf, x + gw + 1, y + gh - 1, 5, "0%", th.s(th.border));
+        // a baseline under the graph, so an idle minute still reads as a graph
+        crate::tile::rule(buf, x, y + gh, gw, th);
+        let secs = s.total.len().min(gw as usize);
+        if secs >= 60 {
+            text(buf, x, y + gh, 8, &format!("{}m ago", secs / 60), th.s(th.border));
+        }
+        y += gh + 2;
+    }
+    // the columns: name, bar, CPU %, memory, pid, as many as fit
+    let pid_w: u16 = if w >= 52 { 8 } else { 0 };
+    let name_w = (w / 4).clamp(8, 18).min(w);
+    let fixed = name_w + 1 + 6 + 1 + 6 + pid_w;
+    let bar_w = w.saturating_sub(fixed + 1);
+    let bar_w = if bar_w >= 6 { bar_w } else { 0 };
+    let cpu_x = x + name_w + 1 + if bar_w > 0 { bar_w + 1 } else { 0 };
+    if y < r.bottom() && w >= 24 {
+        let st = th.s(th.border).add_modifier(Modifier::BOLD);
+        text(buf, x, y, name_w, "PROCESS", st);
+        if bar_w > 0 {
+            text(buf, x + name_w + 1, y, bar_w, "CPU", st);
+        }
+        text(buf, cpu_x, y, 6, "  CPU%", st);
+        if cpu_x + 7 + 6 <= x + w {
+            text(buf, cpu_x + 7, y, 6, "   MEM", st);
+        }
+        if pid_w > 0 {
+            text(buf, x + w - pid_w, y, pid_w, "     PID", st);
+        }
+        y += 1;
+    }
+    // a sparkline row under each process, when every one fits that way
+    let spark = summary && bar_w > 0 && y + 2 * n <= r.bottom();
+    for (pid, cpu, rss, cmd) in &s.rows {
         if y >= r.bottom() {
             break;
         }
-        let mem = if *rss >= 1 << 30 { format!("{:.1}G", *rss as f32 / (1u64 << 30) as f32) } else { format!("{}M", rss >> 20) };
-        text(buf, r.x, y, r.width, &format!("{pid:<7}{cpu:>6.1} {mem:>6}  {cmd}"), th.s(if *cpu > 25.0 { th.accent } else { th.fg }));
+        let t = (*cpu / 100.0).clamp(0.0, 1.0);
+        let hot = *cpu > 25.0;
+        text(buf, x, y, name_w, cmd, th.s(if hot { th.accent } else { th.fg }).add_modifier(Modifier::BOLD));
+        if w < 24 {
+            let c = format!("{cpu:.0}%");
+            let cw = c.len() as u16;
+            if cw + 2 < w {
+                text(buf, x + w - cw, y, cw, &c, th.s(th.dim));
+            }
+            y += 1;
+            continue;
+        }
+        if bar_w > 0 {
+            let fill = th.ramp_at(0.35 + 0.65 * t);
+            crate::tile::hbar(buf, x + name_w + 1, y, bar_w, t, fill, Some(th.bg.lerp(th.border, 0.5)), th);
+        }
+        text(buf, cpu_x, y, 6, &format!("{cpu:>6.1}"), th.s(if hot { th.accent } else { th.fg }));
+        if cpu_x + 7 + 6 <= x + w {
+            text(buf, cpu_x + 7, y, 6, &format!("{:>6}", mem(*rss)), th.s(th.dim));
+        }
+        if pid_w > 0 {
+            text(buf, x + w - pid_w, y, pid_w, &format!("{pid:>8}"), th.s(th.border));
+        }
+        y += 1;
+        if spark {
+            if let Some(h) = s.hist.get(pid) {
+                let peak = h.iter().copied().fold(5.0f32, f32::max);
+                crate::tile::sparkline(buf, Rect::new(x + name_w + 1, y, bar_w, 1), h.iter().copied(), peak, th);
+            }
+            y += 1;
+        }
     }
 }
 
