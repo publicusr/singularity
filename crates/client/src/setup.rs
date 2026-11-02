@@ -279,6 +279,7 @@ pub fn describe(s: &StreamInfo) -> String {
 pub fn draw_stream(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     match &app.stream {
         Some(s) if r.width >= 36 && r.height >= 14 => draw_stream_large(buf, r, app, s, th),
+        Some(s) if r.width >= 22 && r.height >= 9 => draw_stream_medium(buf, r, app, s, th),
         _ => draw_stream_compact(buf, r, app, th),
     }
 }
@@ -454,6 +455,75 @@ fn draw_stream_large(buf: &mut Buffer, r: Rect, app: &App, s: &StreamInfo, th: &
     // the fix, under the graph, when the stream could be lossless and isn't
     if !s.lossless() && y + 2 < bottom.saturating_sub(1) {
         wrapped(buf, x, y + 1, w, bottom.saturating_sub(2), fix_text(app), th.s(th.fg));
+    }
+}
+
+/// The stream Pane at the size most Designs give it (a side Pane): the badge and format, the bitrate as a figure when
+/// it fits, a gauge up to CD quality, the download with a graph of it, and the device at the bottom.
+fn draw_stream_medium(buf: &mut Buffer, r: Rect, app: &App, s: &StreamInfo, th: &Theme) {
+    let (x, w) = (r.x + 1, r.width.saturating_sub(2));
+    let bottom = r.bottom();
+    let mut y = r.y;
+    let (label, col) = badge(app, s, th);
+    let bw = label.chars().count() as u16;
+    text(buf, x, y, bw.min(w), label, th.chip(col));
+    let fmt = format!("{} · {:.1} kHz", s.codec.to_uppercase(), s.sample_rate as f64 / 1000.0);
+    text(buf, x + bw + 1, y, w.saturating_sub(bw + 1), &fmt, th.s(th.fg).add_modifier(Modifier::BOLD));
+    y += 2;
+    let kbps = s.average_bitrate.unwrap_or(s.bitrate) / 1000;
+    let fig = format!("{kbps}kbps");
+    if r.height >= 12 && crate::tile::figure_width(&fig) <= w {
+        crate::tile::figure(buf, x, y, w, &fig, th.s(th.accent).add_modifier(Modifier::BOLD), th.s(th.dim));
+        y += 3;
+    } else {
+        let v = format!("{kbps} kbps");
+        text(buf, x, y, w, &v, th.s(th.accent).add_modifier(Modifier::BOLD));
+        let note = if s.average_bitrate.is_some() { " average" } else { "" };
+        text(buf, x + v.chars().count() as u16, y, w.saturating_sub(v.chars().count() as u16), note, th.s(th.dim));
+        y += 1;
+    }
+    // the gauge: up to a bit past CD quality
+    let scale = (kbps.max(1411) as f32 * 1.12).max(1.0);
+    crate::tile::gauge(buf, x, y, w, kbps as f32 / scale, th);
+    y += 2;
+    // the download, and a graph of the speeds seen (red where it fell short of what the stream needs)
+    let now = singularity_proto::now_ms();
+    let footer = 1u16;
+    if let Some(d) = &app.delivery
+        && y < bottom.saturating_sub(footer)
+    {
+        let need = app.need_kbps().unwrap_or(0);
+        let fresh = d.bandwidth_kbps.filter(|_| now.saturating_sub(d.measured_ms) < 180_000);
+        let stalls = d.stalls_last_minute(now);
+        text(buf, x, y, 9, "download", th.s(th.dim));
+        let (v, st) = match fresh {
+            Some(k) if need > 0 && k < need => (format!("{k} kB/s, need {need}"), th.s(th.error)),
+            Some(k) => (format!("{k} kB/s"), th.s(th.fg)),
+            None => ("not measured lately".to_string(), th.s(th.border)),
+        };
+        text(buf, x + 9, y, w.saturating_sub(9), &v, st.add_modifier(Modifier::BOLD));
+        y += 1;
+        if stalls > 0 && y < bottom.saturating_sub(footer) {
+            text(buf, x, y, 9, "stalls", th.s(th.dim));
+            text(buf, x + 9, y, w.saturating_sub(9), &format!("{stalls} in the last 60s"), th.s(th.error));
+            y += 1;
+        }
+        let gh = bottom.saturating_sub(footer + 1 + y).min(5);
+        if gh >= 1 && app.delivery_hist.len() > 1 {
+            let peak = app.delivery_hist.iter().copied().max().unwrap_or(1).max(need * 2).max(1) as f32;
+            crate::tile::area(buf, Rect::new(x, y, w, gh), app.delivery_hist.iter().map(|k| *k as f32), peak, th, |v| if (v as u32) < need { th.error } else { th.ramp_at(0.3 + 0.7 * v / peak) });
+            y += gh;
+        }
+    }
+    if let Some(EngineStatus::Ready { device_name, active, .. }) = &app.engine {
+        let by = bottom.saturating_sub(1).max(y);
+        if by < bottom {
+            text(buf, x, by, 7, "device", th.s(th.dim));
+            text(buf, x + 7, by, w.saturating_sub(7), &format!("{device_name}{}", if *active { " · active" } else { "" }), th.s(th.fg));
+        }
+    }
+    if !s.lossless() && y + 2 < bottom.saturating_sub(1) {
+        wrapped(buf, x, y + 1, w, bottom.saturating_sub(1), fix_text(app), th.s(th.fg));
     }
 }
 

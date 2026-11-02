@@ -1854,7 +1854,7 @@ mod tests {
         assert!(s.contains("NOT LOSSLESS") && s.contains("VORBIS"), "{s}");
         app.stream = Some(StreamInfo { codec: "flac".into(), bitrate: 1_400_000, average_bitrate: Some(1_689_310), sample_rate: 44_100, sample_format: "32-bit-float-pcm".into() });
         let s = render(&mut app, 160, 48);
-        assert!(s.contains("LOSSLESS") && !s.contains("NOT LOSSLESS") && s.contains("1.69 Mbit/s"));
+        assert!(s.contains("LOSSLESS") && !s.contains("NOT LOSSLESS") && s.contains("FLAC · 44.1 kHz"), "{s}");
         app.run(Action::Health);
         app.tick();
         assert_eq!(sent(&mut rx), vec![Command::GetHealth]);

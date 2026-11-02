@@ -37,7 +37,6 @@ fn glyph(c: char) -> Option<[&'static str; 3]> {
     })
 }
 
-#[cfg(test)]
 /// Width of `s` as a figure: digits 3 + 1 gap, `.`/`:` 1 + 1; anything else counts as a small letter (1).
 pub fn figure_width(s: &str) -> u16 {
     s.chars().map(|c| glyph(c).map(|g| g[0].chars().count() as u16 + 1).unwrap_or(1)).sum::<u16>().saturating_sub(1)
