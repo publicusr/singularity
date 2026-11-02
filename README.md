@@ -4,13 +4,15 @@ A terminal Spotify client for Linux and macOS that feels like the desktop app, p
 and looks spectacular: a Home feed, Made For You, full library, mouse *and* keyboard, btop-grade themes, and
 built-in audio-reactive visuals (yes, including a black hole).
 
-![Singularity: the Home feed, the library, lyrics, audio meters and the black hole, a track playing](docs/media/singularity.png)
+![Singularity in the Rosé theme: the black hole, an oscilloscope, the title marquee, a spectrum and the cover's glow over the Home feed, the library and synced lyrics](docs/media/rose.png)
 
-| Event Horizon | Cockpit | Jam |
+| Ember | An album | Queue and lyrics |
 |---|---|---|
-| ![The Event Horizon design](docs/media/event-horizon.png) | ![The Cockpit design: instruments first](docs/media/cockpit.png) | ![The device picker with a Jam running: its invite link, QR code and a guest](docs/media/jam.png) |
+| ![The Ember theme: the marquee, an oscilloscope and the black hole over Home, lyrics and the library](docs/media/ember.png) | ![An album open beside the queue, synced lyrics and the library, with a starfield, digital rain and Now playing above](docs/media/album.png) | ![Home with Made For You and your top mixes, the queue and synced lyrics](docs/media/queue.png) |
 
-(Screenshots from the test harness: made-up music, covers and account.)
+The Jam picker: the invite link, its QR code and a guest (from the test harness, made-up account).
+
+![The device picker with a Jam running: its invite link, QR code and a guest](docs/media/jam.png)
 
 **Status:** `v0.1.0`. **Linux** is the supported platform; **macOS is a beta**: everything is there, but some of it
 hasn't been checked by hand on a Mac yet (see the issues). Spec in `docs/SPEC.md`.
