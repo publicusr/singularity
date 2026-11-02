@@ -17,7 +17,13 @@ fn mouse(app: &mut App, kind: MouseEventKind, x: u16, y: u16) {
 fn press(app: &mut App, x: u16, y: u16) {
     mouse(app, MouseEventKind::Down(MouseButton::Left), x, y);
 }
+/// The pointer moved there and rests (a held Pane's zone has had its dwell).
 fn drag(app: &mut App, x: u16, y: u16) {
+    sweep(app, x, y);
+    app.tile_settle(Instant::now() + DWELL);
+}
+/// The pointer passes through, without resting.
+fn sweep(app: &mut App, x: u16, y: u16) {
     mouse(app, MouseEventKind::Drag(MouseButton::Left), x, y);
 }
 fn release(app: &mut App, x: u16, y: u16) {
@@ -161,15 +167,19 @@ fn a_drop_that_would_squash_a_pane_is_not_offered() {
     let (x, y) = title_spot(&a, "lyrics");
     press(&mut a, x, y);
     let q = pane(&a, "queue");
-    drag(&mut a, q.right() - 1, q.y + q.height / 2);
+    // a whole column at the screen's left edge: the four left in the row would be 9 columns each
+    let edge = (0, q.y + q.height / 2);
+    drag(&mut a, edge.0, edge.1);
     assert!(a.tile.as_ref().unwrap().zone.is_none(), "no highlight");
     assert_eq!(render(&mut a, 50, 24).matches('⠿').count(), 1, "only the ghost");
     assert_eq!(pane(&a, "queue"), q, "the original layout stays");
-    release(&mut a, q.right() - 1, q.y + q.height / 2);
+    release(&mut a, edge.0, edge.1);
     assert_eq!(a.layout, before);
     assert!(a.naming.is_none());
-    // its centre still swaps
+    // the queue's edge, 12 columns wide, is no split (it would squash, and be uncomfortable anyway): its centre's
     press(&mut a, x, y);
+    drag(&mut a, q.right() - 1, q.y + q.height / 2);
+    assert_eq!(a.tile.as_ref().unwrap().zone, Some(Zone::Swap("queue".into())));
     drag(&mut a, centre(q).0, centre(q).1);
     assert!(matches!(a.tile.as_ref().unwrap().zone, Some(Zone::Swap(_))));
     release(&mut a, centre(q).0, centre(q).1);
@@ -535,12 +545,16 @@ fn random_gestures_leave_every_design_valid() {
                     6 => ctrl(&mut a, 'z'),
                     7 => ctrl(&mut a, 'y'),
                     0..=2 => {
+                        // grabbed where its title is drawn: mid-way, another Pane's ◂ ▸ can be on that spot (and a
+                        // press there swaps that Pane's Widget, the queue's for the now-playing one)
+                        a.motion.skip(motion::SETTLE);
+                        render(&mut a, w, h);
                         let (x, y) = title_spot(&a, &s);
                         press(&mut a, x, y);
                         for _ in 0..3 {
                             drag(&mut a, (next() % w as u64) as u16, (next() % (h - 1) as u64) as u16);
                             render(&mut a, w, h);
-                            a.motion.age(motion::DURATION * (next() % 4) as u32 / 3);
+                            a.motion.skip(motion::SETTLE * (next() % 4) as u32 / 3);
                         }
                         if next() % 4 == 0 {
                             key(&mut a, KeyCode::Esc);
@@ -571,7 +585,7 @@ fn random_gestures_leave_every_design_valid() {
                     }
                 }
                 render(&mut a, w, h);
-                a.motion.age(motion::DURATION * (next() % 3) as u32 / 4);
+                a.motion.skip(motion::SETTLE * (next() % 3) as u32 / 4);
                 render(&mut a, w, h);
                 let body = a.pane_area();
                 assert!(a.drawn.iter().all(|r| r.width >= 1 && r.height >= 1 && r.x >= body.x && r.y >= body.y && r.right() <= body.right() && r.bottom() <= body.bottom()), "{} {w}x{h}: {:?}", design.id, a.drawn);
@@ -616,7 +630,7 @@ fn a_held_pane_floats_live_over_the_empty_slot_it_would_land_in() {
     let (cx, cy) = centre(q);
     drag(&mut a, cx, cy);
     let buf = render_buf(&mut a, W, H);
-    let f = a.float_rect(a.pane_area(), Instant::now()).expect("it floats");
+    let f = a.float_rect(a.pane_area()).expect("it floats");
     // its own size (the stream Pane is small), held by the spot it was grabbed by: the title row under the pointer
     // (here as low as it can go and leave room for its shadow)
     assert_eq!((f.width, f.height), (s.width, s.height));
@@ -649,7 +663,7 @@ fn a_big_pane_floats_smaller_and_never_leaves_the_layout() {
     for (px, py) in [(150u16, 40u16), (0, 1), (W - 1, H - 1), (80, 20)] {
         drag(&mut a, px, py);
         render(&mut a, W, H);
-        let f = a.float_rect(body, Instant::now()).unwrap();
+        let f = a.float_rect(body).unwrap();
         assert!(f.width as f32 <= body.width as f32 * LIFT_MAX && f.height as f32 <= body.height as f32 * LIFT_MAX, "{f:?}");
         assert!(f.width >= crate::layout::MIN_W && f.height >= crate::layout::MIN_H);
         // with its shadow, inside the layout
@@ -662,7 +676,7 @@ fn a_big_pane_floats_smaller_and_never_leaves_the_layout() {
 
 #[test]
 fn panes_ease_to_their_new_places_and_the_held_one_lands_in_its_slot() {
-    use motion::DURATION;
+    use motion::SETTLE;
     let mut a = app();
     a.motion.on = true;
     render(&mut a, W, H);
@@ -676,21 +690,21 @@ fn panes_ease_to_their_new_places_and_the_held_one_lands_in_its_slot() {
     render(&mut a, W, H);
     let q0 = drawn(&a, "queue");
     assert!(q0.x.abs_diff(q.x) <= 2 && q0.y.abs_diff(q.y) <= 2, "{q0:?}");
-    assert!(a.motion.busy(Instant::now()));
-    assert_eq!(a.frame_rate(false), 30, "full speed while things move, even unfocused");
+    assert!(a.motion.busy());
+    assert_eq!((a.frame_rate(false), a.frame_rate(true)), (120, 120), "the motion rate while things move, even unfocused");
     // …is on its way half-way through (every edge between the two places)…
-    a.motion.age(DURATION / 2);
+    a.motion.skip(Duration::from_millis(50));
     render(&mut a, W, H);
     let qm = drawn(&a, "queue");
     let between = |v: u16, p: u16, r: u16| (p.min(r)..=p.max(r)).contains(&v);
     assert!(qm != q && qm != st, "{qm:?}");
     assert!(between(qm.x, q.x, st.x) && between(qm.y, q.y, st.y) && between(qm.right(), q.right(), st.right()) && between(qm.bottom(), q.bottom(), st.bottom()), "{qm:?}");
     // …and exactly there at the end; the held Pane has shrunk from its place to its floating size and follows the pointer
-    a.motion.age(DURATION);
+    a.motion.skip(SETTLE);
     render(&mut a, W, H);
     assert_eq!(drawn(&a, "queue"), st);
-    let target = float_target(a.tile.as_ref().unwrap(), body);
-    assert_eq!(a.float_rect(body, Instant::now()), Some(target));
+    let target = float_target(a.tile.as_ref().unwrap(), body, 1.0);
+    assert_eq!(a.float_rect(body), Some(target));
     // never a rect outside the layout or under a cell, at any moment
     for (i, r) in a.drawn.iter().enumerate() {
         assert!(r.width >= 1 && r.height >= 1 && body.contains(r.as_position()) && r.right() <= body.right() && r.bottom() <= body.bottom(), "{i}: {r:?}");
@@ -699,14 +713,14 @@ fn panes_ease_to_their_new_places_and_the_held_one_lands_in_its_slot() {
     release(&mut a, cx, cy);
     assert_eq!(a.motion.landing.as_deref(), Some("stream"));
     render(&mut a, W, H);
-    a.motion.age(DURATION / 2);
+    a.motion.skip(Duration::from_millis(50));
     let shot = render(&mut a, W, H);
-    let mid = a.float_rect(body, Instant::now()).unwrap();
+    let mid = a.float_rect(body).unwrap();
     assert!(between(mid.x, target.x, q.x) && between(mid.y, target.y, q.y) && mid != q, "{mid:?}");
     assert!(shot.contains('⠿'));
-    a.motion.age(DURATION);
+    a.motion.skip(SETTLE);
     let shot = render(&mut a, W, H);
-    assert!(a.motion.landing.is_none() && a.float_rect(body, Instant::now()).is_none(), "landed");
+    assert!(a.motion.landing.is_none() && a.float_rect(body).is_none(), "landed");
     assert!(!shot.contains('⠿'));
     assert_eq!(drawn(&a, "stream"), q);
     // Esc while held: the others go back, the held one flies back to its own place
@@ -716,17 +730,17 @@ fn panes_ease_to_their_new_places_and_the_held_one_lands_in_its_slot() {
     let lib = pane(&a, "library");
     drag(&mut a, centre(lib).0, centre(lib).1);
     render(&mut a, W, H);
-    a.motion.age(DURATION);
+    a.motion.skip(SETTLE);
     render(&mut a, W, H);
     assert_eq!(drawn(&a, "library"), h, "the library would take home's place");
     key(&mut a, KeyCode::Esc);
     assert_eq!(a.motion.landing.as_deref(), Some("home"));
     render(&mut a, W, H);
-    a.motion.age(DURATION * 2);
+    a.motion.skip(SETTLE * 2);
     render(&mut a, W, H);
     assert_eq!((drawn(&a, "library"), drawn(&a, "home")), (lib, h));
     assert!(a.motion.landing.is_none());
-    assert!(!a.motion.busy(Instant::now()));
+    assert!(!a.motion.busy());
 }
 
 // ── the owner's edge bug, Shift+arrows ────────────────────────────────
@@ -791,13 +805,30 @@ fn shift_arrow_refusals_say_why_in_the_bar_and_change_nothing() {
     // the plain arrow does swap them
     key(&mut a, KeyCode::Up);
     assert_ne!(a.layout, before);
-    // fft's neighbour on the left is its own sibling: ⇧← puts it on loudness' far side
+    // fft's neighbour on the left is loudness, its own sibling: the two would be too narrow side by side, so ⇧←
+    // says so (the comfort rule) and ← swaps them
     let mut b = app();
     b.focus = "fft".into();
+    let before = b.layout.clone();
+    let (f, l) = (pane(&b, "fft"), pane(&b, "loudness"));
+    assert!(f.width + l.width < 2 * crate::tiling::COMFY_W, "{f:?} {l:?}");
     key(&mut b, KeyCode::Char('m'));
     shift(&mut b, KeyCode::Left);
+    assert_eq!(b.layout, before);
+    let said = b.toast.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
+    assert!(said.contains("too narrow to split") && said.ends_with("← swaps"), "{said}");
+    key(&mut b, KeyCode::Left);
     render(&mut b, W, H);
     assert_eq!(pane(&b, "fft").right(), pane(&b, "loudness").x);
+    // in a Pane with room for two, ⇧ splits: the queue below Home in Classic, as a row of its own
+    let mut c = app();
+    c.set_design(2);
+    render(&mut c, W, H);
+    c.focus = "lyrics".into();
+    key(&mut c, KeyCode::Char('m'));
+    let before = c.layout.clone();
+    shift(&mut c, KeyCode::Left);
+    assert_ne!(c.layout, before, "{:?}", c.toast);
 }
 
 /// Every ⇧arrow on every Pane of every Design: the Pane ends up further that way (or as the whole column / row at
@@ -1064,3 +1095,199 @@ fn an_undo_that_would_not_fit_the_window_is_refused() {
     assert_eq!(a.layout, Node::singularity());
 }
 
+
+// ── fast drags, the motion rate (owner, 2026-11-01: "it looks a bit like teleporting") ──
+
+fn ms(n: u64) -> Duration {
+    Duration::from_millis(n)
+}
+
+/// The pointer at (x, y) at moment `t`.
+fn sweep_at(a: &mut App, t: Instant, x: u16, y: u16) {
+    a.input_at = Some(t);
+    sweep(a, x, y);
+    a.input_at = None;
+}
+
+fn shown(a: &App) -> Option<Zone> {
+    a.tile.as_ref().and_then(|t| t.zone.clone())
+}
+
+#[test]
+fn a_fast_sweep_across_panes_leaves_the_preview_and_a_pause_shows_it() {
+    let mut a = app();
+    let before = a.layout.clone();
+    let t0 = Instant::now();
+    let (x, y) = title_spot(&a, "stream");
+    a.input_at = Some(t0);
+    press(&mut a, x, y);
+    let names = ["queue", "home", "library", "lyrics", "fft"];
+    let spots: Vec<(u16, u16)> = names.iter().map(|s| centre(pane(&a, s))).collect();
+    // across five Panes in 100 ms, a frame every 10 ms: each is the one under the pointer for a moment, none is shown
+    for (i, &(px, py)) in spots.iter().enumerate() {
+        let t = t0 + ms(20 * (i as u64 + 1));
+        sweep_at(&mut a, t, px, py);
+        assert_eq!(a.tile.as_ref().unwrap().cand, Some(Zone::Swap(names[i].into())));
+        a.tile_settle(t + ms(10));
+        assert_eq!((shown(&a), a.tile.as_ref().unwrap().preview.is_some()), (None, false), "{}", names[i]);
+        let shot = render(&mut a, W, H);
+        assert_eq!(pane(&a, names[i]), rects(&a).iter().find(|(s, _)| s == names[i]).unwrap().1, "nothing rearranges");
+        assert!(shot.contains('⠿'), "the held Pane follows the pointer all the way");
+    }
+    // resting on fft: still moving fast a moment ago, so not yet; once the pointer has been still for the speed
+    // window it shows (and at the latest after the dwell)
+    let last = t0 + ms(100);
+    a.tile_settle(last + QUICK_DWELL);
+    assert_eq!(shown(&a), None);
+    a.tile_settle(last + WINDOW + ms(1));
+    assert_eq!(shown(&a), Some(Zone::Swap("fft".into())));
+    render(&mut a, W, H);
+    assert_eq!(pane(&a, "stream"), before.compute_shaped(a.pane_area(), a.cell_aspect()).slots.iter().find(|(s, _)| s == "fft").unwrap().1);
+    // a flick across the queue keeps that preview…
+    let t = last + ms(200);
+    let q = centre(pane(&a, "queue"));
+    sweep_at(&mut a, t, q.0, q.1);
+    a.tile_settle(t + ms(10));
+    assert_eq!(shown(&a), Some(Zone::Swap("fft".into())));
+    // …but let go there at once, the drop is where it was let go: with the queue
+    release(&mut a, q.0, q.1);
+    assert_eq!(a.layout, before.swapped("stream", "queue").unwrap());
+}
+
+#[test]
+fn a_dwell_shows_the_zone_and_a_creeping_pointer_shows_it_sooner() {
+    let mut a = app();
+    let t0 = Instant::now();
+    let (x, y) = title_spot(&a, "stream");
+    a.input_at = Some(t0);
+    press(&mut a, x, y);
+    let q = pane(&a, "queue");
+    let (cx, cy) = centre(q);
+    // jumps in and stays, the hand twitching a couple of cells every 15 ms (never still): shown after the dwell
+    sweep_at(&mut a, t0 + ms(10), cx, cy);
+    for (after, on) in [(30u64, false), (60, false), (110, false), (120, true)] {
+        if !on {
+            sweep_at(&mut a, t0 + ms(10 + after), cx + (after as u16 / 15) % 2 * 2, cy);
+        }
+        a.tile_settle(t0 + ms(10 + after));
+        assert_eq!(shown(&a).is_some(), on, "{after} ms");
+    }
+    key(&mut a, KeyCode::Esc);
+    release(&mut a, cx, cy);
+    // creeping into the queue a cell at a time (10 cells a second): shown after the short dwell
+    let t1 = t0 + ms(1000);
+    a.input_at = Some(t1);
+    press(&mut a, x, y);
+    a.input_at = None;
+    let start = (q.x.saturating_sub(4), cy);
+    sweep_at(&mut a, t1 + ms(10), start.0, start.1);
+    let mut t = t1 + ms(300);
+    sweep_at(&mut a, t, start.0, start.1);
+    let mut x = start.0;
+    while a.tile.as_ref().unwrap().cand != Some(Zone::Swap("queue".into())) {
+        t += ms(100);
+        x += 1;
+        sweep_at(&mut a, t, x, start.1);
+        a.tile_settle(t + QUICK_DWELL - ms(1));
+        assert!(x < q.right(), "never reached the queue's centre");
+    }
+    assert!(a.tile.as_ref().unwrap().speed(t) < SLOW);
+    a.tile_settle(t + QUICK_DWELL - ms(1));
+    assert_ne!(shown(&a), Some(Zone::Swap("queue".into())), "not yet");
+    a.tile_settle(t + QUICK_DWELL);
+    assert_eq!(shown(&a), Some(Zone::Swap("queue".into())));
+}
+
+#[test]
+fn a_new_preview_mid_flight_turns_the_panes_without_a_jump() {
+    let mut a = app();
+    a.motion.on = true;
+    render(&mut a, W, H);
+    let (x, y) = title_spot(&a, "stream");
+    press(&mut a, x, y);
+    let (q, lib) = (pane(&a, "queue"), pane(&a, "library"));
+    drag(&mut a, centre(q).0, centre(q).1);
+    render(&mut a, W, H);
+    a.motion.skip(ms(40));
+    render(&mut a, W, H);
+    let mid = drawn(&a, "queue");
+    assert_ne!(mid, q, "on its way");
+    // the pointer pauses over the library instead: the queue heads back from where it is, at the speed it had
+    drag(&mut a, centre(lib).0, centre(lib).1);
+    render(&mut a, W, H);
+    let now = drawn(&a, "queue");
+    assert!(now.x.abs_diff(mid.x) <= 1 && now.y.abs_diff(mid.y) <= 1 && now.width.abs_diff(mid.width) <= 2, "{mid:?} → {now:?}");
+    let mut prev = now;
+    for _ in 0..30 {
+        a.motion.skip(ms(1000 / 240));
+        render(&mut a, W, H);
+        let r = drawn(&a, "queue");
+        assert!(r.x.abs_diff(prev.x) <= 4 && r.y.abs_diff(prev.y) <= 4, "a step of a 240 fps frame: {prev:?} → {r:?}");
+        prev = r;
+    }
+    a.motion.skip(motion::SETTLE);
+    render(&mut a, W, H);
+    assert_eq!(drawn(&a, "queue"), q, "back where it was");
+    key(&mut a, KeyCode::Esc);
+}
+
+#[test]
+fn the_frame_rate_is_the_motion_rate_while_anything_moves() {
+    let mut a = app();
+    a.config.visuals.unfocused_fps = 10;
+    assert_eq!((a.frame_rate(true), a.frame_rate(false)), (30, 10), "idle: as before");
+    let (x, y) = title_spot(&a, "stream");
+    press(&mut a, x, y);
+    assert_eq!(a.frame_rate(true), 30, "a press is no drag yet");
+    drag(&mut a, x + 10, y + 5);
+    assert_eq!((a.frame_rate(true), a.frame_rate(false)), (120, 120), "held: the motion rate, focused or not");
+    for (set, got) in [(240, 240), (144, 144), (1000, 240), (5, 30)] {
+        a.config.visuals.motion_fps = set;
+        assert_eq!(a.frame_rate(true), got);
+    }
+    a.config.visuals.motion_fps = 240;
+    // let go: the landing still moves (motion on), then back to the steady rate
+    a.motion.on = true;
+    release(&mut a, x + 10, y + 5);
+    render(&mut a, W, H);
+    assert!(a.motion.busy() && a.frame_rate(true) == 240);
+    a.motion.skip(motion::SETTLE);
+    render(&mut a, W, H);
+    a.motion.skip(motion::SETTLE);
+    render(&mut a, W, H);
+    assert_eq!(a.frame_rate(true), 30);
+    // a divider being dragged moves with the pointer too
+    let grip = a.dividers[0].grip;
+    press(&mut a, grip.x, grip.y);
+    assert_eq!(a.frame_rate(true), 240);
+    release(&mut a, grip.x, grip.y);
+    assert_eq!(a.frame_rate(true), 30);
+}
+
+#[test]
+fn a_short_wide_pane_is_swapped_with_not_sandwiched() {
+    // the instruments in a short row under Home: fft dropped anywhere on loudness swaps the two
+    use crate::layout::{Axis::*, Size::*};
+    let mut a = app();
+    let s = |x| Node::slot(x);
+    let row = Node::split(Horizontal, Ratio(0.5), s("fft"), s("loudness"));
+    a.layout = Node::split(Horizontal, Cells(30), s("library"), Node::split(Vertical, Ratio(0.7), Node::split(Vertical, Ratio(0.6), s("home"), s("queue")), Node::split(Horizontal, Ratio(0.8), row, s("lyrics"))));
+    render(&mut a, W, H);
+    let before = a.layout.clone();
+    let l = pane(&a, "loudness");
+    assert!(l.height < 2 * crate::tiling::COMFY_H && l.width >= 2 * crate::tiling::COMFY_W, "{l:?}");
+    for (px, py) in [(l.x + l.width / 2, l.y), (l.x + l.width / 2, l.bottom() - 1), (l.x + l.width / 2, l.y + l.height / 2)] {
+        let (x, y) = title_spot(&a, "fft");
+        press(&mut a, x, y);
+        drag(&mut a, px, py);
+        assert_eq!(shown(&a), Some(Zone::Swap("loudness".into())), "({px}, {py}) in {l:?}");
+        key(&mut a, KeyCode::Esc);
+        release(&mut a, px, py);
+    }
+    // and dropped there, the two trade places
+    let (x, y) = title_spot(&a, "fft");
+    press(&mut a, x, y);
+    drag(&mut a, l.x + l.width / 2, l.y);
+    release(&mut a, l.x + l.width / 2, l.y);
+    assert_eq!(a.layout, before.swapped("fft", "loudness").unwrap());
+}

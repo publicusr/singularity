@@ -665,6 +665,8 @@ pub struct App {
     /// Panes easing to new places and the one held up (owner, 2026-11-01); this frame's rects, reused
     pub motion: crate::arrange::motion::Motion,
     pub(crate) drawn: Vec<Rect>,
+    /// when the input event being handled arrived (stamped by the input thread; None: now)
+    pub input_at: Option<Instant>,
     /// drawing the held Pane: its images stay in cells
     pub(crate) floating: bool,
     /// layout undo / redo, and when the last edit offered its "undo"
@@ -790,6 +792,7 @@ impl App {
             divider_from: None,
             motion: crate::arrange::motion::Motion::new(!cfg!(test)),
             drawn: vec![],
+            input_at: None,
             floating: false,
             history: Default::default(),
             undo_offer: None,
@@ -2324,13 +2327,23 @@ impl App {
         self.nudge.due = Some(Instant::now() + NUDGE_SETTLE);
     }
 
-    /// Frames a second (D60): 30 focused, `visuals.unfocused_fps` unfocused, and at most 5 while nothing plays and
-    /// nobody has touched anything for 2 s (the Visuals keep moving, slowly; a key, the mouse or music brings them back).
-    /// Frames a second: 30, or `visuals.unfocused_fps` while the terminal isn't focused. (D62: no slower rate while
-    /// nothing plays; the owner found 5 fps choppy.)
+    /// Frames a second: 30, or `visuals.unfocused_fps` while the terminal isn't focused (D60, D62); while anything
+    /// moves (a held Pane, Panes springing into place, a divider being dragged) `visuals.motion_fps`, focused or not.
     pub fn frame_rate(&self, focused: bool) -> u64 {
-        // Panes on their way somewhere move smoothly even in a window without focus
-        if focused || self.motion.busy(Instant::now()) { 30 } else { self.config.visuals.unfocused_fps.clamp(1, 30) as u64 }
+        if self.moving_now() {
+            return self.motion_fps();
+        }
+        if focused { 30 } else { self.config.visuals.unfocused_fps.clamp(1, 30) as u64 }
+    }
+
+    /// The frame rate for motion (`visuals.motion_fps`, 30–240).
+    pub fn motion_fps(&self) -> u64 {
+        self.config.visuals.motion_fps.clamp(30, 240) as u64
+    }
+
+    /// Whether something on screen is moving with the pointer or on its way somewhere.
+    pub fn moving_now(&self) -> bool {
+        self.motion.busy() || self.tile.as_ref().is_some_and(|t| t.live) || self.divider_from.is_some()
     }
 
     /// Called every frame: sends nudges once they've settled.

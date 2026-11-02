@@ -19,9 +19,8 @@ use crate::app::{Action, App, Hit, Menu, MenuAct, NameFor, Naming, Target};
 use crate::design::DESIGNS;
 use crate::layout::{Divider, MIN_H, MIN_W, Node, WELL_MIN_H, is_hole};
 use crate::theme::{Rgb, Theme};
-use crate::tiling::{CORE, Side, Zone, edge_ratio, neighbour, zone_at};
+use crate::tiling::{CORE, Side, Zone, edge_ratio, neighbour, zone_near};
 use crate::ui::{blank, centered, popup, text};
-use motion::Tween;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -33,17 +32,45 @@ pub const LIFT_MAX: f32 = 0.45;
 /// How long the bar offers "undo" after an edit.
 pub const OFFER: Duration = Duration::from_secs(4);
 
+/// A zone under the pointer becomes the preview once the pointer has stayed in it this long (owner, 2026-11-01: a
+/// fast drag across several Panes rearranged the layout at every one, "like teleporting"; iOS waits for a pause)…
+pub const DWELL: Duration = Duration::from_millis(120);
+/// …or this long, if the pointer is creeping (slower than `SLOW` cells a second over the last `WINDOW`).
+pub const QUICK_DWELL: Duration = Duration::from_millis(40);
+pub const SLOW: f32 = 15.0;
+pub const WINDOW: Duration = Duration::from_millis(100);
+/// Pointer positions kept for its speed.
+const TRAIL: usize = 8;
+
 /// A Pane held by its title: where the press was, where the pointer is, and (once it has moved far enough to be a
-/// drag rather than a click) the drop zone under it and the layout that dropping there would make.
+/// drag rather than a click) the drop zone under the pointer, the zone shown and the layout dropping there would make.
 pub struct TileDrag {
     pub slot: String,
     from: (u16, u16),
     pub at: (u16, u16),
     pub live: bool,
+    /// the zone under the pointer (with hysteresis at its borders) and since when
+    pub cand: Option<Zone>,
+    since: Instant,
+    /// the zone last shown (or found not to fit): a new candidate replaces it after a dwell
+    aim: Option<Zone>,
+    /// the zone shown, if dropping there fits, and the layout it makes
     pub zone: Option<Zone>,
     pub preview: Option<Node>,
     /// the Pane's rectangle when it was picked up
     pub orig: Rect,
+    /// the pointer's last positions (when, x, y), oldest first
+    trail: Vec<(Instant, u16, u16)>,
+}
+
+impl TileDrag {
+    /// How fast the pointer went over the last `WINDOW` before `now`, in cells a second (a row counts as two columns,
+    /// as it looks). Still for a whole window: 0.
+    pub fn speed(&self, now: Instant) -> f32 {
+        let start = now.checked_sub(WINDOW).unwrap_or(now);
+        let path: f32 = self.trail.windows(2).filter(|w| w[1].0 > start).map(|w| ((w[1].1 as f32 - w[0].1 as f32).powi(2) + (2.0 * (w[1].2 as f32 - w[0].2 as f32)).powi(2)).sqrt()).sum();
+        path / WINDOW.as_secs_f32()
+    }
 }
 
 /// What undo goes back to: the layout, the Design it was (None: the built-in one) and what its file said about it,
@@ -59,11 +86,15 @@ pub struct Snapshot {
 }
 
 /// Where a held Pane floats: its own size, at most `LIFT_MAX` of the layout either way (never under its minimum),
-/// with the spot it was grabbed by under the pointer, and inside the layout with room for its shadow.
-pub fn float_target(t: &TileDrag, body: Rect) -> Rect {
+/// with the spot it was grabbed by under the pointer, and inside the layout with room for its shadow. `lift` (0 → 1)
+/// is how far it has grown or shrunk from its size in the layout to that; it follows the pointer from the start.
+pub fn float_target(t: &TileDrag, body: Rect, lift: f32) -> Rect {
     let min_h = if is_hole(&t.slot) { WELL_MIN_H } else { MIN_H };
     let cap = |len: u16, total: u16, min: u16| len.min((total as f32 * LIFT_MAX) as u16).max(min).min(total.saturating_sub(1).max(1));
-    let (w, h) = (cap(t.orig.width, body.width, MIN_W), cap(t.orig.height, body.height, min_h));
+    let mix = |a: u16, b: u16| (a as f32 + (b as f32 - a as f32) * lift.clamp(0.0, 1.0)).round() as u16;
+    let fit = |len: u16, total: u16| len.min(total.saturating_sub(1).max(1));
+    let w = fit(mix(t.orig.width, cap(t.orig.width, body.width, MIN_W)), body.width);
+    let h = fit(mix(t.orig.height, cap(t.orig.height, body.height, min_h)), body.height);
     // the grab point, scaled to the smaller Pane
     let gx = (t.from.0.saturating_sub(t.orig.x) as u32 * w as u32 / t.orig.width.max(1) as u32) as u16;
     let gy = t.from.1.saturating_sub(t.orig.y).min(h.saturating_sub(1));
@@ -124,46 +155,47 @@ impl App {
     pub fn tile_down(&mut self, slot: String, x: u16, y: u16) {
         self.focus = slot.clone();
         let orig = self.layout.compute_shaped(self.pane_area(), self.cell_aspect()).slots.into_iter().find(|(s, _)| *s == slot).map(|(_, r)| r).unwrap_or_default();
-        self.tile = Some(TileDrag { slot, from: (x, y), at: (x, y), live: false, zone: None, preview: None, orig });
+        let at = self.input_time();
+        self.tile = Some(TileDrag { slot, from: (x, y), at: (x, y), live: false, cand: None, since: at, aim: None, zone: None, preview: None, orig, trail: vec![(at, x, y)] });
     }
 
-    /// The held Pane's rectangle this frame: lifted from its place (it shrinks to its floating size on the way) and
-    /// following the pointer; after a release, flying into its slot. None when nothing floats.
-    pub fn float_rect(&mut self, body: Rect, now: Instant) -> Option<Rect> {
+    /// When the input being handled arrived (the input thread stamps it), else now.
+    fn input_time(&self) -> Instant {
+        self.input_at.unwrap_or_else(Instant::now)
+    }
+
+    /// The held Pane's rectangle this frame: lifted from its place (it grows or shrinks to its floating size on the
+    /// way) with the pointer on the spot it was grabbed by; after a release, flying into its slot. None when nothing
+    /// floats.
+    pub fn float_rect(&self, body: Rect) -> Option<Rect> {
         match self.tile.as_ref().filter(|t| t.live) {
-            Some(t) => {
-                let to = float_target(t, body);
-                if !self.motion.on {
-                    return Some(to);
-                }
-                let tw = self.motion.float.get_or_insert(Tween { from: t.orig, to, start: now });
-                tw.follow(to);
-                Some(motion::clamp(tw.at(now), body))
-            }
-            None if self.motion.landing.is_some() => self.motion.float_at(now),
-            None => {
-                self.motion.float = None;
-                None
-            }
+            Some(t) => Some(motion::clamp(float_target(t, body, self.motion.lifted_by()), body)),
+            None => self.motion.float_at(),
         }
     }
 
+    /// The layout what a dropped zone would make, if it can be dropped there: it changes the arrangement, fits the
+    /// window and, for a split, leaves both halves comfortable.
+    fn drop_tree(&self, slot: &str, zone: &Zone) -> Option<Node> {
+        let (body, aspect) = (self.pane_area(), self.cell_aspect());
+        self.layout.moved(slot, zone).filter(|c| *c != self.layout && self.fits(c) && crate::tiling::comfortable(c, slot, zone, body, aspect))
+    }
+
     /// The held Pane let go (dropped or put back): it flies from where it floats into its place in the layout.
-    fn land(&mut self, slot: &str) {
-        let now = Instant::now();
-        let from = self.motion.float.take().map(|t| t.at(now));
-        self.motion.landing = None;
-        let to = self.layout.compute_shaped(self.pane_area(), self.cell_aspect()).slots.into_iter().find(|(s, _)| s == slot).map(|(_, r)| r);
-        if let (Some(from), Some(to), true) = (from, to, self.motion.on) {
-            self.motion.float = Some(Tween { from, to, start: now });
-            self.motion.landing = Some(slot.into());
+    fn land(&mut self, t: &TileDrag) {
+        let body = self.pane_area();
+        let from = motion::clamp(float_target(t, body, self.motion.lifted_by()), body);
+        let to = self.layout.compute_shaped(body, self.cell_aspect()).slots.into_iter().find(|(s, _)| *s == t.slot).map(|(_, r)| r);
+        match to {
+            Some(to) => self.motion.land(&t.slot, from, to),
+            None => self.motion.land(&t.slot, from, from),
         }
     }
 
     /// Esc while a Pane is held: it goes back where it was.
     pub fn tile_cancel(&mut self) {
         if let Some(t) = self.tile.take().filter(|t| t.live) {
-            self.land(&t.slot);
+            self.land(&t);
         }
     }
 
@@ -171,13 +203,22 @@ impl App {
     pub fn tile_pointer(&mut self, m: MouseEvent) {
         match m.kind {
             MouseEventKind::Drag(MouseButton::Left) => self.tile_move(m.column, m.row),
-            MouseEventKind::Up(MouseButton::Left) => self.tile_up(),
+            MouseEventKind::Up(MouseButton::Left) => self.tile_up(m.column, m.row),
             MouseEventKind::Up(_) => self.tile = None,
             _ => {}
         }
     }
 
+    /// The zone under (x, y) for the held Pane: from the layout as it stands, not the preview (what's under the
+    /// pointer can't change because of what the preview did), and sticky at its borders.
+    fn zone_under(&self, t: &TileDrag, x: u16, y: u16) -> Option<Zone> {
+        let (body, aspect) = (self.pane_area(), self.cell_aspect());
+        let slots = self.layout.compute_shaped(body, aspect).slots;
+        zone_near(&slots, body, &t.slot, x, y, t.cand.as_ref())
+    }
+
     fn tile_move(&mut self, x: u16, y: u16) {
+        let now = self.input_time();
         let Some(t) = self.tile.as_mut() else { return };
         if !t.live && x.abs_diff(t.from.0) < 3 && y.abs_diff(t.from.1) < 2 {
             return;
@@ -185,26 +226,45 @@ impl App {
         if !t.live {
             // a fresh lift: whatever was still landing is down
             t.live = true;
-            self.motion.float = None;
-            self.motion.landing = None;
+            self.motion.lifted();
         }
+        let Some(t) = self.tile.as_ref() else { return };
+        let cand = self.zone_under(t, x, y);
         let Some(t) = self.tile.as_mut() else { return };
         t.at = (x, y);
-        let slot = t.slot.clone();
-        let (body, aspect) = (self.pane_area(), self.cell_aspect());
-        // zones come from the layout as it stands, not the preview: what's under the pointer can't change because
-        // of what the preview did
-        let slots = self.layout.compute_shaped(body, aspect).slots;
-        let zone = zone_at(&slots, body, &slot, x, y);
-        let preview = zone.as_ref().and_then(|z| self.layout.moved(&slot, z)).filter(|c| *c != self.layout && self.fits(c));
+        if t.trail.len() == TRAIL {
+            t.trail.remove(0);
+        }
+        t.trail.push((now, x, y));
+        if cand != t.cand {
+            t.cand = cand;
+            t.since = now;
+        }
+        self.tile_settle(now);
+    }
+
+    /// Show the zone under the pointer once it has been there for a dwell (or a shorter one while the pointer
+    /// creeps): a fast drag across Panes leaves the preview as it was, only the held Pane follows the pointer. Called
+    /// on every pointer move and every frame (a pointer that stopped sends nothing).
+    pub fn tile_settle(&mut self, now: Instant) {
+        let Some(t) = self.tile.as_ref().filter(|t| t.live && t.cand != t.aim) else { return };
+        let held = now.saturating_duration_since(t.since);
+        if held < DWELL && (held < QUICK_DWELL || t.speed(now) >= SLOW) {
+            return;
+        }
+        let cand = t.cand.clone();
+        let preview = cand.as_ref().and_then(|z| self.drop_tree(&t.slot, z));
         if let Some(t) = self.tile.as_mut() {
-            // a zone that wouldn't fit isn't offered: nothing highlighted, the original layout shown
-            t.zone = zone.filter(|_| preview.is_some());
+            // a zone that can't take the drop isn't offered: nothing highlighted, the original layout shown
+            t.zone = cand.clone().filter(|_| preview.is_some());
+            t.aim = cand;
             t.preview = preview;
         }
     }
 
-    fn tile_up(&mut self) {
+    /// Let go at (x, y): the zone under the pointer there is the drop, shown or not yet (a quick flick still lands
+    /// where it was let go).
+    fn tile_up(&mut self, x: u16, y: u16) {
         let Some(t) = self.tile.take() else { return };
         if !t.live {
             // a click on the title: the focus moved at the press; the hole's Pane also changes its look
@@ -214,11 +274,11 @@ impl App {
             return;
         }
         // checked again: the terminal can have changed size since the last move
-        if let Some(tree) = t.preview.filter(|c| self.fits(c)) {
+        if let Some(tree) = self.zone_under(&t, x, y).and_then(|z| self.drop_tree(&t.slot, &z)) {
             self.focus = t.slot.clone();
             self.commit_layout(tree);
         }
-        self.land(&t.slot);
+        self.land(&t);
     }
 
     /// A divider dragged to `pos`, unless that would leave a Pane too small (or the well out of shape).
@@ -563,6 +623,12 @@ impl App {
                 Zone::Edge(..) => format!("No room for {name} as a whole {}", dir.line()),
                 Zone::Swap(n) => format!("{name} won't fit where {} is", crate::ui::pane_name(self.design, n)),
             });
+        }
+        if let Zone::Beside(n, _) = &zone
+            && !crate::tiling::comfortable(&tree, slot, &zone, body, aspect)
+        {
+            let thin = if dir.axis() == crate::layout::Axis::Vertical { "short" } else { "narrow" };
+            return self.say(format!("{} is too {thin} to split with {name} · {} swaps", crate::ui::pane_name(self.design, n), dir.arrow()));
         }
         self.focus = slot.into();
         self.commit_layout(tree);

@@ -10,6 +10,37 @@ pub const CORE: [&str; 4] = ["home", "library", "queue", "lyrics"];
 
 /// A Pane's edge bands: this share of its width and height at each side (the rest is the centre, which swaps).
 pub const EDGE_FRAC: f32 = 0.28;
+/// The bands across a Pane's short way (top and bottom of a wide Pane, left and right of a tall one) are thinner: a
+/// split along its long axis is the likelier wish.
+pub const SHORT_EDGE_FRAC: f32 = 0.2;
+/// A split is offered only where both halves would be comfortable (owner, 2026-11-01: small Panes kept offering
+/// "sandwich" splits when a swap was meant): at least this many columns each side by side, rows each stacked. A Pane
+/// too short for a stacked split has no top and bottom bands (that room swaps); too narrow, no left and right ones.
+pub const COMFY_W: u16 = 24;
+pub const COMFY_H: u16 = 8;
+/// Hysteresis at zone borders: the zone under the pointer stays the one it was while the pointer is within this many
+/// columns / rows of it, so a pointer resting on a border doesn't flip between two.
+pub const STICK_X: u16 = 2;
+pub const STICK_Y: u16 = 1;
+
+/// Whether a Pane of this size can be split along `axis` with both halves comfortable.
+pub fn split_comfy(r: Rect, axis: Axis) -> bool {
+    match axis {
+        Axis::Horizontal => r.width >= 2 * COMFY_W,
+        Axis::Vertical => r.height >= 2 * COMFY_H,
+    }
+}
+
+/// Whether Pane `moved` dropped on `zone` gives a comfortable result: a split's two Panes (`moved` and the one it
+/// went beside) each at least `COMFY_W` / `COMFY_H` along the split, as the new tree lays them out. Swaps and screen
+/// edges always are.
+pub fn comfortable(tree: &Node, moved: &str, zone: &Zone, area: Rect, cell_aspect: f64) -> bool {
+    let Zone::Beside(target, side) = zone else { return true };
+    let slots = tree.compute_shaped(area, cell_aspect).slots;
+    let len = |s: &str| slots.iter().find(|(n, _)| n == s).map(|(_, r)| if side.axis() == Axis::Horizontal { r.width } else { r.height });
+    let need = if side.axis() == Axis::Horizontal { COMFY_W } else { COMFY_H };
+    matches!((len(moved), len(target)), (Some(a), Some(b)) if a >= need && b >= need)
+}
 /// The outermost column at each side of the layout gives a full-height column; above and below the layout (the top
 /// bar, the player) a full-width row. The top row of the layout itself is the top Panes' title bars, where a drag
 /// starts: an edge zone there would turn a drag along the titles into a whole row (owner, 2026-11-01).
@@ -84,21 +115,40 @@ pub fn zone_at(slots: &[(String, Rect)], body: Rect, dragged: &str, x: u16, y: u
         return Some(Zone::Edge(s, edge_ratio(s, dragged, me, body)));
     }
     let (name, r) = slots.iter().find(|(_, r)| inside(*r))?;
-    let band = |len: u16| ((len as f32 * EDGE_FRAC).round() as u16).min(len.saturating_sub(1) / 2).max(1);
-    let (bx, by) = (band(r.width), band(r.height));
-    // how far into each band the pointer is (0 = at its inner edge, 1 = on the border); the deepest wins in a corner
+    // the long axis (a cell is about twice as tall as wide): its bands are the full share, the short axis' thinner;
+    // an axis that can't be split comfortably has no bands at all (its room is the centre's: a swap)
+    let wide = r.width >= 2 * r.height;
+    let band = |len: u16, frac: f32, ok: bool| if ok { ((len as f32 * frac).round() as u16).min(len.saturating_sub(1) / 2).max(1) } else { 0 };
+    let bx = band(r.width, if wide { EDGE_FRAC } else { SHORT_EDGE_FRAC }, split_comfy(*r, Axis::Horizontal));
+    let by = band(r.height, if wide { SHORT_EDGE_FRAC } else { EDGE_FRAC }, split_comfy(*r, Axis::Vertical));
+    // how far into each band the pointer is (0 = at its inner edge, 1 = on the border); the deepest wins in a corner,
+    // the long axis' on a tie
     let depth = |d: u16, b: u16| (d < b).then(|| 1.0 - d as f32 / b as f32);
+    let long = |s: Side| if (s.axis() == Axis::Horizontal) == wide { 0.01 } else { 0.0 };
     let sides = [
         (Side::Left, depth(x - r.x, bx)),
         (Side::Right, depth(r.right() - 1 - x, bx)),
         (Side::Top, depth(y - r.y, by)),
         (Side::Bottom, depth(r.bottom() - 1 - y, by)),
     ];
-    let best = sides.iter().filter_map(|(s, d)| d.map(|d| (*s, d))).max_by(|a, b| a.1.total_cmp(&b.1));
+    let best = sides.iter().filter_map(|(s, d)| d.map(|d| (*s, d + long(*s)))).max_by(|a, b| a.1.total_cmp(&b.1));
     Some(match best {
         Some((s, _)) => Zone::Beside(name.clone(), s),
         None => Zone::Swap(name.clone()),
     })
+}
+
+/// `zone_at` with hysteresis: while the pointer is within `STICK_X` columns / `STICK_Y` rows of where `prev` was,
+/// `prev` stays (a pointer resting on the border between two zones doesn't flicker between them).
+pub fn zone_near(slots: &[(String, Rect)], body: Rect, dragged: &str, x: u16, y: u16, prev: Option<&Zone>) -> Option<Zone> {
+    let here = zone_at(slots, body, dragged, x, y);
+    let Some(p) = prev.filter(|p| here.as_ref() != Some(*p)) else { return here };
+    let (sx, sy) = (STICK_X as i32, STICK_Y as i32);
+    let near = (-sy..=sy).flat_map(|dy| (-sx..=sx).map(move |dx| (dx, dy))).filter(|&d| d != (0, 0));
+    let held = near
+        .filter_map(|(dx, dy)| Some(((x as i32 + dx).try_into().ok()?, (y as i32 + dy).try_into().ok()?)))
+        .any(|(nx, ny): (u16, u16)| zone_at(slots, body, dragged, nx, ny).as_ref() == Some(p));
+    if held { Some(p.clone()) } else { here }
 }
 
 /// The Pane next to `name` in direction `dir`: the one sharing the longest stretch of its edge.
@@ -441,7 +491,8 @@ mod tests {
 
     #[test]
     fn the_zones_of_a_pane_are_its_edges_and_its_centre() {
-        let n = Node::cockpit();
+        // two big Panes side by side (80x43 each): every band is there
+        let n = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::slot("fft"), Node::slot("queue"));
         let slots = slots_of(&n);
         let q = rect(&n, AREA, "queue");
         let (cx, cy) = (q.x + q.width / 2, q.y + q.height / 2);
@@ -449,18 +500,94 @@ mod tests {
         let zone = |x, y| zone_at(&slots, AREA, "fft", x, y);
         assert_eq!(zone(cx, cy), Some(Zone::Swap("queue".into())));
         assert_eq!(zone(q.x, cy), Some(Zone::Beside("queue".into(), Left)));
-        assert_eq!(zone(q.right() - 1, cy), Some(Zone::Beside("queue".into(), Right)));
+        assert_eq!(zone(q.right() - 2, cy), Some(Zone::Beside("queue".into(), Right)), "(the last column is the screen edge)");
         assert_eq!(zone(cx, q.y), Some(Zone::Beside("queue".into(), Top)));
         assert_eq!(zone(cx, q.bottom() - 1), Some(Zone::Beside("queue".into(), Bottom)));
-        // the band is the outer 28% each way: just inside it is the centre
-        let bx = (q.width as f32 * EDGE_FRAC).round() as u16;
+        // a tall Pane: its top and bottom bands are the outer 28%, the left and right ones (its short way) 20%; just
+        // inside a band is the centre
+        let (bx, by) = ((q.width as f32 * SHORT_EDGE_FRAC).round() as u16, (q.height as f32 * EDGE_FRAC).round() as u16);
         assert_eq!(zone(q.x + bx - 1, cy), Some(Zone::Beside("queue".into(), Left)));
         assert_eq!(zone(q.x + bx, cy), Some(Zone::Swap("queue".into())));
+        assert_eq!(zone(cx, q.y + by - 1), Some(Zone::Beside("queue".into(), Top)));
+        assert_eq!(zone(cx, q.y + by), Some(Zone::Swap("queue".into())));
         // over the Pane itself: nothing
         let l = rect(&n, AREA, "fft");
         assert_eq!(zone(l.x + 3, l.y + 2), None);
         // beside the layout: nothing
         assert_eq!(zone_at(&slots, Rect::new(10, 1, 140, 43), "fft", 5, cy), None);
+    }
+
+    /// The owner's "sandwich" (2026-11-01): small Panes offered a top/bottom split where a swap was meant. A split is
+    /// offered only where both halves would be comfortable; that room is the centre's (a swap) otherwise.
+    #[test]
+    fn a_split_is_offered_only_where_both_halves_are_comfortable() {
+        use Axis::*;
+        let s = |x| Node::slot(x);
+        // a short wide Pane (160x10) under a big one: no top or bottom band, its left and right ones stay
+        let n = Node::split(Vertical, Size::Cells(33), s("home"), s("loudness"));
+        let slots = slots_of(&n);
+        let l = rect(&n, AREA, "loudness");
+        assert!(l.width >= 2 * COMFY_W && l.height < 2 * COMFY_H, "{l:?}");
+        let cx = l.x + l.width / 2;
+        for y in l.y..l.bottom() {
+            assert_eq!(zone_at(&slots, AREA, "home", cx, y), Some(Zone::Swap("loudness".into())), "row {y}");
+        }
+        assert_eq!(zone_at(&slots, AREA, "home", l.x + 1, l.y + 4), Some(Zone::Beside("loudness".into(), Left)));
+        assert_eq!(zone_at(&slots, AREA, "home", l.x + 2, l.y), Some(Zone::Beside("loudness".into(), Left)), "a corner is the side band's");
+        // a tall narrow one (30x43): no left or right band, top and bottom stay
+        let n = Node::split(Horizontal, Size::Cells(30), s("fft"), s("home"));
+        let slots = slots_of(&n);
+        let f = rect(&n, AREA, "fft");
+        for x in f.x..f.right() {
+            assert!(!matches!(zone_at(&slots, AREA, "home", x, f.y + f.height / 2), Some(Zone::Beside(_, Left | Right))), "column {x}");
+        }
+        assert_eq!(zone_at(&slots, AREA, "home", f.x + 5, f.y), Some(Zone::Beside("fft".into(), Top)));
+        // a small instrument (40x12): a swap wherever the pointer is
+        let n = Node::split(Horizontal, Size::Cells(40), Node::split(Vertical, Size::Cells(12), s("fft"), s("lyrics")), s("home"));
+        let slots = slots_of(&n);
+        let f = rect(&n, AREA, "fft");
+        for (x, y) in [(f.x + 1, f.y), (f.x + 1, f.y + 5), (f.right() - 1, f.bottom() - 1), (f.x + 20, f.y), (f.x + 20, f.bottom() - 1)] {
+            assert_eq!(zone_at(&slots, AREA, "home", x, y), Some(Zone::Swap("fft".into())), "({x}, {y}) of {f:?}");
+        }
+        // the rule as a function: whole halves, along the split
+        assert!(split_comfy(Rect::new(0, 0, 48, 16), Horizontal) && split_comfy(Rect::new(0, 0, 48, 16), Vertical));
+        assert!(!split_comfy(Rect::new(0, 0, 47, 15), Horizontal) && !split_comfy(Rect::new(0, 0, 47, 15), Vertical));
+        // judged on the result too: the queue split in beside a 40x43 column would leave two 20-wide halves
+        let wide = Node::split(Horizontal, Size::Cells(40), s("lyrics"), Node::split(Horizontal, Size::Ratio(0.5), s("home"), s("queue")));
+        let z = Zone::Beside("lyrics".into(), Right);
+        let t = wide.moved("queue", &z).unwrap();
+        assert!(!comfortable(&t, "queue", &z, AREA, 2.0), "20 columns each");
+        let z = Zone::Beside("lyrics".into(), Bottom);
+        let t = wide.moved("queue", &z).unwrap();
+        assert!(comfortable(&t, "queue", &z, AREA, 2.0), "21 rows each");
+        assert!(comfortable(&wide, "queue", &Zone::Swap("home".into()), AREA, 2.0), "a swap always is");
+    }
+
+    #[test]
+    fn a_pointer_resting_on_a_border_keeps_its_zone() {
+        let n = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::slot("fft"), Node::slot("queue"));
+        let slots = slots_of(&n);
+        let q = rect(&n, AREA, "queue");
+        let cy = q.y + q.height / 2;
+        let bx = (q.width as f32 * SHORT_EDGE_FRAC).round() as u16;
+        let band = Zone::Beside("queue".into(), Left);
+        let centre = Zone::Swap("queue".into());
+        // just inside the centre: from the band, still the band (two columns of slack), from nowhere the centre
+        assert_eq!(zone_at(&slots, AREA, "fft", q.x + bx, cy), Some(centre.clone()));
+        assert_eq!(zone_near(&slots, AREA, "fft", q.x + bx, cy, Some(&band)), Some(band.clone()));
+        assert_eq!(zone_near(&slots, AREA, "fft", q.x + bx + 1, cy, Some(&band)), Some(band.clone()));
+        assert_eq!(zone_near(&slots, AREA, "fft", q.x + bx + 2, cy, Some(&band)), Some(centre.clone()), "past the slack");
+        // and back the other way
+        assert_eq!(zone_near(&slots, AREA, "fft", q.x + bx - 1, cy, Some(&centre)), Some(centre.clone()));
+        assert_eq!(zone_near(&slots, AREA, "fft", q.x + bx - 3, cy, Some(&centre)), Some(band.clone()));
+        // a row of slack up and down
+        let by = (q.height as f32 * EDGE_FRAC).round() as u16;
+        let top = Zone::Beside("queue".into(), Top);
+        let cx = q.x + q.width / 2;
+        assert_eq!(zone_near(&slots, AREA, "fft", cx, q.y + by, Some(&top)), Some(top.clone()));
+        assert_eq!(zone_near(&slots, AREA, "fft", cx, q.y + by + 1, Some(&top)), Some(centre.clone()));
+        // nothing before: no slack
+        assert_eq!(zone_near(&slots, AREA, "fft", q.x + bx, cy, None), Some(centre));
     }
 
     #[test]
@@ -469,9 +596,10 @@ mod tests {
         let slots = slots_of(&n);
         let zone = |x, y| zone_at(&slots, AREA, "queue", x, y);
         assert!(matches!(zone(0, 20), Some(Zone::Edge(Left, _))));
-        assert!(matches!(zone(1, 20), Some(Zone::Beside(ref l, Left)) if l == "library"), "one column, not two");
+        // (the library is 30 wide: too narrow for a split beside it, so its edge is its centre)
+        assert!(matches!(zone(1, 20), Some(Zone::Swap(ref l)) if l == "library"), "one column, not two");
         assert!(matches!(zone(AREA.right() - 1, 10), Some(Zone::Edge(Right, _))));
-        assert!(matches!(zone(AREA.right() - 2, 10), Some(Zone::Beside(ref n, Right)) if n == "nowplaying"));
+        assert!(matches!(zone(AREA.right() - 2, 10), Some(Zone::Swap(ref n) | Zone::Beside(ref n, _)) if n == "nowplaying"));
         // the top row is the top Panes' titles: dragging along them is not the screen's edge; the top bar above is
         assert!(matches!(zone(60, AREA.y), Some(Zone::Beside(ref h, Top)) if h == "home"));
         assert!(matches!(zone(60, AREA.y - 1), Some(Zone::Edge(Top, _))));
@@ -640,7 +768,13 @@ mod tests {
                             0..=2 => {
                                 let who = pick(&mut rng);
                                 let (x, y) = (rng.below(w as usize) as u16, rng.below(h as usize) as u16);
-                                let m = zone_at(&slots, body, &who, x, y).and_then(|z| tree.moved(&who, &z));
+                                let z = zone_at(&slots, body, &who, x, y);
+                                // a split is only offered on a Pane with room for two comfortable halves
+                                if let Some(Zone::Beside(t, side)) = &z {
+                                    let r = slots.iter().find(|(s, _)| s == t).unwrap().1;
+                                    assert!(split_comfy(r, side.axis()), "{ctx}: {side:?} of {t} {r:?} offered");
+                                }
+                                let m = z.as_ref().and_then(|z| tree.moved(&who, z).filter(|m| comfortable(m, &who, z, body, aspect)));
                                 assert!(m.as_ref().is_none_or(|m| !m.same_arrangement(&tree)), "{ctx}: a drop that only changes sizes");
                                 m
                             }

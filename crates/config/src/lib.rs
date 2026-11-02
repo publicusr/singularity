@@ -14,7 +14,7 @@ pub use toml_edit;
 use toml_edit::{DocumentMut, Item, Value};
 
 /// The `config.toml` schema this build writes and reads.
-pub const CONFIG_SCHEMA: i64 = 5;
+pub const CONFIG_SCHEMA: i64 = 6;
 /// The `keys.toml` schema.
 pub const KEYS_SCHEMA: i64 = 1;
 
@@ -139,11 +139,13 @@ pub struct Visuals {
     pub gpu: GpuPower,
     /// frames per second while the terminal isn't focused
     pub unfocused_fps: u32,
+    /// frames per second while something moves (a dragged Pane, Panes sliding into place): the monitor's rate
+    pub motion_fps: u32,
 }
 
 impl Default for Visuals {
     fn default() -> Self {
-        Visuals { gpu: GpuPower::LowPower, unfocused_fps: 30 }
+        Visuals { gpu: GpuPower::LowPower, unfocused_fps: 30, motion_fps: 120 }
     }
 }
 
@@ -161,7 +163,7 @@ pub enum GpuPower {
 /// What a fresh `config.toml` says.
 pub const DEFAULT_CONFIG: &str = r#"# Singularity settings. Changes apply as soon as you save this file.
 # (Don't change `schema`: Singularity uses it to update this file when settings change between versions.)
-schema = 5
+schema = 6
 
 [ui]
 # the design: "singularity", "event-horizon", "classic", "cockpit" or "terminal" (Ctrl+K → Pick a design)
@@ -184,6 +186,10 @@ track_change = false
 gpu = "low-power"
 # frames per second while the terminal isn't focused (1–30; lower saves a little CPU, but looks choppier)
 unfocused_fps = 30
+# frames per second while something moves (a Pane you drag, Panes sliding into place): 30–240, best your monitor's
+# refresh rate. Your terminal caps it too: Ghostty follows the monitor; in kitty lower `repaint_delay` (and keep
+# `sync_to_monitor`); otherwise see your terminal's repaint settings
+motion_fps = 120
 
 [idle]
 # after this many minutes without input the black hole leaves its Pane and drifts over the screen; any key wakes it
@@ -224,7 +230,7 @@ preset = "standard"
 pub type Migration = fn(&mut DocumentMut);
 
 /// `config.toml`'s migrations: entry `i` takes schema `i + 1` to `i + 2`.
-pub const CONFIG_MIGRATIONS: &[Migration] = &[add_tint_art, add_engine, add_cache_gb, smooth_unfocused];
+pub const CONFIG_MIGRATIONS: &[Migration] = &[add_tint_art, add_engine, add_cache_gb, smooth_unfocused, add_motion_fps];
 
 /// 1 → 2: `ui.tint_art` (#33) appears at the end of `[ui]`, with its comment, so it can be found.
 fn add_tint_art(doc: &mut DocumentMut) {
@@ -276,6 +282,18 @@ fn smooth_unfocused(doc: &mut DocumentMut) {
     {
         key.leaf_decor_mut().set_prefix(old.replace("(1–30; the Visuals keep moving, slower)", "(1–30; lower saves a little CPU, but looks choppier)"));
     }
+}
+
+/// 5 → 6: `visuals.motion_fps` (owner, 2026-11-01: motion at the monitor's rate) appears at the end of `[visuals]`,
+/// with its comment. A file without `[visuals]` gets the default without being told.
+fn add_motion_fps(doc: &mut DocumentMut) {
+    let Some(visuals) = doc.get_mut("visuals").and_then(Item::as_table_mut) else { return };
+    if visuals.contains_key("motion_fps") {
+        return;
+    }
+    let fresh: DocumentMut = DEFAULT_CONFIG.parse().expect("the default config parses");
+    let (key, item) = fresh["visuals"].as_table().and_then(|t| t.get_key_value("motion_fps")).expect("motion_fps in the default file");
+    visuals.insert_formatted(key, item.clone());
 }
 
 /// Bring `doc` up to `target` with `migrations`. Returns whether anything changed; a document from a newer
@@ -503,6 +521,7 @@ pub const SETTINGS: &[(&str, Kind)] = &[
     ("notifications.track_change", Kind::Toggle),
     ("visuals.gpu", Kind::Choice(&["low-power", "high-performance"])),
     ("visuals.unfocused_fps", Kind::Number { min: 1.0, max: 30.0, step: 1.0, whole: true }),
+    ("visuals.motion_fps", Kind::Number { min: 30.0, max: 240.0, step: 10.0, whole: true }),
     ("idle.enabled", Kind::Toggle),
     ("idle.minutes", Kind::Number { min: 0.5, max: 120.0, step: 0.5, whole: false }),
     ("engine.kind", Kind::Choice(&["auto", "soloist", "spotify-app", "librespot"])),
@@ -713,7 +732,7 @@ minutes = 3
         let r = parse::<Config>("config.toml", mine, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert!(r.value.ui.tint_art && r.value.ui.design == "cockpit");
         assert!(r.migrated.unwrap().contains("design = \"cockpit\" # mine\n# covers"));
-        let off = parse::<Config>("config.toml", "schema = 5\n[ui]\ntint_art = false\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        let off = parse::<Config>("config.toml", "schema = 6\n[ui]\ntint_art = false\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert!(!off.value.ui.tint_art && off.migrated.is_none());
     }
 
@@ -723,12 +742,12 @@ minutes = 3
         let r = parse::<Config>("config.toml", mine, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert!(r.problems.is_empty(), "{:?}", r.problems);
         let text = r.migrated.unwrap();
-        assert!(text.starts_with("schema = 5\n\n[idle]\n# never\nenabled = false\n\n[engine]\n# what plays the music"), "{text}");
+        assert!(text.starts_with("schema = 6\n\n[idle]\n# never\nenabled = false\n\n[engine]\n# what plays the music"), "{text}");
         assert_eq!((r.value.engine.kind, r.value.idle.enabled), (EngineKind::Auto, false));
         // an [engine] of the user's own is left as it is
         let theirs = parse::<Config>("config.toml", "schema = 2\n[engine]\nkind = \"soloist\"\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert_eq!(theirs.value.engine.kind, EngineKind::Soloist);
-        assert!(theirs.migrated.unwrap().starts_with("schema = 5\n[engine]\nkind = \"soloist\"\n# disk space"));
+        assert!(theirs.migrated.unwrap().starts_with("schema = 6\n[engine]\nkind = \"soloist\"\n# disk space"));
         assert_eq!(EngineKind::Auto.resolved(), if cfg!(target_os = "macos") { EngineKind::Librespot } else { EngineKind::Soloist });
     }
 
@@ -738,7 +757,7 @@ minutes = 3
         let r = parse::<Config>("config.toml", mine, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert!(r.problems.is_empty(), "{:?}", r.problems);
         let text = r.migrated.unwrap();
-        assert!(text.starts_with("schema = 5\n\n[engine]\n# mine\nkind = \"librespot\"\n# disk space for Soloist's cache"), "{text}");
+        assert!(text.starts_with("schema = 6\n\n[engine]\n# mine\nkind = \"librespot\"\n# disk space for Soloist's cache"), "{text}");
         assert!(text.ends_with("cache_gb = 5\n"), "{text}");
         assert_eq!((r.value.engine.kind, r.value.engine.cache_gb), (EngineKind::Librespot, 5.0));
         // the Settings page finds it, with its comment
@@ -751,9 +770,28 @@ minutes = 3
         let old = "schema = 4\n\n[visuals]\n# frames per second while the terminal isn't focused (1–30; the Visuals keep moving, slower)\nunfocused_fps = 10 # hm\n";
         let r = parse::<Config>("config.toml", old, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert_eq!(r.value.visuals.unfocused_fps, 30);
-        assert_eq!(r.migrated.as_deref(), Some("schema = 5\n\n[visuals]\n# frames per second while the terminal isn't focused (1–30; lower saves a little CPU, but looks choppier)\nunfocused_fps = 30 # hm\n"));
+        let text = r.migrated.unwrap();
+        assert!(text.starts_with("schema = 6\n\n[visuals]\n# frames per second while the terminal isn't focused (1–30; lower saves a little CPU, but looks choppier)\nunfocused_fps = 30 # hm\n# frames per second while something moves"), "{text}");
         let mine = parse::<Config>("config.toml", "schema = 4\n[visuals]\nunfocused_fps = 12\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert_eq!(mine.value.visuals.unfocused_fps, 12);
+    }
+
+    #[test]
+    fn a_schema_5_config_gains_the_motion_rate_with_its_comment() {
+        let mine = "schema = 5\n\n[visuals]\n# mine\nunfocused_fps = 12\n\n[idle]\nenabled = false\n";
+        let r = parse::<Config>("config.toml", mine, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        assert!(r.problems.is_empty(), "{:?}", r.problems);
+        assert_eq!((r.value.visuals.unfocused_fps, r.value.visuals.motion_fps), (12, 120));
+        let text = r.migrated.unwrap();
+        assert!(text.starts_with("schema = 6\n\n[visuals]\n# mine\nunfocused_fps = 12\n# frames per second while something moves"), "{text}");
+        assert!(text.contains("motion_fps = 120\n\n[idle]\nenabled = false\n"), "{text}");
+        let e = entries(&text).into_iter().find(|e| e.key == "visuals.motion_fps").unwrap();
+        assert!(e.description.contains("30–240") && e.description.contains("repaint"), "{}", e.description);
+        // no [visuals]: nothing added, the default applies; a rate of the user's own stays
+        let bare = parse::<Config>("config.toml", "schema = 5\n[idle]\nenabled = true\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        assert!(!bare.migrated.unwrap().contains("visuals") && bare.value.visuals.motion_fps == 120);
+        let set = parse::<Config>("config.toml", "schema = 6\n[visuals]\nmotion_fps = 240\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        assert!(set.migrated.is_none() && set.value.visuals.motion_fps == 240);
     }
 
     #[test]
