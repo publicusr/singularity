@@ -30,6 +30,7 @@ mod sidebar;
 mod stats;
 mod term;
 mod theme;
+mod tile;
 mod tiling;
 mod tracks;
 mod ui;

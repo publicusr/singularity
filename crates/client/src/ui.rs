@@ -2397,6 +2397,79 @@ mod tests {
         assert!(rows[5].contains('M') || rows[5].contains('W'), "weekday initials under the week: {rows:#?}");
     }
 
+    /// An App with something for every tiling Widget: a stream, its downloads, a listening log, the week's stats.
+    fn widget_app() -> App {
+        use singularity_proto::{Delivery, ListeningSummary, StatsPeriod, StreamInfo};
+        let mut app = App::new(None);
+        app.stream = Some(StreamInfo { codec: "flac".into(), bitrate: 1_400_000, average_bitrate: Some(1_643_334), sample_rate: 44_100, sample_format: "32-bit-float-pcm".into() });
+        app.engine = Some(EngineStatus::Ready { device_name: "Singularity".into(), active: true, version: "1.2.3".into(), expires_in_days: Some(40) });
+        let now = singularity_proto::now_ms();
+        for (i, k) in [900u32, 640, 380, 150, 120, 410, 820, 990, 760, 300].iter().enumerate() {
+            app.delivery_event(Delivery { bandwidth_kbps: Some(*k), measured_ms: now - 10_000 + i as u64, stalls_ms: vec![now - 5_000] });
+        }
+        let minutes: Vec<u32> = (0..singularity_proto::LISTENING_DAYS as u32).map(|d| if d % 5 == 3 { 0 } else { (d * 37) % 190 }).collect();
+        app.listening = Some(ListeningSummary { minutes, today_weekday: 3, hours_this_year: 212.4, top_artist: Some("Nova Drift".into()), streak_days: 6, plays: 1820, plays_today: 14 });
+        app.stats.insert(StatsPeriod::Week, seeded_stats(StatsPeriod::Week));
+        app
+    }
+
+    fn widget_text(buf: &ratatui::buffer::Buffer) -> String {
+        let a = buf.area;
+        (a.y..a.bottom()).map(|y| (a.x..a.right()).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect()
+    }
+
+    #[test]
+    fn the_stat_widgets_fit_any_pane_and_use_a_big_one() {
+        type Draw = fn(&mut ratatui::buffer::Buffer, Rect, &mut App, &Theme);
+        let widgets: [(&str, Draw); 5] = [
+            ("stream", |b, r, a, t| crate::setup::draw_stream(b, r, a, t)),
+            ("top", crate::widgets::top),
+            ("listening", |b, r, a, t| crate::widgets::listening(b, r, a, t)),
+            ("today", |b, r, a, t| crate::stats::today(b, r, a, t)),
+            ("topweek", crate::stats::top_week),
+        ];
+        let mut app = widget_app();
+        let th = app.theme.clone();
+        let dump = std::env::var("SGL_DUMP_WIDGETS").is_ok();
+        for (name, f) in widgets {
+            for w in [1u16, 2, 5, 9, 14, 20, 28, 36, 48, 64, 80, 120, 200] {
+                for h in [1u16, 2, 3, 5, 8, 12, 16, 24, 30, 40, 60] {
+                    // a frame of untouched cells around the Pane: nothing may land there
+                    let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, w + 2, h + 2));
+                    f(&mut buf, Rect::new(1, 1, w, h), &mut app, &th);
+                    for y in 0..h + 2 {
+                        for x in 0..w + 2 {
+                            if x == 0 || y == 0 || x == w + 1 || y == h + 1 {
+                                assert_eq!(buf[(x, y)].symbol(), " ", "{name} {w}x{h}: drawn outside at ({x},{y})");
+                            }
+                        }
+                    }
+                    if dump && [(36, 12), (48, 16), (80, 30), (120, 40)].contains(&(w, h)) {
+                        eprintln!("── {name} {w}x{h}\n{}", widget_text(&buf));
+                    }
+                }
+            }
+        }
+        // the big tiers show their extra detail
+        let big = |app: &mut App, f: Draw, w: u16, h: u16| {
+            let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, w, h));
+            f(&mut buf, Rect::new(0, 0, w, h), app, &th);
+            widget_text(&buf)
+        };
+        let s = big(&mut app, widgets[0].1, 80, 30);
+        assert!(s.contains("LOSSLESS") && s.contains("average bitrate") && s.contains("1411 CD") && s.contains("sample rate") && s.contains("need") && s.contains("Singularity · active"), "{s}");
+        let s = big(&mut app, widgets[2].1, 120, 40);
+        assert!(s.contains("Mon") && s.contains("less") && s.contains("top artist") && s.contains("Nova Drift") && s.contains("streak") && s.contains("the average day") && s.contains("by month"), "{s}");
+        let s = big(&mut app, widgets[3].1, 80, 30);
+        assert!(s.contains("14 plays") && s.contains("6-day streak") && s.contains("vs the 7-day average") && s.contains("best day"), "{s}");
+        app.hits.clear();
+        let s = big(&mut app, widgets[4].1, 80, 30);
+        assert!(s.contains("20 h 34 min · 321 plays") && s.contains("Saffron Echo") && s.contains('█') && s.contains("when you listened"), "{s}");
+        // a tall top this week: each entry is two rows, both clickable
+        let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeek(1)).then_some(*r)).unwrap();
+        assert_eq!(r.height, 2);
+    }
+
     #[test]
     fn top_this_week_switches_between_artists_and_tracks() {
         use singularity_proto::{Command, StatsPeriod};
