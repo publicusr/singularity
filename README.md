@@ -171,13 +171,12 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   `cargo build -p singularityd --features fake`).
 - `cargo test --workspace`; on a Mac, `tools/check-linux.sh` type-checks the Linux build (zig, cargo-zigbuild,
   openssl@3: see the script). The pty harness in `tools/pty/` screenshots the real binaries (its README).
-- `CLAUDE.md` has the working agreements; `docs/HANDOFF.md` the state of things.
+- `CLAUDE.md` has the working agreements.
 
 ## Docs
 
 | Doc | What's in it |
 |-----|--------------|
-| [docs/HANDOFF.md](docs/HANDOFF.md) | Current state, owner feedback, next tickets, prompt for the next session |
 | [docs/SPEC.md](docs/SPEC.md) | The spec: v1 (stories 1–67), v1.x (68–87), implementation and testing decisions, the final audit |
 | [docs/DESIGN-TREE.md](docs/DESIGN-TREE.md) | Every open decision, its dependencies, and the grilling round log |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phased plan, spikes first |
@@ -191,8 +190,9 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 | [docs/research/2026-10-macos.md](docs/research/2026-10-macos.md) | How macOS support came about (the Engine options, the audio tap) |
 | [docs/research/2026-10-soloist-vm-spike.md](docs/research/2026-10-soloist-vm-spike.md) | Soloist in a Linux VM on macOS: measurements, pairing, the firewall |
 | [docs/research/2026-10-free-tiling.md](docs/research/2026-10-free-tiling.md) | What fully free tiling would take |
-| [spikes/soloist-control/](spikes/soloist-control/) | Spike 1: run, pair, control and tap Soloist (walkthrough inside) |
-| [prototypes/design-directions/](prototypes/design-directions/) | Five runnable design directions with a GPU black hole (`cargo run --release`) |
+
+The early spikes (`spikes/`) and design prototypes (`prototypes/`) are in the git history, before the first public
+release.
 
 ## Process
 

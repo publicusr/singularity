@@ -185,7 +185,7 @@ audio, and looks spectacular.
 - **Gravity well & idle**: the hole lives in its own Pane; neighbouring border lines are re-drawn as braille displaced
   sideways toward it, with a moat around the well. Idle mode (default 3 min, switchable off) moves *that* hole out of its
   Pane, lensing the whole body; any input wakes the UI and is swallowed.
-- Code from the prototype (`prototypes/design-directions`) seeds the Visual engine, theme tokens, cell/pixel tiers and
+- Code from the prototype (`prototypes/design-directions`, in the git history) seeds the Visual engine, theme tokens, cell/pixel tiers and
   the hit-testing approach, rewritten to production standards rather than copied wholesale.
 
 ### Platforms
@@ -220,7 +220,7 @@ audio, and looks spectacular.
 
 ## Further Notes
 
-- Spike results: `spikes/soloist-control/FINDINGS.md` (lossless FLAC confirmed once the Connect device quality is Lossless)
+- Spike results (in the git history): `spikes/soloist-control/FINDINGS.md` (lossless FLAC confirmed once the Connect device quality is Lossless)
   and `spikes/catalogue-home/FINDINGS.md` (real Home feed, 31 Shelves in ~1.5 s).
 - Research: `research/2026-10-platform-constraints.md`, `-private-api-risk.md`, `-macos.md`, `-free-tiling.md`.
 - Open: D17 (can Singularity set the device quality itself?) is answered inside the ConnectRemote ticket.

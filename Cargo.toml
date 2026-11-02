@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/proto", "crates/config", "crates/daemon", "crates/client"]
-exclude = ["prototypes", "spikes", "fuzz"]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.0"

@@ -4,3 +4,4 @@ target/
 .env
 *.key
 docs/screenshots/
+docs/HANDOFF.md
