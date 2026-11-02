@@ -74,6 +74,13 @@ Shift+arrow moves or says why not, undo/redo (Ctrl+Z / Ctrl+Y, `u`/`U` in Move m
 undoing a built-in's first edit removes its "(edited)" file). Owner preference: Opus agents or me, not Sonnet.
 Needs the owner's hands-on test: all of it, and DJ once it's back on their Home.
 
+**Owner's fourth round (2026-11-02), merged, both binaries reinstalled:** playback went silent while "playing"
+(Mullvad re-made its tunnel; Soloist's pooled connections hung for 16 min, `CURL error: 42`): a dry spell of 20 s
+while playing now restarts Soloist and resumes (`DryWatch`, once per 3 min). Glow: smooth pixel-tier image (half-blocks
+on the cell tier), stronger reaction. Pixel black hole out of `v`'s rotation (CPU fallback only; Event Horizon now
+defaults to Gargantua). Stat Widgets redesigned with size tiers (`tile.rs`, pty `widgets-large`). Waiting on the owner:
+five widget ideas (vinyl, waterfall, aurora, ripples, horizon) and a live check of all of it.
+
 **Next, in order** (the owner games on this PC: ask before heavy commands — builds, tests, history-wide greps):
 the owner retests (reinstall both binaries first) and says go → redo the scrub from the then-current `main` (the
 scratch clone is session-only; seconds) → **owner's go-ahead** → rename this repo to `publicusr/singularity-archive`, create a new private
