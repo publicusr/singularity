@@ -386,13 +386,32 @@ impl Notifier {
         }
         let r = async {
             let proxy = NotificationsProxy::new(&self.conn).await?;
-            proxy.notify("Singularity", self.id, "media-playback-start", &n.title, &n.body, &[], hints, -1).await
+            proxy.notify("Singularity", self.id, "media-playback-start", &n.title, &markup_escape(&n.body), &[], hints, -1).await
         };
         match r.await {
             Ok(id) => self.id = id,
             Err(e) => tracing::debug!("notification: {e}"),
         }
     }
+}
+
+/// A notification body is markup to most servers (`<b>`, `<a href>`, `<img>`): artists' and albums' names are text.
+fn markup_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Only `https`, at most 5 hops (B9/S6 for redirects too).
+fn https_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|a| {
+        // a redirect stays on https (an https cover must not lead to `http://127.0.0.1` or another plain-http host)
+        if a.url().scheme() != "https" {
+            a.error("a cover redirected off https")
+        } else if a.previous().len() >= 5 {
+            a.error("too many redirects")
+        } else {
+            a.follow()
+        }
+    })
 }
 
 /// The cover as a local file (notification servers don't fetch URLs): `~/.cache/singularity/notify-cover.jpg`.
@@ -419,7 +438,7 @@ async fn cover_file(url: &str) -> anyhow::Result<std::path::PathBuf> {
     fetchable_cover(url)?;
     let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else { anyhow::bail!("no HOME for the cache") };
     let dir = std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".cache")).join("singularity");
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build()?;
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).redirect(https_redirects()).build()?;
     let mut resp = client.get(url).send().await?.error_for_status()?;
     // (#71) a cover is tens of KB: nothing past 8 MB is read, whether or not the server says its length
     const MAX: usize = 8 << 20;
@@ -459,6 +478,29 @@ fn cover_fits(bytes: &[u8]) -> bool {
 mod tests {
     use super::*;
     use singularity_proto::Item;
+
+    #[test]
+    fn a_notification_body_shows_names_as_text_not_markup() {
+        assert_eq!(markup_escape("<a href=\"https://x\">A & B</a>"), "&lt;a href=\"https://x\"&gt;A &amp; B&lt;/a&gt;");
+    }
+
+    /// A redirect to plain http (here, to loopback) is refused, not followed.
+    #[tokio::test]
+    async fn a_cover_redirect_off_https_is_refused() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf).await;
+                let _ = s.write_all(format!("HTTP/1.1 302 Found\r\nLocation: http://{addr}/secret\r\nContent-Length: 0\r\n\r\n").as_bytes()).await;
+            }
+        });
+        let client = reqwest::Client::builder().redirect(https_redirects()).build().unwrap();
+        let err = client.get(format!("http://{addr}/cover")).send().await.unwrap_err();
+        assert!(err.is_redirect(), "{err}");
+    }
 
     fn playing(uri: &str, pos: u64, at: u64) -> PlaybackState {
         PlaybackState { status: PlayStatus::Playing, item: Some(Item { uri: uri.into(), name: "Song".into(), duration_ms: 200_000, ..Default::default() }), position_ms: pos, timestamp_ms: at, speed: 1.0, ..Default::default() }

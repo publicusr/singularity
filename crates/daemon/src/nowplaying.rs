@@ -53,6 +53,14 @@ impl TrackNews {
     }
 }
 
+/// `osascript`'s arguments for a notification. The title and body are data from Spotify (a podcast's episode titles
+/// come straight from its publisher's feed), so they go after `--`: a title like `-e…` would otherwise be read as
+/// one more line of AppleScript (a `property` initialiser runs `do shell script` at compile time).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn osascript_args(n: &News) -> [&str; 9] {
+    ["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", "--", &n.title, &n.body]
+}
+
 #[cfg(target_os = "macos")]
 pub use mac::{main_thread, run};
 
@@ -208,10 +216,11 @@ mod mac {
         }
     }
 
-    /// A macOS notification through `osascript` (title and body passed as arguments, never as script text).
+    /// A macOS notification through `osascript` (title and body passed as arguments after `--`, never as script text
+    /// or options: `osascript_args`).
     async fn notify(n: News) {
         let r = crate::programs::tokio_command("/usr/bin/osascript")
-            .args(["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", &n.title, &n.body])
+            .args(super::osascript_args(&n))
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
@@ -229,6 +238,15 @@ pub use mac::not_wanted;
 mod tests {
     use super::*;
     use singularity_proto::Item;
+
+    #[test]
+    fn a_title_or_body_that_looks_like_an_option_stays_data_for_osascript() {
+        let n = News { title: "-eproperty p : (do shell script \"touch /tmp/x\")".into(), body: "-e".into(), cover_url: None };
+        let args = osascript_args(&n);
+        let end = args.iter().position(|a| *a == "--").expect("options end before the data");
+        assert_eq!(&args[end + 1..], [n.title.as_str(), n.body.as_str()]);
+        assert_eq!(args.len(), end + 3, "nothing else after the data");
+    }
 
     fn playing(uri: &str, pos: u64) -> PlaybackState {
         let now = singularity_proto::now_ms();

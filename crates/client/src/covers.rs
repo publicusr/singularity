@@ -41,7 +41,7 @@ impl Covers {
             let _ = std::fs::create_dir_all(&dir);
             let dir2 = dir.clone();
             tokio::task::spawn_blocking(move || prune(&dir2, DISK_BUDGET));
-            let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().ok();
+            let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).redirect(https_redirects()).build().ok();
             let gate = Arc::new(tokio::sync::Semaphore::new(PARALLEL));
             while let Some(url) = req_rx.recv().await {
                 let (dir, http, done, gate) = (dir.clone(), http.clone(), done_tx.clone(), gate.clone());
@@ -210,6 +210,21 @@ fn prune(dir: &Path, budget: u64) {
 }
 
 /// A PNG header (and nothing else) claiming `w`×`h`: enough for the decoder's limits to refuse it.
+/// Covers follow redirects only on `https`, at most 5 hops (a cover URL is only fetched when it's https: a redirect
+/// must not turn it into a plain-http or loopback request).
+fn https_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|a| {
+        // a redirect stays on https (an https cover must not lead to `http://127.0.0.1` or another plain-http host)
+        if a.url().scheme() != "https" {
+            a.error("a cover redirected off https")
+        } else if a.previous().len() >= 5 {
+            a.error("too many redirects")
+        } else {
+            a.follow()
+        }
+    })
+}
+
 #[cfg(test)]
 pub(crate) fn huge_png_header(w: u32, h: u32) -> Vec<u8> {
     fn crc(data: &[u8]) -> u32 {

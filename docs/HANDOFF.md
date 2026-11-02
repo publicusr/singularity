@@ -96,6 +96,19 @@ and merged. Owner chose new Widgets: vinyl (constant spin), waterfall, aurora, r
 3. Everything else from 2026-11-02 the owner called good "for now": the arrows fix, 240 Hz/drag logic, stream tier,
    the Soloist stuck-stream watchdog (only a real connection drop will exercise it).
 
+**Security review (2026-11-02), fixed:** four Opus reviewers (secrets, listeners, code execution, data from
+strangers) over the whole tree, each finding checked again; nothing reached 8/10. Fixed anyway:
+- macOS notifications: the track title went to `osascript` without `--`, so a podcast episode titled `-e…` could add
+  AppleScript (`nowplaying::osascript_args`, test). Opt-in setting only.
+- macOS VM: `ssh` took any host key (`StrictHostKeyChecking=no`). The guest's host key is now made on the Mac, given
+  to cloud-init (`ssh_keys`) and pinned (`known_hosts`, `HostKeyAlias=singularity-vm`); `SETUP_VERSION` 4 (the ready
+  file is versioned too), so **the Mac's VM re-runs its setup once on next start: check it live**. Pinning tested
+  against a throwaway local sshd (right key: ok; another key: refused).
+- Linux notification bodies are escaped (servers read them as markup); cover fetches (Client and notification)
+  follow redirects only on https, 5 hops at most (test).
+- Not fixable here: Soloist takes its key only as `--api-key`, so `ps` shows it to other local users; README now
+  suggests `hidepid=invisible` on shared PCs.
+
 **Next, in order** (the owner games on this PC: ask before heavy commands — builds, tests, history-wide greps):
 the owner retests (reinstall both binaries first) and says go → redo the scrub from the then-current `main` (the
 scratch clone is session-only; seconds) → **owner's go-ahead** → rename this repo to `publicusr/singularity-archive`, create a new private

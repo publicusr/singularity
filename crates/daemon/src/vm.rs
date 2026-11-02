@@ -32,8 +32,10 @@ pub const GUEST: &str = "192.168.127.2";
 pub const GUEST_WS: u16 = 7700;
 pub const GUEST_PCM: u16 = 5005;
 /// bump when the guest's setup changes: a new instance id makes cloud-init run again (2: the pipe sink over vsock,
-/// and #S7's size caps on the guest's `curl`: 3)
-const SETUP_VERSION: u32 = 3;
+/// and #S7's size caps on the guest's `curl`: 3, the pinned host key: 4)
+const SETUP_VERSION: u32 = 4;
+/// The name the guest's host key is pinned under (`HostKeyAlias`): its port changes with every Daemon.
+const HOST_ALIAS: &str = "singularity-vm";
 
 /// The most each download may be: the two helpers are tens of MB, Debian's image ~210 MB (a few hundred MB means the
 /// server sent something else).
@@ -106,17 +108,23 @@ impl Vm {
             let dir = self.dir.clone();
             tokio::task::spawn_blocking(move || sparse_copy(&dir.join("disk.raw"), &dir.join("disk.sparse")).and_then(|_| std::fs::rename(dir.join("disk.sparse"), dir.join("disk.raw")))).await??;
         }
-        if !self.dir.join("id_ed25519").exists() {
-            let ok = Command::new("/usr/bin/ssh-keygen").env_remove(crate::programs::SECRET_ENV).args(["-q", "-t", "ed25519", "-N", "", "-C", "singularity-vm", "-f"]).arg(self.dir.join("id_ed25519")).status().await?.success();
-            if !ok {
-                anyhow::bail!("couldn't make the VM's SSH key");
+        // our key, and the guest's host key: made here and handed to the guest, so `ssh` accepts only that guest (a
+        // local user who took the loopback port while gvproxy was down can't pose as it and be sent the Soloist key)
+        for (file, what) in [("id_ed25519", "SSH key"), ("host_ed25519", "host key")] {
+            if !self.dir.join(file).exists() {
+                let ok = Command::new("/usr/bin/ssh-keygen").env_remove(crate::programs::SECRET_ENV).args(["-q", "-t", "ed25519", "-N", "", "-C", "singularity-vm", "-f"]).arg(self.dir.join(file)).status().await?.success();
+                if !ok {
+                    anyhow::bail!("couldn't make the VM's {what}");
+                }
             }
         }
         let key = std::fs::read_to_string(self.dir.join("id_ed25519.pub"))?;
+        let host = HostKey { private: std::fs::read_to_string(self.dir.join("host_ed25519"))?, public: std::fs::read_to_string(self.dir.join("host_ed25519.pub"))? };
+        std::fs::write(self.dir.join("known_hosts"), known_hosts(&host.public))?;
         let seed = self.dir.join("seed");
         std::fs::create_dir_all(&seed)?;
         std::fs::write(seed.join("meta-data"), format!("instance-id: singularity-vm-{SETUP_VERSION}\nlocal-hostname: singularity-vm\n"))?;
-        std::fs::write(seed.join("user-data"), user_data(key.trim()))?;
+        std::fs::write(seed.join("user-data"), user_data(key.trim(), &host))?;
         let iso = self.dir.join("seed.iso");
         let _ = std::fs::remove_file(&iso);
         let ok = Command::new("/usr/bin/hdiutil").env_remove(crate::programs::SECRET_ENV).args(["makehybrid", "-quiet", "-iso", "-joliet", "-default-volume-name", "cidata", "-o"]).arg(&iso).arg(&seed).status().await?.success();
@@ -174,16 +182,17 @@ impl Vm {
         say(if first { "Setting up the Soloist VM (first time: a minute or two)…".into() } else { "Starting the Soloist VM…".into() });
         let deadline = tokio::time::Instant::now() + Duration::from_secs(if first { 600 } else { 90 });
         loop {
-            if let Ok(out) = self.ssh("test -f /var/lib/singularity-ready && echo ready").await
+            // gvproxy and vfkit still ours before anything is asked of whoever answers on the port
+            if self.children.lock().await.iter_mut().any(|c| c.try_wait().ok().flatten().is_some()) {
+                anyhow::bail!("the Soloist VM stopped (see {})", self.dir.join("vfkit.log").display());
+            }
+            if let Ok(out) = self.ssh(&format!("test -f /var/lib/singularity-ready-{SETUP_VERSION} && echo ready")).await
                 && out.trim() == "ready"
             {
                 break;
             }
             if tokio::time::Instant::now() > deadline {
                 anyhow::bail!("the Soloist VM didn't come up (see {})", self.dir.join("console.log").display());
-            }
-            if self.children.lock().await.iter_mut().any(|c| c.try_wait().ok().flatten().is_some()) {
-                anyhow::bail!("the Soloist VM stopped (see {})", self.dir.join("vfkit.log").display());
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
@@ -206,12 +215,15 @@ impl Vm {
         }
     }
 
-    /// SSH into the guest: the base command (add the remote command, stdin, pipes).
+    /// SSH into the guest: the base command (add the remote command, stdin, pipes). Only the guest's pinned host key
+    /// is accepted (`known_hosts`, written by `prepare`).
     pub fn ssh_command(&self) -> Command {
         let mut c = crate::programs::tokio_command("/usr/bin/ssh");
         c.arg("-i")
             .arg(self.dir.join("id_ed25519"))
-            .args(["-p", &self.ssh_port.to_string(), "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=10", "singularity@127.0.0.1"])
+            .arg("-o")
+            .arg(format!("UserKnownHostsFile={}", self.dir.join("known_hosts").display()))
+            .args(["-p", &self.ssh_port.to_string(), "-o", "StrictHostKeyChecking=yes", "-o", &format!("HostKeyAlias={HOST_ALIAS}"), "-o", "HostKeyAlgorithms=ssh-ed25519", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=10", "singularity@127.0.0.1"])
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
         c
@@ -336,10 +348,30 @@ pub fn sparse_copy(from: &Path, to: &Path) -> std::io::Result<()> {
     dst.sync_all()
 }
 
-/// The guest's setup (cloud-init): the user, the packages, the PCM server and Soloist's update script.
-pub fn user_data(ssh_key: &str) -> String {
+/// The guest's SSH host key (OpenSSH files), made on the Mac.
+pub struct HostKey {
+    pub private: String,
+    pub public: String,
+}
+
+/// The one line `ssh` checks the guest against.
+fn known_hosts(host_public: &str) -> String {
+    let mut parts = host_public.split_whitespace();
+    format!("{HOST_ALIAS} {} {}\n", parts.next().unwrap_or_default(), parts.next().unwrap_or_default())
+}
+
+/// The guest's setup (cloud-init): the user, its pinned host key, the packages, the PCM server and Soloist's update
+/// script.
+pub fn user_data(ssh_key: &str, host: &HostKey) -> String {
+    let private: String = host.private.trim().lines().map(|l| format!("    {l}\n")).collect();
+    let public = host.public.trim();
     format!(
         r#"#cloud-config
+ssh_deletekeys: true
+ssh_genkeytypes: []
+ssh_keys:
+  ed25519_private: |
+{private}  ed25519_public: {public}
 users:
   - name: singularity
     shell: /bin/bash
@@ -409,7 +441,7 @@ runcmd:
   - apt-get clean
   - rm -rf /var/lib/apt/lists/*
   - fstrim -a
-  - touch /var/lib/singularity-ready
+  - touch /var/lib/singularity-ready-{SETUP_VERSION}
 "#
     )
 }
@@ -465,7 +497,12 @@ mod tests {
 
     #[test]
     fn the_setup_names_the_ports_the_daemon_uses() {
-        let u = user_data("ssh-ed25519 AAAA test");
+        let host = HostKey { private: "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaA\n-----END OPENSSH PRIVATE KEY-----\n".into(), public: "ssh-ed25519 AAAAhost singularity-vm\n".into() };
+        let u = user_data("ssh-ed25519 AAAA test", &host);
+        // the host key the Mac pins, as cloud-init wants it (a block under ed25519_private), and nothing generated
+        assert!(u.contains("ssh_keys:\n  ed25519_private: |\n    -----BEGIN OPENSSH PRIVATE KEY-----\n    b3BlbnNzaA\n    -----END OPENSSH PRIVATE KEY-----\n  ed25519_public: ssh-ed25519 AAAAhost singularity-vm\nusers:"), "{u}");
+        assert!(u.contains("ssh_genkeytypes: []") && u.contains("touch /var/lib/singularity-ready-4"));
+        assert_eq!(known_hosts("ssh-ed25519 AAAAhost singularity-vm\n"), "singularity-vm ssh-ed25519 AAAAhost\n");
         assert!(u.starts_with("#cloud-config\n") && u.contains("ssh-ed25519 AAAA test") && u.contains("VSOCK-CONNECT:2:5005") && u.contains("module-pipe-sink") && u.contains("soloist_release_arm64"));
         assert!(!u.contains("{{") && !u.contains("}}"), "format escapes resolved");
         // S4/S7: the guest's own download is capped and its tar output checked

@@ -52,6 +52,9 @@ with your Premium account; it goes to the keyring), downloads Soloist from Spoti
 the browser) for Home, the library and search, and an audio check. Lossless: on the phone, device picker →
 Singularity → Change quality settings → Lossless (once).
 
+On a PC shared with other people: Soloist takes its key only on its command line, so other local users can see it
+with `ps`. Mounting `/proc` with `hidepid=invisible` hides other users' processes (the health check warns about it too).
+
 Start at login (optional): `cp packaging/systemd/singularityd.service ~/.config/systemd/user/ && systemctl --user
 enable --now singularityd`.
 
