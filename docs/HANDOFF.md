@@ -83,6 +83,18 @@ glow calmer and never fills its Pane; stream got a middle tier (22×9+); the pre
 `visuals.motion_fps` 30–240, default 120, `pace.rs`; spring motion, dwell, comfort zones) was finished from its WIP
 and merged. Owner chose new Widgets: vinyl (constant spin), waterfall, aurora, ripples (horizon: no). Built and merged (`ambient/{vinyl,waterfall,aurora,ripples}.rs`, kitty ids 4–7, pty `visuals-new`). Owner to retest: all of the above, at 240 in Settings.
 
+**Owner's verdict (2026-11-02, bedtime) — do these first next session:**
+1. **Remove the four new Widgets** (vinyl, waterfall, aurora, ripples): "they all suck". Revert merge `1a7d779`'s
+   Widget code (`crates/client/src/ambient/{vinyl,waterfall,aurora,ripples}.rs`, their registration in `layouts.rs`,
+   `tiling.rs` POOL, `app.rs` AUDIO, `ui.rs`, the pty `visuals-new*` scenarios, the GLOSSARY "Visual" names); keep
+   the shared pixel/half-block paint helper in `ambient.rs` only if glow uses it. Kitty ids 4–7 become free.
+2. **Glow still looks low-res** ("a bit better, but still kinda low res"). It renders one image pixel per 2 screen
+   pixels and the terminal scales it; try full resolution (cost: measure in release at 80×30 and 120×40 Panes),
+   and check whether the cover baked into the image is what looks soft (draw the cover as its own placed image
+   on top instead?). Look at a real-size crop, not a downscaled screenshot.
+3. Everything else from 2026-11-02 the owner called good "for now": the arrows fix, 240 Hz/drag logic, stream tier,
+   the Soloist stuck-stream watchdog (only a real connection drop will exercise it).
+
 **Next, in order** (the owner games on this PC: ask before heavy commands — builds, tests, history-wide greps):
 the owner retests (reinstall both binaries first) and says go → redo the scrub from the then-current `main` (the
 scratch clone is session-only; seconds) → **owner's go-ahead** → rename this repo to `publicusr/singularity-archive`, create a new private
