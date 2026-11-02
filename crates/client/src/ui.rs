@@ -39,6 +39,10 @@ fn slot_info(slot: &str) -> (&'static str, &'static str) {
         "starfield" => ("starfield", ""),
         "marquee" => ("marquee", ""),
         "glow" => ("glow", ""),
+        "vinyl" => ("vinyl", ""),
+        "waterfall" => ("waterfall", ""),
+        "aurora" => ("aurora", ""),
+        "ripples" => ("ripples", ""),
         _ => ("?", ""),
     }
 }
@@ -566,9 +570,13 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), sl
         "starfield" => crate::ambient::starfield(f.buffer_mut(), inner, app, th),
         "marquee" => crate::ambient::marquee(f.buffer_mut(), inner, app, th),
         "glow" => crate::ambient::glow(f.buffer_mut(), inner, app, th),
+        "vinyl" => crate::ambient::vinyl(f.buffer_mut(), inner, app, th),
+        "waterfall" => crate::ambient::waterfall(f.buffer_mut(), inner, app, th),
+        "aurora" => crate::ambient::aurora(f.buffer_mut(), inner, app, th),
+        "ripples" => crate::ambient::ripples(f.buffer_mut(), inner, app, th),
         _ => {}
     }
-    if matches!(slot, "hole" | "well" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top" | "today" | "topweek" | "starfield" | "marquee" | "glow") {
+    if matches!(slot, "hole" | "well" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top" | "today" | "topweek" | "starfield" | "marquee" | "glow" | "vinyl" | "waterfall" | "aurora" | "ripples") {
         return;
     }
     if slot == "library" {
@@ -997,7 +1005,7 @@ mod tests {
         assert!(one_row, "the sizes above squeeze a Pane to its minimum");
         // and the worst layouts: every Widget in one Pane after another, nested halving, so most of them are one
         // row high or none at all
-        let names = ["library", "home", "queue", "lyrics", "fft", "loudness", "well", "nowplaying", "levels", "listening", "rain", "scope", "top", "today", "topweek", "starfield", "marquee", "glow", "hole", "stream"];
+        let names = ["library", "home", "queue", "lyrics", "fft", "loudness", "well", "nowplaying", "levels", "listening", "rain", "scope", "top", "today", "topweek", "starfield", "marquee", "glow", "vinyl", "waterfall", "aurora", "ripples", "hole", "stream"];
         let mut stack = Node::Slot(names[0].into());
         for name in &names[1..] {
             stack = Node::Split { axis: Axis::Vertical, first: Size::Ratio(0.5), a: Box::new(stack), b: Box::new(Node::Slot((*name).into())) };
@@ -2565,7 +2573,15 @@ mod tests {
         app.playback.item.as_mut().unwrap().cover_url = Some("https://i.scdn.co/image/c".into());
         let th = app.theme.clone();
         type Draw = fn(&mut ratatui::buffer::Buffer, Rect, &mut App, &crate::theme::Theme);
-        let demos: [(&str, Draw); 3] = [("starfield", crate::ambient::starfield), ("marquee", crate::ambient::marquee), ("glow", crate::ambient::glow)];
+        let demos: [(&str, Draw); 7] = [
+            ("starfield", crate::ambient::starfield),
+            ("marquee", crate::ambient::marquee),
+            ("glow", crate::ambient::glow),
+            ("vinyl", crate::ambient::vinyl),
+            ("waterfall", crate::ambient::waterfall),
+            ("aurora", crate::ambient::aurora),
+            ("ripples", crate::ambient::ripples),
+        ];
         for (name, draw) in demos {
             for (w, h) in [(12u16, 3u16), (20, 5), (40, 8), (80, 14), (160, 30)] {
                 let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, w + 2, h + 2));
