@@ -347,17 +347,57 @@ pub fn glow(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             };
             Rgb(chan(0), chan(1), chan(2))
         };
-        for yy in r.top()..r.bottom() {
-            for xx in r.left()..r.right() {
-                let px = xx as f32 + 0.5;
-                let (top, bot) = (shade(px, yy as f32 * ar + half * 0.5), shade(px, yy as f32 * ar + half * 1.5));
-                if let Some(cell) = buf.cell_mut((xx, yy)) {
-                    cell.set_char('\u{2580}').set_fg(top.color()).set_bg(bot.color());
+        // the pixel tier: one smooth image (the terminal scales it), with the cover painted into it
+        if let Some((cpw, cph)) = app.pixel_tier_for(r) {
+            // about one image pixel per 3 screen pixels: smooth once scaled, and cheap
+            let (w, h) = (((r.width as f64 * cpw) / 3.0).round().max(8.0) as u32, ((r.height as f64 * cph) / 3.0).round().max(8.0) as u32);
+            let (cx0, cy0) = (((cover.x - r.x) as f64 * cpw / 3.0).round() as u32, ((cover.y - r.y) as f64 * cph / 3.0).round() as u32);
+            let (ccw, cch) = ((cover.width as f64 * cpw / 3.0).round().max(1.0) as u32, (cover.height as f64 * cph / 3.0).round().max(1.0) as u32);
+            let art = app.covers.scaled(&url, ccw, cch, tint.as_ref());
+            let (sx, sy) = (r.width as f32 / w as f32, r.height as f32 * ar / h as f32);
+            let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h {
+                for x in 0..w {
+                    let inside = x >= cx0 && y >= cy0 && x < cx0 + ccw && y < cy0 + cch;
+                    let c = match (&art, inside) {
+                        (Some(a), true) => {
+                            let p = a.get_pixel((x - cx0).min(a.width() - 1), (y - cy0).min(a.height() - 1));
+                            Rgb(p[0], p[1], p[2])
+                        }
+                        _ => shade(r.x as f32 + (x as f32 + 0.5) * sx, r.y as f32 * ar + (y as f32 + 0.5) * sy),
+                    };
+                    rgba.extend_from_slice(&[c.0, c.1, c.2, 255]);
+                }
+            }
+            if let Some(k) = app.kitty.as_mut() {
+                k.frame(GLOW_ID, r, w, h, std::sync::Arc::new(rgba));
+            }
+            app.under_image(buf, r, th);
+            if art.is_some() {
+                glow_label(buf, r, cover, &item, th);
+                return;
+            }
+        } else {
+            for yy in r.top()..r.bottom() {
+                for xx in r.left()..r.right() {
+                    let px = xx as f32 + 0.5;
+                    let (top, bot) = (shade(px, yy as f32 * ar + half * 0.5), shade(px, yy as f32 * ar + half * 1.5));
+                    if let Some(cell) = buf.cell_mut((xx, yy)) {
+                        cell.set_char('\u{2580}').set_fg(top.color()).set_bg(bot.color());
+                    }
                 }
             }
         }
     }
     crate::home::cover(buf, cover, &url, "♪", app, th);
+    glow_label(buf, r, cover, &item, th);
+}
+
+/// Glow's Visual id on the pixel tier (the hole is 1, the idle takeover 2).
+const GLOW_ID: u32 = 3;
+
+/// The song under the cover.
+fn glow_label(buf: &mut Buffer, r: Rect, cover: Rect, item: &singularity_proto::Item, th: &Theme) {
     let label = format!("{} · {}", item.name, item.artists.join(", "));
     let ly = cover.bottom() + 1;
     if ly < r.bottom() {
