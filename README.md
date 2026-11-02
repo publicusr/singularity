@@ -138,7 +138,8 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   first start; saves apply at once). `preset = "vim"` in keys.toml adds h/j/k/l movement.
 - **Designs**: Ctrl+K → "Pick a design" (Singularity, Event Horizon, Classic+, Cockpit, Terminal) and "Pick a theme", both with a live
   preview; `t` cycles a design's palettes. Your own themes go in `~/.config/singularity/themes/` (see `_example.toml`).
-- **Layouts**: drag Pane borders; `v` (or a Pane's ◂ ▸) swaps its Widget; Ctrl+K → "Save design as…" keeps it, and it
+- **Layouts**: drag the border between two Panes to resize them (it lights up under the pointer, and kitty or
+  Ghostty show a resize pointer); `v` (or a Pane's ◂ ▸) swaps its Widget; Ctrl+K → "Save design as…" keeps it, and it
   comes back, colours included, in Ctrl+K → Pick a design.
 - **Tiling**: drag a Pane by its title bar: onto another Pane's middle to swap, onto its edge to split it, onto the
   screen's edge (the outermost column, or past the top or bottom of the Panes) for a full-height column or

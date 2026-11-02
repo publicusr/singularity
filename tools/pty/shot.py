@@ -1093,6 +1093,76 @@ def seed_today(data):
     db.close()
 
 
+RESIZE_LAYOUT = """name = "Wide"
+design = "cockpit"
+theme = "ember"
+tree = { split = { axis = "vertical", first = { ratio = 0.43548387 },
+    a = { split = { axis = "horizontal", first = { ratio = 0.25714287 },
+        a = { slot = "marquee" },
+        b = { split = { axis = "horizontal", first = { ratio = 0.5 }, a = { slot = "scope" }, b = { slot = "hole" } } },
+    } },
+    b = { split = { axis = "vertical", first = { ratio = 0.3 },
+        a = { split = { axis = "horizontal", first = { ratio = 0.7080292 },
+            a = { split = { axis = "horizontal", first = { ratio = 0.5 }, a = { slot = "fft" }, b = { slot = "nowplaying" } } },
+            b = { slot = "starfield" },
+        } },
+        b = { split = { axis = "horizontal", first = { ratio = 0.52 },
+            a = { slot = "home" },
+            b = { split = { axis = "horizontal", first = { ratio = 0.5 }, a = { slot = "lyrics" }, b = { slot = "library" } } },
+        } },
+    } },
+} }
+"""
+
+
+def resize(t, out):
+    """The owner's 2026-11-02 report: Home can't be made narrower. A full-screen-sized Cockpit edit (Home | lyrics |
+    library along the bottom): drag the Home | lyrics border left, then the border above Home up; a shot after each,
+    and Home's size printed. Also the lyrics Pane dragged by its title onto Home's right edge (a size-only drop: refused,
+    and the bar should say how to resize). Run at PTY_COLS=264 PTY_ROWS=68."""
+    t.pump(1.5)
+    t.shot(f"{out}/0-start.png")
+    def home_rect():
+        x, y = t.find("\u250c home") or t.find("\u256d home")
+        row = "".join(t.screen.buffer[y][i].data for i in range(t.screen.columns))
+        right = next(i for i in range(x + 1, len(row)) if row[i] in "\u2510\u256e")
+        col = [t.screen.buffer[r][x].data for r in range(t.screen.lines)]
+        bottom = next(r for r in range(y + 1, t.screen.lines) if col[r] in "\u2514\u2570")
+        return x, y, right, bottom
+    x, y, right, bottom = home_rect()
+    print("home before:", right - x + 1, "x", bottom - y + 1)
+    # the border between Home and lyrics: Home's right edge, halfway down
+    gx, gy = right, (y + bottom) // 2
+    mouse(t, 35, gx, gy, wait=0.4)  # hover: the border lights up
+    t.shot(f"{out}/0b-hover.png")
+    mouse(t, 0, gx, gy)
+    for i in range(1, 9):
+        mouse(t, 32, gx - 4 * i, gy, wait=0.1)
+    mouse(t, 0, gx - 32, gy, release=True, wait=0.6)
+    t.shot(f"{out}/1-narrower.png")
+    x, y, right, bottom = home_rect()
+    print("home after the side border:", right - x + 1, "x", bottom - y + 1)
+    # the border above Home (its title row is the move handle; the Pane above's bottom border row is the grip)
+    gx, gy = x + 10, y - 1
+    mouse(t, 0, gx, gy)
+    for i in range(1, 6):
+        mouse(t, 32, gx, gy - 2 * i, wait=0.1)
+    mouse(t, 0, gx, gy - 10, release=True, wait=0.6)
+    t.shot(f"{out}/2-taller.png")
+    x, y, right, bottom = home_rect()
+    print("home after the top border:", right - x + 1, "x", bottom - y + 1)
+    # the lyrics Pane by its title onto Home's right edge: the same arrangement, only sizes: refused
+    lx, ly = t.find("lyrics")
+    mouse(t, 0, lx + 1, ly)
+    for i in range(1, 7):
+        mouse(t, 32, lx + 1 - (lx - right + 3) * i // 6, ly + 6 * i // 6, wait=0.15)
+    t.pump(0.4)
+    mouse(t, 0, right - 2, ly + 6, release=True, wait=0.8)
+    t.shot(f"{out}/3-title-drop.png")
+    print("hint shown:", bool(t.find("drag the border between two Panes")))
+    t.send(b"q", 0.5)
+
+
 def widgets_large(t, out):
     """The tiling Widgets (stream, top, listening, today, top this week) each in a big Pane of a saved layout, a
     track playing on a healthy fake stream; then top this week switched to tracks. Try PTY_COLS=240 PTY_ROWS=70 (Panes
@@ -1536,7 +1606,7 @@ def main():
     if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast", "resize") else "0"
         # kitty's layer under cell backgrounds (#41); the harness composites it as kitty does
         env["SINGULARITY_BELOW_BG"] = "1" if scenario in ("popup", "ambient") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
@@ -1556,6 +1626,10 @@ def main():
         seed_today(env["SINGULARITY_DATA"])
         os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity/layouts", exist_ok=True)
         open(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/big.toml", "w").write(BIG_LAYOUT)
+    if scenario == "resize":
+        os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity/layouts", exist_ok=True)
+        open(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/wide.toml", "w").write(RESIZE_LAYOUT)
+        open(f"{env['XDG_CONFIG_HOME']}/singularity/config.toml", "w").write('schema = 6\n[ui]\ndesign = "cockpit"\ntheme = "ember"\nlayout = "wide"\n')
     if scenario == "tiling-fast":
         os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity", exist_ok=True)
         open(f"{env['XDG_CONFIG_HOME']}/singularity/config.toml", "w").write("schema = 6\n[visuals]\nmotion_fps = 240\n")
@@ -1593,6 +1667,8 @@ def main():
             return stats_widgets(t, out)
         if scenario == "widgets-large":
             return widgets_large(t, out)
+        if scenario == "resize":
+            return resize(t, out)
         if scenario == "ambient":
             return ambient(t, out)
         if scenario == "arrows":

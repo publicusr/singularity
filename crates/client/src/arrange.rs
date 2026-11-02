@@ -103,6 +103,19 @@ pub fn float_target(t: &TileDrag, body: Rect, lift: f32) -> Rect {
     Rect::new(x, y, w, h)
 }
 
+/// A border that can be grabbed, lit in the accent colour (only its line glyphs: a title on it keeps its colours).
+pub fn light_grip(buf: &mut Buffer, grip: Rect, th: &Theme) {
+    for y in grip.top()..grip.bottom() {
+        for x in grip.left()..grip.right() {
+            if let Some(c) = buf.cell_mut((x, y))
+                && c.symbol().chars().next().is_some_and(|ch| ('\u{2500}'..='\u{257f}').contains(&ch))
+            {
+                c.set_fg(th.accent.color());
+            }
+        }
+    }
+}
+
 /// A floating Pane with its shadow (a cell to the right and below), inside `area`.
 pub fn with_shadow(r: Rect, area: Rect) -> Rect {
     Rect::new(r.x, r.y, r.width + 1, r.height + 1).intersection(area)
@@ -274,11 +287,35 @@ impl App {
             return;
         }
         // checked again: the terminal can have changed size since the last move
-        if let Some(tree) = self.zone_under(&t, x, y).and_then(|z| self.drop_tree(&t.slot, &z)) {
+        let zone = self.zone_under(&t, x, y);
+        if let Some(tree) = zone.as_ref().and_then(|z| self.drop_tree(&t.slot, z)) {
             self.focus = t.slot.clone();
             self.commit_layout(tree);
+        } else if zone.as_ref().and_then(|z| self.layout.moved_any(&t.slot, z)).is_some_and(|c| c.same_arrangement(&self.layout)) {
+            // a drop that would only change sizes is no move (owner, 2026-11-01); say how sizes are changed instead
+            // (owner, 2026-11-02: "it snaps right back and doesn't let me")
+            self.say("That would only change sizes · drag the border between two Panes to resize them");
         }
         self.land(&t);
+    }
+
+    /// The divider to light up: the one being dragged, else the one under the pointer.
+    pub fn grip_lit(&self) -> Option<usize> {
+        match &self.drag {
+            Some(Hit::Divider(i)) => Some(*i),
+            _ if self.tile.is_none() && self.modal().is_none() => self.grip_hover,
+            _ => None,
+        }
+    }
+
+    /// The mouse pointer's shape for the terminal (OSC 22: kitty, Ghostty, foot…; others ignore it): a resize arrow
+    /// over a border that can be dragged, else the terminal's own.
+    pub fn pointer_shape(&self) -> &'static str {
+        match self.grip_lit().and_then(|i| self.dividers.get(i)) {
+            Some(d) if d.axis == crate::layout::Axis::Horizontal => "ew-resize",
+            Some(_) => "ns-resize",
+            None => "",
+        }
     }
 
     /// A divider dragged to `pos`, unless that would leave a Pane too small (or the well out of shape).

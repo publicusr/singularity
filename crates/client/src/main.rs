@@ -145,6 +145,12 @@ async fn main() -> anyhow::Result<()> {
             if let Some(k) = app.kitty.as_mut() {
                 k.flush(&mut out)?;
             }
+            let shape = app.pointer_shape();
+            if shape != app.pointer_shape_sent {
+                // OSC 22 sets the pointer's shape; an empty name puts the terminal's own back
+                write!(out, "\x1b]22;{shape}\x1b\\")?;
+                app.pointer_shape_sent = shape;
+            }
             if let Some(t) = app.clipboard.take() {
                 write!(out, "\x1b]52;c;{}\x07", gfx::base64(t.as_bytes()))?;
             }
@@ -166,6 +172,9 @@ async fn main() -> anyhow::Result<()> {
         let _ = k.reset(&mut stdout());
     }
     let _ = units.disable(&mut stdout());
+    if !app.pointer_shape_sent.is_empty() {
+        let _ = write!(stdout(), "\x1b]22;\x1b\\");
+    }
     let _ = execute!(stdout(), DisableMouseCapture, DisableFocusChange, DisableBracketedPaste);
     ratatui::restore();
     res

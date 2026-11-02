@@ -422,6 +422,10 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme, float: Option<Rec
     for (i, d) in computed.dividers.iter().enumerate() {
         app.hit(d.grip, Hit::Divider(i));
     }
+    // the border under the pointer (or being dragged) lights up: it can be grabbed to resize
+    if let Some(d) = app.grip_lit().and_then(|i| computed.dividers.get(i)) {
+        crate::arrange::light_grip(f.buffer_mut(), d.grip, th);
+    }
     for (r, h) in swaps.drain(..) {
         app.hit(r, h);
     }

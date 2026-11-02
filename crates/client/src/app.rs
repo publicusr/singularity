@@ -542,7 +542,7 @@ pub struct App {
     pub login_hidden: bool,
     pub dividers: Vec<Divider>,
     pub(crate) hits: Vec<(Rect, Hit)>,
-    drag: Option<Hit>,
+    pub(crate) drag: Option<Hit>,
     /// a queued song being dragged to a new place
     pub queue_drag: Option<crate::queue::QueueDrag>,
     /// boundary minus grab position, so a divider moves exactly with the mouse whichever grip cell was grabbed
@@ -664,6 +664,10 @@ pub struct App {
     pub body: Rect,
     /// the layout as it was when a divider was grabbed (a changed one counts as an edit on release)
     pub(crate) divider_from: Option<Node>,
+    /// the divider whose grip is under the pointer (lit, and a resize pointer where the terminal has one)
+    pub(crate) grip_hover: Option<usize>,
+    /// the pointer shape last sent to the terminal (OSC 22)
+    pub pointer_shape_sent: &'static str,
     /// Panes easing to new places and the one held up (owner, 2026-11-01); this frame's rects, reused
     pub motion: crate::arrange::motion::Motion,
     pub(crate) drawn: Vec<Rect>,
@@ -793,6 +797,8 @@ impl App {
             widget_pick: None,
             body: Rect::default(),
             divider_from: None,
+            grip_hover: None,
+            pointer_shape_sent: "",
             motion: crate::arrange::motion::Motion::new(!cfg!(test)),
             drawn: vec![],
             input_at: None,
@@ -2495,6 +2501,12 @@ impl App {
         // (decided from state, not from last frame's hit rectangles, which a burst or a key in the same batch outdates)
         if let Some(modal) = self.modal() {
             return self.modal_pointer(modal, m, coarse);
+        }
+        if m.kind == MouseEventKind::Moved {
+            self.grip_hover = match self.hit_at(m.column, m.row) {
+                Some(Hit::Divider(i)) => Some(i),
+                _ => None,
+            };
         }
         // a Pane held by its title: the pointer is the Pane's until it lets go
         if self.tile.is_some() {

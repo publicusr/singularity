@@ -1291,3 +1291,37 @@ fn a_short_wide_pane_is_swapped_with_not_sandwiched() {
     release(&mut a, l.x + l.width / 2, l.y);
     assert_eq!(a.layout, before.swapped("fft", "loudness").unwrap());
 }
+
+/// The owner (2026-11-02): "I can't drag the lyrics pane to take up a bit of Home, it snaps right back". A drop that
+/// only changes sizes is still refused, but says how to resize; the border lights up under the pointer, asks for a
+/// resize pointer, and dragging it resizes.
+#[test]
+fn a_size_only_drop_says_to_drag_the_border_which_lights_up_and_resizes() {
+    use crate::layout::{Axis, Size};
+    let mut a = app();
+    a.layout = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::slot("home"), Node::slot("lyrics"));
+    render(&mut a, W, H);
+    let (home, before) = (pane(&a, "home"), a.layout.clone());
+    // lyrics by its title onto Home's right edge: the same two Panes side by side, only resized
+    let (tx, ty) = title_spot(&a, "lyrics");
+    press(&mut a, tx, ty);
+    drag(&mut a, home.right() - 3, home.y + home.height / 2);
+    release(&mut a, home.right() - 3, home.y + home.height / 2);
+    assert_eq!(a.layout, before, "a size-only drop is no move");
+    assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("drag the border")), "{:?}", a.toast);
+    // the border between them: lit while the pointer is on it, with a left-right resize pointer
+    let (gx, gy) = (home.right() - 1, home.y + home.height / 2);
+    mouse(&mut a, MouseEventKind::Moved, gx, gy);
+    assert_eq!(a.pointer_shape(), "ew-resize");
+    let mut t = Terminal::new(TestBackend::new(W, H)).unwrap();
+    t.draw(|f| crate::ui::draw(f, &mut a)).unwrap();
+    assert_eq!(t.backend().buffer()[(gx, gy)].fg, a.theme.accent.color(), "the grabbable border is lit");
+    mouse(&mut a, MouseEventKind::Moved, home.x + 5, gy);
+    assert_eq!(a.pointer_shape(), "", "off the border: the terminal's own pointer");
+    // and dragging it makes Home narrower
+    press(&mut a, gx, gy);
+    sweep(&mut a, gx - 20, gy);
+    release(&mut a, gx - 20, gy);
+    render(&mut a, W, H);
+    assert_eq!(pane(&a, "home").width, home.width - 20);
+}
