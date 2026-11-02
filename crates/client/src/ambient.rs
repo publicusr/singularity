@@ -33,6 +33,8 @@ pub struct State {
     glow_t: f32,
     glow_lvl: f32,
     glow_pulse: f32,
+    /// the beat that drives the pulse (the pulse eases toward it, so a beat swells in rather than flashing)
+    glow_kick: f32,
     glow_peak: f32,
 }
 
@@ -297,8 +299,11 @@ pub fn glow(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     // normalise against the loudest lately, so a quiet volume still moves it (the peak forgets over ~10 s)
     s.glow_peak = (s.glow_peak * (1.0 - dt * 0.1)).max(level).max(40.0);
     let norm = (level / s.glow_peak).clamp(0.0, 1.0);
-    s.glow_lvl += (norm - s.glow_lvl) * (dt * 9.0).min(1.0);
-    s.glow_pulse = if beat { 1.0 } else { s.glow_pulse * (-dt / 0.11).exp() };
+    // eased both ways, never a flash: the level follows over ~200 ms, a beat swells in over ~80 ms and fades over ~400 ms
+    // (the owner: "too bright and epilepsy-inducing sometimes, depending on the song")
+    s.glow_lvl += (norm - s.glow_lvl) * (dt * 5.0).min(1.0);
+    s.glow_kick = if beat { 1.0 } else { s.glow_kick * (-dt / 0.15).exp() };
+    s.glow_pulse += (s.glow_kick - s.glow_pulse) * (dt / 0.08).min(1.0);
     // the colours ease toward the cover's (a new song fades over, it doesn't jump)
     if let Some(t) = target {
         let k = (dt * 2.5).min(1.0);
@@ -321,18 +326,22 @@ pub fn glow(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let half = ar / 2.0;
         let (mx, my) = (cover.x as f32 + cover.width as f32 / 2.0, (cover.y as f32 + cover.height as f32 / 2.0) * ar);
         let (hw, hh) = (cover.width as f32 / 2.0, cover.height as f32 * half);
-        let reach = (r.width as f32 / 2.0).max(r.height as f32 * half) - hw.min(hh);
-        let radius = (reach.max(4.0) * 0.45 * (0.8 + 0.55 * lvl + 0.4 * pulse)).max(1.0);
-        let gain = (0.55 + 0.3 * lvl + 0.25 * pulse).min(1.0);
+        // the room around the cover on each axis: the glow is measured against it, so it fades out before every edge
+        // of the Pane, however loud (the owner: the whole Pane should never be filled with colour)
+        let (rx, ry) = ((r.width as f32 / 2.0 - hw).max(1.0), (r.height as f32 * half - hh).max(1.0));
+        let radius = 0.3 * (0.85 + 0.35 * lvl + 0.2 * pulse);
+        let gain = (0.42 + 0.18 * lvl + 0.1 * pulse).min(0.7);
         let bg = [th.bg.0 as f32, th.bg.1 as f32, th.bg.2 as f32];
         let shade = |px: f32, py: f32| -> Rgb {
-            let (dx, dy) = ((px - mx).abs() - hw, (py - my).abs() - hh);
-            let d = (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt();
+            let (dx, dy) = (((px - mx).abs() - hw).max(0.0) / rx, ((py - my).abs() - hh).max(0.0) / ry);
+            // 0 at the cover, 1 at the Pane's edge
+            let d = (dx * dx + dy * dy).sqrt();
             // a slow wobble of the reach, different on each side
             let wob = 1.0 + 0.05 * (t * 0.6 + (px - mx) * 0.12).sin() * (t * 0.4 + (py - my) * 0.08).cos();
             let fall = (-(d / (radius * wob))).exp();
-            // fade the far tail out for good, so the Pane's corners are plain background
-            let edge = 1.0 - ((d / (radius * 3.5)).clamp(0.0, 1.0)).powi(2);
+            // gone by 85 % of the way to the edge
+            let e = (d / 0.85).clamp(0.0, 1.0);
+            let edge = 1.0 - e * e * (3.0 - 2.0 * e);
             let k = (fall * edge * gain).clamp(0.0, 1.0);
             // the colour of the cover's nearest edge point
             let u = ((px - (mx - hw)) / (2.0 * hw)).clamp(0.0, 1.0) * 3.0;
@@ -349,10 +358,10 @@ pub fn glow(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         };
         // the pixel tier: one smooth image (the terminal scales it), with the cover painted into it
         if let Some((cpw, cph)) = app.pixel_tier_for(r) {
-            // about one image pixel per 3 screen pixels: smooth once scaled, and cheap
-            let (w, h) = (((r.width as f64 * cpw) / 3.0).round().max(8.0) as u32, ((r.height as f64 * cph) / 3.0).round().max(8.0) as u32);
-            let (cx0, cy0) = (((cover.x - r.x) as f64 * cpw / 3.0).round() as u32, ((cover.y - r.y) as f64 * cph / 3.0).round() as u32);
-            let (ccw, cch) = ((cover.width as f64 * cpw / 3.0).round().max(1.0) as u32, (cover.height as f64 * cph / 3.0).round().max(1.0) as u32);
+            // one image pixel per 2 screen pixels: smooth once scaled, still cheap
+            let (w, h) = (((r.width as f64 * cpw) / 2.0).round().max(8.0) as u32, ((r.height as f64 * cph) / 2.0).round().max(8.0) as u32);
+            let (cx0, cy0) = (((cover.x - r.x) as f64 * cpw / 2.0).round() as u32, ((cover.y - r.y) as f64 * cph / 2.0).round() as u32);
+            let (ccw, cch) = ((cover.width as f64 * cpw / 2.0).round().max(1.0) as u32, (cover.height as f64 * cph / 2.0).round().max(1.0) as u32);
             let art = app.covers.scaled(&url, ccw, cch, tint.as_ref());
             let (sx, sy) = (r.width as f32 / w as f32, r.height as f32 * ar / h as f32);
             let mut rgba = Vec::with_capacity((w * h * 4) as usize);

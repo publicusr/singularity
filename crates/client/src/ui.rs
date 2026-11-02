@@ -479,6 +479,9 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), sl
     let history = !raised && slot == "home" && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20;
     // a Slot that can show other Widgets always keeps its ◂ ▸ (7 cells at the right): a long title gives way
     let can_swap = !raised && ((!crate::layouts::options(slot).is_empty() && slot != "well") || history);
+    // the ◂ ▸ keep their place whether or not the Widget shown can close: cycling onto the queue (no ×) moved them
+    // three cells, and the next click on ▸ landed on ◂, so the Pane went back and forth between two Widgets
+    let tail: u16 = if can_swap && rect.width >= 14 { 3 } else { tail };
     let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
     let room = (rect.width as usize).saturating_sub(2 + used + if can_swap { 8 } else { 0 } + tail as usize);
     let title = if title.chars().count() + 1 > room && room > 1 { title.chars().take(room - 2).collect::<String>() + "…" } else { title };
