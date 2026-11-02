@@ -78,8 +78,12 @@ Needs the owner's hands-on test: all of it, and DJ once it's back on their Home.
 (Mullvad re-made its tunnel; Soloist's pooled connections hung for 16 min, `CURL error: 42`): a dry spell of 20 s
 while playing now restarts Soloist and resumes (`DryWatch`, once per 3 min). Glow: smooth pixel-tier image (half-blocks
 on the cell tier), stronger reaction. Pixel black hole out of `v`'s rotation (CPU fallback only; Event Horizon now
-defaults to Gargantua). Stat Widgets redesigned with size tiers (`tile.rs`, pty `widgets-large`). Waiting on the owner:
-five widget ideas (vinyl, waterfall, aurora, ripples, horizon) and a live check of all of it.
+defaults to Gargantua). Stat Widgets redesigned with size tiers (`tile.rs`, pty `widgets-large`). Later the same night: the ◂ ▸ no longer move when a Pane cycles onto a Widget without × (bounced between two);
+glow calmer and never fills its Pane; stream got a middle tier (22×9+); the previous session's lost job (240 Hz:
+`visuals.motion_fps` 30–240, default 120, `pace.rs`; spring motion, dwell, comfort zones) was finished from its WIP
+and merged. Owner chose new Widgets: vinyl (constant spin), waterfall, aurora, ripples (horizon: no). **In progress:
+an Opus agent builds the four on a worktree branch `worktree-agent-*`** — if a session ends, check `git worktree list`
+for its (possibly uncommitted) work before redoing anything. Owner to retest: all of the above, at 240 in Settings.
 
 **Next, in order** (the owner games on this PC: ask before heavy commands — builds, tests, history-wide greps):
 the owner retests (reinstall both binaries first) and says go → redo the scrub from the then-current `main` (the
