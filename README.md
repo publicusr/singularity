@@ -139,8 +139,12 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   comes back, colours included, in Ctrl+K → Pick a design.
 - **Tiling**: drag a Pane by its title bar: onto another Pane's middle to swap, onto its edge to split it, onto the
   screen's edge (the outermost column, or past the top or bottom of the Panes) for a full-height column or
-  full-width row. The Pane floats under the pointer and the others make room around where it would land; Esc
-  cancels. `×` in a
+  full-width row. The Pane floats under the pointer and the others make room around where it would land once
+  you pause over a spot (a quick sweep across Panes leaves them be; letting go drops where the pointer is); Esc
+  cancels. A Pane too small to share with another is a swap target only. While anything moves the Client draws at
+  `visuals.motion_fps` (Settings; 30–240, default 120: set it to your monitor's refresh rate). Your terminal caps it
+  too: Ghostty follows the monitor; in kitty lower `repaint_delay` (and keep `sync_to_monitor`); otherwise see your
+  terminal's repaint settings. `×` in a
   title closes a Pane, right-click a title to split or close, Ctrl+K has Split right / Split down / Close pane / Move
   pane / Reset design. `m` moves the focused Pane from the keyboard: arrows swap with the neighbour, ⇧arrows split
   beside it, `+` `-` size it, `x` closes it, `u` undoes, Enter or Esc ends. Ctrl+Z undoes a layout change and

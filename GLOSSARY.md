@@ -217,7 +217,9 @@ _Avoid_: edit mode, window manager
 **Drop zone**:
 Where a dragged Pane would land: another Pane's centre (swap), one of its edges (split), or a screen edge (the
 outermost column, or past the top or bottom of the Panes). Only zones that change the arrangement (not just sizes)
-and keep every Pane above its minimum size are offered.
+and keep every Pane above its minimum size are offered; a split only where both halves stay comfortable (at least 24
+columns or 8 rows each), so a small Pane is a swap target. The zone under the pointer becomes the preview after a
+short pause on it (the dwell); a release drops on the zone under the pointer at once.
 _Avoid_: target, dock
 
 **Move mode**:

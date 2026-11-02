@@ -91,8 +91,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     let [top, body, player, hints] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(3), Constraint::Length(1)]).areas(area);
     // the Pane held by the mouse (or landing after a release) floats over the rest: images under it step aside
+    // a new frame: a zone the pointer rests on becomes the preview; the springs and the lift take this frame's time
     let now = std::time::Instant::now();
-    let float = app.float_rect(body, now);
+    app.tile_settle(now);
+    app.motion.frame(now);
+    let float = app.float_rect(body);
     // popups are known up front, so pixel images under them can step down to cells this frame
     let login_r = match &app.catalogue {
         // the wizard shows the code itself
@@ -118,7 +121,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     ];
     app.overlays = overlays.into_iter().flatten().collect();
     top_bar(f, top, app, &th);
-    panes(f, body, app, &th, float, now);
+    panes(f, body, app, &th, float);
     if th.scanlines {
         scanlines(f.buffer_mut(), body);
     }
@@ -382,7 +385,7 @@ fn close_button(buf: &mut Buffer, rect: Rect, th: &Theme, focused: bool, slot: &
     hits.push((Rect::new(x, rect.y, 3, 1), Hit::Close(slot.into())));
 }
 
-fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme, float: Option<Rect>, now: std::time::Instant) {
+fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme, float: Option<Rect>) {
     app.body = body;
     // while a Pane is held over a drop zone, the whole layout is drawn as dropping there would make it
     let tree = app.shown_layout().into_owned();
@@ -392,7 +395,7 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme, float: Option<Rec
     // pointer at once)
     let mut drawn = std::mem::take(&mut app.drawn);
     let snap = app.divider_from.is_some();
-    app.motion.step(&computed.slots, body, now, snap, &mut drawn);
+    app.motion.step(&computed.slots, body, snap, &mut drawn);
     // the Pane held by the mouse leaves an empty slot where it would land; one landing is drawn over the rest
     let lifted = app.tile.as_ref().filter(|t| t.live).map(|t| t.slot.clone());
     let raised = lifted.clone().or_else(|| app.motion.landing.clone().filter(|_| float.is_some()));

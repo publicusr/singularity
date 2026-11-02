@@ -14,7 +14,7 @@ BIN = os.environ.get("PTY_BIN") or f"{ROOT}/target/debug"
 WRAP = os.environ.get("PTY_WRAP", "").split()
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
 # the tiling scenario wants room for the whole Singularity layout
-if sys.argv[1:2] in (["tiling"], ["tiling-lift"]):
+if sys.argv[1:2] in (["tiling"], ["tiling-lift"], ["tiling-fast"]):
     COLS, ROWS = int(os.environ.get("PTY_COLS", 160)), int(os.environ.get("PTY_ROWS", 48))
 
 
@@ -1464,6 +1464,54 @@ def tiling_lift(t, out, env):
     t.send(b"q", 0.5)
 
 
+def tiling_fast(t, out, env):
+    """The owner's 2026-11-01 round on fast drags: at `visuals.motion_fps = 240`, a fast sweep across ~5 Panes leaves
+    the layout as it was (only the held Pane follows); a pause shows the preview; a drop on a short wide Pane swaps,
+    no "sandwich". The Client logs every frame to `frames.log` (start µs, rate, tick/draw/diff/flush µs): the frame
+    intervals during the drag are printed. Pixel tier, 160x48; start from an empty output folder."""
+    t.pump(1.0)
+    t.send(b" ", 0.5)
+    t.shot(f"{out}/00-start.png")
+    hx, hy = t.find("┌ home")
+    hx += 3
+    mouse(t, 0, hx, hy, wait=0.05)
+    # a sweep at ~4 ms a report over the library, the queue, lyrics, the well and back: nothing rearranges
+    path = [(hx, hy), (12, 14), (31, 33), (140, 30), (120, 10), (60, 38)]
+    shots = 0
+    for (x0, y0), (x1, y1) in zip(path, path[1:]):
+        for i in range(1, 21):
+            mouse(t, 32, x0 + (x1 - x0) * i // 20, y0 + (y1 - y0) * i // 20, wait=0.004)
+        t.shot(f"{out}/01-sweep-{shots}.png")
+        shots += 1
+    # it rests: the zone under it becomes the preview
+    t.pump(0.5)
+    t.shot(f"{out}/02-paused.png")
+    # a jiggle over two Panes, then back: the preview doesn't flicker; Esc puts it back
+    t.send(b"\x1b", 0.5)
+    mouse(t, 0, 60, 38, release=True, wait=0.5)
+    t.shot(f"{out}/03-put-back.png")
+    # the shortest wide Pane: dropped on its top row, it swaps
+    sx, sy = t.find("┌ stream")
+    mouse(t, 0, sx + 3, sy, wait=0.05)
+    for lx, ly in [(t.find("┌ loudness") or (0, 0))]:
+        for i in range(1, 11):
+            mouse(t, 32, sx + 3 + (lx + 10 - sx - 3) * i // 10, sy + (ly + 1 - sy) * i // 10, wait=0.01)
+        t.pump(0.4)
+        t.shot(f"{out}/04-over-short-wide.png")
+        mouse(t, 0, lx + 10, ly + 1, release=True, wait=0.6)
+    t.shot(f"{out}/05-dropped.png")
+    t.send(b"\x1b", 0.3)
+    t.send(b"q", 0.5)
+    rows = [list(map(int, l.split())) for l in open(f"{out}/frames.log") if l.strip()]
+    fast = [r for r in rows if r[1] == 240]
+    gaps = sorted((b[0] - a[0]) / 1000 for a, b in zip(fast, fast[1:]) if b[0] - a[0] < 50_000)
+    work = sorted(sum(r[2:]) / 1000 for r in fast)
+    if gaps:
+        p = lambda v, q: v[min(len(v) - 1, int(len(v) * q))]
+        print(f"240 fps frames: {len(fast)}; interval ms mean {sum(gaps) / len(gaps):.2f} p95 {p(gaps, .95):.2f} max {gaps[-1]:.2f}; "
+              f"work ms mean {sum(work) / len(work):.2f} p95 {p(work, .95):.2f} max {work[-1]:.2f}")
+
+
 def main():
     scenario, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
@@ -1484,10 +1532,10 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast") else "0"
         # kitty's layer under cell backgrounds (#41); the harness composites it as kitty does
         env["SINGULARITY_BELOW_BG"] = "1" if scenario in ("popup", "ambient") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
@@ -1507,6 +1555,10 @@ def main():
         seed_today(env["SINGULARITY_DATA"])
         os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity/layouts", exist_ok=True)
         open(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/big.toml", "w").write(BIG_LAYOUT)
+    if scenario == "tiling-fast":
+        os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity", exist_ok=True)
+        open(f"{env['XDG_CONFIG_HOME']}/singularity/config.toml", "w").write("schema = 6\n[visuals]\nmotion_fps = 240\n")
+        env["SINGULARITY_FRAME_LOG"] = f"{os.path.abspath(out)}/frames.log"
     bus = None
     if scenario == "mpris":
         bus, addr = private_bus(out)
@@ -1598,6 +1650,8 @@ def main():
             return tiling(t, out, env)
         if scenario == "tiling-lift":
             return tiling_lift(t, out, env)
+        if scenario == "tiling-fast":
+            return tiling_fast(t, out, env)
         if scenario == "artist":
             t.pump(1.0)
             x, y = t.find("♥  Liked Songs")

@@ -280,7 +280,12 @@ audio, and looks spectacular.
     always move the Pane that way or say in the bar why not. Layout undo / redo: Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z),
     `u` / `U` in Move mode, the bar's "undo" after an edit, and Ctrl+K → "Undo layout" / "Redo layout"; 50 steps per
     session, the Design files follow, and undoing the first edit of a built-in Design returns to it (its unnamed
-    "(edited)" file goes again; a Design you named stays in the picker).
+    "(edited)" file goes again; a Design you named stays in the picker). **Smoother (owner round, 2026-11-01):**
+    while anything moves the Client draws at `visuals.motion_fps` (30–240, default 120; frames on a steady grid,
+    input handled at once); Panes move on springs, so a new target mid-flight bends the path instead of jumping; a
+    zone becomes the preview only after the pointer rests on it (~120 ms, sooner when it creeps), so a fast sweep
+    leaves the layout be, and a release drops where the pointer is; a split is offered only where both halves stay
+    comfortable (≥ 24 columns or ≥ 8 rows each): small Panes are swap targets, and ⇧arrows say so in the bar.
 86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready. Started 2026-10-19 (D48),
     tickets #63–#70, parity rule D49; the light librespot Engine on both OSes (D52, #70).
 

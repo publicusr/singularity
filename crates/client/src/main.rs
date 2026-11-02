@@ -17,6 +17,7 @@ mod looks;
 mod lyrics;
 mod meters;
 mod mini;
+mod pace;
 mod cover;
 mod playlists;
 mod queue;
@@ -39,7 +40,7 @@ mod widgets;
 
 use app::{App, Link};
 use conn::ConnEvent;
-use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event as TermEvent, KeyEventKind};
+use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event as TermEvent, KeyEventKind, MouseEventKind};
 use ratatui::crossterm::execute;
 use singularity_proto::{DaemonMsg, EngineStatus, Event};
 use std::io::{Write, stdout};
@@ -66,14 +67,13 @@ async fn main() -> anyhow::Result<()> {
     }
     let mut tui = ratatui::init();
     execute!(stdout(), EnableMouseCapture, EnableFocusChange, EnableBracketedPaste)?;
-    // unfocused, the whole Client (and so the Visuals) runs slower: `visuals.unfocused_fps` (10) instead of 30
+    // frames: 30 a second, `visuals.unfocused_fps` unfocused, `visuals.motion_fps` while something moves (pace.rs)
     let mut focused = true;
-    let mut last_draw = Instant::now();
     // pixel-precise pointer where the terminal supports it (#24)
     let mut units = term::MouseUnits::detect();
     units.enable(&mut stdout())?;
     // input is read on its own thread so every event carries when it arrived: one wheel notch can come as a burst
-    // of reports (Ghostty), told apart from separate notches by their timing, which the frame's sleep would hide
+    // of reports (Ghostty), told apart from separate notches by their timing; a dragged Pane's dwell needs it too
     let (input_tx, input) = mpsc::channel();
     std::thread::spawn(move || {
         loop {
@@ -85,21 +85,62 @@ async fn main() -> anyhow::Result<()> {
         }
     });
     let mut wheel = term::WheelBursts::default();
+    let mut pacer = pace::Pacer::new(Instant::now());
+    // `SINGULARITY_FRAME_LOG=<file>`: a line per frame (when it started, its rate, how long its parts took)
+    let mut log = std::env::var_os("SINGULARITY_FRAME_LOG").and_then(|p| std::fs::File::create(p).ok()).map(std::io::BufWriter::new);
+    let t0 = Instant::now();
     let res = (|| -> anyhow::Result<()> {
+        // a pointer move waits for the frame: only the last one before it counts (a mouse sends hundreds a second)
+        let mut motion: Option<(Instant, TermEvent)> = None;
         while !app.quit {
+            // until the frame is due, input is handled as it comes
+            let (due, fps) = loop {
+                let fps = app.frame_rate(focused);
+                let due = pacer.due(fps);
+                let Some(wait) = due.checked_duration_since(Instant::now()).filter(|w| !w.is_zero()) else { break (due, fps) };
+                let (at, ev) = match input.recv_timeout(wait) {
+                    Ok(x) => x,
+                    Err(mpsc::RecvTimeoutError::Timeout) => break (due, fps),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => anyhow::bail!("the terminal input closed"),
+                };
+                let ev = ev?;
+                // input brings the frame forward: to the motion rate, or for a bare hover at most 60 a second
+                let hover = matches!(&ev, TermEvent::Mouse(m) if m.kind == MouseEventKind::Moved) && !app.moving_now();
+                pacer.input(if hover { 60.min(app.motion_fps()) } else { app.motion_fps() });
+                if matches!(&ev, TermEvent::Mouse(m) if matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Drag(_))) {
+                    if let Some((pat, pev)) = motion.take()
+                        && !same_kind(&pev, &ev)
+                    {
+                        handle(&mut app, pev, pat, &mut focused, &mut units, &mut wheel)?;
+                    }
+                    motion = Some((at, ev));
+                    continue;
+                }
+                if let Some((pat, pev)) = motion.take() {
+                    handle(&mut app, pev, pat, &mut focused, &mut units, &mut wheel)?;
+                }
+                handle(&mut app, ev, at, &mut focused, &mut units, &mut wheel)?;
+            };
+            if let Some((at, ev)) = motion.take() {
+                handle(&mut app, ev, at, &mut focused, &mut units, &mut wheel)?;
+            }
+            let start = Instant::now();
+            pacer.begin(start, due, fps);
             while let Ok(ev) = conn_rx.try_recv() {
                 apply(&mut app, ev);
             }
-            // at most ~60 redraws a second, however fast input arrives (a moving mouse sends hundreds of events)
-            if let Some(wait) = Duration::from_millis(16).checked_sub(last_draw.elapsed()) {
-                std::thread::sleep(wait);
-            }
-            last_draw = Instant::now();
             app.tick();
+            let ticked = start.elapsed();
             let mut out = stdout().lock();
             out.write_all(b"\x1b[?2026h")?; // synchronized output: the frame and its images appear together
             drop(out);
-            tui.draw(|f| ui::draw(f, &mut app))?;
+            let mut built = Duration::ZERO;
+            tui.draw(|f| {
+                let t = Instant::now();
+                ui::draw(f, &mut app);
+                built = t.elapsed();
+            })?;
+            let drawn = start.elapsed();
             let mut out = stdout().lock();
             if let Some(k) = app.kitty.as_mut() {
                 k.flush(&mut out)?;
@@ -110,41 +151,17 @@ async fn main() -> anyhow::Result<()> {
             out.write_all(b"\x1b[?2026l")?;
             out.flush()?;
             drop(out);
-            let fps = app.frame_rate(focused);
-            let mut next = match input.recv_timeout(Duration::from_millis(1000 / fps)) {
-                Ok(ev) => Some(ev),
-                Err(mpsc::RecvTimeoutError::Timeout) => None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => anyhow::bail!("the terminal input closed"),
-            };
-            while let Some((at, ev)) = next {
-                match ev? {
-                    TermEvent::Key(k) if k.kind != KeyEventKind::Release => app.key(k),
-                    TermEvent::Mouse(m) => {
-                        if wheel.keep(m.kind, at) {
-                            let (m, fx, precise) = units.to_cells(m);
-                            app.pointer(m, fx, precise);
-                        }
-                    }
-                    TermEvent::Paste(s) => app.paste(&s),
-                    TermEvent::FocusLost => focused = false,
-                    TermEvent::FocusGained => focused = true,
-                    TermEvent::Resize(..) => {
-                        if units != term::MouseUnits::Cells {
-                            units = term::MouseUnits::measure().unwrap_or(units);
-                        }
-                        app.cell_px = term::cell_px();
-                        // the resize clears the screen, and with it every placement
-                        if let Some(k) = app.kitty.as_mut() {
-                            k.reset(&mut stdout())?;
-                        }
-                    }
-                    _ => {}
-                }
-                next = input.try_recv().ok();
+            if let Some(l) = log.as_mut() {
+                let us = |d: Duration| d.as_micros();
+                // start, rate, then µs: tick, ui::draw, diff and write, images and flush
+                writeln!(l, "{} {fps} {} {} {} {}", us(start - t0), us(ticked), us(built), us(drawn.saturating_sub(ticked + built)), us(start.elapsed().saturating_sub(drawn)))?;
             }
         }
         Ok(())
     })();
+    if let Some(l) = log.as_mut() {
+        let _ = l.flush();
+    }
     if let Some(k) = app.kitty.as_mut() {
         let _ = k.reset(&mut stdout());
     }
@@ -152,6 +169,42 @@ async fn main() -> anyhow::Result<()> {
     let _ = execute!(stdout(), DisableMouseCapture, DisableFocusChange, DisableBracketedPaste);
     ratatui::restore();
     res
+}
+
+/// One input event, handled at once (`at`: when it arrived).
+fn handle(app: &mut App, ev: TermEvent, at: Instant, focused: &mut bool, units: &mut term::MouseUnits, wheel: &mut term::WheelBursts) -> anyhow::Result<()> {
+    app.input_at = Some(at);
+    match ev {
+        TermEvent::Key(k) if k.kind != KeyEventKind::Release => app.key(k),
+        TermEvent::Mouse(m) => {
+            if wheel.keep(m.kind, at) {
+                let (m, fx, precise) = units.to_cells(m);
+                app.pointer(m, fx, precise);
+            }
+        }
+        TermEvent::Paste(s) => app.paste(&s),
+        TermEvent::FocusLost => *focused = false,
+        TermEvent::FocusGained => *focused = true,
+        TermEvent::Resize(..) => {
+            if *units != term::MouseUnits::Cells {
+                *units = term::MouseUnits::measure().unwrap_or(*units);
+            }
+            app.cell_px = term::cell_px();
+            // the resize clears the screen, and with it every placement
+            if let Some(k) = app.kitty.as_mut() {
+                k.reset(&mut stdout())?;
+            }
+        }
+        _ => {}
+    }
+    app.input_at = None;
+    Ok(())
+}
+
+/// Two pointer moves of the same kind (both hovering, or dragging with the same button and keys): the later one
+/// replaces the earlier.
+fn same_kind(a: &TermEvent, b: &TermEvent) -> bool {
+    matches!((a, b), (TermEvent::Mouse(x), TermEvent::Mouse(y)) if x.kind == y.kind && x.modifiers == y.modifiers)
 }
 
 fn apply(app: &mut App, ev: ConnEvent) {
