@@ -27,8 +27,13 @@ pub struct State {
     /// eased beat brightness, 0..1
     marquee_glow: f32,
     /// the glow's colour now, easing toward the cover's
-    glow_now: Option<Rgb>,
+    glow_now: Option<[[f32; 3]; 16]>,
     glow_last: Option<Instant>,
+    /// the glow's clock, its eased (normalised) bass, the beat pulse, and the loudest bass lately
+    glow_t: f32,
+    glow_lvl: f32,
+    glow_pulse: f32,
+    glow_peak: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -253,7 +258,8 @@ pub fn marquee(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 
 // ── glow ──────────────────────────────────────────────────────────────
 
-/// The cover in the middle, its average colour (saturated a little) bleeding out into the Pane and fading to black.
+/// The cover in the middle, its colours bleeding out into the Pane as smooth solid fields (half-block resolution,
+/// exponential falloff from the cover's edge) and fading into the Theme's background. Bass swells it, a beat pulses it.
 pub fn glow(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     if r.width < 6 || r.height < 3 {
         return;
@@ -268,35 +274,85 @@ pub fn glow(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let cw = ((ch as f64 * aspect).round() as u16).min(r.width.saturating_sub(2));
     let cover = Rect::new(r.x + (r.width - cw) / 2, r.y + (r.height - ch) / 2, cw, ch);
     let tint = app.art_tint.clone();
-    let avg = app.covers.scaled(&url, 4, 4, tint.as_ref()).map(|img| {
-        let n = img.pixels().len() as f32;
-        let sum = img.pixels().fold([0f32; 3], |a, p| [a[0] + p[0] as f32, a[1] + p[1] as f32, a[2] + p[2] as f32]);
-        let mean = sum.map(|v| v / n);
-        // a little more colour than the average, so a muddy cover still glows
-        let grey = (mean[0] + mean[1] + mean[2]) / 3.0;
-        let sat = mean.map(|v| (grey + (v - grey) * 1.6).clamp(0.0, 255.0) as u8);
-        Rgb(sat[0], sat[1], sat[2])
+    // a 4x4 grid of the cover's colours (a little more saturated, so a muddy cover still glows)
+    let target = app.covers.scaled(&url, 4, 4, tint.as_ref()).map(|img| {
+        let mut g = [[0f32; 3]; 16];
+        for (i, p) in img.pixels().take(16).enumerate() {
+            let m = [p[0] as f32, p[1] as f32, p[2] as f32];
+            let grey = (m[0] + m[1] + m[2]) / 3.0;
+            g[i] = m.map(|v| (grey + (v - grey) * 1.6).clamp(0.0, 255.0));
+        }
+        g
     });
-    // the colour eases toward the cover's (a new song fades over, it doesn't jump)
+    let (level, beat) = app
+        .meters
+        .frame
+        .as_ref()
+        .map(|f| (f.out_bands[0].max(f.out_level / 2) as f32, f.beat))
+        .unwrap_or((0.0, false));
     let s = &mut app.ambient;
     let dt = s.glow_last.map(|l| l.elapsed().as_secs_f32().min(0.1)).unwrap_or(1.0);
     s.glow_last = Some(Instant::now());
-    let avg = avg.map(|target| match s.glow_now {
-        Some(now) => now.lerp(target, (dt * 2.5).min(1.0)),
-        None => target,
-    });
-    s.glow_now = avg;
-    if let Some(c) = avg {
-        let bass = app.hole.bass();
-        let (mx, my) = (cover.x as f32 + cover.width as f32 / 2.0, cover.y as f32 + cover.height as f32 / 2.0);
-        let reach = (r.width as f32 / 2.0).max(r.height as f32 * aspect as f32 / 2.0);
+    s.glow_t += dt;
+    // normalise against the loudest lately, so a quiet volume still moves it (the peak forgets over ~10 s)
+    s.glow_peak = (s.glow_peak * (1.0 - dt * 0.1)).max(level).max(40.0);
+    let norm = (level / s.glow_peak).clamp(0.0, 1.0);
+    s.glow_lvl += (norm - s.glow_lvl) * (dt * 9.0).min(1.0);
+    s.glow_pulse = if beat { 1.0 } else { s.glow_pulse * (-dt / 0.11).exp() };
+    // the colours ease toward the cover's (a new song fades over, it doesn't jump)
+    if let Some(t) = target {
+        let k = (dt * 2.5).min(1.0);
+        s.glow_now = Some(match s.glow_now {
+            Some(mut now) => {
+                for (n, t) in now.iter_mut().zip(&t) {
+                    for c in 0..3 {
+                        n[c] += (t[c] - n[c]) * k;
+                    }
+                }
+                now
+            }
+            None => t,
+        });
+    }
+    if let Some(grid) = s.glow_now {
+        let (lvl, pulse, t) = (s.glow_lvl, s.glow_pulse, s.glow_t);
+        // everything in cell-width units: a cell is 1 wide and `aspect` tall, a half-block row `aspect / 2`
+        let ar = aspect as f32;
+        let half = ar / 2.0;
+        let (mx, my) = (cover.x as f32 + cover.width as f32 / 2.0, (cover.y as f32 + cover.height as f32 / 2.0) * ar);
+        let (hw, hh) = (cover.width as f32 / 2.0, cover.height as f32 * half);
+        let reach = (r.width as f32 / 2.0).max(r.height as f32 * half) - hw.min(hh);
+        let radius = (reach.max(4.0) * 0.45 * (0.8 + 0.55 * lvl + 0.4 * pulse)).max(1.0);
+        let gain = (0.55 + 0.3 * lvl + 0.25 * pulse).min(1.0);
+        let bg = [th.bg.0 as f32, th.bg.1 as f32, th.bg.2 as f32];
+        let shade = |px: f32, py: f32| -> Rgb {
+            let (dx, dy) = ((px - mx).abs() - hw, (py - my).abs() - hh);
+            let d = (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt();
+            // a slow wobble of the reach, different on each side
+            let wob = 1.0 + 0.05 * (t * 0.6 + (px - mx) * 0.12).sin() * (t * 0.4 + (py - my) * 0.08).cos();
+            let fall = (-(d / (radius * wob))).exp();
+            // fade the far tail out for good, so the Pane's corners are plain background
+            let edge = 1.0 - ((d / (radius * 3.5)).clamp(0.0, 1.0)).powi(2);
+            let k = (fall * edge * gain).clamp(0.0, 1.0);
+            // the colour of the cover's nearest edge point
+            let u = ((px - (mx - hw)) / (2.0 * hw)).clamp(0.0, 1.0) * 3.0;
+            let v = ((py - (my - hh)) / (2.0 * hh)).clamp(0.0, 1.0) * 3.0;
+            let (x0, y0) = (u.floor().min(2.0), v.floor().min(2.0));
+            let (fx, fy) = (u - x0, v - y0);
+            let at = |x: f32, y: f32| grid[y as usize * 4 + x as usize];
+            let (a, b, c, e) = (at(x0, y0), at(x0 + 1.0, y0), at(x0, y0 + 1.0), at(x0 + 1.0, y0 + 1.0));
+            let chan = |i: usize| {
+                let col = (a[i] * (1.0 - fx) + b[i] * fx) * (1.0 - fy) + (c[i] * (1.0 - fx) + e[i] * fx) * fy;
+                (bg[i] + (col - bg[i]) * k).round().clamp(0.0, 255.0) as u8
+            };
+            Rgb(chan(0), chan(1), chan(2))
+        };
         for yy in r.top()..r.bottom() {
             for xx in r.left()..r.right() {
-                let d = ((xx as f32 - mx).powi(2) + ((yy as f32 - my) * aspect as f32).powi(2)).sqrt() / reach;
-                // breathes gently with the bass
-                let k = ((1.0 - d).clamp(0.0, 1.0).powf(2.2) * (0.55 + 0.25 * bass)).clamp(0.0, 1.0);
+                let px = xx as f32 + 0.5;
+                let (top, bot) = (shade(px, yy as f32 * ar + half * 0.5), shade(px, yy as f32 * ar + half * 1.5));
                 if let Some(cell) = buf.cell_mut((xx, yy)) {
-                    cell.set_char(' ').set_bg(th.bg.lerp(c, k).color());
+                    cell.set_char('\u{2580}').set_fg(top.color()).set_bg(bot.color());
                 }
             }
         }

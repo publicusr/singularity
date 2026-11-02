@@ -35,7 +35,7 @@ pub const DESIGNS: [Design; 5] = [
         blurb: "cream and ice, big black hole",
         layout: Node::event_horizon,
         themes: &["event-horizon"],
-        look: 6,
+        look: 1,
         prompt: None,
         titles: &[("queue", "up next"), ("lyrics", "lyrics")],
     },
