@@ -147,7 +147,8 @@ class Term:
         # their own background, images over backgrounds (z=-1), then text
         img = Image.new("RGB", (COLS * CW, ROWS * CH), "black")
         def paste(below):
-            for (iid, _), (cx, cy, c, r, crop, z) in self.placed.items():
+            # lower z first, as kitty stacks them (glow's field sits one under its cover)
+            for (iid, _), (cx, cy, c, r, crop, z) in sorted(self.placed.items(), key=lambda kv: kv[1][5]):
                 if iid in self.images and (z < -1073741824) == below:
                     src = self.images[iid]
                     if crop:
@@ -1041,42 +1042,6 @@ def ambient(t, out):
     t.send(b"q", 0.5)
 
 
-def visuals_new(t, out):
-    """vinyl, waterfall, aurora and ripples swapped into the lyrics Pane while a song plays (pixel tier; with
-    SINGULARITY_PIXEL=0 via `visuals-new-cells`, the half-block fallback). Vinyl is shot twice a moment apart (it
-    turns) and paused (it coasts to a halt)."""
-    t.pump(1.0)
-    x, y = t.find("♥  Liked Songs")
-    mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
-    rx, ry = t.find("Fake Track 003")
-    mouse(t, 2, rx + 2, ry, wait=0.3)
-    t.send(b"\x1b[B", 0.1); t.send(b"\r", 0.6)  # Play next
-    t.send(b" ", 1.0)
-    swap_in(t, out, "tail -f lyrics.log", "vinyl")
-    t.pump(1.5)
-    t.shot(f"{out}/0-vinyl.png")
-    t.pump(0.4)
-    t.shot(f"{out}/1-vinyl-later.png")
-    t.send(b" ", 2.0)  # pause: it coasts to a halt
-    t.shot(f"{out}/2-vinyl-paused.png")
-    t.send(b" ", 0.5)
-    swap_in(t, out, "vinyl", "waterfall")
-    t.pump(8.0)
-    t.shot(f"{out}/3-waterfall.png")
-    swap_in(t, out, "waterfall", "aurora")
-    t.pump(2.5)
-    t.shot(f"{out}/4-aurora.png")
-    t.pump(1.0)
-    t.shot(f"{out}/5-aurora-later.png")
-    swap_in(t, out, "aurora", "ripples")
-    t.pump(2.0)
-    t.shot(f"{out}/6-ripples.png")
-    t.pump(0.7)
-    t.shot(f"{out}/7-ripples-later.png")
-    t.send(b" ", 0.3)
-    t.send(b"q", 0.5)
-
-
 def stats_widgets(t, out):
     """#37: "today" and "top this week" swapped into the side Slots; a 31 s play is logged and both update."""
     swap_to = lambda now, want: swap_in(t, out, now, want)
@@ -1568,12 +1533,12 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "visuals-new", "visuals-new-cells", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "visuals-new", "popup", "tiling", "tiling-lift", "tiling-fast") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast") else "0"
         # kitty's layer under cell backgrounds (#41); the harness composites it as kitty does
-        env["SINGULARITY_BELOW_BG"] = "1" if scenario in ("popup", "ambient", "visuals-new") else "0"
+        env["SINGULARITY_BELOW_BG"] = "1" if scenario in ("popup", "ambient") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
     if scenario == "listening":
         env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
@@ -1630,8 +1595,6 @@ def main():
             return widgets_large(t, out)
         if scenario == "ambient":
             return ambient(t, out)
-        if scenario.startswith("visuals-new"):
-            return visuals_new(t, out)
         if scenario == "arrows":
             return arrows(t, out)
         if scenario == "popup":

@@ -681,7 +681,7 @@ mod tests {
         }
     }
 
-    const POOL: [&str; 16] = ["fft", "loudness", "levels", "scope", "rain", "starfield", "stream", "top", "listening", "today", "marquee", "glow", "vinyl", "waterfall", "aurora", "ripples"];
+    const POOL: [&str; 12] = ["fft", "loudness", "levels", "scope", "rain", "starfield", "stream", "top", "listening", "today", "marquee", "glow"];
 
     /// What a committed tree must always satisfy, whatever got it there.
     fn assert_sound(n: &Node, body: Rect, aspect: f64, file: bool, ctx: &str) {

@@ -83,15 +83,16 @@ glow calmer and never fills its Pane; stream got a middle tier (22×9+); the pre
 `visuals.motion_fps` 30–240, default 120, `pace.rs`; spring motion, dwell, comfort zones) was finished from its WIP
 and merged. Owner chose new Widgets: vinyl (constant spin), waterfall, aurora, ripples (horizon: no). Built and merged (`ambient/{vinyl,waterfall,aurora,ripples}.rs`, kitty ids 4–7, pty `visuals-new`). Owner to retest: all of the above, at 240 in Settings.
 
-**Owner's verdict (2026-11-02, bedtime) — do these first next session:**
-1. **Remove the four new Widgets** (vinyl, waterfall, aurora, ripples): "they all suck". Revert merge `1a7d779`'s
-   Widget code (`crates/client/src/ambient/{vinyl,waterfall,aurora,ripples}.rs`, their registration in `layouts.rs`,
-   `tiling.rs` POOL, `app.rs` AUDIO, `ui.rs`, the pty `visuals-new*` scenarios, the GLOSSARY "Visual" names); keep
-   the shared pixel/half-block paint helper in `ambient.rs` only if glow uses it. Kitty ids 4–7 become free.
-2. **Glow still looks low-res** ("a bit better, but still kinda low res"). It renders one image pixel per 2 screen
-   pixels and the terminal scales it; try full resolution (cost: measure in release at 80×30 and 120×40 Panes),
-   and check whether the cover baked into the image is what looks soft (draw the cover as its own placed image
-   on top instead?). Look at a real-size crop, not a downscaled screenshot.
+**Owner's verdict (2026-11-02, bedtime), done 2026-11-02:**
+1. **The four new Widgets are gone** (vinyl, waterfall, aurora, ripples: "they all suck"): merge `1a7d779` reverted
+   whole (its shared `Canvas` helper went with it; glow never used it). Kitty ids 4–7 are free again.
+2. **Glow's cover is sharp now.** It was baked into the glow image at half resolution and scaled up by the terminal;
+   now the glow field stays at half resolution (a soft gradient loses nothing) and the cover goes over it as its own
+   full-resolution still (`home::cover`, cached: uploaded once per song). The field sits one z-layer under stills
+   (`Kitty::keep_under_stills`), so the cover is always on top; the pty harness now stacks images by z as kitty
+   does. Test `glow_puts_the_cover_over_its_field_as_a_sharp_image_of_its_own`; pty `ambient`. Client reinstalled.
+   Owner to judge it live; if the soft field itself still reads as low-res, the next step is a full-res field
+   (measure the cost in release first).
 3. Everything else from 2026-11-02 the owner called good "for now": the arrows fix, 240 Hz/drag logic, stream tier,
    the Soloist stuck-stream watchdog (only a real connection drop will exercise it).
 

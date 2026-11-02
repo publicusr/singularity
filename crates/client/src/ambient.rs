@@ -3,10 +3,6 @@
 //! - **starfield** (audio Slots): flying through stars, faster with the music, streaking on surges
 //! - **marquee** (side Slots): the title in a big pixel font, scrolling when it doesn't fit, brighter on beats
 //! - **glow** (side Slots): the cover, with its colour bleeding out into the Pane
-//! - **vinyl**: the cover as the label of a record spinning at 33⅓, the tonearm creeping in as the song plays
-//! - **waterfall**: a spectrogram scrolling right to left, the last 24 s
-//! - **aurora**: slow curtains of light in the cover's colours, swelling with the bass
-//! - **ripples**: rings spreading out from the middle on each beat, like drops on water
 
 use crate::app::App;
 use crate::theme::{Rgb, Theme};
@@ -16,16 +12,6 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use std::time::Instant;
 use unicode_width::UnicodeWidthStr;
-
-mod aurora;
-mod ripples;
-mod vinyl;
-mod waterfall;
-
-pub use aurora::aurora;
-pub use ripples::ripples;
-pub use vinyl::vinyl;
-pub use waterfall::waterfall;
 
 /// Demo state that lives across frames.
 #[derive(Default)]
@@ -50,10 +36,6 @@ pub struct State {
     /// the beat that drives the pulse (the pulse eases toward it, so a beat swells in rather than flashing)
     glow_kick: f32,
     glow_peak: f32,
-    vinyl: vinyl::State,
-    waterfall: waterfall::State,
-    aurora: aurora::State,
-    ripples: ripples::State,
 }
 
 #[derive(Clone, Copy)]
@@ -374,36 +356,25 @@ pub fn glow(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             };
             Rgb(chan(0), chan(1), chan(2))
         };
-        // the pixel tier: one smooth image (the terminal scales it), with the cover painted into it
+        // the pixel tier: the glow is one smooth image at half resolution (the terminal scales it; a soft field loses
+        // nothing), and the cover goes over it as its own sharp, full-resolution image (home::cover below), uploaded
+        // once per song (the owner: baked into the glow at half resolution it looked "kinda low res")
         if let Some((cpw, cph)) = app.pixel_tier_for(r) {
-            // one image pixel per 2 screen pixels: smooth once scaled, still cheap
             let (w, h) = (((r.width as f64 * cpw) / 2.0).round().max(8.0) as u32, ((r.height as f64 * cph) / 2.0).round().max(8.0) as u32);
-            let (cx0, cy0) = (((cover.x - r.x) as f64 * cpw / 2.0).round() as u32, ((cover.y - r.y) as f64 * cph / 2.0).round() as u32);
-            let (ccw, cch) = ((cover.width as f64 * cpw / 2.0).round().max(1.0) as u32, (cover.height as f64 * cph / 2.0).round().max(1.0) as u32);
-            let art = app.covers.scaled(&url, ccw, cch, tint.as_ref());
             let (sx, sy) = (r.width as f32 / w as f32, r.height as f32 * ar / h as f32);
             let mut rgba = Vec::with_capacity((w * h * 4) as usize);
             for y in 0..h {
+                let py = r.y as f32 * ar + (y as f32 + 0.5) * sy;
                 for x in 0..w {
-                    let inside = x >= cx0 && y >= cy0 && x < cx0 + ccw && y < cy0 + cch;
-                    let c = match (&art, inside) {
-                        (Some(a), true) => {
-                            let p = a.get_pixel((x - cx0).min(a.width() - 1), (y - cy0).min(a.height() - 1));
-                            Rgb(p[0], p[1], p[2])
-                        }
-                        _ => shade(r.x as f32 + (x as f32 + 0.5) * sx, r.y as f32 * ar + (y as f32 + 0.5) * sy),
-                    };
+                    let c = shade(r.x as f32 + (x as f32 + 0.5) * sx, py);
                     rgba.extend_from_slice(&[c.0, c.1, c.2, 255]);
                 }
             }
             if let Some(k) = app.kitty.as_mut() {
+                k.keep_under_stills(GLOW_ID);
                 k.frame(GLOW_ID, r, w, h, std::sync::Arc::new(rgba));
             }
             app.under_image(buf, r, th);
-            if art.is_some() {
-                glow_label(buf, r, cover, &item, th);
-                return;
-            }
         } else {
             for yy in r.top()..r.bottom() {
                 for xx in r.left()..r.right() {
@@ -434,110 +405,6 @@ fn glow_label(buf: &mut Buffer, r: Rect, cover: Rect, item: &singularity_proto::
     }
 }
 
-// ── shared by the pictures below ─────────────────────────────────────
-
-/// Where a picture is drawn. Coordinates are in cell widths from the Pane's top left on both axes (a cell is 1 wide
-/// and `aspect` tall), so circles come out round; a pixel is `ux` × `uy` of them.
-pub(crate) struct Canvas {
-    /// pixels across and down: the pixel tier's image, or one per half cell (half-blocks)
-    pub pw: u32,
-    pub ph: u32,
-    pub ux: f32,
-    pub uy: f32,
-    /// the pixel tier
-    pub pixel: bool,
-    /// the Pane in units: `r.width` × `r.height · aspect`
-    pub w: f32,
-    pub h: f32,
-}
-
-impl Canvas {
-    /// The canvas for `r`: the pixel tier when it can be used, at most `max_px` pixels (the terminal scales the image
-    /// smoothly), else half-blocks.
-    pub fn new(app: &App, r: Rect, max_px: f64) -> Canvas {
-        let aspect = app.cell_px.map(|(w, h)| (h / w) as f32).unwrap_or(2.0);
-        let (w, h) = (r.width as f32, r.height as f32 * aspect);
-        let (pw, ph, pixel) = match app.pixel_tier_for(r) {
-            Some((cpw, cph)) => {
-                let (sw, sh) = (r.width as f64 * cpw, r.height as f64 * cph);
-                // one image pixel per 2 screen pixels or more, so a big Pane stays cheap
-                let div = (sw * sh / max_px).sqrt().max(2.0);
-                ((sw / div).round().max(1.0) as u32, (sh / div).round().max(1.0) as u32, true)
-            }
-            None => (r.width as u32, r.height as u32 * 2, false),
-        };
-        Canvas { pw, ph, ux: w / pw.max(1) as f32, uy: h / ph.max(1) as f32, pixel, w, h }
-    }
-
-    /// Fill the picture from `shade(column, row, x, y)` (x, y the pixel's centre in units). On the pixel tier the
-    /// image goes up as Visual `id`; else the Pane is drawn in half-blocks.
-    pub fn paint(&self, buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, id: u32, mut shade: impl FnMut(u32, u32, f32, f32) -> Rgb) {
-        if self.pixel {
-            let mut rgba = Vec::with_capacity((self.pw * self.ph * 4) as usize);
-            for j in 0..self.ph {
-                let y = (j as f32 + 0.5) * self.uy;
-                for i in 0..self.pw {
-                    let c = shade(i, j, (i as f32 + 0.5) * self.ux, y);
-                    rgba.extend_from_slice(&[c.0, c.1, c.2, 255]);
-                }
-            }
-            if let Some(k) = app.kitty.as_mut() {
-                k.frame(id, r, self.pw, self.ph, std::sync::Arc::new(rgba));
-            }
-            app.under_image(buf, r, th);
-            return;
-        }
-        for row in 0..r.height {
-            let (j0, j1) = (row as u32 * 2, row as u32 * 2 + 1);
-            let (y0, y1) = ((j0 as f32 + 0.5) * self.uy, (j1 as f32 + 0.5) * self.uy);
-            for col in 0..r.width {
-                let x = col as f32 + 0.5;
-                let (top, bot) = (shade(col as u32, j0, x, y0), shade(col as u32, j1, x, y1));
-                if let Some(cell) = buf.cell_mut((r.x + col, r.y + row)) {
-                    cell.set_char('\u{2580}').set_fg(top.color()).set_bg(bot.color());
-                }
-            }
-        }
-    }
-}
-
-/// Ease `v` toward `to`: rising over about `up` seconds, falling over about `down` (never a jump: no flashes).
-pub(crate) fn ease(v: &mut f32, to: f32, dt: f32, up: f32, down: f32) {
-    let tau = if to > *v { up } else { down };
-    *v += (to - *v) * (1.0 - (-dt / tau.max(1e-3)).exp());
-}
-
-/// `v` against the loudest lately (`peak` forgets over ~10 s, never below `floor`), so a quiet volume still moves
-/// things: 0..1.
-pub(crate) fn against_peak(peak: &mut f32, v: f32, dt: f32, floor: f32) -> f32 {
-    *peak = (*peak * (1.0 - dt * 0.1).max(0.0)).max(v).max(floor);
-    (v / *peak).clamp(0.0, 1.0)
-}
-
-/// Seconds since `last` (now on return), at most `max`; 0 the first time.
-pub(crate) fn tick(last: &mut Option<Instant>, max: f32) -> f32 {
-    let now = Instant::now();
-    let dt = last.map(|l| now.duration_since(l).as_secs_f32().min(max)).unwrap_or(0.0);
-    *last = Some(now);
-    dt
-}
-
-/// Whether the music is playing (not paused, stopped or nothing at all).
-pub(crate) fn playing(app: &App) -> bool {
-    app.playback.item.is_some() && matches!(app.playback.status, singularity_proto::PlayStatus::Playing | singularity_proto::PlayStatus::Buffering)
-}
-
-/// `bg` with `c` added on top at `k` (0..1 a channel, saturating).
-pub(crate) fn over(bg: Rgb, c: [f32; 3]) -> Rgb {
-    let f = |b: u8, v: f32| (b as f32 + v).round().clamp(0.0, 255.0) as u8;
-    Rgb(f(bg.0, c[0]), f(bg.1, c[1]), f(bg.2, c[2]))
-}
-
-pub(crate) fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
-    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -552,81 +419,27 @@ mod tests {
         assert_eq!(glyph('ż'), glyph('Z'));
     }
 
-    type Draw = fn(&mut Buffer, Rect, &mut App, &Theme);
-    pub(crate) const PICTURES: [(&str, Draw); 4] = [("vinyl", vinyl), ("waterfall", waterfall), ("aurora", aurora), ("ripples", ripples)];
-
-    /// An App with a song playing (a red cover) and a spectrum frame with a beat.
-    pub(crate) fn app_playing() -> App {
+    #[test]
+    fn glow_puts_the_cover_over_its_field_as_a_sharp_image_of_its_own() {
+        let th = Theme::singularity();
         let mut app = App::new(None);
         app.covers.insert("https://i.scdn.co/image/c", image::RgbImage::from_fn(64, 64, |x, y| image::Rgb([200, (x * 3) as u8, (y * 3) as u8])));
-        app.playback.item = Some(singularity_proto::Item { name: "Song".into(), duration_ms: 200_000, cover_url: Some("https://i.scdn.co/image/c".into()), ..Default::default() });
+        app.playback.item = Some(singularity_proto::Item { name: "Song".into(), cover_url: Some("https://i.scdn.co/image/c".into()), ..Default::default() });
         app.playback.status = singularity_proto::PlayStatus::Playing;
-        app.meters.frame = Some(singularity_proto::SpectrumFrame { bands: (0..64).map(|i| 255 - i * 3).collect(), level: 180, vu: [180, 170], beat: true, out_level: 120, out_vu: [120, 110], out_bands: [150, 90, 60] });
-        app
-    }
-
-    #[test]
-    fn the_pictures_stay_inside_their_pane_at_any_size_playing_paused_or_idle() {
-        let th = Theme::singularity();
-        for (name, draw) in PICTURES {
-            for state in 0..3 {
-                let mut app = app_playing();
-                match state {
-                    1 => {
-                        app.playback.status = singularity_proto::PlayStatus::Paused;
-                        app.meters.frame = None;
-                    }
-                    2 => {
-                        app.playback.item = None;
-                        app.meters.frame = None;
-                    }
-                    _ => {}
-                }
-                for (w, h) in [(1u16, 1u16), (2, 1), (1, 3), (3, 2), (8, 3), (20, 5), (40, 8), (80, 14), (200, 60)] {
-                    let mut buf = Buffer::empty(Rect::new(0, 0, w + 2, h + 2));
-                    for _ in 0..3 {
-                        draw(&mut buf, Rect::new(1, 1, w, h), &mut app, &th);
-                        std::thread::sleep(std::time::Duration::from_millis(2));
-                    }
-                    for y in 0..h + 2 {
-                        for x in 0..w + 2 {
-                            if x == 0 || y == 0 || x == w + 1 || y == h + 1 {
-                                assert_eq!(buf[(x, y)], ratatui::buffer::Cell::default(), "{name} state {state} {w}x{h}: drew outside at ({x},{y})");
-                            }
-                        }
-                    }
-                    // something is drawn once there's room (a picture, not a blank Pane)
-                    if w >= 20 && state == 0 {
-                        let bg = th.bg.color();
-                        let lit = (1..=h).flat_map(|y| (1..=w).map(move |x| (x, y))).filter(|&(x, y)| buf[(x, y)].fg != bg || buf[(x, y)].bg != bg).count();
-                        assert!(lit > 0, "{name} {w}x{h}: nothing drawn");
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn the_pictures_go_up_as_their_own_visual_on_the_pixel_tier() {
-        let th = Theme::singularity();
-        for (i, (name, draw)) in PICTURES.into_iter().enumerate() {
-            let mut app = app_playing();
-            app.cell_px = Some((10.0, 20.0));
-            app.kitty = Some(crate::gfx::Kitty::new(false));
-            for (w, h) in [(1u16, 1u16), (3, 2), (40, 12), (120, 40)] {
-                let mut buf = Buffer::empty(Rect::new(0, 0, w + 2, h + 2));
-                let t0 = Instant::now();
-                draw(&mut buf, Rect::new(1, 1, w, h), &mut app, &th);
-                let ms = t0.elapsed().as_secs_f64() * 1000.0;
-                let mut out = vec![];
-                app.kitty.as_mut().unwrap().flush(&mut out).unwrap();
-                let apc = String::from_utf8_lossy(&out);
-                // ids 4–7, each sent double-buffered as 2·id or 2·id + 1
-                let id = 4 + i as u32;
-                assert!(w < 40 || apc.contains(&format!("i={},", id * 2)) || apc.contains(&format!("i={},", id * 2 + 1)), "{name} {w}x{h}: no frame for Visual {id}");
-                // a debug build is far slower than release; this only catches a mistake that makes one heavy
-                assert!(ms < 400.0, "{name} {w}x{h}: {ms:.1} ms a frame");
-            }
-        }
+        app.cell_px = Some((10.0, 20.0));
+        app.kitty = Some(crate::gfx::Kitty::new(false));
+        app.kitty.as_mut().unwrap().below_backgrounds = true;
+        let r = Rect::new(1, 1, 60, 20);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 62, 22));
+        glow(&mut buf, r, &mut app, &th);
+        let mut out = vec![];
+        app.kitty.as_mut().unwrap().flush(&mut out).unwrap();
+        let apc = String::from_utf8_lossy(&out);
+        // the glow field, at half resolution (60·10/2 × 20·20/2), one layer under the stills
+        assert!(apc.contains(&format!("i={},s=300,v=200", GLOW_ID * 2)), "{apc:.300}");
+        assert!(apc.contains("z=-1073741826"), "the glow sits under the cover");
+        // the cover: 10 rows × 20 cells, sent at full resolution (200×200) and placed at the default z
+        assert!(apc.contains("s=200,v=200"), "the cover goes up at full resolution");
+        assert!(apc.contains("a=p,i=1000,p=1,c=20,r=10,C=1,z=-1073741825"), "the cover is placed over the glow");
     }
 }

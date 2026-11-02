@@ -170,7 +170,7 @@ Any self-contained thing that can occupy a Pane: a visual, lyrics, album art, qu
 _Avoid_: module, applet, panel
 
 **Visual**:
-A Widget whose purpose is decoration that reacts to the audio (black hole, spectrum, starfield, vinyl, waterfall, aurora, ripples).
+A Widget whose purpose is decoration that reacts to the audio (black hole, spectrum, starfield).
 _Avoid_: visualizer, effect, animation
 
 **Slot**:

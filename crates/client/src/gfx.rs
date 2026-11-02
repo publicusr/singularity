@@ -95,6 +95,8 @@ pub struct Kitty {
     pub below_backgrounds: bool,
     /// Visuals that must stay over backgrounds (the idle takeover shows through the whole UI)
     over_backgrounds: std::collections::HashSet<u32>,
+    /// Visuals drawn one layer under still images, so a still placed over them (glow's cover) is always on top
+    under_stills: std::collections::HashSet<u32>,
 }
 
 /// kitty's layer under cell backgrounds: an image there shows only through cells with the default background, so
@@ -122,6 +124,7 @@ impl Kitty {
             shm_seq: 0,
             below_backgrounds: false,
             over_backgrounds: Default::default(),
+            under_stills: Default::default(),
         }
     }
 
@@ -130,10 +133,16 @@ impl Kitty {
         self.over_backgrounds.insert(id);
     }
 
+    /// Keep Visual `id` one layer under still images (covers), so one placed over it always shows on top.
+    pub fn keep_under_stills(&mut self, id: u32) {
+        self.under_stills.insert(id);
+    }
+
     /// The z-index for image `id` (an animated Visual's two ids map back to its own).
     fn z(&self, id: u32) -> i32 {
         let visual = if id < FIRST_ID { id / 2 } else { id };
-        if self.below_backgrounds && !self.over_backgrounds.contains(&visual) { BELOW_BACKGROUNDS } else { -1 }
+        let z = if self.below_backgrounds && !self.over_backgrounds.contains(&visual) { BELOW_BACKGROUNDS } else { -1 };
+        if id < FIRST_ID && self.under_stills.contains(&visual) { z - 1 } else { z }
     }
 
     /// Place the image `key` over `rect` this frame; `render` supplies its pixels if the terminal doesn't have them yet.
