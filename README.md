@@ -1,8 +1,8 @@
 # Singularity
 
-A terminal Spotify client for Linux and macOS that feels like the desktop app, plays lossless audio,
-and looks spectacular: a Home feed, Made For You, full library, mouse *and* keyboard, btop-grade themes, and
-built-in audio-reactive visuals (yes, including a black hole).
+A Spotify TUI client for Linux and macOS that keeps nearly everything the desktop app does, plays lossless audio
+and puts the visuals first. Keyboard and mouse driven, with built-in themes and audio-reactive visuals (yes, including
+a black hole), modular and customisable.
 
 ![Singularity in the Rosé theme: the black hole, an oscilloscope, the title marquee, a spectrum and the cover's glow over the Home feed, the library and synced lyrics](docs/media/rose.png)
 
@@ -133,7 +133,7 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 - **Jam**: `d` opens the device picker; its last row starts a Jam on this device (`j` there too). Friends scan the QR
   or open the link to add songs and skip; Enter on the row twice ends it, and the music keeps playing. Hosting needs
   Premium.
-- Keys worth knowing: Space play/pause, Shift+←/→ seek, Ctrl+K palette, Ctrl+L search, `d` devices, `v` Disk look,
+- Keys worth knowing: Space play/pause, Shift+←/→ seek, Ctrl+K palette, Ctrl+L search, `d` devices, `v` swaps the focused Pane's Widget (on the black hole: its Disk look),
   Alt+←/→ back/forward, `l` like, `?` help. Everything is clickable too. `q` (or Esc) quits the Client; the music
   keeps playing.
 - **Settings**: Ctrl+K → "Settings", or `~/.config/singularity/config.toml` and `keys.toml` (written with comments on

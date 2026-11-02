@@ -213,7 +213,7 @@ audio, and looks spectacular.
 
 - Windows, permanently.
 - Offline downloads (DRM) and lossless through librespot (impossible).
-- Public distribution and anything that would redistribute Soloist (it's downloaded on the user's machine only).
+- Anything that would redistribute Soloist (it's downloaded on the user's machine only).
 - v1.x, not v1: playlist editing, stats widgets, the Settings screen, more Visuals, the free-tiling edit mode, podcasts and
   audiobooks, the macOS Engine.
 - Video podcasts and Canvas loops (maybe later as a Visual).
