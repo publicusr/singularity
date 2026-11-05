@@ -528,7 +528,7 @@ fn draw_stream_medium(buf: &mut Buffer, r: Rect, app: &App, s: &StreamInfo, th: 
 }
 
 /// Where the compact stream Pane's next fact goes: down a column, then on to the next one when a wide, short Pane
-/// has room for it; a narrow Pane puts each value under its name.
+/// has room for it; a narrow, tall Pane puts each value under its name.
 struct Flow {
     x: u16,
     y: u16,
@@ -541,7 +541,7 @@ struct Flow {
 impl Flow {
     fn row(&mut self, buf: &mut Buffer, k: &str, v: &str, st: ratatui::style::Style, th: &Theme) {
         let right = self.r.right().saturating_sub(1);
-        let stacked = self.r.width < 26;
+        let stacked = self.r.width < 26 && self.r.height >= 14;
         let need = if stacked { 2 } else { 1 };
         if self.y + need > self.r.bottom() && self.y > self.top && self.x + 2 * self.col_w <= right {
             self.x += self.col_w;
