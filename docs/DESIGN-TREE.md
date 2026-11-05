@@ -1058,3 +1058,9 @@ flowchart LR
   wrapped empty states, unsynced lyrics following the song. Test `lyric_lines_follow_each_other_from_the_left_edge_at_every_size`
   (72×27, the owner's Pane, up to 256×64); pty `sizes` takes `PTY_SIZES=72x27` and the new `design-sizes` scenario
   shoots every built-in Design at 80×24 … 264×68.
+  **Size audit (2026-11-05, after the revert):** every Widget at the seven `sizes` plus 30×5 and 72×27, every Design at
+  five terminal sizes, against the pre-scaling build. Fixed: synced lyrics no longer show the tail of a line that
+  starts above the view alone on the top row (it read as a line of its own; older than the scaling round); a Pane
+  too narrow for its title showed the title's last letter between the ◂ ▸ and the corner ("lis ◂ ▸ g┐"): the title
+  now ends before the arrows; the stream Pane's "play something to see the stream" wraps instead of being cut off;
+  today's "last 7 days" line in a narrow Pane says "7 days 1h53" instead of cutting the total to its first digit.

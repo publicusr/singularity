@@ -361,10 +361,12 @@ pub fn today(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
         let total: u32 = week.iter().sum();
         let (best_i, best) = week.iter().enumerate().max_by_key(|(_, m)| **m).map(|(i, m)| (i, *m)).unwrap_or((0, 0));
         let wd = (sum.today_weekday as usize + 7 * 2 - (week.len() - 1 - best_i)) % 7;
-        text(buf, x, y, 13, "last 7 days ", th.s(th.dim));
-        let tw = fmt_minutes(total);
-        text(buf, x + 12, y, w.saturating_sub(12), &tw, th.s(th.fg).add_modifier(Modifier::BOLD));
-        let bx = x + 12 + tw.width() as u16;
+        // a narrow Pane: the short label and figure, so the total isn't cut to its first digit
+        let (label, tw) = if 12 + fmt_minutes(total).width() as u16 <= w { ("last 7 days ", fmt_minutes(total)) } else { ("7 days ", short_minutes(total)) };
+        let lw = label.width() as u16;
+        text(buf, x, y, lw, label, th.s(th.dim));
+        text(buf, x + lw, y, w.saturating_sub(lw), &tw, th.s(th.fg).add_modifier(Modifier::BOLD));
+        let bx = x + lw + tw.width() as u16;
         if best > 0 && bx + 24 <= x + w {
             text(buf, bx, y, 13, " · best day ", th.s(th.dim));
             let b = format!("{} ({})", WEEKDAY_NAMES[wd], short_minutes(best));

@@ -246,6 +246,11 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let mut hits = vec![];
     for (k, (i, words)) in cache.rows.iter().enumerate().skip(first).take(body) {
         let (i, y) = (*i, r.y + (k - first) as u16);
+        // the tail of a line that starts above the view isn't shown: alone on the top row it read as a line of its own
+        // (synced only: unsynced lyrics scroll by rows under the reader's wheel)
+        if lyr.synced && cache.starts[i] < first && now != Some(i) {
+            continue;
+        }
         let st = match now {
             Some(c) => tone(th, i as i64 - c as i64, reach),
             None if lyr.synced => tone(th, i as i64 + 1, reach),

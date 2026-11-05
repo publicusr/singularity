@@ -492,7 +492,19 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), sl
     let tail: u16 = if can_swap && rect.width >= 14 { 3 } else { tail };
     let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
     let room = (rect.width as usize).saturating_sub(2 + used + if can_swap { 8 } else { 0 } + tail as usize);
-    let title = if title.chars().count() + 1 > room && room > 1 { title.chars().take(room - 2).collect::<String>() + "…" } else { title };
+    // the cells before the ◂ ▸ (their leading space ends the title): in a Pane too narrow for `room`, the title used
+    // to run on under the arrows and its last letter showed between them and the corner ("lis ◂ ▸ g┐")
+    let before_arrows = rect.width as i32 - 2 - used as i32 - 6 - tail as i32;
+    let title = if title.chars().count() < room {
+        title
+    } else if room > 1 {
+        title.chars().take(room - 2).collect::<String>() + "…"
+    } else if can_swap {
+        let free = before_arrows.max(0) as usize;
+        if title.chars().count() <= free { title } else { title.chars().take(free.saturating_sub(1)).collect::<String>() + if free > 0 { "…" } else { "" } }
+    } else {
+        title
+    };
     spans.push(Span::styled(format!("{title} "), title_st));
     if slot == "topweek" {
         let tw = spans.iter().map(|s| s.content.chars().count()).sum::<usize>() as u16;
@@ -2788,6 +2800,10 @@ mod tests {
                 let whole = if line % 3 == 1 { format!("{line} {long}") } else { format!("line {line}") };
                 assert_eq!(joined, whole, "{w} at line {line}: {rows:#?}");
                 assert!(ys.windows(2).all(|p| p[1] == p[0] + 1) && ys.last() < Some(&11), "{w} at line {line}: {rows:#?}");
+                // no line's tail alone on the top row: every line shown starts with its timestamp
+                if w >= 32 && !ys.contains(&0) {
+                    assert!(rows[0].trim().is_empty() || rows[0].starts_with(" ["), "{w} at line {line}: {rows:#?}");
+                }
             }
         }
         // the timestamp only on a line's first row, continuations indented
