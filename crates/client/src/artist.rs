@@ -75,8 +75,10 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         y += 1;
         let focused = app.focus == "home";
         let playing = app.playback.item.as_ref().map(|i| i.uri.clone());
-        app.want_saved(page.top_tracks.iter().take(n).map(|t| t.uri.as_str()), n);
-        for (i, t) in page.top_tracks.iter().take(n).enumerate() {
+        // the rows that fit, a window that follows the highlight (wheel, clicks)
+        let skip = crate::scroll::window(v.top_sel, n, page.top_tracks.len());
+        app.want_saved(page.top_tracks.iter().skip(skip).take(n).map(|t| t.uri.as_str()), n);
+        for (i, t) in page.top_tracks.iter().enumerate().skip(skip).take(n) {
             let selected = focused && i == v.top_sel;
             let bg = if selected { th.selection.color() } else { th.bg.color() };
             blank(buf, x, y, w, th.base().bg(bg));

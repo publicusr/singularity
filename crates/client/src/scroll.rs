@@ -1,9 +1,12 @@
-//! Scrolling inside popups. Every popup is an `app::Modal`, and `App::modal_scroll` must say what the wheel does in
-//! it: a list moves its selection with [`moved`], text taller than its box scrolls with a [`TextScroll`].
+//! Scrolling, wherever there's more than fits. Every popup is an `app::Modal` and `App::modal_scroll` says what the
+//! wheel does in it; every Widget is a `wheel::Widget` and every main-Pane page an `app::Page`, and `App::pane_wheel`
+//! says what it does over them. A list moves its selection with [`moved`] and shows a [`window`] that follows it, text
+//! taller than its box scrolls with a [`TextScroll`], and a view that follows the song (lyrics) is a [`Follow`].
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use std::cell::Cell;
+use std::time::{Duration, Instant};
 
 /// A list's selection `rows` rows on (negative: up), kept inside a list of `len` items.
 pub fn moved(sel: usize, rows: i32, len: usize) -> usize {
@@ -67,9 +70,77 @@ impl TextScroll {
     }
 }
 
+/// How long a view that follows the song stays where the wheel left it before it follows again.
+pub const HOLD: Duration = Duration::from_secs(5);
+
+/// A view that follows something by itself (lyrics follow the song) until the wheel takes it: then it stays where the
+/// wheel put it until [`HOLD`] after the last notch, and goes back to following. Drawing takes `&self`, hence the cells.
+#[derive(Default, Debug)]
+pub struct Follow {
+    /// the first row the last frame showed, and the last first row the wheel may take it to
+    shown: Cell<usize>,
+    max: Cell<usize>,
+    /// where the wheel put it, and when
+    held: Cell<Option<(usize, Instant)>>,
+}
+
+impl Follow {
+    /// `rows` rows on (negative: back) from what's on screen, within what there is; held there for a while.
+    pub fn by(&self, rows: i32) {
+        let from = self.held.get().map_or(self.shown.get(), |(at, _)| at) as i64;
+        let to = (from + rows as i64).clamp(0, self.max.get() as i64) as usize;
+        self.held.set(Some((to, Instant::now())));
+    }
+
+    /// Whether the wheel has the view.
+    pub fn held(&self) -> bool {
+        self.held.get().is_some_and(|(_, t)| t.elapsed() < HOLD)
+    }
+
+    /// Following again at once (a new song).
+    pub fn release(&self) {
+        self.held.set(None);
+    }
+
+    /// The first row to show: `auto` (where following puts it), unless the wheel has the view; `max` is the last first
+    /// row the wheel may take it to.
+    pub fn first(&self, auto: usize, max: usize) -> usize {
+        self.max.set(max);
+        let first = match self.held.get() {
+            Some((at, _)) if self.held() => at.min(max),
+            _ => {
+                self.held.set(None);
+                auto
+            }
+        };
+        self.shown.set(first);
+        first
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_following_view_is_held_by_the_wheel_then_follows_again() {
+        let f = Follow::default();
+        assert_eq!(f.first(7, 20), 7, "following");
+        f.by(3);
+        assert!(f.held());
+        assert_eq!(f.first(8, 20), 10, "from what was on screen, and held while the song moves on");
+        f.by(-100);
+        assert_eq!(f.first(9, 20), 0, "stops at the top");
+        f.by(100);
+        assert_eq!(f.first(9, 20), 20, "and at the end");
+        // the hold runs out
+        f.held.set(Some((20, Instant::now() - HOLD)));
+        assert_eq!(f.first(9, 20), 9);
+        assert!(!f.held());
+        f.by(1);
+        f.release();
+        assert_eq!(f.first(4, 20), 4);
+    }
 
     #[test]
     fn lists_and_text_stay_inside() {

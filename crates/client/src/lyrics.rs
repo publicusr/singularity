@@ -47,6 +47,8 @@ pub struct Wrapped {
     /// unsynced: the scroll the follow set last frame (the wheel moving it means the reader took over: `held`)
     followed: Option<usize>,
     held: bool,
+    /// synced: the wheel takes the view for a while, then it follows the song again
+    pub(crate) follow: crate::scroll::Follow,
 }
 
 /// How far continuation rows are indented.
@@ -211,6 +213,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let fresh = cache.key != key;
     if cache.key.0 != lyr.uri {
         (cache.held, cache.followed) = (false, None);
+        cache.follow.release();
     }
     if fresh {
         cache.key = key;
@@ -257,6 +260,16 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             app.lyrics_scroll = app.lyrics_scroll.min(max);
             app.lyrics_scroll
         }
+    };
+    // synced: the wheel can hold the view elsewhere for a while (`scroll::Follow`); it glides back from there
+    let first = if lyr.synced {
+        let held = cache.follow.first(first, total.saturating_sub(body).max(first));
+        if cache.follow.held() {
+            cache.shown = held as f32;
+        }
+        held
+    } else {
+        first
     };
     cache.at = Some(Instant::now());
     let cache = &app.lyrics_wrap;

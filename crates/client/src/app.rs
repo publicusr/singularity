@@ -601,6 +601,8 @@ pub struct App {
     pub stats: std::collections::HashMap<singularity_proto::StatsPeriod, singularity_proto::Stats>,
     /// the "top this week" Widget shows tracks (else artists)
     pub top_week_tracks: bool,
+    /// how far the wheel has scrolled its entries
+    pub top_week_scroll: crate::scroll::TextScroll,
     pub recent: Vec<String>,
     pub devices: Vec<singularity_proto::Device>,
     /// the account's Jam (D64)
@@ -757,6 +759,7 @@ impl App {
             stats_period: Default::default(),
             stats: Default::default(),
             top_week_tracks: false,
+            top_week_scroll: Default::default(),
             recent: vec![],
             devices: vec![],
             jam: None,
@@ -2565,8 +2568,9 @@ impl App {
         }
         // the Settings page owns the wheel wherever the pointer is: drifting off it must not scroll a Pane behind
         if self.settings_view.is_some() && matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) {
+            // (as over the main Pane: it takes the focus, so the highlight shows)
             if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
-                self.settings_wheel(if m.kind == MouseEventKind::ScrollUp { -1 } else { 1 }, coarse);
+                self.pane_wheel(crate::wheel::Widget::Home, m.column, m.row, if m.kind == MouseEventKind::ScrollUp { -1 } else { 1 }, coarse);
             }
             return;
         }
@@ -2835,98 +2839,16 @@ impl App {
                 }
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                let up = matches!(m.kind, MouseEventKind::ScrollUp);
-                let sign = if up { 1 } else { -1 };
-                let hit = self.hit_at(m.column, m.row);
-                // the Pane under the pointer, whatever's in it (a row's artist and album names are links of their own)
-                let pane = self.pane_at(m.column, m.row);
-                // track lists and the library: the wheel moves the highlight (Shift: a page) and the list follows it
-                // (wheeling a list focuses its Pane, as a click does, so its highlight shows)
-                if pane.as_deref() == Some("home") && self.view.is_some() {
-                    self.focus = "home".into();
-                    let len = self.view_order().len();
-                    if let Some(v) = self.view.as_mut() {
-                        let step = if coarse { v.visible.max(1) as i64 } else { 1 };
-                        v.sel = (v.sel as i64 - sign * step).clamp(0, len.saturating_sub(1) as i64) as usize;
-                        v.reveal();
-                    }
-                    return;
-                }
-                // artist and search pages: songs on top, Shelves below. Over a song row (or its name links) the wheel
-                // moves the highlight; anywhere else on the page it scrolls the Shelves (#38)
-                if pane.as_deref() == Some("home") && (self.artist.is_some() || self.search.is_some()) && self.menu.is_none() {
-                    self.focus = "home".into();
-                    let song_row = |h: &Hit| matches!(h, Hit::TopTrack(_) | Hit::SearchTrack(_));
-                    let on_song = self.hits.iter().any(|(r, h)| song_row(h) && r.y == m.row && m.column >= r.x && m.column < r.right());
-                    // no query yet: the page is the recent searches, and the wheel moves through them
-                    let recent = self.recent.len();
-                    if let Some(s) = self.search.as_mut().filter(|s| s.query.trim().is_empty() && recent > 0) {
-                        s.recent_sel = crate::scroll::moved(s.recent_sel, -sign as i32 * if coarse { 5 } else { 1 }, recent);
-                        return;
-                    }
-                    if on_song {
-                        let d = -sign * if coarse { 5 } else { 1 };
-                        if let Some(a) = self.artist.as_mut() {
-                            let n = a.page.as_ref().map(|p| p.top_tracks.len()).unwrap_or(0);
-                            a.top_sel = (a.top_sel as i64 + d).clamp(0, n.saturating_sub(1) as i64) as usize;
-                        } else if let Some(s) = self.search.as_mut() {
-                            let n = s.rows().len();
-                            s.track_sel = Some((s.track_sel.unwrap_or(0) as i64 + d).clamp(0, n.saturating_sub(1) as i64) as usize);
-                        }
-                    } else {
-                        match self.home_row_at(m.column, m.row) {
-                            Some(row) if coarse => self.feed_view().scroll_shelf(row, -sign as i32),
-                            _ => self.feed_view().scroll_lines(-sign as i32 * 2),
-                        }
-                    }
-                    return;
-                }
-                if pane.as_deref() == Some("home") && self.settings_view.is_some() {
-                    self.focus = "home".into();
-                    self.settings_wheel(-sign, coarse);
-                    return;
-                }
-                if pane.as_deref() == Some("home") && self.stats_view.is_some() {
-                    self.focus = "home".into();
-                    let n = self.stats_view.as_ref().and_then(|v| self.stats.get(&v.period)).map(|s| crate::stats::entries(s).len()).unwrap_or(0);
-                    if let Some(v) = self.stats_view.as_mut() {
-                        let step = if coarse { v.visible.max(1) as i64 } else { 1 };
-                        v.sel = (v.sel as i64 - sign * step).clamp(0, n.saturating_sub(1) as i64) as usize;
-                    }
-                    return;
-                }
-                if pane.as_deref() == Some("library") {
-                    self.focus = "library".into();
-                    let n = crate::sidebar::len(self);
-                    let step = if coarse { self.sidebar.visible.max(1) as i64 } else { 1 };
-                    self.sidebar.move_sel(-sign * step, n);
-                    return;
-                }
-                if matches!(&hit, Some(Hit::Focus(s)) if s == "lyrics") && self.lyrics.as_ref().is_some_and(|l| !l.synced) {
-                    self.lyrics_scroll = (self.lyrics_scroll as i64 - sign * 3).max(0) as usize;
-                    return;
-                }
-                // the queue, like the lists: the wheel moves the highlight (Shift: a page) and the list follows it
-                if pane.as_deref() == Some("queue") {
-                    self.focus = "queue".into();
-                    let n = self.playback.queue.len();
-                    let step = if coarse { self.queue_view.visible.max(1) as i64 } else { 1 };
-                    self.queue_view.move_sel(-sign * step, n);
-                    return;
-                }
-                let over_home = matches!(&hit, Some(Hit::Card(_) | Hit::ShelfScroll(..))) || matches!(&hit, Some(Hit::Focus(s)) if s == "home");
-                if over_home && self.menu.is_none() {
-                    // Shift+wheel scrolls the Shelf under the pointer sideways
-                    match self.home_row_at(m.column, m.row) {
-                        Some(row) if coarse => self.feed_view().scroll_shelf(row, -sign as i32),
-                        _ => self.feed_view().scroll_lines(-sign as i32 * 2),
-                    }
-                    return;
-                }
-                match hit {
-                    Some(Hit::Bar(Bar::Seek, _)) => self.nudge_seek(sign * if coarse { 5000 } else { 1000 }),
-                    Some(Hit::Bar(Bar::Volume, _)) => self.nudge_volume(sign * if coarse { 5 } else { 1 }),
+                let rows = if m.kind == MouseEventKind::ScrollUp { -1 } else { 1 };
+                // the player bar's seek and volume
+                match self.hit_at(m.column, m.row) {
+                    Some(Hit::Bar(Bar::Seek, _)) => return self.nudge_seek(-rows as i64 * if coarse { 5000 } else { 1000 }),
+                    Some(Hit::Bar(Bar::Volume, _)) => return self.nudge_volume(-rows as i64 * if coarse { 5 } else { 1 }),
                     _ => {}
+                }
+                // a Pane, whatever's under the pointer in it: its Widget says what the wheel does there (`wheel.rs`)
+                if let Some(w) = self.pane_at(m.column, m.row).as_deref().and_then(crate::wheel::Widget::of) {
+                    self.pane_wheel(w, m.column, m.row, rows, coarse);
                 }
             }
             _ => {}
@@ -3132,7 +3054,7 @@ impl App {
 
 impl App {
     /// The Home row under the pointer: a Card's row, or a Shelf title's ‹ › buttons.
-    fn home_row_at(&self, x: u16, y: u16) -> Option<usize> {
+    pub(crate) fn home_row_at(&self, x: u16, y: u16) -> Option<usize> {
         match self.hit_at(x, y)? {
             Hit::Card(c) => {
                 let rows = match (&self.search, &self.artist) {
