@@ -1010,6 +1010,16 @@ impl App {
         (k.below_backgrounds || !self.overlays.iter().any(|o| o.intersects(r))).then_some(px)
     }
 
+    /// The pixel tier's cell size, if big text (`bigtext`) can be placed over `r` this frame: text sits over the
+    /// cells' backgrounds even in kitty, so a popup over `r` (whose cells couldn't hide it) means terminal text.
+    pub fn pixel_text_for(&self, r: Rect) -> Option<(f64, f64)> {
+        let px = self.cell_px?;
+        if self.floating || self.kitty.is_none() {
+            return None;
+        }
+        (!self.overlays.iter().any(|o| o.intersects(r))).then_some(px)
+    }
+
     /// What the playing stream needs, kB/s (its measured average, else its nominal bitrate).
     pub fn need_kbps(&self) -> Option<u32> {
         let s = self.stream.as_ref()?;

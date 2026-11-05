@@ -1093,3 +1093,31 @@ flowchart LR
   too narrow for its title showed the title's last letter between the ◂ ▸ and the corner ("lis ◂ ▸ g┐"): the title
   now ends before the arrows; the stream Pane's "play something to see the stream" wraps instead of being cut off;
   today's "last 7 days" line in a narrow Pane says "7 days 1h53" instead of cutting the total to its first digit.
+- **Big text** (2026-11-05, D66/D67 follow-up; owner: "lyrics … in the big window … just occupying the top left corner,
+  like 20% maybe of the screen it should be" and "karaoke also reverted to shitty non-scaling lyrics … now I skipped a
+  song and it's fine"). Cause of the second: the Karaoke Widget's 3×5 pixel font gave up on a line too long for it (two
+  rows at most) and fell back to terminal text. Checked: Ghostty 1.3 parses kitty's text-sizing protocol (OSC 66) but
+  doesn't draw it, so the sizes have to be pixels. **Built**: `bigtext.rs` rasterizes with `fontdue` from a bundled
+  subset of Noto Sans Regular and Bold (Latin, Greek, Cyrillic, punctuation; OFL 1.1, `crates/client/assets/fonts`,
+  plus ♩♪♫ from Noto Sans Math): an image per row, RGBA, keyed by its content (`gfx::Kitty::place_rgba`: always over
+  cell backgrounds and under text, so the accent band shows through; its own budget of 48 off-screen images), glyphs
+  cached per size. The release binary grows by 337 kB. **Lyrics**: a Pane of 96×24 or more inside its frame, on the
+  pixel tier, with no popup over it, draws the same view (timestamps, current line in bold accent on its band a third
+  down, the next bright, the rest fading, the glide, wrapped rows indented) as big text: sized so the song's longer
+  lines (nine in ten, but at most 1.5× the middle line) span the Pane and at least 8 lines fit its height; each row
+  `pitch` cells tall; the glide moves by cells. Below 1.6× a cell's height it stays the cells. Changed beyond scale:
+  timestamps are 0.55× the lines' size; a row cut off at the bottom shows only while the view glides. **Karaoke**: on
+  the pixel tier the line on stage is big text at one size per song (its longer lines span the Pane, 1.1× the middle
+  one at most; a line too long for three rows there shrinks for itself), the fill splits each row into its sung image
+  and its waiting image at a column, the ball lands on each word's middle as the font measures it (radius 0.16 em);
+  the lines before and after it are big text at 0.42× when that is 2 rows or more. The pixel font stays for the cell
+  tier and for songs the font can't draw (CJK); the instrumental screen and unsynced songs are unchanged. Cost
+  (release, 240×65): a steady lyrics frame 266 µs against 309 µs in cells (the images are only placed again), a line
+  change about 2.3 ms (its rows rendered and sent once); a karaoke frame mid-line 354 µs against 277 µs in cells.
+  Tests: `big_text_suits_every_big_pane` (every size to 300×100), `a_big_pane_on_the_pixel_tier_fills_with_big_text`
+  (placements, nothing re-sent next frame, a popup gives the cells back and removes the images),
+  `big_text_draws_at_every_size_and_moment_inside_its_pane`, karaoke `big_text_words_sit_where_the_font_puts_them`,
+  `a_big_pane_sings_in_big_text_split_where_the_fill_is`, `every_size_and_moment_draws_inside_the_pane_on_the_pixel_tier`;
+  pty `sizes` takes `PTY_PIXEL=1`, `PTY_SEEKS` (several moments) and `PTY_TRACK=2`. Unsolved for the owner: the
+  `ttf-parser` under fontdue is flagged unmaintained (RUSTSEC-2026-0192; ignored in `deny.toml`: it reads only the
+  bundled fonts).

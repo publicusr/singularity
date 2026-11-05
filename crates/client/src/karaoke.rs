@@ -5,7 +5,10 @@
 //!
 //! It scales with its Pane: one or two rows give the line alone (scrolled to the word being sung); a few more add the
 //! ball's lane; a big Pane draws the line in the marquee's pixel font (two sizes), and on the pixel tier the ball is
-//! a smooth image of its own instead of a `●` stepping through cells. Word times come with the lyrics when the source
+//! a smooth image of its own instead of a `●` stepping through cells. On the pixel tier a bigger Pane draws the line in
+//! big text instead (`bigtext`, `plan_px`): one size for the whole song, as big as lets its longer lines span the
+//! Pane, long lines wrapped; the line is two images (sung and waiting) split where the fill has got to, and the ball
+//! lands on each word's middle as the font measures it. Word times come with the lyrics when the source
 //! has them, else they're estimated (`timing.rs`); the credit line says which.
 
 pub mod timing;
@@ -33,6 +36,8 @@ pub struct State {
     smooth_until: Option<Instant>,
     /// unsynced lyrics follow the song's progress; the wheel takes them for a while
     pub(crate) follow: crate::scroll::Follow,
+    /// the song's big-text size for a Pane: (song, lines, columns, rows, cell size) → pixels to the em
+    size: (String, usize, u16, u16, (u64, u64), Option<f32>),
 }
 
 impl State {
@@ -48,6 +53,8 @@ impl State {
 enum Font {
     Plain,
     Big(u16),
+    /// big text (pixel tier): its pixels to the em, the cells a row takes and the columns between count-in dots
+    Px { px: f32, pitch: u16, dot: u16 },
 }
 
 impl Font {
@@ -56,12 +63,13 @@ impl Font {
         match self {
             Font::Plain => 1,
             Font::Big(s) => 4 * s,
+            Font::Px { dot, .. } => dot,
         }
     }
     /// Extra columns between two words.
     fn space(self) -> u16 {
         match self {
-            Font::Plain => 1,
+            Font::Plain | Font::Px { .. } => 1,
             Font::Big(s) => 2 * s,
         }
     }
@@ -70,11 +78,12 @@ impl Font {
         match self {
             Font::Plain => 1,
             Font::Big(s) => (5 * s).div_ceil(2),
+            Font::Px { pitch, .. } => pitch,
         }
     }
     fn width(self, s: &str) -> u16 {
         match self {
-            Font::Plain => s.width() as u16,
+            Font::Plain | Font::Px { .. } => s.width() as u16,
             Font::Big(_) => s.chars().count() as u16 * self.char_w(),
         }
     }
@@ -149,6 +158,10 @@ struct Plan {
     lane: u16,
     spots: Vec<Spot>,
     rows: u16,
+    /// big text: each word's left and width in pixels from the line's left column, and each row's text, its first
+    /// column and its width in columns
+    px: Vec<(f32, f32)>,
+    row_px: Vec<(String, u16, u16)>,
 }
 
 impl Plan {
@@ -167,7 +180,7 @@ fn plan(words: &[Word], w: u16, h: u16) -> Plan {
             let font = Font::Big(s);
             let (spots, rows) = lay_out(words, font, w);
             let fits = spots.iter().all(|p| p.x + p.w <= w + s);
-            let p = Plan { font, lane, spots, rows };
+            let p = Plan { font, lane, spots, rows, px: vec![], row_px: vec![] };
             if fits && rows <= most && p.height() + spare <= h {
                 return p;
             }
@@ -181,7 +194,130 @@ fn plan(words: &[Word], w: u16, h: u16) -> Plan {
     } else {
         0
     };
-    Plan { font: Font::Plain, lane, spots, rows }
+    Plan { font: Font::Plain, lane, spots, rows, px: vec![], row_px: vec![] }
+}
+
+/// The lane over big text `pitch` cells tall.
+fn px_lane(pitch: u16) -> u16 {
+    (pitch * 3 / 5).clamp(2, 8)
+}
+
+/// The lines before and after the one on stage, beside big text of `px`: their size and the cells a row of them takes
+/// (under 2: they stay terminal text).
+fn side(px: f32, ch: f64) -> (f32, u16) {
+    let sp = px * 0.42;
+    (sp, ((sp * crate::bigtext::LINE) as f64 / ch).ceil() as u16)
+}
+
+/// Rows kept free around big text of `px`: the line before above it and the next one under it, a row apart.
+fn px_spare(px: f32, ch: f64) -> u16 {
+    match side(px, ch) {
+        (_, sp) if sp >= 2 => 2 * sp + 2,
+        _ => 4,
+    }
+}
+
+/// The smallest big text worth leaving the cells for, against a cell's height.
+const PX_MIN: f64 = 1.25;
+
+/// The song's big-text size for a `w`×`h` Pane (credit row not counted): its longer lines span the Pane, and a row of it
+/// with its lane and the lines around it fits the height. None when it would hardly beat the cells, or the fonts
+/// lack a character.
+fn song_px(lines: &[Line], w: u16, h: u16, (cw, ch): (f64, f64)) -> Option<f32> {
+    if lines.is_empty() || !lines.iter().all(|l| l.words.iter().all(|x| crate::bigtext::covers(&x.text))) {
+        return None;
+    }
+    let texts: Vec<String> = lines.iter().map(|l| plain_text(&l.words)).collect();
+    let typical = crate::bigtext::typical(texts.iter().map(String::as_str), 1.1).max(1.0);
+    let by_width = (w as f64 * cw * 0.94 / typical as f64) as f32;
+    // the tallest row that fits with its lane and the lines around it
+    let mut by_height = 0.0f32;
+    for pitch in 2..=h {
+        let px = (pitch as f64 * ch / crate::bigtext::LINE as f64 * 0.96) as f32;
+        if pitch + px_lane(pitch) + px_spare(px, ch) > h {
+            break;
+        }
+        by_height = px;
+    }
+    let px = by_width.min(by_height);
+    (px as f64 >= PX_MIN * ch).then_some(px.floor())
+}
+
+/// Words in rows of at most `max` pixels at `px` (pieces sung as one word kept together): each word's row, its left
+/// and width from its row's left, and each row's width.
+fn lay_out_px(words: &[Word], px: f32, max: f32) -> (Vec<(u16, f32, f32)>, Vec<f32>) {
+    use crate::bigtext::width;
+    let space = width(" ", px, true);
+    let mut out = Vec::with_capacity(words.len());
+    let mut rows = vec![0.0f32];
+    let mut k = 0;
+    while k < words.len() {
+        let mut end = k + 1;
+        while end < words.len() && words[end].glued {
+            end += 1;
+        }
+        let ws: Vec<f32> = words[k..end].iter().map(|w| width(&w.text, px, true)).collect();
+        let gw: f32 = ws.iter().sum();
+        let cur = *rows.last().unwrap();
+        let mut x = if cur == 0.0 { 0.0 } else { cur + space };
+        if cur > 0.0 && x + gw > max {
+            rows.push(0.0);
+            x = 0.0;
+        }
+        let row = rows.len() as u16 - 1;
+        for w in ws {
+            out.push((row, x, w));
+            x += w;
+        }
+        *rows.last_mut().unwrap() = x;
+        k = end;
+    }
+    (out, rows)
+}
+
+/// The line on stage in big text at the song's size `px` in `w` × `h` cells (shrunk for a line too long for three
+/// rows there); None when even the smallest worth it doesn't fit.
+fn plan_px(words: &[Word], w: u16, h: u16, (cw, ch): (f64, f64), px: f32) -> Option<Plan> {
+    if words.is_empty() {
+        return None;
+    }
+    let max = (w as f64 * cw) as f32;
+    let mut px = px;
+    while px as f64 >= PX_MIN * ch {
+        let pitch = ((px * crate::bigtext::LINE) as f64 / ch).ceil() as u16;
+        let lane = px_lane(pitch);
+        let (laid, rows) = lay_out_px(words, px, max);
+        let n = rows.len() as u16;
+        if n <= 3 && n * (lane + pitch) + px_spare(px, ch) <= h {
+            // each row centred on whole columns, a little room for the last letter's overhang
+            let row_px: Vec<(String, u16, u16)> = rows
+                .iter()
+                .enumerate()
+                .map(|(ri, &rw)| {
+                    let cols = (((rw + px * 0.15) as f64 / cw).ceil() as u16).clamp(1, w);
+                    let mut text = String::new();
+                    for (_, word) in words.iter().enumerate().filter(|(i, _)| laid[*i].0 == ri as u16) {
+                        if !text.is_empty() && !word.glued {
+                            text.push(' ');
+                        }
+                        text.push_str(&word.text);
+                    }
+                    (text, (w - cols) / 2, cols)
+                })
+                .collect();
+            let mut spots = Vec::with_capacity(words.len());
+            let mut pxs = Vec::with_capacity(words.len());
+            for &(row, x, ww) in &laid {
+                let left = row_px[row as usize].1 as f32 * cw as f32 + x;
+                pxs.push((left, ww));
+                spots.push(Spot { row, x: (left as f64 / cw) as u16, w: ((ww as f64 / cw).ceil() as u16).max(1) });
+            }
+            let dot = ((px as f64 * 0.6 / cw).round() as u16).max(2);
+            return Some(Plan { font: Font::Px { px, pitch, dot }, lane, spots, rows: n, px: pxs, row_px });
+        }
+        px *= 0.9;
+    }
+    None
 }
 
 /// `s` cut to `w` columns, with an ellipsis when cut.
@@ -254,7 +390,23 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let lines = std::mem::take(&mut app.karaoke.lines);
     let playing = app.playback.status == singularity_proto::PlayStatus::Playing;
     let mut hits = vec![];
-    let ball = synced(buf, r, &lines, pos, &source, th, &mut hits);
+    // big text on the pixel tier: the song's size for this Pane, worked out once
+    let cpx = app.pixel_text_for(r);
+    let size = cpx.and_then(|c| {
+        let credit = u16::from(r.height >= 7);
+        let key = (lyr.uri.clone(), lines.len(), r.width, r.height, (c.0.to_bits(), c.1.to_bits()));
+        let st = &mut app.karaoke;
+        if (&st.size.0, st.size.1, st.size.2, st.size.3, st.size.4) != (&key.0, key.1, key.2, key.3, key.4) {
+            let px = song_px(&lines, r.width.saturating_sub(2), r.height - credit, c);
+            st.size = (key.0, key.1, key.2, key.3, key.4, px);
+        }
+        st.size.5.map(|px| (c, px))
+    });
+    let big = match (size, app.kitty.as_mut()) {
+        (Some((cpx, px)), Some(kitty)) => Some(Big { cpx, px, kitty }),
+        _ => None,
+    };
+    let ball = synced(buf, r, &lines, pos, &source, th, &mut hits, big);
     // the pixel tier's ball, or the cells' `●`
     let mut smooth = false;
     if let Some(b) = ball {
@@ -273,14 +425,22 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
 }
 
+/// Big text for the line on stage: the cell size, the song's size and where the images go.
+struct Big<'a> {
+    cpx: (f64, f64),
+    px: f32,
+    kitty: &'a mut crate::gfx::Kitty,
+}
+
 /// Where to draw the ball: a column and the bottom row of its lane (fractions: between words, between rows), how
-/// high in the lane (0..1), and the lane's height.
+/// high in the lane (0..1), and the lane's height; over big text, its radius in pixels too.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Ball {
     x: f32,
     base: f32,
     height: f32,
     lane: u16,
+    rad: Option<f64>,
 }
 
 fn cell_ball(buf: &mut Buffer, r: Rect, b: Ball, th: &Theme) {
@@ -294,7 +454,7 @@ fn cell_ball(buf: &mut Buffer, r: Rect, b: Ball, th: &Theme) {
 /// The ball as a small image of its own, placed to the pixel: smooth hops at the motion frame rate.
 fn pixel_ball(app: &mut App, r: Rect, b: Ball, (cw, ch): (f64, f64), th: &Theme) {
     // bigger over the pixel font's taller lanes
-    let rad = (ch * [0.28, 0.28, 0.28, 0.36, 0.42][b.lane.min(4) as usize]).max(2.0);
+    let rad = b.rad.unwrap_or(ch * [0.28, 0.28, 0.28, 0.36, 0.42][b.lane.min(4) as usize]).max(2.0);
     // its centre in pixels from the screen's corner: resting, it sits on the bottom of the lane's last row
     let cx = (b.x as f64 + 0.5) * cw;
     let rest = (b.base as f64 + 1.0) * ch - rad - ch * 0.1;
@@ -350,7 +510,8 @@ fn unsynced(buf: &mut Buffer, r: Rect, app: &App, pos: u64, th: &Theme) {
 }
 
 /// The synced view; returns where the ball goes (if anywhere). Seek targets go to `hits`.
-fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th: &Theme, hits: &mut Vec<(Rect, Hit)>) -> Option<Ball> {
+#[allow(clippy::too_many_arguments)]
+fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th: &Theme, hits: &mut Vec<(Rect, Hit)>, mut big: Option<Big>) -> Option<Ball> {
     let stage = timing::at(lines, pos);
     // one or two rows: the line alone, scrolled to the word being sung
     if r.height <= 2 || r.width < 16 {
@@ -367,32 +528,51 @@ fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th:
     let line = &lines[i];
     let credit = r.height >= 7;
     let w = r.width.saturating_sub(2);
-    let p = plan(&line.words, w, r.height - credit as u16);
+    let p = big.as_ref().and_then(|b| plan_px(&line.words, w, r.height - credit as u16, b.cpx, b.px)).unwrap_or_else(|| plan(&line.words, w, r.height - credit as u16));
+    // big text: the lines around it in smaller big text when that is still bigger than the cells
+    let side = match (p.font, big.as_ref()) {
+        (Font::Px { px, .. }, Some(b)) => Some(side(px, b.cpx.1)).filter(|(_, sp)| *sp >= 2),
+        _ => None,
+    };
     let block = p.height().min(r.height);
     // the line a little above the middle; the next lines under it, the last one above when there's room
     let avail = r.height - credit as u16;
     let top = r.y + avail.saturating_sub(block) * 2 / 5;
     let x0 = r.x + 1;
     let row_top = |row: u16| top + row * (p.lane + p.font.rows()) + p.lane;
-    draw_line(buf, r, x0, &p, line, pos, &row_top, th);
+    match (p.font, big.as_mut()) {
+        (Font::Px { px, pitch, .. }, Some(b)) => px_line(b.kitty, r, x0, &p, line, pos, &row_top, th, b.cpx, px, pitch),
+        _ => draw_line(buf, r, x0, &p, line, pos, &row_top, th),
+    }
     hits.push((Rect::new(r.x, top, r.width, block), Hit::Lyric(line.start)));
+    // the rows a line around it takes: big text's own, or one of the cells
+    let side_rows = side.map_or(1, |(_, sp)| sp);
+    let mut aside = |y: u16, s: &str, c: Rgb, big: &mut Option<Big>| match (side, big.as_mut()) {
+        (Some((sp, rows)), Some(b)) => side_line(b.kitty, r, y, s, c, sp, rows, b.cpx),
+        _ => centre(buf, r, y, s, th.s(c)),
+    };
     // the last line, fading, above
-    if i > 0 && top >= r.y + 2 {
-        let prev = plain_text(&lines[i - 1].words);
-        centre(buf, r, top - 2, &prev, th.s(th.border));
-        hits.push((Rect::new(r.x, top - 2, r.width, 1), Hit::Lyric(lines[i - 1].start)));
+    if i > 0 && top > r.y + side_rows {
+        let y = top - side_rows - 1;
+        aside(y, &plain_text(&lines[i - 1].words), th.border, &mut big);
+        hits.push((Rect::new(r.x, y, r.width, side_rows), Hit::Lyric(lines[i - 1].start)));
     }
     // the next ones below, dimmer the further they are
     let mut y = top + block + 1;
     let bottom = r.bottom() - credit as u16;
     for (k, nx) in lines.iter().enumerate().skip(i + 1).take(3) {
-        if y >= bottom {
+        if y + side_rows > bottom {
             break;
         }
-        let st = if k == i + 1 { th.s(th.dim) } else { th.s(th.border) };
-        centre(buf, r, y, &plain_text(&nx.words), st);
-        hits.push((Rect::new(r.x, y, r.width, 1), Hit::Lyric(nx.start)));
-        y += if p.font == Font::Plain { 1 } else { 2 };
+        let c = if k == i + 1 { th.dim } else { th.border };
+        aside(y, &plain_text(&nx.words), c, &mut big);
+        hits.push((Rect::new(r.x, y, r.width, side_rows), Hit::Lyric(nx.start)));
+        y += match p.font {
+            Font::Plain => 1,
+            Font::Big(_) => 2,
+            Font::Px { .. } if side.is_some() => side_rows,
+            Font::Px { .. } => 2,
+        };
     }
     if credit {
         let hint = if line.exact { "" } else { " · word timing estimated" };
@@ -421,7 +601,13 @@ fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th:
     if count > 1 || (count == 1 && wx <= -1.0) {
         return None;
     }
+    let cw = big.as_ref().map_or(1.0, |b| b.cpx.0) as f32;
     let centre_of = |k: usize| {
+        if let Font::Px { .. } = p.font {
+            // the word's middle as the font measures it, in columns (a column's middle is its index + 0.5)
+            let (left, w) = p.px[k];
+            return x0 as f32 + (left + w / 2.0) / cw - 0.5;
+        }
         let s = p.spots[k];
         let trail = if let Font::Big(sc) = p.font { sc } else { 0 };
         (x0 + s.x) as f32 + (s.w.saturating_sub(trail) as f32 - 1.0) / 2.0
@@ -437,7 +623,82 @@ fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th:
         let t = wx - a as f32;
         (centre_of(a) + (centre_of(b) - centre_of(a)) * t, base_of(a) + (base_of(b) - base_of(a)) * t)
     };
-    Some(Ball { x, base, height: h, lane: p.lane })
+    let rad = match p.font {
+        Font::Px { px, .. } => Some((px * 0.16) as f64),
+        _ => None,
+    };
+    Some(Ball { x, base, height: h, lane: p.lane, rad })
+}
+
+/// The line on stage in big text: per row, the sung part (accent) and the rest (waiting), two images of the same
+/// row split at the column the fill has reached.
+#[allow(clippy::too_many_arguments)]
+fn px_line(kitty: &mut crate::gfx::Kitty, r: Rect, x0: u16, p: &Plan, line: &Line, pos: u64, row_top: &dyn Fn(u16) -> u16, th: &Theme, (cw, ch): (f64, f64), px: f32, pitch: u16) {
+    use crate::bigtext::{Span, key, render};
+    let img_h = (pitch as f64 * ch).round() as u32;
+    let baseline = ((img_h as f32 - px * crate::bigtext::LINE) / 2.0 + px * crate::bigtext::ASCENT).round();
+    for (ri, (text, col, cols)) in p.row_px.iter().enumerate() {
+        let y = row_top(ri as u16);
+        if y + pitch > r.bottom() {
+            break;
+        }
+        let left = *col as f32 * cw as f32;
+        // how far the fill has got along this row, in pixels from its left
+        let mut fill = 0.0f32;
+        for (w, &(wx, ww)) in line.words.iter().zip(&p.px).zip(&p.spots).filter(|(_, s)| s.row == ri as u16).map(|(a, _)| a) {
+            let f = timing::fill(w, pos);
+            if f > 0.0 {
+                fill = fill.max(wx - left + f * ww);
+            }
+        }
+        let split = ((fill as f64 / cw).round() as u16).min(*cols);
+        let img_w = (*cols as f64 * cw).round() as u32;
+        let cut = ((split as f64 * cw).round() as u32).min(img_w);
+        let x = x0 + col;
+        for (sung, from, to) in [(true, 0u16, split), (false, split, *cols)] {
+            if to <= from {
+                continue;
+            }
+            let c = if sung { th.accent } else { th.fg };
+            let spans = [Span { x: 0.0, text, rgb: c, px, bold: true }];
+            let k = key(&spans, img_w, img_h, baseline);
+            let (a, b) = if sung { (0, cut) } else { (cut, img_w) };
+            kitty.place_rgba(k, Rect::new(x + from, y, to - from, pitch), Some([a, 0, b - a, img_h]), || (img_w, img_h, render(&spans, img_w, img_h, baseline)));
+        }
+    }
+}
+
+/// A line beside the one on stage in big text of `px` (`rows` cells tall), centred, cut with an ellipsis when too
+/// wide.
+#[allow(clippy::too_many_arguments)]
+fn side_line(kitty: &mut crate::gfx::Kitty, r: Rect, y: u16, s: &str, c: Rgb, px: f32, rows: u16, (cw, ch): (f64, f64)) {
+    use crate::bigtext::{Span, key, render, width};
+    if y + rows > r.bottom() || r.width < 3 {
+        return;
+    }
+    let max = ((r.width - 2) as f64 * cw) as f32;
+    let mut text = s.trim().to_string();
+    if width(&text, px, false) > max {
+        let room = max - width("…", px, false);
+        let mut cut = String::new();
+        let mut w = 0.0;
+        for ch in text.chars() {
+            let a = crate::bigtext::advance(ch, px, false);
+            if w + a > room {
+                break;
+            }
+            w += a;
+            cut.push(ch);
+        }
+        text = format!("{}…", cut.trim_end());
+    }
+    let cols = (((width(&text, px, false) + px * 0.15) as f64 / cw).ceil() as u16).clamp(1, r.width);
+    let img_w = (cols as f64 * cw).round() as u32;
+    let img_h = (rows as f64 * ch).round() as u32;
+    let baseline = ((img_h as f32 - px * crate::bigtext::LINE) / 2.0 + px * crate::bigtext::ASCENT).round();
+    let spans = [Span { x: 0.0, text: &text, rgb: c, px, bold: false }];
+    let k = key(&spans, img_w, img_h, baseline);
+    kitty.place_rgba(k, Rect::new(r.x + (r.width - cols) / 2, y, cols, rows), None, || (img_w, img_h, render(&spans, img_w, img_h, baseline)));
 }
 
 /// The line on stage, its words filling as they are sung.
@@ -470,6 +731,8 @@ fn draw_line(buf: &mut Buffer, r: Rect, x0: u16, p: &Plan, line: &Line, pos: u64
                 }
             }
             Font::Big(sc) => big_word(buf, r, x0 + s.x, y, &w.text, sc, f, waiting, sung),
+            // drawn as images (`px_line`)
+            Font::Px { .. } => {}
         }
     }
 }
@@ -768,5 +1031,115 @@ mod tests {
         app.kitty.as_mut().unwrap().flush(&mut out).unwrap();
         let apc = String::from_utf8_lossy(&out);
         assert!(apc.contains(&format!("i={},", BALL_ID * 2)) && apc.contains("f=32"), "{apc:.200}");
+    }
+
+    /// `app` on the pixel tier (cells of 10×20 pixels), drawn into a `w`×`h` Pane at (1, 1): the cells and what went to
+    /// the terminal.
+    fn pixel_frame(app: &mut App, w: u16, h: u16) -> (String, String) {
+        if app.kitty.is_none() {
+            app.cell_px = Some((10.0, 20.0));
+            app.kitty = Some(crate::gfx::Kitty::new(false));
+        }
+        let s = render(app, w, h);
+        let mut out = vec![];
+        app.kitty.as_mut().unwrap().flush(&mut out).unwrap();
+        (s, String::from_utf8_lossy(&out).into_owned())
+    }
+
+    #[test]
+    fn big_text_words_sit_where_the_font_puts_them() {
+        let w = words("Every echo finds its way back home");
+        let px = 60.0;
+        let p = plan_px(&w, 200, 40, (10.0, 20.0), px).expect("fits");
+        assert_eq!(p.rows, 1);
+        let (text, col, cols) = &p.row_px[0];
+        assert_eq!(text, "Every echo finds its way back home");
+        // each word's left is the row's left and the width of the text before it, as the font measures
+        let mut before = String::new();
+        for (k, word) in w.iter().enumerate() {
+            let x = *col as f32 * 10.0 + crate::bigtext::width(&before, px, true);
+            assert!((p.px[k].0 - x).abs() < 0.01 && (p.px[k].1 - crate::bigtext::width(&word.text, px, true)).abs() < 0.01, "{k}");
+            before.push_str(&word.text);
+            before.push(' ');
+        }
+        // centred, inside the Pane
+        assert!(col + cols <= 200 && (*col as i32 - (200 - col - cols) as i32).abs() <= 1, "{col} {cols}");
+        // a long line wraps into up to three rows and shrinks only when even that doesn't fit
+        let long = words("Here comes the chorus, hold on to the note and let the whole room carry it all night long");
+        let p = plan_px(&long, 120, 30, (10.0, 20.0), 90.0).expect("fits");
+        assert!(p.rows <= 3 && p.row_px.iter().all(|(_, c, n)| c + n <= 120), "{:?}", p.row_px);
+        assert!(plan_px(&long, 20, 6, (10.0, 20.0), 90.0).is_none(), "too small: the cells' plans");
+    }
+
+    #[test]
+    fn a_big_pane_sings_in_big_text_split_where_the_fill_is() {
+        // between "the" and "lights": "Turn the" sung
+        let mut app = app_at(3_700, true);
+        app.lyrics.as_mut().unwrap().lines[3].text = "Ever after".into();
+        app.playback.status = singularity_proto::PlayStatus::Playing;
+        app.playback.timestamp_ms = singularity_proto::now_ms();
+        let (s, out) = pixel_frame(&mut app, 160, 30);
+        assert!(!s.contains("Turn the lights") && !s.contains('█'), "the line is big text, not cells: {s}");
+        assert!(out.contains("f=32"), "{out:.300}");
+        // the line's row: its sung part from the left (x=0), the rest after it (x>0), same height
+        assert!(out.contains(",x=0,y=0,") && out.split(",x=").skip(1).any(|p| !p.starts_with("0,")), "{out:.400}");
+        // and the ball rides above it
+        assert!(out.contains(&format!("i={},", BALL_ID * 2)));
+        // steady frames send no new text
+        app.playback.status = singularity_proto::PlayStatus::Paused;
+        app.playback.position_ms = 3_700;
+        let _ = pixel_frame(&mut app, 160, 30);
+        let (_, out) = pixel_frame(&mut app, 160, 30);
+        assert!(!out.contains("a=t,"), "{out:.300}");
+        // a CJK line: no big text for the song; the cells draw it
+        let mut app = app_at(31_000, true);
+        let (s, out) = pixel_frame(&mut app, 160, 30);
+        assert!(s.contains("Ünïcödé") && !out.contains("a=t,"), "{s}");
+    }
+
+    /// What big text costs while a line is sung (release: `cargo test --release -p singularity -- --ignored
+    /// karaoke_big_text_cost --nocapture`): every frame moves the fill and the ball; a new line now and then.
+    #[test]
+    #[ignore]
+    fn karaoke_big_text_cost() {
+        for (w, h, px) in [(240u16, 65u16, true), (240, 65, false)] {
+            let mut app = app_at(3_000, true);
+            app.lyrics.as_mut().unwrap().lines[3].text = "Ever after".into();
+            if px {
+                let _ = pixel_frame(&mut app, w, h);
+            }
+            let n = 3_000u64;
+            let t = Instant::now();
+            for i in 0..n {
+                // 4 ms a frame (240 a second) through the first two lines
+                app.playback.position_ms = 3_000 + i * 4 % 9_000;
+                if px {
+                    let _ = pixel_frame(&mut app, w, h);
+                } else {
+                    let _ = render(&mut app, w, h);
+                }
+            }
+            println!("karaoke {w}x{h} {}: {:.1} µs a frame", if px { "big text" } else { "cells" }, t.elapsed().as_secs_f64() * 1e6 / n as f64);
+        }
+    }
+
+    #[test]
+    fn every_size_and_moment_draws_inside_the_pane_on_the_pixel_tier() {
+        let moments = [0, 2_900, 3_000, 3_700, 4_300, 7_000, 9_000, 13_000, 20_000, 200_000];
+        for synced in [true, false] {
+            let mut app = app_at(0, synced);
+            app.lyrics.as_mut().unwrap().lines[3].text = "Ever after".into();
+            for &pos in &moments {
+                app.playback.position_ms = pos;
+                for w in [16u16, 30, 60, 90, 120, 160, 240, 300] {
+                    for h in [3u16, 7, 9, 14, 20, 30, 40, 65, 100] {
+                        let (_, out) = pixel_frame(&mut app, w, h);
+                        for &(x, y, c, r) in &crate::lyrics::tests::placements(&out) {
+                            assert!(x >= 1 && x + c <= w + 1 && y >= 1 && y + r <= h + 1, "{w}x{h} at {pos}: ({x},{y},{c},{r})");
+                        }
+                    }
+                }
+            }
+        }
     }
 }

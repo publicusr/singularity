@@ -11,6 +11,9 @@ ignore = [
     # a fix needs the librespot fork to move to >= 0.41 (ticketed)
     { id = "RUSTSEC-2026-0194", reason = "only Spotify's authenticated answers are parsed; waits on librespot" },
     { id = "RUSTSEC-2026-0195", reason = "only Spotify's authenticated answers are parsed; waits on librespot" },
+    # ttf-parser (under fontdue, big text) is unmaintained: it only ever reads the fonts compiled into the Client
+    # (`crates/client/assets/fonts`), never a font from outside; move to a skrifa-based rasterizer when one is as small
+    { id = "RUSTSEC-2026-0192", reason = "parses only the Client's own bundled fonts" },
 ]
 
 [licenses]

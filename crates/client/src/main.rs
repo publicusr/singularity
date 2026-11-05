@@ -3,6 +3,7 @@
 mod app;
 mod arrange;
 mod artist;
+mod bigtext;
 mod conn;
 mod ambient;
 mod covers;

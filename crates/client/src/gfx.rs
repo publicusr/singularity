@@ -66,6 +66,14 @@ pub struct ImageKey {
 struct Stored {
     id: u32,
     last_used: u64,
+    /// RGBA text (`place_rgba`): over cell backgrounds always, and kept to a smaller budget off screen
+    text: bool,
+}
+
+/// Pixels waiting to be sent: RGB (covers) or RGBA (text over the Pane's own background).
+enum Upload {
+    Rgb(RgbImage),
+    Rgba(u32, u32, Vec<u8>),
 }
 
 /// An animated image queued for this frame: its id, where it goes, and (when it's new) its size and pixels.
@@ -82,7 +90,9 @@ pub struct Kitty {
     placed: HashMap<(u32, u32), (Rect, Option<Crop>)>,
     /// this frame's placements and the images still to transmit
     queue: Vec<(u32, u32, Rect, Option<Crop>)>,
-    uploads: Vec<(u32, RgbImage)>,
+    uploads: Vec<(u32, Upload)>,
+    /// image ids of RGBA text (`place_rgba`)
+    text: std::collections::HashSet<u32>,
     /// animated images (Visuals) this frame: a new picture, or None to keep the one on screen
     frames: Vec<FrameImage>,
     /// per Visual: which of its two image ids is on screen, and where
@@ -105,6 +115,9 @@ const BELOW_BACKGROUNDS: i32 = -1_073_741_825;
 
 /// Images kept in the terminal before the least recently used are freed.
 const MAX_STORED: usize = 300;
+/// Text images (`place_rgba`) kept off screen before the least recently used are freed: they are big, and a song's
+/// lines rarely come back once sung (a seek renders them again).
+const MAX_TEXT: usize = 48;
 /// Image ids below this are reserved for Visuals.
 const FIRST_ID: u32 = 1000;
 
@@ -118,6 +131,7 @@ impl Kitty {
             placed: HashMap::new(),
             queue: vec![],
             uploads: vec![],
+            text: Default::default(),
             frames: vec![],
             animated: HashMap::new(),
             shm_pending: vec![],
@@ -140,6 +154,10 @@ impl Kitty {
 
     /// The z-index for image `id` (an animated Visual's two ids map back to its own).
     fn z(&self, id: u32) -> i32 {
+        // text sits over the cells' backgrounds (a band under the current line shows through), under their text
+        if self.text.contains(&id) {
+            return -1;
+        }
         let visual = if id < FIRST_ID { id / 2 } else { id };
         let z = if self.below_backgrounds && !self.over_backgrounds.contains(&visual) { BELOW_BACKGROUNDS } else { -1 };
         if id < FIRST_ID && self.under_stills.contains(&visual) { z - 1 } else { z }
@@ -148,6 +166,24 @@ impl Kitty {
     /// Place the image `key` over `rect` this frame; `render` supplies its pixels if the terminal doesn't have them yet.
     /// Showing only `crop` of the image, when given (scaled into `rect`).
     pub fn place_cropped(&mut self, key: ImageKey, rect: Rect, crop: Option<Crop>, render: impl FnOnce() -> RgbImage) {
+        self.place(key, rect, crop, false, || Upload::Rgb(render()));
+    }
+
+    /// `place_cropped` for RGBA pixels (`render` gives width, height and pixels): text, placed over the cells'
+    /// backgrounds (in kitty too) and under their text. The caller keeps popups off it (`App::pixel_text_for`).
+    pub fn place_rgba(&mut self, key: ImageKey, rect: Rect, crop: Option<Crop>, render: impl FnOnce() -> (u32, u32, Vec<u8>)) {
+        self.place(key, rect, crop, true, || {
+            let (w, h, px) = render();
+            Upload::Rgba(w, h, px)
+        });
+    }
+
+    /// Whether the terminal already holds image `key` (it would be placed without rendering).
+    pub fn holds(&self, key: &ImageKey) -> bool {
+        self.stored.contains_key(key)
+    }
+
+    fn place(&mut self, key: ImageKey, rect: Rect, crop: Option<Crop>, text: bool, render: impl FnOnce() -> Upload) {
         let frame = self.frame;
         let id = match self.stored.get_mut(&key) {
             Some(s) => {
@@ -158,7 +194,12 @@ impl Kitty {
                 let id = self.next_id;
                 self.next_id = self.next_id.wrapping_add(1).max(FIRST_ID);
                 self.uploads.push((id, render()));
-                self.stored.insert(key, Stored { id, last_used: frame });
+                self.stored.insert(key, Stored { id, last_used: frame, text });
+                if text {
+                    self.text.insert(id);
+                } else {
+                    self.text.remove(&id);
+                }
                 id
             }
         };
@@ -184,9 +225,11 @@ impl Kitty {
 
     /// Write this frame's uploads, placements and removals. Call after ratatui has drawn.
     pub fn flush(&mut self, out: &mut impl Write) -> std::io::Result<()> {
-        for (id, img) in std::mem::take(&mut self.uploads) {
-            let (w, h) = img.dimensions();
-            self.transmit(out, id, (w, h), img.as_raw(), 24, None)?;
+        for (id, up) in std::mem::take(&mut self.uploads) {
+            match up {
+                Upload::Rgb(img) => self.transmit(out, id, img.dimensions(), img.as_raw(), 24, None)?,
+                Upload::Rgba(w, h, px) => self.transmit(out, id, (w, h), &px, 32, None)?,
+            }
         }
         let mut shown = HashMap::new();
         for (id, rect, px) in std::mem::take(&mut self.frames) {
@@ -234,6 +277,7 @@ impl Kitty {
     /// Forget everything (after a resize, which clears the screen, and on exit).
     pub fn reset(&mut self, out: &mut impl Write) -> std::io::Result<()> {
         self.stored.clear();
+        self.text.clear();
         self.placed.clear();
         self.queue.clear();
         self.uploads.clear();
@@ -247,16 +291,31 @@ impl Kitty {
     }
 
     fn evict(&mut self, out: &mut impl Write) -> std::io::Result<()> {
+        let on_screen: std::collections::HashSet<u32> = self.placed.keys().map(|(i, _)| *i).collect();
+        // text off screen first, to its own budget
+        let texts = self.stored.values().filter(|s| s.text && !on_screen.contains(&s.id)).count();
+        if texts > MAX_TEXT {
+            let mut old: Vec<(u64, ImageKey)> = self.stored.iter().filter(|(_, s)| s.text && !on_screen.contains(&s.id)).map(|(k, s)| (s.last_used, k.clone())).collect();
+            old.sort_by_key(|(t, _)| *t);
+            for (_, k) in old.into_iter().take(texts - MAX_TEXT) {
+                self.free(out, &k)?;
+            }
+        }
         if self.stored.len() <= MAX_STORED {
             return Ok(());
         }
-        let on_screen: std::collections::HashSet<u32> = self.placed.keys().map(|(i, _)| *i).collect();
         let mut old: Vec<(u64, ImageKey)> = self.stored.iter().filter(|(_, s)| !on_screen.contains(&s.id)).map(|(k, s)| (s.last_used, k.clone())).collect();
         old.sort_by_key(|(t, _)| *t);
         for (_, k) in old.into_iter().take(self.stored.len() - MAX_STORED) {
-            if let Some(s) = self.stored.remove(&k) {
-                write!(out, "\x1b_Ga=d,d=I,i={},q=2\x1b\\", s.id)?;
-            }
+            self.free(out, &k)?;
+        }
+        Ok(())
+    }
+
+    fn free(&mut self, out: &mut impl Write, k: &ImageKey) -> std::io::Result<()> {
+        if let Some(s) = self.stored.remove(k) {
+            self.text.remove(&s.id);
+            write!(out, "\x1b_Ga=d,d=I,i={},q=2\x1b\\", s.id)?;
         }
         Ok(())
     }

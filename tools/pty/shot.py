@@ -1341,9 +1341,13 @@ def sizes(env, out):
     """Every Widget (SIZES_WIDGETS) in a Pane of each size in SIZES (inside the frame: tiny 10×2 up to huge 256×64),
     a track playing on a healthy fake stream, about 30 s in. One Client per shot, the terminal sized to fit; shots are
     `<size>-<widget>.png`. PTY_WIDGETS / PTY_SIZES (comma-separated; a name or `<w>x<h>`) pick a subset. Also the mini-player at a few
-    terminal sizes (`mini-<w>x<h>.png`; PTY_MINI=0 skips them)."""
+    terminal sizes (`mini-<w>x<h>.png`; PTY_MINI=0 skips them). PTY_PIXEL=1 shoots on the pixel tier; PTY_SEEKS
+    (comma-separated counts of 5 s seeks, default 6) shoots several moments of the song, `<size>-<widget>-<secs>s.png`;
+    PTY_TRACK=2 plays the fake Catalogue's second track (the karaoke song) instead of the first."""
     global COLS, ROWS
     widgets = os.environ.get("PTY_WIDGETS", ",".join(SIZES_WIDGETS)).split(",")
+    seeks = [int(n) for n in os.environ.get("PTY_SEEKS", "6").split(",")]
+    second = os.environ.get("PTY_TRACK", "1") == "2"
     names = os.environ.get("PTY_SIZES", ",".join(SIZES)).split(",")
     cfg = f"{env['XDG_CONFIG_HOME']}/singularity"
     os.makedirs(f"{cfg}/layouts", exist_ok=True)
@@ -1377,9 +1381,15 @@ def sizes(env, out):
                 started = True
             # every shot at the same moment of a song: back a track and on again (both start it from 0), then 30 s in
             t.send(b"b", 0.2); t.send(b"n", 0.4)
-            t.send(b"\x1b[1;2C" * 6, 0.6)  # Shift+→ ×6
-            t.pump(1.0 if widget not in ("stream", "top", "loudness") else 3.5)
-            t.shot(f"{out}/{name}-{widget}.png")
+            if second:
+                t.send(b"n", 0.4)
+            done = 0
+            for n in seeks:
+                t.send(b"\x1b[1;2C" * (n - done), 0.6)  # Shift+→ ×n
+                done = n
+                t.pump(1.0 if widget not in ("stream", "top", "loudness") else 3.5)
+                tag = f"-{n * 5}s" if len(seeks) > 1 else ""
+                t.shot(f"{out}/{name}-{widget}{tag}.png")
             stop(t)
     if os.environ.get("PTY_MINI", "1") == "1":
         open(f"{cfg}/config.toml", "w").write('schema = 6\n')
@@ -1899,6 +1909,8 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast", "resize", "karaoke") else "0"
         if scenario == "design-sizes":
             env["SINGULARITY_PIXEL"] = os.environ.get("PTY_PIXEL", "1")
+        if scenario == "sizes":
+            env["SINGULARITY_PIXEL"] = os.environ.get("PTY_PIXEL", "0")
         # kitty's layer under cell backgrounds (#41); the harness composites it as kitty does
         env["SINGULARITY_BELOW_BG"] = "1" if scenario in ("popup", "ambient") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]

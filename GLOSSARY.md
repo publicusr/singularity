@@ -171,9 +171,15 @@ _Avoid_: module, applet, panel
 
 **Karaoke Widget**:
 A Widget that shows the line being sung big, fills its words with the accent as they are sung and bounces a ball from
-word to word, landing on each as it starts; dots count a line in after an instrumental. It scales from one row to the
-big pixel font.
+word to word, landing on each as it starts; dots count a line in after an instrumental. It scales from one row to
+*big text* on the pixel tier (the marquee's pixel font on the cell tier).
 _Avoid_: sing-along view, karaoke mode
+
+**Big text**:
+Text drawn as an image on the pixel tier with a real font (Noto Sans, bundled with the Client), so a big lyrics or
+Karaoke Pane is filled with text sized to the Pane instead of terminal-sized text in its corner. One size per song and
+Pane; a song with characters the font lacks, a popup over the Pane, or the cell tier keeps terminal text.
+_Avoid_: pixel font (the marquee's 3×5 blocks), big font
 
 **Word timing**:
 When each word of a lyrics line is sung. *Exact* when the lyrics come with it (LRCLIB's word-synced Lyricsfile,
