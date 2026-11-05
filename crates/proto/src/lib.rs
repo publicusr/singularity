@@ -618,6 +618,22 @@ pub struct Lyrics {
 pub struct LyricLine {
     pub start_ms: u64,
     pub text: String,
+    /// when each word is sung, when the source says so (LRCLIB's word-synced Lyricsfile, enhanced LRC); empty: only
+    /// the line is timed (the Karaoke Widget estimates its words). Additive: older Clients ignore it, older Daemons
+    /// leave it out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<LyricWord>,
+}
+
+/// One timed piece of a line: a word, or a syllable of one.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct LyricWord {
+    pub start_ms: u64,
+    /// when it ends, if the source says
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_ms: Option<u64>,
+    /// as the source has it, spacing included: "Hello " is a word, "beau" then "ti" are pieces of one
+    pub text: String,
 }
 
 /// The local listening log, summed up for the listening Pane. Days are local calendar days.
