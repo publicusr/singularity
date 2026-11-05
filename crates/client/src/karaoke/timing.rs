@@ -20,8 +20,8 @@ pub const MAX_SYLLABLE_MS: u64 = 550;
 /// The most of a line's room its estimated words may take: the rest is the breath before the next line.
 const SUNG_SHARE: f64 = 0.95;
 /// An estimated line's words start this long after its stamp (at most a tenth of its room): stamps tend to come a
-/// moment before the voice.
-const LEAD_MS: u64 = 80;
+/// moment before the voice (the owner, 2026-11-05: the ball "a bit ahead almost always" at 80).
+const LEAD_MS: u64 = 200;
 /// How much slower than the song's pace an estimated line may be sung when it has room to spare (it's rushed as much
 /// as its room needs): beyond this the room is a held note and a rest, not slower singing.
 const STRETCH: f64 = 1.15;
@@ -383,7 +383,7 @@ mod tests {
         let w = &l[0].words;
         assert!(!l[0].exact);
         assert_eq!(w.len(), 3);
-        assert_eq!(w[0].start, 10_080, "a moment after the stamp");
+        assert_eq!(w[0].start, 10_000 + LEAD_MS, "a moment after the stamp");
         // "every" is three syllables, "little" two: by syllables, at about the song's pace (a little under: the line
         // shares its room with its tail)
         let (a, b) = (w[1].start - w[0].start, w[2].start - w[1].start);
