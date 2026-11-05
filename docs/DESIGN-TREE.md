@@ -1002,3 +1002,32 @@ flowchart LR
   (drag by title, live reflow, swap/split/screen-edge drop zones, the minimum-size rule, close + split with the core
   four guarded, edits fork a Design, keyboard move mode, the well keeps its shape, ships in v0.1.0). Amendment: the
   user names an edited Design (prompt on the first edit) so the picker isn't a wall of "(edited)" copies.
+- **Widgets at any Pane size** (2026-11-05, D66 follow-up; owner: "all widgets should be better at scaling into any
+  possible size for the window, particularly lyrics so they can be followed more easily"). Audited every Widget with
+  the new pty `sizes` scenario (each alone in a Pane of 10×2 up to 256×64) and a property sweep
+  (`every_widget_stays_in_its_pane_at_every_size`: every Widget at widths 1–300 and heights 1–100 through
+  `ui::widget`, the one place a Pane's Widget is drawn now). The sweep found real bugs: the queue panicked in a
+  one-row Pane (the minimum Pane is 12×3), Now playing drew its title on the Pane's frame in short Panes, the library
+  and levels drew past a very narrow Pane. **Lyrics**: the layout comes from the size alone (`lyrics::fit`): the
+  current line starts a third of the way down and is always whole in view, glides there between lines (`ease`, ~0.1 s),
+  sits on a faint accent band in a big Pane; the lines after it fade with distance, the sung ones quietest
+  (`tone`); a tall Pane puts a blank row between lines; a wide one centres a column as wide as the song's longest line
+  (at most 72) with its timestamps instead of running the text across the Pane; the credit row only from 8 rows;
+  the empty states wrap and centre. Unsynced lyrics follow the song's progress (the reading place a third down) until
+  the wheel moves them; that holds for the song. Layout pieces are plain functions (`wrap`, `wrap_indented`, `fit`,
+  `first_row`, `ease`, `tone`) for the Karaoke Widget to share. Big rendered text for the current line was looked at
+  and not built (see the open question below). **Now playing**: words only when too small for a cover; cover at the
+  left in a wide Pane (and the spectrum across the rest when it is also short); stacked when tall, the title in the
+  pixel font in a big Pane. **levels**: bars thicken with height (up to 6 rows) and centre; a wide, short Pane puts
+  L/R beside bass/mid/high. **marquee**: the pixel font scales (up to 8×) and puts words on up to two lines (four
+  in a narrow Pane) before it scrolls; `ambient::pixel_fit`/`pixel_line` are shared with Now playing. **glow**: the
+  song in words when too small; the label beside the cover in a wide, short Pane, on two lines when narrow.
+  **stream** (compact): facts flow into columns in a wide, short Pane, each value under its name in a narrow one.
+  **today**: the figure and chart in a narrow, tall Pane; the week's columns beside the lines in a wide, short one.
+  **top this week**: a narrow, tall Pane lists as many as fit. **top**: the CPU summary and graph from 14 columns.
+  **listening**: its totals take a row each in a narrow Pane. **library**: a big Pane (32×24+) gives each entry two
+  rows (name over subtitle) and a bigger cover. **queue**: its empty-queue hint wraps. **Home**: a wide Pane whose
+  longest Shelf has fewer Cards than fit makes the Cards bigger (up to 1.5×) so the Shelves reach across. Fine as they
+  were: fft, loudness, scope, rain, starfield, the mini-player. Open (for the owner): big text for the current lyric
+  line (needs a bundled font and a rasterizer for the pixel tier, or kitty's text-sizing protocol, which Ghostty
+  doesn't have); the queue keeps one row per song at every size (two-row entries would need its drag maths changed).
