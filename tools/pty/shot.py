@@ -1230,7 +1230,7 @@ def sizes_layout(subject, w, h):
 def sizes(env, out):
     """Every Widget (SIZES_WIDGETS) in a Pane of each size in SIZES (inside the frame: tiny 10×2 up to huge 256×64),
     a track playing on a healthy fake stream, about 30 s in. One Client per shot, the terminal sized to fit; shots are
-    `<size>-<widget>.png`. PTY_WIDGETS / PTY_SIZES (comma-separated) pick a subset. Also the mini-player at a few
+    `<size>-<widget>.png`. PTY_WIDGETS / PTY_SIZES (comma-separated; a name or `<w>x<h>`) pick a subset. Also the mini-player at a few
     terminal sizes (`mini-<w>x<h>.png`; PTY_MINI=0 skips them)."""
     global COLS, ROWS
     widgets = os.environ.get("PTY_WIDGETS", ",".join(SIZES_WIDGETS)).split(",")
@@ -1251,7 +1251,8 @@ def sizes(env, out):
         os.waitpid(t.pid, 0)
         os.close(t.fd)
     for name in names:
-        w, h = SIZES[name]
+        # a size's name, or any `<w>x<h>`
+        w, h = SIZES[name] if name in SIZES else (int(n) for n in name.split("x"))
         # room for Home beside it and a row of Panes under it, and never so small the mini-player takes over
         COLS, ROWS = max(90, w + 2 + 14), max(30, h + 2 + 12)
         for widget in widgets:
@@ -1276,6 +1277,41 @@ def sizes(env, out):
             t = client()
             t.shot(f"{out}/mini-{COLS}x{ROWS}.png")
             stop(t)
+
+
+DESIGNS = ["singularity", "event-horizon", "classic", "cockpit", "terminal", "karaoke"]
+TERMS = ["80x24", "120x36", "160x48", "220x60", "264x68"]
+
+
+def design_sizes(env, out):
+    """Every built-in Design in its own Panes at several terminal sizes, a track playing about 30 s in, no popup. One
+    Client per shot, `<design>-<cols>x<rows>.png`. PTY_DESIGNS / PTY_TERMS (comma-separated) pick a subset."""
+    global COLS, ROWS
+    designs = os.environ.get("PTY_DESIGNS", ",".join(DESIGNS)).split(",")
+    terms = os.environ.get("PTY_TERMS", ",".join(TERMS)).split(",")
+    cfg = f"{env['XDG_CONFIG_HOME']}/singularity"
+    os.makedirs(cfg, exist_ok=True)
+    started = False
+    for term in terms:
+        COLS, ROWS = (int(n) for n in term.split("x"))
+        for design in designs:
+            open(f"{cfg}/config.toml", "w").write(f'schema = 6\n[ui]\ndesign = "{design}"\n')
+            t = Term(env)
+            t.pump(1.5)
+            if not started:
+                t.send(b" ", 0.8)  # play
+                started = True
+            t.send(b"b", 0.2); t.send(b"n", 0.4)  # every shot at the same moment: track 2 from 0, then 30 s in
+            t.send(b"\x1b[1;2C" * 6, 0.6)
+            t.pump(2.0)
+            t.shot(f"{out}/{design}-{term}.png")
+            t.send(b"q", 0.3)
+            try:
+                os.kill(t.pid, 9)
+            except ProcessLookupError:
+                pass
+            os.waitpid(t.pid, 0)
+            os.close(t.fd)
 
 
 def widgets_large(t, out):
@@ -1747,10 +1783,12 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast", "resize", "karaoke") else "0"
+        if scenario == "design-sizes":
+            env["SINGULARITY_PIXEL"] = os.environ.get("PTY_PIXEL", "1")
         # kitty's layer under cell backgrounds (#41); the harness composites it as kitty does
         env["SINGULARITY_BELOW_BG"] = "1" if scenario in ("popup", "ambient") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
@@ -1795,6 +1833,8 @@ def main():
             sys.exit(f"the Daemon exited ({open(f'{out}/daemon.log').read().strip().splitlines()[-1:]}); built with `cargo build -p singularityd --features fake`?")
         if scenario == "sizes":
             return sizes(env, out)
+        if scenario == "design-sizes":
+            return design_sizes(env, out)
         t = Term(env)
         if scenario == "space-startup":
             return space_startup(t, out, env)

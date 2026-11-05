@@ -1028,8 +1028,8 @@ flowchart LR
   and levels drew past a very narrow Pane. **Lyrics**: the layout comes from the size alone (`lyrics::fit`): the
   current line starts a third of the way down and is always whole in view, glides there between lines (`ease`, ~0.1 s),
   sits on a faint accent band in a big Pane; the lines after it fade with distance, the sung ones quietest
-  (`tone`); a tall Pane puts a blank row between lines; a wide one centres a column as wide as the song's longest line
-  (at most 72) with its timestamps instead of running the text across the Pane; the credit row only from 8 rows;
+  (`tone`); ~~a tall Pane puts a blank row between lines; a wide one centres a column as wide as the song's longest
+  line (at most 72)~~ (both reverted the same day, see below); the credit row only from 8 rows;
   the empty states wrap and centre. Unsynced lyrics follow the song's progress (the reading place a third down) until
   the wheel moves them; that holds for the song. Layout pieces are plain functions (`wrap`, `wrap_indented`, `fit`,
   `first_row`, `ease`, `tone`) for the Karaoke Widget to share. Big rendered text for the current line was looked at
@@ -1048,3 +1048,13 @@ flowchart LR
   were: fft, loudness, scope, rain, starfield, the mini-player. Open (for the owner): big text for the current lyric
   line (needs a bundled font and a rasterizer for the pixel tier, or kitty's text-sizing protocol, which Ghostty
   doesn't have); the queue keeps one row per song at every size (two-row entries would need its drag maths changed).
+  **Reverted (2026-11-05, owner's live test on the Terminal design):** "lyrics splitting into two lines … it was good
+  before; there's dead space on the left and right". In a tall Pane (18+ body rows) the blank row between lines read as
+  every line broken in two (the #30 look the owner had fixed), and a Pane with 60+ columns of text room put the text
+  in a centred column only as wide as the song's longest line, leaving bands of empty Pane either side. Both are gone:
+  `lyrics::fit` is flush left again (`[mm:ss] text` from the Pane's edge, a cell of margin, wrapped only at the Pane's
+  width, continuations indented 2, as in #30) with one row after another. Kept from the scaling round: the current
+  line a third down and always whole, the glide, the accent band, fading by distance, the credit only from 8 rows, the
+  wrapped empty states, unsynced lyrics following the song. Test `lyric_lines_follow_each_other_from_the_left_edge_at_every_size`
+  (72×27, the owner's Pane, up to 256×64); pty `sizes` takes `PTY_SIZES=72x27` and the new `design-sizes` scenario
+  shoots every built-in Design at 80×24 … 264×68.

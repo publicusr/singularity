@@ -2803,6 +2803,27 @@ mod tests {
         assert!(rows.iter().any(|r| r.contains("another song 1")) && !rows.iter().any(|r| r.contains("long")), "{rows:#?}");
     }
 
+    /// The owner's report (2026-11-05): a tall Pane put a blank row between lyric lines, which read as each line split
+    /// in two, and a wide one centred a narrow column. Lines follow each other row by row from the left edge.
+    #[test]
+    fn lyric_lines_follow_each_other_from_the_left_edge_at_every_size() {
+        use singularity_proto::{LyricLine, Lyrics};
+        let (mut app, _rx) = playing_app(400_000);
+        app.playback.item.as_mut().unwrap().uri = "spotify:track:s".into();
+        let lines = (0..200).map(|i| LyricLine { start_ms: i * 5_000, text: format!("line {i} of the song"), ..Default::default() }).collect();
+        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
+        app.playback.position_ms = 300_100;
+        app.playback.timestamp_ms = singularity_proto::now_ms();
+        for (w, h) in [(72u16, 27u16), (40, 12), (120, 36), (160, 48), (256, 64)] {
+            let rows = lyrics_pane(&mut app, w, h);
+            let body = &rows[..h as usize - 1];
+            assert!(body.iter().all(|r| r.starts_with(" [")), "{w}x{h}: every row a line, from the left edge: {rows:#?}");
+            let i = body.iter().position(|r| r.contains("line 60 of")).unwrap();
+            assert_eq!(i, (h as usize - 1) / 3, "{w}x{h}: the current line a third down");
+            assert!(body[i + 1].contains("line 61 of"), "{w}x{h}: the next line on the next row: {rows:#?}");
+        }
+    }
+
     #[test]
     fn unsynced_lyrics_scroll_by_rows_and_stop_at_the_end() {
         use singularity_proto::{LyricLine, Lyrics};
