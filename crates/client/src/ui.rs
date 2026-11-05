@@ -25,6 +25,7 @@ fn slot_info(slot: &str) -> (&'static str, &'static str) {
         "queue" => ("queue", ""),
         "well" => ("gravity well", "the black hole arrives with #16"),
         "lyrics" => ("tail -f lyrics.log", ""),
+        "karaoke" => ("karaoke", ""),
         "loudness" => ("loudness", "arrives with #15"),
         "fft" => ("fft", "arrives with #15"),
         "hole" => ("black hole", ""),
@@ -570,9 +571,10 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), sl
         "starfield" => crate::ambient::starfield(f.buffer_mut(), inner, app, th),
         "marquee" => crate::ambient::marquee(f.buffer_mut(), inner, app, th),
         "glow" => crate::ambient::glow(f.buffer_mut(), inner, app, th),
+        "karaoke" => crate::karaoke::draw(f.buffer_mut(), inner, app, th),
         _ => {}
     }
-    if matches!(slot, "hole" | "well" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top" | "today" | "topweek" | "starfield" | "marquee" | "glow") {
+    if matches!(slot, "hole" | "well" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top" | "today" | "topweek" | "starfield" | "marquee" | "glow" | "karaoke") {
         return;
     }
     if slot == "library" {
@@ -1001,7 +1003,7 @@ mod tests {
         assert!(one_row, "the sizes above squeeze a Pane to its minimum");
         // and the worst layouts: every Widget in one Pane after another, nested halving, so most of them are one
         // row high or none at all
-        let names = ["library", "home", "queue", "lyrics", "fft", "loudness", "well", "nowplaying", "levels", "listening", "rain", "scope", "top", "today", "topweek", "starfield", "marquee", "glow", "hole", "stream"];
+        let names = ["library", "home", "queue", "lyrics", "fft", "loudness", "well", "nowplaying", "levels", "listening", "rain", "scope", "top", "today", "topweek", "starfield", "marquee", "glow", "hole", "stream", "karaoke"];
         let mut stack = Node::Slot(names[0].into());
         for name in &names[1..] {
             stack = Node::Split { axis: Axis::Vertical, first: Size::Ratio(0.5), a: Box::new(stack), b: Box::new(Node::Slot((*name).into())) };
@@ -2612,7 +2614,7 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::GetLyrics { uri: "spotify:track:s".into() }], "asked once for the new track");
         app.tick();
         assert!(sent(&mut rx).is_empty());
-        let lines = (0..20).map(|i| LyricLine { start_ms: i * 5_000, text: format!("line {i}") }).collect();
+        let lines = (0..20).map(|i| LyricLine { start_ms: i * 5_000, text: format!("line {i}"), ..Default::default() }).collect();
         app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "Musixmatch".into(), ..Default::default() });
         app.playback.position_ms = 31_000; // line 6 plays
         app.playback.timestamp_ms = singularity_proto::now_ms();
@@ -2643,7 +2645,7 @@ mod tests {
         let (mut app, _rx) = playing_app(400_000);
         app.playback.item.as_mut().unwrap().uri = "spotify:track:s".into();
         let long = "and the long ones fold over onto the next row when the Pane is narrow";
-        let lines = (0..30).map(|i| LyricLine { start_ms: i * 5_000, text: if i % 3 == 1 { format!("{i} {long}") } else { format!("line {i}") } }).collect();
+        let lines = (0..30).map(|i| LyricLine { start_ms: i * 5_000, text: if i % 3 == 1 { format!("{i} {long}") } else { format!("line {i}") }, ..Default::default() }).collect();
         app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
         let at = |app: &mut App, ms: u64| {
             app.playback.position_ms = ms;
@@ -2671,7 +2673,7 @@ mod tests {
         assert!(rows[i + 1].starts_with(&" ".repeat(11)) && !rows[i + 1].contains('['), "{rows:#?}");
         // the rows are kept between frames: another song with as many lines, at the same width, is wrapped afresh
         app.playback.item.as_mut().unwrap().uri = "spotify:track:t".into();
-        let lines = (0..30).map(|i| LyricLine { start_ms: i * 5_000, text: format!("another song {i}") }).collect();
+        let lines = (0..30).map(|i| LyricLine { start_ms: i * 5_000, text: format!("another song {i}"), ..Default::default() }).collect();
         app.lyrics = Some(Lyrics { uri: "spotify:track:t".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
         let rows = lyrics_pane(&mut app, 40, 12);
         assert!(rows.iter().any(|r| r.contains("another song 1")) && !rows.iter().any(|r| r.contains("long")), "{rows:#?}");
@@ -2682,7 +2684,7 @@ mod tests {
         use singularity_proto::{LyricLine, Lyrics};
         let (mut app, _rx) = playing_app(400_000);
         app.playback.item.as_mut().unwrap().uri = "spotify:track:s".into();
-        let lines = (0..10).map(|i| LyricLine { start_ms: 0, text: format!("line {i} with words enough to wrap") }).collect();
+        let lines = (0..10).map(|i| LyricLine { start_ms: 0, text: format!("line {i} with words enough to wrap"), ..Default::default() }).collect();
         app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: false, lines, source: "LRCLIB".into(), ..Default::default() });
         app.lyrics_scroll = 1_000;
         let rows = lyrics_pane(&mut app, 20, 8);

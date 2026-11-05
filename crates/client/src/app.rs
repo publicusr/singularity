@@ -630,6 +630,8 @@ pub struct App {
     /// first line shown of unsynced lyrics
     pub lyrics_scroll: usize,
     pub lyrics_wrap: crate::lyrics::Wrapped,
+    /// the Karaoke Widget's timed lines and pace
+    pub karaoke: crate::karaoke::State,
     lyrics_asked: Option<String>,
     /// where the hole was drawn this frame (for bending the neighbouring borders)
     pub hole_at: Option<Hole>,
@@ -775,6 +777,7 @@ impl App {
             lyrics: None,
             lyrics_scroll: 0,
             lyrics_wrap: Default::default(),
+            karaoke: Default::default(),
             lyrics_asked: None,
             hole_at: None,
             saved: Default::default(),
@@ -2310,7 +2313,7 @@ impl App {
 
     // ── seek & volume ─────────────────────────────────────────────────
 
-    fn duration_ms(&self) -> u64 {
+    pub fn duration_ms(&self) -> u64 {
         self.playback.item.as_ref().map(|i| i.duration_ms).unwrap_or(0)
     }
 
@@ -2346,9 +2349,14 @@ impl App {
 
     /// Frames a second: 30, or `visuals.unfocused_fps` while the terminal isn't focused (D60, D62); while anything
     /// moves (a held Pane, Panes springing into place, a divider being dragged) `visuals.motion_fps`, focused or not.
+    /// The karaoke ball, mid-hop on the pixel tier and focused: up to 60 (a hop is a few hundred ms; more buys
+    /// nothing a singer sees, and every frame is a whole redraw).
     pub fn frame_rate(&self, focused: bool) -> u64 {
         if self.moving_now() {
             return self.motion_fps();
+        }
+        if focused && self.karaoke.smooth() {
+            return self.motion_fps().min(60);
         }
         if focused { 30 } else { self.config.visuals.unfocused_fps.clamp(1, 30) as u64 }
     }
@@ -2381,11 +2389,11 @@ impl App {
         if let Some(q) = self.search.as_mut().and_then(|s| s.due()) {
             self.send(Command::Search { query: q });
         }
-        // lyrics follow the track, if a lyrics Pane is on screen
+        // lyrics follow the track, if a lyrics or karaoke Pane is on screen
         if let Some(uri) = self.playback.item.as_ref().map(|i| i.uri.clone()).filter(|u| !u.is_empty())
             && self.lyrics_asked.as_deref() != Some(uri.as_str())
             && matches!(self.link, Link::Connected { .. })
-            && self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| s == "lyrics")
+            && self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| s == "lyrics" || s == "karaoke")
         {
             self.lyrics_asked = Some(uri.clone());
             self.send(Command::GetLyrics { uri });

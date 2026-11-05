@@ -681,7 +681,7 @@ mod tests {
         }
     }
 
-    const POOL: [&str; 12] = ["fft", "loudness", "levels", "scope", "rain", "starfield", "stream", "top", "listening", "today", "marquee", "glow"];
+    const POOL: [&str; 13] = ["fft", "loudness", "levels", "scope", "rain", "starfield", "stream", "top", "listening", "today", "marquee", "glow", "karaoke"];
 
     /// What a committed tree must always satisfy, whatever got it there.
     fn assert_sound(n: &Node, body: Rect, aspect: f64, file: bool, ctx: &str) {
@@ -726,7 +726,7 @@ mod tests {
     /// arrangement, never just sizes; undo and redo walk back and forth through exactly the trees committed.
     #[test]
     fn random_edits_never_break_a_layout() {
-        let designs = [("singularity", Node::singularity()), ("event-horizon", Node::event_horizon()), ("classic", Node::classic()), ("cockpit", Node::cockpit()), ("terminal", Node::terminal())];
+        let designs = [("singularity", Node::singularity()), ("event-horizon", Node::event_horizon()), ("classic", Node::classic()), ("cockpit", Node::cockpit()), ("terminal", Node::terminal()), ("karaoke", Node::karaoke())];
         let sizes = [(60u16, 20u16), (80, 24), (100, 30), (120, 40), (160, 48), (200, 60), (300, 90)];
         let (mut sequences, mut committed, mut refused, mut skipped, mut undone) = (0, 0, 0, 0, 0);
         for (name, base) in &designs {

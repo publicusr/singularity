@@ -120,7 +120,7 @@ pub fn starfield(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 // ── marquee ───────────────────────────────────────────────────────────
 
 /// A 3×5 pixel font: rows top to bottom, `#` lit. Letters without one fall back to their plain form, then `?`.
-fn glyph(c: char) -> [&'static str; 5] {
+pub(crate) fn glyph(c: char) -> [&'static str; 5] {
     match c.to_ascii_uppercase() {
         'A' => [".#.", "#.#", "###", "#.#", "#.#"],
         'B' => ["##.", "#.#", "##.", "#.#", "##."],
@@ -178,7 +178,7 @@ fn glyph(c: char) -> [&'static str; 5] {
 }
 
 /// A letter's plain form for the pixel font (Polish and other common accents).
-fn plain(c: char) -> Option<char> {
+pub(crate) fn plain(c: char) -> Option<char> {
     Some(match c {
         'ą' | 'Ą' | 'á' | 'à' | 'ä' | 'â' | 'Á' | 'Ä' => 'A',
         'ć' | 'Ć' | 'ç' | 'č' => 'C',

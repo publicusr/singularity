@@ -14,6 +14,7 @@ mod keymap;
 mod layout;
 mod layouts;
 mod looks;
+mod karaoke;
 mod lyrics;
 mod meters;
 mod mini;
