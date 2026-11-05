@@ -316,7 +316,7 @@ async fn lyrics_round_trip() {
     let listener = singularityd::bind(&path).unwrap();
     tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
     let mut a = connect(&path).await;
-    proto::write_msg(&mut a, &ClientMsg::Command(Command::GetLyrics { uri: "spotify:track:l".into() })).await.unwrap();
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::GetLyrics { uri: "spotify:track:l".into(), words: false })).await.unwrap();
     loop {
         if let DaemonMsg::Event(Event::Lyrics(l)) = proto::read_msg::<_, DaemonMsg>(&mut a).await.unwrap().unwrap() {
             assert_eq!(l.uri, "spotify:track:l");

@@ -927,12 +927,12 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                 // (SINGULARITY_IGNORE_SHUTDOWN: tests play a Daemon too old to know `Shutdown`)
                 ClientMsg::Command(Command::Shutdown) if std::env::var_os("SINGULARITY_IGNORE_SHUTDOWN").is_none() => hub.shutdown.notify_one(),
                 ClientMsg::Command(Command::Shutdown) => {}
-                ClientMsg::Command(Command::GetLyrics { uri }) => match &hub.catalogue {
+                ClientMsg::Command(Command::GetLyrics { uri, words }) => match &hub.catalogue {
                     Some(c) => {
                         // what we know about the track helps the fallback search
                         let pb = hub.playback.lock().await.clone();
                         let meta = pb.item.into_iter().chain(pb.queue.into_iter().map(|q| q.item)).find(|i| i.uri == uri);
-                        if c.send(CatCmd::Lyrics { uri, meta }).await.is_err() {
+                        if c.send(CatCmd::Lyrics { uri, meta, words }).await.is_err() {
                             let _ = out_tx.send(DaemonMsg::Event(Event::Error { message: "the Catalogue has stopped; no lyrics".into() })).await;
                         }
                     }

@@ -117,8 +117,14 @@ pub enum Command {
     Search { query: String },
     /// Fetch an artist page; arrives as `Event::Artist`.
     GetArtist { uri: String },
-    /// Fetch lyrics for a track (Spotify's, else LRCLIB's); arrives as `Event::Lyrics`.
-    GetLyrics { uri: String },
+    /// Fetch lyrics for a track (Spotify's, else LRCLIB's); arrives as `Event::Lyrics`. `words`: a Karaoke Widget is
+    /// on screen, so LRCLIB is also asked for word timing when Spotify's lyrics only time lines (D67). Additive: older
+    /// Daemons ignore it, older Clients leave it out.
+    GetLyrics {
+        uri: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        words: bool,
+    },
     /// Ask for a health report; arrives as `Event::Health`.
     GetHealth,
     /// Exit so a newer `singularityd` can take over (sent by a Client that's newer than this Daemon).

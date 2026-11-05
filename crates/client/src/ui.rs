@@ -2728,9 +2728,16 @@ mod tests {
         let (mut app, mut rx) = playing_app(200_000);
         app.playback.item.as_mut().unwrap().uri = "spotify:track:s".into();
         app.tick();
-        assert_eq!(sent(&mut rx), vec![Command::GetLyrics { uri: "spotify:track:s".into() }], "asked once for the new track");
+        assert_eq!(sent(&mut rx), vec![Command::GetLyrics { uri: "spotify:track:s".into(), words: false }], "asked once for the new track");
         app.tick();
         assert!(sent(&mut rx).is_empty());
+        // a karaoke Pane coming on screen asks again, for word timing too (D67); once
+        assert!(app.layout.swap("lyrics", "karaoke"));
+        app.tick();
+        assert_eq!(sent(&mut rx), vec![Command::GetLyrics { uri: "spotify:track:s".into(), words: true }]);
+        assert!(app.layout.swap("karaoke", "lyrics"));
+        app.tick();
+        assert!(sent(&mut rx).is_empty(), "word timing already asked for: lyrics alone needn't ask again");
         let lines = (0..20).map(|i| LyricLine { start_ms: i * 5_000, text: format!("line {i}"), ..Default::default() }).collect();
         app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "Musixmatch".into(), ..Default::default() });
         app.playback.position_ms = 31_000; // line 6 plays

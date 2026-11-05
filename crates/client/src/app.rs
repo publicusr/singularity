@@ -635,7 +635,8 @@ pub struct App {
     pub lyrics_wrap: crate::lyrics::Wrapped,
     /// the Karaoke Widget's timed lines and pace
     pub karaoke: crate::karaoke::State,
-    lyrics_asked: Option<String>,
+    /// the track lyrics were asked for, and whether with word timing (a Karaoke Pane was on screen)
+    lyrics_asked: Option<(String, bool)>,
     /// where the hole was drawn this frame (for bending the neighbouring borders)
     pub hole_at: Option<Hole>,
     /// what's liked, saved and followed (#22)
@@ -2394,14 +2395,18 @@ impl App {
         if let Some(q) = self.search.as_mut().and_then(|s| s.due()) {
             self.send(Command::Search { query: q });
         }
-        // lyrics follow the track, if a lyrics or karaoke Pane is on screen
+        // lyrics follow the track, if a lyrics or karaoke Pane is on screen; a karaoke Pane wants word timing too, so
+        // one that comes on screen asks again (D67)
         if let Some(uri) = self.playback.item.as_ref().map(|i| i.uri.clone()).filter(|u| !u.is_empty())
-            && self.lyrics_asked.as_deref() != Some(uri.as_str())
             && matches!(self.link, Link::Connected { .. })
-            && self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| s == "lyrics" || s == "karaoke")
         {
-            self.lyrics_asked = Some(uri.clone());
-            self.send(Command::GetLyrics { uri });
+            // (a tree walk each frame, no layout maths)
+            let words = self.layout.path_of("karaoke").is_some();
+            let done = matches!(&self.lyrics_asked, Some((u, w)) if *u == uri && (*w || !words));
+            if !done && (words || self.layout.path_of("lyrics").is_some()) {
+                self.lyrics_asked = Some((uri.clone(), words));
+                self.send(Command::GetLyrics { uri, words });
+            }
         }
         // the ♥ in the player bar follows the track
         if let Some(uri) = self.playback.item.as_ref().map(|i| i.uri.clone()).filter(|u| crate::saved::savable(u))
