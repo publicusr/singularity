@@ -31,7 +31,7 @@ audio, and looks spectacular.
 - **Built-in, audio-reactive Visuals that never get in the way:** a GPU-rendered black hole in its own gravity-well
   Pane, spectrum, loudness history and lyrics. When the app is idle, the hole breaks out and swallows the UI until you
   touch a key.
-- **btop-style theming:** five designs (Singularity, Event Horizon, Classic+, Cockpit, Terminal), all OLED black,
+- **btop-style theming:** six designs (Singularity, Event Horizon, Classic+, Cockpit, Terminal, Karaoke), all OLED black,
   palette variants, theme files you can share.
 
 ## User Stories
@@ -86,6 +86,7 @@ audio, and looks spectacular.
 33. As a listener, I want time-synced lyrics that highlight the current line, so that I can follow along.
 34. As a listener, I want to click a lyric line to seek there, so that I can jump to a part of the song.
 35. As a listener, I want lyrics to fall back to LRCLIB when Spotify has none, so that more songs have lyrics.
+35a. As a singer, I want a Karaoke Widget (D67) that shows the line being sung big, fills each word as it's sung and bounces a ball onto each word as it starts (exact word times when the lyrics have them, estimated otherwise, and said so), with a count-in after instrumentals, so that I can sing along at any Pane size.
 
 ### Visuals
 36. As a user, I want the black hole in its own gravity-well Pane, its gravity bending the borders around it but never my content, so that it looks incredible without costing usability.
@@ -108,7 +109,7 @@ audio, and looks spectacular.
 51. As a user, I want to remap any key in `keys.toml` with conflicts reported, so that customisation is safe.
 
 ### Designs, themes & layouts
-52. As a user, I want five built-in designs (Singularity by default, Event Horizon, Classic+, Cockpit, Terminal), each a Layout preset plus a Theme, so that I can switch identity in one action.
+52. As a user, I want six built-in designs (Singularity by default, Event Horizon, Classic+, Cockpit, Terminal, Karaoke), each a Layout preset plus a Theme, so that I can switch identity in one action.
 53. As a user, I want palette variants within a design (e.g. Cockpit: btop, ice, amber, violet, mono) that recolour everything together, so that recolouring is one switch.
 54. As a user, I want a live theme picker and themes as simple TOML files I can share, so that the community can make more.
 55. As a user, I want to swap the Widget in a Slot, drag Pane borders, and save the result as my own layout, so that I can design my screen.

@@ -169,6 +169,21 @@ _Avoid_: compact mode, tiny mode
 Any self-contained thing that can occupy a Pane: a visual, lyrics, album art, queue, stats.
 _Avoid_: module, applet, panel
 
+**Karaoke Widget**:
+A Widget that shows the line being sung big, fills its words with the accent as they are sung and bounces a ball from
+word to word, landing on each as it starts; dots count a line in after an instrumental. It scales from one row to the
+big pixel font.
+_Avoid_: sing-along view, karaoke mode
+
+**Word timing**:
+When each word of a lyrics line is sung. *Exact* when the lyrics come with it (LRCLIB's word-synced Lyricsfile,
+enhanced LRC), else *estimated* from the line's start and the next line's by syllables; the Karaoke Widget says which.
+_Avoid_: syllable sync (Spotify's unused `SYLLABLE_SYNCED`), word sync
+
+**Lyricsfile**:
+LRCLIB's lyrics format (YAML): lines with start and end times and, when word-synced, their words timed too.
+_Avoid_: elrc
+
 **Visual**:
 A Widget whose purpose is decoration that reacts to the audio (black hole, spectrum, starfield).
 _Avoid_: visualizer, effect, animation
@@ -205,7 +220,7 @@ _Avoid_: profile, workspace, scene
 
 **Design**:
 A Layout preset shipped together with the Themes made for it: Singularity (default), Event Horizon, Classic+, Cockpit,
-Terminal. Picking a Design sets the layout, its own Theme and its Disk look; its Palette variants are a `t` away.
+Terminal, Karaoke. Picking a Design sets the layout, its own Theme and its Disk look; its Palette variants are a `t` away.
 A layout you saved ("Save design as…") is a Design of your own: it remembers the Theme it was saved with.
 _Avoid_: skin, mode, look (that's the Disk look)
 

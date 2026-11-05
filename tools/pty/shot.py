@@ -1218,19 +1218,19 @@ def designs(t, out):
     """#18: each design through the picker (live preview), a track playing; Cockpit's palettes with t."""
     t.pump(1.0)
     t.send(b" ", 1.5)  # play: the meters and the Now playing panel have something to show
-    names = ["singularity", "event-horizon", "classic", "cockpit", "terminal"]
+    names = ["singularity", "event-horizon", "classic", "cockpit", "terminal", "karaoke"]
     t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
     for i, name in enumerate(names):
         if i:
             t.send(b"\x1b[B", 1.2)  # ↓ previews the next design
         t.shot(f"{out}/{i}-{name}.png")
-    t.send(b"\r", 0.5)  # keep Terminal
+    t.send(b"\r", 0.5)  # keep Karaoke
     t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.5)
-    t.send(b"\x1b[A", 0.8)  # back up to Cockpit
+    t.send(b"\x1b[A", 0.4); t.send(b"\x1b[A", 0.8)  # back up to Cockpit
     t.send(b"\r", 0.6)
     for k in range(2):
         t.send(b"t", 0.8)
-        t.shot(f"{out}/5-cockpit-t{k + 1}.png")
+        t.shot(f"{out}/6-cockpit-t{k + 1}.png")
     t.send(b" ", 0.4)
     t.send(b"q", 0.5)
 
