@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn the_current_line_is_the_last_started() {
-        let l: Vec<LyricLine> = [1000u64, 5000, 9000].iter().map(|&s| LyricLine { start_ms: s, text: String::new() }).collect();
+        let l: Vec<LyricLine> = [1000u64, 5000, 9000].iter().map(|&s| LyricLine { start_ms: s, ..Default::default() }).collect();
         assert_eq!(current(&l, 0), None);
         assert_eq!(current(&l, 1000), Some(0));
         assert_eq!(current(&l, 8999), Some(1));

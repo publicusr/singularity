@@ -108,7 +108,8 @@ class Term:
                 raw = base64.b64decode("".join(chunks))
                 if z:
                     raw = zlib.decompress(raw)
-                self.images[iid] = Image.frombytes("RGBA" if f == "32" else "RGB", (w, h), raw).convert("RGB")
+                # RGBA images (the karaoke ball) keep their alpha: pasted through it, as kitty blends them
+                self.images[iid] = Image.frombytes("RGBA" if f == "32" else "RGB", (w, h), raw)
                 self.upload = None
         elif a == "p":
             row, col = self.cup
@@ -156,7 +157,8 @@ class Term:
                     if crop:
                         x, y, w, h = crop
                         src = src.crop((x, y, x + w, y + h))
-                    img.paste(src.resize((c * CW, r * CH)), (cx * CW, cy * CH))
+                    src = src.resize((c * CW, r * CH))
+                    img.paste(src, (cx * CW, cy * CH), src if src.mode == "RGBA" else None)
         paste(True)
         d = ImageDraw.Draw(img)
         def col(v, dflt):
@@ -1257,20 +1259,49 @@ def designs(t, out):
     """#18: each design through the picker (live preview), a track playing; Cockpit's palettes with t."""
     t.pump(1.0)
     t.send(b" ", 1.5)  # play: the meters and the Now playing panel have something to show
-    names = ["singularity", "event-horizon", "classic", "cockpit", "terminal"]
+    names = ["singularity", "event-horizon", "classic", "cockpit", "terminal", "karaoke"]
     t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
     for i, name in enumerate(names):
         if i:
             t.send(b"\x1b[B", 1.2)  # ↓ previews the next design
         t.shot(f"{out}/{i}-{name}.png")
-    t.send(b"\r", 0.5)  # keep Terminal
+    t.send(b"\r", 0.5)  # keep Karaoke
     t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.5)
-    t.send(b"\x1b[A", 0.8)  # back up to Cockpit
+    t.send(b"\x1b[A", 0.4); t.send(b"\x1b[A", 0.8)  # back up to Cockpit
     t.send(b"\r", 0.6)
     for k in range(2):
         t.send(b"t", 0.8)
-        t.shot(f"{out}/5-cockpit-t{k + 1}.png")
+        t.shot(f"{out}/6-cockpit-t{k + 1}.png")
     t.send(b" ", 0.4)
+    t.send(b"q", 0.5)
+
+
+def karaoke(t, out):
+    """The Karaoke design and Widget: track 2 of the fake Catalogue sings (timed and estimated lines, an instrumental
+    gap, a wrapping line). Shots at moments of the song: the count-in, the ball mid-hop, a line sung out, an estimated
+    line, the gap, its count-in, the long line. Run it at a few sizes (PTY_COLS/PTY_ROWS); `karaoke-cells` has no
+    pixel tier (the ball is a `●` in cells)."""
+    t.pump(1.0)
+    t.send(b" ", 0.3)  # play track 1
+    t.send(b"n", 0.0)  # track 2, from 0 s
+    t0 = time.time()
+    def at(secs, name):
+        t.pump(max(0.0, t0 + secs - time.time()))
+        t.shot(f"{out}/{name}.png")
+        print(f"{name}: {time.time() - t0:.2f} s")
+    at(1.6, "0-count-in")
+    at(3.35, "1-first-words")
+    at(3.62, "2-mid-hop")
+    at(4.1, "3-mid-hop-2")
+    at(6.2, "4-sung-out")
+    at(8.0, "5-estimated")
+    t.send(b"\x1b[1;2C", 0.0)  # Shift+→: seek 5 s on, ~13 s (a bare → moves Home's highlight)
+    t0 -= 5
+    at(16.5, "6-gap")
+    at(19.6, "7-gap-count-in")
+    at(24.0, "8-long-line")
+    t.send(b" ", 0.6)  # pause: the ball holds still
+    t.shot(f"{out}/9-paused.png")
     t.send(b"q", 0.5)
 
 
@@ -1644,10 +1675,10 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast", "resize") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast", "resize", "karaoke") else "0"
         # kitty's layer under cell backgrounds (#41); the harness composites it as kitty does
         env["SINGULARITY_BELOW_BG"] = "1" if scenario in ("popup", "ambient") else "0"
         cat = ["--fake-catalogue", f"{ROOT}/crates/client/tests/fixtures/home.json"]
@@ -1671,6 +1702,9 @@ def main():
         os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity/layouts", exist_ok=True)
         open(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/wide.toml", "w").write(RESIZE_LAYOUT)
         open(f"{env['XDG_CONFIG_HOME']}/singularity/config.toml", "w").write('schema = 6\n[ui]\ndesign = "cockpit"\ntheme = "ember"\nlayout = "wide"\n')
+    if scenario.startswith("karaoke"):
+        os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity", exist_ok=True)
+        open(f"{env['XDG_CONFIG_HOME']}/singularity/config.toml", "w").write('schema = 6\n[ui]\ndesign = "karaoke"\n')
     if scenario == "tiling-fast":
         os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity", exist_ok=True)
         open(f"{env['XDG_CONFIG_HOME']}/singularity/config.toml", "w").write("schema = 6\n[visuals]\nmotion_fps = 240\n")
@@ -1728,6 +1762,8 @@ def main():
             return settings(t, out, env)
         if scenario == "themes":
             return themes(t, out)
+        if scenario.startswith("karaoke"):
+            return karaoke(t, out)
         if scenario == "queue-wheel":
             return queue_wheel(t, out)
         if scenario == "queue-lift":

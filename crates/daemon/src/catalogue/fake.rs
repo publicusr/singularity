@@ -304,10 +304,44 @@ fn fake_artist(uri: &str, home: &HomeFeed) -> singularity_proto::ArtistPage {
     singularity_proto::ArtistPage { uri: uri.into(), name: "Nova Drift".into(), monthly_listeners: Some(1_234_567), image_url: None, top_tracks, shelves }
 }
 
-/// Invented synced lyrics, one line every 4 s, for UI work.
+/// Invented synced lyrics, one line every 4 s, for UI work. Track 2 (`fake2`) sings for the Karaoke Widget instead:
+/// see `karaoke_lyrics`.
 fn fake_lyrics(uri: &str) -> singularity_proto::Lyrics {
+    if uri == "spotify:track:fake2" {
+        return karaoke_lyrics(uri);
+    }
     let words = ["Light bends where the music falls", "Every line a slow orbit, and the long ones fold over onto the next row when the Pane is narrow", "We drift past the photon sphere", "", "Nothing escapes the chorus", "Hold on to the event horizon"];
-    let lines = (0..48).map(|i| singularity_proto::LyricLine { start_ms: 2_000 + i * 4_000, text: words[i as usize % words.len()].into() }).collect();
+    let lines = (0..48).map(|i| singularity_proto::LyricLine { start_ms: 2_000 + i * 4_000, text: words[i as usize % words.len()].into(), ..Default::default() }).collect();
+    singularity_proto::Lyrics { uri: uri.into(), synced: true, lines, source: "fake".into(), ..Default::default() }
+}
+
+/// Invented lyrics for the Karaoke Widget, a 30 s verse sung six times: lines of uneven length and pace, some with
+/// every word timed (as LRCLIB's word-synced ones come) and some only by the line (their words are estimated), an
+/// instrumental gap of about 8 s marked by an empty line, and a long line that wraps.
+fn karaoke_lyrics(uri: &str) -> singularity_proto::Lyrics {
+    use singularity_proto::{LyricLine, LyricWord};
+    // (start in the verse, ms; text; word starts relative to the line, or none: line-timed only)
+    let verse: [(u64, &str, &[u64]); 6] = [
+        (3_000, "Turn the lights down low", &[0, 450, 800, 1_400, 2_100]),
+        (6_500, "Sing it like the night is young", &[]),
+        (10_500, "Every echo finds its way back home", &[0, 600, 1_100, 1_500, 1_900, 2_200, 2_700]),
+        (14_500, "", &[]),
+        (22_000, "Here comes the chorus, hold on to the note and let the whole room carry it", &[]),
+        (29_000, "", &[]),
+    ];
+    let mut lines = vec![];
+    for round in 0..6u64 {
+        for (at, text, starts) in verse {
+            let start_ms = round * 30_000 + at;
+            let words = text
+                .split(' ')
+                .zip(starts.iter())
+                .enumerate()
+                .map(|(i, (w, off))| LyricWord { start_ms: start_ms + off, end_ms: None, text: if i + 1 < starts.len() { format!("{w} ") } else { w.to_string() } })
+                .collect();
+            lines.push(LyricLine { start_ms, text: text.into(), words });
+        }
+    }
     singularity_proto::Lyrics { uri: uri.into(), synced: true, lines, source: "fake".into(), ..Default::default() }
 }
 

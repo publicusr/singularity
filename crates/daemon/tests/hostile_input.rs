@@ -25,7 +25,7 @@ const KEYS: &[&str] = &[
     "artists", "profile", "albumOfTrack", "coverArt", "sources", "url", "width", "height", "trackUnion", "albumUnion", "playlistV2", "content", "itemV2",
     "track", "addedAt", "isoString", "uid", "ownerV2", "username", "authorsV2", "narrators", "accessInfo", "signifier", "text", "episodeUnionV2",
     "podcastV2", "audiobookV2", "artistUnion", "discography", "stats", "monthlyListeners", "visuals", "avatarImage", "lyrics", "lines", "startTimeMs",
-    "words", "syncType", "syncedLyrics", "plainLyrics", "home", "sectionContainer", "sections", "sectionItems", "lookup", "saved", "description",
+    "words", "syncType", "syncedLyrics", "plainLyrics", "hasWordSync", "lyricsfile", "home", "sectionContainer", "sections", "sectionItems", "lookup", "saved", "description",
 ];
 const STRINGS: &[&str] = &["Track", "Episode", "Chapter", "Audiobook", "Podcast", "Album", "Playlist", "Artist", "PseudoPlaylist", "LINE_SYNCED", "COMPLETED", "spotify:track:x", "spotify:show:x", "", "ü", "\u{1b}[2J", "9999999999999999999999"];
 
@@ -74,10 +74,20 @@ fn private_api_parsers_never_panic_on_random_answers() {
 #[test]
 fn lrc_text_never_panics() {
     let mut r = Rng(0x00c0_ffee_0071);
-    let pieces = ["[", "]", ":", ".", "00", "99999999999999999999", "-1", "1e308", "ü", "\n", " ", "words", "[00:12.34]", "[ar:x]"];
+    let pieces = ["[", "]", ":", ".", "00", "99999999999999999999", "-1", "1e308", "ü", "\n", " ", "words", "[00:12.34]", "[ar:x]", "<", ">", "<00:01.5>", "<99:99.99>", "<inf:1>"];
     for _ in 0..20_000 {
         let text: String = (0..r.below(30)).map(|_| pieces[r.below(pieces.len())]).collect();
         let _ = singularityd::lyrics::parse_lrc(&text);
+    }
+}
+
+#[test]
+fn lyricsfile_yaml_never_panics() {
+    let mut r = Rng(0x0a3f_11e5_0071);
+    let pieces = ["lines:", "\n", "- ", "  ", "text: ", "start_ms: ", "end_ms: ", "words:", "12", "-3", "'a '", "\"b\"", "{", "}", "[", "]", ",", "&x ", "*x", "!tag ", "|", ">", "? ", ": ", "ü", "#", "---", "...", "%YAML 1.2"];
+    for _ in 0..20_000 {
+        let text: String = (0..r.below(40)).map(|_| pieces[r.below(pieces.len())]).collect();
+        let _ = singularityd::lyrics::parse_lyricsfile(&text);
     }
 }
 

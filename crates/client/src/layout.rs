@@ -123,6 +123,16 @@ impl Node {
         Node::split(Horizontal, Cells(30), Node::slot("library"), Node::split(Horizontal, Last(36), mid, right))
     }
 
+    /// Karaoke: the Karaoke Widget takes the stage; the library over the queue at the side, Home, the whole song's
+    /// lyrics and the cover in its glow along the bottom.
+    pub fn karaoke() -> Node {
+        use Axis::*;
+        use Size::*;
+        let left = Node::split(Vertical, Ratio(0.6), Node::slot("library"), Node::slot("queue"));
+        let bottom = Node::split(Horizontal, Ratio(0.42), Node::slot("home"), Node::split(Horizontal, Ratio(0.55), Node::slot("lyrics"), Node::slot("glow")));
+        Node::split(Horizontal, Cells(30), left, Node::split(Vertical, Ratio(0.66), Node::slot("karaoke"), bottom))
+    }
+
     /// The least room this subtree needs along `axis`: a Slot's minimum, summed along a split's own axis.
     pub(crate) fn min_len(&self, axis: Axis) -> u16 {
         match self {
@@ -335,7 +345,7 @@ mod tests {
     #[test]
     fn every_design_has_home_the_library_the_queue_and_lyrics() {
         // owner rule (D43): the rest is each Design's own
-        for (name, d) in [("singularity", Node::singularity()), ("event-horizon", Node::event_horizon()), ("classic", Node::classic()), ("cockpit", Node::cockpit()), ("terminal", Node::terminal())] {
+        for (name, d) in [("singularity", Node::singularity()), ("event-horizon", Node::event_horizon()), ("classic", Node::classic()), ("cockpit", Node::cockpit()), ("terminal", Node::terminal()), ("karaoke", Node::karaoke())] {
             let slots = d.slot_names();
             for must in ["home", "library", "queue", "lyrics"] {
                 assert!(slots.iter().any(|s| s == must), "{name} has no {must}: {slots:?}");

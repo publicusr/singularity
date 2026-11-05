@@ -172,7 +172,7 @@ const TERMINAL: [(&str, &str, u32, u32, u32); 3] = [
 /// own): id, name, fg, dim, accent, accent2, ramp low→high. Pure black behind, like every theme; borders and the
 /// selection are shades of the accent. Warm ones first.
 type Extra = (&'static str, &'static str, u32, u32, u32, u32, [u32; 4]);
-const EXTRAS: [Extra; 10] = [
+const EXTRAS: [Extra; 11] = [
     ("ember", "Ember", 0xf4dcc8, 0x9a7860, 0xff7a2f, 0xffb347, [0x3a1206, 0xb8400f, 0xff7a2f, 0xffc88a]),
     ("sunset", "Sunset", 0xf6dccf, 0x9c7a78, 0xff6f61, 0xffb86b, [0x3b1230, 0xc2415c, 0xff7a4d, 0xffd08a]),
     ("terracotta", "Terracotta", 0xeedacb, 0x987a68, 0xe07f55, 0xecb98f, [0x35160c, 0x9c4a2c, 0xd9774f, 0xf0c4a0]),
@@ -183,6 +183,8 @@ const EXTRAS: [Extra; 10] = [
     ("paper", "Paper", 0xf3ecdf, 0x948d7e, 0xe0d2b0, 0xbfae88, [0x2b2820, 0x6e684f, 0xb8ab86, 0xece3cd]),
     ("lagoon", "Lagoon", 0xd4ecea, 0x70908e, 0x3fd0c0, 0x7fe3d6, [0x06302d, 0x108f88, 0x3fd0c0, 0xaaf0e8]),
     ("moss", "Moss", 0xdbe6d0, 0x7f9272, 0x9bc77d, 0xc7dc8f, [0x16301a, 0x4c8a45, 0x9bc77d, 0xd6ecb8]),
+    // a karaoke bar's signs: hot pink and cyan (the Karaoke design's own)
+    ("neon", "Neon", 0xf3e6ff, 0x8f7fa6, 0xff4fd8, 0x4fe3ff, [0x2a0a3a, 0x8a1fa8, 0xff4fd8, 0xffb3f0]),
 ];
 
 /// The ids of those shared palettes.

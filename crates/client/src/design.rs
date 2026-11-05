@@ -18,7 +18,7 @@ pub struct Design {
     pub titles: &'static [(&'static str, &'static str)],
 }
 
-pub const DESIGNS: [Design; 5] = [
+pub const DESIGNS: [Design; 6] = [
     Design {
         id: "singularity",
         name: "Singularity",
@@ -68,6 +68,16 @@ pub const DESIGNS: [Design; 5] = [
         look: 1,
         prompt: Some("you@singularity"),
         titles: &[("library", "tree"), ("rain", "rain --audio")],
+    },
+    Design {
+        id: "karaoke",
+        name: "Karaoke",
+        blurb: "sing along, the ball keeps time",
+        layout: Node::karaoke,
+        themes: &["neon", "sunset", "lagoon"],
+        look: 3,
+        prompt: None,
+        titles: &[("karaoke", "♪ karaoke"), ("lyrics", "the whole song"), ("glow", "now playing")],
     },
 ];
 
