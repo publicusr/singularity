@@ -212,17 +212,20 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     } else if let Some(res) = v.results.clone() {
         // under All, songs give way so at least one Shelf of Cards fits below them
         let room = r.bottom().saturating_sub(y + 2) as usize;
-        let n = if v.chip == 0 && !v.feed.shelves.is_empty() { v.songs().min(room.saturating_sub(10)).max(v.songs().min(2)) } else { v.songs() };
+        // (with no Shelves below, the songs take the Pane)
+        let n = if !v.feed.shelves.is_empty() { v.songs().min(room.saturating_sub(10)).max(v.songs().min(2)) } else { v.songs().min(room + 1) };
         let episodes = v.chip == 5;
         let rows = if episodes { &res.episodes } else { &res.tracks };
         if n > 0 {
             text(buf, x, y, w, if episodes { "Episodes" } else { "Songs" }, th.s(th.accent).add_modifier(Modifier::BOLD));
             y += 1;
             let playing = app.playback.item.as_ref().map(|i| i.uri.clone());
+            // more songs than fit: a window that follows the highlight (wheel, ↑ ↓)
+            let skip = crate::scroll::window(v.track_sel.unwrap_or(0), n, v.songs());
             if !episodes {
-                app.want_saved(rows.iter().take(n).map(|t| t.uri.as_str()), n);
+                app.want_saved(rows.iter().skip(skip).take(n).map(|t| t.uri.as_str()), n);
             }
-            for (i, t) in rows.iter().take(n).enumerate() {
+            for (i, t) in rows.iter().enumerate().skip(skip).take(n) {
                 if y >= r.bottom() {
                     break;
                 }

@@ -16,6 +16,9 @@ COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("P
 # the tiling scenario wants room for the whole Singularity layout
 if sys.argv[1:2] in (["tiling"], ["tiling-lift"], ["tiling-fast"]):
     COLS, ROWS = int(os.environ.get("PTY_COLS", 160)), int(os.environ.get("PTY_ROWS", 48))
+# the wheel everywhere: short Panes, so everything holds more than fits
+if sys.argv[1:2] == ["wheel-all"]:
+    COLS, ROWS = int(os.environ.get("PTY_COLS", 120)), int(os.environ.get("PTY_ROWS", 26))
 
 
 def first_font(*paths):
@@ -361,6 +364,113 @@ def wheel_burst(t, out):
     t.shot(f"{out}/0-two-notches.png")
     t.send(b"\r", 1.0)  # play the highlighted song: the third
     t.shot(f"{out}/1-playing.png")
+    t.send(b" ", 0.3)
+    t.send(b"q", 0.5)
+
+
+# library | home | lyrics over queue, on a short screen (wheel-all)
+WHEEL_LAYOUT = """name = "Wheel"
+design = "singularity"
+tree = { split = { axis = "horizontal", first = { cells = 28 }, a = { slot = "library" }, b = { split = { axis = "horizontal", first = { ratio = 0.6 }, a = { slot = "home" }, b = { split = { axis = "vertical", first = { ratio = 0.5 }, a = { slot = "lyrics" }, b = { slot = "queue" } } } } } } }
+"""
+
+
+def wheel_all(t, out):
+    """The wheel over everything that holds more than fits, on a short screen (120×26 by default): Home's Shelves, the
+    library, a track list, an artist page (popular tracks, then its Shelves), search (recent searches, then All, Songs,
+    Artists, Podcasts and Audiobooks), a Show page, Stats, Settings, synced lyrics (held, then following again), the
+    queue, Karaoke (nothing: the line being sung) and top this week. Each place: a shot before and after a few notches,
+    each notch three reports as Ghostty sends them; `<n>-<place>-0.png` / `-1.png`."""
+    # where the Panes are (WHEEL_LAYOUT): the body runs from row 1 to five rows above the bottom
+    top, bottom = 1, ROWS - 5
+    lib, home, right = (2, 26), (30, 81), (85, COLS - 2)
+    mid = (top + bottom) // 2
+    n = [0]
+
+    def notches(x, y, k, down=True):
+        for _ in range(k):
+            t.send(f"\x1b[<{65 if down else 64};{x + 1};{y + 1}M".encode() * 3, 0.06)
+        t.pump(0.4)
+
+    def pane(x, y):
+        # the Pane's cells (by WHEEL_LAYOUT), so the player bar's clock doesn't count as moving
+        cols = next(c for c in (lib, home, right) if c[0] - 2 <= x <= c[1] + 1)
+        rows = (top, bottom) if cols != right else ((top, mid) if y < mid else (mid, bottom))
+        # (colours too: a highlight that moves changes no text)
+        return [(c.data, c.fg, c.bg) for y in range(*rows) for x in range(*cols) for c in [t.screen.buffer[y][x]]]
+
+    def place(name, x, y, k, down=True, settle=0.0):
+        t.pump(settle)
+        t.shot(f"{out}/{n[0]:02}-{name}-0.png")
+        before = pane(x, y)
+        notches(x, y, k, down)
+        t.shot(f"{out}/{n[0]:02}-{name}-1.png")
+        print(f"{n[0]:02} {name}: {'moved' if pane(x, y) != before else 'nothing moved'}")
+        n[0] += 1
+
+    def find_in(s, cols):
+        for y, line in enumerate(t.screen.display[:bottom]):
+            x = line.find(s, cols[0], cols[1])
+            if x >= 0:
+                return x, y
+        return None
+
+    def click(x, y, wait=0.8):
+        mouse(t, 0, x, y); mouse(t, 0, x, y, release=True, wait=wait)
+
+    t.pump(1.0)
+    place("home-shelves", home[0] + 10, mid, 4)
+    place("library", lib[0] + 4, mid, 6)
+    # Liked Songs: play its first song (lyrics and a queue for the Panes on the right), wheel down the list
+    x, y = t.find("♥  Liked Songs")
+    click(x + 2, y)
+    t.send(b"\r", 1.0)
+    place("track-list", home[0] + 10, mid, 12)
+    # an artist page from a row's artist link
+    x, y = find_in("Nova Drift", home)
+    click(x + 1, y, 1.2)
+    rx, ry = find_in("Fake Track", home) or (home[0] + 6, top + 5)
+    place("artist-popular", rx + 2, ry, 6)
+    place("artist-shelves", home[0] + 10, bottom - 3, 4)
+    # search: the recent searches (seeded), then results under each chip
+    t.send(b"\x0c", 0.8)  # Ctrl+L
+    place("search-recent", home[0] + 10, top + 6, 8)
+    t.send(b"al", 1.5)  # (the fake Catalogue: eight songs, and Cards whose names have "al" in them)
+    rx, ry = find_in("al song", home) or (home[0] + 6, top + 5)
+    place("search-all-songs", rx + 2, ry, 3)
+    place("search-all-shelves", home[0] + 10, bottom - 3, 4)
+    t.send(b"\t", 0.6)
+    place("search-songs", home[0] + 10, mid, 7)
+    t.send(b"\t\t", 0.6)
+    place("search-albums", home[0] + 10, mid, 4)
+    t.send(b"\t", 0.6)
+    place("search-playlists", home[0] + 10, mid, 4)
+    t.send(b"\t", 0.8)
+    rx, ry = find_in("Episode 1", home) or (home[0] + 6, top + 5)
+    place("search-podcasts-episodes", rx + 2, ry, 3)
+    # a Show page from the Podcasts chip
+    at = find_in("Fake Sh", home)
+    if at:
+        click(at[0] + 1, at[1], 1.2)
+        place("show-page", home[0] + 10, mid, 12)
+    # Stats and Settings
+    t.send(b"\x0b", 0.3); t.send(b"stats", 0.3); t.send(b"\r", 2.0)
+    place("stats", home[0] + 10, mid, 8)
+    t.send(b"\x0b", 0.3); t.send(b"settings", 0.3); t.send(b"\r", 0.8)
+    place("settings", home[0] + 10, mid, 8)
+    t.send(b"\x1b", 0.6)
+    # the Widgets on the right: synced lyrics are held where the wheel puts them, then follow the song again
+    lyr = (right[0] + 6, top + 4)
+    place("lyrics-synced", *lyr, 4)
+    t.pump(5.5)
+    t.shot(f"{out}/{n[0] - 1:02}-lyrics-synced-2-following-again.png")
+    place("queue", right[0] + 6, bottom - 3, 6)
+    swap_in(t, out, "tail -f lyrics.log", "karaoke")
+    place("karaoke-synced", *lyr, 3, settle=0.5)
+    swap_in(t, out, "karaoke", "top artists")
+    x, y = t.find("top artists")
+    click(x + 1, y)  # its tracks: more of them than fit
+    place("top-this-week", *lyr, 4, settle=0.5)
     t.send(b" ", 0.3)
     t.send(b"q", 0.5)
 
@@ -1747,7 +1857,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast", "resize", "karaoke") else "0"
@@ -1762,7 +1872,7 @@ def main():
         seed_listening(env["SINGULARITY_DATA"])
     if scenario == "stalls":
         env["SINGULARITY_FAKE_STALLS"] = "1"
-    if scenario in ("stats", "stats-widgets", "widgets-large", "sizes"):
+    if scenario in ("stats", "stats-widgets", "widgets-large", "sizes", "wheel-all"):
         env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
         seed_listening(env["SINGULARITY_DATA"])
     if scenario in ("widgets-large", "sizes"):
@@ -1771,6 +1881,13 @@ def main():
         os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity/layouts", exist_ok=True)
         if scenario == "widgets-large":
             open(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/big.toml", "w").write(BIG_LAYOUT)
+    if scenario == "wheel-all":
+        os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity/layouts", exist_ok=True)
+        open(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/wheel.toml", "w").write(WHEEL_LAYOUT)
+        open(f"{env['XDG_CONFIG_HOME']}/singularity/config.toml", "w").write('schema = 6\n[ui]\ndesign = "singularity"\nlayout = "wheel"\n')
+        # recent searches, more than a short Pane shows
+        os.makedirs(f"{env['XDG_STATE_HOME']}/singularity", exist_ok=True)
+        open(f"{env['XDG_STATE_HOME']}/singularity/recent-searches.json", "w").write(json.dumps([f"recent query {i}" for i in range(12)]))
     if scenario == "resize":
         os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity/layouts", exist_ok=True)
         open(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/wide.toml", "w").write(RESIZE_LAYOUT)
@@ -1863,6 +1980,8 @@ def main():
             return wheel_burst(t, out)
         if scenario == "popup-wheel":
             return popup_wheel(t, out)
+        if scenario == "wheel-all":
+            return wheel_all(t, out)
         if scenario == "history":
             return history(t, out)
         if scenario == "meters":

@@ -37,6 +37,7 @@ mod tiling;
 mod tracks;
 mod ui;
 mod visual;
+mod wheel;
 mod widgets;
 
 use app::{App, Link};

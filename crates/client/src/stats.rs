@@ -503,9 +503,12 @@ pub fn top_week(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let mut hits = vec![];
     // two lines an entry, once at least four entries fit that way
     let tall = w >= 26 && r.height >= 2 + 4 * 2;
+    // more entries than fit: the wheel scrolls them
     if !tall {
-        for i in 0..sec.rows(&s).len().min(r.height as usize) {
-            let rect = Rect::new(x, r.y + i as u16, w, 1);
+        let len = sec.rows(&s).len();
+        let first = app.top_week_scroll.window(len, r.height as usize);
+        for i in first..len.min(first + r.height as usize) {
+            let rect = Rect::new(x, r.y + (i - first) as u16, w, 1);
             row(buf, rect, sec, i, &s, peak, false, th);
             hits.push((rect, Hit::TopWeek(i)));
         }
@@ -519,9 +522,10 @@ pub fn top_week(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         }
         crate::tile::rule(buf, x, r.y + 1, w, th);
         let n = rows.len().min(((r.height - 2) / 2) as usize).min(25);
-        let rank_w: u16 = if n >= 10 { 3 } else { 2 };
-        for (i, it) in rows.iter().take(n).enumerate() {
-            let y = r.y + 2 + i as u16 * 2;
+        let first = app.top_week_scroll.window(rows.len(), n);
+        let rank_w: u16 = if first + n >= 10 { 3 } else { 2 };
+        for (i, it) in rows.iter().enumerate().skip(first).take(n) {
+            let y = r.y + 2 + (i - first) as u16 * 2;
             let lead = i == 0;
             let rank_st = if i < 3 { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.border) };
             text(buf, x, y, rank_w, &format!("{:>w$}", i + 1, w = rank_w as usize - 1), rank_st);

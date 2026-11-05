@@ -23,6 +23,11 @@
 - Every popup is a `Modal` variant (`crates/client/src/app.rs`): that gives it the mouse, and the compiler then asks
   for its arm in `App::modal_scroll` (what the wheel does in it) and the popup wheel test opens it. Lists scroll with
   `scroll::moved`/`scroll::window`, tall text with a `scroll::TextScroll`.
+- The same for everything else the wheel can be over: every Widget is a `wheel::Widget` variant
+  (`crates/client/src/wheel.rs`) and every main-Pane page an `app::Page`; the compiler asks for their arms in
+  `App::pane_wheel`/`App::page_wheel` and in the wheel test's cases (`wheel/tests.rs`), which wheels each one, holding
+  more than fits in a short Pane, notch by notch. Anything that can hold more than fits scrolls (a list's window follows
+  its highlight; a view that follows the song is a `scroll::Follow`); pty `wheel-all` shows them all.
 - Verify user-visible changes in a pseudo-terminal (pyte + PIL screenshots) before closing a ticket.
 - Only kill processes you started; test sockets go in `$XDG_RUNTIME_DIR/sgl-*`, on macOS
   `/tmp/sgl-<uid>/` (Unix socket paths must be short).

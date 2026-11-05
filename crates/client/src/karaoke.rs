@@ -31,6 +31,8 @@ pub struct State {
     lines: Vec<Line>,
     /// the ball is moving on the pixel tier until then: frames come quicker meanwhile
     smooth_until: Option<Instant>,
+    /// unsynced lyrics follow the song's progress; the wheel takes them for a while
+    pub(crate) follow: crate::scroll::Follow,
 }
 
 impl State {
@@ -338,6 +340,7 @@ fn unsynced(buf: &mut Buffer, r: Rect, app: &App, pos: u64, th: &Theme) {
     let spare = rows.len().saturating_sub(body as usize);
     let dur = app.duration_ms().max(1);
     let first = (spare as f64 * (pos as f64 / dur as f64).clamp(0.0, 1.0)) as usize;
+    let first = app.karaoke.follow.first(first, spare);
     for (k, row) in rows.iter().skip(first).take(body as usize).enumerate() {
         centre(buf, r, r.y + k as u16, row.trim(), th.s(th.fg));
     }
