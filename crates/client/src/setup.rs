@@ -606,8 +606,8 @@ fn draw_stream_compact(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
             }
         }
         None => {
-            text(buf, x, y, w, "play something to see the stream", th.s(th.dim));
-            y += 2;
+            // wrapped, so a narrow Pane doesn't cut it off mid-sentence
+            y = wrapped(buf, x, y, w, r.bottom(), "play something to see the stream", th.s(th.dim)) + 1;
             flow.y = y;
         }
     }

@@ -4,9 +4,11 @@
 //! timestamp only on the first.
 //!
 //! Scaling: how the lyrics sit in a Pane comes from its size alone (`fit`): a tiny Pane shows the current line and the
-//! next, a tall one spaces the lines out and fades the far ones, a wide one keeps the text in a readable column
-//! centred in the Pane. Between lines the view glides (`ease`). The layout pieces (`wrap`, `fit`, `first_row`,
-//! `ease`, `tone`) are plain functions, so another lyrics view can lay out the same way.
+//! next, a tall one fades the far lines. The text always runs from the Pane's left edge like a log and wraps only at
+//! the Pane's width, one row after another with no blank rows between lines (a blank row read as a line split in
+//! two, and a centred column left dead space either side: both tried and taken out). Between lines the view glides
+//! (`ease`). The layout pieces (`wrap`, `fit`, `first_row`, `ease`, `tone`) are plain functions, so another lyrics
+//! view can lay out the same way.
 
 use crate::app::{App, Hit};
 use crate::theme::Theme;
@@ -33,9 +35,9 @@ fn stamp(ms: u64) -> String {
 /// reader has taken over an unsynced song with the wheel.
 #[derive(Default)]
 pub struct Wrapped {
-    /// (song, text width, lines, gap)
-    key: (String, usize, usize, usize),
-    /// (line, text); a gap row between lines has no text
+    /// (song, text width, lines)
+    key: (String, usize, usize),
+    /// (line, text)
     rows: Vec<(usize, String)>,
     /// where each line's first row is
     starts: Vec<usize>,
@@ -55,11 +57,6 @@ pub struct Wrapped {
 const INDENT: usize = 2;
 /// The timestamp column, `[mm:ss] `.
 const STAMP_W: u16 = 8;
-/// The widest the text gets: a wider Pane centres a column as wide as the song's longest line, up to this (rows much
-/// longer than this are hard to follow back to their start).
-pub const MEASURE: u16 = 72;
-/// Text room from which the lyrics are a centred column rather than flush left like a log.
-const CENTRE_FROM: u16 = 60;
 
 /// A line's rows: words fill `w` columns (continuations `w - INDENT`, indent not included); a word too long for a
 /// row is broken. Widths are display columns.
@@ -98,8 +95,8 @@ pub fn wrap_indented(s: &str, w: usize, indent: usize) -> Vec<String> {
     rows
 }
 
-/// How the lyrics sit in a Pane of `w`×`h` cells (inside its frame). It depends on the size and the song's longest
-/// line only, so nothing jumps while a song plays. Offsets are from the Pane's left edge.
+/// How the lyrics sit in a Pane of `w`×`h` cells (inside its frame). It depends on the size only, so nothing jumps
+/// while a song plays. Offsets are from the Pane's left edge.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Fit {
     /// the timestamp column, when there's room for one (synced lyrics only)
@@ -108,8 +105,6 @@ pub struct Fit {
     pub text_w: u16,
     /// rows for the lyrics (the credit's row not included)
     pub body: u16,
-    /// blank rows between lines, in a tall Pane
-    pub gap: u16,
     /// the source credit on the last row, when there are rows to spare
     pub credit: bool,
     /// the body row the current line starts on: about a third of the way down
@@ -118,24 +113,15 @@ pub struct Fit {
     pub band: bool,
 }
 
-/// The layout for a `w`×`h` Pane; `longest`: the song's longest line in columns.
-pub fn fit(w: u16, h: u16, synced: bool, longest: u16) -> Fit {
+/// The layout for a `w`×`h` Pane: flush left like a log (`[mm:ss] text`), the text as wide as the Pane allows.
+pub fn fit(w: u16, h: u16, synced: bool) -> Fit {
     let margin = u16::from(w >= 12);
     let avail = w.saturating_sub(2 * margin);
     let stamps = synced && avail >= 30;
     let gutter = if stamps { STAMP_W } else { 0 };
-    let room = avail - gutter;
-    // wide: a column as wide as the longest line (up to MEASURE), centred with its timestamps; else flush left
-    let (text_w, left) = if room >= CENTRE_FROM {
-        let tw = longest.clamp(24, MEASURE).min(room);
-        (tw, margin + (avail - gutter - tw) / 2)
-    } else {
-        (room, margin)
-    };
     let credit = h >= 8;
     let body = h - u16::from(credit);
-    let gap = u16::from(body >= 18);
-    Fit { stamp_x: stamps.then_some(left), text_x: left + gutter, text_w, body, gap, credit, anchor: body / 3, band: body >= 12 && avail >= 30 }
+    Fit { stamp_x: stamps.then_some(margin), text_x: margin + gutter, text_w: avail - gutter, body, credit, anchor: body / 3, band: body >= 12 && avail >= 30 }
 }
 
 /// The first row in view for a current line whose rows are `top..end`: it starts on row `anchor` of the `body` rows,
@@ -203,13 +189,12 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         return message(buf, r, why, th);
     }
     let duration = item.duration_ms;
-    let longest = lyr.lines.iter().map(|l| l.text.width()).max().unwrap_or(0).min(u16::MAX as usize) as u16;
-    let f = fit(r.width, r.height, lyr.synced, longest);
+    let f = fit(r.width, r.height, lyr.synced);
     let body = f.body as usize;
     let pos = app.lyrics_position(singularity_proto::now_ms());
-    // every line's rows, and where each line's rows are: wrapped again only for a new song, width or spacing
+    // every line's rows, and where each line's rows are: wrapped again only for a new song or width
     let cache = &mut app.lyrics_wrap;
-    let key = (lyr.uri.clone(), f.text_w as usize, lyr.lines.len(), f.gap as usize);
+    let key = (lyr.uri.clone(), f.text_w as usize, lyr.lines.len());
     let fresh = cache.key != key;
     if cache.key.0 != lyr.uri {
         (cache.held, cache.followed) = (false, None);
@@ -221,9 +206,6 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         cache.starts.clear();
         cache.ends.clear();
         for (i, line) in lyr.lines.iter().enumerate() {
-            if i > 0 {
-                cache.rows.extend((0..f.gap).map(|_| (i, String::new())));
-            }
             cache.starts.push(cache.rows.len());
             let words = if line.text.trim().is_empty() { "♪" } else { line.text.as_str() };
             cache.rows.extend(wrap(words, f.text_w as usize).into_iter().map(|t| (i, t)));
@@ -276,10 +258,12 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let reach = body / 3;
     let mut hits = vec![];
     for (k, (i, words)) in cache.rows.iter().enumerate().skip(first).take(body) {
-        if words.is_empty() {
+        let (i, y) = (*i, r.y + (k - first) as u16);
+        // the tail of a line that starts above the view isn't shown: alone on the top row it read as a line of its own
+        // (synced only: unsynced lyrics scroll by rows under the reader's wheel)
+        if lyr.synced && cache.starts[i] < first && now != Some(i) {
             continue;
         }
-        let (i, y) = (*i, r.y + (k - first) as u16);
         let st = match now {
             Some(c) => tone(th, i as i64 - c as i64, reach),
             None if lyr.synced => tone(th, i as i64 + 1, reach),
@@ -354,31 +338,25 @@ mod tests {
         for w in 0..=300u16 {
             for h in 0..=100u16 {
                 for synced in [true, false] {
-                    for longest in [0u16, 30, 200] {
-                        let f = fit(w, h, synced, longest);
-                        let ctx = format!("{w}x{h} synced {synced} longest {longest}: {f:?}");
-                        assert!(f.text_x + f.text_w <= w, "{ctx}");
-                        assert!(f.body + u16::from(f.credit) <= h && f.anchor < f.body.max(1), "{ctx}");
-                        if let Some(sx) = f.stamp_x {
-                            assert!(sx + STAMP_W <= f.text_x, "{ctx}");
-                        }
-                        // the column is centred: as much room on its right as on its left (give or take a cell)
-                        let right = w - f.text_x - f.text_w;
-                        let left = f.stamp_x.unwrap_or(f.text_x);
-                        assert!(right >= left && right <= left + 1 + u16::from(w >= 12), "{ctx}");
-                        if w >= 12 {
-                            assert!(f.text_w >= 1 && left >= 1, "{ctx}");
-                        }
+                    let f = fit(w, h, synced);
+                    let ctx = format!("{w}x{h} synced {synced}: {f:?}");
+                    assert!(f.text_x + f.text_w <= w, "{ctx}");
+                    assert!(f.body + u16::from(f.credit) <= h && f.anchor < f.body.max(1), "{ctx}");
+                    if let Some(sx) = f.stamp_x {
+                        assert!(sx + STAMP_W <= f.text_x, "{ctx}");
                     }
+                    // flush left like a log, as wide as the Pane: a cell of margin either side, no dead space
+                    let left = f.stamp_x.unwrap_or(f.text_x);
+                    assert_eq!(left, u16::from(w >= 12), "{ctx}");
+                    assert_eq!(w - f.text_x - f.text_w, left, "{ctx}");
                 }
             }
         }
-        // a wide Pane: a readable column in the middle, not text running the whole width
-        let f = fit(256, 64, true, 50);
-        assert_eq!(f.text_w, 50);
-        assert!(f.stamp_x.unwrap() > 90 && f.gap == 1 && f.anchor == 21, "{f:?}");
+        // the owner's Terminal design: `[mm:ss] text` from the left edge, wrapped only at the Pane's width
+        let f = fit(72, 27, true);
+        assert!(f.stamp_x == Some(1) && f.text_x == 9 && f.text_w == 62 && f.anchor == 8, "{f:?}");
         // a short one: no credit, the current line on the first row
-        let f = fit(10, 2, true, 50);
+        let f = fit(10, 2, true);
         assert!(!f.credit && f.anchor == 0 && f.stamp_x.is_none() && f.body == 2, "{f:?}");
     }
 
