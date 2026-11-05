@@ -1206,6 +1206,78 @@ def space_startup(t, out, env):
     t.send(b"q", 0.5)
 
 
+# every Widget a Slot can show, and the sizes (inside the frame) the `sizes` scenario shoots each at
+SIZES_WIDGETS = ["lyrics", "queue", "nowplaying", "stream", "top", "listening", "today", "topweek", "marquee", "glow",
+                 "fft", "loudness", "levels", "scope", "rain", "starfield", "library", "home"]
+SIZES = {"tiny": (10, 2), "small": (20, 6), "narrow": (16, 30), "wide": (110, 4), "medium": (46, 16),
+         "large": (90, 34), "huge": (256, 64)}
+
+
+def sizes_layout(subject, w, h):
+    """A layout with `subject` in a Pane of exactly w×h inside its frame (top left), Home (or the library) beside it
+    and the rest of the four every Design keeps in a row underneath."""
+    core = ["home", "library", "queue", "lyrics"]
+    filler = "library" if subject == "home" else "home"
+    rest = [c for c in core if c not in (subject, filler)]
+    def row(names):
+        if len(names) == 1:
+            return f'{{ slot = "{names[0]}" }}'
+        return f'{{ split = {{ axis = "horizontal", first = {{ ratio = {1 / len(names):.4f} }}, a = {{ slot = "{names[0]}" }}, b = {row(names[1:])} }} }}'
+    top = f'{{ split = {{ axis = "horizontal", first = {{ cells = {w + 2} }}, a = {{ slot = "{subject}" }}, b = {{ slot = "{filler}" }} }} }}'
+    return f'name = "Sizes"\ndesign = "singularity"\ntree = {{ split = {{ axis = "vertical", first = {{ cells = {h + 2} }}, a = {top}, b = {row(rest)} }} }}\n'
+
+
+def sizes(env, out):
+    """Every Widget (SIZES_WIDGETS) in a Pane of each size in SIZES (inside the frame: tiny 10×2 up to huge 256×64),
+    a track playing on a healthy fake stream, about 30 s in. One Client per shot, the terminal sized to fit; shots are
+    `<size>-<widget>.png`. PTY_WIDGETS / PTY_SIZES (comma-separated) pick a subset. Also the mini-player at a few
+    terminal sizes (`mini-<w>x<h>.png`; PTY_MINI=0 skips them)."""
+    global COLS, ROWS
+    widgets = os.environ.get("PTY_WIDGETS", ",".join(SIZES_WIDGETS)).split(",")
+    names = os.environ.get("PTY_SIZES", ",".join(SIZES)).split(",")
+    cfg = f"{env['XDG_CONFIG_HOME']}/singularity"
+    os.makedirs(f"{cfg}/layouts", exist_ok=True)
+    started = False
+    def client():
+        t = Term(env)
+        t.pump(1.5)
+        return t
+    def stop(t):
+        t.send(b"q", 0.3)
+        try:
+            os.kill(t.pid, 9)
+        except ProcessLookupError:
+            pass
+        os.waitpid(t.pid, 0)
+        os.close(t.fd)
+    for name in names:
+        w, h = SIZES[name]
+        # room for Home beside it and a row of Panes under it, and never so small the mini-player takes over
+        COLS, ROWS = max(90, w + 2 + 14), max(30, h + 2 + 12)
+        for widget in widgets:
+            open(f"{cfg}/layouts/sizes.toml", "w").write(sizes_layout(widget, w, h))
+            open(f"{cfg}/config.toml", "w").write('schema = 6\n[ui]\ndesign = "singularity"\nlayout = "sizes"\n')
+            t = client()
+            if not started:
+                # play from Liked Songs (the queue gets a context), so the meters, the stream and lyrics have something
+                x, y = t.find("Liked Songs") or (0, 0)
+                mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
+                t.send(b"\r", 0.8)
+                started = True
+            # every shot at the same moment of a song: back a track and on again (both start it from 0), then 30 s in
+            t.send(b"b", 0.2); t.send(b"n", 0.4)
+            t.send(b"\x1b[1;2C" * 6, 0.6)  # Shift+→ ×6
+            t.pump(1.0 if widget not in ("stream", "top", "loudness") else 3.5)
+            t.shot(f"{out}/{name}-{widget}.png")
+            stop(t)
+    if os.environ.get("PTY_MINI", "1") == "1":
+        open(f"{cfg}/config.toml", "w").write('schema = 6\n')
+        for COLS, ROWS in [(20, 1), (36, 2), (49, 6), (49, 13), (24, 13)]:
+            t = client()
+            t.shot(f"{out}/mini-{COLS}x{ROWS}.png")
+            stop(t)
+
+
 def widgets_large(t, out):
     """The tiling Widgets (stream, top, listening, today, top this week) each in a big Pane of a saved layout, a
     track playing on a healthy fake stream; then top this week switched to tracks. Try PTY_COLS=240 PTY_ROWS=70 (Panes
@@ -1675,7 +1747,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast", "resize", "karaoke") else "0"
@@ -1690,14 +1762,15 @@ def main():
         seed_listening(env["SINGULARITY_DATA"])
     if scenario == "stalls":
         env["SINGULARITY_FAKE_STALLS"] = "1"
-    if scenario in ("stats", "stats-widgets", "widgets-large"):
+    if scenario in ("stats", "stats-widgets", "widgets-large", "sizes"):
         env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
         seed_listening(env["SINGULARITY_DATA"])
-    if scenario == "widgets-large":
+    if scenario in ("widgets-large", "sizes"):
         env["SINGULARITY_FAKE_STALLS"] = "fine"
         seed_today(env["SINGULARITY_DATA"])
         os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity/layouts", exist_ok=True)
-        open(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/big.toml", "w").write(BIG_LAYOUT)
+        if scenario == "widgets-large":
+            open(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/big.toml", "w").write(BIG_LAYOUT)
     if scenario == "resize":
         os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity/layouts", exist_ok=True)
         open(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/wide.toml", "w").write(RESIZE_LAYOUT)
@@ -1720,6 +1793,8 @@ def main():
         if d.poll() is not None:
             # a Client would start a Daemon of its own: stop here instead
             sys.exit(f"the Daemon exited ({open(f'{out}/daemon.log').read().strip().splitlines()[-1:]}); built with `cargo build -p singularityd --features fake`?")
+        if scenario == "sizes":
+            return sizes(env, out)
         t = Term(env)
         if scenario == "space-startup":
             return space_startup(t, out, env)

@@ -527,30 +527,69 @@ fn draw_stream_medium(buf: &mut Buffer, r: Rect, app: &App, s: &StreamInfo, th: 
     }
 }
 
-/// The stream stats Pane in a small Pane: a badge and a row per fact.
+/// Where the compact stream Pane's next fact goes: down a column, then on to the next one when a wide, short Pane
+/// has room for it; a narrow, tall Pane puts each value under its name.
+struct Flow {
+    x: u16,
+    y: u16,
+    /// the first row of a column, and how wide columns are
+    top: u16,
+    col_w: u16,
+    r: Rect,
+}
+
+impl Flow {
+    fn row(&mut self, buf: &mut Buffer, k: &str, v: &str, st: ratatui::style::Style, th: &Theme) {
+        let right = self.r.right().saturating_sub(1);
+        let stacked = self.r.width < 26 && self.r.height >= 14;
+        let need = if stacked { 2 } else { 1 };
+        if self.y + need > self.r.bottom() && self.y > self.top && self.x + 2 * self.col_w <= right {
+            self.x += self.col_w;
+            self.y = self.top;
+        }
+        if self.y + need > self.r.bottom() {
+            self.y = self.r.bottom();
+            return;
+        }
+        // in columns (a short Pane with room for more than one), each keeps to its own width
+        let columns = self.r.height < 12 && self.r.x + 1 + 2 * self.col_w <= right;
+        let w = if columns { (self.col_w - 1).min(right.saturating_sub(self.x)) } else { right.saturating_sub(self.x) };
+        if stacked {
+            text(buf, self.x, self.y, w, k, th.s(th.dim));
+            text(buf, self.x, self.y + 1, w, v, st);
+        } else {
+            text(buf, self.x, self.y, w.min(9), k, th.s(th.dim));
+            text(buf, self.x + 9, self.y, w.saturating_sub(9), v, st);
+        }
+        self.y += need;
+    }
+
+    /// A blank row, unless at the top of a column.
+    fn space(&mut self) {
+        if self.y > self.top {
+            self.y += 1;
+        }
+    }
+}
+
+/// The stream stats Pane in a small Pane: a badge and a row per fact (in columns when it's wide and short).
 fn draw_stream_compact(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     let mut y = r.y;
-    let row = |buf: &mut Buffer, y: &mut u16, k: &str, v: &str, st| {
-        if *y < r.bottom() {
-            text(buf, x, *y, w.min(9), k, th.s(th.dim));
-            text(buf, x + 9, *y, w.saturating_sub(9), v, st);
-            *y += 1;
-        }
-    };
+    let mut flow = Flow { x, y: r.y + 2, top: (r.y + 2).min(r.bottom().saturating_sub(1)), col_w: 32, r };
+    let row = |buf: &mut Buffer, flow: &mut Flow, k: &str, v: &str, st| flow.row(buf, k, v, st, th);
     match &app.stream {
         Some(s) => {
             let (label, col) = badge(app, s, th);
             let bw = label.chars().count() as u16;
             text(buf, x, y, bw.min(w), label, th.chip(col));
             text(buf, x + bw + 1, y, w.saturating_sub(bw + 1), &s.codec.to_uppercase(), th.s(th.fg).add_modifier(Modifier::BOLD));
-            y += 2;
-            row(buf, &mut y, "bitrate", &mbit(s.bitrate), th.s(th.accent).add_modifier(Modifier::BOLD));
+            row(buf, &mut flow, "bitrate", &mbit(s.bitrate), th.s(th.accent).add_modifier(Modifier::BOLD));
             if let Some(a) = s.average_bitrate {
-                row(buf, &mut y, "average", &mbit(a), th.s(th.fg));
+                row(buf, &mut flow, "average", &mbit(a), th.s(th.fg));
             }
-            row(buf, &mut y, "rate", &format!("{:.1} kHz", s.sample_rate as f64 / 1000.0), th.s(th.fg));
-            row(buf, &mut y, "decoded", &s.sample_format.replace("-pcm", "").replace('-', " "), th.s(th.dim));
+            row(buf, &mut flow, "rate", &format!("{:.1} kHz", s.sample_rate as f64 / 1000.0), th.s(th.fg));
+            row(buf, &mut flow, "decoded", &s.sample_format.replace("-pcm", "").replace('-', " "), th.s(th.dim));
             // how well the download keeps up (#45): red when it's below what this stream needs
             let now = singularity_proto::now_ms();
             if let Some(d) = &app.delivery {
@@ -558,27 +597,29 @@ fn draw_stream_compact(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
                     let need = app.need_kbps().unwrap_or(0);
                     let short = need > 0 && k < need;
                     let v = if short { format!("{k} kB/s, need {need}") } else { format!("{k} kB/s") };
-                    row(buf, &mut y, "download", &v, th.s(if short { th.error } else { th.fg }));
+                    row(buf, &mut flow, "download", &v, th.s(if short { th.error } else { th.fg }));
                 }
                 let n = d.stalls_last_minute(now);
                 if n > 0 {
-                    row(buf, &mut y, "stalls", &format!("{n} in the last 60s"), th.s(th.error));
+                    row(buf, &mut flow, "stalls", &format!("{n} in the last 60s"), th.s(th.error));
                 }
             }
         }
         None => {
             text(buf, x, y, w, "play something to see the stream", th.s(th.dim));
             y += 2;
+            flow.y = y;
         }
     }
-    y += 1;
+    flow.space();
     // (the build updates itself, so its expiry isn't news here; the health check has it)
     if let Some(EngineStatus::Ready { device_name, active, version, .. }) = &app.engine {
-        row(buf, &mut y, "device", &format!("{device_name}{}", if *active { " · active" } else { "" }), th.s(th.fg));
+        row(buf, &mut flow, "device", &format!("{device_name}{}", if *active { " · active" } else { "" }), th.s(th.fg));
         if !version.is_empty() {
-            row(buf, &mut y, "build", version, th.s(th.dim));
+            row(buf, &mut flow, "build", version, th.s(th.dim));
         }
     }
+    let mut y = flow.y;
     if app.stream.as_ref().is_some_and(|s| !s.lossless()) && y + 1 < r.bottom() {
         y += 1;
         // the fix, wrapped to the Pane

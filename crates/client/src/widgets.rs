@@ -31,36 +31,97 @@ fn bands3(app: &App) -> [f32; 3] {
 
 // ── Now playing (Classic+) ────────────────────────────────────────────
 
-/// Cover, title and artists, a small spectrum, and what's next.
+/// Cover, title and artists, a spectrum, and what's next. A Pane too small for a cover gets the words; a wide one puts
+/// the cover at its left and the rest beside it; a tall one stacks them; a big one spells the title in the pixel font.
 pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
+    let m = u16::from(r.width >= 12);
+    let (x, w) = (r.x + m, r.width.saturating_sub(2 * m));
+    if w == 0 || r.height == 0 {
+        return;
+    }
     let Some(item) = app.playback.item.clone() else {
-        text(buf, r.x + 1, r.y + r.height / 2, r.width.saturating_sub(2), "nothing playing", th.s(th.dim));
+        text(buf, x, r.y + r.height / 2, w, "nothing playing", th.s(th.dim));
         return;
     };
-    let w = r.width.saturating_sub(2);
-    // a square cover (cells are about twice as tall as wide), leaving room for the rest
-    let ch = (w / 2).min(r.height.saturating_sub(10)).max(3);
-    let cw = (ch * 2).min(w);
-    let cover = Rect::new(r.x + 1 + (w - cw) / 2, r.y, cw, ch);
-    crate::home::cover(buf, cover, item.cover_url.as_deref().unwrap_or(""), "♪", app, th);
-    let mut y = cover.bottom() + 1;
-    text(buf, r.x + 1, y, w, &item.name, th.s(th.fg).add_modifier(Modifier::BOLD));
-    text(buf, r.x + 1, y + 1, w, &item.artists.join(", "), th.s(th.dim));
-    if let Some(c) = &app.playback.context_name {
-        text(buf, r.x + 1, y + 2, w, &format!("from {c}"), th.s(th.dim));
+    let url = item.cover_url.clone().unwrap_or_default();
+    // wide: a cover as tall as the Pane (twice as wide in cells: about square), the rest beside it
+    if r.height >= 4 && w >= r.height * 2 + 24 {
+        let cw = r.height * 2;
+        crate::home::cover(buf, Rect::new(x, r.y, cw, r.height), &url, "♪", app, th);
+        let ix = x + cw + 2;
+        let iw = (x + w).saturating_sub(ix);
+        // short and very wide: the words, and the spectrum across the rest
+        if r.height < 10 && iw >= 64 {
+            let tw = (iw / 2).min(40);
+            np_info(buf, Rect::new(ix, r.y, tw, r.height), &item, app, false, th);
+            crate::meters::spectrum(buf, Rect::new(ix + tw + 2, r.y, iw - tw - 2, r.height), &app.meters, th);
+            return;
+        }
+        return np_info(buf, Rect::new(ix, r.y, iw, r.height), &item, app, true, th);
     }
-    y += 4;
-    let sh = 5.min(r.bottom().saturating_sub(y));
-    if sh > 1 {
-        crate::meters::spectrum(buf, Rect::new(r.x + 1, y, w, sh), &app.meters, th);
+    // tall: a square cover on top, as big as leaves the words (and, taller, a spectrum and the queue) their rows
+    if r.height >= 8 && w >= 8 {
+        let reserve = 3 + if r.height >= 14 { 5 } else { 0 } + if r.height >= 24 { 7 } else { 0 };
+        let ch = (w / 2).min(r.height.saturating_sub(1 + reserve)).max(2);
+        let cw = (ch * 2).min(w);
+        crate::home::cover(buf, Rect::new(x + (w - cw) / 2, r.y, cw, ch), &url, "♪", app, th);
+        return np_info(buf, Rect::new(x, r.y + ch + 1, w, r.height - ch - 1), &item, app, true, th);
+    }
+    np_info(buf, Rect::new(x, r.y, w, r.height), &item, app, true, th);
+}
+
+/// Now playing's words and the rest in `r`: the title (in the pixel font when there's room for it big), artists,
+/// where it plays from, then a spectrum (if `spectrum`) and what's next sharing the rows left.
+fn np_info(buf: &mut Buffer, r: Rect, item: &singularity_proto::Item, app: &App, spectrum: bool, th: &Theme) {
+    if r.width == 0 || r.height == 0 {
+        return;
+    }
+    let bottom = r.bottom();
+    let mut y = r.y;
+    let big = if r.height >= 24 && r.width >= 40 { (2..=4u16).rev().find_map(|s| crate::ambient::pixel_fit(&item.name, r.width, r.height / 3, s, 2).map(|l| (s, l))) } else { None };
+    match big {
+        Some((s, lines)) => {
+            for line in &lines {
+                crate::ambient::pixel_line(buf, r.x, y, r.width, line, s, 0, None, 0.0, th);
+                y += crate::ambient::pixel_rows(s) + 1;
+            }
+        }
+        None => {
+            text(buf, r.x, y, r.width, &item.name, th.s(th.fg).add_modifier(Modifier::BOLD));
+            y += 1;
+        }
+    }
+    let mut line = |buf: &mut Buffer, s: &str| {
+        if y < bottom {
+            text(buf, r.x, y, r.width, s, th.s(th.dim));
+            y += 1;
+        }
+    };
+    line(buf, &item.artists.join(", "));
+    if let Some(c) = &app.playback.context_name {
+        line(buf, &format!("from {c}"));
+    }
+    // the spectrum and the queue share the rest: the queue its songs (up to 8 rows), the spectrum what's left
+    y += 1;
+    let left = bottom.saturating_sub(y);
+    let queue = &app.playback.queue;
+    let want_q = if queue.is_empty() { 0 } else { (queue.len() as u16 + 1).min(8) };
+    let sh = match left {
+        _ if !spectrum => 0,
+        0..=1 => 0,
+        _ if want_q == 0 => left.min(16),
+        _ => left.saturating_sub(want_q + 1).clamp(2.min(left), 12),
+    };
+    if sh > 0 {
+        crate::meters::spectrum(buf, Rect::new(r.x, y, r.width, sh), &app.meters, th);
         y += sh + 1;
     }
-    if y + 1 < r.bottom() {
-        text(buf, r.x + 1, y, w, "Next in queue", th.s(th.fg).add_modifier(Modifier::BOLD));
+    if y + 1 < bottom && !queue.is_empty() {
+        text(buf, r.x, y, r.width, "Next in queue", th.s(th.fg).add_modifier(Modifier::BOLD));
         y += 1;
-        for q in app.playback.queue.iter().take(r.bottom().saturating_sub(y) as usize) {
-            text(buf, r.x + 1, y, 2, "■", th.s(th.accent));
-            text(buf, r.x + 3, y, w.saturating_sub(2), &format!("{} · {}", q.item.name, q.item.artists.join(", ")), th.s(th.dim));
+        for q in queue.iter().take(bottom.saturating_sub(y) as usize) {
+            text(buf, r.x, y, 2.min(r.width), "■", th.s(th.accent));
+            text(buf, r.x + 2, y, r.width.saturating_sub(2), &format!("{} · {}", q.item.name, q.item.artists.join(", ")), th.s(th.dim));
             y += 1;
         }
     }
@@ -68,28 +129,71 @@ pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 
 // ── levels (Cockpit) ──────────────────────────────────────────────────
 
-/// Left/right peak meters, then bass, mid and treble.
+/// Left/right peak meters, then bass, mid and treble. Taller Panes make the bars thicker; a wide, short one puts the
+/// two groups side by side.
 pub fn levels(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
+    if r.width == 0 || r.height == 0 {
+        return;
+    }
     let vu = app.meters.frame.as_ref().map(|f| f.out_vu).unwrap_or([0, 0]);
-    let bar = |buf: &mut Buffer, y: u16, label: &str, v: f32| {
-        if y >= r.bottom() {
-            return;
-        }
-        let w = r.width.saturating_sub(7);
-        let lit = (v.clamp(0.0, 1.0) * w as f32).round() as u16;
-        text(buf, r.x, y, 6, label, th.s(th.dim));
-        for x in 0..w {
-            let (ch, c) = if x < lit { ("■", ramp(th, x as f32 / w.max(1) as f32)) } else { ("·", th.border) };
-            text(buf, r.x + 6 + x, y, 1, ch, th.s(c));
-        }
-    };
-    bar(buf, r.y, "L", vu[0] as f32 / 255.0);
-    bar(buf, r.y + 1, "R", vu[1] as f32 / 255.0);
     let [b, m, t] = bands3(app);
-    // a blank row between the two groups when there's room for it
-    let gap = if r.height >= 6 { 3 } else { 2 };
-    for (i, (name, v)) in [("bass", b), ("mid", m), ("high", t)].into_iter().enumerate() {
-        bar(buf, r.y + gap + i as u16, name, v);
+    let bars = [("L", vu[0] as f32 / 255.0), ("R", vu[1] as f32 / 255.0), ("bass", b), ("mid", m), ("high", t)];
+    if r.height < 6 && r.width >= 48 {
+        let half = r.width / 2;
+        level_bars(buf, Rect::new(r.x, r.y, half - 1, r.height), &bars[..2], 2, false, th);
+        level_bars(buf, Rect::new(r.x + half + 1, r.y, r.width - half - 1, r.height), &bars[2..], 3, false, th);
+        return;
+    }
+    level_bars(buf, r, &bars, 2, true, th);
+}
+
+/// `bars` stacked in `r` with a blank row after the first `group` of them (when there's room), each as thick as the
+/// rows allow (up to 6 rows, a blank row between thick ones), the whole centred top to bottom if `centre`.
+fn level_bars(buf: &mut Buffer, r: Rect, bars: &[(&str, f32)], group: usize, centre: bool, th: &Theme) {
+    let n = bars.len() as u16;
+    let split = u16::from(group < bars.len());
+    // the thickest bars that fit: n bars, a row between thick ones, and the gap between the groups
+    let (thick, between, gap) = (1..=6u16)
+        .rev()
+        .map(|t| (t, u16::from(t >= 2), split * t.div_ceil(2)))
+        .find(|&(t, sp, g)| n * t + (n - 1) * sp + g <= r.height)
+        .unwrap_or((1, 0, u16::from(r.height > n)));
+    let need = n * thick + (n - 1) * between + gap;
+    let mut y = r.y + if centre { r.height.saturating_sub(need) / 2 } else { 0 };
+    // labels: words when there's room, initials when narrow, none when tiny
+    let label_w: u16 = if r.width >= 16 { 6 } else if r.width >= 6 { 2 } else { 0 };
+    let w = r.width - label_w;
+    for (i, (label, v)) in bars.iter().enumerate() {
+        if i == group && i > 0 {
+            y += gap;
+        }
+        if y >= r.bottom() {
+            break;
+        }
+        let rows = thick.min(r.bottom() - y);
+        let lit = (v.clamp(0.0, 1.0) * w as f32 * 8.0).round() as u16;
+        if label_w > 0 {
+            let l = if label_w == 2 { &label[..1] } else { label };
+            text(buf, r.x, y + (rows - 1) / 2, label_w, l, th.s(th.dim));
+        }
+        for row in 0..rows {
+            for k in 0..w {
+                let e = lit.saturating_sub(k * 8).min(8) as usize;
+                let col = ramp(th, k as f32 / w.max(1) as f32);
+                let (ch, st) = match (thick, e) {
+                    (1, 0) => ('·', th.s(th.border)),
+                    (1, _) => ('■', th.s(col)),
+                    (_, 0) => ('█', th.s(th.bg.lerp(th.border, 0.25))),
+                    (_, 8) => ('█', th.s(col)),
+                    // the bar's tip in eighths, over the track
+                    (_, e) => (crate::tile::H_EIGHTHS[e], th.s(col).bg(th.bg.lerp(th.border, 0.25).color())),
+                };
+                if let Some(c) = buf.cell_mut((r.x + label_w + k, y + row)) {
+                    c.set_char(ch).set_style(st);
+                }
+            }
+        }
+        y += rows + between;
     }
 }
 
@@ -135,18 +239,34 @@ pub fn listening(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
             }
         }
     }
-    let line = match sum {
-        None => "the listening log comes from singularityd".to_string(),
-        Some(s) if s.plays == 0 => "nothing logged yet · a track counts after 30 s".into(),
+    let parts: Vec<String> = match sum {
+        None => vec!["the listening log comes from singularityd".to_string()],
+        Some(s) if s.plays == 0 => vec!["nothing logged yet".into(), "a track counts after 30 s".into()],
         Some(s) => {
             let h = if s.hours_this_year < 10.0 { format!("{:.1}", s.hours_this_year) } else { format!("{:.0}", s.hours_this_year) };
             let mut parts = vec![format!("{h} h this year")];
             parts.extend(s.top_artist.as_ref().map(|a| format!("top: {a}")));
             parts.push(format!("streak {} day{}", s.streak_days, if s.streak_days == 1 { "" } else { "s" }));
-            parts.join(" · ")
+            parts
         }
     };
-    text(buf, r.x + 1, r.y + rows + (r.height > 8) as u16, r.width.saturating_sub(2), &line, th.s(th.dim));
+    // the totals on one line, or (a narrow Pane with rows to spare) as many as they need
+    let tw = r.width.saturating_sub(2) as usize;
+    let mut lines: Vec<String> = vec![];
+    for p in parts {
+        match lines.last_mut() {
+            Some(l) if l.chars().count() + 3 + p.chars().count() <= tw => *l = format!("{l} · {p}"),
+            _ => lines.push(p),
+        }
+    }
+    let ty = r.y + rows + (r.height > 8) as u16;
+    let room = r.bottom().saturating_sub(ty) as usize;
+    if lines.len() > room {
+        lines = vec![lines.join(" · ")];
+    }
+    for (i, l) in lines.iter().enumerate().take(room) {
+        text(buf, r.x + 1, ty + i as u16, tw as u16, l, th.s(th.dim));
+    }
 }
 
 /// The listening Pane when it has room: month names over the weeks, weekday names beside them, square-ish cells as
@@ -603,7 +723,7 @@ pub fn top(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         return;
     }
     // the summary and graph when there's room for them and every process
-    let summary = w >= 36 && r.height >= n + 9;
+    let summary = w >= 14 && r.height >= n + 9;
     if summary {
         let total: f32 = s.rows.iter().map(|r| r.1).sum();
         let rss: u64 = s.rows.iter().map(|r| r.2).sum();
@@ -797,6 +917,38 @@ mod tests {
         let mut buf = Buffer::empty(area);
         levels(&mut buf, inner, &app, &th);
         let row = |y| (5..45).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
-        assert!(row(5).starts_with("L") && row(5).contains('■') && row(10).starts_with("high"));
+        // 20 rows: bars two rows thick, the five of them centred
+        let labels: Vec<u16> = (5..25).filter(|&y| row(y).starts_with(|c: char| c.is_alphabetic())).collect();
+        assert_eq!(labels.len(), 5, "{:?}", (5..25).map(row).collect::<Vec<_>>());
+        assert!(row(labels[0]).starts_with("L ") && row(labels[0]).contains('█') && row(labels[4]).starts_with("high"));
+        // a wide, short Pane: the two groups side by side
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 4));
+        levels(&mut buf, Rect::new(0, 0, 80, 4), &app, &th);
+        let row0: String = (0..80).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(row0.starts_with("L ") && row0.contains("bass"), "{row0}");
+    }
+
+    #[test]
+    fn now_playing_fits_its_shape() {
+        let th = Theme::singularity();
+        let mut app = App::new(None);
+        app.playback.item = Some(singularity_proto::Item { name: "Song".into(), artists: vec!["Artist".into()], ..Default::default() });
+        let rows = |app: &mut App, w: u16, h: u16| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+            nowplaying(&mut buf, Rect::new(0, 0, w, h), app, &th);
+            (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>()
+        };
+        // a Pane a row or two tall: the words, no cover
+        let tiny = rows(&mut app, 12, 2);
+        assert_eq!(tiny[0].trim(), "Song", "{tiny:?}");
+        assert_eq!(tiny[1].trim(), "Artist");
+        // wide and short: the cover at the left (its ♪ stand-in, no art loaded), the title beside it at the top
+        let wide = rows(&mut app, 110, 6);
+        let at = wide[0].find("Song").unwrap();
+        assert!(at > 12 && at < 20, "{wide:#?}");
+        // tall: the cover on top, the title under it
+        let tall = rows(&mut app, 30, 30);
+        let y = tall.iter().position(|r| r.contains("Song")).unwrap();
+        assert!(y > 8, "{tall:#?}");
     }
 }

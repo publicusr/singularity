@@ -551,79 +551,85 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), sl
     if closable {
         close_button(f.buffer_mut(), *rect, th, focused, slot, swaps);
     }
+    widget(f.buffer_mut(), *rect, inner, slot, todo, app, th);
+}
+
+/// What Pane `slot` shows inside its frame (`rect` the Pane, `inner` inside the frame): the one place each Widget is
+/// drawn, so tests can draw every Widget at any size the way a Pane does.
+pub fn widget(buf: &mut Buffer, rect: Rect, inner: Rect, slot: &str, todo: &str, app: &mut App, th: &Theme) {
     match slot {
-        "hole" | "well" => crate::visual::well::draw_plain(f.buffer_mut(), *rect, inner, app, th),
-        "nowplaying" => crate::widgets::nowplaying(f.buffer_mut(), inner, app, th),
-        "levels" => crate::widgets::levels(f.buffer_mut(), inner, app, th),
+        "hole" | "well" => crate::visual::well::draw_plain(buf, rect, inner, app, th),
+        "nowplaying" => crate::widgets::nowplaying(buf, inner, app, th),
+        "levels" => crate::widgets::levels(buf, inner, app, th),
         "listening" => {
-            crate::widgets::listening(f.buffer_mut(), inner, app, th);
+            crate::widgets::listening(buf, inner, app, th);
             // a click opens the whole story
             app.hit(inner, Hit::Action(Action::Stats));
         }
-        "rain" => crate::widgets::rain(f.buffer_mut(), inner, app, th),
-        "scope" => crate::widgets::scope(f.buffer_mut(), inner, app, th),
-        "top" => crate::widgets::top(f.buffer_mut(), inner, app, th),
+        "rain" => crate::widgets::rain(buf, inner, app, th),
+        "scope" => crate::widgets::scope(buf, inner, app, th),
+        "top" => crate::widgets::top(buf, inner, app, th),
         "today" => {
-            crate::stats::today(f.buffer_mut(), inner, app, th);
+            crate::stats::today(buf, inner, app, th);
             app.hit(inner, Hit::Action(Action::Stats));
         }
-        "topweek" => crate::stats::top_week(f.buffer_mut(), inner, app, th),
-        "starfield" => crate::ambient::starfield(f.buffer_mut(), inner, app, th),
-        "marquee" => crate::ambient::marquee(f.buffer_mut(), inner, app, th),
-        "glow" => crate::ambient::glow(f.buffer_mut(), inner, app, th),
-        "karaoke" => crate::karaoke::draw(f.buffer_mut(), inner, app, th),
+        "topweek" => crate::stats::top_week(buf, inner, app, th),
+        "starfield" => crate::ambient::starfield(buf, inner, app, th),
+        "marquee" => crate::ambient::marquee(buf, inner, app, th),
+        "glow" => crate::ambient::glow(buf, inner, app, th),
+        "karaoke" => crate::karaoke::draw(buf, inner, app, th),
         _ => {}
     }
     if matches!(slot, "hole" | "well" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top" | "today" | "topweek" | "starfield" | "marquee" | "glow" | "karaoke") {
         return;
     }
     if slot == "library" {
-        crate::sidebar::draw(f.buffer_mut(), inner, app, th);
+        crate::sidebar::draw(buf, inner, app, th);
         return;
     }
     if slot == "lyrics" {
-        crate::lyrics::draw(f.buffer_mut(), inner, app, th);
+        crate::lyrics::draw(buf, inner, app, th);
         return;
     }
     if slot == "queue" {
-        crate::queue::draw(f.buffer_mut(), inner, app, th);
+        crate::queue::draw(buf, inner, app, th);
         return;
     }
     if slot == "stream" {
-        crate::setup::draw_stream(f.buffer_mut(), inner, app, th);
+        crate::setup::draw_stream(buf, inner, app, th);
         return;
     }
     if slot == "fft" {
-        crate::meters::spectrum(f.buffer_mut(), inner, &app.meters, th);
+        crate::meters::spectrum(buf, inner, &app.meters, th);
         return;
     }
     if slot == "loudness" {
-        crate::meters::loudness(f.buffer_mut(), inner, &app.meters, th);
+        crate::meters::loudness(buf, inner, &app.meters, th);
         return;
     }
     if slot == "home" && app.search.is_some() {
-        crate::search::draw(f.buffer_mut(), inner, app, th);
+        crate::search::draw(buf, inner, app, th);
         return;
     }
     if slot == "home" && app.stats_view.is_some() {
-        crate::stats::draw(f.buffer_mut(), inner, app, th);
+        crate::stats::draw(buf, inner, app, th);
         return;
     }
     if slot == "home" && app.settings_view.is_some() {
-        crate::settings::draw(f.buffer_mut(), inner, app, th);
+        crate::settings::draw(buf, inner, app, th);
         return;
     }
     if slot == "home" && app.artist.is_some() {
-        crate::artist::draw(f.buffer_mut(), inner, app, th);
+        crate::artist::draw(buf, inner, app, th);
         return;
     }
     if slot == "home" && app.view.is_some() {
-        crate::tracks::draw(f.buffer_mut(), inner, app, th);
+        crate::tracks::draw(buf, inner, app, th);
         return;
     }
     if slot == "home" {
-        if !home_status(f.buffer_mut(), inner, app, th) {
-            crate::home::draw(f.buffer_mut(), inner, app, th);
+        if !home_status(buf, inner, app, th) {
+            crate::home::draw(buf, inner, app, th);
         }
         return;
     }
@@ -631,7 +637,7 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), sl
         let y = inner.y + inner.height / 2;
         let w = todo.chars().count() as u16;
         let x = inner.x + inner.width.saturating_sub(w) / 2;
-        text(f.buffer_mut(), x, y, inner.width, todo, th.s(th.dim));
+        text(buf, x, y, inner.width, todo, th.s(th.dim));
     }
 }
 
@@ -2531,6 +2537,68 @@ mod tests {
         assert_eq!(r.height, 2);
     }
 
+    /// Every Widget a Slot can show (and the library and Home), as `widget` draws them in a Pane.
+    const EVERY_WIDGET: [&str; 19] = ["lyrics", "queue", "nowplaying", "stream", "top", "listening", "today", "topweek", "marquee", "glow", "fft", "loudness", "levels", "scope", "rain", "starfield", "library", "home", "karaoke"];
+
+    /// `widget_app` playing a song with a cover, a long queue, long synced lyrics (30 s in), the meters moving and a
+    /// library: something for every Widget to show.
+    fn full_app() -> App {
+        use singularity_proto::{Item, LibraryItem, LyricLine, Lyrics, QueueEntry, SpectrumFrame};
+        let mut app = widget_app();
+        app.link = Link::Connected { version: "test".into() };
+        let cover = "https://i.scdn.co/image/c";
+        app.covers.insert(cover, image::RgbImage::from_pixel(64, 64, image::Rgb([200, 60, 40])));
+        app.playback.item = Some(Item { uri: "spotify:track:s".into(), name: "Every Line a Slow Orbit".into(), artists: vec!["Nova Drift".into(), "Mira Vale".into()], duration_ms: 200_000, cover_url: Some(cover.into()), ..Default::default() });
+        app.playback.status = PlayStatus::Playing;
+        app.playback.context_name = Some("Greatest Orbits".into());
+        app.playback.position_ms = 31_000;
+        app.playback.timestamp_ms = singularity_proto::now_ms();
+        app.playback.queue = (0..14).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:q{i}"), name: format!("Song number {i}"), artists: vec!["Saffron Echo".into()], duration_ms: 150_000 + i * 7_000, ..Default::default() }, source: if i < 3 { "queue" } else { "context" }.into(), uid: format!("u{i}") }).collect();
+        let words = ["Light bends where the music falls", "Every line a slow orbit, and the long ones fold over onto the next row when the Pane is narrow", "We drift past the photon sphere", "", "Nothing escapes the chorus"];
+        let lines = (0..40).map(|i| LyricLine { start_ms: 2_000 + i * 4_000, text: words[i as usize % words.len()].into(), ..Default::default() }).collect();
+        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
+        for i in 0..40u8 {
+            app.meters.push(SpectrumFrame { bands: (0..64u8).map(|b| b.wrapping_mul(3).wrapping_add(i)).collect(), level: 180, vu: [200, 150], beat: i % 8 == 0, out_level: 170u8.wrapping_add(i), out_vu: [200, 150], out_bands: [180, 120, 90] });
+        }
+        let item = |n: usize| LibraryItem { uri: format!("spotify:playlist:p{n}"), name: format!("Playlist {n}"), subtitle: "Playlist · 42 songs".into(), kind: "playlist".into(), image_url: None, depth: 0, own: n.is_multiple_of(2) };
+        app.library = Some(singularity_proto::Library { items: (0..30).map(item).collect() });
+        app
+    }
+
+    #[test]
+    fn every_widget_stays_in_its_pane_at_every_size() {
+        // a property sweep: every Widget at every width 1..=24 and then in steps to 300, every height 1..=12 and then in
+        // steps to 100, drawn into a buffer with a frame of untouched cells round the Pane; no panic, nothing outside
+        let mut app = full_app();
+        let th = app.theme.clone();
+        let widths = (1u16..=24).chain((26..=300).step_by(23)).chain([300]);
+        let heights: Vec<u16> = (1u16..=12).chain((14..=100).step_by(11)).chain([100]).collect();
+        // the first failure of each Widget, so one run shows them all
+        let mut bad: Vec<(&str, String)> = vec![];
+        for w in widths {
+            for &h in &heights {
+                for slot in EVERY_WIDGET {
+                    if bad.iter().any(|(s, _)| *s == slot) {
+                        continue;
+                    }
+                    let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, w + 2, h + 2));
+                    app.hits.clear();
+                    let outer = buf.area;
+                    let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| widget(&mut buf, outer, Rect::new(1, 1, w, h), slot, "", &mut app, &th)));
+                    if drawn.is_err() {
+                        bad.push((slot, format!("{slot} {w}x{h}: panicked")));
+                        continue;
+                    }
+                    let outside = (0..h + 2).flat_map(|y| (0..w + 2).map(move |x| (x, y))).find(|&(x, y)| (x == 0 || y == 0 || x == w + 1 || y == h + 1) && buf[(x, y)].symbol() != " ");
+                    if let Some((x, y)) = outside {
+                        bad.push((slot, format!("{slot} {w}x{h}: drew outside at ({x},{y})\n{}", widget_text(&buf))));
+                    }
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.iter().map(|(_, m)| m.as_str()).collect::<Vec<_>>().join("\n"));
+    }
+
     #[test]
     fn top_this_week_switches_between_artists_and_tracks() {
         use singularity_proto::{Command, StatsPeriod};
@@ -2739,6 +2807,32 @@ mod tests {
         let rows = lyrics_pane(&mut app, 20, 8);
         assert!(rows[6].contains("wrap") && rows[7].trim() == "LRCLIB · unsynced", "the last row of the last line ends the view: {rows:#?}");
         assert!(app.lyrics_scroll < 1_000, "clamped, so the wheel turns back at once");
+    }
+
+    #[test]
+    fn unsynced_lyrics_follow_the_song_until_the_wheel_takes_over() {
+        use singularity_proto::{LyricLine, Lyrics};
+        let (mut app, _rx) = playing_app(400_000);
+        app.playback.item.as_mut().unwrap().uri = "spotify:track:s".into();
+        let lines = (0..60).map(|i| LyricLine { start_ms: 0, text: format!("line {i}"), ..Default::default() }).collect();
+        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: false, lines, source: "LRCLIB".into(), ..Default::default() });
+        let at = |app: &mut App, ms: u64| {
+            app.playback.position_ms = ms;
+            app.playback.timestamp_ms = singularity_proto::now_ms();
+        };
+        // the start: from the top; halfway: about the middle of the words a third of the way down the view
+        at(&mut app, 0);
+        let rows = lyrics_pane(&mut app, 30, 13);
+        assert_eq!(rows[0].trim(), "line 0", "{rows:#?}");
+        at(&mut app, 200_000);
+        let rows = lyrics_pane(&mut app, 30, 13);
+        assert_eq!(rows[4].trim(), "line 30", "{rows:#?}");
+        // the wheel moves the view: it stays where the reader put it as the song goes on
+        app.lyrics_scroll -= 3;
+        let held = app.lyrics_scroll;
+        at(&mut app, 300_000);
+        lyrics_pane(&mut app, 30, 13);
+        assert_eq!(app.lyrics_scroll, held);
     }
 
     // ── Album & artist pages, history (#11) ──

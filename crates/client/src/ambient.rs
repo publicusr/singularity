@@ -9,7 +9,7 @@ use crate::theme::{Rgb, Theme};
 use crate::ui::text;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
+use ratatui::style::{Modifier, Style};
 use std::time::Instant;
 use unicode_width::UnicodeWidthStr;
 
@@ -194,7 +194,73 @@ pub(crate) fn plain(c: char) -> Option<char> {
     })
 }
 
-/// The title in big pixels (half-blocks: 5 pixel rows in 3 text rows), scrolling when it's wider than the Pane.
+/// Text rows a line of the pixel font takes at scale `s` (each pixel `s` columns wide and `s` half-rows tall).
+pub fn pixel_rows(s: u16) -> u16 {
+    (5 * s).div_ceil(2)
+}
+
+/// Columns `chars` letters take in the pixel font at scale `s` (3 pixels and a gap each, no gap after the last).
+pub fn pixel_width(chars: usize, s: u16) -> u16 {
+    (chars as u16 * 4 * s).saturating_sub(s)
+}
+
+/// `title`'s words on lines of the pixel font at scale `s` in a `w`×`h` area (a blank row between lines), at most
+/// `max_lines` (and 4) lines; None if a word is too wide or the lines too many or too tall for it.
+pub fn pixel_fit(title: &str, w: u16, h: u16, s: u16, max_lines: usize) -> Option<Vec<Vec<char>>> {
+    let max = ((w + s) / (4 * s)) as usize;
+    let mut lines: Vec<Vec<char>> = vec![];
+    for word in title.split_whitespace() {
+        let word: Vec<char> = word.chars().collect();
+        if word.len() > max {
+            return None;
+        }
+        match lines.last_mut() {
+            Some(l) if l.len() + 1 + word.len() <= max => {
+                l.push(' ');
+                l.extend(word);
+            }
+            _ => lines.push(word),
+        }
+    }
+    let n = lines.len() as u16;
+    (n > 0 && n as usize <= max_lines.min(4) && n * pixel_rows(s) + n - 1 <= h).then_some(lines)
+}
+
+/// One line of the pixel font at scale `s` from (`x`, `y`), at most `w` columns. `off` scrolls it by that many pixel
+/// columns, coming round again after a `gap` (None: no scrolling). The ramp runs top to bottom, `lift` brightens it.
+#[allow(clippy::too_many_arguments)]
+pub fn pixel_line(buf: &mut Buffer, x: u16, y: u16, w: u16, line: &[char], s: u16, off: usize, gap: Option<usize>, lift: f32, th: &Theme) {
+    let s = s.max(1) as usize;
+    let cols = line.len() * 4 * s;
+    let lit = |px: usize, py: usize| -> bool {
+        let i = match gap {
+            Some(g) => (px + off) % (cols + g),
+            None => px,
+        };
+        let (ch, c) = (i / (4 * s), i % (4 * s) / s);
+        c < 3 && ch < line.len() && py / s < 5 && glyph(line[ch])[py / s].as_bytes()[c] == b'#'
+    };
+    let rows = pixel_rows(s as u16) as usize;
+    let span = if gap.is_some() { w as usize } else { cols.min(w as usize) };
+    for cx in 0..span {
+        for row in 0..rows {
+            let (a, b) = (lit(cx, row * 2), lit(cx, row * 2 + 1));
+            let ch = match (a, b) {
+                (true, true) => "█",
+                (true, false) => "▀",
+                (false, true) => "▄",
+                _ => continue,
+            };
+            // the ramp runs across the title, top to bottom brighter
+            let col = th.ramp_at((0.45 + 0.55 * (1.0 - row as f32 / rows as f32) + lift).min(1.0));
+            text(buf, x + cx as u16, y + row as u16, 1, ch, th.s(col));
+        }
+    }
+}
+
+/// The title in big pixels (half-blocks: each pixel row half a text row), as big as the Pane allows: a big Pane
+/// scales the font up and puts the words on lines of their own; a title too long for even the smallest size on one
+/// line scrolls.
 pub fn marquee(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     if w < 8 || r.height == 0 {
@@ -215,43 +281,40 @@ pub fn marquee(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     // a beat lifts it a little; it fades back over half a second
     s.marquee_glow = if beat { (s.marquee_glow + 0.5).min(1.0) } else { (s.marquee_glow - dt * 2.0).max(0.0) };
     let lift = s.marquee_glow * 0.25;
-    // pixel columns: 3 per letter and a gap
-    let title: Vec<char> = item.name.chars().collect();
-    let cols = title.len() * 4;
-    let big = r.height >= 3;
-    let y = r.y + r.height.saturating_sub(if big { 5 } else { 2 }) / 2;
-    if big {
-        let gap = 8usize;
-        let scroll = cols > w as usize;
-        // 8 columns a second, with a gap before it comes round again
-        let off = if scroll { (s.marquee_t * 8.0) as usize % (cols + gap) } else { 0 };
-        let left = if scroll { 0 } else { (w as usize - cols) / 2 };
-        let lit = |px: usize, py: usize| -> bool {
-            let i = (px + off) % (cols + if scroll { gap } else { 0 });
-            let (ch, c) = (i / 4, i % 4);
-            c < 3 && ch < title.len() && glyph(title[ch])[py].as_bytes()[c] == b'#'
-        };
-        for cx in 0..(w as usize - left).min(if scroll { w as usize } else { cols }) {
-            for row in 0..3usize {
-                let (top, bottom) = (row * 2, row * 2 + 1);
-                let a = lit(cx, top);
-                let b = bottom < 5 && lit(cx, bottom);
-                let ch = match (a, b) {
-                    (true, true) => "█",
-                    (true, false) => "▀",
-                    (false, true) => "▄",
-                    _ => continue,
-                };
-                // the ramp runs across the title, top to bottom brighter
-                let col = th.ramp_at((0.45 + 0.55 * (1.0 - row as f32 / 3.0) + lift).min(1.0));
-                text(buf, x + (left + cx) as u16, y + row as u16, 1, ch, th.s(col));
-            }
-        }
-    } else {
-        text(buf, x, y, w, &item.name, th.s(th.accent).add_modifier(Modifier::BOLD));
-    }
     let artists = item.artists.join(", ");
-    let ay = y + if big { 4 } else { 1 };
+    // the artists' row and a blank one above it, when there's room for them under the title
+    let under = if artists.is_empty() { 0 } else { 2 };
+    let room = |h: u16| if h >= 3 + under { h - under } else { h };
+    // the biggest scale whose lines fit (the font is 3×5 pixels: scale 1 is 3 rows a line); two lines at most, so it
+    // stays a title, unless the Pane is too narrow for the words side by side
+    let most = if w < 40 { 4 } else { 2 };
+    let fit = (1..=8u16).rev().find_map(|sc| pixel_fit(&item.name, w, room(r.height), sc, most).map(|l| (sc, l)));
+    let y_after = if let Some((sc, lines)) = fit {
+        let n = lines.len() as u16;
+        let block = n * pixel_rows(sc) + n - 1;
+        let total = block + if r.height >= block + under { under } else { 0 };
+        let mut y = r.y + (r.height - total) / 2;
+        for line in &lines {
+            let lw = pixel_width(line.len(), sc);
+            pixel_line(buf, x + (w - lw) / 2, y, w, line, sc, 0, None, lift, th);
+            y += pixel_rows(sc) + 1;
+        }
+        y - 1
+    } else if r.height >= 3 {
+        // one line, scrolling: 8 columns a second, with a gap before it comes round again
+        let title: Vec<char> = item.name.chars().collect();
+        let gap = 8usize;
+        let off = (s.marquee_t * 8.0) as usize % (title.len() * 4 + gap);
+        let y = r.y + r.height.saturating_sub(3 + if r.height >= 3 + under { under } else { 0 }) / 2;
+        pixel_line(buf, x, y, w, &title, 1, off, Some(gap), lift, th);
+        y + 3
+    } else {
+        let y = r.y + r.height.saturating_sub(2) / 2;
+        let tw = (item.name.width() as u16).min(w);
+        text(buf, x + (w - tw) / 2, y, tw, &item.name, th.s(th.accent).add_modifier(Modifier::BOLD));
+        y
+    };
+    let ay = y_after + 1;
     if ay < r.bottom() && !artists.is_empty() {
         let aw = (artists.width() as u16).min(w);
         text(buf, x + (w - aw) / 2, ay, aw, &artists, th.s(th.dim));
@@ -263,12 +326,21 @@ pub fn marquee(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 /// The cover in the middle, its colours bleeding out into the Pane as smooth solid fields (half-block resolution,
 /// exponential falloff from the cover's edge) and fading into the Theme's background. Bass swells it, a beat pulses it.
 pub fn glow(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
-    if r.width < 6 || r.height < 3 {
+    if r.width < 4 || r.height == 0 {
         return;
     }
     let Some(item) = app.playback.item.clone() else {
         return text(buf, r.x + 1, r.y, r.width.saturating_sub(2), "nothing playing", th.s(th.dim));
     };
+    // too small for a cover to glow round: the song in words
+    if r.width < 6 || r.height < 3 {
+        let (x, w) = (r.x + u16::from(r.width >= 8), r.width.saturating_sub(2 * u16::from(r.width >= 8)));
+        text(buf, x, r.y, w, &item.name, th.s(th.fg).add_modifier(Modifier::BOLD));
+        if r.height > 1 {
+            text(buf, x, r.y + 1, w, &item.artists.join(", "), th.s(th.dim));
+        }
+        return;
+    }
     let url = item.cover_url.clone().unwrap_or_default();
     // the cover: square in pixels, about half the Pane's height
     let aspect = app.cell_px.map(|(w, h)| h / w).unwrap_or(2.0);
@@ -394,20 +466,75 @@ pub fn glow(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 /// Glow's Visual id on the pixel tier (the hole is 1, the idle takeover 2).
 const GLOW_ID: u32 = 3;
 
-/// The song under the cover.
+/// The song under the cover: on one line when it fits, else the title over the artists; beside the cover when the
+/// Pane has no row under it (a wide, short Pane).
 fn glow_label(buf: &mut Buffer, r: Rect, cover: Rect, item: &singularity_proto::Item, th: &Theme) {
-    let label = format!("{} · {}", item.name, item.artists.join(", "));
+    let clip = |s: &str, w: u16| -> String {
+        if s.width() as u16 <= w {
+            return s.to_string();
+        }
+        let mut out = String::new();
+        for c in s.chars() {
+            if out.width() + c.to_string().width() + 1 > w as usize {
+                break;
+            }
+            out.push(c);
+        }
+        out + "…"
+    };
+    let artists = item.artists.join(", ");
     let ly = cover.bottom() + 1;
+    let room = r.width.saturating_sub(2);
     if ly < r.bottom() {
-        let lw = (label.width() as u16).min(r.width.saturating_sub(2));
-        let label: String = if label.width() as u16 > lw { label.chars().take(lw.saturating_sub(1) as usize).collect::<String>() + "…" } else { label };
-        text(buf, r.x + (r.width - lw) / 2, ly, lw, &label, th.s(th.fg));
+        let one = format!("{} · {}", item.name, artists);
+        let lines: Vec<(String, Style)> = if one.width() as u16 <= room || ly + 1 >= r.bottom() || artists.is_empty() {
+            vec![(clip(&one, room), th.s(th.fg))]
+        } else {
+            vec![(clip(&item.name, room), th.s(th.fg).add_modifier(Modifier::BOLD)), (clip(&artists, room), th.s(th.dim))]
+        };
+        for (i, (l, st)) in lines.iter().enumerate() {
+            let lw = l.width() as u16;
+            text(buf, r.x + (r.width - lw) / 2, ly + i as u16, lw, l, *st);
+        }
+        return;
+    }
+    // beside the cover, its middle rows
+    let lx = cover.right() + 2;
+    let lw = r.right().saturating_sub(lx + 1);
+    if lw >= 8 {
+        let y = cover.y + cover.height.saturating_sub(2) / 2;
+        text(buf, lx, y, lw, &clip(&item.name, lw), th.s(th.fg).add_modifier(Modifier::BOLD));
+        if y + 1 < r.bottom() {
+            text(buf, lx, y + 1, lw, &clip(&artists, lw), th.s(th.dim));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pixel_title_fits_wherever_it_is_placed() {
+        for title in ["Track 1", "Every Line a Slow Orbit", "Łódź", "Supercalifragilistic", ""] {
+            for w in 0..=300u16 {
+                for h in (0..=100u16).step_by(3) {
+                    for s in 1..=8 {
+                        if let Some(lines) = pixel_fit(title, w, h, s, 4) {
+                            let n = lines.len() as u16;
+                            assert!(lines.iter().all(|l| pixel_width(l.len(), s) <= w), "{title:?} {w}x{h} at {s}");
+                            assert!(n * pixel_rows(s) + n - 1 <= h && n <= 4, "{title:?} {w}x{h} at {s}");
+                        }
+                    }
+                }
+            }
+        }
+        // a big Pane: big letters, a word or two to a line
+        let lines = pixel_fit("Every Line a Slow Orbit", 254, 60, 6, 4).unwrap();
+        assert_eq!(lines.len(), 3);
+        assert!(pixel_fit("Every Line a Slow Orbit", 254, 60, 8, 4).is_none());
+        assert!(pixel_fit("Every Line a Slow Orbit", 254, 60, 6, 2).is_none(), "three lines are too many here");
+    }
 
     #[test]
     fn every_glyph_is_three_by_five_and_accents_fall_back() {

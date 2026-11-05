@@ -324,7 +324,8 @@ pub fn today(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
         n => format!("{n}-day streak"),
     };
     let streak_st = th.s(if sum.streak_days > 1 { th.accent2 } else { th.dim });
-    if r.height < 9 || w < 22 {
+    // small: lines of text (a narrow Pane tall enough still gets the figure and the chart)
+    if r.height < 9 || w < 12 || (w < 22 && r.height < 16) {
         return today_compact(buf, r, sum, mins, &plays, &streak, streak_st, th);
     }
     let mut y = r.y;
@@ -434,12 +435,34 @@ fn today_compact(buf: &mut Buffer, r: Rect, sum: &singularity_proto::ListeningSu
         text(buf, x, y, w, &clip(t, w as usize), st);
         y += 1;
     }
+    // wide and short: the last 7 days as columns at the right, beside the lines
+    let week = &sum.minutes[sum.minutes.len().saturating_sub(7)..];
+    let max = week.iter().copied().max().unwrap_or(0).max(1);
+    if y + 1 >= r.bottom() && r.height >= 2 && w >= 48 {
+        let lines_w = [headline.width(), plays.width(), streak.width()].into_iter().max().unwrap_or(0) as u16;
+        let x0 = x + w - 7 * 3;
+        if x0 > x + lines_w + 2 {
+            let base = r.bottom() - 2;
+            for (i, m) in week.iter().enumerate() {
+                let is_today = i == week.len() - 1;
+                let t = *m as f32 / max as f32;
+                let col = if is_today { th.accent } else { th.ramp_at(0.3 + 0.7 * t) };
+                let cx = x0 + i as u16 * 3;
+                if *m == 0 {
+                    text(buf, cx, base, 2, "▁▁", th.s(th.border));
+                } else {
+                    crate::tile::column(buf, cx, base, 2, r.height - 1, t, col, th);
+                }
+                let day = (sum.today_weekday as usize + 7 - (week.len() - 1 - i)) % 7;
+                text(buf, cx, base + 1, 1, WEEKDAYS[day], th.s(if is_today { th.accent } else { th.border }));
+            }
+        }
+        return;
+    }
     // the last 7 days, oldest first, with weekday initials under them when there's a row for them
     if y + 1 < r.bottom() {
         y += 1;
         const EIGHTHS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-        let week = &sum.minutes[sum.minutes.len().saturating_sub(7)..];
-        let max = week.iter().copied().max().unwrap_or(0).max(1);
         let cw = (w / 7).clamp(1, 3);
         for (i, m) in week.iter().enumerate() {
             let t = *m as f32 / max as f32;
@@ -481,7 +504,7 @@ pub fn top_week(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     // two lines an entry, once at least four entries fit that way
     let tall = w >= 26 && r.height >= 2 + 4 * 2;
     if !tall {
-        for i in 0..sec.rows(&s).len().min(5).min(r.height as usize) {
+        for i in 0..sec.rows(&s).len().min(r.height as usize) {
             let rect = Rect::new(x, r.y + i as u16, w, 1);
             row(buf, rect, sec, i, &s, peak, false, th);
             hits.push((rect, Hit::TopWeek(i)));
