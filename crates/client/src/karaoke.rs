@@ -238,7 +238,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         centre(buf, r, mid, "nothing to sing along to", th.s(th.fg));
         return centre(buf, r, mid + 1, why, th.s(th.dim));
     }
-    let pos = app.display_position(singularity_proto::now_ms());
+    let pos = app.lyrics_position(singularity_proto::now_ms());
     if !lyr.synced {
         return unsynced(buf, r, app, pos, th);
     }
@@ -665,6 +665,21 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, w + 2, h + 2));
         draw(&mut buf, Rect::new(1, 1, w, h), app, &th);
         (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn the_lyrics_delay_holds_the_words_back() {
+        // paused at 4.3 s with the words 300 ms behind: drawn as at 4.0 s without a delay
+        let mut late = app_at(4_300, true);
+        late.config.lyrics.delay_ms = 300;
+        assert_eq!(late.lyrics_position(singularity_proto::now_ms()), 4_000);
+        let mut plain = app_at(4_000, true);
+        assert_eq!(render(&mut late, 60, 12), render(&mut plain, 60, 12));
+        // never before the song's start; a negative delay brings them forward
+        late.config.lyrics.delay_ms = 9_000;
+        assert_eq!(late.lyrics_position(singularity_proto::now_ms()), 0);
+        late.config.lyrics.delay_ms = -200;
+        assert_eq!(late.lyrics_position(singularity_proto::now_ms()), 4_500);
     }
 
     #[test]

@@ -204,7 +204,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let longest = lyr.lines.iter().map(|l| l.text.width()).max().unwrap_or(0).min(u16::MAX as usize) as u16;
     let f = fit(r.width, r.height, lyr.synced, longest);
     let body = f.body as usize;
-    let pos = app.display_position(singularity_proto::now_ms());
+    let pos = app.lyrics_position(singularity_proto::now_ms());
     // every line's rows, and where each line's rows are: wrapped again only for a new song, width or spacing
     let cache = &mut app.lyrics_wrap;
     let key = (lyr.uri.clone(), f.text_w as usize, lyr.lines.len(), f.gap as usize);

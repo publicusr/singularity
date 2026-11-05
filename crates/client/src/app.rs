@@ -2322,6 +2322,12 @@ impl App {
         self.playback.item.as_ref().map(|i| i.duration_ms).unwrap_or(0)
     }
 
+    /// Where the lyrics and karaoke are in the song: the seek bar's place less `lyrics.delay_ms` (D67), so the words
+    /// can wait for an output that plays later than the player says.
+    pub fn lyrics_position(&self, now_ms: u64) -> u64 {
+        (self.display_position(now_ms) as i64 - self.config.lyrics.delay()).max(0) as u64
+    }
+
     /// Where the seek bar stands: the drag target, a pending nudge, or the interpolated playback position.
     pub fn display_position(&self, now_ms: u64) -> u64 {
         match &self.scrub {
@@ -2699,8 +2705,8 @@ impl App {
                         // a queued or context song can be dragged (a context song also up into your queue)
                         self.queue_drag = crate::queue::QueueDrag::start(self, i);
                     }
-                    // click a lyric line: jump there
-                    Some(Hit::Lyric(ms)) => self.seek_to(ms),
+                    // click a lyric line: jump there (where the music is when the delayed line shows)
+                    Some(Hit::Lyric(ms)) => self.seek_to((ms as i64 + self.config.lyrics.delay()).max(0) as u64),
                     Some(Hit::Well) => {
                         let hole = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| s == "hole");
                         self.focus = if hole { "hole" } else { "well" }.into();

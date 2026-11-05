@@ -2747,6 +2747,11 @@ mod tests {
         let l9 = app.hits.iter().find_map(|(r, h)| (*h == Hit::Lyric(45_000)).then_some(*r)).unwrap();
         click(&mut app, l9.x + 10, l9.y);
         assert_eq!(sent(&mut rx), vec![Command::Seek { position_ms: 45_000 }]);
+        // with the words delayed (`lyrics.delay_ms`), the music goes to where the line will show
+        app.config.lyrics.delay_ms = 250;
+        click(&mut app, l9.x + 10, l9.y);
+        assert_eq!(sent(&mut rx), vec![Command::Seek { position_ms: 45_250 }]);
+        app.config.lyrics.delay_ms = 0;
         // none: a calm empty state that says why
         app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), ..Default::default() });
         assert!(render(&mut app, 160, 48).contains("no lyrics for this one"));
