@@ -196,7 +196,9 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         } else {
             text(buf, x, y, w, "Recent searches", th.s(th.accent).add_modifier(Modifier::BOLD));
             y += 1;
-            for (i, q) in app.recent.iter().enumerate() {
+            // a short Pane shows a window that follows the highlight (wheel, ↑ ↓)
+            let first = crate::scroll::window(v.recent_sel, r.bottom().saturating_sub(y) as usize, app.recent.len());
+            for (i, q) in app.recent.iter().enumerate().skip(first) {
                 if y >= r.bottom() {
                     break;
                 }

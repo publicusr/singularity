@@ -103,12 +103,11 @@ pub fn float_target(t: &TileDrag, body: Rect, lift: f32) -> Rect {
     Rect::new(x, y, w, h)
 }
 
-/// The OSC 22 bytes that give the pointer `shape`; "" puts the terminal's own pointer back. That takes two: kitty
-/// and foot reset on an empty name, but Ghostty (1.3) ignores one ("unknown cursor shape") and would keep the
-/// resize arrow for good (the owner, 2026-11-05); its own pointer is `text`, which kitty and foot also know, so
-/// `text` comes first and the empty name after it, for the terminals that have a configured default of their own.
+/// The OSC 22 bytes that give the pointer `shape`; "" puts the ordinary arrow back. Ghostty (1.3) ignores an empty
+/// name ("unknown cursor shape") and would keep the resize arrow for good, and `text` gives an I-beam (the owner,
+/// 2026-11-05: "can it just be normal"); `default` is the plain arrow in Ghostty, kitty and foot alike.
 pub fn pointer_shape_seq(shape: &str) -> String {
-    if shape.is_empty() { "\x1b]22;text\x1b\\\x1b]22;\x1b\\".to_string() } else { format!("\x1b]22;{shape}\x1b\\") }
+    format!("\x1b]22;{}\x1b\\", if shape.is_empty() { "default" } else { shape })
 }
 
 /// A border that can be grabbed, lit in the accent colour (only its line glyphs: a title on it keeps its colours).

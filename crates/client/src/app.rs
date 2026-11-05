@@ -2858,6 +2858,12 @@ impl App {
                     self.focus = "home".into();
                     let song_row = |h: &Hit| matches!(h, Hit::TopTrack(_) | Hit::SearchTrack(_));
                     let on_song = self.hits.iter().any(|(r, h)| song_row(h) && r.y == m.row && m.column >= r.x && m.column < r.right());
+                    // no query yet: the page is the recent searches, and the wheel moves through them
+                    let recent = self.recent.len();
+                    if let Some(s) = self.search.as_mut().filter(|s| s.query.trim().is_empty() && recent > 0) {
+                        s.recent_sel = crate::scroll::moved(s.recent_sel, -sign as i32 * if coarse { 5 } else { 1 }, recent);
+                        return;
+                    }
                     if on_song {
                         let d = -sign * if coarse { 5 } else { 1 };
                         if let Some(a) = self.artist.as_mut() {

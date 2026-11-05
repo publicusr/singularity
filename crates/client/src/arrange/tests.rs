@@ -1333,7 +1333,7 @@ fn a_size_only_drop_says_to_drag_the_border_which_lights_up_and_resizes() {
 fn the_resize_pointer_goes_back_off_the_border_in_every_terminal() {
     use crate::layout::{Axis, Size};
     // the reset names a shape Ghostty knows, then the empty name kitty and foot reset on
-    assert_eq!(crate::arrange::pointer_shape_seq(""), "\x1b]22;text\x1b\\\x1b]22;\x1b\\");
+    assert_eq!(crate::arrange::pointer_shape_seq(""), "\x1b]22;default\x1b\\");
     assert_eq!(crate::arrange::pointer_shape_seq("ew-resize"), "\x1b]22;ew-resize\x1b\\");
     let mut a = app();
     a.layout = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::slot("home"), Node::slot("lyrics"));

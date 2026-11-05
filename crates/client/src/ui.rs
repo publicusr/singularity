@@ -2045,6 +2045,23 @@ mod tests {
     }
 
     #[test]
+    fn the_wheel_moves_through_recent_searches_and_a_short_pane_follows() {
+        let (mut app, _rx) = playing_app(200_000);
+        app.recent = (0..12).map(|i| format!("query {i}")).collect();
+        app.run(Action::Search);
+        render(&mut app, 120, 24);
+        let home = app.layout.compute(Rect::new(0, 1, 120, 24 - 5)).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        for _ in 0..11 {
+            mouse(&mut app, MouseEventKind::ScrollDown, home.x as f64 + 3.5, home.y + 5, false);
+        }
+        assert_eq!(app.search.as_ref().unwrap().recent_sel, 11);
+        let s = render(&mut app, 120, 24);
+        assert!(s.contains("query 11"), "the highlight stays in view\n{s}");
+        mouse(&mut app, MouseEventKind::ScrollUp, home.x as f64 + 3.5, home.y + 5, false);
+        assert_eq!(app.search.as_ref().unwrap().recent_sel, 10);
+    }
+
+    #[test]
     fn a_book_lists_its_chapters_and_librespot_says_what_plays_them() {
         use singularity_proto::{Card, Command, EngineKind, Progress, SearchResults, TrackPage, TrackRow};
         let (mut app, mut rx) = playing_app(200_000);
