@@ -177,8 +177,15 @@ _Avoid_: sing-along view, karaoke mode
 
 **Word timing**:
 When each word of a lyrics line is sung. *Exact* when the lyrics come with it (LRCLIB's word-synced Lyricsfile,
-enhanced LRC), else *estimated* from the line's start and the next line's by syllables; the Karaoke Widget says which.
+enhanced LRC), else *estimated*: the song's syllables at one *pace* fitted over all its lines, each line's words
+from its start, its last word held; the Karaoke Widget says which.
 _Avoid_: syllable sync (Spotify's unused `SYLLABLE_SYNCED`), word sync
+
+**Lyrics delay**:
+`lyrics.delay_ms` in the config: how much later the lyrics and Karaoke Widgets follow the music than the player's
+position (for an output that lags, such as Bluetooth headphones, or lyrics stamped early throughout); clicking a line
+seeks to where the music is when it shows.
+_Avoid_: lyrics offset (LRC's `[offset:]` runs the other way), latency
 
 **Lyricsfile**:
 LRCLIB's lyrics format (YAML): lines with start and end times and, when word-synced, their words timed too.

@@ -200,7 +200,7 @@ impl App {
         let Some(v) = self.settings_view.clone() else { return false };
         if let Some(mut typed) = v.typing {
             match k.code {
-                KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == ',' => typed.push(c),
+                KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == ',' || (c == '-' && typed.is_empty()) => typed.push(c),
                 KeyCode::Backspace => {
                     typed.pop();
                 }

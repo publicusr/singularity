@@ -86,7 +86,7 @@ audio, and looks spectacular.
 33. As a listener, I want time-synced lyrics that highlight the current line, so that I can follow along.
 34. As a listener, I want to click a lyric line to seek there, so that I can jump to a part of the song.
 35. As a listener, I want lyrics to fall back to LRCLIB when Spotify has none, so that more songs have lyrics.
-35a. As a singer, I want a Karaoke Widget (D67) that shows the line being sung big, fills each word as it's sung and bounces a ball onto each word as it starts (exact word times when the lyrics have them, estimated otherwise, and said so), with a count-in after instrumentals, so that I can sing along at any Pane size.
+35a. As a singer, I want a Karaoke Widget (D67) that shows the line being sung big, fills each word as it's sung and bounces a ball onto each word as it starts (exact word times when the lyrics have them, estimated otherwise, and said so), with a count-in after instrumentals, so that I can sing along at any Pane size. Estimated words follow the song's own pace (fitted over its lines) and hold a line's last word; `lyrics.delay_ms` shifts the lyrics and karaoke against the music for an output that lags.
 
 ### Visuals
 36. As a user, I want the black hole in its own gravity-well Pane, its gravity bending the borders around it but never my content, so that it looks incredible without costing usability.
