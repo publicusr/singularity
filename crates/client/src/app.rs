@@ -687,7 +687,7 @@ pub struct App {
     /// the idle takeover (#17): the last input, since when the hole is out, a preview asked for, and where the hole
     /// sat in its Pane (where it breaks out from)
     last_input: Instant,
-    idle_since: Option<Instant>,
+    pub(crate) idle_since: Option<Instant>,
     idle_preview: bool,
     pub hole_origin: Option<crate::visual::idle::Origin>,
     last_tick: Instant,
@@ -2492,6 +2492,12 @@ impl App {
 
     /// A mouse event; `fx` is the pointer's fractional column, `precise` whether it has real sub-cell resolution.
     pub fn pointer(&mut self, m: MouseEvent, fx: f64, precise: bool) {
+        // the border under the pointer, from every event that says where it is (a release off the border, a wake, a
+        // popup opening: none of them may leave a stale resize pointer behind; the owner, 2026-11-05)
+        self.grip_hover = match (self.modal(), self.hit_at(m.column, m.row)) {
+            (None, Some(Hit::Divider(i))) => Some(i),
+            _ => None,
+        };
         // any mouse event wakes the idle UI, and does nothing else
         if self.wake() {
             return;
@@ -2501,12 +2507,6 @@ impl App {
         // (decided from state, not from last frame's hit rectangles, which a burst or a key in the same batch outdates)
         if let Some(modal) = self.modal() {
             return self.modal_pointer(modal, m, coarse);
-        }
-        if m.kind == MouseEventKind::Moved {
-            self.grip_hover = match self.hit_at(m.column, m.row) {
-                Some(Hit::Divider(i)) => Some(i),
-                _ => None,
-            };
         }
         // a Pane held by its title: the pointer is the Pane's until it lets go
         if self.tile.is_some() {

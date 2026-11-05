@@ -1325,3 +1325,47 @@ fn a_size_only_drop_says_to_drag_the_border_which_lights_up_and_resizes() {
     render(&mut a, W, H);
     assert_eq!(pane(&a, "home").width, home.width - 20);
 }
+
+/// The owner (2026-11-05): "the cursor bugging out and having the arrow left, dot in the middle and arrow right like
+/// for resizing always". Ghostty ignores OSC 22 with an empty name, so putting the pointer back sends `text` (its
+/// own) too; and the resize pointer goes away whenever the pointer is off the border, however it got there.
+#[test]
+fn the_resize_pointer_goes_back_off_the_border_in_every_terminal() {
+    use crate::layout::{Axis, Size};
+    // the reset names a shape Ghostty knows, then the empty name kitty and foot reset on
+    assert_eq!(crate::arrange::pointer_shape_seq(""), "\x1b]22;text\x1b\\\x1b]22;\x1b\\");
+    assert_eq!(crate::arrange::pointer_shape_seq("ew-resize"), "\x1b]22;ew-resize\x1b\\");
+    let mut a = app();
+    a.layout = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::slot("home"), Node::slot("lyrics"));
+    render(&mut a, W, H);
+    let home = pane(&a, "home");
+    let (gx, gy) = (home.right() - 1, home.y + home.height / 2);
+    let on = |a: &mut App| {
+        mouse(a, MouseEventKind::Moved, gx, gy);
+        assert_eq!(a.pointer_shape(), "ew-resize");
+    };
+    // a border dragged and let go away from it (no move after the release)
+    on(&mut a);
+    press(&mut a, gx, gy);
+    sweep(&mut a, gx - 10, gy);
+    release(&mut a, gx - 10, gy);
+    render(&mut a, W, H);
+    assert_eq!(a.pointer_shape(), "", "let go off the border");
+    // a click elsewhere straight after hovering it (a terminal that sent no move in between)
+    render(&mut a, W, H);
+    let home = pane(&a, "home");
+    let (gx, gy) = (home.right() - 1, home.y + home.height / 2);
+    mouse(&mut a, MouseEventKind::Moved, gx, gy);
+    assert_eq!(a.pointer_shape(), "ew-resize");
+    mouse(&mut a, MouseEventKind::ScrollDown, home.x + 3, gy);
+    assert_eq!(a.pointer_shape(), "", "the wheel elsewhere");
+    // the window loses focus, or the terminal is resized, with the pointer on the border
+    mouse(&mut a, MouseEventKind::Moved, gx, gy);
+    a.pointer_gone();
+    assert_eq!(a.pointer_shape(), "", "focus lost / resized");
+    // the idle takeover woken by a move off the border
+    mouse(&mut a, MouseEventKind::Moved, gx, gy);
+    a.idle_since = Some(std::time::Instant::now());
+    mouse(&mut a, MouseEventKind::Moved, home.x + 3, gy);
+    assert_eq!(a.pointer_shape(), "", "a waking move off the border");
+}

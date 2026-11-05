@@ -52,6 +52,7 @@ class Term:
         self.upload = None    # (id, w, h, chunks) while a chunked transmission is in flight
         self.apc_log = []
         self.cup = (0, 0)  # last cursor move seen in the output (row, col), across reads
+        self.osc22 = []  # every pointer shape asked for (OSC 22), in order; "" is a reset to the terminal's own
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, COLS * CW, ROWS * CH))
 
     def pump(self, secs):
@@ -66,6 +67,7 @@ class Term:
                 self.feed(data)
 
     def feed(self, data):
+        self.osc22 += [m.decode() for m in re.findall(rb"\x1b\]22;([^\x1b\x07]*)", data)]
         # pull kitty graphics APCs out before pyte sees them (it would print their payload); each image goes where
         # pyte's cursor is when its APC arrives, as in kitty
         data = self.pending + data
@@ -1135,11 +1137,18 @@ def resize(t, out):
     gx, gy = right, (y + bottom) // 2
     mouse(t, 35, gx, gy, wait=0.4)  # hover: the border lights up
     t.shot(f"{out}/0b-hover.png")
+    print("pointer on the border:", t.osc22[-1:])
+    mouse(t, 35, gx - 6, gy, wait=0.4)
+    print("pointer off it:", t.osc22[-2:])
+    mouse(t, 35, gx, gy, wait=0.3)
     mouse(t, 0, gx, gy)
     for i in range(1, 9):
         mouse(t, 32, gx - 4 * i, gy, wait=0.1)
     mouse(t, 0, gx - 32, gy, release=True, wait=0.6)
     t.shot(f"{out}/1-narrower.png")
+    # off the border it was dragged to (it sits 32 columns left now)
+    mouse(t, 35, gx - 40, gy, wait=0.4)
+    print("pointer after the drag, moved off:", t.osc22[-2:])
     x, y, right, bottom = home_rect()
     print("home after the side border:", right - x + 1, "x", bottom - y + 1)
     # the border above Home (its title row is the move handle; the Pane above's bottom border row is the grip)
@@ -1160,7 +1169,11 @@ def resize(t, out):
     mouse(t, 0, right - 2, ly + 6, release=True, wait=0.8)
     t.shot(f"{out}/3-title-drop.png")
     print("hint shown:", bool(t.find("drag the border between two Panes")))
+    # (Ghostty ignores an empty OSC 22: a reset names `text` first)
+    print("pointer shapes asked for:", t.osc22)
     t.send(b"q", 0.5)
+    t.pump(0.5)
+    print("pointer at exit:", t.osc22[-2:])
 
 
 def widgets_large(t, out):

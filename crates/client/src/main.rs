@@ -67,6 +67,8 @@ async fn main() -> anyhow::Result<()> {
     }
     let mut tui = ratatui::init();
     execute!(stdout(), EnableMouseCapture, EnableFocusChange, EnableBracketedPaste)?;
+    // the terminal's own pointer, whatever an earlier run (or another app) left
+    stdout().write_all(arrange::pointer_shape_seq("").as_bytes())?;
     // frames: 30 a second, `visuals.unfocused_fps` unfocused, `visuals.motion_fps` while something moves (pace.rs)
     let mut focused = true;
     // pixel-precise pointer where the terminal supports it (#24)
@@ -147,8 +149,7 @@ async fn main() -> anyhow::Result<()> {
             }
             let shape = app.pointer_shape();
             if shape != app.pointer_shape_sent {
-                // OSC 22 sets the pointer's shape; an empty name puts the terminal's own back
-                write!(out, "\x1b]22;{shape}\x1b\\")?;
+                out.write_all(arrange::pointer_shape_seq(shape).as_bytes())?;
                 app.pointer_shape_sent = shape;
             }
             if let Some(t) = app.clipboard.take() {
@@ -172,9 +173,8 @@ async fn main() -> anyhow::Result<()> {
         let _ = k.reset(&mut stdout());
     }
     let _ = units.disable(&mut stdout());
-    if !app.pointer_shape_sent.is_empty() {
-        let _ = write!(stdout(), "\x1b]22;\x1b\\");
-    }
+    // always: a shape we can't know about (a crashed run, another app) mustn't outlive us either
+    let _ = stdout().write_all(arrange::pointer_shape_seq("").as_bytes());
     let _ = execute!(stdout(), DisableMouseCapture, DisableFocusChange, DisableBracketedPaste);
     ratatui::restore();
     res
@@ -192,9 +192,14 @@ fn handle(app: &mut App, ev: TermEvent, at: Instant, focused: &mut bool, units: 
             }
         }
         TermEvent::Paste(s) => app.paste(&s),
-        TermEvent::FocusLost => *focused = false,
+        TermEvent::FocusLost => {
+            *focused = false;
+            app.pointer_gone();
+        }
         TermEvent::FocusGained => *focused = true,
         TermEvent::Resize(..) => {
+            // the borders move: the one under the pointer is found again on its next move
+            app.pointer_gone();
             if *units != term::MouseUnits::Cells {
                 *units = term::MouseUnits::measure().unwrap_or(*units);
             }

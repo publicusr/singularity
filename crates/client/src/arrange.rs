@@ -103,6 +103,14 @@ pub fn float_target(t: &TileDrag, body: Rect, lift: f32) -> Rect {
     Rect::new(x, y, w, h)
 }
 
+/// The OSC 22 bytes that give the pointer `shape`; "" puts the terminal's own pointer back. That takes two: kitty
+/// and foot reset on an empty name, but Ghostty (1.3) ignores one ("unknown cursor shape") and would keep the
+/// resize arrow for good (the owner, 2026-11-05); its own pointer is `text`, which kitty and foot also know, so
+/// `text` comes first and the empty name after it, for the terminals that have a configured default of their own.
+pub fn pointer_shape_seq(shape: &str) -> String {
+    if shape.is_empty() { "\x1b]22;text\x1b\\\x1b]22;\x1b\\".to_string() } else { format!("\x1b]22;{shape}\x1b\\") }
+}
+
 /// A border that can be grabbed, lit in the accent colour (only its line glyphs: a title on it keeps its colours).
 pub fn light_grip(buf: &mut Buffer, grip: Rect, th: &Theme) {
     for y in grip.top()..grip.bottom() {
@@ -308,8 +316,14 @@ impl App {
         }
     }
 
+    /// The pointer left the window or the layout changed under it (focus lost, a resize): no border is under it
+    /// until the next mouse event says so.
+    pub fn pointer_gone(&mut self) {
+        self.grip_hover = None;
+    }
+
     /// The mouse pointer's shape for the terminal (OSC 22: kitty, Ghostty, foot…; others ignore it): a resize arrow
-    /// over a border that can be dragged, else the terminal's own.
+    /// over a border that can be dragged, else the terminal's own ("").
     pub fn pointer_shape(&self) -> &'static str {
         match self.grip_lit().and_then(|i| self.dividers.get(i)) {
             Some(d) if d.axis == crate::layout::Axis::Horizontal => "ew-resize",
