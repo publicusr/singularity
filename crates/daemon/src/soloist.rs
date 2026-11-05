@@ -1101,6 +1101,13 @@ impl SoloistState {
             // "queue_changed" is handled above (the queue only)
             _ => return false,
         }
+        // Soloist now says what our last play/pause asked for: from here on its word is the state a toggle goes
+        // from (a remembered press that outlived its answer turned the next toggle the wrong way)
+        if let Some((s, _)) = self.toggled
+            && (self.playback.status == s || (self.playback.status, s) == (PlayStatus::Buffering, PlayStatus::Playing))
+        {
+            self.toggled = None;
+        }
         true
     }
 
@@ -1204,6 +1211,24 @@ mod tests {
         let mut s = SoloistState::default();
         s.playback.status = PlayStatus::Buffering;
         assert_eq!(cmd(&s.to_soloist(Command::TogglePlay)), "pause", "buffering counts as playing");
+    }
+
+    /// Once Soloist has said what our play/pause asked for, the next toggle goes from what it says, not from the press
+    /// (2026-11-05: Space pressed fast as the app starts).
+    #[test]
+    fn a_toggle_goes_from_soloist_once_it_has_answered() {
+        let cmd = |v: &Vec<Value>| v[0]["command"].as_str().unwrap().to_string();
+        let mut s = SoloistState::default();
+        s.playback.status = PlayStatus::Playing;
+        assert_eq!(cmd(&s.to_soloist(Command::Pause)), "pause");
+        assert!(s.apply(&json!({"type": "playback_changed", "status": "paused"})));
+        assert!(s.toggled.is_none(), "answered");
+        // then something else (a phone, Spotify restoring a session) starts it: a toggle pauses
+        assert!(s.apply(&json!({"type": "playback_changed", "status": "playing"})));
+        assert_eq!(cmd(&s.to_soloist(Command::TogglePlay)), "pause");
+        // a stale report that contradicts the press doesn't end it
+        assert!(s.apply(&json!({"type": "playback_changed", "status": "playing"})));
+        assert_eq!(cmd(&s.to_soloist(Command::TogglePlay)), "play", "the press still stands");
     }
 
     #[test]

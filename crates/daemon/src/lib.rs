@@ -1017,7 +1017,8 @@ pub(crate) async fn transport(hub: &Hub, cmd: Command) {
     match (remote, &hub.catalogue) {
         (Some(r), Some(c)) if is_transport(&cmd) => {
             let cmd = match cmd {
-                Command::TogglePlay if r.status == proto::PlayStatus::Playing => Command::Pause,
+                // buffering is playing on its way: a "play" then would be a no-op
+                Command::TogglePlay if matches!(r.status, proto::PlayStatus::Playing | proto::PlayStatus::Buffering) => Command::Pause,
                 Command::TogglePlay => Command::Play { uri: None },
                 other => other,
             };

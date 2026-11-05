@@ -555,6 +555,9 @@ pub struct App {
     volume_hold: Option<(u8, Instant)>,
     /// play/pause as pressed, shown at once and held until the Daemon agrees (or [`PLAY_HOLD`] passes)
     play_hold: Option<(singularity_proto::PlayStatus, Instant)>,
+    /// the player's last word while the hold overrode it: shown once the hold passes, so a press the player answered
+    /// differently (or a state that changed under it) can't stay on screen inverted (the owner, 2026-11-05)
+    held_answer: Option<singularity_proto::PlaybackState>,
     pub home_view: HomeView,
     pub menu: Option<Menu>,
     pub covers: Covers,
@@ -724,6 +727,7 @@ impl App {
             nudge: Nudge::default(),
             volume_hold: None,
             play_hold: None,
+            held_answer: None,
             home_view: HomeView::default(),
             menu: None,
             covers: Covers::offline(),
@@ -2374,6 +2378,7 @@ impl App {
             (false, Some(_)) => self.idle_since = None,
             _ => {}
         }
+        self.end_play_hold();
         let dt = self.last_tick.elapsed().as_secs_f32().min(0.1);
         self.last_tick = Instant::now();
         self.hole.advance(dt, self.meters.frame.as_ref());
@@ -2445,16 +2450,23 @@ impl App {
     /// player's word stands, so a refused change shows as refused).
     /// Space: the bar flips at once, not when the player's answer arrives (up to a second later, which read as "Space
     /// did nothing" and invited a second press that undid the first).
+    ///
+    /// What is sent is what the press means on screen: Pause when the bar shows playing, Play when it shows paused,
+    /// never a blind toggle that the Daemon would work out from its own view. Pressed while that view and the bar
+    /// disagreed (fast presses as the app starts), a toggle paused what the bar showed paused, and the bar, holding
+    /// the press, then showed the opposite of the music for good (the owner, 2026-11-05). Only with nothing known yet
+    /// (no state, no track) does the Daemon decide.
     fn toggle_play(&mut self) {
         use singularity_proto::PlayStatus::*;
-        self.send(Command::TogglePlay);
-        let p = &mut self.playback;
-        let now = singularity_proto::now_ms();
+        let p = &self.playback;
         let to = match p.status {
             Playing | Buffering => Paused,
             Paused if p.item.is_some() => Playing,
-            _ => return,
+            _ => return self.send(Command::TogglePlay),
         };
+        self.send(if to == Playing { Command::Play { uri: None } } else { Command::Pause });
+        let p = &mut self.playback;
+        let now = singularity_proto::now_ms();
         p.position_ms = p.position_at(now);
         p.timestamp_ms = now;
         p.speed = if to == Playing { 1.0 } else { 0.0 };
@@ -2465,10 +2477,13 @@ impl App {
     pub fn playback_event(&mut self, mut p: singularity_proto::PlaybackState) {
         if let Some((s, at)) = self.play_hold {
             let same_track = p.item.as_ref().map(|i| &i.uri) == self.playback.item.as_ref().map(|i| &i.uri);
-            if p.status == s || at.elapsed() > PLAY_HOLD || !same_track {
+            if Self::agrees(p.status, s) || at.elapsed() > PLAY_HOLD || !same_track {
                 self.play_hold = None;
+                self.held_answer = None;
             } else {
-                // an answer from before the press: keep what was pressed
+                // an answer from before the press: keep what was pressed for now, and this answer for when the hold
+                // ends (if nothing newer comes, it is the player's last word)
+                self.held_answer = Some(p.clone());
                 (p.status, p.position_ms, p.timestamp_ms, p.speed) = (s, self.playback.position_ms, self.playback.timestamp_ms, self.playback.speed);
             }
         }
@@ -2480,6 +2495,29 @@ impl App {
             }
         }
         self.playback = p;
+    }
+
+    /// A reported status that is what was pressed: buffering after Play is playing on its way.
+    fn agrees(reported: singularity_proto::PlayStatus, pressed: singularity_proto::PlayStatus) -> bool {
+        use singularity_proto::PlayStatus::*;
+        reported == pressed || (reported, pressed) == (Buffering, Playing)
+    }
+
+    /// Tests: the hold on a pressed play/pause as if it had run out.
+    #[cfg(test)]
+    pub(crate) fn age_play_hold(&mut self) {
+        self.play_hold = self.play_hold.map(|(s, at)| (s, at - PLAY_HOLD - Duration::from_millis(1)));
+    }
+
+    /// The hold on a pressed play/pause has run out: the player's last word stands, even if it came during the hold
+    /// and nothing has come since (called every frame).
+    fn end_play_hold(&mut self) {
+        if self.play_hold.is_some_and(|(_, at)| at.elapsed() > PLAY_HOLD) {
+            self.play_hold = None;
+            if let Some(p) = self.held_answer.take() {
+                self.playback_event(p);
+            }
+        }
     }
 
     // ── mouse ─────────────────────────────────────────────────────────

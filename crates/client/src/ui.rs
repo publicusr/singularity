@@ -1029,7 +1029,8 @@ mod tests {
                 let play = app.hits.iter().find_map(|(r, h)| (*h == Hit::Action(Action::TogglePlay)).then_some(*r)).unwrap_or_else(|| panic!("{w}x{h}: no ▶"));
                 sent(&mut rx);
                 click(&mut app, play.x + 1, play.y);
-                assert_eq!(sent(&mut rx), vec![Command::TogglePlay], "{w}x{h}");
+                // what the button shows: ▶ plays, ❚❚ pauses
+                assert!(matches!(sent(&mut rx)[..], [Command::Play { uri: None }] | [Command::Pause]), "{w}x{h}");
             }
             if h >= 2 {
                 assert!(app.hits.iter().any(|(_, h)| matches!(h, Hit::Bar(Bar::Seek, _))), "{w}x{h}: a progress bar to seek with");
@@ -1145,7 +1146,7 @@ mod tests {
         let (mut app, mut rx) = playing_app(200_000);
         app.playback.status = PlayStatus::Playing;
         app.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-        assert_eq!(sent(&mut rx), vec![singularity_proto::Command::TogglePlay]);
+        assert_eq!(sent(&mut rx), vec![singularity_proto::Command::Pause], "what the bar showed, the other way");
         assert_eq!(app.playback.status, PlayStatus::Paused, "the bar flips before the answer");
         // a state from before the press (still playing) doesn't flip it back
         let mut stale = app.playback.clone();
@@ -1158,6 +1159,54 @@ mod tests {
         app.playback_event(paused);
         app.playback_event(stale);
         assert_eq!(app.playback.status, PlayStatus::Playing);
+    }
+
+    /// The owner (2026-11-05): Space pressed fast as the app starts left the bar showing paused while it played, and
+    /// then Space paused it. Each press now asks for what the bar shows the other way (a no-op for a player already
+    /// there), and the bar ends on what the player last said, even when that came during the hold.
+    #[test]
+    fn space_at_startup_never_leaves_the_bar_inverted() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = playing_app(200_000);
+        let space = |app: &mut App| app.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        // before any state: nothing to show flipped, the Daemon decides
+        app.playback = Default::default();
+        space(&mut app);
+        assert_eq!(sent(&mut rx), vec![Command::TogglePlay]);
+        assert_eq!(app.playback.status, PlayStatus::Idle, "nothing shown that isn't known");
+        // the player's first state: playing
+        let item = singularity_proto::Item { uri: "spotify:track:a".into(), name: "Song".into(), duration_ms: 200_000, ..Default::default() };
+        let playing = singularity_proto::PlaybackState { item: Some(item), status: PlayStatus::Playing, ..Default::default() };
+        app.playback_event(playing.clone());
+        assert_eq!(app.playback.status, PlayStatus::Playing);
+        // a stale "paused" (from before the first press reached the player) shows paused while the music plays
+        let paused = singularity_proto::PlaybackState { status: PlayStatus::Paused, ..playing.clone() };
+        app.playback_event(paused.clone());
+        // Space now means play: sent as Play, which the playing player ignores; it never pauses the music
+        space(&mut app);
+        assert_eq!(sent(&mut rx), vec![Command::Play { uri: None }]);
+        assert_eq!(app.playback.status, PlayStatus::Playing);
+        // a press the player answers otherwise: the answer comes during the hold and nothing after it; once the hold
+        // is over the bar shows the answer, not the press
+        space(&mut app);
+        assert_eq!(sent(&mut rx), vec![Command::Pause]);
+        assert_eq!(app.playback.status, PlayStatus::Paused);
+        app.playback_event(playing.clone());
+        assert_eq!(app.playback.status, PlayStatus::Paused, "held while the answer may be from before the press");
+        app.age_play_hold();
+        app.tick();
+        sent(&mut rx); // (what the frame asks for: lyrics)
+        assert_eq!(app.playback.status, PlayStatus::Playing, "the player's last word, once the hold is over");
+        // buffering after Play is the player agreeing: no answer held back
+        app.playback_event(paused);
+        space(&mut app);
+        assert_eq!(sent(&mut rx), vec![Command::Play { uri: None }]);
+        app.playback_event(singularity_proto::PlaybackState { status: PlayStatus::Buffering, ..playing });
+        assert_eq!(app.playback.status, PlayStatus::Buffering);
+        app.age_play_hold();
+        app.tick();
+        sent(&mut rx); // (what the frame asks for: lyrics)
+        assert_eq!(app.playback.status, PlayStatus::Buffering);
     }
 
     /// What the App sent, without the background `CheckSaved` questions (`sent_all` keeps them).

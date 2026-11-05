@@ -1176,6 +1176,34 @@ def resize(t, out):
     print("pointer at exit:", t.osc22[-2:])
 
 
+def space_startup(t, out, env):
+    """The owner (2026-11-05): Space pressed fast as the app launches left the bar showing paused while it played.
+    Space is mashed while the Client is still connecting and starting, then the bar is compared with a second Client's
+    (a fresh snapshot: the player's real state), then Space pressed a few more times, each compared again."""
+    for gap in (0.05, 0.1, 0.1, 0.2, 0.15, 0.3, 0.1):
+        t.send(b" ", gap)
+    t.pump(2.5)
+    t.shot(f"{out}/0-after-mashing.png")
+    def shown(term):
+        # (❚❚ while playing, ▶ otherwise; "▶|" is always there)
+        return "playing" if term.find("\u275a\u275a") else "not playing"
+    b = Term(env)
+    b.pump(1.5)
+    b.shot(f"{out}/0-second-client.png")
+    print("after mashing: this client", shown(t), "| a fresh client (the player)", shown(b))
+    ok = shown(t) == shown(b)
+    for i in range(1, 5):
+        t.send(b" ", 0.05 + 0.1 * i)
+        t.pump(2.0)
+        b.pump(0.3)
+        print(f"press {i}: this client", shown(t), "| the player", shown(b))
+        ok &= shown(t) == shown(b)
+    t.shot(f"{out}/1-end.png")
+    print("in step:", ok)
+    b.send(b"q", 0.3)
+    t.send(b"q", 0.5)
+
+
 def widgets_large(t, out):
     """The tiling Widgets (stream, top, listening, today, top this week) each in a big Pane of a saved layout, a
     track playing on a healthy fake stream; then top this week switched to tracks. Try PTY_COLS=240 PTY_ROWS=70 (Panes
@@ -1659,6 +1687,8 @@ def main():
             # a Client would start a Daemon of its own: stop here instead
             sys.exit(f"the Daemon exited ({open(f'{out}/daemon.log').read().strip().splitlines()[-1:]}); built with `cargo build -p singularityd --features fake`?")
         t = Term(env)
+        if scenario == "space-startup":
+            return space_startup(t, out, env)
         t.pump(1.5)
         if scenario == "home-scroll":
             return home_scroll(t, out)
