@@ -74,6 +74,16 @@ pub fn rows(feed: &HomeFeed, width: u16, height: u16, aspect: f64) -> (Vec<Row>,
         card_w = ((cover_h as f64 * aspect).round() as u16).clamp(1, w);
         per_view = (((w + CARD_GAP) / (card_w + CARD_GAP)) as usize).max(1);
     }
+    // a wide Pane with room for more Cards than its longest Shelf has: bigger Cards (up to half as big again), so the
+    // Shelves still reach across instead of stopping halfway
+    let most = feed.shelves.iter().filter(|s| !matches!(s.kind.as_str(), "shortcuts" | "feed" | "grid")).map(|s| s.cards.len()).max().unwrap_or(0);
+    if most > 1 && per_view > most {
+        let wider = ((w + CARD_GAP) / most as u16).saturating_sub(CARD_GAP).min(CARD_MAX * 3 / 2);
+        let h = ((wider as f64 / aspect).round() as u16).max(1);
+        if wider > card_w && h <= max_h {
+            (card_w, cover_h, per_view) = (wider, h, most);
+        }
+    }
     let cols = ((w + 1) / (TILE_MIN + 1)).clamp(1, 4) as usize;
     let tile_w = (w + 1) / cols as u16 - 1;
     let tile_cover_w = ((TILE_H as f64 * aspect).round() as u16).max(1);

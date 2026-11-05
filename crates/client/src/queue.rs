@@ -194,8 +194,13 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let q = preview(&app.playback.queue, app.queue_drag.clone());
     let all = lines_of(&q, app.playback.context_name.as_deref());
     if all.is_empty() {
-        if y < r.bottom() {
-            text(buf, x, y, w, "nothing queued · right-click a track → Add to queue", th.s(th.dim));
+        // the hint, by words, on the rows there are
+        for row in crate::lyrics::wrap_indented("nothing queued · right-click a track → Add to queue", w as usize, 0) {
+            if y >= r.bottom() {
+                break;
+            }
+            text(buf, x, y, w, &row, th.s(th.dim));
+            y += 1;
         }
         return;
     }
@@ -214,7 +219,8 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     view.top = view.top.min(all.len().saturating_sub(view.visible));
     let focused = app.focus == "queue";
     let mut hits = vec![];
-    for line in all.iter().skip(view.top).take(view.visible) {
+    // (a Pane a row or two tall has no rows for the list, but keeps its place in it)
+    for line in all.iter().skip(view.top).take(body) {
         match line {
             Line::Heading(h) => text(buf, x, y, w, &clip(h, w as usize), th.s(th.dim).add_modifier(Modifier::BOLD)),
             Line::Entry(i) => {

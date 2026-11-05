@@ -51,14 +51,17 @@ pub fn len(app: &App) -> usize {
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let n = len(app);
     let mut side = app.sidebar;
-    side.visible = r.height.max(1) as usize;
+    // a big Pane: two rows an entry, the name over its subtitle beside a bigger cover
+    let tall = r.width >= 32 && r.height >= 24;
+    let pitch: u16 = if tall { 2 } else { 1 };
+    side.visible = (r.height / pitch).max(1) as usize;
     side.top = side.top.min(n.saturating_sub(side.visible));
     let focused = app.focus == "library";
     let open = app.view.as_ref().map(|v| v.uri.clone());
     let page = app.current_page();
     let mut hits = vec![];
     for row in side.top..n.min(side.top + side.visible) {
-        let y = r.y + (row - side.top) as u16;
+        let y = r.y + (row - side.top) as u16 * pitch;
         let (g, name, sub, depth, current, art) = match row {
             0 => ("⌂", "Home".to_string(), String::new(), 0u16, page == crate::app::Page::Home, None),
             1 => ("⌕", "Search".to_string(), String::new(), 0u16, page == crate::app::Page::Search, None),
@@ -70,13 +73,33 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         };
         let selected = focused && row == side.sel;
         let bg = if selected { th.selection.color() } else { th.bg.color() };
-        blank(buf, r.x, y, r.width, th.base().bg(bg));
+        for k in 0..pitch {
+            blank(buf, r.x, y + k, r.width, th.base().bg(bg));
+        }
         let x = r.x + 1 + depth * 2;
         let st = if current { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.fg) };
+        if tall {
+            let has_art = art.as_ref().is_some_and(|u| app.covers.get(u).is_some());
+            match art.filter(|_| has_art) {
+                Some(url) => crate::home::cover(buf, Rect::new(x, y, 4.min(r.right().saturating_sub(x)), 2), &url, g, app, th),
+                None => text(buf, x + 1, y, 2.min(r.right().saturating_sub(x + 1)), g, th.s(if current { th.accent } else { th.dim }).bg(bg)),
+            }
+            let w = r.right().saturating_sub(x + 6);
+            if sub.is_empty() {
+                // Home and Search: one line, level with the others' names
+                text(buf, x + 6, y, w, &name, st.bg(bg));
+            } else {
+                text(buf, x + 6, y, w, &name, st.add_modifier(Modifier::BOLD).bg(bg));
+                text(buf, x + 6, y + 1, w, &sub, th.s(th.dim).bg(bg));
+            }
+            hits.push((Rect::new(r.x, y, r.width, 2), Hit::Side(row)));
+            continue;
+        }
         // a miniature of the cover where there is one and it has arrived (two cells: about square), else the glyph
+        let gw = 2.min(r.right().saturating_sub(x));
         match art.filter(|u| app.covers.get(u).is_some()) {
-            Some(url) => crate::home::cover(buf, Rect::new(x, y, 2.min(r.right().saturating_sub(x)), 1), &url, g, app, th),
-            None => text(buf, x, y, 2, g, th.s(if current { th.accent } else { th.dim }).bg(bg)),
+            Some(url) => crate::home::cover(buf, Rect::new(x, y, gw, 1), &url, g, app, th),
+            None => text(buf, x, y, gw, g, th.s(if current { th.accent } else { th.dim }).bg(bg)),
         }
         let w = r.right().saturating_sub(x + 3);
         let name_w = name.chars().count() as u16;
