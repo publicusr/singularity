@@ -1095,7 +1095,7 @@ impl App {
     /// Spectrum frames flow only while a Widget that moves with the music is on screen (the Daemon's tap idles
     /// otherwise); called on connect and whenever the layout changes.
     pub fn want_spectrum(&mut self) {
-        const AUDIO: [&str; 10] = ["fft", "loudness", "levels", "rain", "scope", "nowplaying", "well", "hole", "starfield", "glow"];
+        const AUDIO: [&str; 9] = ["fft", "loudness", "levels", "rain", "scope", "well", "hole", "starfield", "glow"];
         let on = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| AUDIO.contains(&s.as_str()));
         if on != self.spectrum_on && matches!(self.link, Link::Connected { .. }) {
             self.spectrum_on = on;
@@ -2373,8 +2373,8 @@ impl App {
 
     /// Frames a second: 30, or `visuals.unfocused_fps` while the terminal isn't focused (D60, D62); while anything
     /// moves (a held Pane, Panes springing into place, a divider being dragged) `visuals.motion_fps`, focused or not.
-    /// The karaoke ball, mid-hop on the pixel tier and focused: up to 60 (a hop is a few hundred ms; more buys
-    /// nothing a singer sees, and every frame is a whole redraw).
+    /// The karaoke ball, moving on the pixel tier and focused: up to 60 (it glides along the line as it is sung; more
+    /// buys nothing a singer sees, and every frame is a whole redraw).
     pub fn frame_rate(&self, focused: bool) -> u64 {
         if self.moving_now() {
             return self.motion_fps();

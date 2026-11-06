@@ -308,14 +308,21 @@ pub fn at(lines: &[Line], pos: u64) -> Stage {
     Stage::Line { i, count }
 }
 
-/// Where the ball is over line `l` at `pos`: (word position, height). The position counts words, fractions between
-/// them: -1 is the waiting spot left of the first word. Height 0 is resting on a word, 1 the top of the hop.
+/// Where the ball is over line `l` at `pos`: (position, height). The position counts word landings, fractions
+/// between them: `k` is word `k`'s landing spot (its first letter), `len` the end of the last word, -1 the waiting spot
+/// left of the line. Height 0 is on the line, 1 the top of a hop.
+///
+/// The ball rides the fill: from a word's start to the next word's it glides at an even pace from the one's landing
+/// spot to the other's, so it is over the letters being sung, never on its way to a word the singer hasn't reached
+/// (the owner, 2026-11-06: it "rushes ahead"; it used to rest, then hop over in at most 650 ms, so it sat over the
+/// next word for most of a quick word and dashed across the long ones). The hop is a bounce at the end of the glide:
+/// up off the word and down onto the next as it starts. The last word it glides to the end of, as its fill does.
 pub fn ball(l: &Line, pos: u64, shown_at: u64) -> (f32, f32) {
     let w = &l.words;
     if w.is_empty() {
         return (-1.0, 0.0);
     }
-    // the word it is on or heading for: the last one started
+    // the word being sung: the last one started
     let k = w.partition_point(|x| x.start <= pos);
     if k == 0 {
         // waiting left of the line, then hopping onto the first word as it is sung
@@ -327,18 +334,20 @@ pub fn ball(l: &Line, pos: u64, shown_at: u64) -> (f32, f32) {
         let t = (pos - from) as f32 / hop as f32;
         return (-1.0 + t, arc(t, hop));
     }
-    if k >= w.len() {
-        return ((w.len() - 1) as f32, 0.0);
-    }
-    // between word k-1 and word k: rest, then hop to land as word k starts
-    let gap = w[k].start - w[k - 1].start;
-    let hop = HOP_MS.min(gap).max(1);
-    let from = w[k].start - hop;
-    if pos < from {
-        return ((k - 1) as f32, 0.0);
-    }
-    let t = (pos - from) as f32 / hop as f32;
-    ((k - 1) as f32 + t, arc(t, hop))
+    let cur = k - 1;
+    let start = w[cur].start;
+    let Some(next) = w.get(k) else {
+        // the last word: along it as it fills, then resting at its end
+        let t = if l.end > start { (pos - start) as f32 / (l.end - start) as f32 } else { 1.0 };
+        return (cur as f32 + t.clamp(0.0, 1.0), 0.0);
+    };
+    let span = (next.start - start).max(1);
+    let t = (pos - start) as f32 / span as f32;
+    // the bounce: the last stretch of the glide, at most a hop long
+    let hop = HOP_MS.min(span).max(1);
+    let up = next.start - hop;
+    let h = if pos >= up { arc((pos - up) as f32 / hop as f32, hop) } else { 0.0 };
+    (cur as f32 + t, h)
 }
 
 /// The hop's height at `t` (0..1) of a hop lasting `hop_ms`: a parabola, lower for quick hops.
@@ -656,9 +665,13 @@ mod tests {
             assert_eq!(ball(l, wk.start, shown), (k as f32, 0.0));
             let (x, h) = ball(l, wk.start - 1, shown);
             assert!(x > (k - 1) as f32 && x < k as f32 && h < 0.1, "about to land: {x} {h}");
+            // never ahead of the singer: halfway through a word, halfway to the next
+            let mid = w[k - 1].start + (wk.start - w[k - 1].start) / 2;
+            let (x, _) = ball(l, mid, shown);
+            assert!((x - (k as f32 - 0.5)).abs() < 0.01, "rides the word being sung: {x}");
         }
-        assert_eq!(ball(l, l.end + 5_000, shown), ((w.len() - 1) as f32, 0.0), "rests on the last word");
-        // positions only go forward
+        assert_eq!(ball(l, l.end + 5_000, shown), (w.len() as f32, 0.0), "rests at the end of the last word");
+        // positions only go forward, and evenly: no dash after a rest
         let mut last = -2.0;
         for pos in (shown..l.end).step_by(11) {
             let (x, h) = ball(l, pos, shown);
