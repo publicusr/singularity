@@ -31,8 +31,10 @@ fn bands3(app: &App) -> [f32; 3] {
 
 // ── Now playing (Classic+) ────────────────────────────────────────────
 
-/// Cover, title and artists, a spectrum, and what's next. A Pane too small for a cover gets the words; a wide one puts
-/// the cover at its left and the rest beside it; a tall one stacks them; a big one spells the title in the pixel font.
+/// Cover, title and artists, and what's next (only while no queue Pane is on screen: the layout is checked every
+/// frame, so opening or closing one takes effect at once). No meters of its own: a Pane holds one thing. A Pane too
+/// small for a cover gets the words; a wide one puts the cover at its left and the rest beside it; a tall one stacks
+/// them; a big one spells the title in the pixel font.
 pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let m = u16::from(r.width >= 12);
     let (x, w) = (r.x + m, r.width.saturating_sub(2 * m));
@@ -43,36 +45,34 @@ pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         text(buf, x, r.y + r.height / 2, w, "nothing playing", th.s(th.dim));
         return;
     };
+    let queue = np_queue(app);
     let url = item.cover_url.clone().unwrap_or_default();
     // wide: a cover as tall as the Pane (twice as wide in cells: about square), the rest beside it
     if r.height >= 4 && w >= r.height * 2 + 24 {
         let cw = r.height * 2;
         crate::home::cover(buf, Rect::new(x, r.y, cw, r.height), &url, "♪", app, th);
         let ix = x + cw + 2;
-        let iw = (x + w).saturating_sub(ix);
-        // short and very wide: the words, and the spectrum across the rest
-        if r.height < 10 && iw >= 64 {
-            let tw = (iw / 2).min(40);
-            np_info(buf, Rect::new(ix, r.y, tw, r.height), &item, app, false, th);
-            crate::meters::spectrum(buf, Rect::new(ix + tw + 2, r.y, iw - tw - 2, r.height), &app.meters, th);
-            return;
-        }
-        return np_info(buf, Rect::new(ix, r.y, iw, r.height), &item, app, true, th);
+        return np_info(buf, Rect::new(ix, r.y, (x + w).saturating_sub(ix), r.height), &item, app, queue, th);
     }
-    // tall: a square cover on top, as big as leaves the words (and, taller, a spectrum and the queue) their rows
+    // tall: a square cover on top, as big as leaves the words (and, taller, what's next) their rows
     if r.height >= 8 && w >= 8 {
-        let reserve = 3 + if r.height >= 14 { 5 } else { 0 } + if r.height >= 24 { 7 } else { 0 };
-        let ch = (w / 2).min(r.height.saturating_sub(1 + reserve)).max(2);
+        let q = if queue && r.height >= 14 { (app.playback.queue.len() as u16 + 2).min(9).min(r.height / 3) } else { 0 };
+        let ch = (w / 2).min(r.height.saturating_sub(4 + q)).max(2);
         let cw = (ch * 2).min(w);
         crate::home::cover(buf, Rect::new(x + (w - cw) / 2, r.y, cw, ch), &url, "♪", app, th);
-        return np_info(buf, Rect::new(x, r.y + ch + 1, w, r.height - ch - 1), &item, app, true, th);
+        return np_info(buf, Rect::new(x, r.y + ch + 1, w, r.height - ch - 1), &item, app, queue, th);
     }
-    np_info(buf, Rect::new(x, r.y, w, r.height), &item, app, true, th);
+    np_info(buf, Rect::new(x, r.y, w, r.height), &item, app, queue, th);
 }
 
-/// Now playing's words and the rest in `r`: the title (in the pixel font when there's room for it big), artists,
-/// where it plays from, then a spectrum (if `spectrum`) and what's next sharing the rows left.
-fn np_info(buf: &mut Buffer, r: Rect, item: &singularity_proto::Item, app: &App, spectrum: bool, th: &Theme) {
+/// Whether Now playing lists what's next: there is something queued and no queue Pane already shows it.
+fn np_queue(app: &App) -> bool {
+    !app.playback.queue.is_empty() && app.layout.path_of("queue").is_none()
+}
+
+/// Now playing's words in `r`: the title (in the pixel font when there's room for it big), artists, where it plays
+/// from, then what's next (if `queue`) in the rows left.
+fn np_info(buf: &mut Buffer, r: Rect, item: &singularity_proto::Item, app: &App, queue: bool, th: &Theme) {
     if r.width == 0 || r.height == 0 {
         return;
     }
@@ -101,25 +101,11 @@ fn np_info(buf: &mut Buffer, r: Rect, item: &singularity_proto::Item, app: &App,
     if let Some(c) = &app.playback.context_name {
         line(buf, &format!("from {c}"));
     }
-    // the spectrum and the queue share the rest: the queue its songs (up to 8 rows), the spectrum what's left
     y += 1;
-    let left = bottom.saturating_sub(y);
-    let queue = &app.playback.queue;
-    let want_q = if queue.is_empty() { 0 } else { (queue.len() as u16 + 1).min(8) };
-    let sh = match left {
-        _ if !spectrum => 0,
-        0..=1 => 0,
-        _ if want_q == 0 => left.min(16),
-        _ => left.saturating_sub(want_q + 1).clamp(2.min(left), 12),
-    };
-    if sh > 0 {
-        crate::meters::spectrum(buf, Rect::new(r.x, y, r.width, sh), &app.meters, th);
-        y += sh + 1;
-    }
-    if y + 1 < bottom && !queue.is_empty() {
+    if queue && y + 1 < bottom {
         text(buf, r.x, y, r.width, "Next in queue", th.s(th.fg).add_modifier(Modifier::BOLD));
         y += 1;
-        for q in queue.iter().take(bottom.saturating_sub(y) as usize) {
+        for q in app.playback.queue.iter().take(bottom.saturating_sub(y) as usize) {
             text(buf, r.x, y, 2.min(r.width), "■", th.s(th.accent));
             text(buf, r.x + 2, y, r.width.saturating_sub(2), &format!("{} · {}", q.item.name, q.item.artists.join(", ")), th.s(th.dim));
             y += 1;
@@ -926,6 +912,28 @@ mod tests {
         levels(&mut buf, Rect::new(0, 0, 80, 4), &app, &th);
         let row0: String = (0..80).map(|x| buf[(x, 0)].symbol().to_string()).collect();
         assert!(row0.starts_with("L ") && row0.contains("bass"), "{row0}");
+    }
+
+    #[test]
+    fn now_playing_has_no_meters_and_lists_the_queue_only_without_a_queue_pane() {
+        let th = Theme::singularity();
+        let mut app = App::new(None);
+        app.playback.item = Some(singularity_proto::Item { name: "Song".into(), artists: vec!["Artist".into()], ..Default::default() });
+        app.playback.queue = vec![singularity_proto::QueueEntry { item: singularity_proto::Item { name: "Next One".into(), ..Default::default() }, source: "queue".into(), uid: String::new() }];
+        let screen = |app: &mut App, w: u16, h: u16| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+            nowplaying(&mut buf, Rect::new(0, 0, w, h), app, &th);
+            (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
+        };
+        app.layout = crate::layout::Node::split(crate::layout::Axis::Horizontal, crate::layout::Size::Ratio(0.5), crate::layout::Node::slot("nowplaying"), crate::layout::Node::slot("lyrics"));
+        for (w, h) in [(40, 40), (140, 8), (110, 20)] {
+            let s = screen(&mut app, w, h);
+            assert!(s.contains("Next One"), "no queue Pane: the queue shows ({w}×{h}): {s}");
+            assert!(!s.contains('▁') && !s.contains('█'), "no spectrum ({w}×{h}): {s}");
+        }
+        // a queue Pane opens: the list goes, at once
+        app.layout = crate::layout::Node::split(crate::layout::Axis::Horizontal, crate::layout::Size::Ratio(0.5), crate::layout::Node::slot("nowplaying"), crate::layout::Node::slot("queue"));
+        assert!(!screen(&mut app, 40, 40).contains("Next"));
     }
 
     #[test]

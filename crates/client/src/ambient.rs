@@ -258,9 +258,9 @@ pub fn pixel_line(buf: &mut Buffer, x: u16, y: u16, w: u16, line: &[char], s: u1
     }
 }
 
-/// The title in big pixels (half-blocks: each pixel row half a text row), as big as the Pane allows: a big Pane
-/// scales the font up and puts the words on lines of their own; a title too long for even the smallest size on one
-/// line scrolls.
+/// The title in big pixels (half-blocks: each pixel row half a text row) on one line, a band across the Pane: double
+/// size when it fits with room around it, else the small size, scrolling when even that is too long. It doesn't
+/// grow to fill a big Pane (the owner, 2026-11-06: filling it was too big).
 pub fn marquee(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     if w < 8 || r.height == 0 {
@@ -285,21 +285,17 @@ pub fn marquee(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     // the artists' row and a blank one above it, when there's room for them under the title
     let under = if artists.is_empty() { 0 } else { 2 };
     let room = |h: u16| if h >= 3 + under { h - under } else { h };
-    // the biggest scale whose lines fit (the font is 3×5 pixels: scale 1 is 3 rows a line); two lines at most, so it
-    // stays a title, unless the Pane is too narrow for the words side by side
-    let most = if w < 40 { 4 } else { 2 };
-    let fit = (1..=8u16).rev().find_map(|sc| pixel_fit(&item.name, w, room(r.height), sc, most).map(|l| (sc, l)));
+    // double size on one line when it fits with a margin and the Pane is tall enough for it to sit in space (the font
+    // is 3×5 pixels: scale 1 is 3 rows, scale 2 is 5)
+    let one = |sc: u16| pixel_fit(&item.name, w, room(r.height), sc, 1).filter(|l| pixel_width(l[0].len(), sc) + 4 * (sc - 1) <= w);
+    let fit = one(2).filter(|_| r.height >= 9 + under).map(|l| (2, l)).or_else(|| one(1).map(|l| (1, l)));
     let y_after = if let Some((sc, lines)) = fit {
-        let n = lines.len() as u16;
-        let block = n * pixel_rows(sc) + n - 1;
+        let block = pixel_rows(sc);
         let total = block + if r.height >= block + under { under } else { 0 };
-        let mut y = r.y + (r.height - total) / 2;
-        for line in &lines {
-            let lw = pixel_width(line.len(), sc);
-            pixel_line(buf, x + (w - lw) / 2, y, w, line, sc, 0, None, lift, th);
-            y += pixel_rows(sc) + 1;
-        }
-        y - 1
+        let y = r.y + (r.height - total) / 2;
+        let lw = pixel_width(lines[0].len(), sc);
+        pixel_line(buf, x + (w - lw) / 2, y, w, &lines[0], sc, 0, None, lift, th);
+        y + block
     } else if r.height >= 3 {
         // one line, scrolling: 8 columns a second, with a gap before it comes round again
         let title: Vec<char> = item.name.chars().collect();
@@ -513,6 +509,23 @@ fn glow_label(buf: &mut Buffer, r: Rect, cover: Rect, item: &singularity_proto::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_marquee_stays_a_band_in_a_big_pane() {
+        let th = Theme::singularity();
+        let mut app = App::new(None);
+        app.playback.item = Some(singularity_proto::Item { name: "Track 1".into(), artists: vec!["Artist".into()], ..Default::default() });
+        // the rows its title takes: one line, at most double size (5 rows), however big the Pane
+        let rows = |app: &mut App, w: u16, h: u16| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+            marquee(&mut buf, Rect::new(0, 0, w, h), app, &th);
+            (0..h).filter(|&y| (0..w).any(|x| "█▀▄".contains(buf[(x, y)].symbol()))).count() as u16
+        };
+        assert_eq!(rows(&mut app, 200, 60), 5, "double size in a big Pane, not filling it");
+        assert_eq!(rows(&mut app, 60, 8), 3, "the small size in a short one");
+        app.playback.item.as_mut().unwrap().name = "A Title Far Too Long For This Pane".into();
+        assert_eq!(rows(&mut app, 60, 20), 3, "a long title scrolls at the small size");
+    }
 
     #[test]
     fn the_pixel_title_fits_wherever_it_is_placed() {

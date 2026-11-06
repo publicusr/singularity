@@ -38,6 +38,8 @@ pub struct State {
     pub(crate) follow: crate::scroll::Follow,
     /// the song's big-text size for a Pane: (song, lines, columns, rows, cell size) → pixels to the em
     size: (String, usize, u16, u16, (u64, u64), Option<f32>),
+    /// the song's pixel-font scale for a Pane: (song, lines, columns, rows) → scale (0: plain text)
+    scale: (String, usize, u16, u16, u16),
 }
 
 impl State {
@@ -171,20 +173,38 @@ impl Plan {
     }
 }
 
-/// The biggest way the line fits `w` × `h` with room left for the next line and the credit.
-fn plan(words: &[Word], w: u16, h: u16) -> Plan {
-    let big_ok = !words.is_empty() && words.iter().all(|x| x.text.chars().all(|c| big_char(c).is_some()));
-    if big_ok {
-        // (scale, lane, most rows, rows to keep free: the big size wants two next lines, the small one)
-        for (s, lane, most, spare) in [(2u16, 4u16, 2u16, 4u16), (1, 3, 3, 2)] {
-            let font = Font::Big(s);
-            let (spots, rows) = lay_out(words, font, w);
-            let fits = spots.iter().all(|p| p.x + p.w <= w + s);
-            let p = Plan { font, lane, spots, rows, px: vec![], row_px: vec![] };
-            if fits && rows <= most && p.height() + spare <= h {
-                return p;
-            }
-        }
+/// The pixel font's sizes in cells: (scale, lane, rows a line keeps to when it can, rows to keep free: the big size
+/// wants two next lines, the small one).
+const BIG_SIZES: [(u16, u16, u16, u16); 2] = [(2, 4, 2, 4), (1, 3, 3, 2)];
+
+/// The line in the pixel font at `s` in `w` × `h`, if it fits: within `most` rows, or (`stretch`) in as many as the
+/// height takes.
+fn plan_big(words: &[Word], w: u16, h: u16, (s, lane, most, spare): (u16, u16, u16, u16), stretch: bool) -> Option<Plan> {
+    if words.is_empty() || !words.iter().all(|x| x.text.chars().all(|c| big_char(c).is_some())) {
+        return None;
+    }
+    let font = Font::Big(s);
+    let (spots, rows) = lay_out(words, font, w);
+    let fits = spots.iter().all(|p| p.x + p.w <= w + s);
+    let p = Plan { font, lane, spots, rows, px: vec![], row_px: vec![] };
+    (fits && (stretch || rows <= most) && p.height() + spare <= h).then_some(p)
+}
+
+/// The biggest pixel-font scale every line of the song fits `w` × `h` at (a long line may take more rows), 0 for plain
+/// text: one font for the whole song, so a long line doesn't switch to another (the owner, 2026-11-06). Lines the
+/// pixel font has no letters for (CJK) don't count: they are plain text whatever the rest is.
+fn song_scale(lines: &[Line], w: u16, h: u16) -> u16 {
+    let sung = || lines.iter().filter(|l| !l.words.is_empty() && l.words.iter().all(|x| x.text.chars().all(|c| big_char(c).is_some())));
+    BIG_SIZES.iter().find(|&&size| sung().all(|l| plan_big(&l.words, w, h, size, true).is_some())).map_or(0, |&(s, ..)| s)
+}
+
+/// The line in `w` × `h` with room left for the next line and the credit, in the pixel font at the song's scale (at
+/// most `scale`; 0: plain text): in its usual rows if it can, else wrapped further at the same size.
+fn plan(words: &[Word], w: u16, h: u16, scale: u16) -> Plan {
+    // the song's own size, in its usual rows, else in more; a smaller one only if the song's size can't hold it
+    let tries = BIG_SIZES.iter().filter(|(s, ..)| *s <= scale).flat_map(|&size| [(size, false), (size, true)]);
+    if let Some(p) = tries.into_iter().find_map(|(size, stretch)| plan_big(words, w, h, size, stretch)) {
+        return p;
     }
     let (spots, rows) = lay_out(words, Font::Plain, w);
     let lane = if rows * 3 + 3 <= h {
@@ -275,49 +295,66 @@ fn lay_out_px(words: &[Word], px: f32, max: f32) -> (Vec<(u16, f32, f32)>, Vec<f
     (out, rows)
 }
 
-/// The line on stage in big text at the song's size `px` in `w` × `h` cells (shrunk for a line too long for three
-/// rows there); None when even the smallest worth it doesn't fit.
-fn plan_px(words: &[Word], w: u16, h: u16, (cw, ch): (f64, f64), px: f32) -> Option<Plan> {
+/// The line on stage in big text at the song's size `px` in `w` × `h` cells: in at most three rows, shrunk if it needs;
+/// a line too long for that keeps the song's size in more rows, then shrinks on down to about the cells' own size, so
+/// it stays in the song's font. None only when not even that fits.
+fn plan_px(words: &[Word], w: u16, h: u16, cpx: (f64, f64), px: f32) -> Option<Plan> {
     if words.is_empty() {
         return None;
     }
-    let max = (w as f64 * cw) as f32;
-    let mut px = px;
-    while px as f64 >= PX_MIN * ch {
-        let pitch = ((px * crate::bigtext::LINE) as f64 / ch).ceil() as u16;
-        let lane = px_lane(pitch);
-        let (laid, rows) = lay_out_px(words, px, max);
-        let n = rows.len() as u16;
-        if n <= 3 && n * (lane + pitch) + px_spare(px, ch) <= h {
-            // each row centred on whole columns, a little room for the last letter's overhang
-            let row_px: Vec<(String, u16, u16)> = rows
-                .iter()
-                .enumerate()
-                .map(|(ri, &rw)| {
-                    let cols = (((rw + px * 0.15) as f64 / cw).ceil() as u16).clamp(1, w);
-                    let mut text = String::new();
-                    for (_, word) in words.iter().enumerate().filter(|(i, _)| laid[*i].0 == ri as u16) {
-                        if !text.is_empty() && !word.glued {
-                            text.push(' ');
-                        }
-                        text.push_str(&word.text);
-                    }
-                    (text, (w - cols) / 2, cols)
-                })
-                .collect();
-            let mut spots = Vec::with_capacity(words.len());
-            let mut pxs = Vec::with_capacity(words.len());
-            for &(row, x, ww) in &laid {
-                let left = row_px[row as usize].1 as f32 * cw as f32 + x;
-                pxs.push((left, ww));
-                spots.push(Spot { row, x: (left as f64 / cw) as u16, w: ((ww as f64 / cw).ceil() as u16).max(1) });
-            }
-            let dot = ((px as f64 * 0.6 / cw).round() as u16).max(2);
-            return Some(Plan { font: Font::Px { px, pitch, dot }, lane, spots, rows: n, px: pxs, row_px });
+    let ch = cpx.1;
+    let tries = |most: u16, floor: f64| {
+        let mut out = vec![];
+        let mut p = px;
+        while p as f64 >= floor * ch {
+            out.push((p, most));
+            p *= 0.9;
         }
-        px *= 0.9;
+        out
+    };
+    tries(3, PX_MIN).into_iter().chain(tries(u16::MAX, PX_FLOOR)).find_map(|(p, most)| plan_px_at(words, w, h, cpx, p, most))
+}
+
+/// The smallest big text a long line shrinks to before the song's font gives way to the cells', against a cell's
+/// height.
+const PX_FLOOR: f64 = 0.9;
+
+/// The line in big text of `px` in `w` × `h` cells, if it fits in at most `most` rows.
+fn plan_px_at(words: &[Word], w: u16, h: u16, (cw, ch): (f64, f64), px: f32, most: u16) -> Option<Plan> {
+    let max = (w as f64 * cw) as f32;
+    let pitch = ((px * crate::bigtext::LINE) as f64 / ch).ceil() as u16;
+    let lane = px_lane(pitch);
+    let (laid, rows) = lay_out_px(words, px, max);
+    let n = rows.len() as u16;
+    // a word wider than the Pane can't be drawn whole: smaller then
+    if n > most || n * (lane + pitch) + px_spare(px, ch) > h || rows.iter().any(|&rw| rw > max) {
+        return None;
     }
-    None
+    // each row centred on whole columns, a little room for the last letter's overhang
+    let row_px: Vec<(String, u16, u16)> = rows
+        .iter()
+        .enumerate()
+        .map(|(ri, &rw)| {
+            let cols = (((rw + px * 0.15) as f64 / cw).ceil() as u16).clamp(1, w);
+            let mut text = String::new();
+            for (_, word) in words.iter().enumerate().filter(|(i, _)| laid[*i].0 == ri as u16) {
+                if !text.is_empty() && !word.glued {
+                    text.push(' ');
+                }
+                text.push_str(&word.text);
+            }
+            (text, (w - cols) / 2, cols)
+        })
+        .collect();
+    let mut spots = Vec::with_capacity(words.len());
+    let mut pxs = Vec::with_capacity(words.len());
+    for &(row, x, ww) in &laid {
+        let left = row_px[row as usize].1 as f32 * cw as f32 + x;
+        pxs.push((left, ww));
+        spots.push(Spot { row, x: (left as f64 / cw) as u16, w: ((ww as f64 / cw).ceil() as u16).max(1) });
+    }
+    let dot = ((px as f64 * 0.6 / cw).round() as u16).max(2);
+    Some(Plan { font: Font::Px { px, pitch, dot }, lane, spots, rows: n, px: pxs, row_px })
 }
 
 /// `s` cut to `w` columns, with an ellipsis when cut.
@@ -402,15 +439,24 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         }
         st.size.5.map(|px| (c, px))
     });
+    // the cells' font: the song's pixel-font scale for this Pane, worked out once
+    let scale = {
+        let (w, h) = (r.width.saturating_sub(2), r.height - u16::from(r.height >= 7));
+        let st = &mut app.karaoke;
+        if (&st.scale.0, st.scale.1, st.scale.2, st.scale.3) != (&lyr.uri, lines.len(), r.width, r.height) {
+            st.scale = (lyr.uri.clone(), lines.len(), r.width, r.height, song_scale(&lines, w, h));
+        }
+        st.scale.4
+    };
     let big = match (size, app.kitty.as_mut()) {
         (Some((cpx, px)), Some(kitty)) => Some(Big { cpx, px, kitty }),
         _ => None,
     };
-    let ball = synced(buf, r, &lines, pos, &source, th, &mut hits, big);
+    let ball = synced(buf, r, &lines, pos, &source, th, &mut hits, big, scale);
     // the pixel tier's ball, or the cells' `●`
     let mut smooth = false;
     if let Some(b) = ball {
-        smooth = playing && b.height > 0.0;
+        smooth = playing && (b.height > 0.0 || b.moving);
         match app.pixel_tier_for(r) {
             Some(px) if b.lane >= 2 => pixel_ball(app, r, b, px, th),
             _ => cell_ball(buf, r, b, th),
@@ -441,6 +487,8 @@ struct Ball {
     height: f32,
     lane: u16,
     rad: Option<f64>,
+    /// gliding along the line (not waiting before it or resting after it)
+    moving: bool,
 }
 
 fn cell_ball(buf: &mut Buffer, r: Rect, b: Ball, th: &Theme) {
@@ -511,7 +559,7 @@ fn unsynced(buf: &mut Buffer, r: Rect, app: &App, pos: u64, th: &Theme) {
 
 /// The synced view; returns where the ball goes (if anywhere). Seek targets go to `hits`.
 #[allow(clippy::too_many_arguments)]
-fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th: &Theme, hits: &mut Vec<(Rect, Hit)>, mut big: Option<Big>) -> Option<Ball> {
+fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th: &Theme, hits: &mut Vec<(Rect, Hit)>, mut big: Option<Big>, scale: u16) -> Option<Ball> {
     let stage = timing::at(lines, pos);
     // one or two rows: the line alone, scrolled to the word being sung
     if r.height <= 2 || r.width < 16 {
@@ -528,7 +576,7 @@ fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th:
     let line = &lines[i];
     let credit = r.height >= 7;
     let w = r.width.saturating_sub(2);
-    let p = big.as_ref().and_then(|b| plan_px(&line.words, w, r.height - credit as u16, b.cpx, b.px)).unwrap_or_else(|| plan(&line.words, w, r.height - credit as u16));
+    let p = big.as_ref().and_then(|b| plan_px(&line.words, w, r.height - credit as u16, b.cpx, b.px)).unwrap_or_else(|| plan(&line.words, w, r.height - credit as u16, scale));
     // big text: the lines around it in smaller big text when that is still bigger than the cells
     let side = match (p.font, big.as_ref()) {
         (Font::Px { px, .. }, Some(b)) => Some(side(px, b.cpx.1)).filter(|(_, sp)| *sp >= 2),
@@ -602,32 +650,57 @@ fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th:
         return None;
     }
     let cw = big.as_ref().map_or(1.0, |b| b.cpx.0) as f32;
-    let centre_of = |k: usize| {
-        if let Font::Px { .. } = p.font {
-            // the word's middle as the font measures it, in columns (a column's middle is its index + 0.5)
-            let (left, w) = p.px[k];
-            return x0 as f32 + (left + w / 2.0) / cw - 0.5;
+    let n = line.words.len();
+    // where the ball touches down on word `k`: over its first letter (`end`: over its last), in columns (a column's
+    // middle is its index + 0.5)
+    let touch = |k: usize, end: bool| -> f32 {
+        match p.font {
+            Font::Px { px, .. } => {
+                let (left, w) = p.px[k];
+                let half = (px * 0.3).min(w / 2.0);
+                x0 as f32 + (if end { left + w - half } else { left + half }) / cw - 0.5
+            }
+            Font::Big(sc) => {
+                let s = p.spots[k];
+                let half = (3 * sc) as f32 / 2.0 - 0.5;
+                let x = (x0 + s.x) as f32;
+                if end { x + s.w.saturating_sub(sc) as f32 - 1.0 - half } else { x + half }
+            }
+            Font::Plain => (x0 + p.spots[k].x) as f32 + if end { p.spots[k].w.saturating_sub(1) as f32 } else { 0.0 },
         }
-        let s = p.spots[k];
-        let trail = if let Font::Big(sc) = p.font { sc } else { 0 };
-        (x0 + s.x) as f32 + (s.w.saturating_sub(trail) as f32 - 1.0) / 2.0
     };
     let base_of = |k: usize| (row_top(p.spots[k].row) - 1) as f32;
     let (x, base) = if wx < 0.0 {
-        let from = (centre_of(0) - 3.0 * p.font.char_w().min(4) as f32).max(r.x as f32);
+        let from = (touch(0, false) - 3.0 * p.font.char_w().min(4) as f32).max(r.x as f32);
         let t = wx + 1.0;
-        (from + (centre_of(0) - from) * t, base_of(0))
+        (from + (touch(0, false) - from) * t, base_of(0))
     } else {
-        let a = (wx.floor() as usize).min(line.words.len() - 1);
-        let b = (a + 1).min(line.words.len() - 1);
+        let a = (wx.floor() as usize).min(n - 1);
         let t = wx - a as f32;
-        (centre_of(a) + (centre_of(b) - centre_of(a)) * t, base_of(a) + (base_of(b) - base_of(a)) * t)
+        let lerp = |p: f32, q: f32, t: f32| p + (q - p) * t;
+        if a + 1 >= n {
+            // along the last word as it fills
+            (lerp(touch(a, false), touch(a, true), t), base_of(a))
+        } else if p.spots[a + 1].row == p.spots[a].row {
+            (lerp(touch(a, false), touch(a + 1, false), t), base_of(a))
+        } else {
+            // the next word starts a row further down: along this one to its end, then the hop down to it
+            let span = line.words[a + 1].start.saturating_sub(line.words[a].start).max(1);
+            let up = 1.0 - timing::HOP_MS.min(span) as f32 / span as f32;
+            if up > 0.0 && t < up {
+                (lerp(touch(a, false), touch(a, true), t / up), base_of(a))
+            } else {
+                let u = if up > 0.0 { (t - up) / (1.0 - up) } else { t };
+                let from = if up > 0.0 { touch(a, true) } else { touch(a, false) };
+                (lerp(from, touch(a + 1, false), u), lerp(base_of(a), base_of(a + 1), u))
+            }
+        }
     };
     let rad = match p.font {
         Font::Px { px, .. } => Some((px * 0.16) as f64),
         _ => None,
     };
-    Some(Ball { x, base, height: h, lane: p.lane, rad })
+    Some(Ball { x, base, height: h, lane: p.lane, rad, moving: wx > -1.0 && wx < n as f32 })
 }
 
 /// The line on stage in big text: per row, the sung part (accent) and the rest (waiting), two images of the same
@@ -892,19 +965,39 @@ mod tests {
     #[test]
     fn the_plan_grows_with_the_pane() {
         let w = words("turn the lights down");
-        assert_eq!(plan(&w, 30, 2).lane, 0, "two rows: no room for the ball");
-        assert_eq!((plan(&w, 30, 4).font, plan(&w, 30, 4).lane), (Font::Plain, 1));
-        assert_eq!(plan(&w, 30, 8).lane, 2);
-        assert_eq!(plan(&w, 100, 14).font, Font::Big(1));
-        assert_eq!(plan(&w, 200, 20).font, Font::Big(2));
+        assert_eq!(plan(&w, 30, 2, 2).lane, 0, "two rows: no room for the ball");
+        assert_eq!((plan(&w, 30, 4, 2).font, plan(&w, 30, 4, 2).lane), (Font::Plain, 1));
+        assert_eq!(plan(&w, 30, 8, 2).lane, 2);
+        assert_eq!(plan(&w, 100, 14, 2).font, Font::Big(1));
+        assert_eq!(plan(&w, 200, 20, 2).font, Font::Big(2));
         // a script the pixel font doesn't have stays plain
         let cjk = words("光が 曲がる");
-        assert_eq!(plan(&cjk, 200, 40).font, Font::Plain);
+        assert_eq!(plan(&cjk, 200, 40, 2).font, Font::Plain);
         // accents map to the plain letters
-        assert_eq!(plan(&words("żółw tańczy"), 200, 40).font, Font::Big(2));
+        assert_eq!(plan(&words("żółw tańczy"), 200, 40, 2).font, Font::Big(2));
     }
 
     /// An App playing a song whose lyrics have both timed and untimed lines, at `pos`.
+    #[test]
+    fn a_long_line_keeps_the_songs_font() {
+        let (short, long) = (words("Turn the lights down"), words("Here comes the chorus hold on to the note and let the whole room carry it"));
+        let line = |w: &[Word]| Line { start: 0, end: 9_000, words: w.to_vec(), exact: true, index: 0 };
+        let song = [line(&short), line(&long)];
+        // the cells: one scale for the whole song, the long line wrapped further at it
+        for (w, h) in [(78u16, 20u16), (78, 30), (120, 30), (158, 40)] {
+            let sc = song_scale(&song, w, h);
+            let (a, b) = (plan(&short, w, h, sc), plan(&long, w, h, sc));
+            assert_eq!(a.font, b.font, "{w}×{h}: {:?} vs {:?}", a.font, b.font);
+            assert!(b.spots.iter().all(|s| s.x + s.w <= w + 2) && b.height() <= h, "{w}×{h}: {b:?}");
+        }
+        // big text: the long line stays big text in a Pane its words are too many for in three rows
+        let cpx = (10.0, 20.0);
+        let px = 60.0;
+        assert!(plan_px(&short, 100, 28, cpx, px).is_some());
+        let p = plan_px(&long, 100, 28, cpx, px).expect("a long line stays big text");
+        assert!(matches!(p.font, Font::Px { .. }) && p.row_px.iter().all(|(_, c, w)| c + w <= 100), "{p:?}");
+    }
+
     fn app_at(pos: u64, synced: bool) -> App {
         let mut app = App::new(None);
         app.playback.item = Some(singularity_proto::Item { uri: "spotify:track:k".into(), name: "Song".into(), duration_ms: 120_000, ..Default::default() });
