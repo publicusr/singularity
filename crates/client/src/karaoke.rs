@@ -226,7 +226,7 @@ fn px_lane(pitch: u16) -> u16 {
 /// (under 2: they stay terminal text).
 fn side(px: f32, ch: f64) -> (f32, u16) {
     let sp = px * 0.42;
-    (sp, ((sp * crate::bigtext::LINE) as f64 / ch).ceil() as u16)
+    (sp, ((sp * crate::bigtext::line()) as f64 / ch).ceil() as u16)
 }
 
 /// Rows kept free around big text of `px`: the line before above it and the next one under it, a row apart.
@@ -253,7 +253,7 @@ fn song_px(lines: &[Line], w: u16, h: u16, (cw, ch): (f64, f64)) -> Option<f32> 
     // the tallest row that fits with its lane and the lines around it
     let mut by_height = 0.0f32;
     for pitch in 2..=h {
-        let px = (pitch as f64 * ch / crate::bigtext::LINE as f64 * 0.96) as f32;
+        let px = (pitch as f64 * ch / crate::bigtext::line() as f64 * 0.96) as f32;
         if pitch + px_lane(pitch) + px_spare(px, ch) > h {
             break;
         }
@@ -322,7 +322,7 @@ const PX_FLOOR: f64 = 0.9;
 /// The line in big text of `px` in `w` × `h` cells, if it fits in at most `most` rows.
 fn plan_px_at(words: &[Word], w: u16, h: u16, (cw, ch): (f64, f64), px: f32, most: u16) -> Option<Plan> {
     let max = (w as f64 * cw) as f32;
-    let pitch = ((px * crate::bigtext::LINE) as f64 / ch).ceil() as u16;
+    let pitch = ((px * crate::bigtext::line()) as f64 / ch).ceil() as u16;
     let lane = px_lane(pitch);
     let (laid, rows) = lay_out_px(words, px, max);
     let n = rows.len() as u16;
@@ -709,7 +709,7 @@ fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th:
 fn px_line(kitty: &mut crate::gfx::Kitty, r: Rect, x0: u16, p: &Plan, line: &Line, pos: u64, row_top: &dyn Fn(u16) -> u16, th: &Theme, (cw, ch): (f64, f64), px: f32, pitch: u16) {
     use crate::bigtext::{Span, key, render};
     let img_h = (pitch as f64 * ch).round() as u32;
-    let baseline = ((img_h as f32 - px * crate::bigtext::LINE) / 2.0 + px * crate::bigtext::ASCENT).round();
+    let baseline = ((img_h as f32 - px * crate::bigtext::line()) / 2.0 + px * crate::bigtext::ascent()).round();
     for (ri, (text, col, cols)) in p.row_px.iter().enumerate() {
         let y = row_top(ri as u16);
         if y + pitch > r.bottom() {
@@ -768,7 +768,7 @@ fn side_line(kitty: &mut crate::gfx::Kitty, r: Rect, y: u16, s: &str, c: Rgb, px
     let cols = (((width(&text, px, false) + px * 0.15) as f64 / cw).ceil() as u16).clamp(1, r.width);
     let img_w = (cols as f64 * cw).round() as u32;
     let img_h = (rows as f64 * ch).round() as u32;
-    let baseline = ((img_h as f32 - px * crate::bigtext::LINE) / 2.0 + px * crate::bigtext::ASCENT).round();
+    let baseline = ((img_h as f32 - px * crate::bigtext::line()) / 2.0 + px * crate::bigtext::ascent()).round();
     let spans = [Span { x: 0.0, text: &text, rgb: c, px, bold: false }];
     let k = key(&spans, img_w, img_h, baseline);
     kitty.place_rgba(k, Rect::new(r.x + (r.width - cols) / 2, y, cols, rows), None, || (img_w, img_h, render(&spans, img_w, img_h, baseline)));

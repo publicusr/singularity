@@ -257,7 +257,8 @@ pub fn listening(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
 
 /// The listening Pane when it has room: month names over the weeks, weekday names beside them, square-ish cells as
 /// big as the Pane allows, a less → more legend, and the year's numbers under the grid (the hours as a figure when
-/// there are rows for it).
+/// there are rows for it). The parts stack with a row between them, the whole block centred in the Pane's height (the
+/// owner, 2026-11-08: the numbers pinned to the bottom left "a ton of dead space" under the grid).
 fn listening_large(buf: &mut Buffer, r: Rect, s: &singularity_proto::ListeningSummary, th: &Theme) {
     const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const DAYS: [&str; 7] = ["Mon", "", "Wed", "", "Fri", "", "Sun"];
@@ -275,7 +276,15 @@ fn listening_large(buf: &mut Buffer, r: Rect, s: &singularity_proto::ListeningSu
     let weeks = ((w - label_w) / px).min(weeks).max(1) as i64;
     let grid_w = weeks as u16 * px;
     let gx = x0 + label_w + (w - label_w).saturating_sub(grid_w) / 2;
-    let gy = r.y + 1;
+    // the block's rows: months, the grid, the legend; the breakdown (a title and 7 rows) after a row's gap when it
+    // fits; then the numbers (the cell footer starts with a blank row of its own, the figure footer gets one)
+    const BREAKDOWN: u16 = 8;
+    let grid_h = 1 + 7 * py + 1;
+    let footer_gap = figure_footer as u16;
+    let breakdown = r.height.saturating_sub(grid_h + footer_gap + footer) > BREAKDOWN; // a gap row and the breakdown
+    let block = grid_h + if breakdown { 1 + BREAKDOWN } else { 0 } + footer_gap + footer;
+    let top = r.y + r.height.saturating_sub(block) / 2;
+    let gy = top + 1;
     let cw = px - 1;
     let today_wd = s.today_weekday as i64;
     let max = s.minutes.iter().copied().max().unwrap_or(0).max(1) as f32;
@@ -289,7 +298,7 @@ fn listening_large(buf: &mut Buffer, r: Rect, s: &singularity_proto::ListeningSu
         let (_, month, _) = crate::stats::civil(today_day - monday_back);
         let mx = gx + c as u16 * px;
         if month != last_month && c + 3 < weeks && mx >= label_end {
-            text(buf, mx, r.y, 3, MONTHS[(month - 1) as usize], th.s(th.dim));
+            text(buf, mx, top, 3, MONTHS[(month - 1) as usize], th.s(th.dim));
             label_end = mx + 4;
         }
         last_month = month;
@@ -333,13 +342,13 @@ fn listening_large(buf: &mut Buffer, r: Rect, s: &singularity_proto::ListeningSu
         text(buf, lx + 5 + 10, ly, 4, "more", th.s(th.border));
     }
     // rows to spare between the grid and the numbers: the average day by weekday, and the months, side by side
-    let spare_y = ly + 2;
-    let spare = r.bottom().saturating_sub(footer + 1).saturating_sub(spare_y);
-    if spare >= 8 {
-        listening_breakdown(buf, Rect::new(x0, spare_y, w, spare.min(9)), s, today_day, th);
+    let mut end = ly + 1;
+    if breakdown {
+        listening_breakdown(buf, Rect::new(x0, end + 1, w, BREAKDOWN), s, today_day, th);
+        end += 1 + BREAKDOWN;
     }
     // the numbers: hours this year (as a figure when tall), the streak, the last 7 days, all plays, the top artist
-    let fy = r.bottom() - footer;
+    let fy = (end + footer_gap).min(r.bottom() - footer);
     let hours = if s.hours_this_year < 10.0 { format!("{:.1}", s.hours_this_year) } else { format!("{:.0}", s.hours_this_year) };
     let week: u32 = s.minutes.iter().rev().take(7).sum();
     let week_s = if week >= 60 { format!("{} h {:02} min", week / 60, week % 60) } else { format!("{week} min") };
@@ -823,6 +832,27 @@ mod tests {
         assert!(app.widgets.rain.cols.iter().all(|c| c.1 <= 9.0), "slow columns");
     }
     use super::*;
+
+    #[test]
+    fn the_big_listening_pane_keeps_its_numbers_close_under_the_grid() {
+        let th = crate::app::App::new(None).theme.clone();
+        let minutes: Vec<u32> = (0..singularity_proto::LISTENING_DAYS as u32).map(|i| i * 7 % 50).collect();
+        let s = singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Nova Drift".into()), streak_days: 10, plays: 534, plays_today: 3 };
+        for (w, h) in [(40, 12), (46, 16), (60, 24), (90, 34), (120, 40), (120, 60), (150, 50), (200, 30), (256, 64), (80, 80)] {
+            let r = Rect::new(3, 2, w, h);
+            let mut buf = Buffer::empty(Rect::new(0, 0, w + 6, h + 4));
+            listening_large(&mut buf, r, &s, &th);
+            let row = |y: u16| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
+            let inked: Vec<u16> = (0..buf.area.height).filter(|&y| !row(y).trim().is_empty()).collect();
+            let (first, last) = (inked[0], *inked.last().unwrap());
+            assert!(first >= r.y && last < r.bottom(), "{w}x{h}: inside the Pane");
+            assert!(inked.windows(2).all(|p| p[1] - p[0] <= 3), "{w}x{h}: no more than two blank rows between parts: {inked:?}");
+            assert!((last.saturating_sub(3)..=last).any(|y| row(y).contains("last 7 days")), "{w}x{h}: the numbers end the block");
+            // the block sits in the middle: the space over it and under it differ by a row at most
+            let (over, under) = (first - r.y, r.bottom() - 1 - last);
+            assert!(over.abs_diff(under) <= 2, "{w}x{h}: centred, {over} over and {under} under");
+        }
+    }
 
     #[test]
     fn top_finds_this_process() {

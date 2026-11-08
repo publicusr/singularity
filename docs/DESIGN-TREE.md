@@ -1121,3 +1121,15 @@ flowchart LR
   pty `sizes` takes `PTY_PIXEL=1`, `PTY_SEEKS` (several moments) and `PTY_TRACK=2`. Unsolved for the owner: the
   `ttf-parser` under fontdue is flagged unmaintained (RUSTSEC-2026-0192; ignored in `deny.toml`: it reads only the
   bundled fonts).
+- **Big text in the terminal's font; the listening Pane's gap** (2026-11-08; owner: big lyrics had "a cooked ass basic
+  font … it looked so much better before the scaling changes", and asked "can we somehow make the plain terminal text
+  scale? the font I have worked really well for the smaller lyrics widgets"). Big text now draws with the terminal's
+  own font (`termfont.rs`): `SINGULARITY_BIG_FONT`, else Ghostty's first `font-family` / kitty's `font_family` (kitty
+  first when it is the terminal), else `fc-match monospace`, else JetBrains Mono (Ghostty's built-in), Menlo, DejaVu
+  Sans Mono, Noto Sans Mono, Liberation Mono; the faces come from the system font folders (`fontdb`), the static file
+  before a variable one, bold the family's bold (≥ 600) or its regular. The bundled Noto Sans stays for characters the
+  terminal's font lacks and when none is found. Line metrics come from the font (`bigtext::ascent()`/`line()`). The
+  scan runs on a thread at startup (pixel tier only). Lyrics and Karaoke both use it. Tests keep the bundled font so
+  they don't depend on the PC. **Listening**: the big Pane pinned its numbers to the bottom, leaving the rows between
+  the grid (or the breakdown) and them empty ("a ton of dead space"); the parts now stack a row apart and the block is
+  centred in the Pane's height (`the_big_listening_pane_keeps_its_numbers_close_under_the_grid`, ten sizes).

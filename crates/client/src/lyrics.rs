@@ -198,13 +198,13 @@ pub fn big_fit(f: &Fit, w: u16, (cw, ch): (f64, f64), typical: f32) -> Option<Bi
     let avail = (f.text_x + f.text_w - left) as f64 * cw;
     let stamp_em = if f.stamp_x.is_some() { crate::bigtext::width("[00:00]  ", STAMP_SCALE, false) as f64 } else { 0.0 };
     let by_width = avail * 0.97 / (typical.max(1.0) as f64 + stamp_em);
-    let by_height = (f.body / BIG_LINES) as f64 * ch / crate::bigtext::LINE as f64;
+    let by_height = (f.body / BIG_LINES) as f64 * ch / crate::bigtext::line() as f64;
     let px = by_width.min(by_height);
     if px < BIG_MIN * ch {
         return None;
     }
     let px = px.floor() as f32;
-    let pitch = ((px * crate::bigtext::LINE) as f64 / ch).ceil() as u16;
+    let pitch = ((px * crate::bigtext::line()) as f64 / ch).ceil() as u16;
     let text_x = (stamp_em * px as f64) as f32;
     Some(BigFit { px, stamp_px: px * STAMP_SCALE, pitch, text_x, text_w: avail as f32 - text_x, indent: crate::bigtext::width("  ", px, false) })
 }
@@ -420,7 +420,7 @@ fn draw_big(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, f: &Fit, b: &B
     let room = r.right().saturating_sub(left);
     let img_h = (pitch as f64 * ch).round() as u32;
     // the text in the middle of its rows
-    let baseline = ((img_h as f32 - b.px * crate::bigtext::LINE) / 2.0 + b.px * crate::bigtext::ASCENT).round();
+    let baseline = ((img_h as f32 - b.px * crate::bigtext::line()) / 2.0 + b.px * crate::bigtext::ascent()).round();
     let reach = body / 3;
     let mut hits = vec![];
     let mut places = vec![];
@@ -641,7 +641,7 @@ pub(crate) mod tests {
                     assert!(w >= BIG_W && f.body >= BIG_H, "{ctx}");
                     assert!(b.px as f64 >= BIG_MIN * 20.0 - 1.0 && b.pitch >= 3, "worth leaving the cells: {ctx}");
                     assert!(f.body / b.pitch >= BIG_LINES, "at least {BIG_LINES} lines fit: {ctx}");
-                    assert!(b.px * crate::bigtext::LINE <= b.pitch as f32 * 20.0, "a row holds its text: {ctx}");
+                    assert!(b.px * crate::bigtext::line() <= b.pitch as f32 * 20.0, "a row holds its text: {ctx}");
                     assert!(b.text_x + b.text_w <= (w - 2) as f32 * 10.0 + 0.01, "{ctx}");
                     assert!(b.text_w >= typical * b.px * 0.96, "the longer lines fit across: {ctx}");
                 }

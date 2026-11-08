@@ -1,10 +1,13 @@
-//! Big text on the pixel tier: a string drawn with a real font (Noto Sans, bundled; `assets/fonts`) into RGBA pixels,
-//! sent as a kitty image and placed on cells like a cover. The lyrics and Karaoke Widgets use it to fill a big Pane
-//! (a terminal draws every cell's text at one size; Ghostty has no text-sizing protocol to ask for more).
+//! Big text on the pixel tier: a string drawn with a real font into RGBA pixels, sent as a kitty image and placed on
+//! cells like a cover. The lyrics and Karaoke Widgets use it to fill a big Pane (a terminal draws every cell's text at
+//! one size; Ghostty has no text-sizing protocol to ask for more).
+//!
+//! The font is the terminal's own (`termfont.rs`: the same lettering as the cells, only bigger); characters it lacks,
+//! or no terminal font found, come from a bundled Noto Sans (`assets/fonts`).
 //!
 //! An image is keyed by everything that shows in it (`key`), so the terminal is sent each one once and steady frames
 //! only place it again. Glyphs are rasterized with `fontdue` and kept per size (`GLYPHS`), so a new line costs a blit
-//! of glyphs already drawn. A string with a character the fonts don't have is drawn as terminal text instead
+//! of glyphs already drawn. A string with a character none of the fonts have is drawn as terminal text instead
 //! (`covers`).
 
 use crate::gfx::ImageKey;
@@ -21,35 +24,56 @@ static BOLD: &[u8] = include_bytes!("../assets/fonts/NotoSans-Bold.ttf");
 /// ♩♪♫♬♭♮♯ (an empty lyrics line shows a ♪)
 static NOTES: &[u8] = include_bytes!("../assets/fonts/NotoSansMath-Notes.ttf");
 
-/// Noto Sans's ascent and descent, in ems: a line's height without extra leading.
-pub const ASCENT: f32 = 1.069;
-pub const LINE: f32 = 1.069 + 0.293;
-
 struct Fonts {
+    /// the terminal's regular and bold faces
+    term: Option<(Font, Font)>,
     regular: Font,
     bold: Font,
     notes: Font,
+    /// the main font's ascent and its ascent + descent, in ems
+    ascent: f32,
+    line: f32,
 }
 
 fn fonts() -> &'static Fonts {
     static F: OnceLock<Fonts> = OnceLock::new();
     F.get_or_init(|| {
-        let load = |b: &'static [u8]| Font::from_bytes(b, FontSettings::default()).expect("bundled font");
-        Fonts { regular: load(REGULAR), bold: load(BOLD), notes: load(NOTES) }
+        let load = |b: &[u8], index: u32| Font::from_bytes(b, FontSettings { collection_index: index, ..FontSettings::default() });
+        let bundled = |b: &'static [u8]| load(b, 0).expect("bundled font");
+        // tests measure with the bundled font only, so they don't depend on the PC's fonts
+        let term = if cfg!(test) { None } else { crate::termfont::find() }
+            .and_then(|t| Some((load(&t.regular.data, t.regular.index).ok()?, load(&t.bold.data, t.bold.index).ok()?)));
+        let regular = bundled(REGULAR);
+        let main = term.as_ref().map_or(&regular, |t| &t.0);
+        // Noto Sans's ascent and descent when a font doesn't say
+        let (ascent, line) = main.horizontal_line_metrics(1.0).map_or((1.069, 1.069 + 0.293), |m| (m.ascent, m.ascent - m.descent));
+        Fonts { term, regular, bold: bundled(BOLD), notes: bundled(NOTES), ascent, line }
     })
 }
 
-/// The font that draws `c` (the notes come from their own).
+/// Find the terminal's font now, off the drawing thread, so the first big text doesn't wait for the font scan.
+pub fn warm() {
+    std::thread::spawn(|| {
+        fonts();
+    });
+}
+
+/// The main font's ascent, in ems: the baseline's depth in a line.
+pub fn ascent() -> f32 {
+    fonts().ascent
+}
+
+/// A line's height in ems (ascent + descent, no extra leading).
+pub fn line() -> f32 {
+    fonts().line
+}
+
+/// The font that draws `c`: the terminal's, else the bundled one, else the notes'.
 fn font_for(c: char, bold: bool) -> Option<&'static Font> {
     let f = fonts();
+    let term = f.term.as_ref().map(|t| if bold { &t.1 } else { &t.0 });
     let main = if bold { &f.bold } else { &f.regular };
-    if main.lookup_glyph_index(c) != 0 {
-        Some(main)
-    } else if f.notes.lookup_glyph_index(c) != 0 {
-        Some(&f.notes)
-    } else {
-        None
-    }
+    [term, Some(main), Some(&f.notes)].into_iter().flatten().find(|font| font.lookup_glyph_index(c) != 0)
 }
 
 /// Whether the fonts draw every character of `s` (spaces and invisible marks aside).

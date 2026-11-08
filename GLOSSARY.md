@@ -176,9 +176,10 @@ word to word, landing on each as it starts; dots count a line in after an instru
 _Avoid_: sing-along view, karaoke mode
 
 **Big text**:
-Text drawn as an image on the pixel tier with a real font (Noto Sans, bundled with the Client), so a big lyrics or
-Karaoke Pane is filled with text sized to the Pane instead of terminal-sized text in its corner. One size per song and
-Pane; a song with characters the font lacks, a popup over the Pane, or the cell tier keeps terminal text.
+Text drawn as an image on the pixel tier in the terminal's own font (found on the system; Noto Sans, bundled with the
+Client, for characters it lacks or when none is found), so a big lyrics or Karaoke Pane is filled with text sized to
+the Pane instead of terminal-sized text in its corner. One size per song and Pane; a song with characters no font has, a
+popup over the Pane, or the cell tier keeps terminal text.
 _Avoid_: pixel font (the marquee's 3×5 blocks), big font
 
 **Word timing**:

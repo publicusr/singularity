@@ -32,6 +32,7 @@ mod setup;
 mod sidebar;
 mod stats;
 mod term;
+mod termfont;
 mod theme;
 mod tile;
 mod tiling;
@@ -67,6 +68,8 @@ async fn main() -> anyhow::Result<()> {
         let mut k = gfx::Kitty::new(term::kitty_shm());
         k.below_backgrounds = term::below_backgrounds();
         app.kitty = Some(k);
+        // big text draws in the terminal's font: find it while the first frames draw
+        bigtext::warm();
     }
     let mut tui = ratatui::init();
     execute!(stdout(), EnableMouseCapture, EnableFocusChange, EnableBracketedPaste)?;
