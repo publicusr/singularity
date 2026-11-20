@@ -1172,3 +1172,8 @@ flowchart LR
   is asked for again after 30 s, and a cached file that doesn't decode is fetched again. (B6) the Client fetches a list
   or artist page again when it's opened more than 10 min after it arrived (the Daemon's own cache time), and keeps the
   newest 64. Left: B5, B7, B9, B11, B12 and the C/D findings.
+- **First public CI with macOS and ARM** (2026-11-20): Linux on ARM passed (D73). macOS showed the Daemon couldn't make
+  its socket on a Mac at all since A10/S5 (2026-10-25): macOS's temp directory is behind root's `/var` link and every
+  link was refused; root's own links are accepted now (only root can make one; anyone else's is still refused).
+  cargo deny: rusqlite 0.41 (libsqlite3-sys 0.39, SQLite 3.54) for RUSTSEC-2026-0459; chrono (unmaintained, only under
+  librespot's oauth2) ignored with its reason.

@@ -165,12 +165,15 @@ fn socket_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 /// Every component of the way to `dir` that exists must be a real directory: a symlink anywhere could put the
-/// socket (and its directory) where someone else chose.
+/// socket (and its directory) where someone else chose. Root's own links are the system's layout (macOS: `/var` and
+/// `/tmp` lead to `/private/…`, so its temp directory is behind one), and only root can make one.
 fn no_symlinks(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
     let mut cur = PathBuf::new();
     for part in dir.components() {
         cur.push(part);
         match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_symlink() && m.uid() == 0 && std::fs::metadata(&cur).is_ok_and(|t| t.is_dir()) => {}
             Ok(m) if m.file_type().is_symlink() => {
                 return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("{} is a symlink: refusing to put the socket there", cur.display())));
             }
@@ -1113,6 +1116,16 @@ mod tests {
     }
 
     /// B6/C12: a playback event that the snapshot already contains is not forwarded to the new Client.
+    /// macOS keeps its temp directory behind root's `/var` link: refusing every link kept the Daemon from making its
+    /// socket there at all. Root's own links are the system's; anyone else's is still refused (protocol tests).
+    #[test]
+    fn root_s_own_symlinks_are_the_system_s_layout() {
+        use std::os::unix::fs::MetadataExt;
+        // a root-owned link to a directory: `/bin` on merged-/usr Linux, `/var` and `/tmp` on macOS
+        let Some(link) = ["/var", "/tmp", "/bin"].into_iter().map(Path::new).find(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink() && m.uid() == 0)) else { return };
+        assert!(no_symlinks(&link.join("sgl-none/singularity")).is_ok(), "{} is root's", link.display());
+    }
+
     #[test]
     fn playback_older_than_the_snapshot_is_superseded() {
         let at = |ms| PlaybackState { timestamp_ms: ms, ..Default::default() };

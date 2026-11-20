@@ -15,6 +15,9 @@ ignore = [
     # (`crates/client/assets/fonts`) and the fonts installed on the computer (fontdb's scan for the terminal's font,
     # `termfont.rs`), never a font from the network; move to a skrifa-based rasterizer when one is as small
     { id = "RUSTSEC-2026-0192", reason = "parses only bundled and locally installed fonts, never downloaded ones" },
+    # chrono is unmaintained (2026-11): it comes in only through oauth2 under librespot's login, which formats token
+    # expiry times with it; no replacement until the librespot fork moves off oauth2 5
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained, no known flaw; only librespot's oauth2 uses it; waits on librespot" },
 ]
 
 [licenses]
