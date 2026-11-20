@@ -40,10 +40,10 @@ fn glyph(kind: &str) -> &'static str {
     }
 }
 
-/// Rows above the library: Home, Search.
-pub const FIXED: usize = 2;
+/// Rows above the library: Home. Search lives on Home itself (D70, D71).
+pub const FIXED: usize = 1;
 
-/// Rows: Home and Search first, then the library. Returns how many rows there are.
+/// Rows: Home first, then the library. Returns how many rows there are.
 pub fn len(app: &App) -> usize {
     FIXED + app.library.as_ref().map(|l| l.items.len()).unwrap_or(0)
 }
@@ -64,7 +64,6 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let y = r.y + (row - side.top) as u16 * pitch;
         let (g, name, sub, depth, current, art) = match row {
             0 => ("⌂", "Home".to_string(), String::new(), 0u16, page == crate::app::Page::Home, None),
-            1 => ("⌕", "Search".to_string(), String::new(), 0u16, page == crate::app::Page::Search, None),
             i => {
                 let it = &app.library.as_ref().expect("row exists").items[i - FIXED];
                 let art = it.image_url.clone().filter(|_| it.kind != "folder");
@@ -86,7 +85,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             }
             let w = r.right().saturating_sub(x + 6);
             if sub.is_empty() {
-                // Home and Search: one line, level with the others' names
+                // Home: one line, level with the others' names
                 text(buf, x + 6, y, w, &name, st.bg(bg));
             } else {
                 text(buf, x + 6, y, w, &name, st.add_modifier(Modifier::BOLD).bg(bg));

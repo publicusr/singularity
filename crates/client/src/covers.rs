@@ -11,11 +11,14 @@ use tokio::sync::mpsc;
 const MEM_ENTRIES: usize = 400;
 const DISK_BUDGET: u64 = 200 * 1024 * 1024;
 const PARALLEL: usize = 4;
+/// How long a cover that couldn't be fetched waits before it's asked for again (the Client started offline, or woke
+/// before the network did)
+const RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 
 enum Entry {
     Loading,
     Ready(Arc<RgbImage>, u64),
-    Failed,
+    Failed(std::time::Instant),
 }
 
 pub struct Covers {
@@ -64,7 +67,7 @@ impl Covers {
         self.tick += 1;
         let mut fresh = false;
         while let Some((url, img)) = self.done.as_mut().and_then(|d| d.try_recv().ok()) {
-            self.mem.insert(url, img.map(|i| Entry::Ready(Arc::new(i), self.tick)).unwrap_or(Entry::Failed));
+            self.mem.insert(url, img.map(|i| Entry::Ready(Arc::new(i), self.tick)).unwrap_or(Entry::Failed(std::time::Instant::now())));
             fresh = true;
         }
         if self.mem.len() > MEM_ENTRIES {
@@ -81,12 +84,16 @@ impl Covers {
         fresh
     }
 
-    /// The cover if it's ready; otherwise starts fetching it (once) and returns None.
+    /// The cover if it's ready; otherwise starts fetching it (once, or again a while after it failed) and returns None.
     pub fn get(&mut self, url: &str) -> Option<Arc<RgbImage>> {
         match self.mem.get_mut(url) {
             Some(Entry::Ready(img, t)) => {
                 *t = self.tick;
                 Some(img.clone())
+            }
+            Some(Entry::Failed(at)) if at.elapsed() >= RETRY => {
+                self.mem.remove(url);
+                self.get(url)
             }
             Some(_) => None,
             None => {
@@ -140,19 +147,20 @@ fn cache_file(dir: &Path, url: &str) -> PathBuf {
 
 async fn load(dir: &Path, http: Option<&reqwest::Client>, url: &str) -> Option<RgbImage> {
     let path = cache_file(dir, url);
-    let bytes = match tokio::fs::read(&path).await {
-        Ok(b) => b,
-        Err(_) => {
-            let resp = http?.get(url).send().await.ok()?.error_for_status().ok()?;
-            let b = body_capped(resp, MAX_COVER_BYTES).await?;
-            // write-then-rename, so a half-written file is never read back as a cover
-            let tmp = path.with_extension("part");
-            if tokio::fs::write(&tmp, &b).await.is_ok() {
-                let _ = tokio::fs::rename(&tmp, &path).await;
-            }
-            b
+    if let Ok(b) = tokio::fs::read(&path).await {
+        if let Some(img) = tokio::task::spawn_blocking(move || decode(&b)).await.ok()? {
+            return Some(img);
         }
-    };
+        // a cached file that doesn't decode would fail on every start: fetch it again
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+    let resp = http?.get(url).send().await.ok()?.error_for_status().ok()?;
+    let bytes = body_capped(resp, MAX_COVER_BYTES).await?;
+    // write-then-rename, so a half-written file is never read back as a cover
+    let tmp = path.with_extension("part");
+    if tokio::fs::write(&tmp, &bytes).await.is_ok() {
+        let _ = tokio::fs::rename(&tmp, &path).await;
+    }
     tokio::task::spawn_blocking(move || decode(&bytes)).await.ok()?
 }
 
@@ -251,6 +259,27 @@ pub(crate) fn huge_png_header(w: u32, h: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// B10 (2026-11-20 bug hunt): a cover that failed once (the Client started offline) stayed blank until restart,
+    /// and a cached file that didn't decode failed on every start.
+    #[tokio::test]
+    async fn a_failed_cover_is_asked_for_again_and_a_broken_cache_file_is_fetched_again() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut c = Covers { requests: Some(tx), ..Covers::offline() };
+        let url = "https://i.scdn.co/image/x";
+        c.mem.insert(url.into(), Entry::Failed(std::time::Instant::now()));
+        assert!(c.get(url).is_none());
+        assert!(rx.try_recv().is_err(), "not at once");
+        c.mem.insert(url.into(), Entry::Failed(std::time::Instant::now() - RETRY));
+        assert!(c.get(url).is_none());
+        assert_eq!(rx.try_recv().ok().as_deref(), Some(url), "asked for again after a while");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = cache_file(dir.path(), url);
+        std::fs::write(&path, b"not a picture").unwrap();
+        assert!(load(dir.path(), None, url).await.is_none());
+        assert!(!path.exists(), "the broken file is gone, so the next try downloads it");
+    }
 
     #[test]
     fn a_picture_claiming_to_be_huge_is_refused_before_it_is_decoded() {

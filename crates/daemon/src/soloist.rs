@@ -1084,11 +1084,21 @@ impl SoloistState {
                 p.volume = ev["volume"].as_u64().unwrap_or(p.volume as u64).min(100) as u8;
                 self.options(&ev["options"]);
             }
-            "track_changed" => p.item = entity(&ev["item"]),
+            "track_changed" => {
+                let item = entity(&ev["item"]);
+                // a different track starts at its beginning: the old track's anchor would show its position until
+                // the next `position_sync` (the bar and synced lyrics jumped, MPRIS sent a spurious Seeked)
+                if item.as_ref().map(|i| &i.uri) != p.item.as_ref().map(|i| &i.uri) {
+                    (p.position_ms, p.timestamp_ms, p.speed) = (0, singularity_proto::now_ms(), 0.0);
+                }
+                p.item = item;
+            }
             "playback_changed" => {
                 p.status = status_of(ev["status"].as_str().unwrap_or(""));
-                if p.status != PlayStatus::Playing {
-                    p.speed = 0.0;
+                if p.status != PlayStatus::Playing && p.speed != 0.0 {
+                    // stop where it is now, not back at the last anchor
+                    let now = singularity_proto::now_ms();
+                    (p.position_ms, p.timestamp_ms, p.speed) = (p.position_at(now), now, 0.0);
                 }
             }
             "volume_changed" => p.volume = ev["volume"].as_u64().unwrap_or(0).min(100) as u8,
@@ -1229,6 +1239,21 @@ mod tests {
         // a stale report that contradicts the press doesn't end it
         assert!(s.apply(&json!({"type": "playback_changed", "status": "playing"})));
         assert_eq!(cmd(&s.to_soloist(Command::TogglePlay)), "play", "the press still stands");
+    }
+
+    /// B4 (2026-11-20 bug hunt): a skip kept the old track's position until Soloist's next `position_sync`, and a
+    /// pause snapped back to the last anchor.
+    #[test]
+    fn a_new_track_starts_at_zero_and_a_pause_stops_where_it_is() {
+        let mut s = SoloistState::default();
+        let now = singularity_proto::now_ms();
+        s.playback = PlaybackState { status: PlayStatus::Playing, item: Some(Item { uri: "spotify:track:a".into(), duration_ms: 300_000, ..Default::default() }), position_ms: 100_000, timestamp_ms: now - 20_000, speed: 1.0, ..Default::default() };
+        assert!(s.apply(&json!({"type": "playback_changed", "status": "paused"})));
+        let at = s.playback.position_at(singularity_proto::now_ms() + 5_000);
+        assert!((120_000..121_000).contains(&at), "paused at 2:00, where it was, not back at 1:40: {at}");
+        assert!(s.apply(&json!({"type": "track_changed", "item": {"uri": "spotify:track:b", "name": "b", "duration_ms": 200_000}})));
+        assert_eq!(s.playback.item.as_ref().map(|i| i.uri.as_str()), Some("spotify:track:b"));
+        assert_eq!(s.playback.position_at(singularity_proto::now_ms()), 0, "the new track starts at its beginning");
     }
 
     #[test]

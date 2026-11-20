@@ -44,9 +44,12 @@ fn slot_info(slot: &str) -> (&'static str, &'static str) {
     }
 }
 
+/// Text at (`x`, `y`), at most `max` columns. Anything outside the buffer is left out (ratatui panics on a row below
+/// it: a popup or list drawn for a taller terminal than the one after a resize).
 pub fn text(buf: &mut Buffer, x: u16, y: u16, max: u16, s: &str, st: Style) {
-    if max > 0 {
-        buf.set_stringn(x, y, s, max as usize, st);
+    let a = buf.area;
+    if max > 0 && y >= a.y && y < a.bottom() && x >= a.x && x < a.right() {
+        buf.set_stringn(x, y, s, max.min(a.right() - x) as usize, st);
     }
 }
 
@@ -323,6 +326,8 @@ fn menu_rect(area: Rect, m: &Menu) -> Rect {
     let h = m.items.len() as u16 + 2;
     let x = m.at.0.min(area.right().saturating_sub(w));
     let y = if m.at.1 + h > area.bottom() { m.at.1.saturating_sub(h) } else { m.at.1 };
+    // opened on a taller screen than this one: keep it on screen
+    let y = y.min(area.bottom().saturating_sub(h)).max(area.y);
     Rect::new(x, y, w.min(area.width), h.min(area.height))
 }
 
@@ -640,8 +645,22 @@ pub fn widget(buf: &mut Buffer, rect: Rect, inner: Rect, slot: &str, todo: &str,
         return;
     }
     if slot == "home" {
-        if !home_status(buf, inner, app, th) {
-            crate::home::draw(buf, inner, app, th);
+        // Search is built into Home (D70): the bar on top, the feed under it
+        let mut feed_area = inner;
+        if inner.height >= 6 && inner.width >= 12 {
+            let (x, w) = (inner.x + 1, inner.width.saturating_sub(2));
+            let on = app.focus == "home" && app.home_view.on_bar;
+            let hint = if on { "type or Enter".to_string() } else { app.keymap.label(Action::Search) };
+            crate::search::bar(buf, Rect::new(x, inner.y, w, 1), "", on, &hint, th);
+            app.hit(Rect::new(x, inner.y, w, 1), Hit::SearchBar);
+            feed_area = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 2);
+            app.home_view.has_bar = true;
+        } else {
+            app.home_view.has_bar = false;
+            app.home_view.on_bar = false;
+        }
+        if !home_status(buf, feed_area, app, th) {
+            crate::home::draw(buf, feed_area, app, th);
         }
         return;
     }
@@ -1376,6 +1395,45 @@ mod tests {
     }
 
     #[test]
+    fn text_outside_the_buffer_is_left_out_not_a_panic() {
+        // (bug hunt A1) a context menu opened low on a tall terminal, then the terminal shrinks
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
+        text(&mut buf, 2, 7, 5, "hello", Style::default());
+        text(&mut buf, 20, 2, 5, "hello", Style::default());
+        text(&mut buf, 8, 1, 5, "hello", Style::default());
+        assert_eq!(buf[(9, 1)].symbol(), "e");
+        let (mut app, _rx) = home_app();
+        render(&mut app, 200, 64);
+        app.menu = Some(Menu { at: (20, 58), target: crate::app::Target::Card(crate::home::CardRef { shelf: 1, card: 0 }), items: vec![("Play".into(), crate::app::MenuAct::Play); 4], selected: 0 });
+        render(&mut app, 80, 24);
+    }
+
+    #[test]
+    fn home_has_search_built_in_and_the_library_does_not() {
+        // (D70, D71) the bar on top of Home: a click opens Search; ↑ from the top row then typing searches what was typed
+        let (mut app, _rx) = home_app();
+        let s = render(&mut app, 200, 64);
+        assert!(s.contains("⌕ Search"), "the bar reads Search:\n{s}");
+        let lib = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "library").unwrap().1;
+        let lib_text = |l: &str| l.chars().skip(lib.x as usize).take(lib.width as usize).collect::<String>();
+        assert!(!s.lines().skip(lib.y as usize).take(4).any(|l| lib_text(l).contains("Search")), "no Search row in the library");
+        let bar = app.hits.iter().find_map(|(r, h)| (*h == Hit::SearchBar).then_some(*r)).expect("a clickable bar");
+        click(&mut app, bar.x + 4, bar.y);
+        assert_eq!(app.current_page(), crate::app::Page::Search);
+        app.run(Action::GoHome);
+        render(&mut app, 200, 64);
+        app.focus = "home".into();
+        for k in [KeyCode::Down, KeyCode::Up, KeyCode::Up] {
+            app.key(KeyEvent::new(k, KeyModifiers::NONE));
+        }
+        assert!(app.home_view.on_bar);
+        for c in "nova".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(app.search.as_ref().map(|s| s.query.as_str()), Some("nova"));
+    }
+
+    #[test]
     fn home_snapshot_shows_shortcuts_shelves_and_covers() {
         let (mut app, _rx) = home_app();
         let s = render(&mut app, 200, 64);
@@ -1416,7 +1474,7 @@ mod tests {
     fn home_scrolls_by_lines_to_the_feed_tail() {
         let (mut app, _rx) = home_app();
         render(&mut app, 200, 64);
-        scroll_to(&mut app, 30);
+        scroll_to(&mut app, 31);
         app.feed_view().scroll_lines(1000);
         let s = render(&mut app, 200, 64);
         assert!(s.contains("Feed pick 20"), "the feed tail is reachable:\n{s}");
@@ -1577,7 +1635,8 @@ mod tests {
         render(&mut app, 200, 64);
         let r = card_rect(&app, 1, 0);
         let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
-        assert_eq!(r.y, home.y + 1, "the Card is clipped at the Pane's top, not dropped");
+        // the feed starts under the search bar and its blank line (D70)
+        assert_eq!(r.y, home.y + 3, "the Card is clipped at the feed's top, not dropped");
         // pixel tier: the same cover placed with a crop of its lower part
         app.kitty = Some(crate::gfx::Kitty::new(false));
         app.cell_px = Some((10.0, 20.0));
@@ -1633,7 +1692,7 @@ mod tests {
         for part in ["⌂  Home", "♥  Liked Songs", "▸  Moods", "≡  Night Drive", "◎  Quiet Orbit"] {
             assert!(s.contains(part), "missing {part:?}\n{s}");
         }
-        let moods = side_rect(&app, 3);
+        let moods = side_rect(&app, 2);
         let line = s.lines().nth(moods.y as usize + 1).unwrap();
         assert!(line.find('≡').unwrap() > s.lines().nth(moods.y as usize).unwrap().find('▸').unwrap(), "the playlist sits inside the folder");
     }
@@ -1648,7 +1707,7 @@ mod tests {
         app.covers.insert(url, image::RgbImage::from_pixel(64, 64, image::Rgb([200, 40, 90])));
         let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
         t.draw(|f| draw(f, &mut app)).unwrap();
-        let row = side_rect(&app, 4);
+        let row = side_rect(&app, 3);
         let buf = t.backend().buffer().clone();
         let x = (row.x..row.right()).find(|&x| buf[(x, row.y)].symbol() == "▀").expect("a half-block cover");
         assert_eq!(buf[(x, row.y)].fg, ratatui::style::Color::Rgb(200, 40, 90));
@@ -1662,7 +1721,7 @@ mod tests {
         use singularity_proto::Command;
         let (mut app, mut rx) = library_app();
         render(&mut app, 160, 48);
-        let r = side_rect(&app, 2);
+        let r = side_rect(&app, 1);
         click(&mut app, r.x + 3, r.y);
         assert_eq!(sent(&mut rx), vec![Command::GetTracks { uri: "spotify:collection".into() }]);
         app.track_page(page(0, 100, 3000));
@@ -1686,7 +1745,7 @@ mod tests {
         use singularity_proto::Command;
         let (mut app, mut rx) = library_app();
         render(&mut app, 160, 48);
-        let r = side_rect(&app, 2);
+        let r = side_rect(&app, 1);
         click(&mut app, r.x + 3, r.y);
         sent(&mut rx);
         app.track_page(page(0, 50, 50));
@@ -2155,7 +2214,7 @@ mod tests {
         use singularity_proto::Command;
         let (mut app, mut rx) = library_app();
         render(&mut app, 160, 48);
-        let r = side_rect(&app, 2);
+        let r = side_rect(&app, 1);
         click(&mut app, r.x + 3, r.y);
         sent(&mut rx);
         app.track_page(page(0, 10, 10));
@@ -2915,7 +2974,7 @@ mod tests {
         use singularity_proto::Command;
         let (mut app, mut rx) = library_app();
         render(&mut app, 160, 48);
-        let r = side_rect(&app, 2);
+        let r = side_rect(&app, 1);
         click(&mut app, r.x + 3, r.y);
         sent(&mut rx);
         let mut p = page(0, 10, 10);
@@ -3359,7 +3418,7 @@ mod tests {
         let (mut app, mut rx) = library_app();
         app.playback.item = Some(singularity_proto::Item { uri: "spotify:track:new".into(), name: "Fresh".into(), artists: vec!["Nova Drift".into()], duration_ms: 200_000, ..Default::default() });
         render(&mut app, 160, 48);
-        let r = side_rect(&app, 2);
+        let r = side_rect(&app, 1);
         click(&mut app, r.x + 3, r.y);
         app.track_page(page(0, 5, 5));
         app.tick();

@@ -250,7 +250,7 @@ fn estimate(text: &str, start: u64, room_end: u64, index: usize, pace: Pace) -> 
         } else if pauses(w) {
             at += per * PAUSE_SYLLABLES;
         }
-        words.push(Word { text: w.to_string(), start: st.round() as u64, end: (end.round() as u64).clamp(st.round() as u64, room_end), glued: false });
+        words.push(Word { text: w.to_string(), start: st.round() as u64, end: (end.round() as u64).min(room_end).max(st.round() as u64), glued: false });
     }
     Line { start, end: words.last().map_or(start, |w| w.end), words, exact: false, index }
 }

@@ -230,6 +230,19 @@ fn a_repeated_track_is_logged_as_a_second_play() {
     assert_eq!((play.item.uri.as_str(), play.played_ms), ("spotify:track:a", 200_000));
 }
 
+/// B8: a seek back to hear a part again is the same play; only a jump back to near the start (the first 20 s) is a
+/// replay. Before, any jump back of more than 5 s was logged as a new play.
+#[test]
+fn a_seek_back_mid_track_is_the_same_play_but_back_to_the_start_is_a_replay() {
+    let mut r = singularityd::store::Recorder::default();
+    r.observe(&playing("spotify:track:a", 0, 0), "here", 0);
+    // at 2:00, back to 1:00: hearing the chorus again
+    assert_eq!(r.observe(&playing("spotify:track:a", 60_000, 120_000), "here", 120_000), None, "a seek back mid-track is still the first play");
+    // 1:30 later (at 2:30 of the track), back to 0:10: it started over
+    let play = r.observe(&playing("spotify:track:a", 10_000, 210_000), "here", 210_000).expect("a jump back to the start is a replay");
+    assert_eq!(play.played_ms, 200_000, "the whole run, capped at the track's length");
+}
+
 // ── C14: an LRC timestamp's minutes overflow (handed over by T0024) ──────────────────────────────────
 
 /// C14: before the fix `parse_lrc` computed `m * 60_000 + …` on a `u64` parsed straight out of the text LRCLIB sent.
@@ -243,4 +256,57 @@ fn a_hostile_lrc_timestamp_does_not_overflow() {
     // saturated, in time order, and the sane line is untouched
     assert_eq!((lines[0].text.as_str(), lines[0].start_ms), ("fine", 1000));
     assert_eq!((lines[1].text.as_str(), lines[1].start_ms), ("words", u64::MAX), "the overflowing stamp stays the latest, not a wrapped one");
+}
+
+// ── B2 (2026-11-20 bug hunt): the Client keeps showing a device that stopped playing ────────────────
+
+/// The computer's own player: one paused state whose anchor is a minute old (Soloist keeps its last anchor while it
+/// sits paused), then nothing.
+struct PausedHere;
+
+impl Engine for PausedHere {
+    fn kind(&self) -> EngineKind {
+        EngineKind::Fake
+    }
+
+    fn respawn(&self) -> Option<Box<dyn Engine>> {
+        None
+    }
+
+    fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>) {
+        let (commands, mut cmd_rx) = mpsc::channel(16);
+        let (events, ev_rx) = mpsc::channel(16);
+        tokio::spawn(async move {
+            let item = Item { uri: "spotify:track:here".into(), name: "here".into(), ..Default::default() };
+            let at = singularity_proto::now_ms() - 60_000;
+            let _ = events.send(EngineEvent::Playback(PlaybackState { status: PlayStatus::Paused, item: Some(item), position_ms: 1_000, timestamp_ms: at, ..Default::default() })).await;
+            while cmd_rx.recv().await.is_some() {}
+        });
+        (commands, ev_rx)
+    }
+}
+
+/// B2: a session dropped every playback state older than the newest one it had forwarded, for its whole life. A
+/// remote device's states are stamped when they arrive, so when the phone stopped and the Daemon went back to its own
+/// player's state (anchored when it last moved), every connected Client dropped it and kept showing the phone's track.
+/// Now only what was queued while the snapshot was read is checked against it.
+#[tokio::test]
+async fn when_another_device_stops_the_client_goes_back_to_this_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("d.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    let (cat_tx, mut cat_rx) = mpsc::channel::<CatCmd>(16);
+    let (cat_events, cat_events_rx) = mpsc::channel::<CatEvent>(16);
+    tokio::spawn(async move { while cat_rx.recv().await.is_some() {} });
+    tokio::spawn(singularityd::serve_with(listener, Box::new(PausedHere), Some((cat_tx, cat_events_rx)), None, singularityd::Extras::default()));
+    let mut s = connect(&path).await;
+    let is = |ev: &Event, uri: &str| matches!(ev, Event::Playback(p) if p.item.as_ref().is_some_and(|i| i.uri == uri));
+    assert!(next_of(&mut s, Duration::from_secs(2), |ev| is(ev, "spotify:track:here")).await, "this computer's state first");
+    // a phone plays …
+    let phone = PlaybackState { status: PlayStatus::Playing, item: Some(Item { uri: "spotify:track:phone".into(), ..Default::default() }), timestamp_ms: singularity_proto::now_ms(), speed: 1.0, ..Default::default() };
+    cat_events.send(CatEvent::Remote(Some(phone))).await.unwrap();
+    assert!(next_of(&mut s, Duration::from_secs(2), |ev| is(ev, "spotify:track:phone")).await, "the phone's track");
+    // … and stops being the active device
+    cat_events.send(CatEvent::Remote(None)).await.unwrap();
+    assert!(next_of(&mut s, Duration::from_secs(2), |ev| is(ev, "spotify:track:here")).await, "the Client was left showing the phone");
 }

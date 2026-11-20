@@ -108,6 +108,16 @@ One item on a Shelf (album, playlist, artist, show): its cover, name and subtitl
 plays); ▶ Play is on the page it opens.
 _Avoid_: tile, item, thumbnail
 
+**Spotlight**:
+A Shelf that holds a single Card ("New release from …"), drawn as that Card's cover with its name, artists and type
+beside it, so no empty Card slots trail it (D69).
+_Avoid_: hero, banner, featured card
+
+**Search bar**:
+The filled line on top of Home that reads "Search" (D70). Clicking it, Ctrl+L, or ↑ from Home's top row then Enter or
+typing opens Search, whose query sits in the same bar in the same place. The library has no Search row (D71).
+_Avoid_: search box, search field, omnibox
+
 **Track list**:
 The tracks of Liked Songs, a playlist or an album, shown in the main Pane. Sorting and filtering change only what
 you see; playing a row always starts the list at that track.

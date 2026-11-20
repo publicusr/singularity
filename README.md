@@ -18,7 +18,8 @@ The Jam picker: the invite link, its QR code and a guest (from the test harness,
 hasn't been checked by hand on a Mac yet (see the issues). Spec in `docs/SPEC.md`.
 
 Linux and macOS have the same features (the rule is D49); `docs/PLATFORMS.md` lists every feature's exact status on
-each, and the few real differences.
+each, and the few real differences. **Linux on ARM** (aarch64, e.g. a Raspberry Pi 5 or an ARM laptop) builds the
+same way and runs Soloist's arm64 build, but hasn't been tried on ARM hardware yet.
 
 ## Not affiliated with Spotify
 
@@ -45,6 +46,8 @@ cargo install --locked --path crates/daemon
 cargo install --locked --path crates/client
 singularity                         # ~/.cargo/bin on your PATH
 ```
+
+The same on x86_64 and on ARM (aarch64): the Daemon downloads the Soloist build for your CPU.
 
 (For a quick try without installing: `cargo build --release && ./target/release/singularity`.)
 

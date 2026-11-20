@@ -88,7 +88,8 @@ impl EngineChoice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EngineKind {
-    /// this OS's own: Soloist on Linux, librespot on macOS (D54)
+    /// this OS's own: Soloist on Linux (x86_64 and arm64, D73), librespot on macOS (D54) and on CPUs Spotify ships no
+    /// Soloist for
     #[default]
     Auto,
     Soloist,
@@ -102,6 +103,7 @@ impl EngineKind {
     pub fn resolved(self) -> EngineKind {
         match self {
             EngineKind::Auto if cfg!(target_os = "macos") => EngineKind::Librespot,
+            EngineKind::Auto if !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")) => EngineKind::Librespot,
             EngineKind::Auto => EngineKind::Soloist,
             k => k,
         }

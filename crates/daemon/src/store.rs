@@ -382,11 +382,15 @@ struct Current {
     speed: f32,
 }
 
-/// How far behind its own progress a state's position may be before it means the track started over (a seek back to
-/// the start, repeat one, a replay): Soloist's reports can lag by a second or so.
+/// How far behind its own progress a state's position may be before it means the track jumped back: Soloist's reports
+/// can lag by a second or so.
 const RESTART_TOLERANCE_MS: u64 = 5_000;
 
-/// Did `s` go back to the start of the same track? Only a state with a later timestamp can say so (an out-of-order
+/// A jump back counts as the track starting over (repeat one, a replay, a seek to the start) only when it lands within
+/// this much of the start; a seek back to hear a part again is still the same play.
+const RESTART_NEAR_START_MS: u64 = 20_000;
+
+/// Did `s` go back to the start of the same track (near its start, not just behind)? Only a state with a later timestamp can say so (an out-of-order
 /// one, or one without a position anchor as some Engines send, says nothing about the track). The position the last
 /// state implies at `s`'s timestamp is compared with the position `s` actually reports.
 fn restarted(c: &Current, s: &PlaybackState) -> bool {
@@ -395,7 +399,7 @@ fn restarted(c: &Current, s: &PlaybackState) -> bool {
     }
     let elapsed = (s.timestamp_ms - c.timestamp_ms) as f64 * c.speed as f64;
     let expected = c.position_ms as f64 + elapsed.max(0.0);
-    (s.position_ms as f64) + RESTART_TOLERANCE_MS as f64 + 1.0 < expected
+    s.position_ms <= RESTART_NEAR_START_MS && (s.position_ms as f64) + RESTART_TOLERANCE_MS as f64 + 1.0 < expected
 }
 
 impl Recorder {
@@ -406,8 +410,8 @@ impl Recorder {
             c.played_ms += now_ms.saturating_sub(t);
         }
         let same = matches!((&self.cur, &s.item), (Some(c), Some(i)) if c.item.uri == i.uri) && s.status != PlayStatus::Idle;
-        // the same track again, at a position well behind its progress: it started over (repeat one, a replay, a seek
-        // back), so the run so far is one play and this is the next
+        // the same track again, back near its start and well behind its progress: it started over (repeat one, a
+        // replay, a seek to the start), so the run so far is one play and this is the next
         let again = same && self.cur.as_ref().is_some_and(|c| restarted(c, s));
         if same && !again {
             let c = self.cur.as_mut().expect("same track");

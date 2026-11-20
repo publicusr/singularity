@@ -193,7 +193,9 @@ pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
         // a podcast's episodes, or a book's chapters
         let p = &v["data"]["podcastUnionV2"];
         let e = if p["chaptersV2"].is_object() { &p["chaptersV2"] } else { &p["episodesV2"] };
-        let rows = e["items"].as_array().into_iter().flatten().filter_map(|it| episode_row(&it["entity"]["data"])).collect();
+        // one row per item, even one that can't be shown (restricted): pages stay dense, so the Client places the next
+        // page at its offset instead of taking it for a gap
+        let rows = e["items"].as_array().into_iter().flatten().map(|it| episode_row(&it["entity"]["data"]).unwrap_or_else(|| stand_in(&it["entity"]["data"], ""))).collect();
         return (rows, e["totalCount"].as_u64().unwrap_or(0) as u32);
     }
     let (items, total) = match uri.split(':').nth(1) {
@@ -217,20 +219,29 @@ pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|it| {
+        .map(|it| {
             // Liked Songs: {track:{_uri,data}}, playlists: {itemV2:{data}}, albums: {track:{uri,…}}
             let (d, uri) = if let Some(d) = it["itemV2"]["data"].as_object() {
-                (Value::Object(d.clone()), d.get("uri")?.as_str()?.to_string())
+                (Value::Object(d.clone()), d.get("uri").and_then(Value::as_str).or(it["itemV2"]["_uri"].as_str()))
             } else if it["track"]["data"].is_object() {
-                (it["track"]["data"].clone(), it["track"]["_uri"].as_str()?.to_string())
+                (it["track"]["data"].clone(), it["track"]["_uri"].as_str())
             } else {
-                (it["track"].clone(), it["track"]["uri"].as_str()?.to_string())
+                (it["track"].clone(), it["track"]["uri"].as_str())
             };
-            if d["__typename"].as_str().is_some_and(|t| t != "Track") {
-                return None; // episodes and local files: later
+            let uri = uri.unwrap_or_default().to_string();
+            // every item keeps its row, so pages stay as long as Spotify's (the Client places pages by offset, and a
+            // short page made it drop the rest of the list) and a row's index is its place in the playlist: an
+            // episode is a playable row, anything else (a local file, a removed or restricted song) a greyed one
+            if uri.is_empty() || d["__typename"].as_str().is_some_and(|t| t != "Track") {
+                let mut row = episode_row(&d).unwrap_or_else(|| stand_in(&d, &uri));
+                row.uid = it["uid"].as_str().map(String::from);
+                if let Some(a) = it["addedAt"]["isoString"].as_str() {
+                    row.added_at = Some(a.to_string());
+                }
+                return row;
             }
             let ms = d["trackDuration"]["totalMilliseconds"].as_u64().or_else(|| d["duration"]["totalMilliseconds"].as_u64()).unwrap_or(0);
-            Some(TrackRow {
+            TrackRow {
                 artist_uris: uris(&d["artists"]["items"]),
                 album_uri: d["albumOfTrack"]["uri"].as_str().or(album_uri).map(String::from),
                 uid: it["uid"].as_str().map(String::from),
@@ -242,10 +253,20 @@ pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
                 added_at: it["addedAt"]["isoString"].as_str().map(String::from),
                 duration_ms: ms,
                 playable: d["playability"]["playable"].as_bool().unwrap_or(true),
-            })
+            }
         })
         .collect();
     (rows, total.unwrap_or(0) as u32)
+}
+
+/// A row for an item that can't be played here (a local file, a song Spotify removed or restricts, an episode it
+/// won't show): greyed, named as well as Spotify allows.
+fn stand_in(d: &Value, uri: &str) -> TrackRow {
+    let uri = d["uri"].as_str().unwrap_or(uri).to_string();
+    let name = d["name"].as_str().filter(|n| !n.is_empty()).map(String::from).unwrap_or_else(|| {
+        if uri.starts_with("spotify:local:") { "Local file" } else { "Unavailable" }.to_string()
+    });
+    TrackRow { uri, name, playable: false, ..Default::default() }
 }
 
 /// An episode (or a book's chapter, #62) as a list row (#59): its release date in `added_at`, Spotify's played state
@@ -553,9 +574,11 @@ mod tests {
         assert!(liked[0].added_at.is_some());
 
         let (pl, n) = parse_tracks("spotify:playlist:p", &fixture("playlist.json"));
-        assert_eq!((pl.len(), n), (2, 100), "the episode is skipped");
-        assert_eq!(pl[1].artists, ["Mira Vale", "Lumen Fields"]);
-        assert!(!pl[1].playable);
+        // (bug hunt B1) every item keeps its row, so the page is as long as Spotify's and the next one lands at its offset
+        assert_eq!((pl.len(), n), (3, 100), "the episode keeps its place");
+        assert_eq!((pl[1].uri.as_str(), pl[1].name.as_str(), pl[1].uid.as_deref()), ("spotify:episode:e0", "Talk", Some("uidE")));
+        assert_eq!(pl[2].artists, ["Mira Vale", "Lumen Fields"]);
+        assert!(!pl[2].playable);
 
         let (al, n) = parse_tracks("spotify:album:a", &fixture("album.json"));
         assert_eq!((al.len(), n), (2, 19));
@@ -610,7 +633,8 @@ mod tests {
             "pagingInfo": { "nextOffset": 3 }, "totalCount": 2766,
             "items": [ep(1, "NOT_STARTED", 0), ep(2, "IN_PROGRESS", 1_200_000), ep(3, "COMPLETED", 0), { "entity": { "data": { "__typename": "RestrictedContent" } } }] } } } });
         let (rows, total) = parse_tracks("spotify:show:s", &page);
-        assert_eq!((rows.len(), total), (3, 2766), "restricted items are skipped");
+        assert_eq!((rows.len(), total), (4, 2766), "a restricted item keeps its row, greyed");
+        assert_eq!((rows[3].name.as_str(), rows[3].playable), ("Unavailable", false));
         assert_eq!(rows[0].added_at.as_deref(), Some("2026-10-16T17:00:00Z"));
         assert_eq!(rows[1].progress, Some(singularity_proto::Progress { position_ms: 1_200_000, done: false }));
         assert!(rows[2].progress.unwrap().done);

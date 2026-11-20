@@ -268,6 +268,31 @@ def home_scroll(t, out):
     t.send(b"q", 0.5)
 
 
+def home_search(t, out):
+    """D68–D72: Home's search bar on top, shortcuts without empty slots, a one-Card Shelf as a spotlight; the bar
+    opens Search in place, and the library has no Search row."""
+    t.pump(1.5)
+    t.shot(f"{out}/0-home.png")
+    print("library Search row gone:", t.find("⌕  Search") is None, "· bar:", t.find("⌕ Search") is not None)
+    x, y = t.find("Made For You") or t.find("Daily Mix 1")
+    for _ in range(12):
+        if t.find("New release from"):
+            break
+        mouse(t, 65, x, y + 2, wait=0.3)
+    for _ in range(3):  # the whole spotlight in view
+        mouse(t, 65, x, y + 2, wait=0.3)
+    t.shot(f"{out}/1-spotlight.png")
+    bx, by = t.find("⌕ Search")
+    mouse(t, 0, bx + 4, by)
+    mouse(t, 0, bx + 4, by, release=True, wait=0.6)
+    t.shot(f"{out}/2-search-open.png")
+    t.send(b"mix", 1.2)
+    t.shot(f"{out}/3-search-typed.png")
+    t.send(b"\x1b", 0.3); t.send(b"\x1b", 0.3)
+    t.shot(f"{out}/4-back-home.png")
+    t.send(b"q", 0.5)
+
+
 def history(t, out):
     """#28/#43: ← → at the right of the main Pane's title: open a list, back to Home, forward again."""
     t.pump(1.0)
@@ -1970,6 +1995,8 @@ def main():
         t.pump(1.5)
         if scenario == "home-scroll":
             return home_scroll(t, out)
+        if scenario == "home-search":
+            return home_search(t, out)
         if scenario.startswith("home"):
             return home(t, out)
         if scenario == "library":

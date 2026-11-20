@@ -162,19 +162,39 @@ fn clip(s: &str, w: u16) -> String {
     o
 }
 
+/// The search bar (D70, D72): one filled line, the same on Home and on the Search page, so opening Search brings it
+/// to life in place, on the first line of `r`. `active` shows the cursor; `hint` sits at the right when there is room.
+pub fn bar(buf: &mut Buffer, r: Rect, query: &str, active: bool, hint: &str, th: &Theme) {
+    let (x, y, w) = (r.x, r.y, r.width);
+    if w < 4 {
+        return;
+    }
+    let fill = th.base().bg(th.selection.color());
+    blank(buf, x, y, w, fill);
+    text(buf, x + 1, y, 2, "⌕", th.s(if active { th.accent } else { th.fg }).bg(th.selection.color()));
+    let hw = hint.chars().count() as u16;
+    let room = w.saturating_sub(4);
+    let show_hint = !hint.is_empty() && room > hw + 12;
+    let tw = if show_hint { room - hw - 2 } else { room };
+    let (shown, colour) = if query.is_empty() { ("Search".to_string(), th.dim) } else { (query.to_string(), th.fg) };
+    // the end of a long query stays in view, where the typing happens
+    let n = shown.chars().count();
+    let fit = (tw as usize).saturating_sub(1);
+    let shown: String = if n > fit { shown.chars().skip(n - fit).collect() } else { shown };
+    let cursor = if active { "▏" } else { "" };
+    let line = if query.is_empty() && active { format!("{cursor}{shown}") } else { format!("{shown}{cursor}") };
+    text(buf, x + 3, y, tw, &line, th.s(colour).add_modifier(Modifier::BOLD).bg(th.selection.color()));
+    if show_hint {
+        text(buf, x + w - hw - 1, y, hw, hint, th.s(th.dim).bg(th.selection.color()));
+    }
+}
+
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let Some(mut v) = app.search.take() else { return };
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     let focused = app.focus == "home";
-    // the query
-    text(buf, x, r.y, 2, "⌕", th.s(th.accent));
-    let shown = if v.query.is_empty() { "what do you want to listen to?".to_string() } else { v.query.clone() };
-    text(buf, x + 2, r.y, w.saturating_sub(2), &format!("{shown}{}", if focused { "▏" } else { "" }), th.s(if v.query.is_empty() { th.dim } else { th.fg }).add_modifier(Modifier::BOLD));
-    let hint = "Tab: filter · Esc: back";
-    let hw = hint.chars().count() as u16;
-    if w > hw + 30 {
-        text(buf, x + w - hw, r.y, hw, hint, th.s(th.border));
-    }
+    // the query, in the same bar Home shows
+    bar(buf, Rect::new(x, r.y, w, 1), &v.query, focused, "Tab: filter · Esc: back", th);
     // chips
     let mut cx = x;
     let mut hits = vec![];

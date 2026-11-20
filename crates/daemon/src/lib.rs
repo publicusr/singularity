@@ -866,6 +866,10 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     snapshot.extend(hub.jam.lock().await.clone().map(|jam| Event::Jam { jam }));
     snapshot.extend(hub.stream.lock().await.clone().map(Event::Stream));
     snapshot.extend(hub.delivery.lock().await.clone().map(Event::Delivery));
+    // what was queued while the snapshot was read: only these can be older than it. Everything after is news in the
+    // order it happened, whatever its anchor says (a remote device's states are stamped when they arrive, the
+    // computer's own player keeps its last anchor, so going back to it must not be taken for going back in time)
+    let mut early = events.len();
     for ev in snapshot {
         let _ = out_tx.send(DaemonMsg::Event(ev)).await;
     }
@@ -875,10 +879,17 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
         loop {
             let ev = match events.recv().await {
                 Ok(ev) => ev,
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    early = early.min(events.len());
+                    continue;
+                }
                 Err(_) => break,
             };
-            if let Event::Playback(p) = &ev {
+            let queued_early = early > 0;
+            early = early.saturating_sub(1);
+            if let Event::Playback(p) = &ev
+                && queued_early
+            {
                 // older than what the snapshot already showed: it would put the Client back in time (B6)
                 if superseded(p, newest) {
                     continue;

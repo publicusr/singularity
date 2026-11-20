@@ -11,11 +11,27 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub const CDN: &str = "https://soloist-builds.spotifycdn.com/soloist_release_x86_64.tar.gz";
+/// Spotify publishes Soloist for x86_64 and arm64 Linux side by side (D73: Linux on ARM runs the arm64 build).
+pub const CDN: &str = "https://soloist-builds.spotifycdn.com/soloist_release_";
 
-/// The CDN to use (`SINGULARITY_SOLOIST_CDN` points tests and the pty harness at a fake one).
+/// This machine's build: `None` on a CPU Spotify ships no Soloist for.
+pub fn cdn_for(arch: &str) -> Option<String> {
+    let name = match arch {
+        "x86_64" => "x86_64",
+        "aarch64" => "arm64",
+        _ => return None,
+    };
+    Some(format!("{CDN}{name}.tar.gz"))
+}
+
+/// The CDN to use (`SINGULARITY_SOLOIST_CDN` points tests and the pty harness at a fake one). On a CPU without a
+/// Soloist build this is the x86_64 one: its binary won't answer `--version`, so the check fails and says so.
 pub fn cdn_url() -> String {
-    std::env::var("SINGULARITY_SOLOIST_CDN").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| CDN.into())
+    std::env::var("SINGULARITY_SOLOIST_CDN")
+        .ok()
+        .filter(|u| !u.is_empty())
+        .or_else(|| cdn_for(std::env::consts::ARCH))
+        .unwrap_or_else(|| format!("{CDN}x86_64.tar.gz"))
 }
 
 /// What a build directory holds, as the CDN described it (`build.json` next to the binary).
@@ -340,6 +356,14 @@ pub fn ymd(unix: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_cpu_gets_its_own_soloist_build() {
+        // (D73) Linux on ARM downloads the arm64 build Spotify publishes next to the x86_64 one
+        assert_eq!(cdn_for("x86_64").as_deref(), Some("https://soloist-builds.spotifycdn.com/soloist_release_x86_64.tar.gz"));
+        assert_eq!(cdn_for("aarch64").as_deref(), Some("https://soloist-builds.spotifycdn.com/soloist_release_arm64.tar.gz"));
+        assert_eq!(cdn_for("riscv64"), None);
+    }
 
     #[test]
     fn http_dates_round_trip() {

@@ -292,6 +292,19 @@
    ]
   },
   {
+   "title": "New release from Nova Drift",
+   "kind": "shelf",
+   "cards": [
+    {
+     "uri": "spotify:album:newrelease",
+     "name": "Afterglow Engine",
+     "subtitle": "Nova Drift, Mira Vale",
+     "image_url": "https://i.scdn.co/image/fixture900",
+     "kind": "album"
+    }
+   ]
+  },
+  {
    "title": "New releases for you",
    "kind": "shelf",
    "cards": [

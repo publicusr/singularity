@@ -108,6 +108,8 @@ async fn run(engine: LibrespotEngine, mut cmds: mpsc::Receiver<Command>, ev: mps
         return;
     };
     let mut saved = None;
+    // how many times in a row Spotify was out of reach while a saved state waited for it
+    let mut unreachable = 0;
     loop {
         // the Catalogue's login; until there is one, look again on every command (the Hub sends one when the login
         // is done) and every 10 s
@@ -119,6 +121,16 @@ async fn run(engine: LibrespotEngine, mut cmds: mpsc::Receiver<Command>, ev: mps
             }
         };
         status(&ev, EngineStatus::Starting).await;
+        // a new Spirc consumes the saved state even when it then can't connect (after a sleep the network is often
+        // not back yet): hand it over only once Spotify answers, and give up waiting after about two minutes (B3)
+        if saved.is_some() && unreachable < 12 && !reachable(&engine.identity.device_name).await {
+            unreachable += 1;
+            match tokio::time::timeout(Duration::from_secs(10), cmds.recv()).await {
+                Ok(None) => return,
+                _ => continue,
+            }
+        }
+        unreachable = 0;
         let receiver = match start(&engine, creds, saved.take()).await {
             Ok(r) => r,
             Err(e) => {
@@ -149,7 +161,10 @@ async fn run(engine: LibrespotEngine, mut cmds: mpsc::Receiver<Command>, ev: mps
                     Some(Command::RestartEngine) => {
                         let _ = ev.send(EngineEvent::Notice("Restarting librespot…".into())).await;
                         let _ = spirc.shutdown();
-                        let _ = (&mut task).await;
+                        // a Spirc stuck on a dead connection may never end: the restart is what should unstick it
+                        if tokio::time::timeout(Duration::from_secs(5), &mut task).await.is_err() {
+                            task.abort();
+                        }
                         break false;
                     }
                     Some(cmd) => {
@@ -206,6 +221,12 @@ async fn run(engine: LibrespotEngine, mut cmds: mpsc::Receiver<Command>, ev: mps
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
+}
+
+/// Does Spotify answer? Asks its access-point resolver, as a new session does first.
+async fn reachable(name: &str) -> bool {
+    let session = Session::new(SessionConfig { device_id: device_id(name), ..SessionConfig::default() }, None);
+    matches!(tokio::time::timeout(Duration::from_secs(10), session.apresolver().try_apresolve()).await, Ok(Ok(_)))
 }
 
 struct Receiver {

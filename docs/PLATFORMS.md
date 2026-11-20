@@ -11,6 +11,12 @@ For users, the README's "Build and run" and "macOS quirks" sections say the same
 
 ## The Engines (what plays the music)
 
+**Linux on ARM (D73):** aarch64 Linux is the same build as x86_64 Linux: no `target_arch` code except the two below.
+The Daemon downloads Soloist's arm64 build (Spotify publishes it next to the x86_64 one, `update::cdn_for`), and on a
+Linux CPU with no Soloist build `auto` means librespot. CI tests on GitHub's `ubuntu-24.04-arm` runner, and a release
+carries an `aarch64-unknown-linux-gnu` archive. Status: 🔶 not built yet (a cross type-check from the x86 PC stops at C dependencies that need an aarch64 sysroot); CI builds and tests it on the first push, and nothing has run on ARM hardware yet (the
+owner's ARM session will check it). The feature rows below are for x86_64 Linux until then.
+
 `[engine] kind` in `config.toml` (Settings page too), read when the Daemon starts. `auto` = Soloist on Linux, librespot
 on macOS (D54, D56: standalone, lightest, the audio Widgets work out of the box; for lossless on macOS, `soloist` (the
 VM) or `spotify-app`).

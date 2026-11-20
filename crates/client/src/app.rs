@@ -337,6 +337,8 @@ pub enum Hit {
     Card(CardRef),
     /// a Shelf's ‹ › buttons: row index, direction
     ShelfScroll(usize, i32),
+    /// Home's search bar (D70): opens Search
+    SearchBar,
     MenuItem(usize),
     /// a sidebar row (0 = Home)
     Side(usize),
@@ -517,6 +519,10 @@ struct ConfigFiles {
     polled: Instant,
 }
 
+/// How long a list or artist page the Client has stays fresh: as long as the Daemon's cache keeps it.
+const KEPT_FOR: Duration = Duration::from_secs(10 * 60);
+/// How many lists and artist pages the Client keeps while you browse elsewhere.
+const KEPT: usize = 64;
 
 pub struct App {
     /// shared with each frame, which holds it while it draws (a clone per frame was the whole Theme: audit Q1)
@@ -612,6 +618,9 @@ pub struct App {
     pub devices_open: bool,
     pub devices_sel: usize,
     artist_pages: HashMap<String, singularity_proto::ArtistPage>,
+    /// when each list and artist page last arrived: one older than [`KEPT_FOR`] is fetched again when opened, and only
+    /// the newest [`KEPT`] are kept (B6: a Client left open for days showed last week's lists)
+    fetched: HashMap<String, Instant>,
     /// history: pages to go back and forward to
     pub back: Vec<Page>,
     pub forward: Vec<Page>,
@@ -767,6 +776,7 @@ impl App {
             devices_open: false,
             devices_sel: 0,
             artist_pages: HashMap::new(),
+            fetched: HashMap::new(),
             back: vec![],
             forward: vec![],
             list_views: HashMap::new(),
@@ -1503,6 +1513,26 @@ impl App {
 
     /// Keys for the focused Home; returns false for keys it doesn't use.
     fn home_key(&mut self, k: KeyEvent) -> bool {
+        // the search bar holds the selection: Enter or typing opens Search (with what was typed), ↓ leaves it
+        if self.search.is_none() && self.artist.is_none() && self.home_view.on_bar {
+            let ctrl = k.modifiers.contains(KeyModifiers::CONTROL) || k.modifiers.contains(KeyModifiers::ALT);
+            match k.code {
+                KeyCode::Enter => {
+                    self.run(Action::Search);
+                    return true;
+                }
+                KeyCode::Char(c) if !ctrl => {
+                    self.navigate(Page::Search);
+                    if let Some(s) = self.search.as_mut() {
+                        s.query.push(c);
+                        s.typed();
+                    }
+                    return true;
+                }
+                KeyCode::Up => return true,
+                _ => {}
+            }
+        }
         if self.active_feed().is_none_or(|h| h.shelves.is_empty()) {
             return false;
         }
@@ -1536,16 +1566,37 @@ impl App {
             self.seed_liked(&p.tracks);
         }
         self.lists.entry(p.uri.clone()).or_default().add(&p);
+        self.fetched.insert(p.uri.clone(), Instant::now());
         self.details_arrived(&p.uri);
+        self.forget_old();
     }
 
-    /// Open sidebar row `row` (0 = Home, 1 = Search, then the library).
+    /// Has `uri` been kept longer than the Daemon keeps it fresh?
+    fn stale(&self, uri: &str) -> bool {
+        self.fetched.get(uri).is_some_and(|at| at.elapsed() >= KEPT_FOR)
+    }
+
+    /// Keep the newest [`KEPT`] lists and artist pages (never the one on screen).
+    fn forget_old(&mut self) {
+        if self.fetched.len() <= KEPT {
+            return;
+        }
+        let shown = [self.view.as_ref().map(|v| v.uri.as_str()), self.artist.as_ref().map(|a| a.uri.as_str())];
+        let mut by_age: Vec<(Instant, String)> = self.fetched.iter().filter(|(u, _)| !shown.contains(&Some(u.as_str()))).map(|(u, at)| (*at, u.clone())).collect();
+        by_age.sort();
+        for (_, uri) in by_age.into_iter().take(self.fetched.len() - KEPT) {
+            self.fetched.remove(&uri);
+            self.lists.remove(&uri);
+            self.list_views.remove(&uri);
+            self.artist_pages.remove(&uri);
+        }
+    }
+
+    /// Open sidebar row `row` (0 = Home, then the library).
     fn open_side(&mut self, row: usize) {
         self.sidebar.sel = row;
-        match row {
-            0 => return self.run(Action::GoHome),
-            1 => return self.run(Action::Search),
-            _ => {}
+        if row == 0 {
+            return self.run(Action::GoHome);
         }
         let Some(it) = self.library.as_ref().and_then(|l| l.items.get(row - crate::sidebar::FIXED)).cloned() else { return };
         match it.kind.as_str() {
@@ -1667,7 +1718,7 @@ impl App {
                 });
                 self.view = Some(v);
                 self.recheck_saved(&uri);
-                if self.lists.get(&uri).is_none_or(|l| !l.complete()) {
+                if self.lists.get(&uri).is_none_or(|l| !l.complete()) || self.stale(&uri) {
                     self.lists.remove(&uri);
                     // fetched again from the top: a show asks for its older episodes again too
                     if let Some(v) = self.view.as_mut() {
@@ -1679,9 +1730,12 @@ impl App {
             Page::Artist { uri, name } => {
                 self.recheck_saved(&uri);
                 let mut a = crate::artist::ArtistView::new(&uri, &name);
-                match self.artist_pages.get(&uri) {
-                    Some(p) => a.set_page(p.clone()),
-                    None => self.send(Command::GetArtist { uri }),
+                // a stale page shows until the fresh one arrives
+                if let Some(p) = self.artist_pages.get(&uri) {
+                    a.set_page(p.clone());
+                }
+                if !self.artist_pages.contains_key(&uri) || self.stale(&uri) {
+                    self.send(Command::GetArtist { uri });
                 }
                 self.artist = Some(a);
             }
@@ -1693,7 +1747,9 @@ impl App {
         if let Some(a) = self.artist.as_mut().filter(|a| a.uri == p.uri) {
             a.set_page(p.clone());
         }
+        self.fetched.insert(p.uri.clone(), Instant::now());
         self.artist_pages.insert(p.uri.clone(), p);
+        self.forget_old();
     }
 
     /// The Shelves on screen (Home's, or the artist page's) and their view state.
@@ -2731,6 +2787,7 @@ impl App {
                         self.open_card(c);
                     }
                     Some(Hit::PlayView) => self.play_view(),
+                    Some(Hit::SearchBar) => self.run(Action::Search),
                     Some(Hit::ShelfScroll(row, d)) => self.feed_view().scroll_shelf(row, d),
                     Some(Hit::Link(l)) => self.open_link(&l),
                     Some(Hit::DeviceRow(i)) => self.transfer_to(i),
@@ -3202,6 +3259,33 @@ mod tests {
     fn idled(app: &mut App) {
         app.last_input = Instant::now() - Duration::from_secs_f32(app.config.idle.minutes * 60.0 + 1.0);
         app.tick();
+    }
+
+    /// B6 (2026-11-20 bug hunt): a list the Client had completely was never asked for again, so a Client left open
+    /// for days showed last week's Discover Weekly; and every list and artist page opened stayed in memory.
+    #[test]
+    fn a_list_older_than_the_daemons_cache_is_fetched_again_and_old_ones_are_let_go() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut app = App::new(Some(tx));
+        app.link = Link::Connected { version: "t".into() };
+        let uri = "spotify:playlist:weekly";
+        let page = |uri: &str| singularity_proto::TrackPage { uri: uri.into(), offset: 0, total: 1, tracks: vec![singularity_proto::TrackRow { uri: "spotify:track:a".into(), name: "a".into(), ..Default::default() }], header: None };
+        app.track_page(page(uri));
+        let list = || Page::List { uri: uri.into(), title: "Weekly".into(), subtitle: String::new() };
+        let asked = |rx: &mut mpsc::Receiver<Command>| std::iter::from_fn(|| rx.try_recv().ok()).any(|c| matches!(c, Command::GetTracks { .. }));
+        app.navigate(list());
+        assert!(!asked(&mut rx), "fresh: shown from what the Client has");
+        app.navigate(Page::Home);
+        *app.fetched.get_mut(uri).unwrap() -= KEPT_FOR;
+        app.navigate(list());
+        assert!(asked(&mut rx), "ten minutes on: asked for again");
+        app.track_page(page(uri));
+
+        for i in 0..KEPT + 10 {
+            app.track_page(page(&format!("spotify:playlist:{i}")));
+        }
+        assert!(app.lists.len() <= KEPT && app.fetched.len() <= KEPT, "{} lists kept", app.lists.len());
+        assert!(app.lists.contains_key(uri), "never the one on screen");
     }
 
     #[test]

@@ -18,8 +18,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS minutes cost ten times as much on a private repository: there macOS runs only when started by hand
-        os: ${{ fromJSON((github.event.repository.private && github.event_name != 'workflow_dispatch') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
+        # macOS minutes cost ten times as much on a private repository: there macOS runs only when started by hand.
+        # Linux on ARM (D73): GitHub's arm64 runners are free for public repositories only
+        os: ${{ fromJSON((github.event.repository.private && github.event_name != 'workflow_dispatch') && '["ubuntu-latest"]' || (github.event.repository.private && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest"]')) }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

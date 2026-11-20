@@ -31,6 +31,8 @@ pub enum RowKind {
     Feed,
     /// one line of a titled grid (e.g. one type of search results)
     Grid,
+    /// a Shelf of a single Card: its cover with the details beside it, so no empty Card slots trail it (D69)
+    Spotlight,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -99,9 +101,10 @@ pub fn rows(feed: &HomeFeed, width: u16, height: u16, aspect: f64) -> (Vec<Row>,
                 let all: Vec<CardRef> = refs.collect();
                 let lines = all.len().div_ceil(cols);
                 for (i, chunk) in all.chunks(cols).enumerate() {
-                    // the grid's lines sit tight; a blank row only after the last one
+                    // the grid's lines sit tight; a blank row only after the last one. A short last line's tiles share
+                    // the whole width (D68): `per_view` is the line's own count
                     let height = TILE_H + u16::from(i + 1 == lines);
-                    out.push(Row { kind: RowKind::Shortcuts, title: None, cards: chunk.to_vec(), per_view: cols, height });
+                    out.push(Row { kind: RowKind::Shortcuts, title: None, cards: chunk.to_vec(), per_view: chunk.len(), height });
                 }
             }
             "feed" => feed_cards.extend(refs),
@@ -113,6 +116,7 @@ pub fn rows(feed: &HomeFeed, width: u16, height: u16, aspect: f64) -> (Vec<Row>,
                     out.push(Row { kind: RowKind::Grid, title, cards: chunk.to_vec(), per_view, height });
                 }
             }
+            _ if s.cards.len() == 1 => out.push(Row { kind: RowKind::Spotlight, title: Some(s.title.clone()), cards: refs.collect(), per_view: 1, height: 1 + card_row_h }),
             _ => out.push(Row { kind: RowKind::Shelf, title: Some(s.title.clone()), cards: refs.collect(), per_view, height: 1 + card_row_h }),
         }
     }
@@ -137,6 +141,10 @@ pub struct HomeView {
     pub rows: Vec<Row>,
     /// rows at least partly in view last frame
     pub visible: usize,
+    /// Home's search bar sits above the rows (D70): ↑ from the top row reaches it
+    pub has_bar: bool,
+    /// the search bar holds the selection (`sel` is then None)
+    pub on_bar: bool,
 }
 
 impl HomeView {
@@ -179,6 +187,14 @@ impl HomeView {
         if self.rows.is_empty() {
             return;
         }
+        if self.on_bar {
+            if dy > 0 {
+                self.on_bar = false;
+                self.offset = 0;
+                self.sel = Some(self.rows[0].cards[0]);
+            }
+            return;
+        }
         let Some((r, c)) = self.sel_pos() else {
             // the first row that starts in view
             let first = (0..self.rows.len()).find(|&i| self.row_y(i) >= self.offset).unwrap_or(self.rows.len() - 1);
@@ -186,6 +202,12 @@ impl HomeView {
             return;
         };
         let (mut r, mut c) = (r as i32, c as i32);
+        if dy < 0 && r == 0 && self.has_bar {
+            self.sel = None;
+            self.on_bar = true;
+            self.offset = 0;
+            return;
+        }
         if dy != 0 {
             // keep the same on-screen column across rows
             let col = c - self.row_first(r as usize) as i32;
@@ -216,6 +238,7 @@ impl HomeView {
         } else if top + content > self.offset + height {
             self.offset = (top + content).saturating_sub(height).min(top);
         }
+        self.on_bar = false;
         let row = &self.rows[r];
         if row.kind == RowKind::Shelf {
             let shelf = row.cards[0].shelf;
@@ -309,9 +332,11 @@ pub fn draw_feed(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, feed: Hom
             let glyph = if card.kind == "artist" { "◍" } else { "♪" };
             let url = card.image_url.clone().unwrap_or_default();
             if row.kind == RowKind::Shortcuts {
-                let x = x0 + i as u16 * (m.tile_w + 1);
-                let cw = m.tile_cover_w.min(m.tile_w);
-                let tw = m.tile_w.saturating_sub(cw + 1);
+                // a short last line stretches its tiles across the Pane
+                let tile_w = (r.width.saturating_sub(2) + 1) / row.per_view.max(1) as u16 - 1;
+                let x = x0 + i as u16 * (tile_w + 1);
+                let cw = m.tile_cover_w.min(tile_w);
+                let tw = tile_w.saturating_sub(cw + 1);
                 let bg = if selected { th.selection.color() } else { th.bg.color() };
                 for (dy, line, st) in [(0, clip_text(&card.name, tw), name_st), (1, clip_text(sub, tw), th.s(th.dim))] {
                     if on(cy + dy) {
@@ -323,7 +348,35 @@ pub fn draw_feed(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, feed: Hom
                     }
                 }
                 cover_at(buf, x, cy, cw, TILE_H, r, &url, glyph, app, th);
-                if let Some(hr) = clip(x, cy, m.tile_w, TILE_H) {
+                if let Some(hr) = clip(x, cy, tile_w, TILE_H) {
+                    app.hit(hr, Hit::Card(*cref));
+                }
+            } else if row.kind == RowKind::Spotlight {
+                // the cover at Card size, the details beside it
+                cover_at(buf, x0, cy, m.card_w, m.cover_h, r, &url, glyph, app, th);
+                let tx = x0 + m.card_w + 2;
+                let tw = r.right().saturating_sub(tx + 1);
+                let kind = match card.kind.as_str() {
+                    "show" => "Podcast".to_string(),
+                    k => k.chars().take(1).flat_map(char::to_uppercase).chain(k.chars().skip(1)).collect(),
+                };
+                let mark = if selected { "▸ " } else { "" };
+                let lines = [
+                    (clip_text(&format!("{mark}{}", card.name), tw), name_st),
+                    (clip_text(&card.subtitle, tw), th.s(th.dim)),
+                    (clip_text(&kind, tw), th.s(th.dim)),
+                    (String::new(), th.s(th.dim)),
+                    (clip_text(if card.kind == "track" { "Enter plays" } else { "Enter opens" }, tw), th.s(th.border)),
+                ];
+                // centred on the cover when it is taller than the details
+                let top = cy + (m.cover_h.saturating_sub(lines.len() as u16) / 2) as i32;
+                for (dy, (line, st)) in lines.iter().enumerate() {
+                    let ly = top + dy as i32;
+                    if tw > 0 && on(ly) && ly < cy + m.cover_h.max(lines.len() as u16) as i32 {
+                        text(buf, tx, ly as u16, tw, line, *st);
+                    }
+                }
+                if let Some(hr) = clip(x0, cy, r.width.saturating_sub(2), m.cover_h.max(2)) {
                     app.hit(hr, Hit::Card(*cref));
                 }
             } else {
@@ -405,6 +458,41 @@ mod tests {
         let card = |n: usize| Card { uri: format!("spotify:playlist:{n}"), name: format!("Mix {n}"), subtitle: String::new(), image_url: None, kind: "playlist".into() };
         let shelf = |kind: &str, n: usize| Shelf { title: kind.into(), kind: kind.into(), cards: (0..n).map(card).collect() };
         HomeFeed { fetched_unix_ms: 0, shelves: vec![shelf("shortcuts", 8), shelf("shelf", 10), shelf("shelf", 3), shelf("feed", 1), shelf("feed", 1), shelf("feed", 1)] }
+    }
+
+    #[test]
+    fn no_empty_slots_a_short_shortcuts_line_stretches_and_a_lone_card_is_a_spotlight() {
+        // (D68, D69) 10 shortcuts in a Pane with room for 3 a line, and a one-Card Shelf ("New release from …")
+        let mut f = feed();
+        f.shelves[0].cards.extend(feed().shelves[0].cards.iter().take(2).cloned());
+        f.shelves.insert(1, Shelf { title: "New release".into(), kind: "shelf".into(), cards: feed().shelves[0].cards[..1].to_vec() });
+        let (rows, _) = rows(&f, 64, 30, 2.0);
+        let short: Vec<usize> = rows.iter().filter(|r| r.kind == RowKind::Shortcuts).map(|r| r.per_view).collect();
+        assert_eq!(short, [3, 3, 3, 1], "the last line's one tile takes the whole width");
+        assert!(rows.iter().filter(|r| r.kind == RowKind::Shortcuts).all(|r| r.cards.len() == r.per_view));
+        let spot = rows.iter().find(|r| r.kind == RowKind::Spotlight).expect("a spotlight");
+        assert_eq!((spot.cards.len(), spot.title.as_deref()), (1, Some("New release")));
+        assert!(rows.iter().filter(|r| r.kind == RowKind::Shelf).all(|r| r.cards.len() > 1));
+    }
+
+    #[test]
+    fn up_from_the_top_row_reaches_the_search_bar_and_down_leaves_it() {
+        let (rows, _) = rows(&feed(), 110, 40, 2.0);
+        let mut v = HomeView { rows, height: 40, has_bar: true, ..Default::default() };
+        v.move_sel(0, 0);
+        assert_eq!(v.sel, Some(CardRef { shelf: 0, card: 0 }));
+        v.move_sel(1, 0);
+        v.move_sel(0, -1);
+        assert!(v.on_bar && v.sel.is_none());
+        v.move_sel(0, -1);
+        assert!(v.on_bar, "nothing above the bar");
+        v.move_sel(0, 1);
+        assert!(!v.on_bar);
+        assert_eq!(v.sel, Some(CardRef { shelf: 0, card: 0 }));
+        // without a bar (an artist page's Shelves) ↑ stays on the top row
+        v.has_bar = false;
+        v.move_sel(0, -1);
+        assert!(!v.on_bar && v.sel.is_some());
     }
 
     #[test]

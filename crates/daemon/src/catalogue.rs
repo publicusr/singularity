@@ -220,13 +220,13 @@ impl Dirs {
 pub fn spawn(dirs: Dirs, engine: Identity) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
     let (cmd_tx, cmd_rx) = mpsc::channel(16);
     let (ev_tx, ev_rx) = mpsc::channel(64);
-    tokio::spawn(supervise(dirs, engine, cmd_rx, ev_tx, cmd_tx.clone()));
+    tokio::spawn(supervise(dirs, engine, cmd_rx, ev_tx));
     (cmd_tx, ev_rx)
 }
 
 /// Run the Catalogue, and keep it running: a panic would otherwise leave a Daemon that browses nothing, says
 /// "logged in" and never answers again (A1/C2). The command channel survives a restart, so Clients keep working.
-async fn supervise(dirs: Dirs, engine: Identity, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
+async fn supervise(dirs: Dirs, engine: Identity, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
     let mut backoff = Duration::from_secs(2);
     loop {
         let began = Instant::now();
@@ -238,7 +238,7 @@ async fn supervise(dirs: Dirs, engine: Identity, mut cmds: mpsc::Receiver<CatCmd
                 let _ = ev.send(CatEvent::TaskStarted("the Catalogue")).await;
             }
         });
-        let done = std::panic::AssertUnwindSafe(run(dirs.clone(), engine.clone(), &mut cmds, ev.clone(), self_tx.clone())).catch_unwind().await;
+        let done = std::panic::AssertUnwindSafe(run(dirs.clone(), engine.clone(), &mut cmds, ev.clone())).catch_unwind().await;
         back.abort();
         match done {
             // the Daemon dropped its end: we're shutting down
@@ -295,21 +295,19 @@ struct State {
     cluster_changed: std::sync::Arc<tokio::sync::Notify>,
 }
 
-async fn run(dirs: Dirs, engine: Identity, cmds: &mut mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>, self_tx: mpsc::Sender<CatCmd>) {
+async fn run(dirs: Dirs, engine: Identity, cmds: &mut mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
     let registry = QueryRegistry::new(dirs.queries.clone());
     let mut st = State { dirs, engine, session: None, registry, ev, remote: None, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default(), cluster_changed: Default::default() };
+    // commands drained from behind a search, in their original order, and the follow-ups of commands already run
+    let mut waiting: VecDeque<CatCmd> = VecDeque::new();
     // resume a previous login
     if saved_credentials(&st.dirs).is_some() {
         if st.connect(None).await {
-            let _ = self_tx.send(CatCmd::Home).await;
-            let _ = self_tx.send(CatCmd::Library).await;
-            let _ = self_tx.send(CatCmd::Devices).await;
+            waiting.extend([CatCmd::Home, CatCmd::Library, CatCmd::Devices]);
         }
     } else {
         st.status(CatalogueStatus::LoggedOut).await;
     }
-    // commands drained from behind a search, in their original order
-    let mut waiting: VecDeque<CatCmd> = VecDeque::new();
     loop {
         let cmd = match waiting.pop_front() {
             Some(c) => c,
@@ -325,17 +323,24 @@ async fn run(dirs: Dirs, engine: Identity, cmds: &mut mpsc::Receiver<CatCmd>, ev
             waiting.extend(later);
             continue;
         }
-        handle(&mut st, cmd, &self_tx).await;
+        handle(&mut st, cmd, &mut waiting).await;
     }
 }
 
-async fn handle(st: &mut State, cmd: CatCmd, self_tx: &mpsc::Sender<CatCmd>) {
+/// Run one command. What it makes necessary next (the sidebar after a playlist change) goes in `next`, which `run`
+/// takes before the channel: sending it back into the channel only this task reads deadlocked the Catalogue once 16
+/// commands were waiting (2026-11-20 bug hunt, A2; the pattern Search had already lost in A2/C4), and with it every
+/// Client session and the Engine task waiting to send it something.
+async fn handle(st: &mut State, cmd: CatCmd, next: &mut VecDeque<CatCmd>) {
+    let library = |next: &mut VecDeque<CatCmd>| {
+        if !next.iter().any(|c| matches!(c, CatCmd::Library)) {
+            next.push_back(CatCmd::Library);
+        }
+    };
     match cmd {
         CatCmd::Login => {
             if st.login().await {
-                let _ = self_tx.send(CatCmd::Home).await;
-                let _ = self_tx.send(CatCmd::Library).await;
-                let _ = self_tx.send(CatCmd::Devices).await;
+                next.extend([CatCmd::Home, CatCmd::Library, CatCmd::Devices]);
             }
         }
         CatCmd::Logout => st.logout().await,
@@ -359,30 +364,30 @@ async fn handle(st: &mut State, cmd: CatCmd, self_tx: &mpsc::Sender<CatCmd>) {
         CatCmd::SetSaved { uri, saved } => {
             // the library changed: the sidebar and Liked Songs follow (Liked Songs from its next open)
             if st.set_saved(uri.clone(), saved).await && !uri.starts_with("spotify:track:") {
-                let _ = self_tx.send(CatCmd::Library).await;
+                library(next);
             }
         }
         CatCmd::CheckSaved(uris) => st.check_saved(uris).await,
         // either way the sidebar shows the truth afterwards
         CatCmd::CreatePlaylist { name, uris } => {
             st.create_playlist(name, uris).await;
-            let _ = self_tx.send(CatCmd::Library).await;
+            library(next);
         }
         CatCmd::AddToPlaylist { playlist, name, uris, anyway } => st.add_to_playlist(playlist, name, uris, anyway).await,
         CatCmd::RemoveFromPlaylist { playlist, uids } => st.remove_from_playlist(playlist, uids).await,
         CatCmd::MoveInPlaylist { playlist, uids, before, after } => st.move_in_playlist(playlist, uids, before, after).await,
         CatCmd::SetCover { playlist, jpeg } => {
             if st.set_cover(playlist, jpeg).await {
-                let _ = self_tx.send(CatCmd::Library).await;
+                library(next);
             }
         }
         CatCmd::DeletePlaylist(uri) => {
             st.delete_playlist(uri).await;
-            let _ = self_tx.send(CatCmd::Library).await;
+            library(next);
         }
         CatCmd::EditPlaylist { uri, name, description } => {
             if st.edit_playlist(uri, name, description).await {
-                let _ = self_tx.send(CatCmd::Library).await;
+                library(next);
             }
         }
         CatCmd::Query { op, vars, reply } => {
@@ -1546,6 +1551,30 @@ pub fn parse_home(v: &Value) -> HomeFeed {
 
 #[cfg(test)]
 mod tests {
+    /// A2 (2026-11-20 bug hunt): a playlist command sent its sidebar refresh back into the Catalogue's own channel of
+    /// 16. With the channel full that send never returned: the Catalogue stopped for good, and every Client session
+    /// and the Engine task waiting to send it something stopped with it.
+    #[tokio::test]
+    async fn a_full_queue_of_playlist_edits_does_not_lock_the_catalogue() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs { credentials: dir.path().join("creds"), queries: dir.path().join("q.json") };
+        let (tx, mut ev) = spawn(dirs, crate::engine::Identity::default());
+        // whatever it reports is read, as the Hub does
+        tokio::spawn(async move { while ev.recv().await.is_some() {} });
+        let flood = async {
+            for i in 0..100 {
+                tx.send(CatCmd::DeletePlaylist(format!("spotify:playlist:{i}"))).await.unwrap();
+            }
+            // and it still answers
+            let (reply, answer) = tokio::sync::oneshot::channel();
+            tx.send(CatCmd::Query { op: "x".into(), vars: Value::Null, reply }).await.unwrap();
+            answer.await.unwrap()
+        };
+        let answer = tokio::time::timeout(Duration::from_secs(10), flood).await.expect("the Catalogue locked up");
+        assert!(answer.is_err(), "logged out: no query runs");
+    }
+
     #[test]
     fn caches_stay_bounded() {
         use std::collections::HashMap;
