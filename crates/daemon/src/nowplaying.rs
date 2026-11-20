@@ -77,6 +77,9 @@ mod mac {
     use std::ptr::NonNull;
     use std::sync::{Arc, OnceLock};
 
+    /// A remote command and the transport command it stands for.
+    type Simple = (Retained<MPRemoteCommand>, fn() -> Command);
+
     /// The Hub, and the runtime to send commands from, once the Daemon serves.
     static HUB: OnceLock<(Arc<Hub>, tokio::runtime::Handle)> = OnceLock::new();
     /// Set by the Daemon: register the remote commands (from the main thread) and keep its run loop.
@@ -191,7 +194,7 @@ mod mac {
         // SAFETY: called on the main thread before its run loop starts; the handlers live for the process
         unsafe {
             let c = MPRemoteCommandCenter::sharedCommandCenter();
-            let simple: [(Retained<MPRemoteCommand>, fn() -> Command); 6] = [
+            let simple: [Simple; 6] = [
                 (c.playCommand(), || Command::Play { uri: None }),
                 (c.pauseCommand(), || Command::Pause),
                 (c.togglePlayPauseCommand(), || Command::TogglePlay),
