@@ -73,6 +73,11 @@ _Avoid_: server, backend, service
 `singularity`, a terminal window that connects to the Daemon and draws the interface. Several can run at once.
 _Avoid_: frontend, TUI (as a noun for the process)
 
+**Now playing**:
+What is playing and on which device (this computer's Engine, or another device Singularity follows over Connect),
+the same for every Client. The Now playing Widget shows it.
+_Avoid_: current track, player state
+
 **ConnectRemote**:
 Spotify Connect commands sent through the Catalogue session, for what the Engine can't do itself (start a context at
 track N, later device transfer and quality). Registers as a hidden device that never shows in device pickers.
