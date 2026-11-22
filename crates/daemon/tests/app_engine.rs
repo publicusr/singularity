@@ -2,6 +2,8 @@
 //! in place of Spotify. Commands must reach the Catalogue as `CatCmd::Engine`; the app's playback, queue and stream
 //! quality, read from a Connect cluster, must reach Clients as the Engine's own.
 
+mod common;
+
 use librespot_protocol::connect::{Cluster, DeviceInfo};
 use librespot_protocol::player::{BitrateLevel, PlaybackQuality, PlayerState, ProvidedTrack};
 use singularity_proto::{self as proto, ClientMsg, Command, DaemonMsg, EngineStatus, Event, PROTOCOL_VERSION, PlayStatus};
@@ -69,7 +71,7 @@ async fn next_event(s: &mut UnixStream, want: impl Fn(&Event) -> bool) -> Event 
 
 #[tokio::test]
 async fn the_spotify_app_plays_through_the_catalogue() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("d.sock");
     let listener = singularityd::bind(&path).unwrap();
     let (cat_tx, mut cat_rx) = mpsc::channel::<CatCmd>(16);

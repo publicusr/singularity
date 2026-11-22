@@ -1,11 +1,13 @@
 //! Seam 1 (spec, Testing Decisions): drive a real Daemon purely through the protocol.
 
+mod common;
+
 use singularity_proto::{self as proto, ClientMsg, DaemonMsg, Event, EngineStatus, PROTOCOL_VERSION};
 use singularityd::engine::NoEngine;
 use tokio::net::UnixStream;
 
 async fn start() -> (tempfile::TempDir, std::path::PathBuf) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("s").join("daemon.sock");
     let listener = singularityd::bind(&path).unwrap();
     tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), None, None));
@@ -81,7 +83,7 @@ async fn a_client_that_stops_reading_is_let_go() {
 #[tokio::test]
 async fn the_socket_never_goes_through_a_symlinked_directory() {
     // (#71) someone else's directory, linked where ours should be, could hand Clients a socket of theirs
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let elsewhere = dir.path().join("elsewhere");
     std::fs::create_dir(&elsewhere).unwrap();
     std::os::unix::fs::symlink(&elsewhere, dir.path().join("sgl")).unwrap();
@@ -98,7 +100,7 @@ async fn the_socket_never_goes_through_a_symlinked_directory() {
 /// intermediate symlink, so the socket could be placed wherever that link pointed.
 #[tokio::test]
 async fn the_socket_never_goes_through_an_intermediate_symlink() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let elsewhere = dir.path().join("elsewhere");
     std::fs::create_dir(&elsewhere).unwrap();
     std::os::unix::fs::symlink(&elsewhere, dir.path().join("sgl")).unwrap();
@@ -112,7 +114,7 @@ async fn the_socket_never_goes_through_an_intermediate_symlink() {
 #[tokio::test]
 async fn a_socket_directory_that_already_exists_keeps_its_mode() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let own = dir.path().join("shared");
     std::fs::create_dir(&own).unwrap();
     std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -124,7 +126,7 @@ async fn a_socket_directory_that_already_exists_keeps_its_mode() {
 #[tokio::test]
 async fn a_new_socket_directory_is_owner_only_from_the_start() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let nested = dir.path().join("a/b");
     singularityd::bind(&nested.join("d.sock")).unwrap();
     for p in [dir.path().join("a"), nested.clone()] {
@@ -150,7 +152,7 @@ async fn next_playback(s: &mut UnixStream) -> singularity_proto::PlaybackState {
 #[tokio::test]
 async fn playback_flow_through_the_protocol() {
     use singularity_proto::{Command, PlayStatus};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("d.sock");
     let listener = singularityd::bind(&path).unwrap();
     tokio::spawn(singularityd::serve(listener, Box::new(singularityd::engine::FakeEngine), None, None));
@@ -178,7 +180,7 @@ async fn playback_flow_through_the_protocol() {
 #[tokio::test]
 async fn library_track_pages_and_play_from_track_n() {
     use singularity_proto::{Command, HomeFeed};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("l.sock");
     let listener = singularityd::bind(&path).unwrap();
     let catalogue = singularityd::catalogue::spawn_fake(HomeFeed::default());
@@ -219,7 +221,7 @@ async fn library_track_pages_and_play_from_track_n() {
 #[tokio::test]
 async fn two_clients_share_one_tap_and_frames_stop_when_paused() {
     use singularity_proto::Command;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("t.sock");
     let listener = singularityd::bind(&path).unwrap();
     tokio::spawn(singularityd::serve(listener, Box::new(singularityd::engine::FakeEngine), None, Some(singularityd::tap::TapSource::Synthetic)));
@@ -262,7 +264,7 @@ async fn two_clients_share_one_tap_and_frames_stop_when_paused() {
 #[tokio::test]
 async fn shutdown_makes_way_for_a_newer_daemon() {
     use singularity_proto::Command;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("x.sock");
     let listener = singularityd::bind(&path).unwrap();
     let served = tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), None, None));
@@ -275,7 +277,7 @@ async fn shutdown_makes_way_for_a_newer_daemon() {
 #[tokio::test]
 async fn queue_edits_and_bare_entries_get_names() {
     use singularity_proto::{Command, HomeFeed};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("q.sock");
     let listener = singularityd::bind(&path).unwrap();
     let catalogue = singularityd::catalogue::spawn_fake(HomeFeed::default());
@@ -311,7 +313,7 @@ async fn queue_edits_and_bare_entries_get_names() {
 #[tokio::test]
 async fn lyrics_round_trip() {
     use singularity_proto::{Command, HomeFeed};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("ly.sock");
     let listener = singularityd::bind(&path).unwrap();
     tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
@@ -329,7 +331,7 @@ async fn lyrics_round_trip() {
 #[tokio::test]
 async fn devices_and_transfer() {
     use singularity_proto::{Command, HomeFeed};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("dv.sock");
     let listener = singularityd::bind(&path).unwrap();
     tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
@@ -353,7 +355,7 @@ async fn devices_and_transfer() {
 #[tokio::test]
 async fn a_jam_starts_reaches_late_clients_and_ends() {
     use singularity_proto::{Command, HomeFeed, Jam};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("jm.sock");
     let listener = singularityd::bind(&path).unwrap();
     tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
@@ -379,7 +381,7 @@ async fn a_jam_starts_reaches_late_clients_and_ends() {
 #[tokio::test]
 async fn saving_settles_on_spotifys_answer_and_failures_carry_the_old_value() {
     use singularity_proto::{Command, HomeFeed, SavedFlag};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("sv.sock");
     let listener = singularityd::bind(&path).unwrap();
     tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
@@ -409,7 +411,7 @@ async fn saving_settles_on_spotifys_answer_and_failures_carry_the_old_value() {
 #[tokio::test]
 async fn playlists_are_created_and_deleted_and_only_your_own() {
     use singularity_proto::{Command, HomeFeed, Library};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("pl.sock");
     let listener = singularityd::bind(&path).unwrap();
     tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
@@ -452,7 +454,7 @@ async fn playlists_are_created_and_deleted_and_only_your_own() {
 #[tokio::test]
 async fn a_playlist_is_renamed_and_redescribed_and_a_refusal_is_told() {
     use singularity_proto::{Command, HomeFeed};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("ed.sock");
     let listener = singularityd::bind(&path).unwrap();
     tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
@@ -483,7 +485,7 @@ async fn a_playlist_is_renamed_and_redescribed_and_a_refusal_is_told() {
 async fn the_listening_log_sums_up_exports_and_deletes_through_the_protocol() {
     use singularity_proto::{Command, Item};
     use singularityd::store::{Play, Store};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let data = dir.path().join("data");
     let now = proto::now_ms();
     {
@@ -539,7 +541,7 @@ async fn the_listening_log_sums_up_exports_and_deletes_through_the_protocol() {
 #[tokio::test]
 async fn tracks_are_added_to_a_playlist_and_a_duplicate_asks_first() {
     use singularity_proto::{AddOutcome, Command, HomeFeed};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("add.sock");
     let listener = singularityd::bind(&path).unwrap();
     tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
@@ -579,7 +581,7 @@ async fn tracks_are_added_to_a_playlist_and_a_duplicate_asks_first() {
 #[tokio::test]
 async fn one_row_is_removed_by_its_uid_and_a_refusal_is_told() {
     use singularity_proto::{Command, HomeFeed};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("rm.sock");
     let listener = singularityd::bind(&path).unwrap();
     tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
@@ -615,7 +617,7 @@ async fn one_row_is_removed_by_its_uid_and_a_refusal_is_told() {
 #[tokio::test]
 async fn a_row_moves_before_another_and_a_refusal_is_told() {
     use singularity_proto::{Command, HomeFeed};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("mv.sock");
     let listener = singularityd::bind(&path).unwrap();
     tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
@@ -655,7 +657,7 @@ async fn a_row_moves_before_another_and_a_refusal_is_told() {
 #[tokio::test]
 async fn a_cover_is_set_put_back_and_refused_when_it_isnt_a_jpeg() {
     use singularity_proto::{Command, HomeFeed};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("cv.sock");
     let listener = singularityd::bind(&path).unwrap();
     tokio::spawn(singularityd::serve(listener, Box::new(NoEngine { reason: "test".into() }), Some(singularityd::catalogue::spawn_fake(HomeFeed::default())), None));
