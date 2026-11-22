@@ -22,7 +22,7 @@ const MAX_TRACKS: u32 = 10_000;
 /// Folders opened at most (they nest a few levels; guard anyway).
 const MAX_FOLDERS: usize = 200;
 
-pub use crate::pathfinder::Fetch;
+use crate::pathfinder::Fetch;
 
 /// Queries through the Catalogue task, paced.
 pub struct CatalogueFetch {

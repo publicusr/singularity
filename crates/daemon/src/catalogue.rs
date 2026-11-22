@@ -286,7 +286,7 @@ struct State<Q> {
     /// the same session, for the query port's adapter
     slot: SessionSlot,
     /// the query port (D78)
-    q: Q,
+    queries: Q,
     ev: mpsc::Sender<CatEvent>,
     remote: Option<ConnectRemote>,
     tracks: HashMap<String, (Instant, Vec<TrackPage>)>,
@@ -307,7 +307,7 @@ struct State<Q> {
 }
 
 async fn run<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, q: Q, slot: SessionSlot, cmds: &mut mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
-    let mut st = State { dirs, engine, session: None, slot, q, ev, remote: None, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default(), cluster_changed: Default::default() };
+    let mut st = State { dirs, engine, session: None, slot, queries: q, ev, remote: None, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default(), cluster_changed: Default::default() };
     // commands drained from behind a search, in their original order, and the follow-ups of commands already run
     let mut waiting: VecDeque<CatCmd> = VecDeque::new();
     // resume a previous login
@@ -578,7 +578,7 @@ impl<Q: Fetch + Sync> State<Q> {
     async fn logout(&mut self) {
         self.remote = None;
         self.tracks.clear();
-        if let Some(s) = self.session.take() {
+        if let Some(s) = &self.session {
             s.shutdown();
         }
         self.set_session(None);
@@ -601,7 +601,7 @@ impl<Q: Fetch + Sync> State<Q> {
     /// One Pathfinder query through the port (D78); a session Spotify ended is replaced first.
     async fn query(&mut self, op: &str, vars: Value) -> anyhow::Result<Value> {
         self.session().await;
-        self.q.query(op, vars).await
+        self.queries.query(op, vars).await
     }
 
     async fn library(&mut self) {

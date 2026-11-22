@@ -1,4 +1,5 @@
-//! Seam A of D78: the real Catalogue, `CatCmd` in and `CatEvent` out, over a fixtures adapter for the query port.
+//! The real Catalogue at its own interface (D78), `CatCmd` in and `CatEvent` out, over a fixtures adapter for the
+//! query port. It runs logged out of Spotify: queries go through the port either way, and nothing else is reached.
 //! What these catch: what is asked, in what order, what is kept and reused, how pages and failures come out. What
 //! they can't: Spotify's real answers changing shape (the recorded fixtures stay as they were).
 
@@ -36,7 +37,7 @@ fn fixture(name: &str) -> Value {
     serde_json::from_str(&std::fs::read_to_string(format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()).unwrap()
 }
 
-/// A Catalogue over `f`, logged out of Spotify (nothing but the port is reached), in a scratch dir.
+/// A Catalogue over `f`, in a scratch dir.
 fn catalogue(f: &Fixtures) -> (tempfile::TempDir, mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
     let dir = tempfile::tempdir().unwrap();
     let dirs = Dirs { credentials: dir.path().join("creds"), queries: dir.path().join("q.json") };
@@ -131,4 +132,39 @@ async fn a_track_list_is_sent_and_kept() {
         assert!(!page.tracks.is_empty());
     }
     assert_eq!(f.asked("fetchPlaylist"), 1, "the second open comes from what was kept");
+}
+
+#[tokio::test]
+async fn a_long_track_list_comes_page_by_page() {
+    let f = Fixtures::new(|op, _| {
+        assert_eq!(op, "fetchPlaylist");
+        let mut v = fixture("playlist.json");
+        v["data"]["playlistV2"]["content"]["totalCount"] = json!(250);
+        Ok(v)
+    });
+    let (_dir, tx, mut ev) = catalogue(&f);
+    tx.send(CatCmd::Tracks("spotify:playlist:p".into())).await.unwrap();
+    let mut offsets = vec![];
+    for _ in 0..3 {
+        offsets.push(next(&mut ev, |e| if let CatEvent::Tracks(p) = e { Some(p.offset) } else { None }).await);
+    }
+    assert_eq!(offsets, [0, 100, 200], "each page sent as it arrives");
+    let asked: Vec<u64> = f.asked.lock().unwrap().iter().map(|(_, v)| v["offset"].as_u64().unwrap()).collect();
+    assert_eq!(asked, [0, 100, 200]);
+}
+
+/// While typing, only the newest search matters: the ones it replaces aren't asked for, and what waited behind
+/// them runs after it, in the order it was asked for.
+#[tokio::test]
+async fn the_newest_search_goes_first_and_the_rest_keep_their_order() {
+    let f = Fixtures::new(|op, _| Ok(if op == "libraryV3" { fixture("library.json") } else { json!({}) }));
+    let (_dir, tx, mut ev) = catalogue(&f);
+    // all four wait in the channel before the Catalogue reads any (this test's runtime has one thread)
+    for c in [CatCmd::Tracks("spotify:playlist:p".into()), CatCmd::Search("no".into()), CatCmd::Library, CatCmd::Search("nova".into())] {
+        tx.send(c).await.unwrap();
+    }
+    next(&mut ev, |e| matches!(e, CatEvent::Library(_)).then_some(())).await;
+    let asked: Vec<String> = f.asked.lock().unwrap().iter().map(|(op, v)| format!("{op} {}", v["searchTerm"].as_str().unwrap_or(""))).collect();
+    let asked: Vec<&str> = asked.iter().map(|s| s.trim_end()).collect();
+    assert_eq!(asked[..3], ["fetchPlaylist", "searchDesktop nova", "libraryV3"]);
 }

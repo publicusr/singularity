@@ -1,8 +1,8 @@
 //! The query port under the Catalogue (D78): one Pathfinder query, `op` and its variables in, Spotify's answer out.
 //!
 //! [`Fetch`] is the port. [`Pathfinder`] is the adapter that talks to Spotify: it looks the operation's hash up in
-//! the [`QueryRegistry`], asks once more after a hang, refreshes the registry when a hash is retired, and doesn't
-//! crawl the web player again for an operation the last crawl didn't have (C3). Tests of the Catalogue use a
+//! the [`QueryRegistry`] (which doesn't crawl the web player again for an operation a recent crawl didn't have, C3),
+//! asks once more after a hang, and refreshes the registry when a hash is retired. Tests of the Catalogue use a
 //! fixtures adapter instead; tests of these rules use a stand-in [`Raw`] call.
 
 use crate::queries::QueryRegistry;

@@ -20,6 +20,8 @@ const TTL_MS: u64 = 3 * 24 * 3600 * 1000;
 const MAX_BODY: u64 = 16 * 1024 * 1024;
 /// A whole refresh's budget when something is waiting for it (a 412 after a hash was retired).
 const REFRESH_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+/// How long an operation a crawl didn't find fails without another crawl (C3).
+const MISSING_RETRY: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 static OP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""(\w+)","(?:query|mutation)","([0-9a-f]{64})""#).unwrap());
 static MAIN_JS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"src="(https://[^"]+/web-player/web-player\.[0-9a-f]+\.js)""#).unwrap());
@@ -69,9 +71,9 @@ pub struct QueryRegistry {
     refreshing: Option<tokio::task::JoinHandle<anyhow::Result<Cache>>>,
     /// a stand-in for the crawl (tests); `None` reads the web player
     crawl: Option<Crawl>,
-    /// operations the current hashes came without although a crawl was made for them (C3): they fail at once until
-    /// the next crawl brings new hashes
-    missing: std::collections::HashSet<String>,
+    /// operations a crawl made for them didn't find, and when (C3): they fail at once for `MISSING_RETRY` (a crawl
+    /// that lost one of its files must not hide an operation for the whole TTL), or until a crawl brings new hashes
+    missing: HashMap<String, std::time::Instant>,
 }
 
 /// A crawl of the web player: the operations it found.
@@ -89,14 +91,15 @@ impl QueryRegistry {
     pub async fn hash(&mut self, op: &str) -> anyhow::Result<String> {
         self.collect().await;
         let stale = singularity_proto::now_ms().saturating_sub(self.cache.fetched_unix_ms) > TTL_MS;
-        if self.missing.contains(op) {
+        self.missing.retain(|_, at| at.elapsed() < MISSING_RETRY);
+        if self.missing.contains_key(op) {
             if stale {
                 self.start_refresh();
             }
         } else if !self.cache.ops.contains_key(op) {
             self.refresh().await?;
             if !self.cache.ops.contains_key(op) {
-                self.missing.insert(op.to_string());
+                self.missing.insert(op.to_string(), std::time::Instant::now());
             }
         } else if stale && self.refreshing.is_none() {
             tracing::info!("query registry: refreshing the Pathfinder hashes in the background; browsing carries on");
