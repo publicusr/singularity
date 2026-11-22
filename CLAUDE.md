@@ -3,7 +3,7 @@
 - **New session? Read `docs/HANDOFF.md` first** if you have one: a local, git-ignored file with the current state,
   feedback and the next tickets.
 
-- Planning runs on the grilling method (`.claude/skills/grilling`): rounds over the design tree in
+- Planning runs on the grilling method (the `mattpocock-skills` plugin's `grilling`): rounds over the design tree in
   `docs/DESIGN-TREE.md`, numbered questions with a ➡️ recommendation each, worded so "yes" accepts.
   Look facts up yourself; put decisions to the owner and wait.
 - Planning is done; implementation is authorised ticket by ticket (owner: "keep building, follow the plan").
@@ -37,3 +37,17 @@
   "macOS quirks" sections are the user-facing version: keep them true too.
 - Test Daemons pin their Engine and stay in scratch dirs (`SINGULARITY_ENGINE`, `SINGULARITY_SOLOIST=local`,
   `SINGULARITY_START_APP=0`, `SINGULARITY_NOWPLAYING=off`, `SINGULARITY_NO_KEYRING=1`, scratch `XDG_*`; `tools/pty/shot.py` sets them all).
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on this repo, through `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default roles, each label named after its role (`needs-triage` … `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` and `docs/adr/` at the root. See `docs/agents/domain.md`.

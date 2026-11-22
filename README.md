@@ -206,8 +206,8 @@ release.
 
 Planning follows Matt Pocock's [skills](https://github.com/mattpocock/skills):
 `grill-with-docs` (interview in rounds over a design tree, write glossary + ADRs as we go), then
-`to-spec`, then tickets, then implementation. The grilling skills are vendored in `.claude/skills/`,
-so `/grill-with-docs` works in any Claude Code session opened here.
+`to-spec`, then tickets, then implementation. Install them with
+`claude plugin install mattpocock-skills@claude-plugins-official`; `docs/agents/` says how they're set up here.
 
 ## Licence
 
