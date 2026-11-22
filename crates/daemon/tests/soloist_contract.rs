@@ -366,6 +366,21 @@ fn a_pause_ends_a_dry_spell() {
     assert_eq!(s.deadline(), None);
 }
 
+/// C4: an underrun logged after the pause (the audio thread running out as it stops) isn't a dry spell either: the
+/// watchdog restarted a paused Soloist 20 s later.
+#[test]
+fn an_underrun_while_paused_or_idle_never_restarts_soloist() {
+    let now = t0();
+    let mut s = playing("spotify:track:a", now);
+    ws(&mut s, json!({"type": "playback_changed", "status": "paused"}), now + secs(1));
+    s.step(Input::Log(LogNews::Stall), now + secs(2));
+    assert_eq!(stop(&s.step(Input::Tick, now + secs(30))), None);
+    assert_eq!(s.deadline(), None);
+    let mut s = session(Handover::default());
+    s.step(Input::Log(LogNews::Stall), now);
+    assert_eq!(stop(&s.step(Input::Tick, now + secs(30))), None, "idle");
+}
+
 #[test]
 fn restart_and_a_new_key_stop_soloist() {
     let now = t0();

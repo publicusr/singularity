@@ -245,7 +245,7 @@ impl Session {
     }
 
     fn log(&mut self, n: LogNews, now: Now, out: &mut Vec<Action>) {
-        self.dry.news(&n, now.at);
+        self.dry.news(&n, self.st.playback.status, now.at);
         match n {
             LogNews::Stream(info) => out.push(Action::Event(EngineEvent::Stream(info))),
             LogNews::Bandwidth(k) => {
@@ -333,7 +333,7 @@ impl Session {
 /// between tracks, and only when a command of ours caused the change: playback someone else started (a phone on
 /// Connect) is followed, not interrupted (restarting Soloist would undo it, and the restart picks up our old state).
 fn quiet_moment(p: &PlaybackState, track_changed: bool, ours: bool) -> bool {
-    if matches!(p.status, PlayStatus::Playing | PlayStatus::Buffering) { track_changed && ours } else { true }
+    if playing(p.status) { track_changed && ours } else { true }
 }
 
 /// Where to pick up after the restart (a track that just started resumes from its start).
@@ -353,9 +353,12 @@ struct DryWatch {
 }
 
 impl DryWatch {
-    fn news(&mut self, n: &LogNews, now: Instant) {
+    /// `n` arrived while playback was `s`.
+    fn news(&mut self, n: &LogNews, s: PlayStatus, now: Instant) {
         match n {
-            LogNews::Stall => {
+            // only playing (or buffering) can start one: an underrun as a pause stops the audio isn't a dry spell, and
+            // the pause that came first had already ended any (C4: the watchdog restarted a paused Soloist)
+            LogNews::Stall if playing(s) => {
                 self.since.get_or_insert(now);
             }
             LogNews::Bandwidth(_) | LogNews::Flowing => self.since = None,
@@ -365,7 +368,7 @@ impl DryWatch {
 
     /// Only playing (or buffering) can be dry: a pause or a stop ends it.
     fn status(&mut self, s: PlayStatus) {
-        if !matches!(s, PlayStatus::Playing | PlayStatus::Buffering) {
+        if !playing(s) {
             self.since = None;
         }
     }
@@ -378,6 +381,11 @@ impl DryWatch {
     fn clear(&mut self) {
         self.since = None;
     }
+}
+
+/// Playing, or trying to (buffering).
+fn playing(s: PlayStatus) -> bool {
+    matches!(s, PlayStatus::Playing | PlayStatus::Buffering)
 }
 
 /// Translates Soloist's WebSocket events into our `PlaybackState`, and our commands into Soloist's.
