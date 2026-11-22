@@ -34,7 +34,7 @@ pub struct Search {
     sent: String,
     typed_at: Option<Instant>,
     /// a picked recent search or Enter: goes out on the next `due` without waiting for a pause
-    now: bool,
+    skip_pause: bool,
     recent: Vec<String>,
     /// results by `key`, newest last
     cache: Vec<(String, Instant, SearchResults)>,
@@ -136,7 +136,7 @@ impl Search {
         self.failed = None;
         self.typed_at = Some(Instant::now());
         self.track_sel = None;
-        self.now = false;
+        self.skip_pause = false;
         if key(&self.query) != key(&self.sent) {
             self.sent.clear();
         }
@@ -150,7 +150,7 @@ impl Search {
     fn run_now(&mut self) {
         self.failed = None;
         self.sent.clear();
-        self.now = true;
+        self.skip_pause = true;
     }
 
     /// The query to send now, if any: when typing has paused on a new one (2+ characters), or at once after a pick or
@@ -161,11 +161,11 @@ impl Search {
 
     fn due_at(&mut self, now: Instant) -> Option<String> {
         let q = self.query.trim().to_string();
-        let quiet = self.now || self.typed_at.is_some_and(|t| now.duration_since(t) >= DEBOUNCE);
+        let quiet = self.skip_pause || self.typed_at.is_some_and(|t| now.duration_since(t) >= DEBOUNCE);
         if !quiet || q.chars().count() < 2 || key(&q) == key(&self.sent) {
             return None;
         }
-        self.now = false;
+        self.skip_pause = false;
         self.sent = q.clone();
         self.cache.retain(|(_, at, _)| now.duration_since(*at) < CACHE_TTL);
         if let Some((_, _, r)) = self.cache.iter().find(|(k, _, _)| *k == key(&q)) {
@@ -184,9 +184,13 @@ impl Search {
         let current = key(&r.query) == key(&self.query);
         if let Some(e) = r.error {
             if current {
-                // shown instead of "searching…"; the same words may go out again (Enter, or typing)
+                // shown instead of "searching…" and of older words' results; the same words go out again on Enter
+                // (or once typing changes them), never by themselves
                 self.failed = Some(e);
-                self.sent.clear();
+                if !self.answered() {
+                    self.results = None;
+                    self.rebuild();
+                }
             }
             return;
         }
@@ -195,9 +199,11 @@ impl Search {
         if self.cache.len() > CACHE_MAX {
             self.cache.remove(0);
         }
-        if current {
+        // the same answer again (a fresh one for kept results, usually unchanged) leaves the page as the user has it
+        if current && self.results.as_ref() != Some(&r) {
             self.failed = None;
             self.results = Some(r);
+            self.track_sel = None;
             self.rebuild();
         }
     }
@@ -208,7 +214,7 @@ impl Search {
         if q.chars().count() < 2 {
             return;
         }
-        self.recent.retain(|r| !r.eq_ignore_ascii_case(q));
+        self.recent.retain(|r| key(r) != key(q));
         self.recent.insert(0, q.to_string());
         self.recent.truncate(RECENT_MAX);
         save_recent(&self.recent);
@@ -546,9 +552,48 @@ mod tests {
         s.receive(SearchResults { query: "nova".into(), error: Some("no answer".into()), ..Default::default() });
         assert_eq!(s.failed(), Some("no answer"));
         assert!(s.results().is_none());
+        assert_eq!(s.due_at(Instant::now() + DEBOUNCE), None, "a failure waits for Enter or typing, it doesn't retry by itself");
         s.submit();
         assert_eq!(s.failed(), None);
         assert_eq!(s.due().as_deref(), Some("nova"));
+    }
+
+    #[test]
+    fn a_failure_for_new_words_shows_instead_of_older_results() {
+        let mut s = Search::default();
+        ran(&mut s, "nova");
+        s.type_text(" drift");
+        assert!(s.due_at(Instant::now() + DEBOUNCE).is_some());
+        assert!(s.results().is_some(), "the older results stay while the new words are out");
+        s.receive(SearchResults { query: "nova drift".into(), error: Some("no answer".into()), ..Default::default() });
+        assert!(s.results().is_none() && s.failed().is_some(), "the failure is what shows");
+    }
+
+    #[test]
+    fn a_fresh_answer_like_the_kept_one_leaves_the_highlight_alone() {
+        let mut s = Search::with_recent(vec!["nova".into()]);
+        ran(&mut s, "nova");
+        s.clear();
+        s.pick(0);
+        assert!(s.due().is_some());
+        s.track_sel = Some(0);
+        s.shelves.offset = 3;
+        s.receive(answer("nova"));
+        assert_eq!((s.track_sel, s.shelves.offset), (Some(0), 3), "the same answer again changes nothing on screen");
+        // a different answer starts the page afresh
+        s.receive(SearchResults { query: "nova".into(), ..Default::default() });
+        assert_eq!((s.track_sel, s.shelves.offset), (None, 0));
+    }
+
+    #[test]
+    fn recent_searches_match_as_queries_do() {
+        let mut s = Search::default();
+        for q in ["Étoile", "étoile"] {
+            s.clear();
+            s.type_text(q);
+            s.remember();
+        }
+        assert_eq!(s.recent(), ["étoile"]);
     }
 
     #[test]
