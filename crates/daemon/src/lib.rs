@@ -731,8 +731,8 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                 if hub.engine_kind == proto::EngineKind::Librespot && waiting && matches!(s, proto::CatalogueStatus::Ready { .. }) {
                     to_player(&hub, Command::RestartEngine).await;
                 }
-                // logged out, no other device is ours to follow or control any more (C5)
-                if matches!(s, proto::CatalogueStatus::LoggedOut) {
+                // logged out, or the session gone, no other device is ours to follow or control any more (C5)
+                if matches!(s, proto::CatalogueStatus::LoggedOut | proto::CatalogueStatus::Unavailable { .. }) {
                     other_device_gone(&hub).await;
                 }
                 *hub.catalogue_status.lock().await = Some(s.clone());
@@ -767,7 +767,7 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
             // tasks inside the Catalogue report their own deaths; the health view names them (A1)
             CatEvent::TaskStopped(name, why) => {
                 // with the Catalogue gone, so is what Connect told us (C5); it says again once it's back
-                if name == "the Catalogue" {
+                if name == catalogue::TASK {
                     other_device_gone(&hub).await;
                 }
                 hub.task_stopped(name, &why).await
@@ -1155,7 +1155,6 @@ mod tests {
         assert!(!superseded(&at(0), 1_000), "a state without an anchor carries no time to compare");
     }
 
-    /// A1: a background task that panics is named in the health view and started again.
     /// C5 (2026-11-20 bug hunt): logged out, "another device is playing" stayed, so the bar kept showing that device's
     /// song and our transport buttons kept going to it.
     #[tokio::test]
@@ -1177,6 +1176,7 @@ mod tests {
         assert_eq!(*hub.playback.lock().await, *hub.engine_playback.lock().await, "the bar is back on this computer");
     }
 
+    /// A1: a background task that panics is named in the health view and started again.
     #[tokio::test]
     async fn a_background_task_that_panics_is_restarted_and_named() {
         let hub = test_hub();

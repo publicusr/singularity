@@ -8,9 +8,14 @@
 
 use super::*;
 
+/// How long a Connect command waits for a login under way.
+const LOGIN_WAIT: Duration = Duration::from_secs(30);
+
 pub(super) struct Connect {
     engine: Identity,
     slot: SessionSlot,
+    /// browsing is logging in: wait for it
+    logging_in: std::sync::Arc<tokio::sync::watch::Sender<bool>>,
     ev: mpsc::Sender<CatEvent>,
     /// browsing, which owns the login: told when the session ended so it logs in again
     browse: mpsc::WeakUnboundedSender<CatCmd>,
@@ -24,8 +29,8 @@ pub(super) struct Connect {
 }
 
 impl Connect {
-    pub(super) fn new(engine: Identity, slot: SessionSlot, ev: mpsc::Sender<CatEvent>, browse: mpsc::WeakUnboundedSender<CatCmd>) -> Connect {
-        Connect { engine, slot, ev, browse, remote: None, on: None, cluster: Default::default(), cluster_changed: Default::default() }
+    pub(super) fn new(engine: Identity, slot: SessionSlot, logging_in: std::sync::Arc<tokio::sync::watch::Sender<bool>>, ev: mpsc::Sender<CatEvent>, browse: mpsc::WeakUnboundedSender<CatCmd>) -> Connect {
+        Connect { engine, slot, logging_in, ev, browse, remote: None, on: None, cluster: Default::default(), cluster_changed: Default::default() }
     }
 
     /// Run Connect's commands one after another until browsing hangs up.
@@ -52,28 +57,48 @@ impl Connect {
         }
     }
 
-    /// The Catalogue's current session. Logged out, or with a session Spotify ended (browsing is told, and logs in
-    /// again), there's none, and the remote of an old one goes.
-    fn session(&mut self) -> anyhow::Result<Session> {
-        let current = self.slot.lock().unwrap().clone();
-        match current {
-            Some(s) if !s.is_invalid() => {
-                if self.on.as_ref().is_some_and(|on| on.session_id() != s.session_id()) {
+    /// The Catalogue's current session. While browsing logs in, or logs in again after Spotify ended the session
+    /// (asked for here), it's waited for, up to `LOGIN_WAIT`, as when Connect's commands queued behind the login;
+    /// logged out it fails at once. The remote of an old session goes.
+    async fn session(&mut self) -> anyhow::Result<Session> {
+        let deadline = Instant::now() + LOGIN_WAIT;
+        let (mut slot, mut busy) = (self.slot.subscribe(), self.logging_in.subscribe());
+        let mut asked = false;
+        loop {
+            let current = self.slot.borrow().clone();
+            match current {
+                Some(s) if !s.is_invalid() => {
+                    if self.on.as_ref().is_some_and(|on| on.session_id() != s.session_id()) {
+                        self.drop_remote();
+                    }
+                    return Ok(s);
+                }
+                Some(_) => {
                     self.drop_remote();
+                    if !asked {
+                        asked = true;
+                        if let Some(b) = self.browse.upgrade() {
+                            let _ = b.send(CatCmd::Reconnect);
+                        }
+                    }
                 }
-                Ok(s)
-            }
-            Some(_) => {
-                self.drop_remote();
-                if let Some(b) = self.browse.upgrade() {
-                    let _ = b.send(CatCmd::Reconnect);
+                None if !asked && !*self.logging_in.borrow() => {
+                    self.drop_remote();
+                    anyhow::bail!("not logged in to Spotify")
                 }
-                anyhow::bail!("the Spotify session ended; logging in again")
+                None => self.drop_remote(),
             }
-            None => {
-                self.drop_remote();
-                anyhow::bail!("not logged in to Spotify")
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                anyhow::bail!("Spotify didn't log in again within {} s", LOGIN_WAIT.as_secs());
             }
+            let changed = async {
+                tokio::select! {
+                    _ = slot.changed() => {}
+                    _ = busy.changed() => {}
+                }
+            };
+            let _ = tokio::time::timeout(left, changed).await;
         }
     }
 
@@ -82,9 +107,9 @@ impl Connect {
         self.on = None;
     }
 
-    /// ConnectRemote (started on first use) and Soloist's Connect id.
+    /// ConnectRemote, started on first use on the current session.
     async fn remote(&mut self) -> anyhow::Result<(Session, &mut ConnectRemote)> {
-        let session = self.session()?;
+        let session = self.session().await?;
         if self.remote.is_none() {
             let (remote, cluster, mut updates, mut ids) = ConnectRemote::start(session.clone()).await?;
             self.remote = Some(remote);
@@ -153,14 +178,13 @@ impl Connect {
         let (session, remote) = self.remote().await?;
         // the latest cluster shows the device under another id, or not at all: it re-registered (the app restarted,
         // or came back after a network change), so look it up again
-        let name = &name;
-        if let Some(cached) = remote.cached_id(name) {
-            let latest = cluster.lock().expect("cluster lock").as_ref().map(|c| c.device.iter().find(|(_, d)| d.name == *name).map(|(id, _)| id.clone()));
+        if let Some(cached) = remote.cached_id(&name) {
+            let latest = cluster.lock().expect("cluster lock").as_ref().map(|c| c.device.iter().find(|(_, d)| d.name == name).map(|(id, _)| id.clone()));
             if latest.is_some_and(|now| now.as_deref() != Some(cached)) {
                 remote.forget_ids();
             }
         }
-        let to = remote.device_id(name).await?;
+        let to = remote.device_id(&name).await?;
         Ok((session, remote, to))
     }
 
@@ -234,7 +258,7 @@ impl Connect {
 
     /// Read the account's Jam (on login and when the Devices list is asked for).
     async fn refresh_jam(&mut self) {
-        let Ok(session) = self.session() else { return };
+        let Ok(session) = self.session().await else { return };
         let (names, engine_id) = jam_devices(&self.cluster, &self.engine);
         match crate::jam::current(&session, &names, engine_id.as_deref()).await {
             Ok(jam) => {

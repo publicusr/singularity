@@ -5,7 +5,7 @@
 //! cached under `$XDG_DATA_HOME/singularity/catalogue` (owner-only).
 //! Rules: metadata only, no crawling, back off on errors, never retry in a loop.
 
-use crate::pathfinder::{Fetch, Pathfinder, SessionRaw, SessionSlot};
+use crate::pathfinder::{Fetch, Pathfinder, SessionRaw, SessionSlot, session_slot};
 use crate::queries::QueryRegistry;
 use futures_util::{FutureExt, StreamExt};
 use librespot_core::{authentication::Credentials, cache::Cache, config::SessionConfig, session::Session};
@@ -221,6 +221,9 @@ impl Dirs {
 }
 
 /// The Catalogue, for an Engine that is `engine` on Connect.
+/// The Catalogue's name in the health view.
+pub const TASK: &str = "the Catalogue";
+
 pub fn spawn(dirs: Dirs, engine: Identity) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
     let queries = dirs.queries.clone();
     spawn_with(dirs, engine, move |slot| Pathfinder::new(QueryRegistry::new(queries.clone()), SessionRaw(slot)))
@@ -245,10 +248,10 @@ async fn supervise<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, make: impl Fn(
             let ev = ev.clone();
             async move {
                 tokio::time::sleep(Duration::from_secs(60)).await;
-                let _ = ev.send(CatEvent::TaskStarted("the Catalogue")).await;
+                let _ = ev.send(CatEvent::TaskStarted(TASK)).await;
             }
         });
-        let slot = SessionSlot::default();
+        let slot = session_slot();
         let done = std::panic::AssertUnwindSafe(run(dirs.clone(), engine.clone(), make(slot.clone()), slot, &mut cmds, ev.clone())).catch_unwind().await;
         back.abort();
         match done {
@@ -259,7 +262,7 @@ async fn supervise<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, make: impl Fn(
                     backoff = Duration::from_secs(2);
                 }
                 let _ = ev.send(CatEvent::Status(CatalogueStatus::Unavailable { message: "the Catalogue stopped; it's starting again".into() })).await;
-                let _ = ev.send(CatEvent::TaskStopped("the Catalogue", "it panicked".into())).await;
+                let _ = ev.send(CatEvent::TaskStopped(TASK, "it panicked".into())).await;
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(300));
             }
@@ -289,8 +292,11 @@ struct State<Q> {
     /// the query port (D78)
     queries: Q,
     ev: mpsc::Sender<CatEvent>,
-    /// Connect's own loop (D79): its commands go there and never wait behind browsing
-    connect: mpsc::UnboundedSender<CatCmd>,
+    /// Connect's own loop (D79): its commands go there and never wait behind browsing. Dropping it (when browsing
+    /// ends) ends Connect.
+    to_connect: mpsc::UnboundedSender<CatCmd>,
+    /// a login under way: Connect waits for it rather than failing (D79)
+    logging_in: std::sync::Arc<tokio::sync::watch::Sender<bool>>,
     tracks: HashMap<String, (Instant, Vec<TrackPage>)>,
     /// shows found to be audiobooks (#62): their pages come from `queryBookChapters`
     books: std::collections::HashSet<String>,
@@ -306,18 +312,40 @@ struct State<Q> {
 
 /// Which loop runs a command (D79): Connect's, or browsing's.
 fn is_connect(cmd: &CatCmd) -> bool {
-    matches!(
-        cmd,
+    // every command named, so a new one is routed on purpose
+    match cmd {
         CatCmd::Devices
-            | CatCmd::Transfer(_)
-            | CatCmd::StartJam
-            | CatCmd::EndJam
-            | CatCmd::Remote(_)
-            | CatCmd::Engine(_)
-            | CatCmd::Queue(_)
-            | CatCmd::PlayFrom { .. }
-            | CatCmd::Resume(_)
-    )
+        | CatCmd::Transfer(_)
+        | CatCmd::StartJam
+        | CatCmd::EndJam
+        | CatCmd::Remote(_)
+        | CatCmd::Engine(_)
+        | CatCmd::Queue(_)
+        | CatCmd::PlayFrom { .. }
+        | CatCmd::Resume(_) => true,
+        CatCmd::Login
+        | CatCmd::Logout
+        | CatCmd::Reconnect
+        | CatCmd::Home
+        | CatCmd::Library
+        | CatCmd::Tracks(_)
+        | CatCmd::MoreTracks { .. }
+        | CatCmd::FindShow(_)
+        | CatCmd::Describe(_)
+        | CatCmd::Lyrics { .. }
+        | CatCmd::Artist(_)
+        | CatCmd::Search(_)
+        | CatCmd::SetSaved { .. }
+        | CatCmd::CheckSaved(_)
+        | CatCmd::CreatePlaylist { .. }
+        | CatCmd::AddToPlaylist { .. }
+        | CatCmd::RemoveFromPlaylist { .. }
+        | CatCmd::SetCover { .. }
+        | CatCmd::MoveInPlaylist { .. }
+        | CatCmd::DeletePlaylist(_)
+        | CatCmd::EditPlaylist { .. }
+        | CatCmd::Query { .. } => false,
+    }
 }
 
 /// Browsing and Connect side by side in this one task, so a panic in either is caught by `supervise` and a wait in
@@ -325,8 +353,9 @@ fn is_connect(cmd: &CatCmd) -> bool {
 async fn run<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, q: Q, slot: SessionSlot, cmds: &mut mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
     let (browse_tx, browse_rx) = mpsc::unbounded_channel();
     let (connect_tx, connect_rx) = mpsc::unbounded_channel();
-    let connect = connect::Connect::new(engine.clone(), slot.clone(), ev.clone(), browse_tx.downgrade());
-    let st = State { dirs, session: None, slot, queries: q, ev, connect: connect_tx.clone(), tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new() };
+    let logging_in = std::sync::Arc::new(tokio::sync::watch::Sender::new(false));
+    let connect = connect::Connect::new(engine.clone(), slot.clone(), logging_in.clone(), ev.clone(), browse_tx.downgrade());
+    let st = State { dirs, session: None, slot, queries: q, ev, to_connect: connect_tx.clone(), logging_in, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new() };
     let pass_on = async move {
         while let Some(c) = cmds.recv().await {
             let to = if is_connect(&c) { &connect_tx } else { &browse_tx };
@@ -367,7 +396,7 @@ async fn browse<Q: Fetch + Sync>(mut st: State<Q>, mut cmds: mpsc::UnboundedRece
     }
 }
 
-/// Run one command. What it makes necessary next (the sidebar after a playlist change) goes in `next`, which `run`
+/// Run one command. What it makes necessary next (the sidebar after a playlist change) goes in `next`, which `browse`
 /// takes before the channel: sending it back into the channel only this task reads deadlocked the Catalogue once 16
 /// commands were waiting (2026-11-20 bug hunt, A2; the pattern Search had already lost in A2/C4), and with it every
 /// Client session and the Engine task waiting to send it something.
@@ -432,7 +461,7 @@ async fn handle<Q: Fetch + Sync>(st: &mut State<Q>, cmd: CatCmd, next: &mut VecD
         CatCmd::Search(_) => {}
         // the rest is Connect's (`is_connect`): a follow-up such as the device list after a login
         other => {
-            let _ = st.connect.send(other);
+            let _ = st.to_connect.send(other);
         }
     }
 }
@@ -521,7 +550,7 @@ fn cache(dirs: &Dirs) -> anyhow::Result<Cache> {
 impl<Q: Fetch + Sync> State<Q> {
     /// The session changes in one place, so the query port's adapter always asks through the current one.
     fn set_session(&mut self, s: Option<Session>) {
-        *self.slot.lock().unwrap() = s.clone();
+        self.slot.send_replace(s.clone());
         self.session = s;
     }
 
@@ -569,8 +598,15 @@ impl<Q: Fetch + Sync> State<Q> {
         }
     }
 
-    /// Connect with fresh credentials, or the cached reusable ones.
+    /// Connect with fresh credentials, or the cached reusable ones. Connect waits meanwhile.
     async fn connect(&mut self, fresh: Option<Credentials>) -> bool {
+        self.logging_in.send_replace(true);
+        let ok = self.log_in(fresh).await;
+        self.logging_in.send_replace(false);
+        ok
+    }
+
+    async fn log_in(&mut self, fresh: Option<Credentials>) -> bool {
         self.status(CatalogueStatus::Connecting).await;
         let cache = match cache(&self.dirs) {
             Ok(c) => c,
@@ -599,8 +635,10 @@ impl<Q: Fetch + Sync> State<Q> {
         }
         let premium = product.as_deref() == Some("premium");
         keep_credentials_in_keyring(&self.dirs);
-        self.status(CatalogueStatus::Ready { username: session.username(), country: session.country(), premium }).await;
+        let ready = CatalogueStatus::Ready { username: session.username(), country: session.country(), premium };
+        // in the slot first: what Ready sets off (librespot starting, an Engine's commands) finds the session there
         self.set_session(Some(session));
+        self.status(ready).await;
         true
     }
 

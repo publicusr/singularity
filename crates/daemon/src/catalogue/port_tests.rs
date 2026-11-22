@@ -184,7 +184,9 @@ async fn a_search_is_answered_while_connect_is_busy() {
 
 #[test]
 fn connect_work_goes_to_connect_and_browsing_stays() {
-    for c in [CatCmd::Devices, CatCmd::Remote(Command::Next), CatCmd::Engine(Command::Pause), CatCmd::StartJam, CatCmd::Queue(QueueEdit::Clear)] {
+    let resume = crate::engine::Resume { context_uri: None, track_uri: "spotify:track:t".into(), position_ms: 0, paused: false };
+    let play_from = CatCmd::PlayFrom { context_uri: "spotify:playlist:p".into(), index: 0, track_uri: None };
+    for c in [CatCmd::Devices, CatCmd::Transfer("d".into()), CatCmd::StartJam, CatCmd::EndJam, CatCmd::Remote(Command::Next), CatCmd::Engine(Command::Pause), CatCmd::Queue(QueueEdit::Clear), play_from, CatCmd::Resume(resume)] {
         assert!(is_connect(&c), "{c:?}");
     }
     for c in [CatCmd::Search("x".into()), CatCmd::Library, CatCmd::Home, CatCmd::Describe(vec![]), CatCmd::Login, CatCmd::Logout, CatCmd::Reconnect] {
