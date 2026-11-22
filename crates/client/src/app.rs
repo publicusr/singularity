@@ -3,7 +3,7 @@
 
 use crate::covers::Covers;
 use crate::gfx::Kitty;
-use crate::home::{CardRef, HomeView};
+use crate::home::{CardId, CardRef, HomeView};
 use crate::layout::{Divider, Node};
 use crate::meters::Meters;
 use crate::visual::BlackHole;
@@ -435,7 +435,8 @@ pub enum MenuAct {
 /// What a context menu is about.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
-    Card(CardRef),
+    /// a Card, by identity (#23: recorded when the menu opens, found again when it acts)
+    Card(CardId),
     /// a row of the open track list, by identity (D81: recorded when the menu opens, found again when it acts)
     Row(crate::openlist::RowId),
     /// a queue entry: its URI and uid, and whether the user queued it
@@ -2010,6 +2011,14 @@ impl App {
         self.active_feed()?.shelves.get(c.shelf)?.cards.get(c.card)
     }
 
+    /// Where a menu's Card is in the Shelves on screen now.
+    fn target_card(&self, t: &Target) -> Option<CardRef> {
+        match t {
+            Target::Card(id) => id.find(self.active_feed()?),
+            _ => None,
+        }
+    }
+
     fn play_card(&mut self, c: CardRef) {
         self.home_view.sel = Some(c);
         if let Some(uri) = self.card(c).map(|k| k.uri.clone()) {
@@ -2038,8 +2047,9 @@ impl App {
         items.extend(self.save_entry(&uri));
         items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::Card(c)).map(|r| (r.x + 2, r.y + 1))).unwrap_or((0, 0));
+        let Some(id) = self.active_feed().and_then(|f| CardId::of(f, c)) else { return };
         self.feed_view().sel = Some(c);
-        self.open_popup(Popup::Menu(Menu { at, target: Target::Card(c), items, selected: 0 }));
+        self.open_popup(Popup::Menu(Menu { at, target: Target::Card(id), items, selected: 0 }));
     }
 
     /// Right-click on a track-list row.
@@ -2140,7 +2150,7 @@ impl App {
     /// URI and name of a menu's target.
     pub(crate) fn target_track(&self, t: &Target) -> Option<(String, String, String)> {
         match t {
-            Target::Card(c) => self.card(*c).map(|k| (k.uri.clone(), k.name.clone(), k.kind.clone())),
+            Target::Card(_) => self.target_card(t).and_then(|c| self.card(c)).map(|k| (k.uri.clone(), k.name.clone(), k.kind.clone())),
             Target::Row(id) => self.open.find(id).map(|(_, row)| (row.uri.clone(), row.name.clone(), "track".into())),
             Target::Queued { uri, name, .. } | Target::Track { uri, name } => Some((uri.clone(), name.clone(), "track".into())),
             Target::Library { uri, name } => Some((uri.clone(), name.clone(), uri.split(':').nth(1).unwrap_or("").into())),
@@ -2156,8 +2166,10 @@ impl App {
         }
         let Some((uri, name, kind)) = self.target_track(&m.target) else {
             // (another Client took it out, or the list was fetched again without it)
-            if matches!(m.target, Target::Row(_)) {
-                self.say("That song isn't in the list any more");
+            match m.target {
+                Target::Row(_) => self.say("That song isn't in the list any more"),
+                Target::Card(_) => self.say("That isn't here any more"),
+                _ => {}
             }
             return;
         };
@@ -2168,8 +2180,8 @@ impl App {
         };
         let name = if name.is_empty() { "it".to_string() } else { name };
         match act {
-            MenuAct::Play => match m.target {
-                Target::Card(c) => self.play_card(c),
+            MenuAct::Play => match self.target_card(&m.target) {
+                Some(c) => self.play_card(c),
                 _ => self.send(Command::Play { uri: Some(uri) }),
             },
             MenuAct::PlayHere => {
@@ -2193,8 +2205,8 @@ impl App {
                 self.send(Command::RemoveFromQueue { uri, uid });
             }
             MenuAct::ClearQueue => self.run(Action::ClearQueue),
-            MenuAct::GoTo => match m.target {
-                Target::Card(c) => self.open_card(c),
+            MenuAct::GoTo => match self.target_card(&m.target) {
+                Some(c) => self.open_card(c),
                 // an episode row: its show, at that episode
                 _ if uri.starts_with("spotify:episode:") => self.open(&uri, &name, "", "episode"),
                 _ => self.say(format!("{} pages arrive with #11", capitalise(&kind))),
