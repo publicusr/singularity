@@ -16,62 +16,202 @@ pub const DEBOUNCE: Duration = Duration::from_millis(300);
 pub const CHIPS: [&str; 7] = ["All", "Songs", "Artists", "Albums", "Playlists", "Podcasts", "Audiobooks"];
 const RECENT_MAX: usize = 12;
 
+/// Results kept this long by query, so going back or picking a recent search shows them at once (the Daemon keeps
+/// its own for the same time).
+pub const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const CACHE_MAX: usize = 16;
+
+/// Search (D74): the query and everything that decides what goes out and when, the recent searches, results kept by
+/// query, and the page's own view state. App owns one for its whole life; leaving the page keeps it as it was.
 #[derive(Default)]
-pub struct SearchView {
-    pub query: String,
-    pub chip: usize,
-    pub results: Option<SearchResults>,
-    /// the query last sent, and when the user last typed
+pub struct Search {
+    open: bool,
+    query: String,
+    results: Option<SearchResults>,
+    /// the last search failed: why
+    failed: Option<String>,
+    /// the query last sent (empty: nothing is out), and when the user last typed
     sent: String,
     typed_at: Option<Instant>,
+    /// a picked recent search or Enter: goes out on the next `due` without waiting for a pause
+    now: bool,
+    recent: Vec<String>,
+    /// results by `key`, newest last
+    cache: Vec<(String, Instant, SearchResults)>,
+    pub chip: usize,
     /// the Card Shelves for the current chip
     pub feed: HomeFeed,
     pub shelves: HomeView,
     /// selected song row (None: the selection is in the Shelves)
     pub track_sel: Option<usize>,
     pub recent_sel: usize,
-    /// the last search failed: why
-    pub failed: Option<String>,
 }
 
-impl SearchView {
-    /// Ask again after a failed search, now.
-    pub fn retry(&mut self) {
-        self.failed = None;
-        self.sent.clear();
-        self.typed_at = Instant::now().checked_sub(DEBOUNCE);
+/// How queries are matched, as the Daemon matches them.
+fn key(q: &str) -> String {
+    q.trim().to_lowercase()
+}
+
+impl Search {
+    /// Search with these recent searches (newest first).
+    pub fn with_recent(recent: Vec<String>) -> Self {
+        Self { recent, ..Default::default() }
     }
 
-    pub fn typed(&mut self) {
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    pub fn set_open(&mut self, open: bool) {
+        self.open = open;
+    }
+
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// The answer for the query on screen (None: none yet).
+    pub fn results(&self) -> Option<&SearchResults> {
+        self.results.as_ref()
+    }
+
+    /// The results on screen answer the query as it is now.
+    pub fn answered(&self) -> bool {
+        self.results.as_ref().is_some_and(|r| key(&r.query) == key(&self.query))
+    }
+
+    pub fn failed(&self) -> Option<&str> {
+        self.failed.as_deref()
+    }
+
+    pub fn recent(&self) -> &[String] {
+        &self.recent
+    }
+
+    /// Typed (or pasted) text, at the end of the query.
+    pub fn type_text(&mut self, t: &str) {
+        self.query.push_str(t);
+        self.edited();
+    }
+
+    /// Backspace: false when the query was already empty (Backspace then means back).
+    pub fn erase(&mut self) -> bool {
+        if self.query.pop().is_none() {
+            return false;
+        }
+        self.edited();
+        true
+    }
+
+    /// Esc: false when the query was already empty (Esc then means back).
+    pub fn clear(&mut self) -> bool {
+        if self.query.is_empty() {
+            return false;
+        }
+        self.query.clear();
+        self.edited();
+        true
+    }
+
+    /// Recent search `i` runs again, at once.
+    pub fn pick(&mut self, i: usize) {
+        let Some(q) = self.recent.get(i).cloned() else { return };
+        self.query = q;
+        self.edited();
+        self.run_now();
+    }
+
+    /// Enter: the recent search under the highlight while the query is empty, else the query as it is, at once.
+    pub fn submit(&mut self) {
+        if self.query.trim().is_empty() {
+            self.pick(self.recent_sel);
+        } else {
+            self.run_now();
+        }
+    }
+
+    /// The query changed: what was out no longer counts for it (#8: an emptied query that was sent before must go out
+    /// again when it comes back). The results on screen stay until the new answer, unless the query is now empty.
+    fn edited(&mut self) {
         self.failed = None;
         self.typed_at = Some(Instant::now());
         self.track_sel = None;
-    }
-
-    /// The query to send now, if typing has paused on a new one (2+ characters).
-    pub fn due(&mut self) -> Option<String> {
-        let q = self.query.trim().to_string();
-        let quiet = self.typed_at.is_some_and(|t| t.elapsed() >= DEBOUNCE);
-        if quiet && q.chars().count() >= 2 && q != self.sent {
-            self.sent = q.clone();
-            return Some(q);
-        }
-        None
-    }
-
-    pub fn set_results(&mut self, r: SearchResults) {
-        if r.query.trim() != self.query.trim() {
-            return; // an older answer: the user has typed on
-        }
-        if let Some(e) = r.error {
-            // shown instead of "searching…"; the same words may go out again (Enter, or typing)
-            self.failed = Some(e);
+        self.now = false;
+        if key(&self.query) != key(&self.sent) {
             self.sent.clear();
+        }
+        if self.query.trim().is_empty() {
+            self.results = None;
+            self.rebuild();
+        }
+    }
+
+    /// Go out on the next `due`, even if these words went out before (a fresh answer replaces a kept one).
+    fn run_now(&mut self) {
+        self.failed = None;
+        self.sent.clear();
+        self.now = true;
+    }
+
+    /// The query to send now, if any: when typing has paused on a new one (2+ characters), or at once after a pick or
+    /// Enter. Kept results for it show straight away.
+    pub fn due(&mut self) -> Option<String> {
+        self.due_at(Instant::now())
+    }
+
+    fn due_at(&mut self, now: Instant) -> Option<String> {
+        let q = self.query.trim().to_string();
+        let quiet = self.now || self.typed_at.is_some_and(|t| now.duration_since(t) >= DEBOUNCE);
+        if !quiet || q.chars().count() < 2 || key(&q) == key(&self.sent) {
+            return None;
+        }
+        self.now = false;
+        self.sent = q.clone();
+        self.cache.retain(|(_, at, _)| now.duration_since(*at) < CACHE_TTL);
+        if let Some((_, _, r)) = self.cache.iter().find(|(k, _, _)| *k == key(&q)) {
+            self.results = Some(r.clone());
+            self.rebuild();
+        }
+        Some(q)
+    }
+
+    /// An answer from the Daemon. One for other words is kept for later but not shown.
+    pub fn receive(&mut self, r: SearchResults) {
+        self.receive_at(r, Instant::now());
+    }
+
+    fn receive_at(&mut self, r: SearchResults, now: Instant) {
+        let current = key(&r.query) == key(&self.query);
+        if let Some(e) = r.error {
+            if current {
+                // shown instead of "searching…"; the same words may go out again (Enter, or typing)
+                self.failed = Some(e);
+                self.sent.clear();
+            }
             return;
         }
-        self.failed = None;
-        self.results = Some(r);
-        self.rebuild();
+        self.cache.retain(|(k, _, _)| *k != key(&r.query));
+        self.cache.push((key(&r.query), now, r.clone()));
+        if self.cache.len() > CACHE_MAX {
+            self.cache.remove(0);
+        }
+        if current {
+            self.failed = None;
+            self.results = Some(r);
+            self.rebuild();
+        }
+    }
+
+    /// A result was opened or played: the query is worth remembering (newest first, no duplicates). Saved on disk.
+    pub fn remember(&mut self) {
+        let q = self.query.trim();
+        if q.chars().count() < 2 {
+            return;
+        }
+        self.recent.retain(|r| !r.eq_ignore_ascii_case(q));
+        self.recent.insert(0, q.to_string());
+        self.recent.truncate(RECENT_MAX);
+        save_recent(&self.recent);
     }
 
     pub fn set_chip(&mut self, chip: usize) {
@@ -100,7 +240,11 @@ impl SearchView {
     }
 
     fn rebuild(&mut self) {
-        let Some(r) = &self.results else { return };
+        let Some(r) = &self.results else {
+            self.feed = HomeFeed::default();
+            self.shelves = HomeView::default();
+            return;
+        };
         let shelf = |t: &str, kind: &str, cards: &Vec<singularity_proto::Card>| Shelf { title: t.into(), kind: kind.into(), cards: cards.clone() };
         let shelves = match self.chip {
             0 => vec![shelf("Top results", "shelf", &r.top), shelf("Artists", "shelf", &r.artists), shelf("Albums", "shelf", &r.albums), shelf("Playlists", "shelf", &r.playlists), shelf("Podcasts", "shelf", &r.podcasts), shelf("Audiobooks", "shelf", &r.audiobooks)],
@@ -114,17 +258,6 @@ impl SearchView {
         self.feed = HomeFeed { fetched_unix_ms: 0, shelves: shelves.into_iter().filter(|s| !s.cards.is_empty()).collect() };
         self.shelves = HomeView::default();
     }
-}
-
-/// Remember `q` at the front of the recent searches (no duplicates, newest first).
-pub fn remember(recent: &mut Vec<String>, q: &str) {
-    let q = q.trim();
-    if q.chars().count() < 2 {
-        return;
-    }
-    recent.retain(|r| !r.eq_ignore_ascii_case(q));
-    recent.insert(0, q.to_string());
-    recent.truncate(RECENT_MAX);
 }
 
 fn recent_file() -> std::path::PathBuf {
@@ -190,11 +323,14 @@ pub fn bar(buf: &mut Buffer, r: Rect, query: &str, active: bool, hint: &str, th:
 }
 
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
-    let Some(mut v) = app.search.take() else { return };
+    if !app.search.is_open() {
+        return;
+    }
+    let mut v = std::mem::take(&mut app.search);
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     let focused = app.focus == "home";
     // the query, in the same bar Home shows
-    bar(buf, Rect::new(x, r.y, w, 1), &v.query, focused, "Tab: filter · Esc: back", th);
+    bar(buf, Rect::new(x, r.y, w, 1), v.query(), focused, "Tab: filter · Esc: back", th);
     // chips
     let mut cx = x;
     let mut hits = vec![];
@@ -210,15 +346,15 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         cx += lw + 1;
     }
     let mut y = r.y + 3;
-    if v.query.trim().is_empty() {
-        if app.recent.is_empty() {
+    if v.query().trim().is_empty() {
+        if v.recent().is_empty() {
             text(buf, x, y, w, "Search for songs, artists, albums, playlists, podcasts and audiobooks.", th.s(th.dim));
         } else {
             text(buf, x, y, w, "Recent searches", th.s(th.accent).add_modifier(Modifier::BOLD));
             y += 1;
             // a short Pane shows a window that follows the highlight (wheel, ↑ ↓)
-            let first = crate::scroll::window(v.recent_sel, r.bottom().saturating_sub(y) as usize, app.recent.len());
-            for (i, q) in app.recent.iter().enumerate().skip(first) {
+            let first = crate::scroll::window(v.recent_sel, r.bottom().saturating_sub(y) as usize, v.recent().len());
+            for (i, q) in v.recent().iter().enumerate().skip(first) {
                 if y >= r.bottom() {
                     break;
                 }
@@ -229,7 +365,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                 y += 1;
             }
         }
-    } else if let Some(res) = v.results.clone() {
+    } else if let Some(res) = v.results().cloned() {
         // under All, songs give way so at least one Shelf of Cards fits below them
         let room = r.bottom().saturating_sub(y + 2) as usize;
         // (with no Shelves below, the songs take the Pane)
@@ -288,7 +424,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             y += 1;
         }
         if v.feed.shelves.is_empty() && n == 0 && y < r.bottom() {
-            text(buf, x, y, w, &format!("nothing found for “{}”", v.query.trim()), th.s(th.dim));
+            text(buf, x, y, w, &format!("nothing found for “{}”", v.query().trim()), th.s(th.dim));
         }
         if y < r.bottom() && !v.feed.shelves.is_empty() {
             for (rect, h) in hits.drain(..) {
@@ -296,15 +432,13 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             }
             let feed = std::mem::take(&mut v.feed);
             let view = std::mem::take(&mut v.shelves);
-            app.search = Some(v);
+            app.search = v;
             let (feed, view) = crate::home::draw_feed(buf, Rect::new(r.x, y, r.width, r.bottom() - y), app, th, feed, view);
-            if let Some(s) = app.search.as_mut() {
-                s.feed = feed;
-                s.shelves = view;
-            }
+            app.search.feed = feed;
+            app.search.shelves = view;
             return;
         }
-    } else if let Some(e) = &v.failed {
+    } else if let Some(e) = v.failed() {
         text(buf, x, y, w, &format!("search failed: {e} · Enter tries again"), th.s(th.dim));
     } else {
         text(buf, x, y, w, "searching…", th.s(th.dim));
@@ -312,42 +446,135 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     for (rect, h) in hits {
         app.hit(rect, h);
     }
-    app.search = Some(v);
+    app.search = v;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn answer(q: &str) -> SearchResults {
+        SearchResults { query: q.into(), tracks: vec![singularity_proto::TrackRow { uri: format!("spotify:track:{q}"), name: q.into(), ..Default::default() }], ..Default::default() }
+    }
+
+    /// `s` ran `q` (typed it, waited, sent it) and its answer arrived.
+    fn ran(s: &mut Search, q: &str) {
+        s.type_text(q);
+        assert_eq!(s.due_at(Instant::now() + DEBOUNCE).as_deref(), Some(q));
+        s.receive(answer(q));
+    }
+
     #[test]
     fn debounce_waits_for_a_pause_and_two_characters() {
-        let mut v = SearchView { query: "d".into(), ..Default::default() };
-        v.typed();
+        let mut s = Search::default();
+        s.type_text("d");
         std::thread::sleep(DEBOUNCE + Duration::from_millis(10));
-        assert_eq!(v.due(), None, "one character isn't a search");
-        v.query.push('a');
-        v.typed();
-        assert_eq!(v.due(), None, "still typing");
+        assert_eq!(s.due(), None, "one character isn't a search");
+        s.type_text("a");
+        assert_eq!(s.due(), None, "still typing");
         std::thread::sleep(DEBOUNCE + Duration::from_millis(10));
-        assert_eq!(v.due().as_deref(), Some("da"));
-        assert_eq!(v.due(), None, "sent once");
+        assert_eq!(s.due().as_deref(), Some("da"));
+        assert_eq!(s.due(), None, "sent once");
+    }
+
+    #[test]
+    fn a_cleared_search_picked_again_goes_out_at_once() {
+        // #8: after Esc the old "sent" made the picked search look already asked, so it never went out
+        let mut s = Search::with_recent(vec!["nova".into()]);
+        ran(&mut s, "nova");
+        assert!(s.clear());
+        s.pick(0);
+        assert_eq!(s.query(), "nova");
+        assert_eq!(s.due().as_deref(), Some("nova"), "no debounce for a pick, and it goes out again");
+    }
+
+    #[test]
+    fn erasing_to_empty_and_typing_the_same_words_asks_again() {
+        let mut s = Search::default();
+        ran(&mut s, "nova");
+        while s.erase() {}
+        assert!(s.results().is_none(), "an empty query shows the recent searches, not old results");
+        s.type_text("nova");
+        assert_eq!(s.due_at(Instant::now() + DEBOUNCE).as_deref(), Some("nova"));
+    }
+
+    #[test]
+    fn a_picked_search_shows_its_kept_results_at_once_and_still_asks() {
+        let mut s = Search::with_recent(vec!["nova".into(), "orbit".into()]);
+        ran(&mut s, "orbit");
+        s.clear();
+        ran(&mut s, "nova");
+        s.clear();
+        s.pick(1);
+        assert_eq!(s.due().as_deref(), Some("orbit"), "a fresh answer is asked for");
+        assert_eq!(s.results().map(|r| r.query.as_str()), Some("orbit"), "the kept one shows meanwhile");
+        assert_eq!(s.rows().len(), 1);
+    }
+
+    #[test]
+    fn kept_results_expire() {
+        let mut s = Search::with_recent(vec!["nova".into()]);
+        ran(&mut s, "nova");
+        s.clear();
+        s.pick(0);
+        assert_eq!(s.due_at(Instant::now() + CACHE_TTL + Duration::from_secs(1)).as_deref(), Some("nova"));
+        assert!(s.results().is_none(), "too old to show");
+    }
+
+    #[test]
+    fn enter_sends_typed_words_without_waiting() {
+        let mut s = Search::default();
+        s.type_text("nova");
+        assert_eq!(s.due(), None);
+        s.submit();
+        assert_eq!(s.due().as_deref(), Some("nova"));
+    }
+
+    #[test]
+    fn enter_on_an_empty_query_runs_the_highlighted_recent_search() {
+        let mut s = Search::with_recent(vec!["nova".into(), "orbit".into()]);
+        s.recent_sel = 1;
+        s.submit();
+        assert_eq!(s.due().as_deref(), Some("orbit"));
+    }
+
+    #[test]
+    fn a_failed_search_can_go_out_again() {
+        let mut s = Search::default();
+        s.type_text("nova");
+        assert!(s.due_at(Instant::now() + DEBOUNCE).is_some());
+        s.receive(SearchResults { query: "nova".into(), error: Some("no answer".into()), ..Default::default() });
+        assert_eq!(s.failed(), Some("no answer"));
+        assert!(s.results().is_none());
+        s.submit();
+        assert_eq!(s.failed(), None);
+        assert_eq!(s.due().as_deref(), Some("nova"));
+    }
+
+    #[test]
+    fn an_answer_for_older_words_is_kept_but_not_shown() {
+        let mut s = Search::default();
+        s.type_text("nova dr");
+        s.receive(answer("nova"));
+        assert!(s.results().is_none());
+        s.receive(answer("Nova Dr "));
+        assert!(s.answered(), "matched as the Daemon matches: case and outer spaces don't count");
+        // the older answer was kept: going back to those words shows it at once
+        for _ in 0..3 {
+            s.erase();
+        }
+        assert_eq!(s.due_at(Instant::now() + DEBOUNCE).as_deref(), Some("nova"));
+        assert!(s.answered());
     }
 
     #[test]
     fn recent_searches_are_newest_first_without_duplicates() {
-        let mut r = vec![];
+        let mut s = Search::default();
         for q in ["daft punk", "nova", "Daft Punk", "x"] {
-            remember(&mut r, q);
+            s.clear();
+            s.type_text(q);
+            s.remember();
         }
-        assert_eq!(r, ["Daft Punk", "nova"]);
-    }
-
-    #[test]
-    fn stale_answers_are_ignored() {
-        let mut v = SearchView { query: "nova dr".into(), ..Default::default() };
-        v.set_results(SearchResults { query: "nova".into(), ..Default::default() });
-        assert!(v.results.is_none());
-        v.set_results(SearchResults { query: "nova dr".into(), ..Default::default() });
-        assert!(v.results.is_some());
+        assert_eq!(s.recent(), ["Daft Punk", "nova"]);
     }
 }

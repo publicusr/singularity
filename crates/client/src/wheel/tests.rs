@@ -155,10 +155,10 @@ const PAGES: usize = 6;
 
 fn search(app: &mut App, chip: usize) {
     app.run(Action::Search);
-    let s = app.search.as_mut().unwrap();
-    s.query = "orbit".into();
+    let s = app.searching_mut().unwrap();
+    s.type_text("orbit");
     let cards = |kind: &str| (0..30).map(|i| card(i, kind)).collect::<Vec<_>>();
-    s.set_results(SearchResults {
+    s.receive(SearchResults {
         query: "orbit".into(),
         top: cards("album"),
         tracks: (0..30).map(|i| row(i, "track")).collect(),
@@ -217,7 +217,7 @@ fn pages() -> Vec<Case> {
         Case {
             what: "search: recent searches",
             set: |app| {
-                app.recent = (0..12).map(|i| format!("query {i}")).collect();
+                app.search = crate::search::Search::with_recent((0..12).map(|i| format!("query {i}")).collect());
                 app.run(Action::Search);
             },
             moves: 11,

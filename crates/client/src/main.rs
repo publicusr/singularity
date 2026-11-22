@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let (cmd_tx, mut conn_rx) = conn::spawn();
     let mut app = App::new(Some(cmd_tx));
-    app.recent = search::load_recent();
+    app.search = search::Search::with_recent(search::load_recent());
     app.covers = covers::Covers::spawn(cache_dir().join("covers"));
     app.cell_px = term::cell_px();
     app.hole.allow_gpu = true;
@@ -286,9 +286,7 @@ fn apply(app: &mut App, ev: ConnEvent) {
         ConnEvent::Msg(DaemonMsg::Event(Event::Devices { devices })) => app.devices = devices,
         ConnEvent::Msg(DaemonMsg::Event(Event::Jam { jam })) => app.jam = jam,
         ConnEvent::Msg(DaemonMsg::Event(Event::Search(r))) => {
-            if let Some(s) = app.search.as_mut() {
-                s.set_results(r);
-            }
+            app.search.receive(r);
         }
         ConnEvent::Msg(DaemonMsg::Event(Event::Lyrics(l))) => {
             if app.playback.item.as_ref().is_some_and(|i| i.uri == l.uri) {

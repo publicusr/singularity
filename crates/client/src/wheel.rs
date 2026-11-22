@@ -149,10 +149,10 @@ impl App {
             }
             // no query yet: the recent searches; then songs (or episodes) and Shelves, as on an artist page
             Page::Search => {
-                let recent = self.recent.len();
-                let Some(s) = self.search.as_mut() else { return };
+                let Some(s) = self.searching_mut() else { return };
+                let recent = s.recent().len();
                 let step = rows * if coarse { 5 } else { 1 };
-                if s.query.trim().is_empty() {
+                if s.query().trim().is_empty() {
                     s.recent_sel = moved(s.recent_sel, step, recent);
                     return;
                 }

@@ -468,7 +468,7 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), sl
     let title = crate::design::title(app.design, slot, title);
     // the main Pane is titled after what it shows
     let title = match (slot, &app.view, &app.artist) {
-        ("home", _, _) if app.search.is_some() => "search".to_string(),
+        ("home", _, _) if app.search.is_open() => "search".to_string(),
         ("home", _, _) if app.stats_view.is_some() => "stats".to_string(),
         ("home", _, _) if app.settings_view.is_some() => "settings".to_string(),
         ("home", _, Some(a)) => a.name.clone(),
@@ -624,7 +624,7 @@ pub fn widget(buf: &mut Buffer, rect: Rect, inner: Rect, slot: &str, todo: &str,
         crate::meters::loudness(buf, inner, &app.meters, th);
         return;
     }
-    if slot == "home" && app.search.is_some() {
+    if slot == "home" && app.search.is_open() {
         crate::search::draw(buf, inner, app, th);
         return;
     }
@@ -1253,6 +1253,18 @@ mod tests {
         sent_all(rx).into_iter().filter(|c| !matches!(c, singularity_proto::Command::CheckSaved { .. })).collect()
     }
 
+    /// A Search answer from the Daemon, as `main.rs` hands it over.
+    fn receive_search(app: &mut App, r: singularity_proto::SearchResults) {
+        app.search.receive(r);
+    }
+
+    /// The search counts as worth remembering (a result was opened or played).
+    fn remember_search(app: &mut App, q: &str) {
+        let s = app.searching_mut().unwrap();
+        assert_eq!(s.query().trim(), q);
+        s.remember();
+    }
+
     fn sent_all(rx: &mut tokio::sync::mpsc::Receiver<singularity_proto::Command>) -> Vec<singularity_proto::Command> {
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
@@ -1430,7 +1442,7 @@ mod tests {
         for c in "nova".chars() {
             app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
-        assert_eq!(app.search.as_ref().map(|s| s.query.as_str()), Some("nova"));
+        assert_eq!(app.searching().map(|s| s.query()), Some("nova"));
     }
 
     #[test]
@@ -2118,18 +2130,18 @@ mod tests {
     #[test]
     fn the_wheel_moves_through_recent_searches_and_a_short_pane_follows() {
         let (mut app, _rx) = playing_app(200_000);
-        app.recent = (0..12).map(|i| format!("query {i}")).collect();
+        app.search = crate::search::Search::with_recent((0..12).map(|i| format!("query {i}")).collect());
         app.run(Action::Search);
         render(&mut app, 120, 24);
         let home = app.layout.compute(Rect::new(0, 1, 120, 24 - 5)).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
         for _ in 0..11 {
             mouse(&mut app, MouseEventKind::ScrollDown, home.x as f64 + 3.5, home.y + 5, false);
         }
-        assert_eq!(app.search.as_ref().unwrap().recent_sel, 11);
+        assert_eq!(app.searching().unwrap().recent_sel, 11);
         let s = render(&mut app, 120, 24);
         assert!(s.contains("query 11"), "the highlight stays in view\n{s}");
         mouse(&mut app, MouseEventKind::ScrollUp, home.x as f64 + 3.5, home.y + 5, false);
-        assert_eq!(app.search.as_ref().unwrap().recent_sel, 10);
+        assert_eq!(app.searching().unwrap().recent_sel, 10);
     }
 
     #[test]
@@ -2139,10 +2151,10 @@ mod tests {
         let book = "spotify:show:b1";
         // in search: the Audiobooks chip, with Spotify's access line (D58)
         app.run(Action::Search);
-        app.search.as_mut().unwrap().query = "orbit".into();
+        app.searching_mut().unwrap().type_text("orbit");
         let card = Card { uri: book.into(), name: "The Long Orbit".into(), subtitle: "Listen free until Oct 31 · Ada Quill".into(), image_url: None, kind: "show".into() };
-        app.search.as_mut().unwrap().set_results(SearchResults { query: "orbit".into(), audiobooks: vec![card], ..Default::default() });
-        app.search.as_mut().unwrap().set_chip(6);
+        app.searching_mut().unwrap().receive(SearchResults { query: "orbit".into(), audiobooks: vec![card], ..Default::default() });
+        app.searching_mut().unwrap().set_chip(6);
         let s = render(&mut app, 160, 48);
         for part in ["Audiobooks", "The Long Or", "Listen free"] {
             assert!(s.contains(part), "missing {part:?}\n{s}");
@@ -2184,11 +2196,11 @@ mod tests {
         use singularity_proto::{Command, Progress, SearchResults, TrackRow};
         let (mut app, mut rx) = playing_app(200_000);
         app.run(Action::Search);
-        app.search.as_mut().unwrap().query = "orbits".into();
+        app.searching_mut().unwrap().type_text("orbits");
         let ep = |i: u32, p: Progress| TrackRow { uri: format!("spotify:episode:e{i}"), name: format!("Orbit talk {i}"), artists: vec!["A Show".into()], artist_uris: vec!["spotify:show:s".into()], duration_ms: 3_000_000, playable: true, progress: Some(p), ..Default::default() };
         let episodes = vec![ep(1, Progress { position_ms: 1_200_000, done: false }), ep(2, Progress { position_ms: 0, done: true })];
-        app.search.as_mut().unwrap().set_results(SearchResults { query: "orbits".into(), episodes, ..Default::default() });
-        app.search.as_mut().unwrap().set_chip(5);
+        app.searching_mut().unwrap().receive(SearchResults { query: "orbits".into(), episodes, ..Default::default() });
+        app.searching_mut().unwrap().set_chip(5);
         let s = render(&mut app, 160, 48);
         for part in ["Episodes", "Orbit talk 1", "A Show", "30 min left", "✓ played", "50 min"] {
             assert!(s.contains(part), "missing {part:?}\n{s}");
@@ -3027,7 +3039,7 @@ mod tests {
         use singularity_proto::{Card, Command, SearchResults, TrackRow};
         let (mut app, mut rx) = playing_app(1);
         app.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
-        assert!(app.search.is_some());
+        assert!(app.search.is_open());
         for c in "nova".chars() {
             app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
             app.tick();
@@ -3038,7 +3050,7 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::Search { query: "nova".into() }]);
         let card = |n: &str, k: &str| Card { uri: format!("spotify:{k}:{n}"), name: n.into(), subtitle: k.into(), image_url: None, kind: k.into() };
         let tracks = (0..8).map(|i| TrackRow { uri: format!("spotify:track:n{i}"), name: format!("Nova song {i}"), artists: vec!["Nova Drift".into()], artist_uris: vec!["spotify:artist:nova".into()], duration_ms: 200_000, playable: true, ..Default::default() }).collect();
-        app.search.as_mut().unwrap().set_results(SearchResults { query: "nova".into(), top: vec![card("Nova Drift", "artist")], tracks, artists: vec![card("Nova Drift", "artist")], albums: vec![card("Event Horizon", "album")], playlists: vec![], podcasts: vec![], episodes: vec![], audiobooks: vec![], error: None });
+        app.searching_mut().unwrap().receive(SearchResults { query: "nova".into(), top: vec![card("Nova Drift", "artist")], tracks, artists: vec![card("Nova Drift", "artist")], albums: vec![card("Event Horizon", "album")], playlists: vec![], podcasts: vec![], episodes: vec![], audiobooks: vec![], error: None });
         let s = render(&mut app, 200, 64);
         assert!(s.contains("Songs") && s.contains("Nova song 4") && !s.contains("Nova song 5"), "All shows five songs:\n{s}");
         assert!(s.contains("Top results") && s.contains("Albums"));
@@ -3052,16 +3064,37 @@ mod tests {
         let c = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Card(_)).then_some(*r)).unwrap();
         click(&mut app, c.x + 2, c.y + 1);
         assert_eq!(sent(&mut rx), vec![Command::GetTracks { uri: "spotify:album:Event Horizon".into() }]);
-        assert_eq!(app.recent, ["nova"]);
+        assert_eq!(app.search.recent(), ["nova"]);
         // back to the search, results and chip intact
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(app.search.as_ref().map(|s| (s.query.as_str(), s.chip)), Some(("nova", 3)));
+        assert_eq!(app.searching().map(|s| (s.query(), s.chip)), Some(("nova", 3)));
         // an empty query lists recent searches
         for _ in 0..4 {
             app.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         }
         let s = render(&mut app, 200, 64);
         assert!(s.contains("Recent searches") && s.contains("  nova"), "{s}");
+    }
+
+    #[test]
+    fn picking_the_recent_search_just_cleared_runs_it_again() {
+        // #8: Esc cleared the query but the Client still thought "nova" was sent, so picking it sent nothing
+        use singularity_proto::{Command, SearchResults};
+        let (mut app, mut rx) = playing_app(1);
+        app.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        for c in "nova".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        std::thread::sleep(crate::search::DEBOUNCE + std::time::Duration::from_millis(20));
+        app.tick();
+        assert_eq!(sent(&mut rx), vec![Command::Search { query: "nova".into() }]);
+        receive_search(&mut app, SearchResults { query: "nova".into(), ..Default::default() });
+        remember_search(&mut app, "nova");
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        // Enter on the empty query picks the highlighted recent search: it goes out at once, no debounce
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.tick();
+        assert_eq!(sent(&mut rx), vec![Command::Search { query: "nova".into() }], "the picked search runs again");
     }
 
     #[test]
@@ -3075,7 +3108,7 @@ mod tests {
         std::thread::sleep(crate::search::DEBOUNCE + std::time::Duration::from_millis(20));
         app.tick();
         assert_eq!(sent(&mut rx), vec![Command::Search { query: "nova".into() }]);
-        app.search.as_mut().unwrap().set_results(SearchResults { query: "nova".into(), error: Some("Spotify didn't answer within 12 s".into()), ..Default::default() });
+        app.searching_mut().unwrap().receive(SearchResults { query: "nova".into(), error: Some("Spotify didn't answer within 12 s".into()), ..Default::default() });
         let s = render(&mut app, 120, 40);
         assert!(s.contains("search failed: Spotify didn't answer") && !s.contains("searching…"), "{s}");
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
