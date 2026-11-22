@@ -207,6 +207,25 @@ fn a_state_without_the_queue_is_applied_normally_inside_the_window() {
     assert_eq!(p.queue.len(), 1);
 }
 
+/// C4: two quick skips ask for the queue twice; the second answer is a snapshot from before the change as well, and
+/// must not put the song that stopped back.
+#[test]
+fn each_queue_answer_in_flight_is_only_a_queue() {
+    let now = t0();
+    let mut s = playing("spotify:track:a", now);
+    assert_eq!(sent(&ws(&mut s, track("spotify:track:b"), now + secs(1))), ["get_queue"]);
+    assert_eq!(sent(&ws(&mut s, track("spotify:track:c"), now + secs(2))), ["get_queue"]);
+    for (i, stale) in ["spotify:track:a", "spotify:track:b"].into_iter().enumerate() {
+        let mut answer = state("playing", stale, 1_000, now + secs(2));
+        answer["upcoming"] = json!([{"uid": format!("u{i}"), "source": "context", "item": item("spotify:track:next")}]);
+        let p = playback(&ws(&mut s, answer, now + secs(3))).unwrap();
+        assert_eq!(p.item.as_ref().map(|i| i.uri.as_str()), Some("spotify:track:c"), "answer {i} put {stale} back");
+    }
+    // both answered: the next state is news again
+    let p = playback(&ws(&mut s, { let mut st = state("paused", "spotify:track:c", 5_000, now + secs(4)); st["upcoming"] = json!([]); st }, now + secs(4))).unwrap();
+    assert_eq!(p.status, PlayStatus::Paused);
+}
+
 /// An answer that comes too late isn't taken for the answer: it's a full state.
 #[test]
 fn a_queue_answer_window_closes() {

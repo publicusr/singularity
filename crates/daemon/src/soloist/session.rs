@@ -388,8 +388,9 @@ struct SoloistState {
     expected: Option<(String, Instant)>,
     /// when we sent a next/previous/play/pause: the change that follows it is ours (its target isn't known)
     sent_at: Option<Instant>,
-    /// when we asked for the queue: its answer is a snapshot from before the change we just heard about
-    queue_asked_at: Option<Instant>,
+    /// when we asked for the queue, oldest first, until answered: each answer is a snapshot from before the change we
+    /// had just heard about
+    queue_asked: Vec<Instant>,
     /// what our last play/pause asked for, and when: a toggle right after it goes from there, not from a state
     /// Soloist hasn't reported yet (two quick presses sent "pause" twice)
     toggled: Option<(PlayStatus, Instant)>,
@@ -447,7 +448,7 @@ impl SoloistState {
     /// We asked Soloist for the queue: its answer shows the player as it was, which may not have the track that just
     /// changed yet, so only the queue is taken from it.
     fn asking_for_queue(&mut self, now: Instant) {
-        self.queue_asked_at = Some(now);
+        self.queue_asked.push(now);
     }
 
     /// Apply the queue in an event's `upcoming`. True if it differs from what we had. (An event without a list
@@ -473,9 +474,13 @@ impl SoloistState {
         // the answer to our own `get_queue`: the track it still shows may be the one that just stopped. Only a state
         // that actually carries the queue we asked for is that answer: any other state in the window (a phone's
         // pause reaching us first) is real news and is applied as usual (audit C9).
-        if ev["type"] == "playback_state" && ev["upcoming"].is_array() && self.queue_asked_at.is_some_and(|at| now.at.saturating_duration_since(at) <= QUEUE_ANSWER) {
-            self.queue_asked_at = None;
-            return self.queue(&ev["upcoming"]);
+        // Each ask in flight has its answer (two quick skips ask twice, C4); one not answered in time is forgotten.
+        if ev["type"] == "playback_state" && ev["upcoming"].is_array() {
+            self.queue_asked.retain(|at| now.at.saturating_duration_since(*at) <= QUEUE_ANSWER);
+            if !self.queue_asked.is_empty() {
+                self.queue_asked.remove(0);
+                return self.queue(&ev["upcoming"]);
+            }
         }
         // what plays next: nothing about the current track
         if ev["type"] == "queue_changed" {
