@@ -1256,7 +1256,7 @@ impl App {
             Some(Modal::Devices) => return self.devices_key(k),
             Some(Modal::Health) => {
                 match k.code {
-                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => self.shut(Modal::Health),
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => self.close_if_open(Modal::Health),
                     code => {
                         if let Some(s) = self.text_scroll(Modal::Health) {
                             s.by(text_rows(code));
@@ -1269,7 +1269,7 @@ impl App {
             // any key closes the help, but the ones that scroll it when it's taller than the screen
             Some(Modal::Help) => {
                 match (text_rows(k.code), self.text_scroll(Modal::Help)) {
-                    (0, _) | (_, None) => self.shut(Modal::Help),
+                    (0, _) | (_, None) => self.close_if_open(Modal::Help),
                     (rows, Some(s)) => s.by(rows),
                 }
                 return;
@@ -1792,7 +1792,7 @@ impl App {
                 let i = *sel;
                 self.transfer_to(i);
             }
-            KeyCode::Esc | KeyCode::Char('d') | KeyCode::Char('q') => self.shut(Modal::Devices),
+            KeyCode::Esc | KeyCode::Char('d') | KeyCode::Char('q') => self.close_if_open(Modal::Devices),
             _ => {}
         }
     }
@@ -1802,7 +1802,7 @@ impl App {
         if i == self.devices.len() {
             return self.jam_row();
         }
-        self.shut(Modal::Devices);
+        self.close_if_open(Modal::Devices);
         let Some(d) = self.devices.get(i).cloned() else { return };
         if d.active {
             return self.say(format!("Already playing on {}", d.name));
@@ -2222,7 +2222,7 @@ impl App {
     fn menu_key(&mut self, k: KeyEvent) {
         let Some(m) = self.menu_mut() else { return };
         match k.code {
-            KeyCode::Esc => self.shut(Modal::Menu),
+            KeyCode::Esc => self.close_if_open(Modal::Menu),
             KeyCode::Up => m.selected = m.selected.saturating_sub(1),
             KeyCode::Down => m.selected = (m.selected + 1).min(m.items.len().saturating_sub(1)),
             KeyCode::Enter => {
@@ -2299,7 +2299,7 @@ impl App {
         let n = self.palette_items().len();
         let Some(p) = self.palette_mut() else { return };
         match k.code {
-            KeyCode::Esc => self.shut(Modal::Palette),
+            KeyCode::Esc => self.close_if_open(Modal::Palette),
             KeyCode::Up => p.selected = p.selected.saturating_sub(1),
             KeyCode::Down => p.selected = (p.selected + 1).min(n.saturating_sub(1)),
             KeyCode::Backspace => {
@@ -2313,7 +2313,7 @@ impl App {
             KeyCode::Enter => {
                 let sel = p.selected;
                 if let Some(a) = self.palette_items().get(sel).copied() {
-                    self.shut(Modal::Palette);
+                    self.close_if_open(Modal::Palette);
                     self.run(a);
                 }
             }
@@ -2582,7 +2582,7 @@ impl App {
         }
         match m.kind {
             MouseEventKind::Down(MouseButton::Right) => {
-                self.shut(Modal::Menu);
+                self.close_if_open(Modal::Menu);
                 let at = Some((m.column, m.row));
                 match self.hit_at(m.column, m.row) {
                     Some(Hit::Card(c)) => {
@@ -2789,7 +2789,7 @@ impl App {
                     Some(Hit::Action(a)) => self.run(a),
                     Some(Hit::PaletteItem(i)) => {
                         if let Some(a) = self.palette_items().get(i).copied() {
-                            self.shut(Modal::Palette);
+                            self.close_if_open(Modal::Palette);
                             self.run(a);
                         }
                     }
@@ -2803,7 +2803,7 @@ impl App {
                             self.scrub = Some(Scrub::press(bar, r, max, fx, precise));
                         }
                     }
-                    None => self.shut(Modal::Palette),
+                    None => self.close_if_open(Modal::Palette),
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -2992,7 +2992,7 @@ impl App {
     }
 
     /// Close popup `m`, if it's the one open (an action it ran may have opened another: that one stays).
-    pub(crate) fn shut(&mut self, m: Modal) {
+    pub(crate) fn close_if_open(&mut self, m: Modal) {
         if self.is_open(m) {
             self.popup = None;
         }
@@ -3105,7 +3105,7 @@ impl App {
                 match modal {
                     Modal::Adding => match hit {
                         Some(Hit::AddPick(i)) => self.add_pick(i),
-                        _ => self.shut(Modal::Adding),
+                        _ => self.close_if_open(Modal::Adding),
                     },
                     Modal::Picker => match hit {
                         Some(Hit::PickerItem(i)) => {
@@ -3117,24 +3117,24 @@ impl App {
                     // a click elsewhere only closes the menu
                     Modal::Menu => match hit {
                         Some(Hit::MenuItem(i)) => self.menu_run(i),
-                        _ => self.shut(Modal::Menu),
+                        _ => self.close_if_open(Modal::Menu),
                     },
                     Modal::Devices => match hit {
                         Some(Hit::DeviceRow(i)) => self.transfer_to(i),
-                        _ => self.shut(Modal::Devices),
+                        _ => self.close_if_open(Modal::Devices),
                     },
                     Modal::Palette => match hit {
                         Some(Hit::PaletteItem(i)) => {
                             if let Some(a) = self.palette_items().get(i).copied() {
-                                self.shut(Modal::Palette);
+                                self.close_if_open(Modal::Palette);
                                 self.run(a);
                             }
                         }
                         // outside the popup closes it; inside, between items, nothing
-                        _ if !self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom()) => self.shut(Modal::Palette),
+                        _ if !self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom()) => self.close_if_open(Modal::Palette),
                         _ => {}
                     },
-                    Modal::Help => self.shut(Modal::Help),
+                    Modal::Help => self.close_if_open(Modal::Help),
                     // the bar's "undo" works in Move mode; any other click ends it
                     Modal::Move => match hit {
                         Some(Hit::Action(a @ (Action::UndoLayout | Action::RedoLayout))) => self.run(a),
@@ -3142,7 +3142,7 @@ impl App {
                     },
                     Modal::Widgets => match hit {
                         Some(Hit::WidgetItem(i)) => self.widget_chosen(i),
-                        _ => self.shut(Modal::Widgets),
+                        _ => self.close_if_open(Modal::Widgets),
                     },
                     // forms and the wizard are typed into; a click on or around them does nothing
                     Modal::Naming | Modal::Details | Modal::Cover | Modal::Wizard | Modal::Health | Modal::Login => {}

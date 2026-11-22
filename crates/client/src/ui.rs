@@ -1144,7 +1144,7 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.palette().is_none() && app.is_open(crate::app::Modal::Help));
         // and by mouse
-        app.shut(crate::app::Modal::Help);
+        app.close_if_open(crate::app::Modal::Help);
         app.run(Action::Palette);
         for c in "quit".chars() {
             app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
@@ -3442,6 +3442,17 @@ mod tests {
             click(&mut app, 0, 0);
             let closes = matches!(m, Modal::Palette | Modal::Picker | Modal::Widgets | Modal::Adding | Modal::Devices | Modal::Menu | Modal::Help);
             assert_eq!(app.modal(), Some(if closes { Modal::Wizard } else { m }), "{m:?}: the click");
+            // the click on its first row, inside its box: the row is chosen (the popup has done its job and gone)
+            let (mut app, _rx) = over_wizard(m);
+            render(&mut app, w, h);
+            let row = app.hits.iter().find(|(_, hit)| matches!(hit, Hit::PaletteItem(0) | Hit::PickerItem(0) | Hit::WidgetItem(0) | Hit::AddPick(0) | Hit::DeviceRow(0) | Hit::MenuItem(0))).map(|(r, _)| *r);
+            if let Some(r) = row {
+                click(&mut app, r.x + 1, r.y);
+                assert_ne!(app.modal(), Some(m), "{m:?}: the click on its row went to the wizard");
+                assert!(app.layers().contains(&Modal::Wizard), "{m:?}: the wizard stays");
+            } else {
+                assert!(!matches!(m, Modal::Palette | Modal::Picker | Modal::Widgets | Modal::Adding | Modal::Devices | Modal::Menu), "{m:?}: a list popup has rows to click");
+            }
         }
     }
 

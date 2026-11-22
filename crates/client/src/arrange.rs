@@ -412,7 +412,7 @@ impl App {
         let was = self.layout_name.clone().and_then(|id| self.saved_layouts.iter().find(|x| x.id == id).cloned());
         // the first edit's naming prompt: nothing was written yet, and the edit is going
         if self.naming().is_some_and(|n| n.purpose == NameFor::Fork) {
-            self.shut(crate::app::Modal::Naming);
+            self.close_if_open(crate::app::Modal::Naming);
         }
         self.layout = s.tree;
         self.focus = if self.layout.has(&s.focus) { s.focus } else { "home".into() };
@@ -576,7 +576,7 @@ impl App {
                 let i = p.sel;
                 self.widget_chosen(i);
             }
-            KeyCode::Esc | KeyCode::Char('q') => self.shut(crate::app::Modal::Widgets),
+            KeyCode::Esc | KeyCode::Char('q') => self.close_if_open(crate::app::Modal::Widgets),
             _ => {}
         }
     }

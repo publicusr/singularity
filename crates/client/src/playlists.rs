@@ -229,7 +229,7 @@ impl App {
         let field = if d.on_description { &mut d.description } else { &mut d.name };
         let max = if d.on_description { DESCRIPTION_MAX } else { NAME_MAX };
         match k.code {
-            KeyCode::Esc => self.shut(crate::app::Modal::Details),
+            KeyCode::Esc => self.close_if_open(crate::app::Modal::Details),
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => d.on_description = !d.on_description,
             KeyCode::Enter => self.save_details(),
             KeyCode::Backspace if k.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -264,7 +264,7 @@ impl App {
         if !d.known {
             return self.say("Still fetching the description…");
         }
-        self.shut(crate::app::Modal::Details);
+        self.close_if_open(crate::app::Modal::Details);
         let Some(old) = self.own_playlist(&d.uri).map(|i| i.name.clone()) else { return };
         let old = (old, self.description_of(&d.uri));
         if old == (name.clone(), description.clone()) {
@@ -354,7 +354,7 @@ impl App {
     pub fn adding_key(&mut self, k: KeyEvent) {
         let Some(a) = self.adding_mut() else { return };
         match k.code {
-            KeyCode::Esc => self.shut(crate::app::Modal::Adding),
+            KeyCode::Esc => self.close_if_open(crate::app::Modal::Adding),
             KeyCode::Up => self.adding_move(-1),
             KeyCode::Down => self.adding_move(1),
             KeyCode::Enter => {
@@ -736,7 +736,7 @@ mod tests {
         // the sidebar menu: Delete only on your own
         app.open_side_menu(crate::sidebar::FIXED + 2, None);
         assert!(!menu_labels(&app).iter().any(|l| l.starts_with("Delete")), "{:?}", menu_labels(&app));
-        app.shut(crate::app::Modal::Menu);
+        app.close_if_open(crate::app::Modal::Menu);
         app.open_side_menu(crate::sidebar::FIXED + 1, None);
         let labels = menu_labels(&app);
         assert!(labels.contains(&"New playlist…".to_string()) && labels.contains(&"Delete playlist…".to_string()), "{labels:?}");
@@ -773,7 +773,7 @@ mod tests {
         // others' playlists: nothing offered, nothing sent
         app.open_side_menu(crate::sidebar::FIXED + 2, None);
         assert!(!menu_labels(&app).contains(&"Edit details…".to_string()));
-        app.shut(crate::app::Modal::Menu);
+        app.close_if_open(crate::app::Modal::Menu);
         app.edit_details("spotify:playlist:theirs");
         assert!(app.details().is_none());
         app.open("spotify:playlist:mine", "Mine", "", "playlist");
@@ -830,7 +830,7 @@ mod tests {
         app.library.as_mut().unwrap().items.push(item("spotify:playlist:road", "Road trip", true));
         // every track menu offers it
         app.open_row_menu(0, None);
-        app.shut(crate::app::Modal::Menu);
+        app.close_if_open(crate::app::Modal::Menu);
         app.ask_add(vec!["spotify:track:t".into()], "Song");
         let names = |app: &App| app.adding_rows().into_iter().map(|(_, n)| n).collect::<Vec<_>>();
         assert_eq!(names(&app), vec!["+ New playlist…", "Mine", "Road trip"], "only your own, New first");
@@ -910,7 +910,7 @@ mod tests {
         app.track_page(TrackPage { uri: "spotify:playlist:theirs".into(), offset: 0, total: 1, tracks: vec![row("c", "x0")], header: None });
         app.open_row_menu(0, None);
         assert!(!menu_labels(&app).iter().any(|l| l.starts_with("Remove")));
-        app.shut(crate::app::Modal::Menu);
+        app.close_if_open(crate::app::Modal::Menu);
         app.key(ratatui::crossterm::event::KeyEvent::from(KeyCode::Delete));
         assert!(!sent(&mut rx).iter().any(|c| matches!(c, Command::RemoveFromPlaylist { .. })));
     }

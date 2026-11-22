@@ -116,7 +116,7 @@ impl App {
     pub fn cover_key(&mut self, k: KeyEvent) {
         let Some(f) = self.cover_form_mut() else { return };
         match k.code {
-            KeyCode::Esc => self.shut(crate::app::Modal::Cover),
+            KeyCode::Esc => self.close_if_open(crate::app::Modal::Cover),
             KeyCode::Enter if f.ready.is_some() => self.upload_cover(),
             KeyCode::Enter => self.load_cover(),
             KeyCode::Backspace => {
