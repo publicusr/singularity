@@ -392,16 +392,19 @@ fn tolerant<T: Default + Serialize + for<'de> Deserialize<'de>>(name: &str, mut 
         let spanned = toml_edit::Document::parse(text).ok();
         let culprit = e.span().zip(spanned.as_ref()).and_then(|(at, d)| culprit(d.as_table(), &at));
         let Some((path, bad)) = culprit.filter(|(path, _)| remove(&mut doc, path)) else {
-            problems.push(format!("{name}: {} (using the defaults)", one_line(e.message())));
+            problems.push(format!("{name}: {} (using the defaults)", one_line(&e.to_string())));
             return T::default();
         };
         let key = path.join(".");
+        // (serde words an unknown enum value this way; any other wording still reads right as "isn't valid")
         let what = if e.message().starts_with("unknown variant") { "isn't known".to_string() } else { format!("isn't valid ({})", one_line(e.message())) };
         let instead = match defaults.as_ref().and_then(|d| default_at(d.as_item(), &path)) {
             Some(Item::Value(Value::String(s))) if !s.value().is_empty() => format!("using {}", s.value()),
             Some(Item::Value(v)) if !v.is_inline_table() => format!("using {}", shown(v)),
             Some(_) => "using its defaults".into(),
-            None => "left out".into(),
+            // a key the defaults don't have (a binding) is gone; without the defaults to look in, it's the default
+            None if defaults.is_some() => "left out".into(),
+            None => "using the default".into(),
         };
         problems.push(format!("{name}: {key} = {bad} {what}; {instead}"));
     }
@@ -415,10 +418,12 @@ fn culprit(table: &dyn toml_edit::TableLike, at: &std::ops::Range<usize>) -> Opt
             path.insert(0, key.to_string());
             return Some((path, bad));
         }
-        if let Item::Value(v) = item
-            && v.span().is_some_and(|s| s.start <= at.start && at.end <= s.end)
-        {
-            return Some((vec![key.to_string()], shown(v)));
+        if item.span().is_some_and(|s| s.start <= at.start && at.end <= s.end) {
+            let bad = match item {
+                Item::Value(v) => shown(v),
+                _ => "a table".into(),
+            };
+            return Some((vec![key.to_string()], bad));
         }
     }
     None
@@ -963,6 +968,13 @@ minutes = 3
         assert_eq!((r.value.ui, r.value.visuals.motion_fps, r.value.idle.minutes), (Ui::default(), 60, 9.0));
         // the file itself is never changed by reading it
         assert!(r.migrated.is_none());
+    }
+
+    #[test]
+    fn a_table_where_a_value_belongs_defaults_that_key() {
+        let r = parse::<Config>("config.toml", "schema = 7\n[ui.design]\nx = 1\n[engine]\nkind = \"librespot\"\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        assert_eq!((r.value.engine.kind, r.value.ui.design.as_str()), (EngineKind::Librespot, "singularity"));
+        assert!(r.problems.len() == 1 && r.problems[0].starts_with("config.toml: ui.design = a table isn't valid"), "{:?}", r.problems);
     }
 
     #[test]

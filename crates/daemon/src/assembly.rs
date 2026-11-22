@@ -43,8 +43,10 @@ impl Host<'static> {
 pub enum Plan {
     /// `--fake-engine`: a pretend player for UI work and tests
     Fake,
-    /// Soloist, in the Soloist VM on macOS (D55) or here; `cache_mb` is its `--cache-size` (the VM keeps its own)
-    Soloist { in_vm: bool, cache_mb: u32 },
+    /// Soloist on this computer; `cache_mb` is its `--cache-size` (0: no limit)
+    Soloist { cache_mb: u32 },
+    /// macOS: Soloist in the Soloist VM (D55), its audio played and tapped by the Daemon; the VM keeps its own cache
+    SoloistVm,
     /// the official app, driven over Connect; `start_app`: find and start it (off in tests)
     SpotifyApp { start_app: bool },
     /// librespot inside the Daemon
@@ -66,7 +68,7 @@ pub enum Tap {
 
 /// Where Home, Search and the library come from.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Catalogue {
+pub enum CatalogueMode {
     /// Spotify, with the saved login
     Spotify,
     /// `--fake-catalogue <home.json>`: a recorded Home feed (a `fake` build)
@@ -83,7 +85,7 @@ pub struct Assembly {
     pub identity: Identity,
     /// None: no tap (`SINGULARITY_TAP=off`, so a test Daemon never listens to the owner's real player)
     pub tap: Option<Tap>,
-    pub catalogue: Catalogue,
+    pub catalogue: CatalogueMode,
     /// config.toml's problems and the assembly's own, worded for the user
     pub problems: Vec<String>,
 }
@@ -128,13 +130,13 @@ pub fn assemble(config: Read<Config>, args: &[String], env: impl Fn(&str) -> Opt
             let in_vm = host.macos && env("SINGULARITY_SOLOIST").as_deref() != Some("local");
             let device_name = if in_vm { named(&|| format!("Singularity on {} (lossless)", (host.computer)())) } else { named(&|| crate::soloist::DEVICE_NAME.into()) };
             let tap = if in_vm { Tap::EngineFeed } else { Tap::PipeWire(StreamOf::Soloist) };
-            (Plan::Soloist { in_vm, cache_mb: choice.soloist_cache_mb() }, Identity { device_name, ..Identity::default() }, tap)
+            (if in_vm { Plan::SoloistVm } else { Plan::Soloist { cache_mb: choice.soloist_cache_mb() } }, Identity { device_name, ..Identity::default() }, tap)
         }
     };
     let catalogue = match args.iter().position(|a| a == "--fake-catalogue").and_then(|i| args.get(i + 1)) {
-        Some(path) => Catalogue::Recorded(PathBuf::from(path)),
-        None if flag("--no-catalogue") => Catalogue::Off,
-        None => Catalogue::Spotify,
+        Some(path) => CatalogueMode::Recorded(PathBuf::from(path)),
+        None if flag("--no-catalogue") => CatalogueMode::Off,
+        None => CatalogueMode::Spotify,
     };
     let tap = (env("SINGULARITY_TAP").as_deref() != Some("off")).then_some(tap);
     Assembly { plan, identity, tap, catalogue, problems }
@@ -145,7 +147,8 @@ impl Assembly {
         self.plan == Plan::Fake
     }
 
-    /// Make the Engine (commands go to `catalogue`, if there is one) and the tap's source.
+    /// Make the Engine (commands go to `catalogue`, if there is one) and the tap's source. Only for an assembly made
+    /// with [`Host::this`]: off macOS there is no Soloist VM to make (a panic) and no app process tap (none).
     pub fn build(&self, catalogue: Option<mpsc::Sender<CatCmd>>) -> (Box<dyn Engine>, Option<TapSource>) {
         let identity = self.identity.clone();
         // the samples of an Engine that plays from this Daemon, for the tap
@@ -161,11 +164,11 @@ impl Assembly {
                 tracing::info!("Engine: the Spotify app, {:?} on Connect", identity.device_name);
                 Box::new(crate::app_engine::AppEngine { identity, catalogue, start_app })
             }
-            Plan::Soloist { in_vm: true, .. } => {
+            Plan::SoloistVm => {
                 tracing::info!("Engine: Soloist in the Soloist VM, {:?} on Connect", identity.device_name);
                 soloist_in_vm(identity.device_name, &mut feed)
             }
-            Plan::Soloist { in_vm: false, cache_mb } => {
+            Plan::Soloist { cache_mb } => {
                 Box::new(crate::soloist::SoloistEngine { cache_mb, device_name: identity.device_name, ..crate::soloist::SoloistEngine::from_env() })
             }
         };
@@ -222,9 +225,9 @@ mod tests {
     #[test]
     fn soloist_on_linux_is_named_singularity_and_tapped_through_pipewire() {
         let a = assemble(config("kind = \"auto\""), &[], no_env, &linux());
-        assert_eq!(a.plan, Plan::Soloist { in_vm: false, cache_mb: 5120 });
+        assert_eq!(a.plan, Plan::Soloist { cache_mb: 5120 });
         assert_eq!((a.identity.device_name.as_str(), a.identity.via_connect, a.identity.player), ("Singularity", false, "Soloist"));
-        assert_eq!((a.tap, a.catalogue, a.problems.len()), (Some(Tap::PipeWire(StreamOf::Soloist)), Catalogue::Spotify, 0));
+        assert_eq!((a.tap, a.catalogue, a.problems.len()), (Some(Tap::PipeWire(StreamOf::Soloist)), CatalogueMode::Spotify, 0));
     }
 
     /// C5: `[engine] device` names Soloist on Linux too, and an empty setting keeps "Singularity".
@@ -236,14 +239,14 @@ mod tests {
 
     #[test]
     fn soloist_on_macos_runs_in_the_vm_and_its_audio_comes_to_the_daemon() {
-        let a = assemble(config("kind = \"soloist\"\ncache_gb = 1"), &[], no_env, &mac());
-        assert_eq!((a.plan, a.tap), (Plan::Soloist { in_vm: true, cache_mb: 1024 }, Some(Tap::EngineFeed)));
+        let a = assemble(config("kind = \"soloist\""), &[], no_env, &mac());
+        assert_eq!((a.plan, a.tap), (Plan::SoloistVm, Some(Tap::EngineFeed)));
         assert_eq!(a.identity.device_name, "Singularity on desk (lossless)");
         let named = assemble(config("kind = \"soloist\"\ndevice = \"Den\""), &[], no_env, &mac());
         assert_eq!(named.identity.device_name, "Den");
         // the pty harness's local stand-in, on any OS
         let local = assemble(config("kind = \"soloist\""), &[], with(&[("SINGULARITY_SOLOIST", "local")]), &mac());
-        assert_eq!((local.plan, local.tap, local.identity.device_name.as_str()), (Plan::Soloist { in_vm: false, cache_mb: 5120 }, Some(Tap::PipeWire(StreamOf::Soloist)), "Singularity"));
+        assert_eq!((local.plan, local.tap, local.identity.device_name.as_str()), (Plan::Soloist { cache_mb: 5120 }, Some(Tap::PipeWire(StreamOf::Soloist)), "Singularity"));
     }
 
     #[test]
@@ -276,7 +279,7 @@ mod tests {
         let a = assemble(config("kind = \"soloist\""), &[], with(&[("SINGULARITY_ENGINE", "librespot")]), &linux());
         assert_eq!(a.plan, Plan::Librespot);
         let bad = assemble(config("kind = \"soloist\""), &[], with(&[("SINGULARITY_ENGINE", "vlc")]), &linux());
-        assert_eq!(bad.plan, Plan::Soloist { in_vm: false, cache_mb: 5120 });
+        assert_eq!(bad.plan, Plan::Soloist { cache_mb: 5120 });
         assert_eq!(bad.problems, ["SINGULARITY_ENGINE=vlc isn't known (soloist, spotify-app or librespot); using config.toml's"]);
         let off = assemble(config("kind = \"librespot\""), &[], with(&[("SINGULARITY_TAP", "off")]), &linux());
         assert_eq!(off.tap, None);
@@ -296,9 +299,9 @@ mod tests {
     fn the_command_line_picks_the_catalogue() {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let cat = |a: &[&str]| assemble(config(""), &args(a), no_env, &linux()).catalogue;
-        assert_eq!(cat(&["--no-catalogue"]), Catalogue::Off);
-        assert_eq!(cat(&["--fake-catalogue", "home.json"]), Catalogue::Recorded("home.json".into()));
-        assert_eq!(cat(&[]), Catalogue::Spotify);
+        assert_eq!(cat(&["--no-catalogue"]), CatalogueMode::Off);
+        assert_eq!(cat(&["--fake-catalogue", "home.json"]), CatalogueMode::Recorded("home.json".into()));
+        assert_eq!(cat(&[]), CatalogueMode::Spotify);
     }
 
     #[tokio::test]

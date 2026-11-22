@@ -1,6 +1,6 @@
 //! `singularityd` binary: parse flags, pick the Engine, serve the socket.
 
-use singularityd::assembly::{Catalogue, Host, Plan, assemble};
+use singularityd::assembly::{CatalogueMode, Host, Plan, assemble};
 
 /// The log names the account and what plays: whoever opened it (a Client, launchd, a shell), it's owner-only.
 fn private_log() {
@@ -72,9 +72,9 @@ async fn run() -> anyhow::Result<i32> {
     }
     let fake = assembly.fake();
     let catalogue = match &assembly.catalogue {
-        Catalogue::Recorded(path) => Some(fake_catalogue(path)?),
-        Catalogue::Spotify => Some(singularityd::catalogue::spawn(singularityd::catalogue::Dirs::from_env(), assembly.identity.clone())),
-        Catalogue::Off => None,
+        CatalogueMode::Recorded(path) => Some(fake_catalogue(path)?),
+        CatalogueMode::Spotify => Some(singularityd::catalogue::spawn(singularityd::catalogue::Dirs::from_env(), assembly.identity.clone())),
+        CatalogueMode::Off => None,
     };
     let (engine, tap) = assembly.build(catalogue.as_ref().map(|(tx, _)| tx.clone()));
     // MPRIS on the session bus (SINGULARITY_DBUS=<address> picks another bus, =off none). A fake Engine stays off the
