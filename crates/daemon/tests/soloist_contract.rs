@@ -357,6 +357,18 @@ fn restart_and_a_new_key_stop_soloist() {
     assert!(matches!(&a[..], [Action::StoreKey(k), Action::Stop(Stop::Restart)] if k == "k"), "stored, then used: {a:?}");
 }
 
+/// C4: a rejected key (or a second Soloist on the same data) ends the run once the WebSocket is up as well, so the
+/// Daemon says Failed and waits for a new key, instead of restarting into the same refusal every 2–60 s.
+#[test]
+fn a_rejected_key_or_a_locked_data_dir_stops_soloist_at_any_time() {
+    let now = t0();
+    let mut s = session(Handover::default());
+    ws(&mut s, json!({"type": "auth_state", "logged_in": false}), now);
+    assert_eq!(stop(&s.step(Input::Log(LogNews::BadKey), now)), Some(Stop::BadKey));
+    let mut s = playing("spotify:track:a", now);
+    assert_eq!(stop(&s.step(Input::Log(LogNews::Locked), now)), Some(Stop::Locked));
+}
+
 /// Soloist's verbose log, recorded in spike 1 (stream lines only): the first track Vorbis, then FLAC after the
 /// device was set to Lossless.
 #[test]

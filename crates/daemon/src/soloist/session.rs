@@ -70,6 +70,10 @@ pub enum Stop {
     Restart,
     /// into the new build
     Update,
+    /// Spotify rejected the API key: no use starting again until there's a new one
+    BadKey,
+    /// another Soloist already runs on this data directory
+    Locked,
 }
 
 /// What a run leaves for the next one.
@@ -263,7 +267,11 @@ impl Session {
                     out.push(Action::Event(EngineEvent::Status(self.ready())));
                 }
             }
-            LogNews::ZeroConf(_) | LogNews::Flowing | LogNews::Locked | LogNews::BadKey => {}
+            // whenever it comes (also once the WebSocket is up), retrying won't help (C4: it was ignored then, and
+            // became a restart loop without a Failed status)
+            LogNews::BadKey => out.push(Action::Stop(Stop::BadKey)),
+            LogNews::Locked => out.push(Action::Stop(Stop::Locked)),
+            LogNews::ZeroConf(_) | LogNews::Flowing => {}
         }
     }
 

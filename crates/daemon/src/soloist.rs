@@ -720,12 +720,34 @@ where
     Ok(None)
 }
 
+fn locked() -> anyhow::Error {
+    anyhow::anyhow!("another Soloist is already running with Singularity's data (is a second singularityd running?)")
+}
+
+/// Soloist stopped by itself (or closed its WebSocket): its last lines may say why (a rejected key), so they get a
+/// moment to arrive, and the session the last word.
+async fn died(child: &mut Child, news_rx: &mut mpsc::Receiver<LogNews>, s: &mut Session) -> anyhow::Result<Exit> {
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    while let Ok(n) = news_rx.try_recv() {
+        // (the run is over: only why it ended still counts)
+        if let Some(Action::Stop(stop)) = s.step(Input::Log(n), Now::real()).into_iter().find(|a| matches!(a, Action::Stop(_))) {
+            return stopped(child, stop).await;
+        }
+    }
+    Ok(match child.try_wait()? {
+        Some(st) if st.code() == Some(10) => Exit::Expired,
+        _ => Exit::Died,
+    })
+}
+
 /// Stop Soloist for the session's reason.
 async fn stopped(child: &mut Child, s: Stop) -> anyhow::Result<Exit> {
     let _ = child.kill().await;
     Ok(match s {
         Stop::Restart => Exit::Restart,
         Stop::Update => Exit::Update,
+        Stop::BadKey => return Err(BadKey.into()),
+        Stop::Locked => return Err(locked()),
     })
 }
 
@@ -749,29 +771,14 @@ async fn pump(engine: &SoloistEngine, run: &mut Started, s: &mut Session, cmd_rx
     // wait for the WebSocket endpoint files
     let mut addr = None;
     for _ in 0..100 {
-        if let Some(st) = child.try_wait()? {
-            // let the output catch up: it says why
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            while let Ok(n) = news_rx.try_recv() {
-                match n {
-                    LogNews::BadKey => return Err(BadKey.into()),
-                    LogNews::Locked => anyhow::bail!("another Soloist is already running with Singularity's data (is a second singularityd running?)"),
-                    _ => {}
-                }
-            }
-            return Ok(if st.code() == Some(10) { Exit::Expired } else { Exit::Died });
+        if child.try_wait()?.is_some() {
+            return died(child, news_rx, s).await;
         }
         while let Ok(n) = news_rx.try_recv() {
-            match n {
-                LogNews::Locked => anyhow::bail!("another Soloist is already running with Singularity's data (is a second singularityd running?)"),
-                LogNews::BadKey => return Err(BadKey.into()),
-                n => {
-                    tap(&n, &mut zeroconf);
-                    // (nothing is sent before the WebSocket is up: log news only tells the Daemon)
-                    if let Some(stop) = carry_out(s.step(Input::Log(n), Now::real()), &mut futures_util::sink::drain(), engine, ev_tx).await? {
-                        return stopped(child, stop).await;
-                    }
-                }
+            tap(&n, &mut zeroconf);
+            // (nothing is sent before the WebSocket is up: log news only tells the Daemon)
+            if let Some(stop) = carry_out(s.step(Input::Log(n), Now::real()), &mut futures_util::sink::drain(), engine, ev_tx).await? {
+                return stopped(child, stop).await;
             }
         }
         // the VM's Soloist: ready once its WebSocket answers through the forward
@@ -797,12 +804,12 @@ async fn pump(engine: &SoloistEngine, run: &mut Started, s: &mut Session, cmd_rx
         let deadline = s.deadline();
         let actions = tokio::select! {
             exit = child.wait() => {
-                let exit = exit?;
-                return Ok(if exit.code() == Some(10) { Exit::Expired } else { Exit::Died });
+                exit?;
+                return died(child, news_rx, s).await;
             }
             msg = ws_rx.next() => {
                 let Some(Ok(Message::Text(t))) = msg else {
-                    if msg.is_none() { return Ok(Exit::Died); }
+                    if msg.is_none() { return died(child, news_rx, s).await; }
                     continue;
                 };
                 let Ok(ev) = serde_json::from_str::<Value>(t.as_str()) else { continue };
