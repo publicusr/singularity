@@ -96,29 +96,72 @@ async fn run(mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>
             }
         }
         // connected: pump both directions until either side breaks
-        loop {
-            tokio::select! {
-                msg = proto::read_msg::<_, DaemonMsg>(&mut rd) => match msg {
-                    Ok(Some(m)) => {
-                        if ev_tx.send(ConnEvent::Msg(m)).await.is_err() {
-                            return;
-                        }
-                    }
-                    _ => break,
-                },
-                cmd = cmd_rx.recv() => match cmd {
-                    Some(c) => {
-                        if proto::write_msg(&mut wr, &ClientMsg::Command(c)).await.is_err() {
-                            break;
-                        }
-                    }
-                    None => return,
-                },
-            }
+        if pump(rd, wr, &mut cmd_rx, &ev_tx).await == Pumped::Quit {
+            return;
         }
         let _ = ev_tx.send(ConnEvent::Disconnected).await;
         started_daemon = false;
         tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// How a connection's pump ended.
+#[derive(Debug, PartialEq)]
+enum Pumped {
+    /// the connection broke: connect again
+    Broke,
+    /// the App is gone: stop
+    Quit,
+}
+
+/// Messages from the Daemon to the App, and the App's commands to the Daemon, until either side breaks.
+///
+/// Frames are read on a task of their own (D82): reading one takes several awaits, and inside the `select!` a
+/// command arriving between them dropped the half-read frame. Both branches here only take from a channel, which
+/// loses nothing when the other one wins. The channel is bounded: a slow App makes the reader wait, as before.
+async fn pump<R, W>(mut rd: R, mut wr: W, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<ConnEvent>) -> Pumped
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let (frame_tx, mut frames) = mpsc::channel::<DaemonMsg>(64);
+    let reader = tokio::spawn(async move {
+        while let Ok(Some(m)) = proto::read_msg::<_, DaemonMsg>(&mut rd).await {
+            if frame_tx.send(m).await.is_err() {
+                return;
+            }
+        }
+    });
+    // (the reader goes with the connection, whichever way the pump ends)
+    let _reader = AbortOnDrop(reader);
+    loop {
+        tokio::select! {
+            msg = frames.recv() => match msg {
+                Some(m) => {
+                    if ev_tx.send(ConnEvent::Msg(m)).await.is_err() {
+                        return Pumped::Quit;
+                    }
+                }
+                None => return Pumped::Broke,
+            },
+            cmd = cmd_rx.recv() => match cmd {
+                Some(c) => {
+                    // (frames read but not yet handed on go with the connection; the reconnect sends fresh state)
+                    if proto::write_msg(&mut wr, &ClientMsg::Command(c)).await.is_err() {
+                        return Pumped::Broke;
+                    }
+                }
+                None => return Pumped::Quit,
+            },
+        }
+    }
+}
+
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -217,6 +260,37 @@ fn start_daemon() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pump (D82): a frame used to be read inside the `select!`, so a command sent while a frame was half
+    /// in threw the half away, and the stream fell out of step ("frame too large", garbage, then a reconnect).
+    #[tokio::test]
+    async fn a_command_sent_while_a_frame_is_half_in_does_not_cut_the_frame() {
+        use tokio::io::AsyncWriteExt;
+        let (ours, theirs) = tokio::io::duplex(1 << 16);
+        let (rd, wr) = tokio::io::split(ours);
+        let (mut daemon_rd, mut daemon_wr) = tokio::io::split(theirs);
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(4);
+        let (ev_tx, mut ev_rx) = mpsc::channel(4);
+        let pumping = tokio::spawn(async move { pump(rd, wr, &mut cmd_rx, &ev_tx).await });
+        let message = "a notice long enough to be sent in two halves".to_string();
+        let body = serde_json::to_vec(&DaemonMsg::Event(proto::Event::Notice { message: message.clone() })).unwrap();
+        let (first, rest) = body.split_at(body.len() / 2);
+        daemon_wr.write_all(&(body.len() as u32).to_be_bytes()).await.unwrap();
+        daemon_wr.write_all(first).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // the user does something now
+        cmd_tx.send(Command::Next).await.unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(2), proto::read_msg::<_, ClientMsg>(&mut daemon_rd)).await;
+        assert!(matches!(got, Ok(Ok(Some(ClientMsg::Command(Command::Next))))), "{got:?}");
+        daemon_wr.write_all(rest).await.unwrap();
+        let ev = tokio::time::timeout(Duration::from_secs(2), ev_rx.recv()).await;
+        match ev {
+            Ok(Some(ConnEvent::Msg(DaemonMsg::Event(proto::Event::Notice { message: m })))) => assert_eq!(m, message),
+            other => panic!("the frame didn't arrive whole: {other:?}; the pump ended {:?}", pumping.is_finished()),
+        }
+        drop(cmd_tx);
+        assert_eq!(pumping.await.unwrap(), Pumped::Quit);
+    }
 
     #[tokio::test]
     async fn only_a_singularityd_is_stopped() {

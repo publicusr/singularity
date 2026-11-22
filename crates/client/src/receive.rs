@@ -1,0 +1,133 @@
+//! The one way Daemon events enter the Client (D82): `main` and tests alike call [`App::receive`], so what an event
+//! does is tested where it happens. Nothing here touches the terminal or starts a program: what the main loop does
+//! for an event (opening the pairing page) is left for it in a field, like the clipboard.
+
+use crate::app::{App, Link};
+use crate::conn::ConnEvent;
+use singularity_proto::{DaemonMsg, EngineStatus, Event};
+
+impl App {
+    /// A Daemon event, or a change in the connection.
+    pub fn receive(&mut self, ev: ConnEvent) {
+        match ev {
+            ConnEvent::Connecting => {}
+            ConnEvent::Updating => self.say("Updating singularityd…"),
+            ConnEvent::Disconnected => self.link = Link::Connecting,
+            ConnEvent::Connected { daemon_version, engine } => {
+                self.link = Link::Connected { version: daemon_version };
+                self.engine_kind = engine;
+                self.on_connected();
+            }
+            ConnEvent::Incompatible(m) => {
+                self.say(m.clone());
+                self.link = Link::Incompatible(m);
+            }
+            ConnEvent::Msg(DaemonMsg::Event(Event::Engine(s))) => {
+                self.setup.engine_was_ready |= matches!(s, EngineStatus::Ready { .. });
+                self.engine = Some(s);
+            }
+            ConnEvent::Msg(DaemonMsg::Event(Event::Playback(p))) => self.playback_event(p),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Error { message })) => self.say(message),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Catalogue(c))) => {
+                if let singularity_proto::CatalogueStatus::LoginPending { url, .. } = &c
+                    && !matches!(self.catalogue, Some(singularity_proto::CatalogueStatus::LoginPending { .. }))
+                {
+                    self.login_hidden = false;
+                    // the main loop opens the pairing page in the browser
+                    self.open_url = Some(url.clone());
+                }
+                self.catalogue = Some(c);
+            }
+            ConnEvent::Msg(DaemonMsg::Event(Event::Home(h))) => self.home = Some(h),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Library(l))) => self.library = Some(l),
+            ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistCreated { uri, name })) => self.playlist_created(&uri, &name),
+            ConnEvent::Msg(DaemonMsg::Event(Event::AddedToPlaylist { playlist, name, uris, outcome })) => self.added_to_playlist(&playlist, &name, uris, outcome),
+            ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistCoverSet { playlist, ok })) => self.cover_set(&playlist, ok),
+            ConnEvent::Msg(DaemonMsg::Event(Event::MovedInPlaylist { playlist, uids, ok })) => self.moved_in_playlist(&playlist, &uids, ok),
+            ConnEvent::Msg(DaemonMsg::Event(Event::RemovedFromPlaylist { playlist, uids, ok })) => self.removed_from_playlist(&playlist, &uids, ok),
+            ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistEdited { uri, name, description, ok })) => self.playlist_edited(&uri, &name, &description, ok),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Tracks(p))) => self.track_page(p),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Spectrum(f))) => {
+                // the setup's audio check passes once real sound comes through
+                if f.level > 20 {
+                    self.setup.heard = true;
+                }
+                self.meters.push(f);
+            }
+            ConnEvent::Msg(DaemonMsg::Event(Event::Stream(s))) => self.stream = Some(s),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Delivery(d))) => self.delivery_event(d),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Health(h))) => self.health = Some(h),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Artist(p))) => self.artist_page(p),
+            ConnEvent::Msg(DaemonMsg::Event(Event::EpisodeShow { episode, show })) => self.episode_show(episode, show),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Devices { devices })) => self.devices = devices,
+            ConnEvent::Msg(DaemonMsg::Event(Event::Jam { jam })) => self.jam = jam,
+            ConnEvent::Msg(DaemonMsg::Event(Event::Search(r))) => {
+                self.search.receive(r);
+            }
+            ConnEvent::Msg(DaemonMsg::Event(Event::Lyrics(l))) => self.lyrics_event(l),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Notice { message })) => self.say(message),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Saved { entries })) => self.saved_event(entries),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Listening(s))) => {
+                self.listening = Some(s);
+                // a Play was logged (or old plays got their links): stats on screen ask again
+                self.refresh_stats();
+            }
+            ConnEvent::Msg(DaemonMsg::Event(Event::Stats(s))) => {
+                self.stats.insert(s.period, s);
+            }
+            ConnEvent::Msg(_) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+impl App {
+    /// A Daemon event, as `receive` gets it (tests).
+    pub fn hear(&mut self, e: Event) {
+        self.receive(ConnEvent::Msg(DaemonMsg::Event(e)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use singularity_proto::{CatalogueStatus, Command, EngineKind};
+
+    fn event(e: Event) -> ConnEvent {
+        ConnEvent::Msg(DaemonMsg::Event(e))
+    }
+
+    #[test]
+    fn connecting_and_losing_the_daemon_shows_on_the_link() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let mut app = App::new(Some(tx));
+        app.receive(ConnEvent::Connected { daemon_version: "1.2.3".into(), engine: EngineKind::Librespot });
+        assert_eq!(app.link, Link::Connected { version: "1.2.3".into() });
+        assert_eq!(app.engine_kind, EngineKind::Librespot);
+        assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|c| c == Command::GetListening), "connected: asks for the listening log");
+        app.receive(ConnEvent::Disconnected);
+        assert_eq!(app.link, Link::Connecting);
+    }
+
+    /// The pairing page opens once per login, by the main loop: never from inside `receive`, so a test can't open a
+    /// browser.
+    #[test]
+    fn a_pending_login_asks_the_main_loop_to_open_its_page_once() {
+        let mut app = App::new(None);
+        let pending = || event(Event::Catalogue(CatalogueStatus::LoginPending { url: "https://example.invalid/pair".into(), code: "ABCD".into() }));
+        app.receive(pending());
+        assert_eq!(app.open_url.take().as_deref(), Some("https://example.invalid/pair"));
+        app.receive(pending());
+        assert_eq!(app.open_url, None, "still the same login: not opened again");
+        assert!(matches!(app.catalogue, Some(CatalogueStatus::LoginPending { .. })));
+    }
+
+    #[test]
+    fn an_engine_that_was_ready_once_is_remembered_by_the_setup() {
+        let mut app = App::new(None);
+        app.receive(event(Event::Engine(EngineStatus::Ready { device_name: "d".into(), active: true, version: "v".into(), expires_in_days: None })));
+        app.receive(event(Event::Engine(EngineStatus::Failed { message: "gone".into() })));
+        assert!(app.setup.engine_was_ready);
+        assert_eq!(app.engine, Some(EngineStatus::Failed { message: "gone".into() }));
+    }
+}

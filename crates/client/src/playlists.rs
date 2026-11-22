@@ -697,7 +697,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let mut app = App::new(Some(tx));
         app.link = crate::app::Link::Connected { version: "test".into() };
-        app.library = Some(Library { items: vec![LibraryItem { kind: "liked".into(), ..item("spotify:collection", "Liked Songs", false) }, item("spotify:playlist:mine", "Mine", true), item("spotify:playlist:theirs", "Theirs", false)] });
+        app.hear(singularity_proto::Event::Library(Library { items: vec![LibraryItem { kind: "liked".into(), ..item("spotify:collection", "Liked Songs", false) }, item("spotify:playlist:mine", "Mine", true), item("spotify:playlist:theirs", "Theirs", false)] }));
         (app, rx)
     }
 
