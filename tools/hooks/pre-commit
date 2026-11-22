@@ -1,0 +1,15 @@
+#!/bin/sh
+# Blocks a commit that clippy would fail in CI. Enable once per clone: git config core.hooksPath tools/hooks
+# SKIP_CLIPPY_HOOK=1 git commit ... skips it.
+[ "${SKIP_CLIPPY_HOOK:-}" = 1 ] && exit 0
+cd "$(git rev-parse --show-toplevel)" || exit 1
+# On machines with run-hidden, cargo runs inside it, unless this hook already is (run-hidden sets HIDDEN_SANDBOXED).
+if command -v run-hidden >/dev/null 2>&1 && [ -z "${HIDDEN_SANDBOXED:-}" ]; then
+    set -- run-hidden cargo
+else
+    set -- cargo
+fi
+if ! "$@" clippy --workspace --all-targets --locked -- -D warnings; then
+    echo "pre-commit: clippy failed; fix it (tools/check.sh runs everything CI runs) or SKIP_CLIPPY_HOOK=1 to skip" >&2
+    exit 1
+fi
