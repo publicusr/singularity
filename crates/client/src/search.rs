@@ -16,9 +16,9 @@ pub const DEBOUNCE: Duration = Duration::from_millis(300);
 pub const CHIPS: [&str; 7] = ["All", "Songs", "Artists", "Albums", "Playlists", "Podcasts", "Audiobooks"];
 const RECENT_MAX: usize = 12;
 
-/// Results kept this long by query, so going back or picking a recent search shows them at once (the Daemon keeps
-/// its own for the same time).
-pub const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+/// Results kept this long by query, so going back or picking a recent search shows them at once; a fresh answer is
+/// still asked for (the Daemon keeps its own for 5 minutes).
+pub const CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 const CACHE_MAX: usize = 16;
 
 /// Search (D74): the query and everything that decides what goes out and when, the recent searches, results kept by
