@@ -67,13 +67,21 @@ pub struct QueryRegistry {
     /// a refresh running off the Catalogue's command loop (audit C8): browsing carries on with the old hashes until
     /// it finishes
     refreshing: Option<tokio::task::JoinHandle<anyhow::Result<Cache>>>,
+    /// a stand-in for the crawl (tests); `None` reads the web player
+    crawl: Option<Crawl>,
+    /// operations the current hashes came without although a crawl was made for them (C3): they fail at once until
+    /// the next crawl brings new hashes
+    missing: std::collections::HashSet<String>,
 }
+
+/// A crawl of the web player: the operations it found.
+pub(crate) type Crawl = std::sync::Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, anyhow::Result<HashMap<String, String>>> + Send + Sync>;
 
 impl QueryRegistry {
     pub fn new(path: PathBuf) -> QueryRegistry {
         let cache = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let http = reqwest::Client::builder().user_agent(USER_AGENT).timeout(std::time::Duration::from_secs(20)).build().expect("http client");
-        QueryRegistry { path, cache, http, base: WEB_PLAYER.into(), refreshing: None }
+        QueryRegistry { path, cache, http, base: WEB_PLAYER.into(), refreshing: None, crawl: None, missing: Default::default() }
     }
 
     /// Hash for `op`. A stale cache is refreshed *in the background*: browsing keeps working with the hashes it has
@@ -81,8 +89,15 @@ impl QueryRegistry {
     pub async fn hash(&mut self, op: &str) -> anyhow::Result<String> {
         self.collect().await;
         let stale = singularity_proto::now_ms().saturating_sub(self.cache.fetched_unix_ms) > TTL_MS;
-        if !self.cache.ops.contains_key(op) {
+        if self.missing.contains(op) {
+            if stale {
+                self.start_refresh();
+            }
+        } else if !self.cache.ops.contains_key(op) {
             self.refresh().await?;
+            if !self.cache.ops.contains_key(op) {
+                self.missing.insert(op.to_string());
+            }
         } else if stale && self.refreshing.is_none() {
             tracing::info!("query registry: refreshing the Pathfinder hashes in the background; browsing carries on");
             self.start_refresh();
@@ -105,6 +120,7 @@ impl QueryRegistry {
         };
         if let Ok(cache) = &result {
             self.cache = cache.clone();
+            self.missing.clear();
         }
         result.map(|_| ())
     }
@@ -116,7 +132,10 @@ impl QueryRegistry {
         }
         let handle = self.refreshing.take().expect("checked above");
         match handle.await {
-            Ok(Ok(cache)) => self.cache = cache,
+            Ok(Ok(cache)) => {
+                self.cache = cache;
+                self.missing.clear();
+            }
             Ok(Err(e)) => tracing::warn!("query registry refresh failed: {e}"),
             Err(e) => tracing::warn!("query registry refresh stopped: {e}"),
         }
@@ -128,7 +147,22 @@ impl QueryRegistry {
             return;
         }
         let (http, path, base) = (self.http.clone(), self.path.clone(), self.base.clone());
-        self.refreshing = Some(tokio::spawn(async move { refresh_http(&http, &path, &base).await }));
+        let crawl = self.crawl.clone();
+        self.refreshing = Some(tokio::spawn(async move {
+            match crawl {
+                Some(c) => Ok(Cache { fetched_unix_ms: singularity_proto::now_ms(), ops: c().await? }),
+                None => refresh_http(&http, &path, &base).await,
+            }
+        }));
+    }
+
+    /// A registry that crawls with `crawl` instead of the web player, starting from the hashes in `ops`.
+    #[cfg(test)]
+    pub(crate) fn with_crawl(ops: HashMap<String, String>, crawl: Crawl) -> QueryRegistry {
+        let mut r = QueryRegistry::new(PathBuf::from("/nonexistent/singularity-test-queries.json"));
+        r.cache = Cache { fetched_unix_ms: singularity_proto::now_ms(), ops };
+        r.crawl = Some(crawl);
+        r
     }
 
 }

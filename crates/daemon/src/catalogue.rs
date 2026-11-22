@@ -5,9 +5,10 @@
 //! cached under `$XDG_DATA_HOME/singularity/catalogue` (owner-only).
 //! Rules: metadata only, no crawling, back off on errors, never retry in a loop.
 
+use crate::pathfinder::{Fetch, Pathfinder, SessionRaw, SessionSlot};
 use crate::queries::QueryRegistry;
 use futures_util::{FutureExt, StreamExt};
-use librespot_core::{authentication::Credentials, cache::Cache, config::SessionConfig, error::ErrorKind, session::Session};
+use librespot_core::{authentication::Credentials, cache::Cache, config::SessionConfig, session::Session};
 use librespot_oauth::DeviceAuthClientBuilder;
 use serde_json::{Value, json};
 use crate::connect::{ConnectRemote, QueueEdit};
@@ -218,15 +219,21 @@ impl Dirs {
 
 /// The Catalogue, for an Engine that is `engine` on Connect.
 pub fn spawn(dirs: Dirs, engine: Identity) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
+    let queries = dirs.queries.clone();
+    spawn_with(dirs, engine, move |slot| Pathfinder::new(QueryRegistry::new(queries.clone()), SessionRaw(slot)))
+}
+
+/// The Catalogue over the query port `make` builds for each run (D78): Spotify's adapter, or fixtures in tests.
+fn spawn_with<Q: Fetch + Sync + 'static>(dirs: Dirs, engine: Identity, make: impl Fn(SessionSlot) -> Q + Send + 'static) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
     let (cmd_tx, cmd_rx) = mpsc::channel(16);
     let (ev_tx, ev_rx) = mpsc::channel(64);
-    tokio::spawn(supervise(dirs, engine, cmd_rx, ev_tx));
+    tokio::spawn(supervise(dirs, engine, make, cmd_rx, ev_tx));
     (cmd_tx, ev_rx)
 }
 
 /// Run the Catalogue, and keep it running: a panic would otherwise leave a Daemon that browses nothing, says
 /// "logged in" and never answers again (A1/C2). The command channel survives a restart, so Clients keep working.
-async fn supervise(dirs: Dirs, engine: Identity, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
+async fn supervise<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, make: impl Fn(SessionSlot) -> Q, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
     let mut backoff = Duration::from_secs(2);
     loop {
         let began = Instant::now();
@@ -238,7 +245,8 @@ async fn supervise(dirs: Dirs, engine: Identity, mut cmds: mpsc::Receiver<CatCmd
                 let _ = ev.send(CatEvent::TaskStarted("the Catalogue")).await;
             }
         });
-        let done = std::panic::AssertUnwindSafe(run(dirs.clone(), engine.clone(), &mut cmds, ev.clone())).catch_unwind().await;
+        let slot = SessionSlot::default();
+        let done = std::panic::AssertUnwindSafe(run(dirs.clone(), engine.clone(), make(slot.clone()), slot, &mut cmds, ev.clone())).catch_unwind().await;
         back.abort();
         match done {
             // the Daemon dropped its end: we're shutting down
@@ -270,12 +278,15 @@ fn drain_for_search(mut q: String, cmds: &mut mpsc::Receiver<CatCmd>) -> (String
     (q, later)
 }
 
-struct State {
+struct State<Q> {
     dirs: Dirs,
     /// this computer's Engine on Connect
     engine: Identity,
     session: Option<Session>,
-    registry: QueryRegistry,
+    /// the same session, for the query port's adapter
+    slot: SessionSlot,
+    /// the query port (D78)
+    q: Q,
     ev: mpsc::Sender<CatEvent>,
     remote: Option<ConnectRemote>,
     tracks: HashMap<String, (Instant, Vec<TrackPage>)>,
@@ -295,9 +306,8 @@ struct State {
     cluster_changed: std::sync::Arc<tokio::sync::Notify>,
 }
 
-async fn run(dirs: Dirs, engine: Identity, cmds: &mut mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
-    let registry = QueryRegistry::new(dirs.queries.clone());
-    let mut st = State { dirs, engine, session: None, registry, ev, remote: None, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default(), cluster_changed: Default::default() };
+async fn run<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, q: Q, slot: SessionSlot, cmds: &mut mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
+    let mut st = State { dirs, engine, session: None, slot, q, ev, remote: None, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default(), cluster_changed: Default::default() };
     // commands drained from behind a search, in their original order, and the follow-ups of commands already run
     let mut waiting: VecDeque<CatCmd> = VecDeque::new();
     // resume a previous login
@@ -331,7 +341,7 @@ async fn run(dirs: Dirs, engine: Identity, cmds: &mut mpsc::Receiver<CatCmd>, ev
 /// takes before the channel: sending it back into the channel only this task reads deadlocked the Catalogue once 16
 /// commands were waiting (2026-11-20 bug hunt, A2; the pattern Search had already lost in A2/C4), and with it every
 /// Client session and the Engine task waiting to send it something.
-async fn handle(st: &mut State, cmd: CatCmd, next: &mut VecDeque<CatCmd>) {
+async fn handle<Q: Fetch + Sync>(st: &mut State<Q>, cmd: CatCmd, next: &mut VecDeque<CatCmd>) {
     let library = |next: &mut VecDeque<CatCmd>| {
         if !next.iter().any(|c| matches!(c, CatCmd::Library)) {
             next.push_back(CatCmd::Library);
@@ -479,7 +489,13 @@ fn cache(dirs: &Dirs) -> anyhow::Result<Cache> {
     Ok(Cache::new(Some(&dirs.credentials), None, None, None)?)
 }
 
-impl State {
+impl<Q: Fetch + Sync> State<Q> {
+    /// The session changes in one place, so the query port's adapter always asks through the current one.
+    fn set_session(&mut self, s: Option<Session>) {
+        *self.slot.lock().unwrap() = s.clone();
+        self.session = s;
+    }
+
     /// An event for the Daemon; if its channel is gone the event is lost, and at least the log says so (Q11).
     async fn emit(&self, ev: CatEvent) {
         if self.ev.send(ev).await.is_err() {
@@ -555,7 +571,7 @@ impl State {
         let premium = product.as_deref() == Some("premium");
         keep_credentials_in_keyring(&self.dirs);
         self.status(CatalogueStatus::Ready { username: session.username(), country: session.country(), premium }).await;
-        self.session = Some(session);
+        self.set_session(Some(session));
         true
     }
 
@@ -565,6 +581,7 @@ impl State {
         if let Some(s) = self.session.take() {
             s.shutdown();
         }
+        self.set_session(None);
         let _ = std::fs::remove_file(self.dirs.credentials.join("credentials.json"));
         crate::secrets::clear("spotify");
         self.status(CatalogueStatus::LoggedOut).await;
@@ -573,7 +590,7 @@ impl State {
     async fn session(&mut self) -> Option<Session> {
         if self.session.as_ref().is_some_and(|s| s.is_invalid()) {
             tracing::info!("catalogue session ended; reconnecting");
-            self.session = None;
+            self.set_session(None);
             // a new session needs a new dealer, so a new remote
             self.remote = None;
             self.connect(None).await;
@@ -581,27 +598,10 @@ impl State {
         self.session.clone()
     }
 
-    /// Run a persisted query; on a retired hash (412), refresh the registry and retry once.
+    /// One Pathfinder query through the port (D78); a session Spotify ended is replaced first.
     async fn query(&mut self, op: &str, vars: Value) -> anyhow::Result<Value> {
-        let session = self.session().await.ok_or_else(|| anyhow::anyhow!("not logged in to Spotify"))?;
-        let hash = self.registry.hash(op).await?;
-        // a request that hangs is asked once more: the stuck connection went with the abandoned request
-        let first = match crate::spotify(session.spclient().pathfinder_query(op, &hash, vars.clone())).await {
-            Err(e) if e.kind == ErrorKind::DeadlineExceeded => {
-                tracing::warn!("`{op}`: {e}; asking again");
-                crate::spotify(session.spclient().pathfinder_query(op, &hash, vars.clone())).await
-            }
-            r => r,
-        };
-        match first {
-            Err(e) if e.kind == ErrorKind::FailedPrecondition => {
-                tracing::warn!("`{op}` hash retired; refreshing the query registry");
-                self.registry.refresh().await?;
-                let hash = self.registry.hash(op).await?;
-                Ok(crate::spotify(session.spclient().pathfinder_query(op, &hash, vars)).await?)
-            }
-            r => Ok(r?),
-        }
+        self.session().await;
+        self.q.query(op, vars).await
     }
 
     async fn library(&mut self) {
@@ -1548,6 +1548,9 @@ pub fn parse_home(v: &Value) -> HomeFeed {
     }
     HomeFeed { fetched_unix_ms: singularity_proto::now_ms(), shelves }
 }
+
+#[cfg(test)]
+mod port_tests;
 
 #[cfg(test)]
 mod tests {
