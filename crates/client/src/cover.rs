@@ -314,7 +314,7 @@ mod tests {
         let mut app = App::new(Some(tx));
         app.link = crate::app::Link::Connected { version: "test".into() };
         let item = |uri: &str, own| LibraryItem { uri: uri.into(), name: "P".into(), subtitle: String::new(), kind: "playlist".into(), image_url: Some("https://old".into()), depth: 0, own };
-        app.library = Some(Library { items: vec![item("spotify:playlist:mine", true), item("spotify:playlist:theirs", false)] });
+        app.hear(singularity_proto::Event::Library(Library { items: vec![item("spotify:playlist:mine", true), item("spotify:playlist:theirs", false)] }));
         let sent = |rx: &mut tokio::sync::mpsc::Receiver<Command>| std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
         app.ask_cover("spotify:playlist:theirs");
         assert!(app.cover_form.is_none(), "only your own");

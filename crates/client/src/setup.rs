@@ -745,20 +745,20 @@ mod tests {
     fn steps_follow_the_daemons_reports() {
         let mut app = App::new(None);
         app.link = Link::Connected { version: "t".into() };
-        app.engine = Some(EngineStatus::NotConfigured { reason: "no key".into() });
+        app.hear(singularity_proto::Event::Engine(EngineStatus::NotConfigured { reason: "no key".into() }));
         assert_eq!(step(&app), Step::Key);
         assert!(wanted(&app));
-        app.engine = Some(EngineStatus::NeedsPairing { device_name: "Singularity".into() });
+        app.hear(singularity_proto::Event::Engine(EngineStatus::NeedsPairing { device_name: "Singularity".into() }));
         assert_eq!(step(&app), Step::Pair);
-        app.engine = Some(EngineStatus::Ready { device_name: "Singularity".into(), active: true, version: "v".into(), expires_in_days: Some(80) });
-        app.catalogue = Some(CatalogueStatus::LoggedOut);
+        app.hear(singularity_proto::Event::Engine(EngineStatus::Ready { device_name: "Singularity".into(), active: true, version: "v".into(), expires_in_days: Some(80) }));
+        app.hear(singularity_proto::Event::Catalogue(CatalogueStatus::LoggedOut));
         assert_eq!(step(&app), Step::Login);
         assert!(wanted(&app));
-        app.catalogue = Some(CatalogueStatus::Ready { username: "u".into(), country: "SE".into(), premium: true });
+        app.hear(singularity_proto::Event::Catalogue(CatalogueStatus::Ready { username: "u".into(), country: "SE".into(), premium: true }));
         assert_eq!(step(&app), Step::Audio);
         assert!(!wanted(&app), "a set-up user is never interrupted");
         app.setup.dismissed = true;
-        app.engine = Some(EngineStatus::NotConfigured { reason: "x".into() });
+        app.hear(singularity_proto::Event::Engine(EngineStatus::NotConfigured { reason: "x".into() }));
         assert!(!wanted(&app), "dismissed stays dismissed");
     }
 
@@ -767,17 +767,17 @@ mod tests {
         let mut app = App::new(None);
         app.link = Link::Connected { version: "t".into() };
         app.engine_kind = EngineKind::SpotifyApp;
-        app.engine = Some(EngineStatus::NotConfigured { reason: "the Spotify app isn't installed".into() });
+        app.hear(singularity_proto::Event::Engine(EngineStatus::NotConfigured { reason: "the Spotify app isn't installed".into() }));
         assert_eq!(step(&app), Step::App);
         assert!(wanted(&app));
         // starting, and not logged in: the login first, as the app is driven over Connect
-        app.engine = Some(EngineStatus::Starting);
-        app.catalogue = Some(CatalogueStatus::LoggedOut);
+        app.hear(singularity_proto::Event::Engine(EngineStatus::Starting));
+        app.hear(singularity_proto::Event::Catalogue(CatalogueStatus::LoggedOut));
         assert_eq!(step(&app), Step::Login);
-        app.catalogue = Some(CatalogueStatus::Ready { username: "u".into(), country: "PL".into(), premium: true });
+        app.hear(singularity_proto::Event::Catalogue(CatalogueStatus::Ready { username: "u".into(), country: "PL".into(), premium: true }));
         assert_eq!(step(&app), Step::Connect);
         assert!(wanted(&app), "no Engine yet: the wizard says why");
-        app.engine = Some(EngineStatus::Ready { device_name: "Mac".into(), active: false, version: "1.2.94".into(), expires_in_days: None });
+        app.hear(singularity_proto::Event::Engine(EngineStatus::Ready { device_name: "Mac".into(), active: false, version: "1.2.94".into(), expires_in_days: None }));
         assert_eq!(step(&app), Step::Audio);
         assert!(!wanted(&app));
         // its audio is tapped on both OSes (#67): playing isn't enough, sound must come through
@@ -786,7 +786,7 @@ mod tests {
         app.setup.heard = true;
         assert_eq!(step(&app), Step::Done);
         // the health check names the app, and has no Soloist key row
-        app.health = Some(singularity_proto::Health { soloist_key: "missing".into(), spotify_login: "keyring".into(), ..Default::default() });
+        app.hear(singularity_proto::Event::Health(singularity_proto::Health { soloist_key: "missing".into(), spotify_login: "keyring".into(), ..Default::default() }));
         let rows = health_rows(&app);
         let engine = rows.iter().find(|r| r.1 == "Engine").unwrap();
         assert_eq!(engine.2, "Spotify app 1.2.94 · \"Mac\" on Connect · not the active device");
@@ -794,7 +794,7 @@ mod tests {
         assert_eq!(rows.iter().find(|r| r.1 == "Spotify login").unwrap().2, KEYRING);
         // later it drops off Connect (a network change): the health check says so, the wizard stays away
         app.setup.engine_was_ready = true;
-        app.engine = Some(EngineStatus::Failed { message: "\"Mac\" isn't on Spotify Connect".into() });
+        app.hear(singularity_proto::Event::Engine(EngineStatus::Failed { message: "\"Mac\" isn't on Spotify Connect".into() }));
         assert_eq!(step(&app), Step::Connect);
         assert!(!wanted(&app));
     }
@@ -805,15 +805,15 @@ mod tests {
         app.link = Link::Connected { version: "t".into() };
         app.engine_kind = EngineKind::Librespot;
         // it waits for the Catalogue's login: that's the first step, not "install the app"
-        app.engine = Some(EngineStatus::NotConfigured { reason: "log in to Spotify first".into() });
-        app.catalogue = Some(CatalogueStatus::LoggedOut);
+        app.hear(singularity_proto::Event::Engine(EngineStatus::NotConfigured { reason: "log in to Spotify first".into() }));
+        app.hear(singularity_proto::Event::Catalogue(CatalogueStatus::LoggedOut));
         assert_eq!(step(&app), Step::Login);
         assert!(wanted(&app));
         assert_eq!(Step::all(app.engine_kind).iter().map(|s| s.0).collect::<Vec<_>>(), [Step::Login, Step::Connect, Step::Audio]);
-        app.catalogue = Some(CatalogueStatus::Ready { username: "u".into(), country: "PL".into(), premium: true });
-        app.engine = Some(EngineStatus::Starting);
+        app.hear(singularity_proto::Event::Catalogue(CatalogueStatus::Ready { username: "u".into(), country: "PL".into(), premium: true }));
+        app.hear(singularity_proto::Event::Engine(EngineStatus::Starting));
         assert_eq!(step(&app), Step::Connect);
-        app.engine = Some(EngineStatus::Ready { device_name: "Singularity on Mac".into(), active: true, version: String::new(), expires_in_days: None });
+        app.hear(singularity_proto::Event::Engine(EngineStatus::Ready { device_name: "Singularity on Mac".into(), active: true, version: String::new(), expires_in_days: None }));
         // its audio is always tapped (in-process): playing isn't enough, sound must come through
         app.playback.status = PlayStatus::Playing;
         assert_eq!(step(&app), Step::Audio);
@@ -831,12 +831,12 @@ mod tests {
     fn the_health_check_names_a_missing_tool() {
         let mut app = App::new(None);
         app.link = Link::Connected { version: "t".into() };
-        app.health = Some(singularity_proto::Health { soloist_key: "keyring".into(), spotify_login: "keyring".into(), missing_tools: vec!["pactl".into(), "tar".into()], ..Default::default() });
+        app.hear(singularity_proto::Event::Health(singularity_proto::Health { soloist_key: "keyring".into(), spotify_login: "keyring".into(), missing_tools: vec!["pactl".into(), "tar".into()], ..Default::default() }));
         let rows = health_rows(&app);
         let tools = rows.iter().find(|r| r.1 == "Tools").expect("a Tools row");
         assert_eq!((tools.0, tools.2.as_str()), ('!', "missing: pactl, tar"));
         // nothing missing: no row at all
-        app.health = Some(singularity_proto::Health { soloist_key: "keyring".into(), spotify_login: "keyring".into(), ..Default::default() });
+        app.hear(singularity_proto::Event::Health(singularity_proto::Health { soloist_key: "keyring".into(), spotify_login: "keyring".into(), ..Default::default() }));
         assert!(health_rows(&app).iter().all(|r| r.1 != "Tools"));
     }
 

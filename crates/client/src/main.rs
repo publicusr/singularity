@@ -2,6 +2,7 @@
 
 mod app;
 mod openlist;
+mod receive;
 mod arrange;
 mod artist;
 mod bigtext;
@@ -44,11 +45,9 @@ mod visual;
 mod wheel;
 mod widgets;
 
-use app::{App, Link};
-use conn::ConnEvent;
+use app::App;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event as TermEvent, KeyEventKind, MouseEventKind};
 use ratatui::crossterm::execute;
-use singularity_proto::{DaemonMsg, EngineStatus, Event};
 use std::io::{Write, stdout};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -137,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
             let start = Instant::now();
             pacer.begin(start, due, fps);
             while let Ok(ev) = conn_rx.try_recv() {
-                apply(&mut app, ev);
+                app.receive(ev);
             }
             app.tick();
             let ticked = start.elapsed();
@@ -159,6 +158,9 @@ async fn main() -> anyhow::Result<()> {
             if shape != app.pointer_shape_sent {
                 out.write_all(arrange::pointer_shape_seq(shape).as_bytes())?;
                 app.pointer_shape_sent = shape;
+            }
+            if let Some(url) = app.open_url.take() {
+                open_in_browser(&url);
             }
             if let Some(t) = app.clipboard.take() {
                 write!(out, "\x1b]52;c;{}\x07", gfx::base64(t.as_bytes()))?;
@@ -229,79 +231,14 @@ fn same_kind(a: &TermEvent, b: &TermEvent) -> bool {
     matches!((a, b), (TermEvent::Mouse(x), TermEvent::Mouse(y)) if x.kind == y.kind && x.modifiers == y.modifiers)
 }
 
-fn apply(app: &mut App, ev: ConnEvent) {
-    match ev {
-        ConnEvent::Connecting => {}
-        ConnEvent::Updating => app.say("Updating singularityd…"),
-        ConnEvent::Disconnected => app.link = Link::Connecting,
-        ConnEvent::Connected { daemon_version, engine } => {
-            app.link = Link::Connected { version: daemon_version };
-            app.engine_kind = engine;
-            app.on_connected();
-        }
-        ConnEvent::Incompatible(m) => {
-            app.say(m.clone());
-            app.link = Link::Incompatible(m);
-        }
-        ConnEvent::Msg(DaemonMsg::Event(Event::Engine(s))) => {
-            app.setup.engine_was_ready |= matches!(s, EngineStatus::Ready { .. });
-            app.engine = Some(s);
-        }
-        ConnEvent::Msg(DaemonMsg::Event(Event::Playback(p))) => app.playback_event(p),
-        ConnEvent::Msg(DaemonMsg::Event(Event::Error { message })) => app.say(message),
-        ConnEvent::Msg(DaemonMsg::Event(Event::Catalogue(c))) => {
-            if let singularity_proto::CatalogueStatus::LoginPending { url, .. } = &c
-                && !matches!(app.catalogue, Some(singularity_proto::CatalogueStatus::LoginPending { .. }))
-            {
-                app.login_hidden = false;
-                // open the pairing page in the user's browser (the code is also shown in the UI): a fixed system
-                // location, never a `PATH` lookup (audit S3), and without the Daemon's secret (S10)
-                if let Some(opener) = opener() {
-                    let mut cmd = std::process::Command::new(opener);
-                    cmd.env_remove(conn::SECRET_ENV).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-                    let _ = cmd.spawn();
-                }
-            }
-            app.catalogue = Some(c);
-        }
-        ConnEvent::Msg(DaemonMsg::Event(Event::Home(h))) => app.home = Some(h),
-        ConnEvent::Msg(DaemonMsg::Event(Event::Library(l))) => app.library = Some(l),
-        ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistCreated { uri, name })) => app.playlist_created(&uri, &name),
-        ConnEvent::Msg(DaemonMsg::Event(Event::AddedToPlaylist { playlist, name, uris, outcome })) => app.added_to_playlist(&playlist, &name, uris, outcome),
-        ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistCoverSet { playlist, ok })) => app.cover_set(&playlist, ok),
-        ConnEvent::Msg(DaemonMsg::Event(Event::MovedInPlaylist { playlist, uids, ok })) => app.moved_in_playlist(&playlist, &uids, ok),
-        ConnEvent::Msg(DaemonMsg::Event(Event::RemovedFromPlaylist { playlist, uids, ok })) => app.removed_from_playlist(&playlist, &uids, ok),
-        ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistEdited { uri, name, description, ok })) => app.playlist_edited(&uri, &name, &description, ok),
-        ConnEvent::Msg(DaemonMsg::Event(Event::Tracks(p))) => app.track_page(p),
-        ConnEvent::Msg(DaemonMsg::Event(Event::Spectrum(f))) => {
-            // the setup's audio check passes once real sound comes through
-            if f.level > 20 {
-                app.setup.heard = true;
-            }
-            app.meters.push(f);
-        }
-        ConnEvent::Msg(DaemonMsg::Event(Event::Stream(s))) => app.stream = Some(s),
-        ConnEvent::Msg(DaemonMsg::Event(Event::Delivery(d))) => app.delivery_event(d),
-        ConnEvent::Msg(DaemonMsg::Event(Event::Health(h))) => app.health = Some(h),
-        ConnEvent::Msg(DaemonMsg::Event(Event::Artist(p))) => app.artist_page(p),
-        ConnEvent::Msg(DaemonMsg::Event(Event::EpisodeShow { episode, show })) => app.episode_show(episode, show),
-        ConnEvent::Msg(DaemonMsg::Event(Event::Devices { devices })) => app.devices = devices,
-        ConnEvent::Msg(DaemonMsg::Event(Event::Jam { jam })) => app.jam = jam,
-        ConnEvent::Msg(DaemonMsg::Event(Event::Search(r))) => {
-            app.search.receive(r);
-        }
-        ConnEvent::Msg(DaemonMsg::Event(Event::Lyrics(l))) => app.lyrics_event(l),
-        ConnEvent::Msg(DaemonMsg::Event(Event::Notice { message })) => app.say(message),
-        ConnEvent::Msg(DaemonMsg::Event(Event::Saved { entries })) => app.saved_event(entries),
-        ConnEvent::Msg(DaemonMsg::Event(Event::Listening(s))) => {
-            app.listening = Some(s);
-            // a Play was logged (or old plays got their links): stats on screen ask again
-            app.refresh_stats();
-        }
-        ConnEvent::Msg(DaemonMsg::Event(Event::Stats(s))) => {
-            app.stats.insert(s.period, s);
-        }
-        ConnEvent::Msg(_) => {}
+
+/// Open the pairing page in the user's browser (the code is also shown in the UI): a fixed system location, never a
+/// `PATH` lookup (audit S3), and without the Daemon's secret (S10).
+fn open_in_browser(url: &str) {
+    if let Some(opener) = opener() {
+        let mut cmd = std::process::Command::new(opener);
+        cmd.env_remove(conn::SECRET_ENV).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        let _ = cmd.spawn();
     }
 }
 

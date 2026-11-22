@@ -98,7 +98,7 @@ fn cases(w: Widget) -> Vec<Case> {
             what: "a long library",
             set: |app| {
                 let item = |n: usize| LibraryItem { uri: format!("spotify:playlist:p{n}"), name: format!("Playlist {n}"), subtitle: "Playlist".into(), kind: "playlist".into(), image_url: None, depth: 0, own: false };
-                app.library = Some(singularity_proto::Library { items: (0..60).map(item).collect() });
+                app.hear(singularity_proto::Event::Library(singularity_proto::Library { items: (0..60).map(item).collect() }));
             },
             moves: 20,
         }],
@@ -186,7 +186,7 @@ fn pages() -> Vec<Case> {
             what: "Home's Shelves",
             set: |app| {
                 let shelf = |s: usize| Shelf { title: format!("Shelf {s}"), kind: "shelf".into(), cards: (0..12).map(|i| card(i, "album")).collect() };
-                app.home = Some(HomeFeed { fetched_unix_ms: 0, shelves: (0..8).map(shelf).collect() });
+                app.hear(singularity_proto::Event::Home(HomeFeed { fetched_unix_ms: 0, shelves: (0..8).map(shelf).collect() }));
             },
             moves: 20,
         },

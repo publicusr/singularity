@@ -1380,8 +1380,8 @@ mod tests {
             let c = [(i * 40 % 255) as u8, 90, 160];
             app.covers.insert(&url, image::RgbImage::from_pixel(300, 300, image::Rgb(c)));
         }
-        app.catalogue = Some(CatalogueStatus::Ready { username: "u".into(), country: "SE".into(), premium: true });
-        app.home = Some(feed);
+        app.hear(singularity_proto::Event::Catalogue(CatalogueStatus::Ready { username: "u".into(), country: "SE".into(), premium: true }));
+        app.hear(singularity_proto::Event::Home(feed));
         (app, rx)
     }
 
@@ -1666,14 +1666,14 @@ mod tests {
         use singularity_proto::{Library, LibraryItem};
         let (mut app, rx) = playing_app(200_000);
         let item = |uri: &str, name: &str, kind: &str, depth| LibraryItem { uri: uri.into(), name: name.into(), subtitle: String::new(), kind: kind.into(), image_url: None, depth, own: false };
-        app.library = Some(Library {
+        app.hear(singularity_proto::Event::Library(Library {
             items: vec![
                 item("spotify:collection", "Liked Songs", "liked", 0),
                 item("spotify:user:u:folder:f", "Moods", "folder", 0),
                 item("spotify:playlist:p", "Night Drive", "playlist", 1),
                 item("spotify:album:a", "Quiet Orbit", "album", 0),
             ],
-        });
+        }));
         (app, rx)
     }
 
@@ -1846,9 +1846,9 @@ mod tests {
             })
             .collect();
         app.track_page(singularity_proto::TrackPage { uri: "spotify:playlist:p".into(), offset: 0, total: 80, tracks: rows, header: None });
-        app.library = Some(singularity_proto::Library {
+        app.hear(singularity_proto::Event::Library(singularity_proto::Library {
             items: (0..60).map(|i| singularity_proto::LibraryItem { uri: format!("spotify:playlist:{i}"), name: format!("List {i}"), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: false }).collect(),
-        });
+        }));
         render(&mut app, 160, 48);
         // over an artist link, where the wheel used to do nothing
         let link = app.hits.iter().find(|(_, h)| matches!(h, Hit::Link(l) if l.uri == "spotify:artist:n")).unwrap().0;
@@ -1953,7 +1953,7 @@ mod tests {
     fn first_run_wizard_takes_the_key_without_showing_it() {
         use singularity_proto::{Command, EngineStatus};
         let (mut app, mut rx) = playing_app(1);
-        app.engine = Some(EngineStatus::NotConfigured { reason: "no Soloist API key yet".into() });
+        app.hear(singularity_proto::Event::Engine(EngineStatus::NotConfigured { reason: "no Soloist API key yet".into() }));
         let s = render(&mut app, 120, 40);
         assert!(s.contains("Set up Singularity") && s.contains("Spotify Premium") && s.contains(crate::setup::KEY_URL), "{s}");
         app.paste("spak_secret123");
@@ -1962,7 +1962,7 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(sent(&mut rx), vec![Command::SetSoloistKey { key: "spak_secret123".into() }]);
         // next steps follow what the Daemon reports
-        app.engine = Some(EngineStatus::NeedsPairing { device_name: "Singularity".into() });
+        app.hear(singularity_proto::Event::Engine(EngineStatus::NeedsPairing { device_name: "Singularity".into() }));
         assert!(render(&mut app, 120, 40).contains("device picker"));
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!render(&mut app, 120, 40).contains("Set up Singularity"), "Esc: later");
@@ -2005,7 +2005,7 @@ mod tests {
         app.run(Action::Health);
         app.tick();
         assert_eq!(sent(&mut rx), vec![Command::GetHealth]);
-        app.health = Some(singularity_proto::Health { soloist_key: "keyring".into(), spotify_login: "keyring".into(), audio_output: Some("DAC Pro".into()), engine_expires_in_days: Some(80), engine_build: Some("2026-10-16".into()), ..Default::default() });
+        app.hear(singularity_proto::Event::Health(singularity_proto::Health { soloist_key: "keyring".into(), spotify_login: "keyring".into(), audio_output: Some("DAC Pro".into()), engine_expires_in_days: Some(80), engine_build: Some("2026-10-16".into()), ..Default::default() }));
         let s = render(&mut app, 160, 48);
         assert!(s.contains("Health check") && s.contains("DAC Pro") && s.contains("FLAC · 1.40 Mbit/s"), "{s}");
     }
@@ -2569,7 +2569,7 @@ mod tests {
         use singularity_proto::{Delivery, ListeningSummary, StatsPeriod, StreamInfo};
         let mut app = App::new(None);
         app.stream = Some(StreamInfo { codec: "flac".into(), bitrate: 1_400_000, average_bitrate: Some(1_643_334), sample_rate: 44_100, sample_format: "32-bit-float-pcm".into() });
-        app.engine = Some(EngineStatus::Ready { device_name: "Singularity".into(), active: true, version: "1.2.3".into(), expires_in_days: Some(40) });
+        app.hear(singularity_proto::Event::Engine(EngineStatus::Ready { device_name: "Singularity".into(), active: true, version: "1.2.3".into(), expires_in_days: Some(40) }));
         let now = singularity_proto::now_ms();
         for (i, k) in [900u32, 640, 380, 150, 120, 410, 820, 990, 760, 300].iter().enumerate() {
             app.delivery_event(Delivery { bandwidth_kbps: Some(*k), measured_ms: now - 10_000 + i as u64, stalls_ms: vec![now - 5_000] });
@@ -2661,7 +2661,7 @@ mod tests {
             app.meters.push(SpectrumFrame { bands: (0..64u8).map(|b| b.wrapping_mul(3).wrapping_add(i)).collect(), level: 180, vu: [200, 150], beat: i % 8 == 0, out_level: 170u8.wrapping_add(i), out_vu: [200, 150], out_bands: [180, 120, 90] });
         }
         let item = |n: usize| LibraryItem { uri: format!("spotify:playlist:p{n}"), name: format!("Playlist {n}"), subtitle: "Playlist · 42 songs".into(), kind: "playlist".into(), image_url: None, depth: 0, own: n.is_multiple_of(2) };
-        app.library = Some(singularity_proto::Library { items: (0..30).map(item).collect() });
+        app.hear(singularity_proto::Event::Library(singularity_proto::Library { items: (0..30).map(item).collect() }));
         app
     }
 
@@ -3143,7 +3143,7 @@ mod tests {
     fn a_long_device_list_scrolls_with_its_selection() {
         use singularity_proto::Device;
         let (mut app, _rx) = playing_app(1);
-        app.devices = (0..30).map(|i| Device { id: format!("d{i}"), name: format!("Speaker {i:02}"), kind: "speaker".into(), active: i == 0, volume: None, is_engine: i == 0 }).collect();
+        app.hear(singularity_proto::Event::Devices { devices: (0..30).map(|i| Device { id: format!("d{i}"), name: format!("Speaker {i:02}"), kind: "speaker".into(), active: i == 0, volume: None, is_engine: i == 0 }).collect() });
         app.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         let s = render(&mut app, 100, 20);
         assert!(s.contains("Speaker 00") && !s.contains("Speaker 29") && s.contains("Start a Jam"), "{s}");
@@ -3160,7 +3160,7 @@ mod tests {
         use singularity_proto::{Command, Device};
         let (mut app, mut rx) = playing_app(1);
         let dev = |id: &str, name: &str, active: bool, engine: bool| Device { id: id.into(), name: name.into(), kind: "speaker".into(), active, volume: Some(50), is_engine: engine };
-        app.devices = vec![dev("solo", "Singularity", true, true), dev("phone", "Pixel", false, false)];
+        app.hear(singularity_proto::Event::Devices { devices: vec![dev("solo", "Singularity", true, true), dev("phone", "Pixel", false, false)] });
         let s = render(&mut app, 160, 48);
         assert!(s.contains("⧉ devices"));
         app.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
@@ -3172,7 +3172,7 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::Transfer { device_id: "phone".into() }]);
         assert!(!app.devices_open);
         // now the phone plays: the bar says so
-        app.devices = vec![dev("solo", "Singularity", false, true), dev("phone", "Pixel", true, false)];
+        app.hear(singularity_proto::Event::Devices { devices: vec![dev("solo", "Singularity", false, true), dev("phone", "Pixel", true, false)] });
         assert!(render(&mut app, 160, 48).contains("⧉ playing on Pixel"));
     }
 
@@ -3217,10 +3217,10 @@ mod tests {
         for (name, open) in opens {
             for (w, h) in [(200u16, 60u16), (90, 30)] {
                 let (mut app, _rx) = library_app();
-                app.catalogue = Some(CatalogueStatus::Ready { username: "u".into(), country: "SE".into(), premium: true });
-                app.home = Some(feed.clone());
+                app.hear(singularity_proto::Event::Catalogue(CatalogueStatus::Ready { username: "u".into(), country: "SE".into(), premium: true }));
+                app.hear(singularity_proto::Event::Home(feed.clone()));
                 app.playback.queue = (0..8).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:q{i}"), name: format!("Song {i}"), duration_ms: 150_000, ..Default::default() }, source: "queue".into(), uid: format!("u{i}") }).collect();
-                app.devices = vec![singularity_proto::Device { id: "a".into(), name: "Speaker".into(), kind: "speaker".into(), active: true, volume: Some(50), is_engine: true }];
+                app.hear(singularity_proto::Event::Devices { devices: vec![singularity_proto::Device { id: "a".into(), name: "Speaker".into(), kind: "speaker".into(), active: true, volume: Some(50), is_engine: true }] });
                 render(&mut app, w, h);
                 open(&mut app);
                 render(&mut app, w, h);
@@ -3235,7 +3235,7 @@ mod tests {
     #[test]
     fn the_wheel_drives_the_popup_even_off_its_edge() {
         let (mut app, _rx) = library_app();
-        app.devices = (0..3).map(|i| singularity_proto::Device { id: format!("d{i}"), name: format!("Dev {i}"), kind: "speaker".into(), active: i == 0, volume: Some(50), is_engine: false }).collect();
+        app.hear(singularity_proto::Event::Devices { devices: (0..3).map(|i| singularity_proto::Device { id: format!("d{i}"), name: format!("Dev {i}"), kind: "speaker".into(), active: i == 0, volume: Some(50), is_engine: false }).collect() });
         render(&mut app, 160, 48);
         app.run(Action::Devices);
         render(&mut app, 160, 48);
@@ -3285,18 +3285,18 @@ mod tests {
                 app.setup.forced = true;
             }
             Modal::Devices => {
-                app.devices = (0..6).map(|i| Device { id: format!("d{i}"), name: format!("Dev {i}"), kind: "speaker".into(), active: i == 0, volume: Some(50), is_engine: i == 0 }).collect();
+                app.hear(singularity_proto::Event::Devices { devices: (0..6).map(|i| Device { id: format!("d{i}"), name: format!("Dev {i}"), kind: "speaker".into(), active: i == 0, volume: Some(50), is_engine: i == 0 }).collect() });
                 app.run(Action::Devices);
             }
             Modal::Health => {
-                app.health = Some(singularity_proto::Health { missing_tools: vec!["tar".into()], audio_output: Some("speakers".into()), ..Default::default() });
+                app.hear(singularity_proto::Event::Health(singularity_proto::Health { missing_tools: vec!["tar".into()], audio_output: Some("speakers".into()), ..Default::default() }));
                 app.stream = Some(singularity_proto::StreamInfo { codec: "vorbis".into(), bitrate: 320_000, average_bitrate: None, sample_rate: 44_100, sample_format: "f32".into() });
                 app.run(Action::Health);
             }
             Modal::Menu => app.open_queue_menu(0, Some((20, 3))),
             Modal::Help => app.run(Action::Help),
             Modal::Move => app.start_move(),
-            Modal::Login => app.catalogue = Some(CatalogueStatus::LoginPending { url: "https://example.com/pair".into(), code: "ABCD".into() }),
+            Modal::Login => app.hear(singularity_proto::Event::Catalogue(CatalogueStatus::LoginPending { url: "https://example.com/pair".into(), code: "ABCD".into() })),
         }
     }
 
@@ -3432,7 +3432,7 @@ mod tests {
         use singularity_proto::{Command, Device};
         let (mut app, mut rx) = playing_app(1);
         let dev = |id: &str, name: &str, active: bool, engine: bool| Device { id: id.into(), name: name.into(), kind: "speaker".into(), active, volume: Some(50), is_engine: engine };
-        app.devices = vec![dev("solo", "Singularity", true, true), dev("phone", "Pixel", false, false)];
+        app.hear(singularity_proto::Event::Devices { devices: vec![dev("solo", "Singularity", true, true), dev("phone", "Pixel", false, false)] });
         app.run(Action::Jam);
         sent(&mut rx);
         let s = render(&mut app, 160, 60);
@@ -3441,7 +3441,7 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::StartJam]);
         assert!(app.devices_open, "the picker stays open for the invite");
         // the Daemon answers: the invite, its QR and the guest show, and the bar says a Jam runs
-        app.jam = Some(jam(true, &["Guest Friend"]));
+        app.hear(singularity_proto::Event::Jam { jam: Some(jam(true, &["Guest Friend"])) });
         let s = render(&mut app, 160, 60);
         assert!(s.contains("◎ Jam on Singularity · 1 guest") && s.contains("socialsession/FakeJamToken123") && s.contains("♪ Guest Friend"), "{s}");
         // the QR's finder pattern (the visuals draw half blocks too)
@@ -3456,7 +3456,7 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(sent(&mut rx), vec![Command::EndJam]);
         // someone else's Jam can't be ended from here
-        app.jam = Some(jam(false, &[]));
+        app.hear(singularity_proto::Event::Jam { jam: Some(jam(false, &[])) });
         app.key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         assert_eq!(sent(&mut rx), vec![]);
     }

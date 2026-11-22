@@ -580,6 +580,8 @@ pub struct App {
     delivery_warned: Option<Instant>,
     /// text to put on the system clipboard (OSC 52), written by the main loop
     pub clipboard: Option<String>,
+    /// a page to open in the browser (a login's pairing page), opened by the main loop
+    pub open_url: Option<String>,
     pub library: Option<singularity_proto::Library>,
     pub sidebar: Sidebar,
     /// the Track lists received so far and the one open (None open: the main Pane shows Home or an artist), D81
@@ -742,6 +744,7 @@ impl App {
             delivery_hist: Default::default(),
             delivery_warned: None,
             clipboard: None,
+            open_url: None,
             library: None,
             sidebar: Sidebar::default(),
             open: Default::default(),
