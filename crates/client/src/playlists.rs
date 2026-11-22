@@ -75,7 +75,8 @@ pub struct Playlists {
     /// rows taken out before Spotify answered, by (playlist, uid): where they were
     removing: HashMap<(String, String), (usize, singularity_proto::TrackRow)>,
     /// the row pressed on (a drag from it reorders), and the drag under way
-    pub press: Option<usize>,
+    /// the row pressed, by identity (D81: a row taken out before the drag lands doesn't make it move another)
+    pub press: Option<crate::openlist::RowId>,
     pub row_drag: Option<RowDrag>,
     /// rows moved before Spotify answered, by (playlist, uid): where they were, and how many moves are unanswered
     moving: HashMap<(String, String), (usize, usize)>,
@@ -192,7 +193,7 @@ impl App {
 
     /// The description is known once the playlist's first page has arrived (it carries the header).
     fn description_known(&self, uri: &str) -> bool {
-        self.lists.contains_key(uri)
+        self.open.has(uri)
     }
 
     /// A track page arrived: the form waiting for this playlist's description gets it.
@@ -207,7 +208,7 @@ impl App {
 
     /// The playlist's description as last heard (its page's header), if its page has been open.
     fn description_of(&self, uri: &str) -> String {
-        self.lists.get(uri).and_then(|l| l.header.as_ref()).map(|h| h.description.clone()).unwrap_or_default()
+        self.open.list(uri).and_then(|l| l.header.as_ref()).map(|h| h.description.clone()).unwrap_or_default()
     }
 
     /// Open the "Edit details" form, filled in.
@@ -283,10 +284,10 @@ impl App {
         if let Some(lib) = self.library.as_mut() {
             lib.items.iter_mut().filter(|i| i.uri == uri).for_each(|i| i.name = name.into());
         }
-        if let Some(v) = self.view.as_mut().filter(|v| v.uri == uri) {
+        if let Some(v) = self.open.view_mut().filter(|v| v.uri == uri) {
             v.title = name.into();
         }
-        if let Some(v) = self.list_views.get_mut(uri) {
+        if let Some(v) = self.open.remembered_mut(uri) {
             v.title = name.into();
         }
         for p in self.back.iter_mut().chain(self.forward.iter_mut()) {
@@ -296,7 +297,7 @@ impl App {
                 *title = name.into();
             }
         }
-        if let Some(l) = self.lists.get_mut(uri) {
+        if let Some(mut l) = self.open.edit(uri) {
             l.header.get_or_insert_with(Default::default).description = description.into();
         }
     }
@@ -405,10 +406,10 @@ impl App {
         let mine = self.playlists.asked.iter().position(|n| n == name).map(|i| self.playlists.asked.remove(i)).is_some();
         match outcome {
             AddOutcome::Added => {
-                if self.view.as_ref().is_some_and(|v| v.uri == playlist) {
+                if self.open.is_open(playlist) {
                     self.send(Command::GetTracks { uri: playlist.into() });
                 } else {
-                    self.lists.remove(playlist);
+                    self.open.drop_list(playlist);
                 }
                 if mine {
                     self.say(format!("Added to {name}"));
@@ -427,25 +428,21 @@ impl App {
 impl App {
     /// The open list is one of your playlists, so its rows can be removed.
     pub fn rows_removable(&self) -> bool {
-        self.view.as_ref().is_some_and(|v| self.own_playlist(&v.uri).is_some())
+        self.open.view().is_some_and(|v| self.own_playlist(&v.uri).is_some())
     }
 
     /// Take the row at view position `vi` out of the open playlist.
     pub fn remove_row(&mut self, vi: usize) {
-        let Some(playlist) = self.view.as_ref().map(|v| v.uri.clone()).filter(|u| self.own_playlist(u).is_some()) else {
+        let Some(playlist) = self.open.view().map(|v| v.uri.clone()).filter(|u| self.own_playlist(u).is_some()) else {
             return self.say("Only your own playlists can lose songs");
         };
-        let order = self.view_order();
-        let Some(row) = order.get(vi).and_then(|&i| self.lists.get(&playlist)?.rows().get(i)).cloned() else { return };
+        let Some((_, row)) = self.open.row_at(vi).map(|(i, r)| (i, r.clone())) else { return };
         let Some(uid) = row.uid.clone() else {
             return self.say("Spotify didn't say which row this is; open the playlist again");
         };
-        let Some(taken) = self.lists.get_mut(&playlist).and_then(|l| l.take_uid(&uid)) else { return };
+        let Some(taken) = self.open.edit(&playlist).and_then(|mut l| l.take_uid(&uid)) else { return };
+        // (the selection settles on the row that took its place)
         self.playlists.removing.insert((playlist.clone(), uid.clone()), taken);
-        let len = self.view_order().len();
-        if let Some(v) = self.view.as_mut() {
-            v.sel = v.sel.min(len.saturating_sub(1));
-        }
         self.send(Command::RemoveFromPlaylist { playlist, uids: vec![uid] });
         self.say(format!("Removed {}", row.name));
     }
@@ -456,12 +453,12 @@ impl App {
             match (self.playlists.removing.remove(&(playlist.to_string(), uid.clone())), ok) {
                 (Some((at, row)), false) => {
                     self.say(format!("Spotify didn't remove {}; it's back", row.name));
-                    if let Some(l) = self.lists.get_mut(playlist) {
+                    if let Some(mut l) = self.open.edit(playlist) {
                         l.put_back(at, row);
                     }
                 }
                 (None, true) => {
-                    if let Some(l) = self.lists.get_mut(playlist) {
+                    if let Some(mut l) = self.open.edit(playlist) {
                         l.take_uid(uid);
                     }
                 }
@@ -474,7 +471,7 @@ impl App {
 impl App {
     /// Why the open list's rows can't be moved, if they can't.
     fn unmovable(&self) -> Option<&'static str> {
-        let v = self.view.as_ref()?;
+        let v = self.open.view()?;
         if self.own_playlist(&v.uri).is_none() {
             Some("Only your own playlists can be reordered")
         } else if v.sort.is_some() || !v.filter.is_empty() {
@@ -486,7 +483,7 @@ impl App {
 
     /// The pointer moved with the button held after pressing a row: start or follow a drag.
     pub fn drag_row_to(&mut self, y: u16) {
-        let Some(from) = self.playlists.press else { return };
+        let Some(from) = self.pressed_at() else { return };
         // the row under the pointer (rows are drawn in the preview's order), clamped to the visible ones
         let rows: Vec<(u16, usize)> = self.hits.iter().filter_map(|(r, h)| if let Hit::Track(k) = h { Some((r.y, *k)) } else { None }).collect();
         let to = match rows.iter().find(|(ry, _)| *ry == y) {
@@ -506,21 +503,28 @@ impl App {
             self.playlists.row_drag = Some(RowDrag { from, to: from });
         }
         if let Some(d) = self.playlists.row_drag.as_mut() {
-            d.to = to;
+            (d.from, d.to) = (from, to);
         }
-        if let Some(v) = self.view.as_mut() {
+        if let Some(v) = self.open.view_mut() {
             v.sel = to;
         }
     }
 
     /// The button let go: a drag lands.
     pub fn drop_row(&mut self) {
+        let from = self.pressed_at();
         self.playlists.press = None;
-        if let Some(d) = self.playlists.row_drag.take()
-            && d.to != d.from
-        {
-            self.move_row(d.from, d.to);
+        let Some(d) = self.playlists.row_drag.take() else { return };
+        match from {
+            Some(from) if from != d.to => self.move_row(from, d.to),
+            Some(_) => {}
+            None => self.say("That song isn't in the list any more"),
         }
+    }
+
+    /// Where the pressed row shows now.
+    fn pressed_at(&self) -> Option<usize> {
+        self.open.find(self.playlists.press.as_ref()?).map(|(vi, _)| vi)
     }
 
     /// Alt+↑↓ on the selected row.
@@ -528,7 +532,7 @@ impl App {
         if let Some(why) = self.unmovable() {
             return self.say(why);
         }
-        let len = self.view_order().len();
+        let len = self.open.order().len();
         let to = sel as i64 + d as i64;
         if (0..len as i64).contains(&to) {
             self.move_row(sel, to as usize);
@@ -538,17 +542,24 @@ impl App {
     /// Move row `from` to `to` (positions in the playlist's own order): at once here, then one move on Spotify,
     /// anchored to the row it lands before (or after, at the end).
     fn move_row(&mut self, from: usize, to: usize) {
-        let Some(playlist) = self.view.as_ref().map(|v| v.uri.clone()) else { return };
-        let Some(list) = self.lists.get_mut(&playlist) else { return };
-        let Some(uid) = list.rows().get(from).and_then(|r| r.uid.clone()) else {
+        let Some((playlist, top)) = self.open.view().map(|v| (v.uri.clone(), v.top)) else { return };
+        let moved = {
+            let Some(mut list) = self.open.edit(&playlist) else { return };
+            list.rows().get(from).and_then(|r| r.uid.clone()).map(|uid| {
+                list.move_row(from, to);
+                let before = list.rows().get(to + 1).and_then(|r| r.uid.clone());
+                let after = if before.is_none() { to.checked_sub(1).and_then(|i| list.rows().get(i)).and_then(|r| r.uid.clone()) } else { None };
+                (uid, before, after)
+            })
+        };
+        let Some((uid, before, after)) = moved else {
             return self.say("Spotify didn't say which row this is; open the playlist again");
         };
-        list.move_row(from, to);
-        let before = list.rows().get(to + 1).and_then(|r| r.uid.clone());
-        let after = if before.is_none() { to.checked_sub(1).and_then(|i| list.rows().get(i)).and_then(|r| r.uid.clone()) } else { None };
         self.playlists.moving.entry((playlist.clone(), uid.clone())).or_insert((from, 0)).1 += 1;
-        if let Some(v) = self.view.as_mut() {
-            v.sel = to;
+        // the moved row is selected where it lands, and the list doesn't scroll under it
+        if let Some(v) = self.open.view_mut() {
+            (v.sel, v.top) = (to, top);
+            v.reveal();
         }
         self.send(Command::MoveInPlaylist { playlist, uids: vec![uid], before, after });
     }
@@ -568,7 +579,7 @@ impl App {
             };
             match (mine, ok) {
                 (Some(was), false) => {
-                    if let Some(l) = self.lists.get_mut(playlist)
+                    if let Some(mut l) = self.open.edit(playlist)
                         && let Some(i) = l.rows().iter().position(|r| r.uid.as_deref() == Some(uid.as_str()))
                     {
                         l.move_row(i, was);
@@ -576,10 +587,10 @@ impl App {
                     self.say("Spotify didn't take the move; it's back where it was");
                 }
                 (None, true) => {
-                    if self.view.as_ref().is_some_and(|v| v.uri == playlist) {
+                    if self.open.is_open(playlist) {
                         self.send(Command::GetTracks { uri: playlist.into() });
                     } else {
-                        self.lists.remove(playlist);
+                        self.open.drop_list(playlist);
                     }
                 }
                 _ => {}
@@ -787,7 +798,7 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         assert_eq!(sent(&mut rx), vec![Command::EditPlaylist { uri: "spotify:playlist:mine".into(), name: "Road trip".into(), description: "Songs for the car".into() }]);
         assert!(app.playlists.details.is_none());
-        let shown = |app: &App| (app.own_playlist("spotify:playlist:mine").unwrap().name.clone(), app.current_page(), app.lists["spotify:playlist:mine"].header.as_ref().unwrap().description.clone());
+        let shown = |app: &App| (app.own_playlist("spotify:playlist:mine").unwrap().name.clone(), app.current_page(), app.open.list("spotify:playlist:mine").unwrap().header.as_ref().unwrap().description.clone());
         let (name, page, desc) = shown(&app);
         assert!(name == "Road trip" && desc == "Songs for the car" && matches!(page, crate::app::Page::List { title, .. } if title == "Road trip"), "shown at once");
         // Spotify refuses: all of it goes back
@@ -879,7 +890,7 @@ mod tests {
         let at = labels.iter().position(|l| l == "Remove from this playlist").expect("offered on your own");
         app.menu_run(at);
         assert_eq!(sent(&mut rx), vec![Command::RemoveFromPlaylist { playlist: "spotify:playlist:mine".into(), uids: vec!["u1".into()] }]);
-        let uids = |app: &App| app.lists["spotify:playlist:mine"].rows().iter().map(|r| r.uid.clone().unwrap()).collect::<Vec<_>>();
+        let uids = |app: &App| app.open.list("spotify:playlist:mine").unwrap().rows().iter().map(|r| r.uid.clone().unwrap()).collect::<Vec<_>>();
         assert_eq!(uids(&app), vec!["u0", "u2", "u3"], "one copy goes at once, the other stays");
         // refused: back where it was
         app.removed_from_playlist("spotify:playlist:mine", &["u1".into()], false);
@@ -887,12 +898,12 @@ mod tests {
         assert!(app.toast.as_ref().unwrap().0.contains("it's back"));
         // the Delete key on the selected row; Spotify agrees
         app.focus = "home".into();
-        app.view.as_mut().unwrap().sel = 3;
+        app.open.view_mut().unwrap().sel = 3;
         app.key(ratatui::crossterm::event::KeyEvent::from(KeyCode::Delete));
         assert_eq!(sent(&mut rx), vec![Command::RemoveFromPlaylist { playlist: "spotify:playlist:mine".into(), uids: vec!["u3".into()] }]);
         app.removed_from_playlist("spotify:playlist:mine", &["u3".into()], true);
         assert_eq!(uids(&app), vec!["u0", "u1", "u2"]);
-        assert_eq!(app.view.as_ref().unwrap().sel, 2, "the selection stays on a row");
+        assert_eq!(app.open.view().unwrap().sel, 2, "the selection stays on a row");
         // another Client's removal leaves here too
         app.removed_from_playlist("spotify:playlist:mine", &["u0".into()], true);
         assert_eq!(uids(&app), vec!["u1", "u2"]);
@@ -904,6 +915,34 @@ mod tests {
         app.menu = None;
         app.key(ratatui::crossterm::event::KeyEvent::from(KeyCode::Delete));
         assert!(!sent(&mut rx).iter().any(|c| matches!(c, Command::RemoveFromPlaylist { .. })));
+    }
+
+    /// Candidate 3 (D81): a row's menu used to remember where the row showed, and look again only when an action was
+    /// chosen; a page arriving into the sorted list meanwhile made "Remove from this playlist" remove another song.
+    #[test]
+    fn a_row_menu_acts_on_its_row_even_if_a_page_arrives_while_it_is_open() {
+        use singularity_proto::{TrackPage, TrackRow};
+        let (mut app, mut rx) = app();
+        let row = |name: &str, uid: &str| TrackRow { uri: format!("spotify:track:{name}"), name: name.into(), uid: Some(uid.into()), playable: true, ..Default::default() };
+        let page = |offset: u32, tracks: Vec<TrackRow>| TrackPage { uri: "spotify:playlist:mine".into(), offset, total: 4, tracks, header: None };
+        app.open("spotify:playlist:mine", "Mine", "", "playlist");
+        app.track_page(page(0, vec![row("delta", "u0"), row("bravo", "u1")]));
+        app.open.view_mut().unwrap().cycle_sort(crate::tracks::Col::Title);
+        sent(&mut rx);
+        // shown: bravo delta; the menu is on bravo, at the top
+        app.open_row_menu(0, None);
+        // the rest arrives: alpha sorts above it
+        app.track_page(page(2, vec![row("alpha", "u2"), row("charlie", "u3")]));
+        let remove = menu_labels(&app).iter().position(|l| l == "Remove from this playlist").unwrap();
+        app.menu_run(remove);
+        assert_eq!(sent(&mut rx), vec![Command::RemoveFromPlaylist { playlist: "spotify:playlist:mine".into(), uids: vec!["u1".into()] }], "bravo, not alpha");
+        // a row another Client removed while its menu was open: nothing happens, and the bar says why
+        app.open_row_menu(0, None);
+        app.removed_from_playlist("spotify:playlist:mine", &["u2".into()], true);
+        let remove = menu_labels(&app).iter().position(|l| l == "Remove from this playlist").unwrap();
+        app.menu_run(remove);
+        assert!(sent(&mut rx).is_empty());
+        assert!(app.toast.as_ref().unwrap().0.contains("isn't in the list any more"), "{:?}", app.toast);
     }
 
     #[test]
@@ -921,11 +960,11 @@ mod tests {
             t.draw(|f| crate::ui::draw(f, app)).unwrap();
             t.backend().buffer().clone()
         };
-        let uids = |app: &App| app.lists["spotify:playlist:mine"].rows().iter().map(|r| r.uid.clone().unwrap()).collect::<Vec<_>>();
+        let uids = |app: &App| app.open.list("spotify:playlist:mine").unwrap().rows().iter().map(|r| r.uid.clone().unwrap()).collect::<Vec<_>>();
         draw(&mut app);
         let y = |app: &App, k: usize| app.hit_rect(&Hit::Track(k)).unwrap().y;
         // press row 0, drag down onto row 3: the preview shows it there before the drop
-        app.playlists.press = Some(0);
+        app.playlists.press = app.open.id_at(0);
         let (y0, y3) = (y(&app, 0), y(&app, 3));
         app.drag_row_to(y0);
         assert!(app.playlists.row_drag.is_none(), "a shaky click isn't a drag");
@@ -939,7 +978,7 @@ mod tests {
         assert_eq!(uids(&app), vec!["u1", "u2", "u3", "u0", "u4"]);
         // Alt+↓ on the last-but-one: to the end, anchored after the last
         app.focus = "home".into();
-        app.view.as_mut().unwrap().sel = 3;
+        app.open.view_mut().unwrap().sel = 3;
         app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
         assert_eq!(sent(&mut rx), vec![Command::MoveInPlaylist { playlist: "spotify:playlist:mine".into(), uids: vec!["u0".into()], before: None, after: Some("u4".into()) }]);
         assert_eq!(uids(&app), vec!["u1", "u2", "u3", "u4", "u0"]);
@@ -949,7 +988,7 @@ mod tests {
         app.moved_in_playlist("spotify:playlist:mine", &["u0".into()], false);
         assert_eq!(uids(&app), vec!["u0", "u1", "u2", "u3", "u4"]);
         // a sorted view says why instead
-        app.view.as_mut().unwrap().sort = Some((crate::tracks::Col::Title, false));
+        app.open.view_mut().unwrap().sort = Some((crate::tracks::Col::Title, false));
         app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
         assert!(app.toast.as_ref().unwrap().0.contains("Clear the sort"));
         assert!(sent(&mut rx).is_empty());

@@ -1,6 +1,7 @@
 //! `singularity`: the terminal Client.
 
 mod app;
+mod openlist;
 mod arrange;
 mod artist;
 mod bigtext;

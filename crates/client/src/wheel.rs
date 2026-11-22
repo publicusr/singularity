@@ -124,8 +124,8 @@ impl App {
             Page::Home => self.shelves_wheel(x, y, rows, coarse),
             // track lists, Show and Book pages: the highlight, and the list follows it
             Page::List { .. } => {
-                let len = self.view_order().len();
-                if let Some(v) = self.view.as_mut() {
+                let len = self.open.order().len();
+                if let Some(v) = self.open.view_mut() {
                     let step = if coarse { v.visible.max(1) as i32 } else { 1 };
                     v.sel = moved(v.sel, rows * step, len);
                     v.reveal();

@@ -467,7 +467,7 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), sl
     let (title, todo) = slot_info(slot);
     let title = crate::design::title(app.design, slot, title);
     // the main Pane is titled after what it shows
-    let title = match (slot, &app.view, &app.artist) {
+    let title = match (slot, app.open.view(), &app.artist) {
         ("home", _, _) if app.search.is_open() => "search".to_string(),
         ("home", _, _) if app.stats_view.is_some() => "stats".to_string(),
         ("home", _, _) if app.settings_view.is_some() => "settings".to_string(),
@@ -640,7 +640,7 @@ pub fn widget(buf: &mut Buffer, rect: Rect, inner: Rect, slot: &str, todo: &str,
         crate::artist::draw(buf, inner, app, th);
         return;
     }
-    if slot == "home" && app.view.is_some() {
+    if slot == "home" && app.open.view().is_some() {
         crate::tracks::draw(buf, inner, app, th);
         return;
     }
@@ -1508,13 +1508,13 @@ mod tests {
         let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
         assert!(back.x > home.x + home.width / 2, "{back:?} in {home:?}");
         assert!(render(&mut app, 200, 64).contains("← →"));
-        assert!(app.view.is_some());
+        assert!(app.open.view().is_some());
         click(&mut app, back.x + 1, back.y);
-        assert!(app.view.is_none() && app.forward.len() == 1, "back on Home");
+        assert!(app.open.view().is_none() && app.forward.len() == 1, "back on Home");
         render(&mut app, 200, 64);
         let fwd = app.hits.iter().find_map(|(r, h)| (*h == Hit::History(1)).then_some(*r)).expect("▸ shown");
         click(&mut app, fwd.x, fwd.y);
-        assert!(app.view.as_ref().is_some_and(|v| v.uri == "spotify:playlist:mfy1"), "forward again");
+        assert!(app.open.view().is_some_and(|v| v.uri == "spotify:playlist:mfy1"), "forward again");
     }
 
     #[test]
@@ -1534,7 +1534,7 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:playlist:mfy1".into()) }]);
         // Esc is back to Home, where it was
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.view.is_none());
+        assert!(app.open.view().is_none());
     }
 
     #[test]
@@ -1782,7 +1782,7 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::PlayFrom { context_uri: "spotify:collection".into(), index: 49, track_uri: Some("spotify:track:t49".into()) }]);
         // Backspace goes back to Home
         key(&mut app, KeyCode::Backspace);
-        assert!(app.view.is_none());
+        assert!(app.open.view().is_none());
     }
 
     #[test]
@@ -1832,7 +1832,7 @@ mod tests {
     #[test]
     fn the_wheel_moves_the_highlight_anywhere_over_a_list_and_the_library() {
         let mut app = App::new(None);
-        app.view = Some(crate::tracks::TrackView::new("spotify:playlist:p", "P"));
+        app.open.put_view(crate::tracks::TrackView::new("spotify:playlist:p", "P"));
         let rows = (0..80)
             .map(|i| singularity_proto::TrackRow {
                 uri: format!("spotify:track:{i}"),
@@ -1855,15 +1855,15 @@ mod tests {
         for _ in 0..3 {
             mouse(&mut app, MouseEventKind::ScrollDown, link.x as f64 + 0.5, link.y, false);
         }
-        assert_eq!(app.view.as_ref().unwrap().sel, 3);
+        assert_eq!(app.open.view().unwrap().sel, 3);
         mouse(&mut app, MouseEventKind::ScrollUp, link.x as f64 + 0.5, link.y, false);
-        assert_eq!(app.view.as_ref().unwrap().sel, 2);
+        assert_eq!(app.open.view().unwrap().sel, 2);
         // Shift: a page; the list follows the highlight
-        let vis = app.view.as_ref().unwrap().visible;
+        let vis = app.open.view().unwrap().visible;
         for _ in 0..3 {
             app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: link.x, row: link.y, modifiers: KeyModifiers::SHIFT }, link.x as f64 + 0.5, false);
         }
-        let v = app.view.as_ref().unwrap();
+        let v = app.open.view().unwrap();
         assert_eq!(v.sel, 2 + 3 * vis);
         assert!(v.sel >= v.top && v.sel < v.top + v.visible, "the highlight stays in view");
         // the library sidebar
@@ -2122,7 +2122,7 @@ mod tests {
         assert!(sent(&mut rx).iter().any(|c| matches!(c, Command::MoreTracks { offset: 100, .. })));
         app.track_page(eps(100, 130));
         render(&mut app, 160, 48);
-        let v = app.view.as_ref().unwrap();
+        let v = app.open.view().unwrap();
         assert_eq!((v.sel, v.reveal_uri.is_none()), (120, true));
         assert!(render(&mut app, 160, 48).contains("Episode 10"));
     }
@@ -3036,7 +3036,7 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
         assert!(app.artist.is_some() && sent(&mut rx).is_empty(), "no refetch");
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(app.view.as_ref().map(|v| (v.uri.as_str(), v.sort.is_some())), Some(("spotify:collection", true)));
+        assert_eq!(app.open.view().map(|v| (v.uri.as_str(), v.sort.is_some())), Some(("spotify:collection", true)));
         // forward again
         app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
         assert!(app.artist.is_some());
@@ -3480,7 +3480,7 @@ mod tests {
     }
 
     fn liked_uris(app: &App) -> Vec<String> {
-        app.lists["spotify:collection"].rows().iter().map(|r| r.uri.clone()).collect()
+        app.open.list("spotify:collection").unwrap().rows().iter().map(|r| r.uri.clone()).collect()
     }
 
     #[test]
@@ -3549,7 +3549,7 @@ mod tests {
         // Spotify refuses: the row comes back where it was
         app.saved_event(vec![flag("spotify:track:t2", true)]);
         assert_eq!(liked_uris(&app)[3], "spotify:track:t2");
-        assert_eq!(app.lists["spotify:collection"].total, 6);
+        assert_eq!(app.open.list("spotify:collection").unwrap().total, 6);
         assert!(sent(&mut rx).is_empty(), "no reload");
     }
 

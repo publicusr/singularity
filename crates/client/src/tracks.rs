@@ -243,11 +243,6 @@ impl TrackView {
         }
     }
 
-    pub fn set_filter(&mut self, f: String) {
-        self.filter = f;
-        self.sel = 0;
-        self.top = 0;
-    }
 }
 
 /// Widest a title column gets; artist and album columns stop at `NAME_MAX`.
@@ -327,11 +322,11 @@ fn fmt_dur(ms: u64) -> String {
 }
 
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
-    let Some(mut view) = app.view.take() else { return };
+    let Some(mut view) = app.open.take_view() else { return };
     let empty = TrackList::default();
     // a page has arrived (an empty playlist's says total 0)
-    let arrived = app.lists.contains_key(&view.uri);
-    let list = app.lists.get(&view.uri).unwrap_or(&empty);
+    let arrived = app.open.has(&view.uri);
+    let list = app.open.list(&view.uri).unwrap_or(&empty);
     let show = view.uri.starts_with("spotify:show:");
     // an audiobook (#62): a show of chapters
     let book = list.header.as_ref().is_some_and(|h| h.book);
@@ -524,7 +519,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     if view.uri != LIKED && !show {
         app.want_saved(ahead.iter().map(String::as_str), view.visible);
     }
-    app.view = Some(view);
+    app.open.put_view(view);
 }
 
 #[cfg(test)]
@@ -590,9 +585,9 @@ mod tests {
     #[test]
     fn filter_matches_all_words_across_fields() {
         let mut v = TrackView::new("u", "t");
-        v.set_filter("nova cor".into());
+        v.filter = "nova cor".into();
         assert_eq!(v.compute_order(&rows()), [2]);
-        v.set_filter("MIRA".into());
+        v.filter = "MIRA".into();
         assert_eq!(v.compute_order(&rows()), [1]);
     }
 

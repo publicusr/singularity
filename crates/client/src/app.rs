@@ -10,7 +10,7 @@ use crate::visual::BlackHole;
 use crate::visual::well::Hole;
 use crate::scrub::{Bar, Scrub};
 use crate::sidebar::Sidebar;
-use crate::tracks::{Col, TrackList, TrackView};
+use crate::tracks::{Col, TrackView};
 use std::collections::HashMap;
 use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -436,8 +436,8 @@ pub enum MenuAct {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
     Card(CardRef),
-    /// a row of the open track list, by view position
-    Row(usize),
+    /// a row of the open track list, by identity (D81: recorded when the menu opens, found again when it acts)
+    Row(crate::openlist::RowId),
     /// a queue entry: its URI and uid, and whether the user queued it
     Queued { uri: String, uid: String, name: String, queued: bool },
     /// any other track (an artist's popular tracks)
@@ -582,10 +582,8 @@ pub struct App {
     pub clipboard: Option<String>,
     pub library: Option<singularity_proto::Library>,
     pub sidebar: Sidebar,
-    /// track lists received so far, by URI
-    pub lists: HashMap<String, TrackList>,
-    /// the open track list (None: the main Pane shows Home or an artist)
-    pub view: Option<TrackView>,
+    /// the Track lists received so far and the one open (None open: the main Pane shows Home or an artist), D81
+    pub open: crate::openlist::OpenList,
     /// the open artist page
     pub artist: Option<crate::artist::ArtistView>,
     /// Search (D74): open while its page shows; kept as it was while you browse its results, so back returns to them
@@ -622,9 +620,9 @@ pub struct App {
     /// history: pages to go back and forward to
     pub back: Vec<Page>,
     pub forward: Vec<Page>,
-    /// each list's sort, filter and scroll, kept while you browse elsewhere
-    pub(crate) list_views: HashMap<String, TrackView>,
     last_click: Option<(Instant, usize)>,
+    /// the row a click on the open list was on, for telling a double-click (D81)
+    last_row: Option<crate::openlist::RowId>,
     pub meters: Meters,
     pub stream: Option<singularity_proto::StreamInfo>,
     pub health: Option<singularity_proto::Health>,
@@ -746,8 +744,7 @@ impl App {
             clipboard: None,
             library: None,
             sidebar: Sidebar::default(),
-            lists: HashMap::new(),
-            view: None,
+            open: Default::default(),
             artist: None,
             search: Default::default(),
             stats_view: None,
@@ -769,8 +766,8 @@ impl App {
             fetched: HashMap::new(),
             back: vec![],
             forward: vec![],
-            list_views: HashMap::new(),
             last_click: None,
+            last_row: None,
             meters: Meters::default(),
             stream: None,
             health: None,
@@ -929,7 +926,7 @@ impl App {
             || self.playlists.adding.is_some()
             || self.cover_form.is_some()
             || self.settings_typing()
-            || self.view.as_ref().is_some_and(|v| v.filtering)
+            || self.open.view().is_some_and(|v| v.filtering)
             || (self.search.is_open() && self.focus == "home")
     }
 
@@ -1169,7 +1166,7 @@ impl App {
             Action::Stats => self.navigate(Page::Stats),
             Action::Settings => self.navigate(Page::Settings),
             Action::Forward => self.go_forward(),
-            Action::Filter => match self.view.as_mut() {
+            Action::Filter => match self.open.view_mut() {
                 Some(v) => {
                     v.filtering = true;
                     self.focus = "home".into();
@@ -1340,7 +1337,7 @@ impl App {
             return;
         }
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
-        if self.view.as_ref().is_some_and(|v| v.filtering) {
+        if self.open.view().is_some_and(|v| v.filtering) {
             return self.filter_key(k);
         }
         // Ctrl+Shift+Z redoes, where the terminal tells it from Ctrl+Z (the keymap reads both as Ctrl+Z)
@@ -1365,10 +1362,10 @@ impl App {
         if self.focus == "home" && self.settings_view.is_some() && (self.settings_typing() || !shift) && self.settings_key(k) {
             return;
         }
-        if self.focus == "home" && !shift && self.view.is_some() && self.tracks_key(k) {
+        if self.focus == "home" && !shift && self.open.view().is_some() && self.tracks_key(k) {
             return;
         }
-        if self.focus == "home" && !shift && self.view.is_none() && self.home_key(k) {
+        if self.focus == "home" && !shift && self.open.view().is_none() && self.home_key(k) {
             return;
         }
         // Esc on an artist or search page goes back, never quits
@@ -1555,7 +1552,7 @@ impl App {
         if p.uri == crate::tracks::LIKED {
             self.seed_liked(&p.tracks);
         }
-        self.lists.entry(p.uri.clone()).or_default().add(&p);
+        self.open.add_page(&p);
         self.fetched.insert(p.uri.clone(), Instant::now());
         self.details_arrived(&p.uri);
         self.forget_old();
@@ -1571,13 +1568,12 @@ impl App {
         if self.fetched.len() <= KEPT {
             return;
         }
-        let shown = [self.view.as_ref().map(|v| v.uri.as_str()), self.artist.as_ref().map(|a| a.uri.as_str())];
+        let shown = [self.open.view().map(|v| v.uri.as_str()), self.artist.as_ref().map(|a| a.uri.as_str())];
         let mut by_age: Vec<(Instant, String)> = self.fetched.iter().filter(|(u, _)| !shown.contains(&Some(u.as_str()))).map(|(u, at)| (*at, u.clone())).collect();
         by_age.sort();
         for (_, uri) in by_age.into_iter().take(self.fetched.len() - KEPT) {
             self.fetched.remove(&uri);
-            self.lists.remove(&uri);
-            self.list_views.remove(&uri);
+            self.open.forget(&uri);
             self.artist_pages.remove(&uri);
         }
     }
@@ -1628,7 +1624,7 @@ impl App {
         }
         self.pending_episode = None;
         self.navigate(Page::List { uri: show.uri, title: show.name, subtitle: String::new() });
-        if let Some(v) = self.view.as_mut() {
+        if let Some(v) = self.open.view_mut() {
             v.reveal_uri = Some(episode);
         }
     }
@@ -1655,7 +1651,7 @@ impl App {
         if self.settings_view.is_some() {
             return Page::Settings;
         }
-        match &self.view {
+        match self.open.view() {
             Some(v) => Page::List { uri: v.uri.clone(), title: v.title.clone(), subtitle: v.subtitle.clone() },
             None => Page::Home,
         }
@@ -1688,9 +1684,7 @@ impl App {
     /// Put `p` in the main Pane (no history change).
     fn show(&mut self, p: Page) {
         // keep the list we leave as it was (sort, filter, scroll)
-        if let Some(v) = self.view.take() {
-            self.list_views.insert(v.uri.clone(), v);
-        }
+        self.open.close();
         self.artist = None;
         self.stats_view = None;
         self.settings_view = None;
@@ -1708,17 +1702,16 @@ impl App {
                 self.settings_view = Some(Default::default());
             }
             Page::List { uri, title, subtitle } => {
-                let v = self.list_views.remove(&uri).unwrap_or_else(|| {
+                self.open.open(&uri, || {
                     let mut v = TrackView::new(&uri, &title);
                     v.subtitle = subtitle;
                     v
                 });
-                self.view = Some(v);
                 self.recheck_saved(&uri);
-                if self.lists.get(&uri).is_none_or(|l| !l.complete()) || self.stale(&uri) {
-                    self.lists.remove(&uri);
+                if self.open.list(&uri).is_none_or(|l| !l.complete()) || self.stale(&uri) {
+                    self.open.drop_list(&uri);
                     // fetched again from the top: a show asks for its older episodes again too
-                    if let Some(v) = self.view.as_mut() {
+                    if let Some(v) = self.open.view_mut() {
                         v.more_for = None;
                     }
                     self.send(Command::GetTracks { uri });
@@ -1897,11 +1890,11 @@ impl App {
 
     /// ▶ Play on the open list: the whole context from its first track.
     fn play_view(&mut self) {
-        let Some(uri) = self.view.as_ref().map(|v| v.uri.clone()) else { return };
+        let Some(uri) = self.open.view().map(|v| v.uri.clone()) else { return };
         if self.book_refused(&uri) {
             return;
         }
-        let Some(v) = self.view.as_ref() else { return };
+        let Some(v) = self.open.view() else { return };
         let cmd = if v.uri == crate::tracks::LIKED {
             Command::PlayFrom { context_uri: v.uri.clone(), index: 0, track_uri: None }
         } else {
@@ -1911,7 +1904,7 @@ impl App {
     }
 
     fn sort(&mut self, col: Col) {
-        match self.view.as_mut() {
+        match self.open.view_mut() {
             Some(v) => v.cycle_sort(col),
             None => self.say("Open a playlist, album or Liked Songs to sort it"),
         }
@@ -1919,7 +1912,7 @@ impl App {
 
     /// A book on librespot, which Spotify won't give chapter keys (D57): says what plays them instead.
     fn book_refused(&mut self, uri: &str) -> bool {
-        let book = self.lists.get(uri).and_then(|l| l.header.as_ref()).is_some_and(|h| h.book);
+        let book = self.open.list(uri).and_then(|l| l.header.as_ref()).is_some_and(|h| h.book);
         if book && self.engine_kind == singularity_proto::EngineKind::Librespot {
             self.say(singularity_proto::AUDIOBOOKS_NEED);
             return true;
@@ -1927,24 +1920,15 @@ impl App {
         false
     }
 
-    /// The view's visible order and the list length.
-    pub(crate) fn view_order(&self) -> std::rc::Rc<[usize]> {
-        match (&self.view, self.view.as_ref().and_then(|v| self.lists.get(&v.uri))) {
-            (Some(v), Some(l)) => v.order(l),
-            _ => std::rc::Rc::new([]),
-        }
-    }
-
     /// Play the row at view position `vi`: the context starts at that track's place in the original list.
     fn play_row(&mut self, vi: usize) {
-        let order = self.view_order();
-        let (Some(v), Some(&ri)) = (self.view.as_ref(), order.get(vi)) else { return };
-        let Some(row) = self.lists.get(&v.uri).and_then(|l| l.rows().get(ri)) else { return };
+        let (Some(v), Some((ri, row))) = (self.open.view(), self.open.row_at(vi)) else { return };
         if !row.playable {
             return self.say("This track isn't available");
         }
-        let cmd = Command::PlayFrom { context_uri: v.uri.clone(), index: ri as u32, track_uri: Some(row.uri.clone()) };
-        if self.book_refused(&v.uri.clone()) {
+        let uri = v.uri.clone();
+        let cmd = Command::PlayFrom { context_uri: uri.clone(), index: ri as u32, track_uri: Some(row.uri.clone()) };
+        if self.book_refused(&uri) {
             return;
         }
         self.send(cmd);
@@ -1977,9 +1961,9 @@ impl App {
     }
 
     fn tracks_key(&mut self, k: KeyEvent) -> bool {
-        let len = self.view_order().len();
+        let len = self.open.order().len();
         let removable = self.rows_removable();
-        let Some(v) = self.view.as_mut() else { return false };
+        let Some(v) = self.open.view_mut() else { return false };
         let page = v.visible.max(1) as i64;
         match k.code {
             // Alt+↑↓: the selected row moves one place in your own playlist (#55)
@@ -2006,7 +1990,7 @@ impl App {
                 self.remove_row(sel);
             }
             // Esc clears the filter, then goes back to Home (it never quits from inside a list)
-            KeyCode::Esc if !v.filter.is_empty() => v.set_filter(String::new()),
+            KeyCode::Esc if !v.filter.is_empty() => self.open.set_filter(String::new()),
             KeyCode::Esc => self.run(Action::Back),
             _ => return false,
         }
@@ -2014,27 +1998,25 @@ impl App {
     }
 
     fn filter_key(&mut self, k: KeyEvent) {
-        let len = self.view_order().len();
-        let Some(v) = self.view.as_mut() else { return };
-        match k.code {
+        let len = self.open.order().len();
+        let Some(v) = self.open.view_mut() else { return };
+        let filter = match k.code {
             KeyCode::Esc => {
                 v.filtering = false;
-                v.set_filter(String::new());
+                String::new()
             }
-            KeyCode::Enter => v.filtering = false,
+            KeyCode::Enter => return v.filtering = false,
             KeyCode::Backspace => {
                 let mut f = v.filter.clone();
                 f.pop();
-                v.set_filter(f);
+                f
             }
-            KeyCode::Up => v.move_sel(-1, len),
-            KeyCode::Down => v.move_sel(1, len),
-            KeyCode::Char(c) => {
-                let f = format!("{}{c}", v.filter);
-                v.set_filter(f);
-            }
-            _ => {}
-        }
+            KeyCode::Up => return v.move_sel(-1, len),
+            KeyCode::Down => return v.move_sel(1, len),
+            KeyCode::Char(c) => format!("{}{c}", v.filter),
+            _ => return,
+        };
+        self.open.set_filter(filter);
     }
 
     fn side_key(&mut self, k: KeyEvent) -> bool {
@@ -2045,7 +2027,7 @@ impl App {
             KeyCode::Enter | KeyCode::Right => {
                 let row = self.sidebar.sel;
                 self.open_side(row);
-                if row > 0 && self.view.is_some() {
+                if row > 0 && self.open.view().is_some() {
                     self.focus = "home".into();
                 }
             }
@@ -2096,7 +2078,8 @@ impl App {
 
     /// Right-click on a track-list row.
     pub fn open_row_menu(&mut self, vi: usize, at: Option<(u16, u16)>) {
-        if let Some(v) = self.view.as_mut() {
+        let Some(id) = self.open.id_at(vi) else { return };
+        if let Some(v) = self.open.view_mut() {
             v.sel = vi;
         }
         let mut items = vec![("Play from here".to_string(), MenuAct::PlayHere), ("Play next".into(), MenuAct::PlayNext), ("Add to queue".into(), MenuAct::Queue)];
@@ -2104,12 +2087,12 @@ impl App {
         if self.rows_removable() {
             items.push(("Remove from this playlist".into(), MenuAct::RemoveFromPlaylist));
         }
-        if let Some((uri, ..)) = self.target_track(&Target::Row(vi)) {
+        if let Some((uri, ..)) = self.target_track(&Target::Row(id.clone())) {
             items.extend(self.save_entry(&uri));
         }
         items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::Track(vi)).map(|r| (r.x + 4, r.y + 1))).unwrap_or((0, 0));
-        self.menu = Some(Menu { at, target: Target::Row(vi), items, selected: 0 });
+        self.menu = Some(Menu { at, target: Target::Row(id), items, selected: 0 });
     }
 
     /// Right-click on a queue entry.
@@ -2192,12 +2175,7 @@ impl App {
     pub(crate) fn target_track(&self, t: &Target) -> Option<(String, String, String)> {
         match t {
             Target::Card(c) => self.card(*c).map(|k| (k.uri.clone(), k.name.clone(), k.kind.clone())),
-            Target::Row(vi) => {
-                let order = self.view_order();
-                let v = self.view.as_ref()?;
-                let row = self.lists.get(&v.uri)?.rows().get(*order.get(*vi)?)?;
-                Some((row.uri.clone(), row.name.clone(), "track".into()))
-            }
+            Target::Row(id) => self.open.find(id).map(|(_, row)| (row.uri.clone(), row.name.clone(), "track".into())),
             Target::Queued { uri, name, .. } | Target::Track { uri, name } => Some((uri.clone(), name.clone(), "track".into())),
             Target::Library { uri, name } => Some((uri.clone(), name.clone(), uri.split(':').nth(1).unwrap_or("").into())),
             Target::Pane(_) => None,
@@ -2210,7 +2188,18 @@ impl App {
         if let Target::Pane(slot) = &m.target {
             return self.pane_menu_run(slot, act);
         }
-        let Some((uri, name, kind)) = self.target_track(&m.target) else { return };
+        let Some((uri, name, kind)) = self.target_track(&m.target) else {
+            // (another Client took it out, or the list was fetched again without it)
+            if matches!(m.target, Target::Row(_)) {
+                self.say("That song isn't in the list any more");
+            }
+            return;
+        };
+        // where a row shows now
+        let shown_at = |app: &App| match &m.target {
+            Target::Row(id) => app.open.find(id).map(|(vi, _)| vi),
+            _ => None,
+        };
         let name = if name.is_empty() { "it".to_string() } else { name };
         match act {
             MenuAct::Play => match m.target {
@@ -2218,7 +2207,7 @@ impl App {
                 _ => self.send(Command::Play { uri: Some(uri) }),
             },
             MenuAct::PlayHere => {
-                if let Target::Row(vi) = m.target {
+                if let Some(vi) = shown_at(self) {
                     self.play_row(vi);
                 }
             }
@@ -2251,7 +2240,7 @@ impl App {
             MenuAct::Save => self.toggle_saved(&uri, &name),
             MenuAct::AddToPlaylist => self.ask_add(vec![uri], &name),
             MenuAct::RemoveFromPlaylist => {
-                if let Target::Row(vi) = m.target {
+                if let Some(vi) = shown_at(self) {
                     self.remove_row(vi);
                 }
             }
@@ -2332,9 +2321,9 @@ impl App {
         } else if let Some(p) = self.palette.as_mut() {
             p.query.push_str(s);
             p.selected = 0;
-        } else if let Some(v) = self.view.as_mut().filter(|v| v.filtering) {
+        } else if let Some(v) = self.open.view().filter(|v| v.filtering) {
             let f = format!("{}{s}", v.filter);
-            v.set_filter(f);
+            self.open.set_filter(f);
         }
     }
 
@@ -2682,8 +2671,11 @@ impl App {
                     Some(Hit::Track(vi)) => {
                         self.focus = "home".into();
                         // a second click on the same row soon after plays it
-                        let double = self.last_click.is_some_and(|(t, i)| i == vi && t.elapsed() < DOUBLE_CLICK);
-                        if let Some(v) = self.view.as_mut() {
+                        // (by identity: a page arriving between the clicks doesn't make it another song, D81)
+                        let id = self.open.id_at(vi);
+                        let double = self.last_click.is_some_and(|(t, i)| i == vi && t.elapsed() < DOUBLE_CLICK) && id.is_some() && self.last_row == id;
+                        self.last_row = id;
+                        if let Some(v) = self.open.view_mut() {
                             v.sel = vi;
                         }
                         if double {
@@ -2692,7 +2684,7 @@ impl App {
                         } else {
                             self.last_click = Some((Instant::now(), vi));
                             // a drag from here reorders your own playlist
-                            self.playlists.press = self.rows_removable().then_some(vi);
+                            self.playlists.press = self.rows_removable().then(|| self.open.id_at(vi)).flatten();
                         }
                     }
                     Some(Hit::SortCol(c)) => self.sort(c),
@@ -3201,18 +3193,18 @@ mod tests {
         std::fs::write(dir.path().join("keys.toml"), "schema = 1\npreset = \"vim\"\n").unwrap();
         saved(&mut app);
         assert_eq!(app.keymap.preset, "vim");
-        app.view = Some(TrackView::new("spotify:collection", "Liked Songs"));
+        app.open.put_view(TrackView::new("spotify:collection", "Liked Songs"));
         let rows = (0..5).map(|i| singularity_proto::TrackRow { uri: format!("spotify:track:{i}"), name: format!("Song {i}"), playable: true, ..Default::default() }).collect();
         app.track_page(singularity_proto::TrackPage { uri: "spotify:collection".into(), offset: 0, total: 5, tracks: rows, header: None });
         press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
         press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.view.as_ref().unwrap().sel, 2);
+        assert_eq!(app.open.view().unwrap().sel, 2);
         press(&mut app, KeyCode::Char('G'), KeyModifiers::SHIFT);
-        assert_eq!(app.view.as_ref().unwrap().sel, 4);
+        assert_eq!(app.open.view().unwrap().sel, 4);
         // in the filter, j is a letter
         press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
         press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.view.as_ref().unwrap().filter, "j");
+        assert_eq!(app.open.view().unwrap().filter, "j");
     }
 
     #[test]
@@ -3259,8 +3251,8 @@ mod tests {
         for i in 0..KEPT + 10 {
             app.track_page(page(&format!("spotify:playlist:{i}")));
         }
-        assert!(app.lists.len() <= KEPT && app.fetched.len() <= KEPT, "{} lists kept", app.lists.len());
-        assert!(app.lists.contains_key(uri), "never the one on screen");
+        assert!(app.open.len() <= KEPT && app.fetched.len() <= KEPT, "{} lists kept", app.open.len());
+        assert!(app.open.has(uri), "never the one on screen");
     }
 
     #[test]
