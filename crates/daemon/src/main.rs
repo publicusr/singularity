@@ -1,9 +1,6 @@
 //! `singularityd` binary: parse flags, pick the Engine, serve the socket.
 
-use singularityd::engine::{Engine, FakeEngine};
-use singularityd::app_engine::AppEngine;
-use singularityd::librespot::LibrespotEngine;
-use singularityd::soloist::SoloistEngine;
+use singularityd::assembly::{CatalogueMode, Host, Plan, assemble};
 
 /// The log names the account and what plays: whoever opened it (a Client, launchd, a shell), it's owner-only.
 fn private_log() {
@@ -64,78 +61,22 @@ async fn run() -> anyhow::Result<i32> {
         Err(e) => return Err(e.into()),
     };
     tracing::info!("singularityd {} listening on {}", singularityd::VERSION, path.display());
-    // the Engine (D51, D52): --fake-engine, a pretend player for UI work without Soloist or a Spotify account; else
-    // config.toml's [engine] (Soloist on Linux, librespot on macOS; any of them where it exists)
+    // the Engine (D51, D52, D55), its tap and the Catalogue, from config.toml's [engine], the environment and the flags
+    // (--fake-engine, --no-catalogue, --fake-catalogue <home.json>): see `assembly`
     let args: Vec<String> = std::env::args().collect();
-    let fake = args.iter().any(|a| a == "--fake-engine");
-    let choice = singularity_config::load_config(&singularity_config::config_path()).value.engine;
-    // SINGULARITY_ENGINE=soloist|spotify-app|librespot overrides config.toml (tests pin it, whatever the OS)
-    use singularity_config::EngineKind as Kind;
-    let kind = match std::env::var("SINGULARITY_ENGINE").as_deref() {
-        _ if fake => None,
-        Ok("soloist") => Some(Kind::Soloist),
-        Ok("spotify-app") => Some(Kind::SpotifyApp),
-        Ok("librespot") => Some(Kind::Librespot),
-        _ => Some(choice.kind.resolved()),
+    let config = singularity_config::load_config(&singularity_config::config_path());
+    let assembly = assemble(config, &args, |k| std::env::var(k).ok(), &Host::this());
+    // the Client reads the same config.toml and shows its problems (a toast, the Settings page); here they're logged
+    for p in &assembly.problems {
+        tracing::warn!("{p}");
+    }
+    let fake = assembly.fake();
+    let catalogue = match &assembly.catalogue {
+        CatalogueMode::Recorded(path) => Some(fake_catalogue(path)?),
+        CatalogueMode::Spotify => Some(singularityd::catalogue::spawn(singularityd::catalogue::Dirs::from_env(), assembly.identity.clone())),
+        CatalogueMode::Off => None,
     };
-    let app = (kind == Some(Kind::SpotifyApp)).then(|| AppEngine::new(&choice.device, None));
-    let librespot = (kind == Some(Kind::Librespot)).then(|| LibrespotEngine::new(&choice.device, None, singularityd::catalogue::Dirs::from_env()));
-    // macOS: Soloist runs in the Soloist VM (D55); its audio comes to the Daemon, which plays it and taps it
-    #[cfg(target_os = "macos")]
-    // (SINGULARITY_SOLOIST=local: a local stand-in instead, as the pty harness's tests use on any OS)
-    let soloist_vm = (kind == Some(Kind::Soloist) && std::env::var("SINGULARITY_SOLOIST").as_deref() != Ok("local")).then(|| {
-        let feed = singularityd::tap::Feed::new();
-        (SoloistEngine::in_vm(&choice.device, feed.clone()), feed)
-    });
-    #[cfg(not(target_os = "macos"))]
-    let soloist_vm: Option<(SoloistEngine, std::sync::Arc<singularityd::tap::Feed>)> = None;
-    // `[engine] device` names Soloist too, on Linux as in the VM (audit C5): the same name in Connect and in the identity
-    let local_soloist = SoloistEngine { cache_mb: choice.soloist_cache_mb(), device_name: SoloistEngine::named(&choice.device), ..SoloistEngine::from_env() };
-    let soloist_identity = soloist_vm.as_ref().map(|(s, _)| s.device_name.clone()).unwrap_or_else(|| local_soloist.device_name.clone());
-    let identity = app.as_ref().map(|a| a.identity.clone()).or_else(|| librespot.as_ref().map(|l| l.identity.clone())).or_else(|| (kind == Some(Kind::Soloist)).then(|| singularityd::engine::Identity { device_name: soloist_identity, ..Default::default() })).unwrap_or_default();
-    // --no-catalogue: playback only (no Spotify login / private API)
-    // --fake-catalogue <home.json>: a recorded Home feed instead of Spotify (UI work, screenshots; `fake` feature)
-    let fake_home = args.iter().position(|a| a == "--fake-catalogue").and_then(|i| args.get(i + 1));
-    let catalogue = if let Some(path) = fake_home {
-        Some(fake_catalogue(path)?)
-    } else {
-        (!args.iter().any(|a| a == "--no-catalogue")).then(|| singularityd::catalogue::spawn(singularityd::catalogue::Dirs::from_env(), identity.clone()))
-    };
-    // the AudioTap listens to the Engine's own audio: Soloist's PipeWire stream, librespot's samples in-process; the
-    // fake Engine "plays" a synthetic groove (SINGULARITY_TAP=off: none, so a test Daemon never listens to the
-    // owner's real player). The Spotify app's audio: its PipeWire stream on Linux, a Core Audio process tap on macOS (#67).
-    use singularityd::tap::{StreamOf, TapSource};
-    let tap = match (&librespot, kind) {
-        _ if fake => Some(TapSource::Synthetic),
-        (Some(l), _) => Some(TapSource::Feed(l.feed.clone())),
-        (None, _) if soloist_vm.is_some() => soloist_vm.as_ref().map(|(_, f)| TapSource::Feed(f.clone())),
-        #[cfg(target_os = "macos")]
-        (None, Some(Kind::SpotifyApp)) => Some(TapSource::App(singularityd::tap::Feed::new())),
-        #[cfg(not(target_os = "macos"))]
-        (None, Some(Kind::SpotifyApp)) => Some(TapSource::PipeWire(StreamOf::SpotifyApp)),
-        _ => Some(TapSource::PipeWire(StreamOf::Soloist)),
-    };
-    let tap = tap.filter(|_| std::env::var("SINGULARITY_TAP").as_deref() != Ok("off"));
-    let engine: Box<dyn Engine> = match (app, librespot) {
-        _ if fake => Box::new(FakeEngine),
-        (_, Some(l)) => {
-            tracing::info!("Engine: librespot, {:?} on Connect", l.identity.device_name);
-            Box::new(LibrespotEngine { catalogue: catalogue.as_ref().map(|(tx, _)| tx.clone()), ..l })
-        }
-        (Some(app), _) => {
-            tracing::info!("Engine: the Spotify app, {:?} on Connect", app.identity.device_name);
-            // SINGULARITY_START_APP=0: never look for or start the real app (tests)
-            let start_app = std::env::var("SINGULARITY_START_APP").as_deref() != Ok("0");
-            Box::new(AppEngine { catalogue: catalogue.as_ref().map(|(tx, _)| tx.clone()), start_app, ..app })
-        }
-        (None, None) => match soloist_vm {
-            Some((s, _)) => {
-                tracing::info!("Engine: Soloist in the Soloist VM, {:?} on Connect", s.device_name);
-                Box::new(s)
-            }
-            None => Box::new(local_soloist),
-        },
-    };
+    let (engine, tap) = assembly.build(catalogue.as_ref().map(|(tx, _)| tx.clone()));
     // MPRIS on the session bus (SINGULARITY_DBUS=<address> picks another bus, =off none). A fake Engine stays off the
     // session bus unless asked, so test Daemons never show up in the desktop's media controls.
     let notify = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -159,7 +100,7 @@ async fn run() -> anyhow::Result<i32> {
         _ if !cfg!(target_os = "macos") => None,
         Ok("off") => None,
         Ok("on") => Some(singularityd::nowplaying::Options { notify: notify.clone() }),
-        _ if fake || kind == Some(Kind::SpotifyApp) => None,
+        _ if fake || matches!(assembly.plan, Plan::SpotifyApp { .. }) => None,
         _ => Some(singularityd::nowplaying::Options { notify: notify.clone() }),
     };
     // MPRIS is D-Bus: Linux's (a macOS session has no session bus)
@@ -178,11 +119,11 @@ async fn run() -> anyhow::Result<i32> {
 }
 
 #[cfg(feature = "fake")]
-fn fake_catalogue(path: &str) -> anyhow::Result<(tokio::sync::mpsc::Sender<singularityd::catalogue::CatCmd>, tokio::sync::mpsc::Receiver<singularityd::catalogue::CatEvent>)> {
+fn fake_catalogue(path: &std::path::Path) -> anyhow::Result<(tokio::sync::mpsc::Sender<singularityd::catalogue::CatCmd>, tokio::sync::mpsc::Receiver<singularityd::catalogue::CatEvent>)> {
     Ok(singularityd::catalogue::spawn_fake(serde_json::from_str(&std::fs::read_to_string(path)?)?))
 }
 
 #[cfg(not(feature = "fake"))]
-fn fake_catalogue(_: &str) -> anyhow::Result<(tokio::sync::mpsc::Sender<singularityd::catalogue::CatCmd>, tokio::sync::mpsc::Receiver<singularityd::catalogue::CatEvent>)> {
+fn fake_catalogue(_: &std::path::Path) -> anyhow::Result<(tokio::sync::mpsc::Sender<singularityd::catalogue::CatCmd>, tokio::sync::mpsc::Receiver<singularityd::catalogue::CatEvent>)> {
     anyhow::bail!("--fake-catalogue is only in builds with the `fake` feature: cargo build -p singularityd --features fake")
 }

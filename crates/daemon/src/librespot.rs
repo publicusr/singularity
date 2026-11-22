@@ -35,14 +35,6 @@ pub struct LibrespotEngine {
     pub feed: Arc<Feed>,
 }
 
-impl LibrespotEngine {
-    /// librespot as Engine, under `device` on Connect (empty: "Singularity on <this computer>").
-    pub fn new(device: &str, catalogue: Option<mpsc::Sender<CatCmd>>, dirs: Dirs) -> LibrespotEngine {
-        let device_name = if device.trim().is_empty() { format!("Singularity on {}", crate::app_engine::this_computer()) } else { device.trim().to_string() };
-        LibrespotEngine { identity: Identity { device_name, via_connect: true, version: String::new(), player: "librespot" }, catalogue, dirs, feed: Feed::new() }
-    }
-}
-
 /// Where the last volume is kept: Connect doesn't remember it for a receiver, and starting at 50% every time
 /// would be a surprise either way (the catalogue dir: owner-only, next to the login it plays with).
 fn volume_file(dirs: &Dirs) -> std::path::PathBuf {

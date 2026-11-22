@@ -6,7 +6,7 @@
 //! - Hot reload: `Watched` notices a save (by mtime and size, which also catches editors that save by renaming).
 //! - A bad value never stops the app: what can't be read falls back to its default, and the problem is reported.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -32,7 +32,7 @@ pub fn keys_path() -> PathBuf {
     dir().join("keys.toml")
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     pub ui: Ui,
@@ -45,7 +45,7 @@ pub struct Config {
 
 /// Lyrics against the music (D67): a constant shift for the lyrics and karaoke Widgets, for an output that plays
 /// later than the player says (Bluetooth headphones) or lyrics stamped early or late throughout.
-#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LyricsSync {
     /// ms the words follow the music later (negative: earlier)
@@ -60,7 +60,7 @@ impl LyricsSync {
 }
 
 /// Which Engine plays (D51); read when the Daemon starts.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct EngineChoice {
     pub kind: EngineKind,
@@ -85,7 +85,7 @@ impl EngineChoice {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EngineKind {
     /// this OS's own: Soloist on Linux (x86_64 and arm64, D73), librespot on macOS (D54) and on CPUs Spotify ships no
@@ -101,9 +101,13 @@ pub enum EngineKind {
 impl EngineKind {
     /// What `Auto` means here.
     pub fn resolved(self) -> EngineKind {
+        self.resolved_on(cfg!(target_os = "macos"), cfg!(any(target_arch = "x86_64", target_arch = "aarch64")))
+    }
+
+    /// What `Auto` means on macOS or not, on a CPU Spotify ships Soloist for or not.
+    pub fn resolved_on(self, macos: bool, soloist_cpu: bool) -> EngineKind {
         match self {
-            EngineKind::Auto if cfg!(target_os = "macos") => EngineKind::Librespot,
-            EngineKind::Auto if !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")) => EngineKind::Librespot,
+            EngineKind::Auto if macos || !soloist_cpu => EngineKind::Librespot,
             EngineKind::Auto => EngineKind::Soloist,
             k => k,
         }
@@ -111,7 +115,7 @@ impl EngineKind {
 }
 
 /// The idle takeover: after `minutes` without input the black hole leaves its Pane and drifts over the screen.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Idle {
     pub enabled: bool,
@@ -124,7 +128,7 @@ impl Default for Idle {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Ui {
     /// singularity, event-horizon, classic, cockpit or terminal
@@ -145,14 +149,14 @@ impl Default for Ui {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Notifications {
     /// a desktop notification when a new track starts
     pub track_change: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Visuals {
     pub gpu: GpuPower,
@@ -169,7 +173,7 @@ impl Default for Visuals {
 }
 
 /// Which graphics chip draws the Visuals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GpuPower {
     /// the built-in graphics: plenty for the black hole, and frugal
@@ -354,8 +358,10 @@ pub struct Read<T> {
     pub migrated: Option<String>,
 }
 
-/// Parse a config file's text (migrating it to `target` first).
-pub fn parse<T: Default + for<'de> Deserialize<'de>>(name: &str, text: &str, migrations: &[Migration], target: i64) -> Read<T> {
+/// Parse a config file's text (migrating it to `target` first). A value that doesn't fit defaults only that key (a
+/// section of the wrong shape, that section), the rest stays as written, and each is reported by its dotted key:
+/// one typo in `[ui]` never switches the Engine back to its default.
+pub fn parse<T: Default + Serialize + for<'de> Deserialize<'de>>(name: &str, text: &str, migrations: &[Migration], target: i64) -> Read<T> {
     let mut problems = vec![];
     let mut doc = match text.parse::<DocumentMut>() {
         Ok(d) => d,
@@ -369,14 +375,84 @@ pub fn parse<T: Default + for<'de> Deserialize<'de>>(name: &str, text: &str, mig
             None
         }
     };
-    let value = match toml_edit::de::from_document::<T>(doc) {
-        Ok(v) => v,
-        Err(e) => {
-            problems.push(format!("{name}: {} (using the defaults)", one_line(&e.to_string())));
-            T::default()
-        }
-    };
+    let value = tolerant(name, doc, &mut problems);
     Read { value, problems, migrated }
+}
+
+/// Deserialize `doc`, leaving out each key whose value doesn't fit (found by the error's place in the text) until
+/// the rest does. What can't be pinned to a key defaults the whole file, as before.
+fn tolerant<T: Default + Serialize + for<'de> Deserialize<'de>>(name: &str, mut doc: DocumentMut, problems: &mut Vec<String>) -> T {
+    let defaults = toml_edit::ser::to_document(&T::default()).ok();
+    loop {
+        let text = doc.to_string();
+        let e = match toml_edit::Document::parse(text.clone()).map_err(toml_edit::de::Error::from).and_then(toml_edit::de::from_document::<T>) {
+            Ok(v) => return v,
+            Err(e) => e,
+        };
+        let spanned = toml_edit::Document::parse(text).ok();
+        let culprit = e.span().zip(spanned.as_ref()).and_then(|(at, d)| culprit(d.as_table(), &at));
+        let Some((path, bad)) = culprit.filter(|(path, _)| remove(&mut doc, path)) else {
+            problems.push(format!("{name}: {} (using the defaults)", one_line(&e.to_string())));
+            return T::default();
+        };
+        let key = path.join(".");
+        // (serde words an unknown enum value this way; any other wording still reads right as "isn't valid")
+        let what = if e.message().starts_with("unknown variant") { "isn't known".to_string() } else { format!("isn't valid ({})", one_line(e.message())) };
+        let instead = match defaults.as_ref().and_then(|d| default_at(d.as_item(), &path)) {
+            Some(Item::Value(Value::String(s))) if !s.value().is_empty() => format!("using {}", s.value()),
+            Some(Item::Value(v)) if !v.is_inline_table() => format!("using {}", shown(v)),
+            Some(_) => "using its defaults".into(),
+            // a key the defaults don't have (a binding) is gone; without the defaults to look in, it's the default
+            None if defaults.is_some() => "left out".into(),
+            None => "using the default".into(),
+        };
+        problems.push(format!("{name}: {key} = {bad} {what}; {instead}"));
+    }
+}
+
+/// The innermost key whose value holds `at` (a span in the text), and that value as written.
+fn culprit(table: &dyn toml_edit::TableLike, at: &std::ops::Range<usize>) -> Option<(Vec<String>, String)> {
+    for (key, item) in table.iter() {
+        let inner = item.as_table_like().and_then(|t| culprit(t, at));
+        if let Some((mut path, bad)) = inner {
+            path.insert(0, key.to_string());
+            return Some((path, bad));
+        }
+        if item.span().is_some_and(|s| s.start <= at.start && at.end <= s.end) {
+            let bad = match item {
+                Item::Value(v) => shown(v),
+                _ => "a table".into(),
+            };
+            return Some((vec![key.to_string()], bad));
+        }
+    }
+    None
+}
+
+/// A value as TOML writes it, without its comments and spacing.
+fn shown(v: &Value) -> String {
+    let mut v = v.clone();
+    v.decor_mut().clear();
+    v.to_string()
+}
+
+/// Take the key at `path` out of the document. False if it wasn't there.
+fn remove(doc: &mut DocumentMut, path: &[String]) -> bool {
+    let Some((last, parents)) = path.split_last() else { return false };
+    let mut table: &mut dyn toml_edit::TableLike = doc.as_table_mut();
+    for p in parents {
+        let Some(next) = table.get_mut(p).and_then(Item::as_table_like_mut) else { return false };
+        table = next;
+    }
+    table.remove(last).is_some()
+}
+
+/// What the defaults have at `path`.
+fn default_at<'a>(mut item: &'a Item, path: &[String]) -> Option<&'a Item> {
+    for p in path {
+        item = item.as_table_like()?.get(p)?;
+    }
+    Some(item)
 }
 
 fn one_line(s: &str) -> String {
@@ -389,7 +465,7 @@ pub fn load_config(path: &Path) -> Read<Config> {
 }
 
 /// Read a file the same way (`keys.toml` too).
-pub fn load<T: Default + for<'de> Deserialize<'de>>(path: &Path, name: &str, default: &str, migrations: &[Migration], target: i64) -> Read<T> {
+pub fn load<T: Default + Serialize + for<'de> Deserialize<'de>>(path: &Path, name: &str, default: &str, migrations: &[Migration], target: i64) -> Read<T> {
     if !path.exists() {
         let _ = write_atomic(path, default);
     }
@@ -500,7 +576,7 @@ fn set_watched(path: &Path, default: &str, dotted: &str, v: Value, mut after_rea
 }
 
 /// `keys.toml` as written: a preset and bindings by action name (checked against the actions by the Client).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Keys {
     pub preset: String,
@@ -513,7 +589,7 @@ impl Default for Keys {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum OneOrMany {
     One(String),
@@ -861,6 +937,52 @@ minutes = 3
         assert_eq!((r.value, r.problems.len()), (Config::default(), 1));
         let r = parse::<Config>("config.toml", "schema = 9\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert!(r.problems[0].contains("newer Singularity"));
+    }
+
+    #[test]
+    fn a_typo_in_one_section_leaves_the_others_as_written() {
+        let text = "schema = 7\n[ui]\ndesign = \"cockpit\"\ntransparent = \"yes\"\n[engine]\nkind = \"librespot\"\ndevice = \"Den\"\n";
+        let r = parse::<Config>("config.toml", text, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        assert_eq!((r.value.engine.kind, r.value.engine.device.as_str()), (EngineKind::Librespot, "Den"), "[engine] stays");
+        assert_eq!((r.value.ui.design.as_str(), r.value.ui.transparent), ("cockpit", false), "only the bad key defaults");
+        assert_eq!(r.problems.len(), 1, "{:?}", r.problems);
+        assert!(r.problems[0].starts_with("config.toml: ui.transparent = \"yes\" isn't valid"), "{:?}", r.problems);
+        assert!(r.problems[0].ends_with("; using false"), "{:?}", r.problems);
+    }
+
+    #[test]
+    fn an_unknown_engine_is_named_and_the_default_used() {
+        let r = parse::<Config>("config.toml", "schema = 7\n[engine]\nkind = \"x\"\ncache_gb = 2\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        assert_eq!(r.problems, ["config.toml: engine.kind = \"x\" isn't known; using auto"]);
+        assert_eq!((r.value.engine.kind, r.value.engine.cache_gb), (EngineKind::Auto, 2.0));
+    }
+
+    #[test]
+    fn every_bad_key_is_reported_and_a_section_of_the_wrong_shape_defaults_whole() {
+        let text = "schema = 7\nui = 5\n[visuals]\ngpu = \"quantum\"\nunfocused_fps = \"fast\"\nmotion_fps = 60\n[idle]\nminutes = 9\n";
+        let r = parse::<Config>("config.toml", text, CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        assert_eq!(r.problems.len(), 3, "{:?}", r.problems);
+        assert!(r.problems.iter().any(|p| p.starts_with("config.toml: ui = 5 isn't valid") && p.ends_with("; using its defaults")), "{:?}", r.problems);
+        assert!(r.problems.iter().any(|p| p == "config.toml: visuals.gpu = \"quantum\" isn't known; using low-power"), "{:?}", r.problems);
+        assert!(r.problems.iter().any(|p| p.starts_with("config.toml: visuals.unfocused_fps = \"fast\"") && p.ends_with("; using 30")), "{:?}", r.problems);
+        assert_eq!((r.value.ui, r.value.visuals.motion_fps, r.value.idle.minutes), (Ui::default(), 60, 9.0));
+        // the file itself is never changed by reading it
+        assert!(r.migrated.is_none());
+    }
+
+    #[test]
+    fn a_table_where_a_value_belongs_defaults_that_key() {
+        let r = parse::<Config>("config.toml", "schema = 7\n[ui.design]\nx = 1\n[engine]\nkind = \"librespot\"\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
+        assert_eq!((r.value.engine.kind, r.value.ui.design.as_str()), (EngineKind::Librespot, "singularity"));
+        assert!(r.problems.len() == 1 && r.problems[0].starts_with("config.toml: ui.design = a table isn't valid"), "{:?}", r.problems);
+    }
+
+    #[test]
+    fn a_bad_binding_is_left_out_and_the_rest_kept() {
+        let r = parse::<Keys>("keys.toml", "preset = \"vim\"\n[bindings]\nlike = 5\nnext = \"n\"\n", &[], KEYS_SCHEMA);
+        assert_eq!((r.value.preset.as_str(), r.value.bindings.len()), ("vim", 1));
+        assert_eq!(r.value.bindings["next"].keys(), ["n"]);
+        assert!(r.problems.len() == 1 && r.problems[0].starts_with("keys.toml: bindings.like = 5 isn't valid") && r.problems[0].ends_with("; left out"), "{:?}", r.problems);
     }
 
     #[test]

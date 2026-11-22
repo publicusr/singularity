@@ -30,15 +30,6 @@ pub struct App {
     pub version: String,
 }
 
-impl AppEngine {
-    /// The app as Engine, under `device` on Connect (empty: this computer's name).
-    pub fn new(device: &str, catalogue: Option<mpsc::Sender<CatCmd>>) -> AppEngine {
-        let device_name = if device.trim().is_empty() { this_computer() } else { device.trim().to_string() };
-        let version = installed().map(|a| a.version).unwrap_or_default();
-        AppEngine { identity: Identity { device_name, via_connect: true, version, player: "the Spotify app" }, catalogue, start_app: true }
-    }
-}
-
 impl Engine for AppEngine {
     fn kind(&self) -> singularity_proto::EngineKind {
         singularity_proto::EngineKind::SpotifyApp
