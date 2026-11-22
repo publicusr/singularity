@@ -22,10 +22,7 @@ const MAX_TRACKS: u32 = 10_000;
 /// Folders opened at most (they nest a few levels; guard anyway).
 const MAX_FOLDERS: usize = 200;
 
-/// Runs one private-API query.
-pub trait Fetch {
-    fn query(&mut self, op: &str, vars: Value) -> impl std::future::Future<Output = anyhow::Result<Value>> + Send;
-}
+use crate::pathfinder::Fetch;
 
 /// Queries through the Catalogue task, paced.
 pub struct CatalogueFetch {

@@ -19,6 +19,7 @@ pub mod pcm;
 pub mod process_tap;
 pub mod playlists;
 pub mod programs;
+pub mod pathfinder;
 pub mod queries;
 pub mod secrets;
 pub mod soloist;
