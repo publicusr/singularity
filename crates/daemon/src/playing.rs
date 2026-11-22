@@ -1,4 +1,4 @@
-//! Now playing (candidate 5): what is playing and on which device, the same for every Client.
+//! Now playing (D80): what is playing and on which device, the same for every Client.
 //!
 //! The hub feeds it the Engine's state, another device's state (or that it's gone), the track names the Catalogue
 //! found or couldn't find, and a resync; each returns what the hub sends on. It holds no lock and never waits, so
@@ -61,7 +61,7 @@ impl NowPlaying {
 
     /// Another device's state, or `None` when no other device plays (any more).
     pub fn remote(&mut self, state: Option<PlaybackState>) -> Changed {
-        let Some(mut state) = state else { return Changed { show: self.gone(), ask: vec![] } };
+        let Some(mut state) = state else { return self.gone() };
         let ask = self.fill(&mut state);
         self.remote = Some(state.clone());
         self.shown = state.clone();
@@ -69,19 +69,21 @@ impl NowPlaying {
     }
 
     /// No other device is ours to follow any more (it stopped, or we logged out): the bar goes back to this
-    /// computer's Engine. `None` when none was followed.
-    pub fn gone(&mut self) -> Option<PlaybackState> {
-        self.remote.take()?;
+    /// computer's Engine. Nothing to show when none was followed.
+    pub fn gone(&mut self) -> Changed {
+        if self.remote.take().is_none() {
+            return Changed::default();
+        }
         // (named with what came meanwhile: the Engine's rows don't wait for its next update)
         let mut engine = std::mem::take(&mut self.engine);
-        self.fill(&mut engine);
+        let ask = self.fill(&mut engine);
         self.engine = engine;
         self.shown = self.engine.clone();
-        Some(self.shown.clone())
+        Changed { show: Some(self.shown.clone()), ask }
     }
 
     /// Names the Catalogue found: shown at once.
-    pub fn described(&mut self, items: Vec<Item>) -> PlaybackState {
+    pub fn described(&mut self, items: Vec<Item>) -> Changed {
         for i in items {
             self.describing.remove(&i.uri);
             trim_any(&mut self.described, MAX_DESCRIBED);
@@ -89,25 +91,26 @@ impl NowPlaying {
         }
         // what's on screen, and the Engine's state kept behind another device's
         let (mut shown, mut engine) = (std::mem::take(&mut self.shown), std::mem::take(&mut self.engine));
-        self.fill(&mut shown);
-        self.fill(&mut engine);
+        let mut ask = self.fill(&mut shown);
+        ask.extend(self.fill(&mut engine));
         (self.shown, self.engine) = (shown, engine);
         if let Some(r) = self.remote.as_mut() {
             *r = self.shown.clone();
         }
-        self.shown.clone()
+        Changed { show: Some(self.shown.clone()), ask }
     }
 
     /// Names that couldn't be found: a later state asks again (A8; the Catalogue keeps them from being asked too often).
-    pub fn describe_failed(&mut self, uris: Vec<String>) {
+    pub fn describe_failed(&mut self, uris: Vec<String>) -> Changed {
         for uri in uris {
             self.describing.remove(&uri);
         }
+        Changed::default()
     }
 
     /// A change the Clients showed early didn't happen: the last real state puts it back.
-    pub fn resync(&self) -> PlaybackState {
-        self.shown.clone()
+    pub fn resync(&self) -> Changed {
+        Changed { show: Some(self.shown.clone()), ask: vec![] }
     }
 
     /// Where a Client's command goes: a play/pause button drives the other device while one plays.
@@ -178,7 +181,7 @@ mod tests {
         let first = now.engine(playing(bare(t), PlayStatus::Playing));
         assert_eq!(first.ask, [t]);
         assert_eq!(now.engine(playing(bare(t), PlayStatus::Playing)).ask, Vec::<String>::new(), "already asked");
-        let shown = now.described(vec![named(t, "Song")]);
+        let shown = now.described(vec![named(t, "Song")]).show.unwrap();
         assert_eq!(shown.item.unwrap().name, "Song");
     }
 
@@ -208,7 +211,7 @@ mod tests {
         now.engine(ours.clone());
         now.remote(Some(playing(named("spotify:track:p", "Phone song"), PlayStatus::Playing)));
         assert_eq!(now.remote(None).show, Some(ours.clone()));
-        assert_eq!(now.gone(), None, "nothing to let go of twice");
+        assert_eq!(now.gone(), Changed::default(), "nothing to let go of twice");
         assert!(!now.elsewhere());
     }
 
@@ -224,9 +227,20 @@ mod tests {
         now.engine(ours);
         now.remote(Some(playing(bare(theirs), PlayStatus::Playing)));
         now.described(vec![named(mine, "Mine"), named(theirs, "Theirs")]);
-        let back = now.gone().unwrap();
+        let back = now.gone().show.unwrap();
         assert_eq!(back.item.unwrap().name, "Mine");
         assert_eq!(back.queue[0].item.name, "Theirs");
+    }
+
+    /// Review: a track marked as being asked about must be asked about, whichever input found it bare.
+    #[test]
+    fn a_bare_track_found_on_coming_back_is_asked_for() {
+        let mut now = NowPlaying::default();
+        let t = "spotify:track:mine";
+        now.engine(playing(bare(t), PlayStatus::Paused));
+        now.remote(Some(playing(named("spotify:track:p", "P"), PlayStatus::Playing)));
+        now.describe_failed(vec![t.into()]);
+        assert_eq!(now.gone().ask, [t], "asked again once the bar is back on it");
     }
 
     #[test]

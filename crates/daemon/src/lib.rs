@@ -57,7 +57,7 @@ pub struct Hub {
     pub started_unix_ms: u64,
     /// which Engine this Daemon runs
     pub engine_kind: proto::EngineKind,
-    /// what is playing and on which device (candidate 5); never held across an await
+    /// what is playing and on which device (D80); never held across an await
     pub now: std::sync::Mutex<playing::NowPlaying>,
     pub engine_status: Mutex<Option<proto::EngineStatus>>,
     pub catalogue_status: Mutex<Option<proto::CatalogueStatus>>,
@@ -107,9 +107,9 @@ impl Hub {
         self.now.lock().expect("now playing lock")
     }
 
-    /// Feed Now playing one input and send on what it changed: the playback to Clients (sent under the lock, so
+    /// Give Now playing one input and send on what it changed: the playback to Clients (sent under the lock, so
     /// Clients hear states in the order they were made), the tracks to name to the Catalogue.
-    async fn playing(&self, input: impl FnOnce(&mut playing::NowPlaying) -> playing::Changed) {
+    async fn feed(&self, input: impl FnOnce(&mut playing::NowPlaying) -> playing::Changed) {
         let ask = {
             let mut now = self.now();
             let changed = input(&mut now);
@@ -123,14 +123,6 @@ impl Hub {
             && c.send(CatCmd::Describe(ask)).await.is_err()
         {
             self.report("the Catalogue has stopped; those tracks won't be named");
-        }
-    }
-
-    /// No other device is playing (any more): the bar goes back to this computer's Engine.
-    fn other_device_gone(&self) {
-        let mut now = self.now();
-        if let Some(s) = now.gone() {
-            let _ = self.events.send(Event::Playback(s));
         }
     }
 
@@ -495,7 +487,7 @@ async fn run_engine(engine: Box<dyn Engine>, hub: Arc<Hub>, mut commands: mpsc::
 async fn on_engine_event(hub: &Arc<Hub>, ev: EngineEvent, engine_tx: &mpsc::Sender<Command>) {
     match ev {
         // (while another device plays, Clients follow that one)
-        EngineEvent::Playback(state) => hub.playing(|now| now.engine(state)).await,
+        EngineEvent::Playback(state) => hub.feed(|now| now.engine(state)).await,
         EngineEvent::Status(status) => {
             // (the app's status comes with every Connect update: Clients hear only changes)
             let mut current = hub.engine_status.lock().await;
@@ -578,7 +570,8 @@ async fn log_plays(hub: Arc<Hub>) {
 
 /// Where playback is happening, for the listening log.
 async fn device_name(hub: &Hub) -> String {
-    if hub.now().elsewhere()
+    let elsewhere = hub.now().elsewhere();
+    if elsewhere
         && let Some(d) = hub.devices.lock().await.iter().flatten().find(|d| d.active && !d.is_engine)
     {
         return d.name.clone();
@@ -642,7 +635,7 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                     }
                 }
                 // shown at once
-                hub.playing(|now| playing::Changed { show: Some(now.described(items)), ask: vec![] }).await;
+                hub.feed(|now| now.described(items)).await;
             }
             CatEvent::Saved(entries) => {
                 let _ = hub.events.send(Event::Saved { entries });
@@ -676,7 +669,7 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                     let _ = hub.events.send(Event::Jam { jam });
                 }
             }
-            CatEvent::Remote(r) => hub.playing(|now| now.remote(r)).await,
+            CatEvent::Remote(r) => hub.feed(|now| now.remote(r)).await,
             CatEvent::Status(s) => {
                 // librespot plays as the Catalogue's login: waiting for one, it starts as soon as there is one
                 let waiting = matches!(*hub.engine_status.lock().await, Some(proto::EngineStatus::NotConfigured { .. }));
@@ -685,7 +678,7 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                 }
                 // logged out, or the session gone, no other device is ours to follow or control any more (C5)
                 if matches!(s, proto::CatalogueStatus::LoggedOut | proto::CatalogueStatus::Unavailable { .. }) {
-                    hub.other_device_gone();
+                    hub.feed(|now| now.gone()).await;
                 }
                 *hub.catalogue_status.lock().await = Some(s.clone());
                 let _ = hub.events.send(Event::Catalogue(s));
@@ -720,16 +713,16 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
             CatEvent::TaskStopped(name, why) => {
                 // with the Catalogue gone, so is what Connect told us (C5); it says again once it's back
                 if name == catalogue::TASK {
-                    hub.other_device_gone();
+                    hub.feed(|now| now.gone()).await;
                 }
                 hub.task_stopped(name, &why).await
             }
             CatEvent::TaskStarted(name) => hub.task_running(name).await,
             // these couldn't be looked up: clear the marks so a later playback state asks again (A8; the Catalogue
             // keeps them from being asked about too often)
-            CatEvent::DescribeFailed(uris) => hub.now().describe_failed(uris),
+            CatEvent::DescribeFailed(uris) => hub.feed(|now| now.describe_failed(uris)).await,
             // a change the Clients showed early didn't happen: the last real state puts it back
-            CatEvent::Resync => hub.playing(|now| playing::Changed { show: Some(now.resync()), ask: vec![] }).await,
+            CatEvent::Resync => hub.feed(|now| now.resync()).await,
         }
     }
 }
@@ -990,14 +983,16 @@ const WRITE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A command for the player: to the Engine, or over Connect while another device plays.
 pub(crate) async fn transport(hub: &Hub, cmd: Command) {
+    // (without the Catalogue no other device is followed: the command goes to the Engine as it is)
+    let Some(c) = &hub.catalogue else { return to_player(hub, cmd).await };
     let route = hub.now().route(cmd);
-    match (route, &hub.catalogue) {
-        (playing::Route::Connect(cmd), Some(c)) => {
+    match route {
+        playing::Route::Connect(cmd) => {
             if c.send(CatCmd::Remote(cmd)).await.is_err() {
                 hub.report("the Catalogue has stopped; that command wasn't delivered");
             }
         }
-        (playing::Route::Connect(cmd) | playing::Route::Engine(cmd), _) => to_player(hub, cmd).await,
+        playing::Route::Engine(cmd) => to_player(hub, cmd).await,
     }
 }
 
@@ -1086,6 +1081,8 @@ mod tests {
     async fn logging_out_lets_go_of_the_other_device() {
         let hub = test_hub();
         let phone = PlaybackState { context_uri: Some("spotify:playlist:on-the-phone".into()), ..Default::default() };
+        let ours = PlaybackState { context_uri: Some("spotify:playlist:here".into()), ..Default::default() };
+        hub.now().engine(ours.clone());
         hub.now().remote(Some(phone));
         let (tx, rx) = mpsc::channel(4);
         tokio::spawn(run_catalogue(rx, hub.clone()));
@@ -1097,7 +1094,7 @@ mod tests {
         })
         .await
         .expect("the other device is still remembered after logout");
-        assert_eq!(hub.playback(), PlaybackState::default(), "the bar is back on this computer");
+        assert_eq!(hub.playback(), ours, "the bar is back on this computer");
     }
 
     /// A1: a background task that panics is named in the health view and started again.
