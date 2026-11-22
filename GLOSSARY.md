@@ -43,6 +43,12 @@ One of the few places where Linux and macOS have their own code (Engine, AudioTa
 autostart, process lookup). Everything else is shared (D49); `docs/PLATFORMS.md` lists them.
 _Avoid_: port, backend
 
+**Engine assembly**:
+The Daemon's choice, at start, of which Engine runs, the device name it shows on Connect, where the AudioTap's audio
+comes from and the Catalogue, made in one step from the config, the command line and the computer. A bad config value
+resets only that key, and says so.
+_Avoid_: engine setup, bootstrap
+
 **Build**:
 One Soloist release from Spotify's CDN. Builds expire after about 90 days; the Daemon stages a newer one and restarts
 the Engine into it at a quiet moment (paused, idle, or a track change), so the user never sees the expiry.
