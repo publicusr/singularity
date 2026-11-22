@@ -181,11 +181,11 @@ impl App {
         if kind(uri) != "track" {
             return;
         }
-        let Some(list) = self.lists.get_mut(LIKED) else { return };
-        if !list.complete() {
+        let Some(complete) = self.open.list(LIKED).map(|l| l.complete()) else { return };
+        if !complete {
             // pages are still arriving by offset: start over rather than shift them
-            self.lists.remove(LIKED);
-            if self.view.as_ref().is_some_and(|v| v.uri == LIKED) {
+            self.open.drop_list(LIKED);
+            if self.open.view().is_some_and(|v| v.uri == LIKED) {
                 self.send(Command::GetTracks { uri: LIKED.into() });
             }
             return;
@@ -201,26 +201,26 @@ impl App {
                     None => return,
                 },
             };
-            if let Some(list) = self.lists.get_mut(LIKED) {
+            if let Some(mut list) = self.open.edit(LIKED) {
                 list.insert(at, row);
             }
-        } else if let Some(removed) = list.remove(uri) {
+        } else if let Some(removed) = self.open.edit(LIKED).and_then(|mut l| l.remove(uri)) {
             self.saved.stash.insert(uri.into(), removed);
         }
         // the sidebar's and the list's "N songs" count along
-        let Some(n) = self.lists.get(LIKED).map(|l| l.total) else { return };
+        let Some(n) = self.open.list(LIKED).map(|l| l.total) else { return };
         let count = format!("{n} songs");
         if let Some(it) = self.library.as_mut().and_then(|l| l.items.iter_mut().find(|i| i.kind == "liked")) {
             it.subtitle = count.clone();
         }
-        if let Some(v) = self.view.as_mut().filter(|v| v.uri == LIKED) {
+        if let Some(v) = self.open.view_mut().filter(|v| v.uri == LIKED) {
             v.subtitle = count;
         }
     }
 
     /// A track's row from anywhere on screen (lists, search, the artist page, what's playing).
     fn find_row(&self, uri: &str) -> Option<TrackRow> {
-        let lists = self.lists.values().flat_map(|l| l.rows().iter());
+        let lists = self.open.all_rows();
         let search = self.searching().into_iter().filter_map(|s| s.results()).flat_map(|r| r.tracks.iter());
         let artist = self.artist.iter().filter_map(|a| a.page.as_ref()).flat_map(|p| p.top_tracks.iter());
         if let Some(r) = lists.chain(search).chain(artist).find(|r| r.uri == uri) {

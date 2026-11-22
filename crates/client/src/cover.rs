@@ -183,12 +183,12 @@ impl App {
     /// Show `url` as the playlist's cover (sidebar and header), remembering what to put back.
     fn show_cover(&mut self, uri: &str, url: Option<String>) {
         let lib = self.library.as_ref().and_then(|l| l.items.iter().find(|i| i.uri == uri)).map(|i| i.image_url.clone()).unwrap_or_default();
-        let header = self.lists.get(uri).and_then(|l| l.header.as_ref()).and_then(|h| h.cover_url.clone());
+        let header = self.open.list(uri).and_then(|l| l.header.as_ref()).and_then(|h| h.cover_url.clone());
         self.covers_was.entry(uri.into()).or_insert((lib, header));
         if let Some(i) = self.library.as_mut().and_then(|l| l.items.iter_mut().find(|i| i.uri == uri)) {
             i.image_url = url.clone();
         }
-        if let Some(h) = self.lists.get_mut(uri).and_then(|l| l.header.as_mut()) {
+        if let Some(h) = self.open.header_mut(uri) {
             h.cover_url = url;
         }
     }
@@ -201,16 +201,16 @@ impl App {
             self.say("Cover changed");
         }
         if ok {
-            if self.view.as_ref().is_some_and(|v| v.uri == uri) {
+            if self.open.view().is_some_and(|v| v.uri == uri) {
                 self.send(Command::GetTracks { uri: uri.into() });
             } else {
-                self.lists.remove(uri);
+                self.open.drop_list(uri);
             }
         } else if let Some((lib, header)) = was {
             if let Some(i) = self.library.as_mut().and_then(|l| l.items.iter_mut().find(|i| i.uri == uri)) {
                 i.image_url = lib;
             }
-            if let Some(h) = self.lists.get_mut(uri).and_then(|l| l.header.as_mut()) {
+            if let Some(h) = self.open.header_mut(uri) {
                 h.cover_url = header;
             }
         }

@@ -327,11 +327,11 @@ fn fmt_dur(ms: u64) -> String {
 }
 
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
-    let Some(mut view) = app.view.take() else { return };
+    let Some(mut view) = app.open.take_view() else { return };
     let empty = TrackList::default();
     // a page has arrived (an empty playlist's says total 0)
-    let arrived = app.lists.contains_key(&view.uri);
-    let list = app.lists.get(&view.uri).unwrap_or(&empty);
+    let arrived = app.open.has(&view.uri);
+    let list = app.open.list(&view.uri).unwrap_or(&empty);
     let show = view.uri.starts_with("spotify:show:");
     // an audiobook (#62): a show of chapters
     let book = list.header.as_ref().is_some_and(|h| h.book);
@@ -524,7 +524,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     if view.uri != LIKED && !show {
         app.want_saved(ahead.iter().map(String::as_str), view.visible);
     }
-    app.view = Some(view);
+    app.open.put_view(view);
 }
 
 #[cfg(test)]

@@ -57,7 +57,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     side.visible = (r.height / pitch).max(1) as usize;
     side.top = side.top.min(n.saturating_sub(side.visible));
     let focused = app.focus == "library";
-    let open = app.view.as_ref().map(|v| v.uri.clone());
+    let open = app.open.view().map(|v| v.uri.clone());
     let page = app.current_page();
     let mut hits = vec![];
     for row in side.top..n.min(side.top + side.visible) {
