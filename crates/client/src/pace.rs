@@ -68,6 +68,7 @@ impl Moves {
     }
 }
 
+/// A pointer move: hovering or dragging.
 fn is_move(ev: &Event) -> bool {
     matches!(ev, Event::Mouse(m) if matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)))
 }

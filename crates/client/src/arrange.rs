@@ -295,6 +295,26 @@ impl App {
         }
     }
 
+    /// The window changed size while a Pane is held: the zones moved under the pointer (#21: the preview went on
+    /// showing a zone of the old size, and a release dropped there). The zone under the pointer is found again, as if
+    /// it had been there since its last move. If a preview was up, the new zone's shows at once (the pointer didn't
+    /// move; blanking it until a dwell would blink); if none was, it shows after its dwell as usual.
+    pub fn tile_resized(&mut self) {
+        let Some(t) = self.tile.as_ref().filter(|t| t.live) else { return };
+        let (slot, (x, y), was) = (t.slot.clone(), t.at, t.zone.is_some());
+        let since = t.trail.last().map_or(t.since, |p| p.0);
+        // (not sticky: the border it would stick to is the old window's)
+        let cand = zone_near(&self.layout.compute_shaped(self.pane_area(), self.cell_aspect()).slots, self.pane_area(), &slot, x, y, None);
+        let preview = cand.as_ref().filter(|_| was).and_then(|z| self.drop_tree(&slot, z));
+        if let Some(t) = self.tile.as_mut() {
+            t.zone = cand.clone().filter(|_| preview.is_some());
+            t.aim = cand.clone().filter(|_| was);
+            t.preview = preview;
+            t.cand = cand;
+            t.since = since;
+        }
+    }
+
     /// Let go at (x, y): what the preview shows is the drop (#21: a flick let go before its zone was shown landed
     /// somewhere never shown); nothing shown, it goes back.
     fn tile_up(&mut self, x: u16, y: u16) {
@@ -346,24 +366,25 @@ impl App {
     /// A divider dragged to `pos`, or as far toward it as it goes without leaving a Pane too small (or the well out of
     /// shape): a fast drag past that stops at the limit, not short of it (#21).
     pub fn drag_divider(&mut self, d: &Divider, pos: u16) {
-        let to = |p: u16| {
+        let dragged_to = |p: u16| {
             let mut t = self.layout.clone();
             t.drag(d, p);
             t
         };
-        let t = to(pos);
+        let t = dragged_to(pos);
         if self.fits(&t) || !self.fits(&self.layout) {
             self.layout = t;
             return;
         }
-        // from where the boundary is now (it fits), the furthest cell toward `pos` that still fits
-        let Some(mut ok) = self.layout.boundary(d).filter(|&b| self.fits(&to(b))) else { return };
+        // from where the boundary is now (it fits), the furthest cell toward `pos` that still fits (found by halving;
+        // whatever it lands on fits)
+        let Some(mut ok) = self.layout.boundary(d).filter(|&b| self.fits(&dragged_to(b))) else { return };
         let mut bad = pos;
         while ok.abs_diff(bad) > 1 {
             let mid = ((ok as u32 + bad as u32) / 2) as u16;
-            if self.fits(&to(mid)) { ok = mid } else { bad = mid }
+            if self.fits(&dragged_to(mid)) { ok = mid } else { bad = mid }
         }
-        self.layout = to(ok);
+        self.layout = dragged_to(ok);
     }
 
     /// A divider let go: a layout that changed is an edit.

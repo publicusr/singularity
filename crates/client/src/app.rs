@@ -2593,13 +2593,13 @@ impl App {
             (None, Some(Hit::Divider(i))) => Some(i),
             _ => None,
         };
+        // a release we never heard ends what it held, before anything else sees the event (even one that only wakes)
+        self.release_unheard(m.kind);
         // any mouse event wakes the idle UI, and does nothing else
         if self.wake() {
             return;
         }
         let coarse = m.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT);
-        // a release we never heard ends what it held, before anything else sees the event
-        self.release_unheard(m.kind);
         // the one gate: while a popup is open the mouse belongs to it, and nothing behind it ever sees an event
         // (decided from state, not from last frame's hit rectangles, which a burst or a key in the same batch outdates)
         if let Some(modal) = self.modal() {
