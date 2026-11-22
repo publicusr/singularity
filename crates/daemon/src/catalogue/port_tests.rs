@@ -168,3 +168,28 @@ async fn the_newest_search_goes_first_and_the_rest_keep_their_order() {
     let asked: Vec<&str> = asked.iter().map(|s| s.trim_end()).collect();
     assert_eq!(asked[..3], ["fetchPlaylist", "searchDesktop nova", "libraryV3"]);
 }
+
+/// #8: a search waited behind Connect work in the Catalogue's one loop, here the resume after an update, which
+/// retries for 6.5 s while this computer's device comes back (an Engine's own commands could wait 20 s for it).
+#[tokio::test]
+async fn a_search_is_answered_while_connect_is_busy() {
+    let f = Fixtures::new(|_, _| Ok(json!({})));
+    let (_dir, tx, mut ev) = catalogue(&f);
+    let resume = crate::engine::Resume { context_uri: None, track_uri: "spotify:track:t".into(), position_ms: 0, paused: false };
+    tx.send(CatCmd::Resume(resume)).await.unwrap();
+    tx.send(CatCmd::Search("nova".into())).await.unwrap();
+    let answered = tokio::time::timeout(Duration::from_secs(1), next(&mut ev, |e| if let CatEvent::Search(r) = e { Some(r) } else { None })).await;
+    assert!(answered.is_ok(), "the search waited for Connect");
+}
+
+#[test]
+fn connect_work_goes_to_connect_and_browsing_stays() {
+    let resume = crate::engine::Resume { context_uri: None, track_uri: "spotify:track:t".into(), position_ms: 0, paused: false };
+    let play_from = CatCmd::PlayFrom { context_uri: "spotify:playlist:p".into(), index: 0, track_uri: None };
+    for c in [CatCmd::Devices, CatCmd::Transfer("d".into()), CatCmd::StartJam, CatCmd::EndJam, CatCmd::Remote(Command::Next), CatCmd::Engine(Command::Pause), CatCmd::Queue(QueueEdit::Clear), play_from, CatCmd::Resume(resume)] {
+        assert!(is_connect(&c), "{c:?}");
+    }
+    for c in [CatCmd::Search("x".into()), CatCmd::Library, CatCmd::Home, CatCmd::Describe(vec![]), CatCmd::Login, CatCmd::Logout, CatCmd::Reconnect] {
+        assert!(!is_connect(&c), "{c:?}");
+    }
+}

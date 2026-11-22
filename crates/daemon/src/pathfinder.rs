@@ -9,7 +9,7 @@ use crate::queries::QueryRegistry;
 use librespot_core::{error::ErrorKind, session::Session};
 use serde_json::Value;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Runs one private-API query.
 pub trait Fetch: Send {
@@ -59,23 +59,28 @@ impl<R: Raw> Fetch for Pathfinder<R> {
     }
 }
 
-/// The Catalogue's Spotify session, shared with the adapter: the Catalogue logs in and out, the adapter asks through
-/// whichever session is current.
-pub type SessionSlot = Arc<Mutex<Option<Session>>>;
+/// The Catalogue's Spotify session, shared with the adapter and Connect: the Catalogue logs in and out, they ask
+/// through whichever session is current (and Connect can wait for the next one, D79).
+pub type SessionSlot = Arc<tokio::sync::watch::Sender<Option<Session>>>;
+
+/// An empty slot: logged out.
+pub fn session_slot() -> SessionSlot {
+    Arc::new(tokio::sync::watch::Sender::new(None))
+}
 
 /// [`Raw`] through the logged-in session, with [`crate::spotify`]'s deadline.
 pub struct SessionRaw(pub SessionSlot);
 
 impl Raw for SessionRaw {
     fn ready(&self) -> anyhow::Result<()> {
-        match self.0.lock().unwrap().as_ref() {
+        match self.0.borrow().as_ref() {
             Some(_) => Ok(()),
             None => anyhow::bail!("not logged in to Spotify"),
         }
     }
 
     async fn call(&mut self, op: &str, hash: &str, vars: Value) -> Result<Value, librespot_core::Error> {
-        let session = self.0.lock().unwrap().clone().ok_or_else(|| librespot_core::Error::unauthenticated("not logged in to Spotify"))?;
+        let session = self.0.borrow().clone().ok_or_else(|| librespot_core::Error::unauthenticated("not logged in to Spotify"))?;
         crate::spotify(session.spclient().pathfinder_query(op, hash, vars)).await
     }
 }
@@ -84,6 +89,7 @@ impl Raw for SessionRaw {
 mod tests {
     use super::*;
     use std::collections::{HashMap, VecDeque};
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Spotify as a script: each call takes the next answer and is written down with the hash it used.
@@ -154,7 +160,7 @@ mod tests {
     #[tokio::test]
     async fn logged_out_nothing_is_looked_up() {
         let (reg, crawls) = registry(&[]);
-        let mut p = Pathfinder::new(reg, SessionRaw(SessionSlot::default()));
+        let mut p = Pathfinder::new(reg, SessionRaw(session_slot()));
         let e = p.query("someOpNoOneHas", Value::Null).await.unwrap_err().to_string();
         assert!(e.contains("not logged in"), "{e}");
         assert_eq!(crawls.load(Ordering::SeqCst), 0);

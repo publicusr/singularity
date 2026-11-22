@@ -30,6 +30,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
             let evs = match cmd {
                 CatCmd::Home => vec![CatEvent::Home(home.clone())],
                 CatCmd::Login => vec![CatEvent::Status(ready.clone())],
+                CatCmd::Reconnect => vec![],
                 CatCmd::Logout => vec![CatEvent::Status(CatalogueStatus::LoggedOut)],
                 CatCmd::Library => vec![CatEvent::Library(lib.clone())],
                 // a name with "fail" in it fails, as does deleting a playlist whose URI has it
