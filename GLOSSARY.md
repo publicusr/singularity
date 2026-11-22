@@ -213,6 +213,11 @@ _Avoid_: lyrics offset (LRC's `[offset:]` runs the other way), latency
 LRCLIB's lyrics format (YAML): lines with start and end times and, when word-synced, their words timed too.
 _Avoid_: elrc
 
+**Song lyrics**:
+The playing song's lyrics as the Client holds them: what was asked for (with or without word timing), what came back,
+and what the lyrics and Karaoke Widgets show of them. A new answer starts both afresh.
+_Avoid_: lyrics state, lyrics cache
+
 **Visual**:
 A Widget whose purpose is decoration that reacts to the audio (black hole, spectrum, starfield).
 _Avoid_: visualizer, effect, animation
