@@ -84,6 +84,11 @@ between tracks when the Daemon's own command (Play, Next, Previous, TogglePlay) 
 not an invitation to restart (D63).
 _Avoid_: safe restart, idle window
 
+**Handover**:
+What one Soloist run leaves for the next when the Daemon restarts it (into a new Build, or for a stuck stream): where
+playback was, so it carries on there, and when the last stuck-stream restart was.
+_Avoid_: restart state, carry-over
+
 **Jam**:
 Spotify's shared listening session ("social session" internally): one device hosts, guests add to and skip in the
 host's queue. Server-side, through `social-connect`; a host needs Premium, and any listed Connect player can host.
