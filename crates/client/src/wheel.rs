@@ -94,21 +94,15 @@ impl App {
             // three rows a notch; synced lyrics are held where the wheel puts them for a while, then follow the song
             // again; unsynced ones stay where the reader took them
             Widget::Lyrics => {
-                let Some(synced) = self.lyrics.as_ref().map(|l| l.synced) else { return };
-                self.focus = "lyrics".into();
-                let d = rows * if coarse { 10 } else { 3 };
-                if synced {
-                    self.lyrics_wrap.follow.by(d);
-                } else {
-                    self.lyrics_scroll = (self.lyrics_scroll as i64 + d as i64).max(0) as usize;
+                if self.lyrics.wheel_lyrics(rows * if coarse { 10 } else { 3 }) {
+                    self.focus = "lyrics".into();
                 }
             }
             // the line being sung is the whole point when the lyrics are synced (the whole song is the lyrics
             // Widget's); unsynced, it shows the whole text, which the wheel scrolls for a while
             Widget::Karaoke => {
-                if self.lyrics.as_ref().is_some_and(|l| !l.synced && !l.lines.is_empty()) {
+                if self.lyrics.wheel_karaoke(rows * if coarse { 10 } else { 3 }) {
                     self.focus = "karaoke".into();
-                    self.karaoke.follow.by(rows * if coarse { 10 } else { 3 });
                 }
             }
             Widget::TopWeek => {

@@ -63,7 +63,7 @@ fn card(i: usize, kind: &str) -> Card {
 
 fn lyrics(app: &mut App, synced: bool) {
     let lines = (0..120u64).map(|i| LyricLine { start_ms: 1_000 + i * 3_000, text: format!("Line number {i} of the song"), ..Default::default() }).collect();
-    app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced, lines, source: "LRCLIB".into(), ..Default::default() });
+    app.lyrics_event(Lyrics { uri: "spotify:track:s".into(), synced, lines, source: "LRCLIB".into(), ..Default::default() });
 }
 
 fn stats(period: StatsPeriod) -> singularity_proto::Stats {

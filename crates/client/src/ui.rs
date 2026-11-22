@@ -2656,7 +2656,7 @@ mod tests {
         app.playback.queue = (0..14).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:q{i}"), name: format!("Song number {i}"), artists: vec!["Saffron Echo".into()], duration_ms: 150_000 + i * 7_000, ..Default::default() }, source: if i < 3 { "queue" } else { "context" }.into(), uid: format!("u{i}") }).collect();
         let words = ["Light bends where the music falls", "Every line a slow orbit, and the long ones fold over onto the next row when the Pane is narrow", "We drift past the photon sphere", "", "Nothing escapes the chorus"];
         let lines = (0..40).map(|i| LyricLine { start_ms: 2_000 + i * 4_000, text: words[i as usize % words.len()].into(), ..Default::default() }).collect();
-        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
+        app.lyrics_event(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
         for i in 0..40u8 {
             app.meters.push(SpectrumFrame { bands: (0..64u8).map(|b| b.wrapping_mul(3).wrapping_add(i)).collect(), level: 180, vu: [200, 150], beat: i % 8 == 0, out_level: 170u8.wrapping_add(i), out_vu: [200, 150], out_bands: [180, 120, 90] });
         }
@@ -2822,6 +2822,23 @@ mod tests {
 
     // ── Lyrics (#14) ──
 
+    /// A request sent just before the link to the Daemon dropped is never answered: once connected again, the lyrics
+    /// are asked for again.
+    #[test]
+    fn a_reconnect_asks_for_the_lyrics_again() {
+        use singularity_proto::Command;
+        let (mut app, mut rx) = playing_app(200_000);
+        app.playback.item.as_mut().unwrap().uri = "spotify:track:s".into();
+        app.tick();
+        assert_eq!(sent(&mut rx), vec![Command::GetLyrics { uri: "spotify:track:s".into(), words: false }]);
+        app.link = Link::Connecting;
+        app.tick();
+        app.link = Link::Connected { version: "test".into() };
+        app.on_connected();
+        app.tick();
+        assert!(sent(&mut rx).contains(&Command::GetLyrics { uri: "spotify:track:s".into(), words: false }), "asked again");
+    }
+
     #[test]
     fn lyrics_follow_the_song_and_a_click_seeks() {
         use singularity_proto::{Command, LyricLine, Lyrics};
@@ -2839,7 +2856,7 @@ mod tests {
         app.tick();
         assert!(sent(&mut rx).is_empty(), "word timing already asked for: lyrics alone needn't ask again");
         let lines = (0..20).map(|i| LyricLine { start_ms: i * 5_000, text: format!("line {i}"), ..Default::default() }).collect();
-        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "Musixmatch".into(), ..Default::default() });
+        app.lyrics_event(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "Musixmatch".into(), ..Default::default() });
         app.playback.position_ms = 31_000; // line 6 plays
         app.playback.timestamp_ms = singularity_proto::now_ms();
         let s = render(&mut app, 160, 48);
@@ -2853,9 +2870,9 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::Seek { position_ms: 45_250 }]);
         app.config.lyrics.delay_ms = 0;
         // none: a calm empty state that says why
-        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), ..Default::default() });
+        app.lyrics_event(Lyrics { uri: "spotify:track:s".into(), ..Default::default() });
         assert!(render(&mut app, 160, 48).contains("no lyrics for this one"));
-        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), missing: "no lyrics on Spotify or LRCLIB".into(), ..Default::default() });
+        app.lyrics_event(Lyrics { uri: "spotify:track:s".into(), missing: "no lyrics on Spotify or LRCLIB".into(), ..Default::default() });
         assert!(render(&mut app, 160, 48).contains("no lyrics on Spotify or LRCLIB"));
     }
 
@@ -2875,7 +2892,7 @@ mod tests {
         app.playback.item.as_mut().unwrap().uri = "spotify:track:s".into();
         let long = "and the long ones fold over onto the next row when the Pane is narrow";
         let lines = (0..30).map(|i| LyricLine { start_ms: i * 5_000, text: if i % 3 == 1 { format!("{i} {long}") } else { format!("line {i}") }, ..Default::default() }).collect();
-        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
+        app.lyrics_event(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
         let at = |app: &mut App, ms: u64| {
             app.playback.position_ms = ms;
             app.playback.timestamp_ms = singularity_proto::now_ms();
@@ -2907,7 +2924,7 @@ mod tests {
         // the rows are kept between frames: another song with as many lines, at the same width, is wrapped afresh
         app.playback.item.as_mut().unwrap().uri = "spotify:track:t".into();
         let lines = (0..30).map(|i| LyricLine { start_ms: i * 5_000, text: format!("another song {i}"), ..Default::default() }).collect();
-        app.lyrics = Some(Lyrics { uri: "spotify:track:t".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
+        app.lyrics_event(Lyrics { uri: "spotify:track:t".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
         let rows = lyrics_pane(&mut app, 40, 12);
         assert!(rows.iter().any(|r| r.contains("another song 1")) && !rows.iter().any(|r| r.contains("long")), "{rows:#?}");
     }
@@ -2920,7 +2937,7 @@ mod tests {
         let (mut app, _rx) = playing_app(400_000);
         app.playback.item.as_mut().unwrap().uri = "spotify:track:s".into();
         let lines = (0..200).map(|i| LyricLine { start_ms: i * 5_000, text: format!("line {i} of the song"), ..Default::default() }).collect();
-        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
+        app.lyrics_event(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
         app.playback.position_ms = 300_100;
         app.playback.timestamp_ms = singularity_proto::now_ms();
         for (w, h) in [(72u16, 27u16), (40, 12), (120, 36), (160, 48), (256, 64)] {
@@ -2939,11 +2956,14 @@ mod tests {
         let (mut app, _rx) = playing_app(400_000);
         app.playback.item.as_mut().unwrap().uri = "spotify:track:s".into();
         let lines = (0..10).map(|i| LyricLine { start_ms: 0, text: format!("line {i} with words enough to wrap"), ..Default::default() }).collect();
-        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: false, lines, source: "LRCLIB".into(), ..Default::default() });
-        app.lyrics_scroll = 1_000;
+        app.lyrics_event(Lyrics { uri: "spotify:track:s".into(), synced: false, lines, source: "LRCLIB".into(), ..Default::default() });
+        assert!(app.lyrics.wheel_lyrics(1_000));
         let rows = lyrics_pane(&mut app, 20, 8);
         assert!(rows[6].contains("wrap") && rows[7].trim() == "LRCLIB · unsynced", "the last row of the last line ends the view: {rows:#?}");
-        assert!(app.lyrics_scroll < 1_000, "clamped, so the wheel turns back at once");
+        // clamped, so the wheel turns back at once
+        app.lyrics.wheel_lyrics(-1);
+        let back = lyrics_pane(&mut app, 20, 8);
+        assert_eq!(back[1..7], rows[0..6], "a row back: {back:#?}");
     }
 
     #[test]
@@ -2952,7 +2972,7 @@ mod tests {
         let (mut app, _rx) = playing_app(400_000);
         app.playback.item.as_mut().unwrap().uri = "spotify:track:s".into();
         let lines = (0..60).map(|i| LyricLine { start_ms: 0, text: format!("line {i}"), ..Default::default() }).collect();
-        app.lyrics = Some(Lyrics { uri: "spotify:track:s".into(), synced: false, lines, source: "LRCLIB".into(), ..Default::default() });
+        app.lyrics_event(Lyrics { uri: "spotify:track:s".into(), synced: false, lines, source: "LRCLIB".into(), ..Default::default() });
         let at = |app: &mut App, ms: u64| {
             app.playback.position_ms = ms;
             app.playback.timestamp_ms = singularity_proto::now_ms();
@@ -2965,11 +2985,11 @@ mod tests {
         let rows = lyrics_pane(&mut app, 30, 13);
         assert_eq!(rows[4].trim(), "line 30", "{rows:#?}");
         // the wheel moves the view: it stays where the reader put it as the song goes on
-        app.lyrics_scroll -= 3;
-        let held = app.lyrics_scroll;
+        app.lyrics.wheel_lyrics(-3);
+        let held = lyrics_pane(&mut app, 30, 13);
+        assert_eq!(held[7].trim(), "line 30", "{held:#?}");
         at(&mut app, 300_000);
-        lyrics_pane(&mut app, 30, 13);
-        assert_eq!(app.lyrics_scroll, held);
+        assert_eq!(lyrics_pane(&mut app, 30, 13), held);
     }
 
     // ── Album & artist pages, history (#11) ──

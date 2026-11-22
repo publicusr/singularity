@@ -19,6 +19,7 @@ use crate::ui::text;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
+use singularity_proto::LyricLine;
 use std::time::{Duration, Instant};
 use timing::{Line, Stage, Word};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -26,26 +27,72 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// The ball's Visual id on the pixel tier (the hole is 1, the idle takeover 2, glow 3).
 const BALL_ID: u32 = 4;
 
-/// What the Widget keeps between frames: the song's timed lines (worked out once per song).
+/// A Pane's columns and rows, and the cells' size in pixels (as bits).
+type PaneCells = (u16, u16, (u64, u64));
+
+/// What the Widget keeps between frames: the song's timed lines and sizes (worked out once for the lyrics in hand:
+/// `SongLyrics` starts them afresh when new ones arrive), and its view.
 #[derive(Default)]
 pub struct State {
-    /// (song, lines, its length)
-    key: (String, usize, u64),
-    lines: Vec<Line>,
+    /// the timed lines, and the song's length they were timed for
+    lines: Option<(u64, Vec<Line>)>,
     /// the ball is moving on the pixel tier until then: frames come quicker meanwhile
     smooth_until: Option<Instant>,
     /// unsynced lyrics follow the song's progress; the wheel takes them for a while
     pub(crate) follow: crate::scroll::Follow,
-    /// the song's big-text size for a Pane: (song, lines, columns, rows, cell size) → pixels to the em
-    size: (String, usize, u16, u16, (u64, u64), Option<f32>),
-    /// the song's pixel-font scale for a Pane: (song, lines, columns, rows) → scale (0: plain text)
-    scale: (String, usize, u16, u16, u16),
+    /// the song's big-text size for a Pane: (columns, rows, cell size) → pixels to the em
+    size: Option<(PaneCells, Option<f32>)>,
+    /// the song's pixel-font scale for a Pane: (columns, rows) → scale (0: plain text)
+    scale: Option<((u16, u16), u16)>,
 }
 
 impl State {
     /// Whether the ball needs frames faster than the usual 30 a second right now.
     pub fn smooth(&self) -> bool {
         self.smooth_until.is_some_and(|t| Instant::now() < t)
+    }
+
+    /// The ball is moving on the pixel tier: quicker frames for a moment.
+    pub(crate) fn moving(&mut self) {
+        self.smooth_until = Some(Instant::now() + Duration::from_millis(200));
+    }
+
+    /// New lyrics arrived: what was worked out from the old ones goes (the wheel's hold stays).
+    pub(crate) fn new_lyrics(&mut self) {
+        (self.lines, self.size, self.scale) = (None, None, None);
+    }
+
+    /// The timed lines of `lyrics` (a song `duration` ms long), and for a `w`×`h` Pane the song's big-text size (cells
+    /// of `cpx` pixels, the pixel tier) and pixel-font scale: each worked out once for these lyrics.
+    pub(crate) fn song(&mut self, lyrics: &[LyricLine], duration: u64, w: u16, h: u16, cpx: Option<(f64, f64)>) -> (&[Line], Option<f32>, u16) {
+        if self.lines.as_ref().is_none_or(|(d, _)| *d != duration) {
+            self.lines = Some((duration, timing::timed(lyrics, duration)));
+            (self.size, self.scale) = (None, None);
+        }
+        let lines = &self.lines.as_ref().expect("timed above").1;
+        let credit = u16::from(h >= 7);
+        // big text on the pixel tier: the song's size for this Pane
+        let px = cpx.and_then(|c| {
+            let key = (w, h, (c.0.to_bits(), c.1.to_bits()));
+            match self.size {
+                Some((k, px)) if k == key => px,
+                _ => {
+                    let px = song_px(lines, w.saturating_sub(2), h - credit, c);
+                    self.size = Some((key, px));
+                    px
+                }
+            }
+        });
+        // the cells' font: the song's pixel-font scale for this Pane
+        let scale = match self.scale {
+            Some((k, s)) if k == (w, h) => s,
+            _ => {
+                let s = song_scale(lines, w.saturating_sub(2), h - credit);
+                self.scale = Some(((w, h), s));
+                s
+            }
+        };
+        (lines, px, scale)
     }
 }
 
@@ -402,7 +449,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let Some(item) = app.playback.item.as_ref() else {
         return centre(buf, r, mid, "nothing playing · play a song to sing along", th.s(th.dim));
     };
-    let Some(lyr) = app.lyrics.as_ref().filter(|l| l.uri == item.uri) else {
+    let Some(lyr) = app.lyrics.for_song(&item.uri) else {
         return centre(buf, r, mid, "looking for lyrics…", th.s(th.dim));
     };
     if lyr.lines.is_empty() {
@@ -418,41 +465,16 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         return unsynced(buf, r, app, pos, th);
     }
     let duration = item.duration_ms;
-    let st = &mut app.karaoke;
-    if st.key.0 != lyr.uri || (st.key.1, st.key.2) != (lyr.lines.len(), duration) {
-        st.key = (lyr.uri.clone(), lyr.lines.len(), duration);
-        st.lines = timing::timed(&lyr.lines, duration);
-    }
-    let source = lyr.source.clone();
-    let lines = std::mem::take(&mut app.karaoke.lines);
     let playing = app.playback.status == singularity_proto::PlayStatus::Playing;
     let mut hits = vec![];
-    // big text on the pixel tier: the song's size for this Pane, worked out once
+    // the song's timed lines, and its sizes for this Pane (big text on the pixel tier, the cells' pixel font)
     let cpx = app.pixel_text_for(r);
-    let size = cpx.and_then(|c| {
-        let credit = u16::from(r.height >= 7);
-        let key = (lyr.uri.clone(), lines.len(), r.width, r.height, (c.0.to_bits(), c.1.to_bits()));
-        let st = &mut app.karaoke;
-        if (&st.size.0, st.size.1, st.size.2, st.size.3, st.size.4) != (&key.0, key.1, key.2, key.3, key.4) {
-            let px = song_px(&lines, r.width.saturating_sub(2), r.height - credit, c);
-            st.size = (key.0, key.1, key.2, key.3, key.4, px);
-        }
-        st.size.5.map(|px| (c, px))
-    });
-    // the cells' font: the song's pixel-font scale for this Pane, worked out once
-    let scale = {
-        let (w, h) = (r.width.saturating_sub(2), r.height - u16::from(r.height >= 7));
-        let st = &mut app.karaoke;
-        if (&st.scale.0, st.scale.1, st.scale.2, st.scale.3) != (&lyr.uri, lines.len(), r.width, r.height) {
-            st.scale = (lyr.uri.clone(), lines.len(), r.width, r.height, song_scale(&lines, w, h));
-        }
-        st.scale.4
-    };
-    let big = match (size, app.kitty.as_mut()) {
+    let Some(sung) = app.lyrics.sung(duration, r.width, r.height, cpx) else { return };
+    let big = match (cpx.zip(sung.px), app.kitty.as_mut()) {
         (Some((cpx, px)), Some(kitty)) => Some(Big { cpx, px, kitty }),
         _ => None,
     };
-    let ball = synced(buf, r, &lines, pos, &source, th, &mut hits, big, scale);
+    let ball = synced(buf, r, sung.lines, pos, &sung.lyrics.source, th, &mut hits, big, sung.scale);
     // the pixel tier's ball, or the cells' `●`
     let mut smooth = false;
     if let Some(b) = ball {
@@ -463,9 +485,8 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         }
     }
     if smooth && app.pixel_tier_for(r).is_some() {
-        app.karaoke.smooth_until = Some(Instant::now() + Duration::from_millis(200));
+        app.lyrics.ball_moving();
     }
-    app.karaoke.lines = lines;
     for (rect, h) in hits {
         app.hit(rect, h);
     }
@@ -542,13 +563,13 @@ fn pixel_ball(app: &mut App, r: Rect, b: Ball, (cw, ch): (f64, f64), th: &Theme)
 
 /// Unsynced lyrics: shown whole and centred, no ball; long ones move along with the song (they have no times).
 fn unsynced(buf: &mut Buffer, r: Rect, app: &App, pos: u64, th: &Theme) {
-    let Some(lyr) = app.lyrics.as_ref() else { return };
+    let Some(lyr) = app.lyrics.current() else { return };
     let body = r.height.saturating_sub(1);
     let rows: Vec<String> = lyr.lines.iter().flat_map(|l| crate::lyrics::wrap(if l.text.is_empty() { "♪" } else { &l.text }, r.width.saturating_sub(2) as usize)).collect();
     let spare = rows.len().saturating_sub(body as usize);
     let dur = app.duration_ms().max(1);
     let first = (spare as f64 * (pos as f64 / dur as f64).clamp(0.0, 1.0)) as usize;
-    let first = app.karaoke.follow.first(first, spare);
+    let first = app.lyrics.karaoke().follow.first(first, spare);
     for (k, row) in rows.iter().skip(first).take(body as usize).enumerate() {
         centre(buf, r, r.y + k as u16, row.trim(), th.s(th.fg));
     }
@@ -1015,8 +1036,15 @@ mod tests {
             LyricLine { start_ms: 12_000, text: "".into(), ..Default::default() },
             LyricLine { start_ms: 30_000, text: "Ünïcödé and 光が曲がる".into(), ..Default::default() },
         ];
-        app.lyrics = Some(Lyrics { uri: "spotify:track:k".into(), synced, lines, source: "fake".into(), ..Default::default() });
+        app.lyrics_event(Lyrics { uri: "spotify:track:k".into(), synced, lines, source: "fake".into(), ..Default::default() });
         app
+    }
+
+    /// The song's fourth line in letters every font has, arriving as new lyrics.
+    fn ever_after(app: &mut App) {
+        let mut l = app.lyrics.current().unwrap().clone();
+        l.lines[3].text = "Ever after".into();
+        app.lyrics_event(l);
     }
 
     fn render(app: &mut App, w: u16, h: u16) -> String {
@@ -1063,7 +1091,7 @@ mod tests {
         let _ = render(&mut app, 40, 10);
         app.playback.item = Some(singularity_proto::Item { uri: "spotify:track:x".into(), ..Default::default() });
         assert!(render(&mut app, 40, 10).contains("looking for lyrics"));
-        app.lyrics = Some(Lyrics { uri: "spotify:track:x".into(), missing: "no lyrics on Spotify or LRCLIB".into(), ..Default::default() });
+        app.lyrics_event(Lyrics { uri: "spotify:track:x".into(), missing: "no lyrics on Spotify or LRCLIB".into(), ..Default::default() });
         let s = render(&mut app, 60, 10);
         assert!(s.contains("nothing to sing along to") && s.contains("no lyrics on Spotify or LRCLIB"), "{s}");
     }
@@ -1096,7 +1124,7 @@ mod tests {
         let s = render(&mut app, 60, 12);
         assert!(s.contains("next line") && s.contains("Ünïcödé"), "{s}");
         // 2.5 s before the line after the gap: three dots and no ball yet
-        let first = timing::timed(&app.lyrics.as_ref().unwrap().lines, 120_000)[2].first();
+        let first = timing::timed(&app.lyrics.current().unwrap().lines, 120_000)[2].first();
         let mut app = app_at(first - 2_500, true);
         let s = render(&mut app, 60, 12);
         assert_eq!(s.matches('●').count(), 3, "{s}");
@@ -1168,7 +1196,7 @@ mod tests {
     fn a_big_pane_sings_in_big_text_split_where_the_fill_is() {
         // between "the" and "lights": "Turn the" sung
         let mut app = app_at(3_700, true);
-        app.lyrics.as_mut().unwrap().lines[3].text = "Ever after".into();
+        ever_after(&mut app);
         app.playback.status = singularity_proto::PlayStatus::Playing;
         app.playback.timestamp_ms = singularity_proto::now_ms();
         let (s, out) = pixel_frame(&mut app, 160, 30);
@@ -1197,7 +1225,7 @@ mod tests {
     fn karaoke_big_text_cost() {
         for (w, h, px) in [(240u16, 65u16, true), (240, 65, false)] {
             let mut app = app_at(3_000, true);
-            app.lyrics.as_mut().unwrap().lines[3].text = "Ever after".into();
+            ever_after(&mut app);
             if px {
                 let _ = pixel_frame(&mut app, w, h);
             }
@@ -1221,7 +1249,7 @@ mod tests {
         let moments = [0, 2_900, 3_000, 3_700, 4_300, 7_000, 9_000, 13_000, 20_000, 200_000];
         for synced in [true, false] {
             let mut app = app_at(0, synced);
-            app.lyrics.as_mut().unwrap().lines[3].text = "Ever after".into();
+            ever_after(&mut app);
             for &pos in &moments {
                 app.playback.position_ms = pos;
                 for w in [16u16, 30, 60, 90, 120, 160, 240, 300] {

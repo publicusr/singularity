@@ -97,11 +97,6 @@ impl Follow {
         self.held.get().is_some_and(|(_, t)| t.elapsed() < HOLD)
     }
 
-    /// Following again at once (a new song).
-    pub fn release(&self) {
-        self.held.set(None);
-    }
-
     /// The first row to show: `auto` (where following puts it), unless the wheel has the view; `max` is the last first
     /// row the wheel may take it to.
     pub fn first(&self, auto: usize, max: usize) -> usize {
@@ -137,9 +132,6 @@ mod tests {
         f.held.set(Some((20, Instant::now() - HOLD)));
         assert_eq!(f.first(9, 20), 9);
         assert!(!f.held());
-        f.by(1);
-        f.release();
-        assert_eq!(f.first(4, 20), 4);
     }
 
     #[test]
