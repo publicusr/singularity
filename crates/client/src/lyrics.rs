@@ -33,15 +33,15 @@ fn stamp(ms: u64) -> String {
     format!("[{:02}:{:02}]", ms / 60_000, ms / 1000 % 60)
 }
 
-/// Every line's rows, kept between frames for one song at one width: wrapping all of a song's lines on every frame
-/// was a third of the Client's allocations (#71). Also where the view is (it glides between lines) and whether the
-/// reader has taken over an unsynced song with the wheel.
+/// Every line's rows, kept between frames for the lyrics in hand at one width: wrapping all of a song's lines on every
+/// frame was a third of the Client's allocations (#71). Also where the view is (it glides between lines) and whether
+/// the reader has taken over an unsynced song with the wheel. `SongLyrics` starts it afresh when new lyrics arrive.
 #[derive(Default)]
 pub struct Wrapped {
-    /// (song, text width (or the big text's size), lines)
-    key: (String, u64, usize),
-    /// (song, lines, the width of its longer lines in ems: `typical`; None when the fonts can't draw it)
-    typical: (String, usize, Option<f32>),
+    /// the text width (or the big text's size) the rows are wrapped for
+    key: Option<u64>,
+    /// the width of the song's longer lines in ems (`typical`; None when the fonts can't draw it), once worked out
+    typical: Option<Option<f32>>,
     /// (line, text)
     rows: Vec<(usize, String)>,
     /// where each line's first row is
@@ -56,6 +56,34 @@ pub struct Wrapped {
     held: bool,
     /// synced: the wheel takes the view for a while, then it follows the song again
     pub(crate) follow: crate::scroll::Follow,
+    /// unsynced: the first row shown
+    pub(crate) scroll: usize,
+}
+
+impl Wrapped {
+    /// The width of the song's longer lines (`typical`), worked out once for the lyrics in hand.
+    fn typical(&mut self, lines: &[LyricLine]) -> Option<f32> {
+        *self.typical.get_or_insert_with(|| typical(lines))
+    }
+
+    /// Every line's rows for a layout (`key`: the text width, or the big text's size) as `wrap` breaks a line: wrapped
+    /// again only for another layout (new lyrics start afresh). Whether they were wrapped just now.
+    fn wrap(&mut self, lines: &[LyricLine], key: u64, wrap: impl Fn(&str) -> Vec<String>) -> bool {
+        if self.key == Some(key) {
+            return false;
+        }
+        self.key = Some(key);
+        self.rows.clear();
+        self.starts.clear();
+        self.ends.clear();
+        for (i, line) in lines.iter().enumerate() {
+            self.starts.push(self.rows.len());
+            let words = if line.text.trim().is_empty() { "♪" } else { line.text.as_str() };
+            self.rows.extend(wrap(words).into_iter().map(|t| (i, t)));
+            self.ends.push(self.rows.len());
+        }
+        true
+    }
 }
 
 /// How far continuation rows are indented.
@@ -255,7 +283,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let Some(item) = app.playback.item.as_ref() else {
         return message(buf, r, "nothing playing", th);
     };
-    let Some(lyr) = app.lyrics.as_ref().filter(|l| l.uri == item.uri) else {
+    let Some(lyr) = app.lyrics.for_song(&item.uri) else {
         return message(buf, r, "looking for lyrics…", th);
     };
     if lyr.lines.is_empty() {
@@ -267,38 +295,17 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let pos = app.lyrics_position(singularity_proto::now_ms());
     // a big Pane on the pixel tier: big text, rows `pitch` cells tall
     let cpx = app.pixel_text_for(r);
-    let cache = &mut app.lyrics_wrap;
-    if cpx.is_some() && (cache.typical.0 != lyr.uri || cache.typical.1 != lyr.lines.len()) {
-        cache.typical = (lyr.uri.clone(), lyr.lines.len(), typical(&lyr.lines));
-    }
-    let big = cpx.zip(cache.typical.2).and_then(|(cpx, t)| big_fit(&f, r.width, cpx, t).map(|b| (b, cpx)));
+    let Some((lyr, cache)) = app.lyrics.lyrics_view() else { return };
+    let big = cpx.and_then(|cpx| cache.typical(&lyr.lines).map(|t| (cpx, t))).and_then(|(cpx, t)| big_fit(&f, r.width, cpx, t).map(|b| (b, cpx)));
     let (body, anchor) = match big {
         Some((b, _)) => ((f.body / b.pitch) as usize, (f.body / b.pitch) as usize / 3),
         None => (f.body as usize, f.anchor as usize),
     };
-    // every line's rows, and where each line's rows are: wrapped again only for a new song or width
-    let key = (lyr.uri.clone(), big.map_or(f.text_w as u64, |(b, _)| b.key()), lyr.lines.len());
-    let fresh = cache.key != key;
-    if cache.key.0 != lyr.uri {
-        (cache.held, cache.followed) = (false, None);
-        cache.follow.release();
-    }
-    if fresh {
-        cache.key = key;
-        cache.rows.clear();
-        cache.starts.clear();
-        cache.ends.clear();
-        for (i, line) in lyr.lines.iter().enumerate() {
-            cache.starts.push(cache.rows.len());
-            let words = if line.text.trim().is_empty() { "♪" } else { line.text.as_str() };
-            let rows = match big {
-                Some((b, _)) => crate::bigtext::wrap(words, b.text_w, b.indent, |s| crate::bigtext::width(s, b.px, true)),
-                None => wrap(words, f.text_w as usize),
-            };
-            cache.rows.extend(rows.into_iter().map(|t| (i, t)));
-            cache.ends.push(cache.rows.len());
-        }
-    }
+    // every line's rows, and where each line's rows are
+    let fresh = match big {
+        Some((b, _)) => cache.wrap(&lyr.lines, b.key(), |s| crate::bigtext::wrap(s, b.text_w, b.indent, |s| crate::bigtext::width(s, b.px, true))),
+        None => cache.wrap(&lyr.lines, f.text_w as u64, |s| wrap(s, f.text_w as usize)),
+    };
     let now = if lyr.synced { current(&lyr.lines, pos) } else { None };
     let total = cache.rows.len();
     // big text glides by cells: where the view's top is between rows (-1: on a row)
@@ -324,16 +331,16 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         // unsynced: the reading place follows the song's progress until the wheel moves the view
         None => {
             let max = total.saturating_sub(body);
-            if cache.followed.is_some_and(|v| v != app.lyrics_scroll) || (cache.followed.is_none() && app.lyrics_scroll != 0) {
+            if cache.followed.is_some_and(|v| v != cache.scroll) || (cache.followed.is_none() && cache.scroll != 0) {
                 cache.held = true;
             }
             if !cache.held && duration > 0 {
                 let at = (pos.min(duration) as f64 / duration as f64 * total as f64) as usize;
-                app.lyrics_scroll = at.saturating_sub(anchor).min(max);
-                cache.followed = Some(app.lyrics_scroll);
+                cache.scroll = at.saturating_sub(anchor).min(max);
+                cache.followed = Some(cache.scroll);
             }
-            app.lyrics_scroll = app.lyrics_scroll.min(max);
-            app.lyrics_scroll
+            cache.scroll = cache.scroll.min(max);
+            cache.scroll
         }
     };
     // synced: the wheel can hold the view elsewhere for a while (`scroll::Follow`); it glides back from there
@@ -353,7 +360,6 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let hits = draw_big(buf, r, app, th, &f, &b, cpx, top, now, body);
         return finish(buf, r, app, th, &f, hits);
     }
-    let cache = &app.lyrics_wrap;
     let reach = body / 3;
     let mut hits = vec![];
     for (k, (i, words)) in cache.rows.iter().enumerate().skip(first).take(body) {
@@ -392,7 +398,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 
 /// The credit on the last row, and the lines' click targets.
 fn finish(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, f: &Fit, hits: Vec<(Rect, Hit)>) {
-    let Some(lyr) = app.lyrics.as_ref() else { return };
+    let Some(lyr) = app.lyrics.current() else { return };
     if f.credit {
         // the longest credit that fits
         let credits = if lyr.synced { vec![format!("lyrics: {}", lyr.source), lyr.source.clone()] } else { vec![format!("lyrics: {} · not time-synced", lyr.source), format!("{} · unsynced", lyr.source), lyr.source.clone()] };
@@ -410,8 +416,7 @@ fn finish(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, f: &Fit, hits: V
 #[allow(clippy::too_many_arguments)]
 fn draw_big(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, f: &Fit, b: &BigFit, (cw, ch): (f64, f64), top: f32, now: Option<usize>, body: usize) -> Vec<(Rect, Hit)> {
     use crate::bigtext::{Span, key, render, width};
-    let Some(lyr) = app.lyrics.as_ref() else { return vec![] };
-    let cache = &app.lyrics_wrap;
+    let Some((lyr, cache)) = app.lyrics.lyrics_view() else { return vec![] };
     let pitch = b.pitch as i32;
     let off = (top * pitch as f32).round() as i32;
     let first = (off / pitch).max(0) as usize;
@@ -597,7 +602,7 @@ pub(crate) mod tests {
         app.playback.position_ms = pos;
         let texts = ["Light bends where the music falls", "We drift past the photon sphere", "", "Every line a slow orbit, and the long ones fold over onto the next row when the Pane is narrow", "Hold on"];
         let lines = (0..n).map(|i| LyricLine { start_ms: i * 4_000, text: texts[i as usize % texts.len()].into(), ..Default::default() }).collect();
-        app.lyrics = Some(Lyrics { uri: "spotify:track:b".into(), synced: true, lines, source: "fake".into(), ..Default::default() });
+        app.lyrics_event(Lyrics { uri: "spotify:track:b".into(), synced: true, lines, source: "fake".into(), ..Default::default() });
         app.cell_px = Some((10.0, 20.0));
         app.kitty = Some(crate::gfx::Kitty::new(false));
         app
@@ -705,9 +710,11 @@ pub(crate) mod tests {
             }
         }
         // a song the fonts can't draw keeps to the cells
-        app.lyrics.as_mut().unwrap().lines[3].text = "光が曲がる".into();
-        app.lyrics.as_mut().unwrap().uri = "spotify:track:c".into();
+        let mut other = app.lyrics.current().unwrap().clone();
+        other.lines[3].text = "光が曲がる".into();
+        other.uri = "spotify:track:c".into();
         app.playback.item.as_mut().unwrap().uri = "spotify:track:c".into();
+        app.lyrics_event(other);
         app.playback.position_ms = 12_100;
         let (rows, out) = frame(&mut app, 240, 65);
         assert!(placements(&out).is_empty() && rows.iter().any(|r| r.contains("光")), "{rows:#?}");

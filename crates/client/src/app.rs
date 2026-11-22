@@ -638,14 +638,8 @@ pub struct App {
     /// how covers are coloured this frame: the Theme's tint, or None for real colours
     pub art_tint: Option<crate::theme::Tint>,
     pub queue_view: crate::queue::QueueView,
-    pub lyrics: Option<singularity_proto::Lyrics>,
-    /// first line shown of unsynced lyrics
-    pub lyrics_scroll: usize,
-    pub lyrics_wrap: crate::lyrics::Wrapped,
-    /// the Karaoke Widget's timed lines and pace
-    pub karaoke: crate::karaoke::State,
-    /// the track lyrics were asked for, and whether with word timing (a Karaoke Pane was on screen)
-    lyrics_asked: Option<(String, bool)>,
+    /// the playing song's lyrics: what was asked for, what arrived, and the lyrics and Karaoke Widgets' views of them
+    pub lyrics: crate::songlyrics::SongLyrics,
     /// where the hole was drawn this frame (for bending the neighbouring borders)
     pub hole_at: Option<Hole>,
     /// what's liked, saved and followed (#22)
@@ -788,11 +782,7 @@ impl App {
             hole: BlackHole::default(),
             art_tint: None,
             queue_view: Default::default(),
-            lyrics: None,
-            lyrics_scroll: 0,
-            lyrics_wrap: Default::default(),
-            karaoke: Default::default(),
-            lyrics_asked: None,
+            lyrics: Default::default(),
             hole_at: None,
             saved: Default::default(),
             confirm_remove: None,
@@ -1033,6 +1023,12 @@ impl App {
         (bits > 0).then(|| (bits as f64 / 8.0 / 1000.0).round() as u32)
     }
 
+    /// Lyrics from the Daemon (kept if they are the playing song's).
+    pub fn lyrics_event(&mut self, l: singularity_proto::Lyrics) {
+        let playing = self.playback.item.as_ref().map(|i| i.uri.as_str());
+        self.lyrics.receive(l, playing);
+    }
+
     /// The Engine's latest download speed and stalls. When playback keeps running dry on a slow connection, say so
     /// once (not once per stall): music that "keeps pausing" shouldn't look like a Singularity bug (#45).
     pub fn delivery_event(&mut self, d: singularity_proto::Delivery) {
@@ -1080,6 +1076,7 @@ impl App {
     /// After (re)connecting: ask for spectrum frames if an audio Widget is on screen.
     pub fn on_connected(&mut self) {
         self.spectrum_on = false;
+        self.lyrics.reconnected();
         self.want_widget_data();
         self.send(Command::GetListening);
     }
@@ -2417,7 +2414,7 @@ impl App {
         if self.moving_now() {
             return self.motion_fps();
         }
-        if focused && self.karaoke.smooth() {
+        if focused && self.lyrics.karaoke().smooth() {
             return self.motion_fps().min(60);
         }
         if focused { 30 } else { self.config.visuals.unfocused_fps.clamp(1, 30) as u64 }
@@ -2458,10 +2455,8 @@ impl App {
             && matches!(self.link, Link::Connected { .. })
         {
             // (a tree walk each frame, no layout maths)
-            let words = self.layout.path_of("karaoke").is_some();
-            let done = matches!(&self.lyrics_asked, Some((u, w)) if *u == uri && (*w || !words));
-            if !done && (words || self.layout.path_of("lyrics").is_some()) {
-                self.lyrics_asked = Some((uri.clone(), words));
+            let (lyrics, karaoke) = (self.layout.path_of("lyrics").is_some(), self.layout.path_of("karaoke").is_some());
+            if let Some(words) = self.lyrics.ask(&uri, lyrics, karaoke) {
                 self.send(Command::GetLyrics { uri, words });
             }
         }

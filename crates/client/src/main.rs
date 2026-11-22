@@ -29,6 +29,7 @@ mod saved;
 mod search;
 mod settings;
 mod setup;
+mod songlyrics;
 mod sidebar;
 mod stats;
 mod term;
@@ -288,13 +289,7 @@ fn apply(app: &mut App, ev: ConnEvent) {
         ConnEvent::Msg(DaemonMsg::Event(Event::Search(r))) => {
             app.search.receive(r);
         }
-        ConnEvent::Msg(DaemonMsg::Event(Event::Lyrics(l))) => {
-            if app.playback.item.as_ref().is_some_and(|i| i.uri == l.uri) {
-                app.lyrics_scroll = 0;
-                app.lyrics_wrap = Default::default();
-                app.lyrics = Some(l);
-            }
-        }
+        ConnEvent::Msg(DaemonMsg::Event(Event::Lyrics(l))) => app.lyrics_event(l),
         ConnEvent::Msg(DaemonMsg::Event(Event::Notice { message })) => app.say(message),
         ConnEvent::Msg(DaemonMsg::Event(Event::Saved { entries })) => app.saved_event(entries),
         ConnEvent::Msg(DaemonMsg::Event(Event::Listening(s))) => {
