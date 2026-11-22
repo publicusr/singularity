@@ -13,11 +13,15 @@
 //!   in the guest, Soloist is started over SSH, its WebSocket and audio come through forwarded ports, and pairing is
 //!   announced on the LAN while it waits for it
 
-use crate::engine::{Engine, EngineEvent, Resume};
+mod session;
+
+pub use session::{Action, Handover, Input, Now, Session, Stop};
+
+use crate::engine::{Engine, EngineEvent};
 use crate::update::{self, Builds, Checked};
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use serde_json::{Value, json};
-use singularity_proto::{Command, EngineStatus, Item, PlayStatus, PlaybackState, QueueEntry, RepeatMode};
+use serde_json::Value;
+use singularity_proto::{Command, EngineStatus};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -314,59 +318,15 @@ struct Updates {
     staged: Arc<Notify>,
     /// the running build's days left (the checks get closer near the end)
     days: watch::Sender<Option<u32>>,
-    /// where playback was when we restarted for an update
-    resume: Option<Resume>,
-    /// when Soloist was last restarted because its stream was stuck (one try per `DRY_RETRY`)
-    unstuck_at: Option<std::time::Instant>,
-}
-
-/// How long playback may sit dry, with no data arriving, before Soloist's connections count as stuck.
-const DRY_STUCK: Duration = Duration::from_secs(20);
-/// At most one restart per this long for a stuck stream: a connection that is really down isn't fixed by restarting.
-const DRY_RETRY: Duration = Duration::from_secs(180);
-
-/// Is playback dry and staying dry? Verified 2026-11-02: after the VPN's tunnel was re-established, Soloist's
-/// requests for audio failed for 16 minutes (`CURL error: 42`, no bandwidth samples) while it kept reporting
-/// "playing" at the same second; new connections worked, so a fresh Soloist gets the music back. Data arriving
-/// (a bandwidth sample) or audio flowing again ends a dry spell; so does anything but playing.
-#[derive(Default)]
-pub struct DryWatch {
-    since: Option<tokio::time::Instant>,
-}
-
-impl DryWatch {
-    pub fn news(&mut self, n: &LogNews, now: tokio::time::Instant) {
-        match n {
-            LogNews::Stall => {
-                self.since.get_or_insert(now);
-            }
-            LogNews::Bandwidth(_) | LogNews::Flowing => self.since = None,
-            _ => {}
-        }
-    }
-
-    /// Only playing (or buffering) can be dry: a pause or a stop ends it.
-    pub fn status(&mut self, s: PlayStatus) {
-        if !matches!(s, PlayStatus::Playing | PlayStatus::Buffering) {
-            self.since = None;
-        }
-    }
-
-    /// When the current dry spell becomes stuck.
-    pub fn deadline(&self) -> Option<tokio::time::Instant> {
-        self.since.map(|t| t + DRY_STUCK)
-    }
-
-    pub fn clear(&mut self) {
-        self.since = None;
-    }
+    /// what the last run left for the next (where playback was, the last restart for a stuck stream)
+    handover: Handover,
 }
 
 /// Keep Soloist running: start, connect, pump; on exit wait (with backoff) and start again.
 async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<EngineEvent>) {
     let mut backoff = Duration::from_secs(2);
     let (builds, url) = (engine.builds(), update::cdn_url());
-    let mut upd = Updates { staged: Arc::new(Notify::new()), days: watch::channel(None).0, resume: None, unstuck_at: None };
+    let mut upd = Updates { staged: Arc::new(Notify::new()), days: watch::channel(None).0, handover: Handover::default() };
     let mut updater = None;
     loop {
         let Some(key) = api_key().await else {
@@ -573,34 +533,6 @@ async fn keep_current_in_vm(v: Arc<crate::soloist_vm::VmHost>, days: watch::Rece
     }
 }
 
-/// Is now a good moment to restart into a new build? Paused or idle at once. In the middle of a playing track, only
-/// between tracks, and only when a command of ours caused the change: playback someone else started (a phone on
-/// Connect) is followed, not interrupted (restarting Soloist would undo it, and the restart picks up our old state).
-pub fn quiet_moment(p: &PlaybackState, track_changed: bool, ours: bool) -> bool {
-    if matches!(p.status, PlayStatus::Playing | PlayStatus::Buffering) {
-        track_changed && ours
-    } else {
-        true
-    }
-}
-
-/// How long after one of our commands the track change it asked for can arrive (a Play names its track, a
-/// Next/Previous/TogglePlay doesn't, so its window is shorter).
-const OUR_CHANGE: Duration = Duration::from_secs(30);
-const OUR_CHANGE_UNTIL: Duration = Duration::from_secs(10);
-/// How long an answer to our `get_queue` may take (after that a playback state is news, not the answer).
-const QUEUE_ANSWER: Duration = Duration::from_secs(5);
-/// After a restart for an update, how long the new Soloist has to say what it is playing before the remembered
-/// state is put back.
-const RESUME_GRACE: Duration = Duration::from_millis(1500);
-
-/// Where to pick up after the restart (a track that just started resumes from its start).
-pub fn resume_point(p: &PlaybackState, track_changed: bool) -> Option<Resume> {
-    let item = p.item.as_ref()?;
-    let position_ms = if track_changed { 0 } else { p.position_at(singularity_proto::now_ms()) };
-    Some(Resume { context_uri: p.context_uri.clone(), track_uri: item.uri.clone(), position_ms, paused: p.status == PlayStatus::Paused })
-}
-
 /// Soloist's state directory and the two below it, owner-only (it holds its pairing and cache: audit S1).
 fn private_state_dirs(state: &std::path::Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -642,9 +574,22 @@ pub fn running_soloist(state: &std::path::Path) -> Option<u32> {
     (comm.trim() == "soloist").then_some(pid)
 }
 
-// (the ZeroConf port is only used on macOS, to announce the VM's Soloist for pairing)
-#[cfg_attr(not(target_os = "macos"), allow(unused_assignments, unused_variables))]
-async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<EngineEvent>, upd: &mut Updates) -> anyhow::Result<Exit> {
+/// A Soloist that has been started, before its WebSocket is up.
+struct Started {
+    child: Child,
+    /// what its log says
+    news: mpsc::Receiver<LogNews>,
+    version: String,
+    /// the VM's Soloist: its WebSocket, through the forwarded port
+    vm_ws: Option<String>,
+    #[cfg(target_os = "macos")]
+    in_vm: Option<Arc<crate::soloist_vm::VmHost>>,
+    /// (the VM's Soloist session: closing its stdin stops Soloist, so it's held for the run)
+    _vm_stdin: Option<tokio::process::ChildStdin>,
+}
+
+/// Start Soloist, its output parsed for news and written on to the log.
+async fn start(engine: &SoloistEngine, key: &str) -> anyhow::Result<Started> {
     let state = engine.state_dir();
     // another Daemon's Soloist owns these files: touch nothing (its port file, its log)
     if engine.vm().is_none()
@@ -655,7 +600,6 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
     private_state_dirs(&state)?;
     let _ = tokio::fs::remove_file(state.join("data/ws.port")).await;
     let mut log = open_log(&state)?;
-    // (the VM's Soloist session: closing its stdin stops Soloist, so it's held for this run)
     #[allow(unused_mut, unused_assignments)]
     let mut session_stdin: Option<tokio::process::ChildStdin> = None;
     #[cfg(target_os = "macos")]
@@ -695,9 +639,8 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
             cmd.spawn()?
         }
     };
-    let _session = session_stdin;
     // Soloist's output: parsed for news, then written on to the log
-    let (news_tx, mut news_rx) = mpsc::channel::<LogNews>(16);
+    let (news_tx, news_rx) = mpsc::channel::<LogNews>(16);
     let (line_tx, mut line_rx) = mpsc::channel::<String>(256);
     for out in [child.stdout.take().map(|o| Box::new(o) as Box<dyn tokio::io::AsyncRead + Unpin + Send>), child.stderr.take().map(|e| Box::new(e) as _)].into_iter().flatten() {
         let tx = line_tx.clone();
@@ -731,45 +674,119 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
     };
     #[cfg(not(target_os = "macos"))]
     let version = crate::programs::tokio_command(engine.binary()).arg("--version").output().await.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    // the VM's Soloist: its WebSocket through the forwarded port, and its ZeroConf port for pairing
+    // the VM's Soloist: its WebSocket through the forwarded port
     #[cfg(target_os = "macos")]
     let vm_ws = in_vm.as_ref().map(|v| format!("ws://127.0.0.1:{}", v.ws_port));
     #[cfg(not(target_os = "macos"))]
     let vm_ws: Option<String> = None;
-    let mut zeroconf: Option<u16> = None;
+    Ok(Started {
+        child,
+        news: news_rx,
+        version,
+        vm_ws,
+        #[cfg(target_os = "macos")]
+        in_vm,
+        _vm_stdin: session_stdin,
+    })
+}
 
+/// One run of Soloist: started, then its process, its log, its WebSocket, our commands and the update side pumped
+/// through a [`Session`]. What the run leaves for the next one goes back into `upd`.
+async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<EngineEvent>, upd: &mut Updates) -> anyhow::Result<Exit> {
+    let mut run = start(engine, key).await?;
+    let mut s = Session::new(engine.device_name.clone(), run.version.clone(), engine.saved_volume(), std::mem::take(&mut upd.handover));
+    let exit = pump(engine, &mut run, &mut s, cmd_rx, ev_tx, upd).await;
+    upd.handover = s.into_handover();
+    exit
+}
+
+/// Carry out what a step of the session asks for. Returns the stop among it, if any (Soloist isn't stopped yet).
+async fn carry_out<S>(actions: Vec<Action>, ws: &mut S, engine: &SoloistEngine, ev_tx: &mpsc::Sender<EngineEvent>) -> anyhow::Result<Option<Stop>>
+where
+    S: futures_util::Sink<Message> + Unpin,
+    S::Error: std::error::Error + Send + Sync + 'static,
+{
+    for a in actions {
+        match a {
+            Action::Send(m) => ws.send(Message::text(m.to_string())).await?,
+            Action::Event(e) => {
+                let _ = ev_tx.send(e).await;
+            }
+            Action::SaveVolume(v) => engine.save_volume(v),
+            Action::StoreKey(k) => store_key(k, ev_tx).await,
+            Action::Stop(s) => return Ok(Some(s)),
+        }
+    }
+    Ok(None)
+}
+
+fn locked() -> anyhow::Error {
+    anyhow::anyhow!("another Soloist is already running with Singularity's data (is a second singularityd running?)")
+}
+
+/// Soloist stopped by itself (or closed its WebSocket): its last lines may say why (a rejected key), so they get a
+/// moment to arrive, and the session the last word.
+async fn died(child: &mut Child, news_rx: &mut mpsc::Receiver<LogNews>, s: &mut Session) -> anyhow::Result<Exit> {
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    while let Ok(n) = news_rx.try_recv() {
+        // (the run is over: only why it ended still counts)
+        if let Some(Action::Stop(stop)) = s.step(Input::Log(n), Now::real()).into_iter().find(|a| matches!(a, Action::Stop(_))) {
+            return stopped(child, stop).await;
+        }
+    }
+    Ok(match child.try_wait()? {
+        Some(st) if st.code() == Some(10) => Exit::Expired,
+        _ => Exit::Died,
+    })
+}
+
+/// Stop Soloist for the session's reason.
+async fn stopped(child: &mut Child, s: Stop) -> anyhow::Result<Exit> {
+    let _ = child.kill().await;
+    Ok(match s {
+        Stop::Restart => Exit::Restart,
+        Stop::Update => Exit::Update,
+        Stop::BadKey => return Err(BadKey.into()),
+        Stop::Locked => return Err(locked()),
+    })
+}
+
+/// The I/O around a [`Session`]: Soloist's process, its log, its WebSocket, our commands, the update side and the
+/// session's deadline in; what the session asks for out.
+// (the ZeroConf port is only used on macOS, to announce the VM's Soloist for pairing)
+#[cfg_attr(not(target_os = "macos"), allow(unused_assignments, unused_variables))]
+async fn pump(engine: &SoloistEngine, run: &mut Started, s: &mut Session, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<EngineEvent>, upd: &Updates) -> anyhow::Result<Exit> {
+    let state = engine.state_dir();
+    let (child, news_rx) = (&mut run.child, &mut run.news);
+    // what the session doesn't need from the log: the build's days left go to the update checker, the ZeroConf port
+    // to pairing
+    let mut zeroconf: Option<u16> = None;
+    let tap = |n: &LogNews, zeroconf: &mut Option<u16>| match n {
+        LogNews::Lifetime(d) => {
+            upd.days.send_replace(Some(*d));
+        }
+        LogNews::ZeroConf(p) => *zeroconf = Some(*p),
+        _ => {}
+    };
     // wait for the WebSocket endpoint files
     let mut addr = None;
-    let mut expires_in_days = None;
-    // the stream's download speed and recent stalls (#45)
-    let mut delivery = singularity_proto::Delivery::default();
     for _ in 0..100 {
-        if let Some(st) = child.try_wait()? {
-            // let the output catch up: it says why
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            while let Ok(n) = news_rx.try_recv() {
-                match n {
-                    LogNews::BadKey => return Err(BadKey.into()),
-                    LogNews::Locked => anyhow::bail!("another Soloist is already running with Singularity's data (is a second singularityd running?)"),
-                    _ => {}
-                }
-            }
-            return Ok(if st.code() == Some(10) { Exit::Expired } else { Exit::Died });
+        if child.try_wait()?.is_some() {
+            return died(child, news_rx, s).await;
         }
         while let Ok(n) = news_rx.try_recv() {
-            match n {
-                LogNews::Lifetime(d) => {
-                    expires_in_days = Some(d);
-                    upd.days.send_replace(Some(d));
-                }
-                LogNews::Locked => anyhow::bail!("another Soloist is already running with Singularity's data (is a second singularityd running?)"),
-                LogNews::BadKey => return Err(BadKey.into()),
-                LogNews::ZeroConf(p) => zeroconf = Some(p),
-                LogNews::Stream(_) | LogNews::Bandwidth(_) | LogNews::Stall | LogNews::Flowing | LogNews::Unplayable => {}
+            tap(&n, &mut zeroconf);
+            // before the WebSocket is up, only the build's lifetime and why it can't start count (as ever); log news
+            // sends nothing to Soloist either way
+            if !matches!(n, LogNews::Lifetime(_) | LogNews::BadKey | LogNews::Locked) {
+                continue;
+            }
+            if let Some(stop) = carry_out(s.step(Input::Log(n), Now::real()), &mut futures_util::sink::drain(), engine, ev_tx).await? {
+                return stopped(child, stop).await;
             }
         }
         // the VM's Soloist: ready once its WebSocket answers through the forward
-        if let Some(a) = &vm_ws {
+        if let Some(a) = &run.vm_ws {
             if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_secs(2), tokio_tungstenite::connect_async(a.as_str())).await {
                 addr = Some(a.clone());
                 break;
@@ -783,425 +800,55 @@ async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver
     let Some(addr) = addr else { anyhow::bail!("Soloist never opened its WebSocket") };
     let (ws, _) = tokio_tungstenite::connect_async(addr).await?;
     let (mut ws_tx, mut ws_rx) = ws.split();
-    let mut st = SoloistState::default();
-    let mut logged_in = false;
     // macOS: Soloist's pairing endpoint announced on the LAN while it waits for a phone
     #[cfg(target_os = "macos")]
     let mut announced: Option<crate::soloist_vm::Announcement> = None;
-    let mut active = false;
-    // a build staged while this one runs waits for a quiet moment
-    let mut staged = false;
-    // where playback was when we restarted for an update, and when to put it back
-    let mut pending_resume: Option<Resume> = None;
-    let mut resume_at: Option<tokio::time::Instant> = None;
-    let mut dry = DryWatch::default();
 
     loop {
-        tokio::select! {
+        let deadline = s.deadline();
+        let actions = tokio::select! {
             exit = child.wait() => {
-                let exit = exit?;
-                return Ok(if exit.code() == Some(10) { Exit::Expired } else { Exit::Died });
+                exit?;
+                return died(child, news_rx, s).await;
             }
             msg = ws_rx.next() => {
                 let Some(Ok(Message::Text(t))) = msg else {
-                    if msg.is_none() { return Ok(Exit::Died); }
+                    if msg.is_none() { return died(child, news_rx, s).await; }
                     continue;
                 };
                 let Ok(ev) = serde_json::from_str::<Value>(t.as_str()) else { continue };
-                match ev["type"].as_str() {
-                    Some("auth_state") | Some("device_changed") => {
-                        let was_logged_in = logged_in;
-                        if let Some(l) = ev["logged_in"].as_bool() { logged_in = l; }
-                        // a volume asked for while Soloist was starting is lost (it starts at its own default once
-                        // logged in): set it again
-                        if logged_in && !was_logged_in
-                            && let Some(v) = engine.saved_volume()
-                        {
-                            ws_tx.send(Message::text(json!({"type":"command","command":"set_volume","volume":v}).to_string())).await?;
-                        }
-                        if let Some(a) = ev["is_active"].as_bool() { active = a; }
-                        // back after an update: pick up where playback was, once the new Soloist has had a moment
-                        // to say whether it came back playing something already (see below)
-                        if logged_in && let Some(r) = upd.resume.take() {
-                            pending_resume = Some(r);
-                            resume_at = Some(tokio::time::Instant::now() + RESUME_GRACE);
-                        }
-                        #[cfg(target_os = "macos")]
-                        if let Some(v) = &in_vm {
-                            if logged_in {
-                                announced = None;
-                            } else if announced.is_none()
-                                && let Some(p) = zeroconf
-                            {
-                                match v.announce(p, &engine.device_name).await {
-                                    Ok(a) => announced = Some(a),
-                                    Err(e) => tracing::warn!("pairing: couldn't announce Soloist on the LAN: {e}"),
-                                }
-                            }
-                        }
-                        let s = if logged_in {
-                            // (the lifetime may still arrive below; status is re-sent then)
-                            EngineStatus::Ready { device_name: engine.device_name.clone(), active, version: version.clone(), expires_in_days }
-                        } else {
-                            EngineStatus::NeedsPairing { device_name: engine.device_name.clone() }
-                        };
-                        status(ev_tx, s).await;
-                    }
-                    Some("error") => {
-                        let _ = ev_tx.send(EngineEvent::Error(ev["message"].as_str().unwrap_or("Soloist error").to_string())).await;
-                    }
-                    _ => {
-                        let track_changed = ev["type"] == "track_changed";
-                        if st.apply(&ev) {
-                            dry.status(st.playback.status);
-                            let _ = ev_tx.send(EngineEvent::Playback(st.playback.clone())).await;
-                        }
-                        // (every change: one to 0 looks like no change from the state's default)
-                        if ev["type"] == "volume_changed" {
-                            engine.save_volume(st.playback.volume);
-                        }
-                        // the new Soloist came back playing something: someone (a phone on Connect) put it there, or
-                        // Spotify restored it, so putting our remembered state back would undo it
-                        if pending_resume.is_some() && st.playback.item.is_some() {
-                            pending_resume = None;
-                            resume_at = None;
-                            tracing::info!("not picking up where playback was after the restart: the player came back with a track of its own");
-                        }
-                        let ours = track_changed && st.change_is_ours();
-                        if track_changed {
-                            st.asking_for_queue();
-                            let _ = ws_tx.send(Message::text(json!({"type":"command","command":"get_queue","limit":20}).to_string())).await;
-                        }
-                        if staged && quiet_moment(&st.playback, track_changed, ours) {
-                            return restart_for_update(&mut child, &st.playback, track_changed, upd).await;
+                let pairing = matches!(ev["type"].as_str(), Some("auth_state") | Some("device_changed"));
+                let actions = s.step(Input::Ws(ev), Now::real());
+                #[cfg(target_os = "macos")]
+                if pairing && let Some(v) = &run.in_vm {
+                    if s.logged_in() {
+                        announced = None;
+                    } else if announced.is_none()
+                        && let Some(p) = zeroconf
+                    {
+                        match v.announce(p, &engine.device_name).await {
+                            Ok(a) => announced = Some(a),
+                            Err(e) => tracing::warn!("pairing: couldn't announce Soloist on the LAN: {e}"),
                         }
                     }
                 }
+                actions
             }
             // (a notice from before this build started may be stale: only a build still waiting counts)
-            _ = upd.staged.notified(), if engine.update_waiting() => {
-                staged = true;
-                if quiet_moment(&st.playback, false, false) {
-                    return restart_for_update(&mut child, &st.playback, false, upd).await;
-                }
+            _ = upd.staged.notified(), if engine.update_waiting() => s.step(Input::Staged, Now::real()),
+            // the time the session asked to be woken at: a resume after a restart, a dry spell gone on too long
+            _ = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => s.step(Input::Tick, Now::real()),
+            Some(n) = news_rx.recv() => {
+                tap(&n, &mut zeroconf);
+                s.step(Input::Log(n), Now::real())
             }
-            // the moment has come to pick up where playback was after the restart
-            _ = tokio::time::sleep_until(resume_at.unwrap_or_else(tokio::time::Instant::now)), if resume_at.is_some() => {
-                resume_at = None;
-                if let Some(r) = pending_resume.take() {
-                    let _ = ev_tx.send(EngineEvent::Resume(r)).await;
-                }
-            }
-            // playback has been dry too long: Soloist's connections to Spotify are stuck
-            _ = tokio::time::sleep_until(dry.deadline().unwrap_or_else(tokio::time::Instant::now)), if dry.deadline().is_some() => {
-                dry.clear();
-                if upd.unstuck_at.is_some_and(|t| t.elapsed() < DRY_RETRY) {
-                    tracing::warn!("playback is still stuck without audio data after restarting Soloist");
-                    let _ = ev_tx.send(EngineEvent::Notice("Spotify still isn't sending audio: is the connection (or a VPN) down?".into())).await;
-                } else {
-                    tracing::warn!("no audio data for {} s while playing: restarting Soloist to reconnect", DRY_STUCK.as_secs());
-                    let _ = ev_tx.send(EngineEvent::Notice("No audio from Spotify for 20 s: reconnecting the player…".into())).await;
-                    upd.unstuck_at = Some(std::time::Instant::now());
-                    upd.resume = resume_point(&st.playback, false);
-                    let _ = child.kill().await;
-                    return Ok(Exit::Restart);
-                }
-            }
-            Some(n) = news_rx.recv() => { dry.news(&n, tokio::time::Instant::now()); match n {
-                LogNews::Stream(info) => { let _ = ev_tx.send(EngineEvent::Stream(info)).await; }
-                LogNews::Bandwidth(k) => {
-                    delivery.bandwidth_kbps = Some(k);
-                    delivery.measured_ms = singularity_proto::now_ms();
-                    let _ = ev_tx.send(EngineEvent::Delivery(delivery.clone())).await;
-                }
-                LogNews::Unplayable => {
-                    let _ = ev_tx.send(EngineEvent::Notice("Spotify won't play that here (DJ isn't supported yet)".into())).await;
-                }
-                LogNews::Stall => {
-                    let now = singularity_proto::now_ms();
-                    delivery.stalls_ms.retain(|t| now.saturating_sub(*t) <= 120_000);
-                    delivery.stalls_ms.push(now);
-                    let _ = ev_tx.send(EngineEvent::Delivery(delivery.clone())).await;
-                }
-                LogNews::Lifetime(d) => {
-                    expires_in_days = Some(d);
-                    upd.days.send_replace(Some(d));
-                    if logged_in {
-                        status(ev_tx, EngineStatus::Ready { device_name: engine.device_name.clone(), active, version: version.clone(), expires_in_days }).await;
-                    }
-                }
-                LogNews::ZeroConf(p) => zeroconf = Some(p),
-                LogNews::Flowing | LogNews::Locked | LogNews::BadKey => {}
-            }},
             cmd = cmd_rx.recv() => {
                 let Some(cmd) = cmd else { let _ = child.kill().await; return Ok(Exit::Quit) };
-                if cmd == Command::RestartEngine {
-                    let _ = ev_tx.send(EngineEvent::Notice("Restarting Soloist…".into())).await;
-                    let _ = child.kill().await;
-                    return Ok(Exit::Restart);
-                }
-                if let Command::SetSoloistKey { key } = cmd {
-                    // a new key: restart Soloist with it
-                    store_key(key, ev_tx).await;
-                    let _ = child.kill().await;
-                    return Ok(Exit::Restart);
-                }
-                // the volume asked for is the one a restarted Soloist starts at, even if this one never applies it
-                if let Command::SetVolume { percent } = cmd {
-                    engine.save_volume(percent.min(100));
-                }
-                for m in st.to_soloist(cmd) {
-                    ws_tx.send(Message::text(m.to_string())).await?;
-                }
+                s.step(Input::Command(cmd), Now::real())
             }
-        }
-    }
-}
-
-/// Stop Soloist so the new build takes over, remembering where playback was.
-async fn restart_for_update(child: &mut Child, p: &PlaybackState, track_changed: bool, upd: &mut Updates) -> anyhow::Result<Exit> {
-    upd.resume = resume_point(p, track_changed);
-    tracing::info!("restarting Soloist into the new build ({})", if track_changed { "between tracks" } else { "while quiet" });
-    let _ = child.kill().await;
-    Ok(Exit::Update)
-}
-
-/// Translates Soloist's WebSocket events into our `PlaybackState`, and our commands into Soloist's.
-/// Pure (no I/O) so it can be tested against recorded transcripts.
-#[derive(Default)]
-pub struct SoloistState {
-    pub playback: PlaybackState,
-    /// the track one of our commands asked for, and when: the change that follows it is ours
-    expected: Option<(String, std::time::Instant)>,
-    /// when we sent a next/previous/play/pause: the change that follows it is ours (its target isn't known)
-    sent_at: Option<std::time::Instant>,
-    /// when we asked for the queue: its answer is a snapshot from before the change we just heard about
-    queue_asked_at: Option<std::time::Instant>,
-    /// what our last play/pause asked for, and when: a toggle right after it goes from there, not from a state
-    /// Soloist hasn't reported yet (two quick presses sent "pause" twice)
-    toggled: Option<(PlayStatus, std::time::Instant)>,
-}
-
-/// How long our own play/pause outranks Soloist's last report for the next toggle.
-const TOGGLE_FRESH: Duration = Duration::from_secs(2);
-
-fn entity(v: &Value) -> Option<Item> {
-    let uri = v["uri"].as_str().filter(|u| !u.is_empty())?.to_string();
-    let d = &v["decorations"];
-    let artists: Vec<String> = d["creators"].as_array().map(|a| a.iter().filter_map(|c| c["entity"]["decorations"]["identity"]["name"].as_str().map(String::from)).collect()).unwrap_or_default();
-    let covers = d["visual_identity"]["cover"].as_array().cloned().unwrap_or_default();
-    let cover_url = ["large", "xlarge", "default", "small"]
-        .iter()
-        .find_map(|size| covers.iter().find(|c| c["size"] == *size))
-        .or(covers.first())
-        .and_then(|c| c["url"].as_str().map(String::from));
-    // an episode's creator may be missing: its show (the parent) stands in
-    let parent = d["parent"]["entity"]["decorations"]["identity"]["name"].as_str().map(String::from);
-    let artists = if artists.is_empty() && uri.starts_with("spotify:episode:") { parent.clone().into_iter().collect() } else { artists };
-    Some(Item {
-        uri,
-        name: d["identity"]["name"].as_str().unwrap_or_default().to_string(),
-        artists,
-        album: d["parent"]["entity"]["decorations"]["identity"]["name"].as_str().map(String::from),
-        cover_url,
-        duration_ms: d["playback"]["duration_ms"].as_u64().unwrap_or(0),
-        explicit: d["playback"]["content_ratings"].as_array().is_some_and(|r| r.iter().any(|x| x == "explicit")),
-        artist_uris: d["creators"].as_array().map(|a| a.iter().filter_map(|c| c["entity"]["uri"].as_str().map(String::from)).collect()).unwrap_or_default(),
-        album_uri: d["parent"]["entity"]["uri"].as_str().map(String::from),
-    })
-}
-
-fn status_of(s: &str) -> PlayStatus {
-    match s {
-        "playing" => PlayStatus::Playing,
-        "paused" => PlayStatus::Paused,
-        "buffering" => PlayStatus::Buffering,
-        _ => PlayStatus::Idle,
-    }
-}
-
-impl SoloistState {
-    /// Was the track change that just arrived (`playback` already applied) caused by a command of ours? A change from
-    /// another app is news to follow, not something to restart Soloist over. (Consumes what we expected.)
-    pub fn change_is_ours(&mut self) -> bool {
-        let now = std::time::Instant::now();
-        let by_track = match (&self.expected, self.playback.item.as_ref().map(|i| i.uri.as_str())) {
-            (Some((want, at)), Some(uri)) => want == uri && now.saturating_duration_since(*at) <= OUR_CHANGE,
-            _ => false,
         };
-        let by_time = self.sent_at.is_some_and(|at| now.saturating_duration_since(at) <= OUR_CHANGE_UNTIL);
-        self.expected = None;
-        self.sent_at = None;
-        by_track || by_time
-    }
-
-    /// We asked Soloist for the queue: its answer shows the player as it was, which may not have the track that just
-    /// changed yet, so only the queue is taken from it.
-    pub fn asking_for_queue(&mut self) {
-        self.queue_asked_at = Some(std::time::Instant::now());
-    }
-
-    /// Apply the queue in an event's `upcoming`. True if it differs from what we had. (An event without a list
-    /// doesn't wipe the queue: it says nothing about it.)
-    fn queue(&mut self, upcoming: &Value) -> bool {
-        let Some(list) = upcoming.as_array() else { return false };
-        let q: Vec<QueueEntry> = list
-            .iter()
-            .map(|q| {
-                let item = entity(&q["item"]).unwrap_or_else(|| Item { uri: q["uid"].as_str().unwrap_or_default().into(), ..Default::default() });
-                QueueEntry { item, source: q["source"].as_str().unwrap_or("context").into(), uid: q["uid"].as_str().unwrap_or_default().into() }
-            })
-            .collect();
-        if q == self.playback.queue {
-            return false;
-        }
-        self.playback.queue = q;
-        true
-    }
-
-    /// Apply one Soloist event. Returns true when our playback state changed.
-    pub fn apply(&mut self, ev: &Value) -> bool {
-        // the answer to our own `get_queue`: the track it still shows may be the one that just stopped. Only a state
-        // that actually carries the queue we asked for is that answer: any other state in the window (a phone's
-        // pause reaching us first) is real news and is applied as usual (audit C9).
-        if ev["type"] == "playback_state" && ev["upcoming"].is_array() && self.queue_asked_at.is_some_and(|at| at.elapsed() <= QUEUE_ANSWER) {
-            self.queue_asked_at = None;
-            return self.queue(&ev["upcoming"]);
-        }
-        // what plays next: nothing about the current track
-        if ev["type"] == "queue_changed" {
-            return self.queue(&ev["upcoming"]);
-        }
-        let p = &mut self.playback;
-        match ev["type"].as_str().unwrap_or("") {
-            "playback_state" => {
-                p.status = status_of(ev["status"].as_str().unwrap_or(""));
-                p.item = entity(&ev["item"]);
-                p.context_uri = ev["context"]["uri"].as_str().filter(|u| !u.is_empty()).map(String::from);
-                p.context_name = ev["context"]["decorations"]["identity"]["name"].as_str().map(String::from);
-                self.position(&ev["position"]);
-                let p = &mut self.playback;
-                p.volume = ev["volume"].as_u64().unwrap_or(p.volume as u64).min(100) as u8;
-                self.options(&ev["options"]);
-            }
-            "track_changed" => {
-                let item = entity(&ev["item"]);
-                // a different track starts at its beginning: the old track's anchor would show its position until
-                // the next `position_sync` (the bar and synced lyrics jumped, MPRIS sent a spurious Seeked)
-                if item.as_ref().map(|i| &i.uri) != p.item.as_ref().map(|i| &i.uri) {
-                    (p.position_ms, p.timestamp_ms, p.speed) = (0, singularity_proto::now_ms(), 0.0);
-                }
-                p.item = item;
-            }
-            "playback_changed" => {
-                p.status = status_of(ev["status"].as_str().unwrap_or(""));
-                if p.status != PlayStatus::Playing && p.speed != 0.0 {
-                    // stop where it is now, not back at the last anchor
-                    let now = singularity_proto::now_ms();
-                    (p.position_ms, p.timestamp_ms, p.speed) = (p.position_at(now), now, 0.0);
-                }
-            }
-            "volume_changed" => p.volume = ev["volume"].as_u64().unwrap_or(0).min(100) as u8,
-            "context_changed" => {
-                p.context_uri = ev["context"]["uri"].as_str().filter(|u| !u.is_empty()).map(String::from);
-                p.context_name = ev["context"]["decorations"]["identity"]["name"].as_str().map(String::from);
-            }
-            "options_changed" => self.options(&ev["options"]),
-            "position_sync" => self.position(&ev["position"]),
-            // "queue_changed" is handled above (the queue only)
-            _ => return false,
-        }
-        // Soloist now says what our last play/pause asked for: from here on its word is the state a toggle goes
-        // from (a remembered press that outlived its answer turned the next toggle the wrong way)
-        if let Some((s, _)) = self.toggled
-            && (self.playback.status == s || (self.playback.status, s) == (PlayStatus::Buffering, PlayStatus::Playing))
-        {
-            self.toggled = None;
-        }
-        true
-    }
-
-    fn position(&mut self, pos: &Value) {
-        let p = &mut self.playback;
-        if let (Some(ms), Some(ts)) = (pos["position_ms"].as_u64(), pos["timestamp_ms"].as_u64()) {
-            p.position_ms = ms;
-            p.timestamp_ms = ts;
-            p.speed = pos["speed"].as_f64().unwrap_or(0.0) as f32;
-        }
-    }
-
-    fn options(&mut self, o: &Value) {
-        let p = &mut self.playback;
-        if let Some(s) = o["shuffle"].as_bool() {
-            p.shuffle = s;
-        }
-        p.repeat = match o["repeat"].as_str() {
-            Some("context") => RepeatMode::Context,
-            Some("track") => RepeatMode::Track,
-            Some(_) => RepeatMode::Off,
-            None => p.repeat,
-        };
-    }
-
-    /// Our command → Soloist WebSocket command(s). Notes what the command is expected to cause (see
-    /// [`SoloistState::change_is_ours`]).
-    pub fn to_soloist(&mut self, cmd: Command) -> Vec<Value> {
-        let now = std::time::Instant::now();
-        match &cmd {
-            Command::Play { uri: Some(u) } => self.expected = Some((u.clone(), now)),
-            Command::PlayFrom { track_uri: Some(u), .. } => self.expected = Some((u.clone(), now)),
-            Command::Play { uri: None } | Command::Next | Command::Previous | Command::TogglePlay => self.sent_at = Some(now),
-            _ => {}
-        }
-        let c = |name: &str| json!({"type":"command","command":name});
-        match cmd {
-            Command::Play { uri: Some(u) } => vec![json!({"type":"command","command":"play","uri":u})],
-            Command::Play { uri: None } => {
-                self.toggled = Some((PlayStatus::Playing, now));
-                vec![c("play")]
-            }
-            Command::Pause => {
-                self.toggled = Some((PlayStatus::Paused, now));
-                vec![c("pause")]
-            }
-            Command::TogglePlay => {
-                let now_status = match self.toggled {
-                    Some((s, at)) if now.saturating_duration_since(at) < TOGGLE_FRESH => s,
-                    _ => self.playback.status,
-                };
-                // buffering is playing too: "play" then was a no-op
-                let pause = matches!(now_status, PlayStatus::Playing | PlayStatus::Buffering);
-                self.toggled = Some((if pause { PlayStatus::Paused } else { PlayStatus::Playing }, now));
-                vec![c(if pause { "pause" } else { "play" })]
-            }
-            Command::Next => vec![c("skip_next")],
-            Command::Previous => vec![c("skip_prev")],
-            Command::Seek { position_ms } => vec![json!({"type":"command","command":"seek","position_ms":position_ms})],
-            Command::SetVolume { percent } => vec![json!({"type":"command","command":"set_volume","volume":percent.min(100)})],
-            Command::SetShuffle { enabled } => vec![json!({"type":"command","command":"set_shuffle","enabled":enabled})],
-            Command::SetRepeat { mode } => {
-                let (t, ctx) = match mode {
-                    RepeatMode::Off => (false, false),
-                    RepeatMode::Context => (false, true),
-                    RepeatMode::Track => (true, false),
-                };
-                // order matters (Soloist docs): disable the other mode first
-                if t {
-                    vec![json!({"type":"command","command":"set_repeat_context","enabled":false}), json!({"type":"command","command":"set_repeat_track","enabled":true})]
-                } else {
-                    vec![json!({"type":"command","command":"set_repeat_track","enabled":false}), json!({"type":"command","command":"set_repeat_context","enabled":ctx})]
-                }
-            }
-            Command::AddToQueue { uri } => vec![json!({"type":"command","command":"add_to_queue","uri":uri})],
-            Command::GetState => vec![c("get_state")],
-            // Soloist can't start a context at an offset (tested 2026-10-17); ConnectRemote does that. Here, as a
-            // last resort, the track plays on its own.
-            Command::PlayFrom { track_uri: Some(u), .. } => vec![json!({"type":"command","command":"play","uri":u})],
-            Command::PlayFrom { .. } | Command::GetLibrary | Command::GetTracks { .. } | Command::MoreTracks { .. } | Command::FindShow { .. } | Command::Spectrum { .. } | Command::Shutdown | Command::SetSoloistKey { .. } | Command::GetHealth | Command::GetLyrics { .. } | Command::GetArtist { .. } | Command::Search { .. } | Command::GetDevices | Command::Transfer { .. } | Command::StartJam | Command::EndJam | Command::SetSaved { .. } | Command::CheckSaved { .. } | Command::GetListening | Command::GetStats { .. } | Command::ExportLocalData | Command::DeleteLocalData | Command::CreatePlaylist { .. } | Command::DeletePlaylist { .. } | Command::EditPlaylist { .. } | Command::AddToPlaylist { .. } | Command::RemoveFromPlaylist { .. } | Command::MoveInPlaylist { .. } | Command::SetPlaylistCover { .. } => vec![],
-            // Soloist only appends; the rest goes through ConnectRemote
-            Command::PlayNext { uri } => vec![json!({"type":"command","command":"add_to_queue","uri":uri})],
-            Command::RemoveFromQueue { .. } | Command::ClearQueue | Command::MoveInQueue { .. } => vec![],
-            Command::Login | Command::Logout | Command::GetHome | Command::RestartEngine | Command::Unknown => vec![],
+        if let Some(stop) = carry_out(actions, &mut ws_tx, engine, ev_tx).await? {
+            return stopped(child, stop).await;
         }
     }
 }
@@ -1211,82 +858,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_quick_second_toggle_goes_from_the_first_not_from_a_stale_state() {
-        let cmd = |v: &Vec<Value>| v[0]["command"].as_str().unwrap().to_string();
-        let mut s = SoloistState::default();
-        s.playback.status = PlayStatus::Playing;
-        assert_eq!(cmd(&s.to_soloist(Command::TogglePlay)), "pause");
-        // Soloist hasn't said "paused" yet: the second press still means play
-        assert_eq!(cmd(&s.to_soloist(Command::TogglePlay)), "play");
-        let mut s = SoloistState::default();
-        s.playback.status = PlayStatus::Buffering;
-        assert_eq!(cmd(&s.to_soloist(Command::TogglePlay)), "pause", "buffering counts as playing");
-    }
-
-    /// Once Soloist has said what our play/pause asked for, the next toggle goes from what it says, not from the press
-    /// (2026-11-05: Space pressed fast as the app starts).
-    #[test]
-    fn a_toggle_goes_from_soloist_once_it_has_answered() {
-        let cmd = |v: &Vec<Value>| v[0]["command"].as_str().unwrap().to_string();
-        let mut s = SoloistState::default();
-        s.playback.status = PlayStatus::Playing;
-        assert_eq!(cmd(&s.to_soloist(Command::Pause)), "pause");
-        assert!(s.apply(&json!({"type": "playback_changed", "status": "paused"})));
-        assert!(s.toggled.is_none(), "answered");
-        // then something else (a phone, Spotify restoring a session) starts it: a toggle pauses
-        assert!(s.apply(&json!({"type": "playback_changed", "status": "playing"})));
-        assert_eq!(cmd(&s.to_soloist(Command::TogglePlay)), "pause");
-        // a stale report that contradicts the press doesn't end it
-        assert!(s.apply(&json!({"type": "playback_changed", "status": "playing"})));
-        assert_eq!(cmd(&s.to_soloist(Command::TogglePlay)), "play", "the press still stands");
-    }
-
-    /// B4 (2026-11-20 bug hunt): a skip kept the old track's position until Soloist's next `position_sync`, and a
-    /// pause snapped back to the last anchor.
-    #[test]
-    fn a_new_track_starts_at_zero_and_a_pause_stops_where_it_is() {
-        let mut s = SoloistState::default();
-        let now = singularity_proto::now_ms();
-        s.playback = PlaybackState { status: PlayStatus::Playing, item: Some(Item { uri: "spotify:track:a".into(), duration_ms: 300_000, ..Default::default() }), position_ms: 100_000, timestamp_ms: now - 20_000, speed: 1.0, ..Default::default() };
-        assert!(s.apply(&json!({"type": "playback_changed", "status": "paused"})));
-        let at = s.playback.position_at(singularity_proto::now_ms() + 5_000);
-        assert!((120_000..121_000).contains(&at), "paused at 2:00, where it was, not back at 1:40: {at}");
-        assert!(s.apply(&json!({"type": "track_changed", "item": {"uri": "spotify:track:b", "name": "b", "duration_ms": 200_000}})));
-        assert_eq!(s.playback.item.as_ref().map(|i| i.uri.as_str()), Some("spotify:track:b"));
-        assert_eq!(s.playback.position_at(singularity_proto::now_ms()), 0, "the new track starts at its beginning");
-    }
-
-    #[test]
     fn an_unplayable_context_is_news() {
         let mut p = LogParser::default();
         assert_eq!(p.line("19:48:31.990 I [f:2197] AdvanceStuck detected, reason: unplayable"), Some(LogNews::Unplayable));
         assert_eq!(p.line("19:48:31.990 I [f:289] Prefetch: looks like new context"), None);
     }
 
-    /// 2026-11-02: Soloist sat "playing" at 0:09 for minutes with no data arriving; the watch calls that stuck.
+    /// The lines that start and end a dry spell (2026-11-02: Soloist sat "playing" at 0:09 for minutes with no data).
     #[test]
-    fn a_dry_spell_without_data_becomes_stuck() {
+    fn an_underrun_and_its_recovery_are_news() {
         let mut p = LogParser::default();
-        let stall = p.line("01:41:05.291 I [f:776                           ] audioThreadMain: underrun, _is_processing_audio now false").unwrap();
-        assert_eq!(stall, LogNews::Stall);
-        let flowing = p.line("01:42:46.421 I [f:972                           ] updateInternalDriverToPlaying: underrun, _is_processing_audio now true").unwrap();
-        assert_eq!(flowing, LogNews::Flowing);
-        let t0 = tokio::time::Instant::now();
-        let mut w = DryWatch::default();
-        assert_eq!(w.deadline(), None);
-        w.news(&stall, t0);
-        w.news(&stall, t0 + Duration::from_secs(5));
-        assert_eq!(w.deadline(), Some(t0 + DRY_STUCK), "the spell counts from its first stall");
-        w.news(&LogNews::Bandwidth(900), t0);
-        assert_eq!(w.deadline(), None, "data arriving ends it");
-        w.news(&stall, t0);
-        w.news(&flowing, t0);
-        assert_eq!(w.deadline(), None, "audio flowing again ends it");
-        w.news(&stall, t0);
-        w.status(PlayStatus::Buffering);
-        assert!(w.deadline().is_some(), "buffering is still trying to play");
-        w.status(PlayStatus::Paused);
-        assert_eq!(w.deadline(), None, "a pause isn't a stuck stream");
+        let stall = p.line("01:41:05.291 I [f:776                           ] audioThreadMain: underrun, _is_processing_audio now false");
+        assert_eq!(stall, Some(LogNews::Stall));
+        let flowing = p.line("01:42:46.421 I [f:972                           ] updateInternalDriverToPlaying: underrun, _is_processing_audio now true");
+        assert_eq!(flowing, Some(LogNews::Flowing));
     }
 
     /// S1: the state directory (pairing, cache) and both logs are owner-only, and an older build's 0644 log is
