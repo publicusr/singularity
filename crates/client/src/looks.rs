@@ -156,9 +156,10 @@ impl App {
         if let Some(t) = self.user_themes.iter().find(|t| t.id == self.theme.id).cloned() {
             self.theme = t.into();
         }
-        if let Some(p) = self.picker.as_mut().filter(|p| p.kind == PickerKind::Theme) {
+        let items = theme_items(&self.user_themes);
+        if let Some(p) = self.picker_mut().filter(|p| p.kind == PickerKind::Theme) {
             let sel = p.items.get(p.sel).map(|i| i.0.clone());
-            p.items = theme_items(&self.user_themes);
+            p.items = items;
             p.sel = sel.and_then(|s| p.items.iter().position(|i| i.0 == s)).unwrap_or(p.sel.min(p.items.len() - 1));
         }
         if !problems.is_empty() {
@@ -193,7 +194,7 @@ impl App {
             (PickerKind::Theme, _) => self.theme.id.clone(),
         };
         let sel = items.iter().position(|(id, ..)| *id == current).unwrap_or(0);
-        self.picker = Some(Picker { kind, items, sel, before: (self.design, self.theme.id.clone(), self.layout.clone(), self.layout_name.clone()) });
+        self.open_popup(crate::app::Popup::Picker(Picker { kind, items, sel, before: (self.design, self.theme.id.clone(), self.layout.clone(), self.layout_name.clone()) }));
     }
 
     /// Put saved layout `s` on screen (with the colours it was saved with, or its design's).
@@ -237,10 +238,10 @@ impl App {
 
     /// Typing a name: for "Save design as…" (#19) or a new playlist (#51).
     pub fn naming_key(&mut self, k: KeyEvent) {
-        let Some(n) = self.naming.as_mut() else { return };
-        let max = if matches!(n.purpose, crate::app::NameFor::Layout | crate::app::NameFor::Fork) { 40 } else { 100 };
+        let Some(purpose) = self.naming().map(|n| n.purpose) else { return };
+        let max = if matches!(purpose, crate::app::NameFor::Layout | crate::app::NameFor::Fork) { 40 } else { 100 };
         // the first edit of a built-in Design can still be undone (or, undone, redone) from its naming prompt
-        if n.purpose == crate::app::NameFor::Fork && k.modifiers.contains(KeyModifiers::CONTROL) {
+        if purpose == crate::app::NameFor::Fork && k.modifiers.contains(KeyModifiers::CONTROL) {
             match self.keymap.action(k) {
                 Some(crate::app::Action::UndoLayout) if !k.modifiers.contains(KeyModifiers::SHIFT) => return self.undo_layout(),
                 Some(crate::app::Action::UndoLayout | crate::app::Action::RedoLayout) => return self.redo_layout(),
@@ -250,12 +251,12 @@ impl App {
         match k.code {
             KeyCode::Esc => {
                 // the first edit of a built-in Design, left unnamed: kept as its one "(edited)" Design
-                if self.naming.take().is_some_and(|n| n.purpose == crate::app::NameFor::Fork) {
+                if self.take_naming().is_some_and(|n| n.purpose == crate::app::NameFor::Fork) {
                     self.keep_edited();
                 }
             }
             KeyCode::Enter => {
-                let Some(n) = self.naming.take() else { return };
+                let Some(n) = self.take_naming() else { return };
                 match n.purpose {
                     crate::app::NameFor::Layout if !n.text.trim().is_empty() => self.save_layout(&n.text),
                     crate::app::NameFor::Layout => {}
@@ -265,7 +266,7 @@ impl App {
                         let id = crate::layouts::file_id(&n.text);
                         if self.saved_layouts.iter().any(|s| s.id == id && !s.edited) {
                             self.say(format!("There is already a design called \"{}\"", n.text.trim()));
-                            self.naming = Some(n);
+                            self.open_popup(crate::app::Popup::Naming(n));
                         } else {
                             self.save_layout(&n.text);
                         }
@@ -274,9 +275,15 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
-                n.text.pop();
+                if let Some(n) = self.naming_mut() {
+                    n.text.pop();
+                }
             }
-            KeyCode::Char(c) if n.text.chars().count() < max => n.text.push(c),
+            KeyCode::Char(c) => {
+                if let Some(n) = self.naming_mut().filter(|n| n.text.chars().count() < max) {
+                    n.text.push(c);
+                }
+            }
             _ => {}
         }
     }
@@ -295,7 +302,7 @@ impl App {
 
     /// Show item `i` (the preview).
     pub fn picker_select(&mut self, i: usize) {
-        let Some(p) = self.picker.as_mut() else { return };
+        let Some(p) = self.picker_mut() else { return };
         p.sel = i.min(p.items.len().saturating_sub(1));
         let (kind, id) = (p.kind, p.items[p.sel].0.clone());
         match kind {
@@ -317,7 +324,7 @@ impl App {
 
     /// Enter: keep what's shown.
     pub fn picker_keep(&mut self) {
-        if let Some(p) = self.picker.take() {
+        if let Some(p) = self.take_picker() {
             // another Design: the layout undo history was the last one's
             if p.before.0 != self.design || p.before.2 != self.layout || p.before.3 != self.layout_name {
                 self.history.clear();
@@ -328,7 +335,7 @@ impl App {
 
     /// Esc: put back what was there.
     pub fn picker_cancel(&mut self) {
-        let Some(p) = self.picker.take() else { return };
+        let Some(p) = self.take_picker() else { return };
         if p.before.0 != self.design {
             self.set_design(p.before.0);
         }
@@ -339,7 +346,7 @@ impl App {
     }
 
     pub fn picker_key(&mut self, k: KeyEvent) {
-        let Some(p) = self.picker.as_ref() else { return };
+        let Some(p) = self.picker() else { return };
         let (sel, n) = (p.sel, p.items.len());
         match k.code {
             KeyCode::Up => self.picker_select(sel.saturating_sub(1)),
@@ -368,7 +375,7 @@ pub fn picker_rect(area: Rect, p: &Picker) -> Rect {
 
 /// The picker: the list, a swatch of the theme on screen, and how to keep or undo it.
 pub fn draw_picker(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
-    let Some(p) = app.picker.as_ref() else { return };
+    let Some(p) = app.picker() else { return };
     let r = picker_rect(area, p);
     let title = match p.kind {
         PickerKind::Design => "Design",
@@ -510,11 +517,11 @@ mod tests {
         assert!(themes.join("_example.toml").exists(), "an example to start from");
         assert!(app.user_themes.is_empty(), "but not one of the themes");
         app.run(crate::app::Action::PickTheme);
-        let n = app.picker.as_ref().unwrap().items.len();
+        let n = app.picker().unwrap().items.len();
         std::fs::write(themes.join("dusk.toml"), "name = \"Dusk\"\nbase = \"event-horizon\"\n[colors]\naccent = \"#ff8800\"\n").unwrap();
         app.theme_dir.as_mut().unwrap().polled -= std::time::Duration::from_secs(2);
         app.tick();
-        let items = &app.picker.as_ref().unwrap().items;
+        let items = &app.picker().unwrap().items;
         assert_eq!(items.len(), n + 1);
         let i = items.iter().position(|(id, ..)| id == "dusk").unwrap();
         app.picker_select(i);
@@ -583,9 +590,9 @@ mod tests {
         assert_eq!(again.layout.compute(area), mine.compute(area));
         // in the picker, after the built-in designs
         again.run(crate::app::Action::PickDesign);
-        let items = &again.picker.as_ref().unwrap().items;
+        let items = &again.picker().unwrap().items;
         assert_eq!(items.last().unwrap().1, "Wide library");
-        assert_eq!(again.picker.as_ref().unwrap().sel, items.len() - 1, "the one in use is selected");
+        assert_eq!(again.picker().unwrap().sel, items.len() - 1, "the one in use is selected");
         key(&mut again, KeyCode::Home);
         assert_eq!(again.layout, crate::layout::Node::singularity());
         key(&mut again, KeyCode::Esc);

@@ -700,7 +700,9 @@ pub fn draw_health(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     let (x, w) = (inner.x + 2, inner.width.saturating_sub(4));
     // on a short screen the rows scroll above the two footer lines, which stay
     let body = Rect { height: inner.height.saturating_sub(2), ..inner };
-    app.health_scroll.draw(buf, body, |buf, body| health_body(buf, body, app, th));
+    if let Some(scroll) = app.text_scroll(crate::app::Modal::Health) {
+        scroll.draw(buf, body, |buf, body| health_body(buf, body, app, th));
+    }
     let foot = "Soloist takes its key only on its command line: `ps` shows it to local users.";
     text(buf, x, inner.bottom().saturating_sub(2), w, foot, th.s(th.border));
     text(buf, x, inner.bottom().saturating_sub(1), w, "Esc closes · refreshes every few seconds", th.s(th.dim));

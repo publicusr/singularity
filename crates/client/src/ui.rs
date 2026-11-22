@@ -1,6 +1,6 @@
 //! Rendering. Pure function of `App` state, plus hit-box registration for the mouse.
 
-use crate::app::{Action, App, Hit, Link, Menu};
+use crate::app::{Action, App, Hit, Link, Menu, Modal};
 use crate::scrub::{self, Bar};
 use crate::theme::{Rgb, Theme};
 use ratatui::Frame;
@@ -100,30 +100,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.tile_settle(now);
     app.motion.frame(now);
     let float = app.float_rect(body);
-    // popups are known up front, so pixel images under them can step down to cells this frame
-    let login_r = match &app.catalogue {
-        // the wizard shows the code itself
-        Some(CatalogueStatus::LoginPending { .. }) if !app.login_hidden && !crate::setup::wanted(app) => Some(centered(area, 64, 9)),
-        _ => None,
-    };
-    let overlays = [
-        login_r,
-        app.palette.is_some().then(|| palette_rect(area, app)),
-        app.help.then(|| help_rect(area, help_rows(&app.keymap).len())),
-        crate::setup::wanted(app).then(|| crate::setup::rect(area)),
-        app.health_open.then(|| crate::setup::health_rect(area)),
-        app.devices_open.then(|| devices_rect(area, app)),
-        app.picker.as_ref().map(|p| crate::looks::picker_rect(area, p)),
-        app.naming.is_some().then(|| naming_rect(area)),
-        app.widget_pick.as_ref().map(|p| crate::arrange::widgets_rect(area, p)),
-        float.map(|r| crate::arrange::with_shadow(r, area)),
-        app.playlists.details.is_some().then(|| crate::playlists::details_rect(area)),
-        app.playlists.adding.is_some().then(|| crate::playlists::adding_rect(area, app.adding_rows().len())),
-        app.cover_form.is_some().then(|| crate::cover::rect(area)),
-        app.menu.as_ref().map(|m| menu_rect(area, m)),
-        app.toast.as_ref().filter(|_| app.move_mode.is_none()).map(|(msg, _)| toast_rect(area, msg)),
-    ];
-    app.overlays = overlays.into_iter().flatten().collect();
+    // popups are known up front, so pixel images under them can step down to cells this frame; what's over the
+    // Panes, the top first (D83)
+    let layers = app.layers();
+    let mut overlays: Vec<Rect> = layers.iter().filter_map(|&m| layer_rect(area, app, m)).collect();
+    overlays.extend(float.map(|r| crate::arrange::with_shadow(r, area)));
+    overlays.extend(app.toast.as_ref().filter(|_| app.move_mode.is_none()).map(|(msg, _)| toast_rect(area, msg)));
+    app.overlays = overlays;
     top_bar(f, top, app, &th);
     panes(f, body, app, &th, float);
     if th.scanlines {
@@ -140,61 +123,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         None => hint_bar(f.buffer_mut(), hints, &th, &app.keymap),
     }
     crate::arrange::draw_undo_chip(f.buffer_mut(), hints, app, &th);
-    if let (Some(r), Some(CatalogueStatus::LoginPending { url, code })) = (login_r, app.catalogue.clone()) {
-        login(f, r, &th, &url, &code);
-    }
-    if app.menu.is_some() {
-        menu(f, area, app, &th);
-    }
-    if app.palette.is_some() {
-        palette(f, area, app, &th);
-    }
-    if app.help {
-        help(f, area, &th, &app.keymap, &app.help_scroll);
-    }
-    if app.devices_open {
-        devices(f.buffer_mut(), area, app, &th);
-    }
-    if app.picker.is_some() {
-        crate::looks::draw_picker(f.buffer_mut(), area, app, &th);
-    }
-    if app.widget_pick.is_some() {
-        crate::arrange::draw_widgets(f.buffer_mut(), area, app, &th);
-    }
-    if let Some(n) = app.naming.clone() {
-        let mut edited = format!("Enter save · Esc keep it as “{} (edited)”", crate::design::DESIGNS[app.design].name);
-        // the edit can still be undone from here, where there's room to say so
-        let undo = app.keymap.label(Action::UndoLayout);
-        if !undo.is_empty() && edited.chars().count() + undo.chars().count() + 8 <= naming_rect(area).width.saturating_sub(4) as usize {
-            edited += &format!(" · {undo} undo");
-        }
-        let (title, hint) = match n.purpose {
-            crate::app::NameFor::Layout => ("Save design as", "Enter save · Esc cancel · find it in Ctrl+K → Pick a design"),
-            crate::app::NameFor::Fork => ("Keep your changes as a design", edited.as_str()),
-            crate::app::NameFor::NewPlaylist => ("New playlist", "Enter create · Esc cancel"),
-        };
-        let inner = popup(f.buffer_mut(), naming_rect(area), &th, title);
-        let buf = f.buffer_mut();
-        // the end of a long name stays in view
-        let w = inner.width.saturating_sub(5) as usize;
-        let shown: String = n.text.chars().skip(n.text.chars().count().saturating_sub(w)).collect();
-        text(buf, inner.x + 1, inner.y, inner.width.saturating_sub(2), &format!("› {shown}▏"), th.s(th.fg).add_modifier(Modifier::BOLD));
-        text(buf, inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), hint, th.s(th.dim));
-    }
-    if app.playlists.details.is_some() {
-        crate::playlists::draw_details(f.buffer_mut(), area, app, &th);
-    }
-    if app.playlists.adding.is_some() {
-        crate::playlists::draw_adding(f.buffer_mut(), area, app, &th);
-    }
-    if app.cover_form.is_some() {
-        crate::cover::draw(f.buffer_mut(), area, app, &th);
-    }
-    if app.health_open {
-        crate::setup::draw_health(f.buffer_mut(), crate::setup::health_rect(area), app, &th);
-    }
-    if crate::setup::wanted(app) {
-        crate::setup::draw_wizard(f.buffer_mut(), crate::setup::rect(area), app, &th);
+    // the bottom first, so the one on top is drawn last
+    for &m in layers.iter().rev() {
+        draw_layer(f, area, app, &th, m);
     }
     if let Some((msg, _)) = app.toast.clone().filter(|_| app.move_mode.is_none()) {
         let r = toast_rect(area, &msg);
@@ -254,6 +185,74 @@ fn transparent(buf: &mut Buffer, r: Rect, th: &Theme) {
     }
 }
 
+/// Where what's over the Panes covers the screen (Move mode covers nothing: the Pane is the thing).
+fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
+    Some(match m {
+        Modal::Login => centered(area, 64, 9),
+        Modal::Palette => palette_rect(area, app),
+        Modal::Help => help_rect(area, help_rows(&app.keymap).len()),
+        Modal::Wizard => crate::setup::rect(area),
+        Modal::Health => crate::setup::health_rect(area),
+        Modal::Devices => devices_rect(area, app),
+        Modal::Picker => crate::looks::picker_rect(area, app.picker()?),
+        Modal::Naming => naming_rect(area),
+        Modal::Widgets => crate::arrange::widgets_rect(area, app.widget_pick()?),
+        Modal::Details => crate::playlists::details_rect(area),
+        Modal::Adding => crate::playlists::adding_rect(area, app.adding_rows().len()),
+        Modal::Cover => crate::cover::rect(area),
+        Modal::Menu => menu_rect(area, app.menu()?),
+        Modal::Move => return None,
+    })
+}
+
+/// Draw what's over the Panes (Move mode is drawn in the hint bar).
+fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
+    match m {
+        Modal::Login => {
+            if let Some(CatalogueStatus::LoginPending { url, code }) = app.catalogue.clone() {
+                login(f, centered(area, 64, 9), th, &url, &code);
+            }
+        }
+        Modal::Menu => menu(f, area, app, th),
+        Modal::Palette => palette(f, area, app, th),
+        Modal::Help => {
+            if let Some(scroll) = app.text_scroll(Modal::Help) {
+                help(f, area, th, &app.keymap, scroll);
+            }
+        }
+        Modal::Devices => devices(f.buffer_mut(), area, app, th),
+        Modal::Picker => crate::looks::draw_picker(f.buffer_mut(), area, app, th),
+        Modal::Widgets => crate::arrange::draw_widgets(f.buffer_mut(), area, app, th),
+        Modal::Naming => {
+            let Some(n) = app.naming().cloned() else { return };
+            let mut edited = format!("Enter save · Esc keep it as “{} (edited)”", crate::design::DESIGNS[app.design].name);
+            // the edit can still be undone from here, where there's room to say so
+            let undo = app.keymap.label(Action::UndoLayout);
+            if !undo.is_empty() && edited.chars().count() + undo.chars().count() + 8 <= naming_rect(area).width.saturating_sub(4) as usize {
+                edited += &format!(" · {undo} undo");
+            }
+            let (title, hint) = match n.purpose {
+                crate::app::NameFor::Layout => ("Save design as", "Enter save · Esc cancel · find it in Ctrl+K → Pick a design"),
+                crate::app::NameFor::Fork => ("Keep your changes as a design", edited.as_str()),
+                crate::app::NameFor::NewPlaylist => ("New playlist", "Enter create · Esc cancel"),
+            };
+            let inner = popup(f.buffer_mut(), naming_rect(area), th, title);
+            let buf = f.buffer_mut();
+            // the end of a long name stays in view
+            let w = inner.width.saturating_sub(5) as usize;
+            let shown: String = n.text.chars().skip(n.text.chars().count().saturating_sub(w)).collect();
+            text(buf, inner.x + 1, inner.y, inner.width.saturating_sub(2), &format!("› {shown}▏"), th.s(th.fg).add_modifier(Modifier::BOLD));
+            text(buf, inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), hint, th.s(th.dim));
+        }
+        Modal::Details => crate::playlists::draw_details(f.buffer_mut(), area, app, th),
+        Modal::Adding => crate::playlists::draw_adding(f.buffer_mut(), area, app, th),
+        Modal::Cover => crate::cover::draw(f.buffer_mut(), area, app, th),
+        Modal::Health => crate::setup::draw_health(f.buffer_mut(), crate::setup::health_rect(area), app, th),
+        Modal::Wizard => crate::setup::draw_wizard(f.buffer_mut(), crate::setup::rect(area), app, th),
+        Modal::Move => {}
+    }
+}
+
 fn naming_rect(area: Rect) -> Rect {
     centered(area, 64, 4)
 }
@@ -281,10 +280,10 @@ fn devices(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     let list = app.devices.clone();
     let shown = device_rows(area, app);
     // the selection stays in view (on the Jam row, the last devices show)
-    let first = crate::scroll::window(app.devices_sel.min(list.len() - 1), shown, list.len());
+    let first = crate::scroll::window(app.devices_sel().unwrap_or(0).min(list.len() - 1), shown, list.len());
     for (i, d) in list.iter().enumerate().skip(first).take(shown) {
         let y = inner.y + 1 + (i - first) as u16;
-        let sel = i == app.devices_sel;
+        let sel = app.devices_sel() == Some(i);
         let st = if d.active { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.fg) };
         let bg = if sel { th.selection.color() } else { th.bg.color() };
         blank(buf, inner.x, y, inner.width, th.base().bg(bg));
@@ -332,7 +331,7 @@ fn menu_rect(area: Rect, m: &Menu) -> Rect {
 }
 
 fn menu(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
-    let Some(m) = app.menu.as_ref() else { return };
+    let Some(m) = app.menu() else { return };
     let r = menu_rect(area, m);
     let items = m.items.clone();
     let selected = m.selected;
@@ -885,7 +884,7 @@ fn overlay_block<'a>(th: &Theme, title: &'a str) -> Block<'a> {
 
 fn palette(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
     let items = app.palette_items();
-    let (query, selected) = app.palette.as_ref().map(|p| (p.query.clone(), p.selected)).unwrap_or_default();
+    let (query, selected) = app.palette().map(|p| (p.query.clone(), p.selected)).unwrap_or_default();
     let r = palette_rect(area, app);
     f.render_widget(Clear, r);
     let block = overlay_block(th, "Command palette");
@@ -1119,7 +1118,7 @@ mod tests {
         }
         let (mut app, _rx) = home_app();
         let found = |app: &mut App, q: &str| {
-            app.palette = Some(crate::app::Palette { query: q.into(), selected: 0 });
+            app.open_popup(crate::app::Popup::Palette(crate::app::Palette { query: q.into(), selected: 0 }));
             app.palette_items()
         };
         assert_eq!(found(&mut app, "palette")[0], Action::NextVariant, "the old word still finds it");
@@ -1137,15 +1136,15 @@ mod tests {
     fn palette_filters_and_runs_actions() {
         let mut app = App::new(None);
         app.key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
-        assert!(app.palette.is_some());
+        assert!(app.palette().is_some());
         for c in "help".chars() {
             app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
         assert_eq!(app.palette_items()[0], Action::Help);
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(app.palette.is_none() && app.help);
+        assert!(app.palette().is_none() && app.is_open(crate::app::Modal::Help));
         // and by mouse
-        app.help = false;
+        app.shut(crate::app::Modal::Help);
         app.run(Action::Palette);
         for c in "quit".chars() {
             app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
@@ -1416,7 +1415,7 @@ mod tests {
         assert_eq!(buf[(9, 1)].symbol(), "e");
         let (mut app, _rx) = home_app();
         render(&mut app, 200, 64);
-        app.menu = Some(Menu { at: (20, 58), target: crate::app::Target::Card(crate::home::CardRef { shelf: 1, card: 0 }), items: vec![("Play".into(), crate::app::MenuAct::Play); 4], selected: 0 });
+        app.open_popup(crate::app::Popup::Menu(Menu { at: (20, 58), target: crate::app::Target::Card(crate::home::CardRef { shelf: 1, card: 0 }), items: vec![("Play".into(), crate::app::MenuAct::Play); 4], selected: 0 }));
         render(&mut app, 80, 24);
     }
 
@@ -1575,7 +1574,7 @@ mod tests {
         let link = s.lines().position(|l| l.contains("Copy link")).unwrap() as u16;
         let col = s.lines().nth(link as usize).unwrap().chars().position(|c| c == 'C').unwrap() as u16;
         click(&mut app, col, link);
-        assert!(app.menu.is_none());
+        assert!(app.menu().is_none());
         assert_eq!(app.clipboard.as_deref(), Some("https://open.spotify.com/album/rp0"));
         assert!(sent(&mut rx).is_empty());
     }
@@ -2213,7 +2212,7 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:episode:e1".into()) }]);
         // its menu leads to the show, at that episode
         app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column: row.x + 2, row: row.y, modifiers: KeyModifiers::NONE });
-        let at = app.menu.as_ref().unwrap().items.iter().position(|(l, _)| l == "Go to show").expect("Go to show");
+        let at = app.menu().unwrap().items.iter().position(|(l, _)| l == "Go to show").expect("Go to show");
         for _ in 0..at {
             app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         }
@@ -3170,7 +3169,7 @@ mod tests {
         let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::DeviceRow(1)).then_some(*r)).unwrap();
         click(&mut app, row.x + 3, row.y);
         assert_eq!(sent(&mut rx), vec![Command::Transfer { device_id: "phone".into() }]);
-        assert!(!app.devices_open);
+        assert!(!app.is_open(crate::app::Modal::Devices));
         // now the phone plays: the bar says so
         app.hear(singularity_proto::Event::Devices { devices: vec![dev("solo", "Singularity", false, true), dev("phone", "Pixel", true, false)] });
         assert!(render(&mut app, 160, 48).contains("⧉ playing on Pixel"));
@@ -3239,14 +3238,14 @@ mod tests {
         render(&mut app, 160, 48);
         app.run(Action::Devices);
         render(&mut app, 160, 48);
-        assert_eq!(app.devices_sel, 0);
+        assert_eq!(app.devices_sel(), Some(0));
         // far outside the popup, on the Library, the wheel still moves the popup's highlight and nothing else
         mouse(&mut app, MouseEventKind::ScrollDown, 1.5, 10, false);
         mouse(&mut app, MouseEventKind::ScrollDown, 1.5, 10, false);
-        assert_eq!((app.devices_sel, app.sidebar.sel), (2, 0));
+        assert_eq!((app.devices_sel(), app.sidebar.sel), (Some(2), 0));
         // a click outside only closes it
         click(&mut app, 1, 10);
-        assert!(!app.devices_open);
+        assert!(!app.is_open(crate::app::Modal::Devices));
         assert_eq!(app.sidebar.sel, 0, "the click that closed the popup didn't open a library row");
         // the Settings page keeps the wheel when the pointer drifts onto the Library
         app.run(Action::Settings);
@@ -3264,21 +3263,21 @@ mod tests {
         match m {
             Modal::Palette => app.run(Action::Palette),
             Modal::Picker => app.open_picker(crate::looks::PickerKind::Theme),
-            Modal::Naming => app.naming = Some(crate::app::Naming::playlist()),
+            Modal::Naming => app.open_popup(crate::app::Popup::Naming(crate::app::Naming::playlist())),
             Modal::Widgets => {
                 let items = crate::layouts::all_widgets().take(8).collect();
-                app.widget_pick = Some(crate::arrange::WidgetPick { target: "home".into(), side: crate::tiling::Side::Right, items, sel: 0 });
+                app.open_popup(crate::app::Popup::Widgets(crate::arrange::WidgetPick { target: "home".into(), side: crate::tiling::Side::Right, items, sel: 0 }));
             }
             Modal::Details => {
                 let description = (0..40).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
-                app.playlists.details = Some(crate::playlists::Details { uri: "spotify:playlist:p".into(), name: "Night Drive".into(), description, on_description: true, known: true, scroll: Default::default() });
+                app.open_popup(crate::app::Popup::Details(crate::playlists::Details { uri: "spotify:playlist:p".into(), name: "Night Drive".into(), description, on_description: true, known: true, scroll: Default::default() }));
             }
             Modal::Adding => {
                 let own = (0..30).map(|i| LibraryItem { uri: format!("spotify:playlist:o{i}"), name: format!("Mine {i}"), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: true });
                 app.library.as_mut().unwrap().items.extend(own);
                 app.ask_add(vec!["spotify:track:x".into()], "Song");
             }
-            Modal::Cover => app.cover_form = Some(crate::cover::CoverForm { playlist: "spotify:playlist:p".into(), name: "Night Drive".into(), path: String::new(), ready: None, error: None }),
+            Modal::Cover => app.open_popup(crate::app::Popup::Cover(crate::cover::CoverForm { playlist: "spotify:playlist:p".into(), name: "Night Drive".into(), path: String::new(), ready: None, error: None })),
             Modal::Wizard => {
                 app.engine_kind = EngineKind::Soloist;
                 app.setup.rekey = true;
@@ -3304,16 +3303,16 @@ mod tests {
     fn modal_at(app: &App, m: crate::app::Modal) -> Option<usize> {
         use crate::app::Modal;
         match m {
-            Modal::Palette => app.palette.as_ref().map(|p| p.selected),
-            Modal::Picker => app.picker.as_ref().map(|p| p.sel),
-            Modal::Widgets => app.widget_pick.as_ref().map(|p| p.sel),
-            Modal::Details => app.playlists.details.as_ref().map(|d| d.scroll.offset()),
-            Modal::Adding => app.playlists.adding.as_ref().map(|a| a.sel),
+            Modal::Palette => app.palette().map(|p| p.selected),
+            Modal::Picker => app.picker().map(|p| p.sel),
+            Modal::Widgets => app.widget_pick().map(|p| p.sel),
+            Modal::Details => app.details().map(|d| d.scroll.offset()),
+            Modal::Adding => app.adding().map(|a| a.sel),
             Modal::Wizard => Some(app.wizard_scroll.offset()),
-            Modal::Devices => Some(app.devices_sel),
-            Modal::Health => Some(app.health_scroll.offset()),
-            Modal::Menu => app.menu.as_ref().map(|m| m.selected),
-            Modal::Help => Some(app.help_scroll.offset()),
+            Modal::Devices => app.devices_sel(),
+            Modal::Health => app.text_scroll(m).map(|s| s.offset()),
+            Modal::Menu => app.menu().map(|m| m.selected),
+            Modal::Help => app.text_scroll(m).map(|s| s.offset()),
             Modal::Naming | Modal::Cover | Modal::Move | Modal::Login => None,
         }
     }
@@ -3386,6 +3385,81 @@ mod tests {
         }
     }
 
+    /// The library app with a queue (the queue menu has a row to open on).
+    fn popup_app() -> (App, tokio::sync::mpsc::Receiver<singularity_proto::Command>) {
+        use singularity_proto::{Item, QueueEntry};
+        let (mut app, rx) = library_app();
+        app.playback.queue = (0..8).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:q{i}"), name: format!("Song {i}"), duration_ms: 150_000, ..Default::default() }, source: "queue".into(), uid: format!("u{i}") }).collect();
+        (app, rx)
+    }
+
+    /// The screen as drawn: every cell, symbol and colours.
+    fn drawn(app: &mut App, w: u16, h: u16) -> Buffer {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| draw(f, app)).unwrap();
+        t.backend().buffer().clone()
+    }
+
+    /// D83: a popup opened while the setup wizard shows is the one on top. It's drawn over the wizard (its box looks
+    /// as it does without the wizard), it takes the click and it takes the keys (Esc closes it, the wizard stays).
+    #[test]
+    fn a_popup_opened_over_the_wizard_is_on_top_for_the_eye_the_mouse_and_the_keys() {
+        use crate::app::Modal;
+        let (w, h) = (160u16, 48u16);
+        let popups: Vec<Modal> = Modal::ALL.iter().copied().filter(|m| !matches!(m, Modal::Wizard | Modal::Login | Modal::Move)).collect();
+        assert!(popups.len() >= 11);
+        let over_wizard = |m: Modal| {
+            let (mut app, rx) = popup_app();
+            render(&mut app, w, h);
+            open_modal(&mut app, Modal::Wizard);
+            open_modal(&mut app, m);
+            app.toast = None;
+            (app, rx)
+        };
+        for m in popups {
+            // the popup alone: its box, as it looks
+            let (mut alone, _rx) = popup_app();
+            render(&mut alone, w, h);
+            open_modal(&mut alone, m);
+            alone.toast = None;
+            let want = drawn(&mut alone, w, h);
+            let r = alone.overlays.first().copied().expect("a popup has a box");
+            // over the wizard: drawn on top
+            let (mut app, _rx) = over_wizard(m);
+            let got = drawn(&mut app, w, h);
+            for y in r.top()..r.bottom() {
+                for x in r.left()..r.right() {
+                    assert_eq!(got[(x, y)], want[(x, y)], "{m:?}: drawn under the wizard at {x},{y}");
+                }
+            }
+            assert_eq!(app.modal(), Some(m), "{m:?}: on top for the mouse and the wheel");
+            // the keys: Esc closes the popup, not the wizard
+            app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert_eq!(app.modal(), Some(Modal::Wizard), "{m:?}: Esc went to the wizard");
+            // the click: outside its box, it closes the popups a click closes; the forms stay; the wizard stays either way
+            let (mut app, _rx) = over_wizard(m);
+            render(&mut app, w, h);
+            click(&mut app, 0, 0);
+            let closes = matches!(m, Modal::Palette | Modal::Picker | Modal::Widgets | Modal::Adding | Modal::Devices | Modal::Menu | Modal::Help);
+            assert_eq!(app.modal(), Some(if closes { Modal::Wizard } else { m }), "{m:?}: the click");
+        }
+    }
+
+    /// D83: popups don't nest; opening one replaces the one open.
+    #[test]
+    fn opening_a_popup_replaces_the_one_open() {
+        use crate::app::Modal;
+        let (mut app, _rx) = popup_app();
+        render(&mut app, 160, 48);
+        open_modal(&mut app, Modal::Menu);
+        app.run(Action::Palette);
+        assert_eq!(app.modal(), Some(Modal::Palette));
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.modal(), None, "the menu went when the palette opened");
+        render(&mut app, 160, 48);
+        assert!(app.overlays.is_empty(), "nothing left on screen: {:?}", app.overlays);
+    }
+
     #[test]
     fn tall_popups_show_their_last_lines_when_scrolled() {
         let (mut app, _rx) = library_app();
@@ -3395,17 +3469,17 @@ mod tests {
         assert!(s.contains("command palette") && !s.contains("quit the Client"), "{s}");
         // ↓ scrolls the help rather than closing it; the wheel takes it to its end
         app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert!(app.help && app.help_scroll.offset() == 1);
+        assert_eq!(app.text_scroll(crate::app::Modal::Help).map(|s| s.offset()), Some(1));
         for _ in 0..20 {
             app.mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column: 0, row: 0, modifiers: KeyModifiers::NONE });
         }
         let s = render(&mut app, w, h);
         assert!(s.contains("quit the Client") && s.contains("keys.toml"), "{s}");
         app.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
-        assert!(!app.help);
+        assert!(!app.is_open(crate::app::Modal::Help));
         // a long playlist description shows its end; the wheel backs up to its start
         let description = (0..40).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
-        app.playlists.details = Some(crate::playlists::Details { uri: "spotify:playlist:p".into(), name: "Night Drive".into(), description, on_description: true, known: true, scroll: Default::default() });
+        app.open_popup(crate::app::Popup::Details(crate::playlists::Details { uri: "spotify:playlist:p".into(), name: "Night Drive".into(), description, on_description: true, known: true, scroll: Default::default() }));
         let s = render(&mut app, w, h);
         assert!(s.contains("word39") && !s.contains("word0 "), "{s}");
         for _ in 0..10 {
@@ -3439,7 +3513,7 @@ mod tests {
         assert!(s.contains("✚ Start a Jam on Singularity"), "{s}");
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(sent(&mut rx), vec![Command::StartJam]);
-        assert!(app.devices_open, "the picker stays open for the invite");
+        assert!(app.is_open(crate::app::Modal::Devices), "the picker stays open for the invite");
         // the Daemon answers: the invite, its QR and the guest show, and the bar says a Jam runs
         app.hear(singularity_proto::Event::Jam { jam: Some(jam(true, &["Guest Friend"])) });
         let s = render(&mut app, 160, 60);
@@ -3539,9 +3613,9 @@ mod tests {
         // unlike row 3 (t2) from its menu
         let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::Track(3)).then_some(*r)).unwrap();
         app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column: row.x + 5, row: row.y, modifiers: KeyModifiers::NONE });
-        let m = app.menu.as_ref().unwrap();
+        let m = app.menu().unwrap();
         let i = m.items.iter().position(|(l, _)| l == "Remove from Liked Songs").expect("menu offers removal");
-        app.menu.as_mut().unwrap().selected = i;
+        app.menu_mut().unwrap().selected = i;
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(sent(&mut rx), vec![Command::SetSaved { uri: "spotify:track:t2".into(), saved: false }]);
         assert!(!liked_uris(&app).contains(&"spotify:track:t2".to_string()));
@@ -3561,9 +3635,9 @@ mod tests {
         app.playback.queue = vec![singularity_proto::QueueEntry { item, source: "queue".into(), uid: "u".into() }];
         app.open_queue_menu(0, Some((10, 10)));
         assert_eq!(sent_all(&mut rx), vec![Command::CheckSaved { uris: vec!["spotify:track:q".into()] }]);
-        assert!(app.menu.as_ref().unwrap().items.iter().any(|(l, _)| l == "Save to Liked Songs"));
+        assert!(app.menu().unwrap().items.iter().any(|(l, _)| l == "Save to Liked Songs"));
         app.saved_event(vec![flag("spotify:track:q", true)]);
-        assert!(app.menu.as_ref().unwrap().items.iter().any(|(l, _)| l == "Remove from Liked Songs"));
+        assert!(app.menu().unwrap().items.iter().any(|(l, _)| l == "Remove from Liked Songs"));
     }
 
     #[test]
