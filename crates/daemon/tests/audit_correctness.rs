@@ -1,6 +1,8 @@
 //! T0025 audit (correctness): the bug-proving tests. The ones T0027 fixed (C2/A1, C1/A8) run for real; C10 and C14
 //! belong to other tickets and stay `#[ignore]`d until they are fixed.
 
+mod common;
+
 use singularity_proto::{self as proto, ClientMsg, Command, DaemonMsg, EngineKind, Event, Item, PlayStatus, PlaybackState, QueueEntry, PROTOCOL_VERSION};
 use singularityd::catalogue::{CatCmd, CatEvent};
 use singularityd::engine::{Engine, EngineEvent};
@@ -99,7 +101,7 @@ async fn next_of(s: &mut UnixStream, wait: Duration, mut wanted: impl FnMut(&Eve
 /// Engine is built again — after which playback works.
 #[tokio::test]
 async fn an_engine_that_dies_is_reported_and_playback_commands_do_not_vanish() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("d.sock");
     let listener = singularityd::bind(&path).unwrap();
     let restarts = Started::default();
@@ -165,7 +167,7 @@ impl Engine for BareQueueEngine {
 /// (`DescribeFailed`, which the real one sends too), and the Hub asks again.
 #[tokio::test]
 async fn a_description_that_never_arrives_is_asked_for_again() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("d.sock");
     let listener = singularityd::bind(&path).unwrap();
     // a Catalogue stand-in: it describes only the first URI of every batch it is asked about, and counts
@@ -292,7 +294,7 @@ impl Engine for PausedHere {
 /// Now only what was queued while the snapshot was read is checked against it.
 #[tokio::test]
 async fn when_another_device_stops_the_client_goes_back_to_this_one() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("d.sock");
     let listener = singularityd::bind(&path).unwrap();
     let (cat_tx, mut cat_rx) = mpsc::channel::<CatCmd>(16);

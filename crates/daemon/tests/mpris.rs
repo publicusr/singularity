@@ -1,6 +1,8 @@
 //! Seam 1 for MPRIS (#21): a Daemon with the FakeEngine on a private D-Bus, driven the way playerctl and KDE's media
 //! widget do. The bus has no service activation, so nothing on the machine is started by it.
 
+mod common;
+
 use singularity_proto::{self as proto, ClientMsg, Command, DaemonMsg};
 use singularityd::engine::FakeEngine;
 use std::collections::HashMap;
@@ -24,7 +26,7 @@ impl Drop for Bus {
 /// A private session bus (None if `dbus-daemon` isn't installed: the test then says so and passes).
 fn private_bus() -> Option<Bus> {
     use std::io::BufRead;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let conf = dir.path().join("bus.conf");
     std::fs::write(
         &conf,
@@ -101,7 +103,7 @@ async fn playerctl_style_control_and_track_notifications() {
     let (ntx, mut notes) = tokio::sync::mpsc::unbounded_channel();
     let _desktop = zbus::connection::Builder::address(bus.address.as_str()).name("org.freedesktop.Notifications").serve_at("/org/freedesktop/Notifications", FakeNotifications(ntx)).build().await.unwrap();
     // the Daemon
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::scratch();
     let path = dir.path().join("m.sock");
     let listener = singularityd::bind(&path).unwrap();
     let opts = singularityd::mpris::Options { address: Some(bus.address.clone()), notify: std::sync::Arc::new(true.into()) };

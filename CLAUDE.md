@@ -32,7 +32,8 @@
 - Only kill processes you started; test sockets go in `$XDG_RUNTIME_DIR/sgl-*`, on macOS
   `/tmp/sgl-<uid>/` (Unix socket paths must be short).
 - Linux and macOS have the same features (D49): OS-specific code only behind the platform seams in `docs/PLATFORMS.md`.
-  On a Mac, `tools/check-linux.sh` type-checks the Linux build; run it before committing. `docs/PLATFORMS.md` is the
+  Before pushing, `tools/check.sh` runs what CI runs. On a Mac, `tools/check-linux.sh` type-checks the Linux build;
+  run it before committing. `docs/PLATFORMS.md` is the
   exact parity status: update its rows whenever something changes on either OS. The README's "Build and run" and
   "macOS quirks" sections are the user-facing version: keep them true too.
 - Test Daemons pin their Engine and stay in scratch dirs (`SINGULARITY_ENGINE`, `SINGULARITY_SOLOIST=local`,
