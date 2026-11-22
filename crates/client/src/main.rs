@@ -231,7 +231,6 @@ fn same_kind(a: &TermEvent, b: &TermEvent) -> bool {
     matches!((a, b), (TermEvent::Mouse(x), TermEvent::Mouse(y)) if x.kind == y.kind && x.modifiers == y.modifiers)
 }
 
-
 /// Open the pairing page in the user's browser (the code is also shown in the UI): a fixed system location, never a
 /// `PATH` lookup (audit S3), and without the Daemon's secret (S10).
 fn open_in_browser(url: &str) {

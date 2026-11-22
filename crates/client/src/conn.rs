@@ -146,6 +146,7 @@ where
             },
             cmd = cmd_rx.recv() => match cmd {
                 Some(c) => {
+                    // (frames read but not yet handed on go with the connection; the reconnect sends fresh state)
                     if proto::write_msg(&mut wr, &ClientMsg::Command(c)).await.is_err() {
                         return Pumped::Broke;
                     }
@@ -260,7 +261,7 @@ fn start_daemon() -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// The pump (candidate 7): a frame used to be read inside the `select!`, so a command sent while a frame was half
+    /// The pump (D82): a frame used to be read inside the `select!`, so a command sent while a frame was half
     /// in threw the half away, and the stream fell out of step ("frame too large", garbage, then a reconnect).
     #[tokio::test]
     async fn a_command_sent_while_a_frame_is_half_in_does_not_cut_the_frame() {

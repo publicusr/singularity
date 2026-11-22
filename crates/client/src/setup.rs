@@ -793,7 +793,7 @@ mod tests {
         assert!(rows.iter().all(|r| r.1 != "Soloist key"));
         assert_eq!(rows.iter().find(|r| r.1 == "Spotify login").unwrap().2, KEYRING);
         // later it drops off Connect (a network change): the health check says so, the wizard stays away
-        app.setup.engine_was_ready = true;
+        assert!(app.setup.engine_was_ready, "set by the Engine's Ready, heard above");
         app.hear(singularity_proto::Event::Engine(EngineStatus::Failed { message: "\"Mac\" isn't on Spotify Connect".into() }));
         assert_eq!(step(&app), Step::Connect);
         assert!(!wanted(&app));
