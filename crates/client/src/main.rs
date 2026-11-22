@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
     let t0 = Instant::now();
     let res = (|| -> anyhow::Result<()> {
         // a pointer move waits for the frame: only the last one before it counts (a mouse sends hundreds a second)
-        let mut motion: Option<(Instant, TermEvent)> = None;
+        let mut moves = pace::Moves::default();
         while !app.quit {
             // until the frame is due, input is handled as it comes
             let (due, fps) = loop {
@@ -116,21 +116,11 @@ async fn main() -> anyhow::Result<()> {
                 // input brings the frame forward: to the motion rate, or for a bare hover at most 60 a second
                 let hover = matches!(&ev, TermEvent::Mouse(m) if m.kind == MouseEventKind::Moved) && !app.moving_now();
                 pacer.input(if hover { 60.min(app.motion_fps()) } else { app.motion_fps() });
-                if matches!(&ev, TermEvent::Mouse(m) if matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Drag(_))) {
-                    if let Some((pat, pev)) = motion.take()
-                        && !same_kind(&pev, &ev)
-                    {
-                        handle(&mut app, pev, pat, &mut focused, &mut units, &mut wheel)?;
-                    }
-                    motion = Some((at, ev));
-                    continue;
+                for (at, ev) in moves.push(at, ev).into_iter().flatten() {
+                    handle(&mut app, ev, at, &mut focused, &mut units, &mut wheel)?;
                 }
-                if let Some((pat, pev)) = motion.take() {
-                    handle(&mut app, pev, pat, &mut focused, &mut units, &mut wheel)?;
-                }
-                handle(&mut app, ev, at, &mut focused, &mut units, &mut wheel)?;
             };
-            if let Some((at, ev)) = motion.take() {
+            if let Some((at, ev)) = moves.flush() {
                 handle(&mut app, ev, at, &mut focused, &mut units, &mut wheel)?;
             }
             let start = Instant::now();
@@ -223,12 +213,6 @@ fn handle(app: &mut App, ev: TermEvent, at: Instant, focused: &mut bool, units: 
     }
     app.input_at = None;
     Ok(())
-}
-
-/// Two pointer moves of the same kind (both hovering, or dragging with the same button and keys): the later one
-/// replaces the earlier.
-fn same_kind(a: &TermEvent, b: &TermEvent) -> bool {
-    matches!((a, b), (TermEvent::Mouse(x), TermEvent::Mouse(y)) if x.kind == y.kind && x.modifiers == y.modifiers)
 }
 
 /// Open the pairing page in the user's browser (the code is also shown in the UI): a fixed system location, never a

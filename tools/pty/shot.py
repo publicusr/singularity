@@ -14,7 +14,7 @@ BIN = os.environ.get("PTY_BIN") or f"{ROOT}/target/debug"
 WRAP = os.environ.get("PTY_WRAP", "").split()
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
 # the tiling scenario wants room for the whole Singularity layout
-if sys.argv[1:2] in (["tiling"], ["tiling-lift"], ["tiling-fast"]):
+if sys.argv[1:2] in (["tiling"], ["tiling-lift"], ["tiling-fast"], ["tiling-paths"]):
     COLS, ROWS = int(os.environ.get("PTY_COLS", 160)), int(os.environ.get("PTY_ROWS", 48))
 # the wheel everywhere: short Panes, so everything holds more than fits
 if sys.argv[1:2] == ["wheel-all"]:
@@ -1908,6 +1908,56 @@ def tiling_fast(t, out, env):
               f"work ms mean {sum(work) / len(work):.2f} p95 {p(work, .95):.2f} max {work[-1]:.2f}")
 
 
+def tiling_paths(t, out, env):
+    """#21: pointer paths in the real Client. A fling across Panes let go at once puts the Pane back (nothing was
+    shown); a pause on the queue then a flick to the library let go at once drops on the queue (what was shown); a
+    release the Client never heard (the pointer comes back with no button down) puts the Pane back and the next click
+    works. Prints where the held Pane ends each time. Pixel tier, 160x48; start from an empty output folder."""
+    t.pump(1.0)
+    t.send(b" ", 0.5)
+    t.shot(f"{out}/00-start.png")
+    hx, hy = t.find("┌ home")
+    qx, qy = t.find("┌ queue")
+    lx, ly = t.find("┌ ~/library")
+
+    def glide(x0, y0, x1, y1, n, wait):
+        for i in range(1, n + 1):
+            mouse(t, 32, x0 + (x1 - x0) * i // n, y0 + (y1 - y0) * i // n, wait=wait)
+
+    # 1. a fling over the queue, the library and lyrics, let go at once
+    mouse(t, 0, hx + 3, hy, wait=0.05)
+    glide(hx + 3, hy, qx + 10, qy + 5, 10, 0.004)
+    glide(qx + 10, qy + 5, lx + 5, ly + 5, 10, 0.004)
+    mouse(t, 0, lx + 5, ly + 5, release=True, wait=0.6)
+    t.shot(f"{out}/01-fling-put-back.png")
+    print("fling: home", "back where it was" if t.find("┌ home") == (hx, hy) else f"moved to {t.find('┌ home')}")
+    # 2. rest over the queue (its zone is shown: the dashed slot), then a flick to the library let go at once: it
+    # lands in that slot
+    mouse(t, 0, hx + 3, hy, wait=0.05)
+    glide(hx + 3, hy, qx + 10, qy + 5, 15, 0.01)
+    t.pump(0.4)
+    t.shot(f"{out}/02-shown-over-queue.png")
+    slot = t.find("╭╌")
+    glide(qx + 10, qy + 5, lx + 5, ly + 5, 6, 0.004)
+    mouse(t, 0, lx + 5, ly + 5, release=True, wait=0.6)
+    t.shot(f"{out}/03-dropped-where-shown.png")
+    print("flick after a pause: home", "in the slot that was shown" if t.find("┌ home") == slot else f"at {t.find('┌ home')}, the slot was {slot}")
+    t.send(b"\x1b", 0.4)  # the naming prompt: keep it unnamed
+    # 3. picked up, then the pointer moves with no button down: its release went elsewhere
+    sx, sy = t.find("┌ stream")
+    mouse(t, 0, sx + 3, sy, wait=0.05)
+    glide(sx + 3, sy, 60, 20, 10, 0.01)
+    t.pump(0.3)
+    mouse(t, 35, 61, 21, wait=0.6)
+    t.shot(f"{out}/04-unheard-release.png")
+    print("unheard release: stream", "back where it was" if t.find("┌ stream") == (sx, sy) else f"at {t.find('┌ stream')}")
+    lx, ly = t.find("┌ ~/library")
+    mouse(t, 0, lx + 3, ly, wait=0.05)
+    mouse(t, 0, lx + 3, ly, release=True, wait=0.5)
+    t.shot(f"{out}/05-click-after.png")
+    t.send(b"q", 0.5)
+
+
 def main():
     scenario, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
@@ -1928,10 +1978,10 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast", "resize", "karaoke") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast", "tiling-paths", "resize", "karaoke") else "0"
         if scenario == "design-sizes":
             env["SINGULARITY_PIXEL"] = os.environ.get("PTY_PIXEL", "1")
         if scenario == "sizes":
@@ -2084,6 +2134,8 @@ def main():
             return tiling_lift(t, out, env)
         if scenario == "tiling-fast":
             return tiling_fast(t, out, env)
+        if scenario == "tiling-paths":
+            return tiling_paths(t, out, env)
         if scenario == "artist":
             t.pump(1.0)
             x, y = t.find("♥  Liked Songs")

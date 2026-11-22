@@ -219,13 +219,26 @@ impl App {
         }
     }
 
-    /// Mouse events while a Pane is held.
+    /// Mouse events while a Pane is held: only the left button's (another button pressed meanwhile doesn't drop it).
     pub fn tile_pointer(&mut self, m: MouseEvent) {
         match m.kind {
             MouseEventKind::Drag(MouseButton::Left) => self.tile_move(m.column, m.row),
             MouseEventKind::Up(MouseButton::Left) => self.tile_up(m.column, m.row),
-            MouseEventKind::Up(_) => self.tile = None,
             _ => {}
+        }
+    }
+
+    /// A bare move or a fresh press while a Pane or a divider is held: its release went somewhere else (another
+    /// window, after the focus moved) and was never heard (#21: the Pane stayed held and swallowed every click). A held
+    /// Pane goes back; a divider is let go where it is.
+    pub fn release_unheard(&mut self, kind: MouseEventKind) {
+        if !matches!(kind, MouseEventKind::Moved | MouseEventKind::Down(MouseButton::Left)) {
+            return;
+        }
+        self.tile_cancel();
+        if matches!(self.drag, Some(Hit::Divider(_))) {
+            self.drag = None;
+            self.divider_released();
         }
     }
 
@@ -282,8 +295,8 @@ impl App {
         }
     }
 
-    /// Let go at (x, y): the zone under the pointer there is the drop, shown or not yet (a quick flick still lands
-    /// where it was let go).
+    /// Let go at (x, y): what the preview shows is the drop (#21: a flick let go before its zone was shown landed
+    /// somewhere never shown); nothing shown, it goes back.
     fn tile_up(&mut self, x: u16, y: u16) {
         let Some(t) = self.tile.take() else { return };
         if !t.live {
@@ -293,12 +306,11 @@ impl App {
             }
             return;
         }
-        // checked again: the terminal can have changed size since the last move
-        let zone = self.zone_under(&t, x, y);
-        if let Some(tree) = zone.as_ref().and_then(|z| self.drop_tree(&t.slot, z)) {
+        // checked again: the terminal can have changed size since it was shown
+        if let Some(tree) = t.preview.clone().filter(|p| self.fits(p)) {
             self.focus = t.slot.clone();
             self.commit_layout(tree);
-        } else if zone.as_ref().and_then(|z| self.layout.moved_any(&t.slot, z)).is_some_and(|c| c.same_arrangement(&self.layout)) {
+        } else if t.preview.is_none() && self.zone_under(&t, x, y).and_then(|z| self.layout.moved_any(&t.slot, &z)).is_some_and(|c| c.same_arrangement(&self.layout)) {
             // a drop that would only change sizes is no move (owner, 2026-11-01); say how sizes are changed instead
             // (owner, 2026-11-02: "it snaps right back and doesn't let me")
             self.say("That would only change sizes · drag the border between two Panes to resize them");
@@ -331,13 +343,27 @@ impl App {
         }
     }
 
-    /// A divider dragged to `pos`, unless that would leave a Pane too small (or the well out of shape).
+    /// A divider dragged to `pos`, or as far toward it as it goes without leaving a Pane too small (or the well out of
+    /// shape): a fast drag past that stops at the limit, not short of it (#21).
     pub fn drag_divider(&mut self, d: &Divider, pos: u16) {
-        let mut t = self.layout.clone();
-        t.drag(d, pos);
+        let to = |p: u16| {
+            let mut t = self.layout.clone();
+            t.drag(d, p);
+            t
+        };
+        let t = to(pos);
         if self.fits(&t) || !self.fits(&self.layout) {
             self.layout = t;
+            return;
         }
+        // from where the boundary is now (it fits), the furthest cell toward `pos` that still fits
+        let Some(mut ok) = self.layout.boundary(d).filter(|&b| self.fits(&to(b))) else { return };
+        let mut bad = pos;
+        while ok.abs_diff(bad) > 1 {
+            let mid = ((ok as u32 + bad as u32) / 2) as u16;
+            if self.fits(&to(mid)) { ok = mid } else { bad = mid }
+        }
+        self.layout = to(ok);
     }
 
     /// A divider let go: a layout that changed is an edit.
@@ -853,3 +879,5 @@ impl Side {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod paths;

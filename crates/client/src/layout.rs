@@ -272,6 +272,21 @@ impl Node {
         }
     }
 
+    /// Where `d`'s boundary sits: the column/row `drag` would leave it at.
+    pub fn boundary(&self, d: &Divider) -> Option<u16> {
+        let (start, total) = match d.axis {
+            Axis::Horizontal => (d.area.x, d.area.width),
+            Axis::Vertical => (d.area.y, d.area.height),
+        };
+        let Some(Node::Split { first, .. }) = self.at_path(&d.path) else { return None };
+        let n = match *first {
+            Size::Cells(n) => n,
+            Size::Ratio(r) => (r * total as f32).round() as u16,
+            Size::Last(l) => total.saturating_sub(l),
+        };
+        Some(start + n)
+    }
+
     /// Move a divider so the boundary sits at mouse column/row `pos`. Keeps the size's kind
     /// (fixed cells stay fixed, ratios stay ratios) so window resizes behave as the preset intended.
     pub fn drag(&mut self, d: &Divider, pos: u16) {

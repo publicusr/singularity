@@ -991,7 +991,7 @@ impl App {
         })
     }
 
-    fn hit_at(&self, x: u16, y: u16) -> Option<Hit> {
+    pub(crate) fn hit_at(&self, x: u16, y: u16) -> Option<Hit> {
         self.hits.iter().rev().find(|(r, _)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom()).map(|(_, h)| h.clone())
     }
 
@@ -2598,6 +2598,8 @@ impl App {
             return;
         }
         let coarse = m.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT);
+        // a release we never heard ends what it held, before anything else sees the event
+        self.release_unheard(m.kind);
         // the one gate: while a popup is open the mouse belongs to it, and nothing behind it ever sees an event
         // (decided from state, not from last frame's hit rectangles, which a burst or a key in the same batch outdates)
         if let Some(modal) = self.modal() {

@@ -411,8 +411,8 @@ fn letting_go_of_a_divider_is_an_edit() {
 fn a_divider_will_not_squash_the_well() {
     let mut a = app();
     // the divider below the well, dragged as far up as it goes, then as far down
-    let well = pane(&a, "well");
     for target in [0u16, 100] {
+        let well = pane(&a, "well");
         let d = a.dividers.iter().find(|d| d.grip.y + 1 == well.bottom() && d.axis == crate::layout::Axis::Vertical).cloned().unwrap();
         press(&mut a, d.grip.x + 3, d.grip.y);
         drag(&mut a, d.grip.x + 3, target);
@@ -1149,9 +1149,9 @@ fn a_fast_sweep_across_panes_leaves_the_preview_and_a_pause_shows_it() {
     sweep_at(&mut a, t, q.0, q.1);
     a.tile_settle(t + ms(10));
     assert_eq!(shown(&a), Some(Zone::Swap("fft".into())));
-    // …but let go there at once, the drop is where it was let go: with the queue
+    // …and let go there at once, the drop is what was shown (#21): with fft, not the queue it was never shown over
     release(&mut a, q.0, q.1);
-    assert_eq!(a.layout, before.swapped("stream", "queue").unwrap());
+    assert_eq!(a.layout, before.swapped("stream", "fft").unwrap());
 }
 
 #[test]
