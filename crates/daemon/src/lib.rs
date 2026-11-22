@@ -2,6 +2,7 @@
 //! Clients talk to it over the protocol in `singularity-proto` (ADR-0003).
 
 pub mod app_engine;
+pub mod assembly;
 pub mod librespot;
 pub mod backup;
 pub mod catalogue;
@@ -374,11 +375,12 @@ async fn follow_config(notify: Arc<std::sync::atomic::AtomicBool>) {
     let mut first = true;
     loop {
         if first || watched.changed() {
-            first = false;
             let r = singularity_config::load_config(&path);
-            for p in &r.problems {
+            // the start's problems the Daemon logged with its Engine assembly; a save's are new
+            for p in r.problems.iter().filter(|_| !first) {
                 tracing::warn!("{p}");
             }
+            first = false;
             notify.store(r.value.notifications.track_change, std::sync::atomic::Ordering::Relaxed);
         }
         tokio::time::sleep(Duration::from_secs(1)).await;

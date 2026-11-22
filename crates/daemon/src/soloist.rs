@@ -44,12 +44,6 @@ pub struct SoloistEngine {
 }
 
 impl SoloistEngine {
-    /// The name `[engine] device` asks for, else the default ("Singularity"). On Linux this is the name in Spotify's
-    /// device pickers: without it the setting did nothing there (audit C5).
-    pub fn named(device: &str) -> String {
-        if device.trim().is_empty() { DEVICE_NAME.into() } else { device.trim().to_string() }
-    }
-
     pub fn from_env() -> SoloistEngine {
         let base = std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
@@ -64,13 +58,12 @@ impl SoloistEngine {
         }
     }
 
-    /// Soloist in the Soloist VM, as `device` on Connect (empty: "Singularity on <this computer> (lossless)", apart from a
-    /// Linux machine's "Singularity" and this Mac's librespot, which can linger in the device list after a switch, as
-    /// devices are found by name); its audio also goes to `feed`.
+    /// Soloist in the Soloist VM, as `device_name` on Connect (the Engine assembly names it); its audio also goes to
+    /// `feed`.
     #[cfg(target_os = "macos")]
-    pub fn in_vm(device: &str, feed: Arc<crate::tap::Feed>) -> SoloistEngine {
+    pub fn in_vm(device_name: String, feed: Arc<crate::tap::Feed>) -> SoloistEngine {
         let mut e = SoloistEngine::from_env();
-        e.device_name = if device.trim().is_empty() { format!("Singularity on {} (lossless)", crate::app_engine::this_computer()) } else { device.trim().into() };
+        e.device_name = device_name;
         e.vm = Some(Arc::new(crate::soloist_vm::VmHost::new(&e.data_dir, feed)));
         e
     }
@@ -903,15 +896,6 @@ mod tests {
         assert_eq!(strip_ansi(hostile), "trackname");
         // the parser still reads the lines it needs
         assert!(strip_ansi("Streaming: a\tb").contains("Streaming"));
-    }
-
-    /// C5: `[engine] device` names Soloist on Linux too, and an empty setting keeps "Singularity".
-    #[test]
-    fn the_configured_device_names_soloist() {
-        assert_eq!(SoloistEngine::named("Kitchen"), "Kitchen");
-        assert_eq!(SoloistEngine::named("  Kitchen  "), "Kitchen");
-        assert_eq!(SoloistEngine::named(""), DEVICE_NAME);
-        assert_eq!(SoloistEngine::named("   "), DEVICE_NAME);
     }
 
     #[test]

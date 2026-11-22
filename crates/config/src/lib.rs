@@ -101,9 +101,13 @@ pub enum EngineKind {
 impl EngineKind {
     /// What `Auto` means here.
     pub fn resolved(self) -> EngineKind {
+        self.resolved_on(cfg!(target_os = "macos"), cfg!(any(target_arch = "x86_64", target_arch = "aarch64")))
+    }
+
+    /// What `Auto` means on macOS or not, on a CPU Spotify ships Soloist for or not.
+    pub fn resolved_on(self, macos: bool, soloist_cpu: bool) -> EngineKind {
         match self {
-            EngineKind::Auto if cfg!(target_os = "macos") => EngineKind::Librespot,
-            EngineKind::Auto if !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")) => EngineKind::Librespot,
+            EngineKind::Auto if macos || !soloist_cpu => EngineKind::Librespot,
             EngineKind::Auto => EngineKind::Soloist,
             k => k,
         }
