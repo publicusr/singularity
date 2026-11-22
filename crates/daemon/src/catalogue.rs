@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
+mod connect;
 #[cfg(feature = "fake")]
 mod fake;
 #[cfg(feature = "fake")]
@@ -86,6 +87,8 @@ pub enum CatCmd {
     Engine(Command),
     /// one raw private-API query, answered on `reply` (the library backup, one request at a time)
     Query { op: String, vars: Value, reply: tokio::sync::oneshot::Sender<anyhow::Result<Value>> },
+    /// Connect found the session ended (D79): browsing, which owns the login, logs in again
+    Reconnect,
 }
 
 #[derive(Debug, Clone)]
@@ -267,7 +270,7 @@ async fn supervise<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, make: impl Fn(
 /// The commands that arrived behind a search: the newest search replaces this one, everything else waits its turn.
 /// (A2/C4: they used to be sent back into the channel this task alone reads, which deadlocked it when it was full
 /// and ran them after the search in any case.)
-fn drain_for_search(mut q: String, cmds: &mut mpsc::Receiver<CatCmd>) -> (String, VecDeque<CatCmd>) {
+fn drain_for_search(mut q: String, cmds: &mut mpsc::UnboundedReceiver<CatCmd>) -> (String, VecDeque<CatCmd>) {
     let mut later = VecDeque::new();
     while let Ok(c) = cmds.try_recv() {
         match c {
@@ -280,15 +283,14 @@ fn drain_for_search(mut q: String, cmds: &mut mpsc::Receiver<CatCmd>) -> (String
 
 struct State<Q> {
     dirs: Dirs,
-    /// this computer's Engine on Connect
-    engine: Identity,
     session: Option<Session>,
     /// the same session, for the query port's adapter
     slot: SessionSlot,
     /// the query port (D78)
     queries: Q,
     ev: mpsc::Sender<CatEvent>,
-    remote: Option<ConnectRemote>,
+    /// Connect's own loop (D79): its commands go there and never wait behind browsing
+    connect: mpsc::UnboundedSender<CatCmd>,
     tracks: HashMap<String, (Instant, Vec<TrackPage>)>,
     /// shows found to be audiobooks (#62): their pages come from `queryBookChapters`
     books: std::collections::HashSet<String>,
@@ -300,14 +302,42 @@ struct State<Q> {
     word_tried: HashMap<String, ()>,
     artists: HashMap<String, (Instant, singularity_proto::ArtistPage)>,
     searches: HashMap<String, (Instant, singularity_proto::SearchResults)>,
-    /// the latest Connect cluster, kept fresh by the dealer
-    cluster: std::sync::Arc<std::sync::Mutex<Option<librespot_protocol::connect::Cluster>>>,
-    /// told whenever a new cluster arrives (the Spotify app as Engine waits on it for its device)
-    cluster_changed: std::sync::Arc<tokio::sync::Notify>,
 }
 
+/// Which loop runs a command (D79): Connect's, or browsing's.
+fn is_connect(cmd: &CatCmd) -> bool {
+    matches!(
+        cmd,
+        CatCmd::Devices
+            | CatCmd::Transfer(_)
+            | CatCmd::StartJam
+            | CatCmd::EndJam
+            | CatCmd::Remote(_)
+            | CatCmd::Engine(_)
+            | CatCmd::Queue(_)
+            | CatCmd::PlayFrom { .. }
+            | CatCmd::Resume(_)
+    )
+}
+
+/// Browsing and Connect side by side in this one task, so a panic in either is caught by `supervise` and a wait in
+/// one never holds up the other. Commands are passed on as they arrive, so a search still sees the ones behind it.
 async fn run<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, q: Q, slot: SessionSlot, cmds: &mut mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
-    let mut st = State { dirs, engine, session: None, slot, queries: q, ev, remote: None, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), cluster: Default::default(), cluster_changed: Default::default() };
+    let (browse_tx, browse_rx) = mpsc::unbounded_channel();
+    let (connect_tx, connect_rx) = mpsc::unbounded_channel();
+    let connect = connect::Connect::new(engine.clone(), slot.clone(), ev.clone(), browse_tx.downgrade());
+    let st = State { dirs, session: None, slot, queries: q, ev, connect: connect_tx.clone(), tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new() };
+    let pass_on = async move {
+        while let Some(c) = cmds.recv().await {
+            let to = if is_connect(&c) { &connect_tx } else { &browse_tx };
+            let _ = to.send(c);
+        }
+        // the Daemon hung up: browsing ends with its channel, and Connect with browsing
+    };
+    futures_util::join!(pass_on, browse(st, browse_rx), connect.run(connect_rx));
+}
+
+async fn browse<Q: Fetch + Sync>(mut st: State<Q>, mut cmds: mpsc::UnboundedReceiver<CatCmd>) {
     // commands drained from behind a search, in their original order, and the follow-ups of commands already run
     let mut waiting: VecDeque<CatCmd> = VecDeque::new();
     // resume a previous login
@@ -328,7 +358,7 @@ async fn run<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, q: Q, slot: SessionS
         };
         if let CatCmd::Search(q) = cmd {
             // while typing, only the newest search matters; whatever else waited ran before the search was asked for
-            let (q, later) = drain_for_search(q, cmds);
+            let (q, later) = drain_for_search(q, &mut cmds);
             st.search(q).await;
             waiting.extend(later);
             continue;
@@ -348,6 +378,10 @@ async fn handle<Q: Fetch + Sync>(st: &mut State<Q>, cmd: CatCmd, next: &mut VecD
         }
     };
     match cmd {
+        // Connect saw the session end: replace it
+        CatCmd::Reconnect => {
+            st.session().await;
+        }
         CatCmd::Login => {
             if st.login().await {
                 next.extend([CatCmd::Home, CatCmd::Library, CatCmd::Devices]);
@@ -359,18 +393,9 @@ async fn handle<Q: Fetch + Sync>(st: &mut State<Q>, cmd: CatCmd, next: &mut VecD
         CatCmd::Tracks(uri) => st.track_list(uri).await,
         CatCmd::MoreTracks { uri, offset } => st.more_tracks(uri, offset).await,
         CatCmd::FindShow(uri) => st.find_show(uri).await,
-        CatCmd::PlayFrom { context_uri, index, track_uri } => st.play_from(context_uri, index, track_uri).await,
-        CatCmd::Queue(edit) => st.queue(edit).await,
         CatCmd::Describe(uris) => st.describe(uris).await,
         CatCmd::Lyrics { uri, meta, words } => st.lyrics(uri, meta, words).await,
         CatCmd::Artist(uri) => st.artist(uri).await,
-        CatCmd::Devices => st.devices().await,
-        CatCmd::Transfer(id) => st.transfer(id).await,
-        CatCmd::StartJam => st.start_jam().await,
-        CatCmd::EndJam => st.end_jam().await,
-        CatCmd::Resume(r) => st.resume(r).await,
-        CatCmd::Remote(cmd) => st.remote_command(cmd).await,
-        CatCmd::Engine(cmd) => st.engine_command(cmd).await,
         CatCmd::SetSaved { uri, saved } => {
             // the library changed: the sidebar and Liked Songs follow (Liked Songs from its next open)
             if st.set_saved(uri.clone(), saved).await && !uri.starts_with("spotify:track:") {
@@ -403,8 +428,12 @@ async fn handle<Q: Fetch + Sync>(st: &mut State<Q>, cmd: CatCmd, next: &mut VecD
         CatCmd::Query { op, vars, reply } => {
             let _ = reply.send(st.query(&op, vars).await);
         }
-        // handled by `run` itself (it drains what came behind a search)
+        // handled by `browse` itself (it drains what came behind a search)
         CatCmd::Search(_) => {}
+        // the rest is Connect's (`is_connect`): a follow-up such as the device list after a login
+        other => {
+            let _ = st.connect.send(other);
+        }
     }
 }
 
@@ -575,8 +604,8 @@ impl<Q: Fetch + Sync> State<Q> {
         true
     }
 
+    /// Logged out, Connect drops its remote too: it finds the session gone from the slot.
     async fn logout(&mut self) {
-        self.remote = None;
         self.tracks.clear();
         if let Some(s) = &self.session {
             s.shutdown();
@@ -590,9 +619,8 @@ impl<Q: Fetch + Sync> State<Q> {
     async fn session(&mut self) -> Option<Session> {
         if self.session.as_ref().is_some_and(|s| s.is_invalid()) {
             tracing::info!("catalogue session ended; reconnecting");
+            // Connect sees the new session in the slot and starts a new remote for it (a dealer belongs to one)
             self.set_session(None);
-            // a new session needs a new dealer, so a new remote
-            self.remote = None;
             self.connect(None).await;
         }
         self.session.clone()
@@ -732,79 +760,6 @@ impl<Q: Fetch + Sync> State<Q> {
                 return Some(pages);
             }
         }
-    }
-
-    /// ConnectRemote (started on first use) and Soloist's Connect id.
-    async fn remote(&mut self) -> anyhow::Result<(Session, &mut ConnectRemote, String)> {
-        let session = self.session().await.ok_or_else(|| anyhow::anyhow!("not logged in to Spotify"))?;
-        if self.remote.is_none() {
-            let (remote, cluster, mut updates, mut ids) = ConnectRemote::start(session.clone()).await?;
-            self.remote = Some(remote);
-            *self.cluster.lock().expect("cluster lock") = Some(cluster.clone());
-            emit_cluster(&self.ev, &cluster, &self.engine).await;
-            // the dealer pushes every change; keep the latest and tell the Daemon. After a reconnect (a network
-            // change) it has a new connection id, which must be registered again, or the pushes stop.
-            let (latest, ev, engine, changed) = (self.cluster.clone(), self.ev.clone(), self.engine.clone(), self.cluster_changed.clone());
-            let session = session.clone();
-            // every change to the account's Jam (D64): read it again, the update itself is loose JSON
-            let mut jam_updates = session.dealer().listen_for(crate::jam::UPDATE_TOPIC, |_| -> Result<(), librespot_core::Error> { Ok(()) })?;
-            tokio::spawn(async move {
-                loop {
-                    let c = tokio::select! {
-                        u = jam_updates.next() => match u {
-                            Some(_) => {
-                                let (names, engine_id) = jam_devices(&latest, &engine);
-                                match crate::jam::current(&session, &names, engine_id.as_deref()).await {
-                                    Ok(jam) => {
-                                        let _ = ev.send(CatEvent::Jam(jam)).await;
-                                    }
-                                    Err(e) => tracing::debug!("Jam: couldn't read it after an update: {e}"),
-                                }
-                                continue;
-                            }
-                            None => return,
-                        },
-                        u = updates.next() => match u {
-                            Some(Ok(u)) => match u.cluster.into_option() {
-                                Some(c) => c,
-                                None => continue,
-                            },
-                            Some(Err(_)) => continue,
-                            None => return,
-                        },
-                        id = ids.next() => match id {
-                            Some(Ok(id)) => match crate::connect::reconnected(&session, &id).await {
-                                Ok(c) => {
-                                    tracing::info!("Connect: registered again after a reconnect");
-                                    c
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Connect: couldn't register again after a reconnect: {e}");
-                                    continue;
-                                }
-                            },
-                            Some(Err(_)) => continue,
-                            None => return,
-                        },
-                    };
-                    *latest.lock().expect("cluster lock") = Some(c.clone());
-                    emit_cluster(&ev, &c, &engine).await;
-                    changed.notify_waiters();
-                }
-            });
-        }
-        let remote = self.remote.as_mut().expect("just started");
-        // the latest cluster shows the device under another id, or not at all: it re-registered (the app restarted,
-        // or came back after a network change), so look it up again
-        let name = &self.engine.device_name;
-        if let Some(cached) = remote.cached_id(name) {
-            let latest = self.cluster.lock().expect("cluster lock").as_ref().map(|c| c.device.iter().find(|(_, d)| d.name == *name).map(|(id, _)| id.clone()));
-            if latest.is_some_and(|now| now.as_deref() != Some(cached)) {
-                remote.forget_ids();
-            }
-        }
-        let to = remote.device_id(name).await?;
-        Ok((session, remote, to))
     }
 
     /// Add to or remove from the library. Returns whether it worked; either way the Daemon hears the truth.
@@ -1000,215 +955,6 @@ impl<Q: Fetch + Sync> State<Q> {
                 Err(e) => {
                     tracing::debug!("areEntitiesInLibrary: {e}");
                     return;
-                }
-            }
-        }
-    }
-
-    async fn devices(&mut self) {
-        if let Err(e) = self.remote().await {
-            tracing::debug!("Connect devices: {e}");
-            return;
-        }
-        let c = self.cluster.lock().expect("cluster lock").clone();
-        if let Some(c) = c {
-            emit_cluster(&self.ev, &c, &self.engine).await;
-        }
-        self.refresh_jam().await;
-    }
-
-    async fn transfer(&mut self, to: String) {
-        let cluster = self.cluster.clone();
-        let result = async {
-            let (_, remote, _) = self.remote().await?;
-            remote.transfer(&remote_cluster(&cluster)?, &to).await
-        }
-        .await;
-        if let Err(e) = result {
-            if let Some(r) = self.remote.as_mut() {
-                r.forget_ids();
-            }
-            self.fail(format!("Couldn't move playback: {e}")).await;
-        }
-    }
-
-    /// Start a Jam hosted on the Engine's own device (D64; verified to work for Soloist's, 2026-10-30).
-    async fn start_jam(&mut self) {
-        let result = async {
-            let (session, _, to) = self.remote().await?;
-            let (names, _) = jam_devices(&self.cluster, &self.engine);
-            crate::jam::start(&session, &to, &names).await
-        }
-        .await;
-        match result {
-            Ok(Some(jam)) => {
-                tracing::info!("Jam started on {}", jam.host.as_deref().unwrap_or("an unlisted device"));
-                let _ = self.ev.send(CatEvent::Jam(Some(jam))).await;
-            }
-            Ok(None) => self.fail("Spotify didn't start a Jam (Premium is needed to host one)".into()).await,
-            Err(e) => self.fail(format!("Couldn't start a Jam: {e}")).await,
-        }
-    }
-
-    /// End the Jam this account runs, for everyone; the music keeps playing.
-    async fn end_jam(&mut self) {
-        let result = async {
-            let (session, _, _) = self.remote().await?;
-            let (names, engine_id) = jam_devices(&self.cluster, &self.engine);
-            match crate::jam::current(&session, &names, engine_id.as_deref()).await? {
-                None => Ok(None),
-                Some(jam) if !jam.owner => anyhow::bail!("only the one who started it can end it"),
-                Some(jam) => crate::jam::end(&session, &jam.session_id).await.map(|()| Some(jam)),
-            }
-        }
-        .await;
-        match result {
-            Ok(ended) => {
-                if ended.is_some() {
-                    tracing::info!("Jam ended");
-                }
-                let _ = self.ev.send(CatEvent::Jam(None)).await;
-            }
-            Err(e) => self.fail(format!("Couldn't end the Jam: {e}")).await,
-        }
-    }
-
-    /// Read the account's Jam (on login and when the Devices list is asked for).
-    async fn refresh_jam(&mut self) {
-        let Some(session) = self.session.clone() else { return };
-        let (names, engine_id) = jam_devices(&self.cluster, &self.engine);
-        match crate::jam::current(&session, &names, engine_id.as_deref()).await {
-            Ok(jam) => {
-                let _ = self.ev.send(CatEvent::Jam(jam)).await;
-            }
-            Err(e) => tracing::debug!("Jam: couldn't read it: {e}"),
-        }
-    }
-
-    /// After a Soloist update: the restarted device takes a moment to show up on Connect, so this tries a few times,
-    /// then falls back to the Engine playing the track alone.
-    async fn resume(&mut self, r: crate::engine::Resume) {
-        for attempt in 0..4 {
-            tokio::time::sleep(Duration::from_millis(if attempt == 0 { 500 } else { 2000 })).await;
-            let result = async {
-                let (_, remote, to) = self.remote().await?;
-                remote.resume(&to, &r, "").await
-            }
-            .await;
-            match result {
-                Ok(()) => return,
-                Err(e) => {
-                    tracing::debug!("resume after the update (attempt {}): {e}", attempt + 1);
-                    if let Some(rm) = self.remote.as_mut() {
-                        rm.forget_ids();
-                    }
-                }
-            }
-        }
-        let _ = self.ev.send(CatEvent::ToEngine(Command::Play { uri: Some(r.track_uri) })).await;
-        let _ = self.ev.send(CatEvent::ToEngine(Command::Seek { position_ms: r.position_ms })).await;
-        if r.paused {
-            let _ = self.ev.send(CatEvent::ToEngine(Command::Pause)).await;
-        }
-    }
-
-    /// Our transport buttons, for the device that's playing.
-    async fn remote_command(&mut self, cmd: Command) {
-        let active = self.cluster.lock().expect("cluster lock").as_ref().map(|c| c.active_device_id.clone()).filter(|a| !a.is_empty());
-        let result = async {
-            let to = active.ok_or_else(|| anyhow::anyhow!("no device is playing"))?;
-            let (_, remote, _) = self.remote().await?;
-            remote.control(&to, &cmd).await
-        }
-        .await;
-        if let Err(e) = result {
-            self.fail(format!("Couldn't control the other device: {e}")).await;
-        }
-    }
-
-    /// An Engine played over Connect (the Spotify app, D51; librespot, D52): its commands go to its Connect device. Failures are reported, never handed
-    /// back to the Engine (that's where they came from).
-    async fn engine_command(&mut self, cmd: Command) {
-        let cluster = self.cluster.clone();
-        let result = async {
-            let (session, remote, to) = self.engine_device().await?;
-            let state = remote_cluster(&cluster).ok();
-            let ours = state.as_ref().is_some_and(|c| c.active_device_id == to);
-            let ps = state.as_ref().and_then(|c| c.player_state.as_ref());
-            let playing = ours && ps.is_some_and(|p| p.is_playing && !p.is_paused);
-            match cmd {
-                Command::SetSoloistKey { .. } => anyhow::bail!("the Spotify app plays without a Soloist key"),
-                Command::TogglePlay if playing => remote.control(&to, &Command::Pause).await,
-                // resume what the account played last, on this computer
-                Command::TogglePlay | Command::Play { uri: None } if !ours => match state.as_ref().filter(|_| ps.is_some_and(|p| p.track.is_some())) {
-                    Some(c) => remote.transfer(c, &to).await,
-                    None => anyhow::bail!("nothing to resume yet: play something from a list"),
-                },
-                Command::TogglePlay => remote.control(&to, &Command::Play { uri: None }).await,
-                Command::AddToQueue { uri } => remote.add_to_queue(&to, &uri).await,
-                Command::PlayFrom { context_uri, index, track_uri } => {
-                    let context = if context_uri == library::LIKED { format!("spotify:user:{}:collection", session.username()) } else { context_uri };
-                    remote.play_from(&to, &context, index, track_uri.as_deref()).await
-                }
-                other => remote.control(&to, &other).await,
-            }
-        }
-        .await;
-        if let Err(e) = result {
-            if let Some(r) = self.remote.as_mut() {
-                r.forget_ids();
-            }
-            let player = self.engine.player;
-            let mut player = player.strip_prefix("the ").unwrap_or(player).to_string();
-            player[..1].make_ascii_uppercase();
-            self.fail(format!("{player}: {e}")).await;
-        }
-    }
-
-    /// ConnectRemote and the Spotify app's device. A device that isn't on Connect (the app just started, or came back
-    /// after a network change) is waited for: each pushed cluster is looked at, for up to 20 s. No polling.
-    async fn engine_device(&mut self) -> anyhow::Result<(Session, &mut ConnectRemote, String)> {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let name = self.engine.device_name.clone();
-        loop {
-            let changed = self.cluster_changed.clone();
-            let next = changed.notified();
-            match self.remote().await {
-                Ok(_) => break,
-                Err(e) if Instant::now() >= deadline || !e.to_string().contains("not found") => return Err(e),
-                Err(_) => {
-                    tracing::debug!("waiting for {name:?} on Connect");
-                    if let Some(r) = self.remote.as_mut() {
-                        r.forget_ids();
-                    }
-                    let _ = tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), next).await;
-                }
-            }
-        }
-        self.remote().await
-    }
-
-    /// Queue edits Soloist can't make (play next, remove, clear, move) go through Connect.
-    async fn queue(&mut self, edit: QueueEdit) {
-        let result = async {
-            let (_, remote, to) = self.remote().await?;
-            remote.edit_queue(&to, &edit).await
-        }
-        .await;
-        if let Err(e) = result {
-            tracing::warn!("queue edit via Connect failed: {e}");
-            if let Some(r) = self.remote.as_mut() {
-                r.forget_ids();
-            }
-            match edit {
-                // Soloist can at least append it
-                QueueEdit::PlayNext(uri) => {
-                    let _ = self.ev.send(CatEvent::ToEngine(Command::AddToQueue { uri })).await;
-                    self.fail("Couldn't put it first; added it to the end of the queue".into()).await;
-                }
-                _ => {
-                    self.fail(format!("Couldn't change the queue: {e}")).await;
-                    let _ = self.ev.send(CatEvent::Resync).await;
                 }
             }
         }
@@ -1423,24 +1169,6 @@ impl<Q: Fetch + Sync> State<Q> {
         let _ = self.ev.send(CatEvent::Lyrics(l)).await;
     }
 
-    /// Start a context at track N through ConnectRemote; if that fails, the Engine plays the track alone.
-    async fn play_from(&mut self, context_uri: String, index: u32, track_uri: Option<String>) {
-        let result = async {
-            // a failure below drops the remote, so a stale device id is looked up again next time
-            let (session, remote, to) = self.remote().await?;
-            let context = if context_uri == library::LIKED { format!("spotify:user:{}:collection", session.username()) } else { context_uri.clone() };
-            remote.play_from(&to, &context, index, track_uri.as_deref()).await
-        }
-        .await;
-        if let Err(e) = result {
-            tracing::warn!("play from track {index} of {context_uri} via Connect failed: {e}");
-            if let Some(r) = self.remote.as_mut() {
-                r.forget_ids();
-            }
-            let _ = self.ev.send(CatEvent::ToEngine(Command::PlayFrom { context_uri, index, track_uri })).await;
-        }
-    }
-
     async fn home(&mut self) {
         let vars = json!({
             "includeHomeChapterVideoCards": false,
@@ -1648,9 +1376,9 @@ mod tests {
     /// task's own full channel (a deadlock) and not lost.
     #[tokio::test]
     async fn a_search_drains_the_commands_behind_it_in_order() {
-        let (tx, mut rx) = mpsc::channel(16);
+        let (tx, mut rx) = mpsc::unbounded_channel();
         for c in [CatCmd::Search("a".into()), CatCmd::Library, CatCmd::Devices, CatCmd::Search("b".into())] {
-            tx.send(c).await.unwrap();
+            tx.send(c).unwrap();
         }
         let first = match rx.recv().await.unwrap() {
             CatCmd::Search(q) => q,

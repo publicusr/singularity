@@ -629,6 +629,16 @@ async fn fill_queue(hub: &Hub, state: &mut PlaybackState) -> Vec<String> {
     missing
 }
 
+/// No other device is playing (any more): the bar goes back to this computer's Engine.
+async fn other_device_gone(hub: &Hub) {
+    if hub.remote.lock().await.take().is_none() {
+        return;
+    }
+    let state = hub.engine_playback.lock().await.clone();
+    *hub.playback.lock().await = state.clone();
+    let _ = hub.events.send(Event::Playback(state));
+}
+
 async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
     while let Some(ev) = events.recv().await {
         match ev {
@@ -708,11 +718,8 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                         s
                     }
                     None => {
-                        let was_remote = hub.remote.lock().await.take().is_some();
-                        if !was_remote {
-                            continue;
-                        }
-                        hub.engine_playback.lock().await.clone()
+                        other_device_gone(&hub).await;
+                        continue;
                     }
                 };
                 *hub.playback.lock().await = state.clone();
@@ -723,6 +730,10 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                 let waiting = matches!(*hub.engine_status.lock().await, Some(proto::EngineStatus::NotConfigured { .. }));
                 if hub.engine_kind == proto::EngineKind::Librespot && waiting && matches!(s, proto::CatalogueStatus::Ready { .. }) {
                     to_player(&hub, Command::RestartEngine).await;
+                }
+                // logged out, no other device is ours to follow or control any more (C5)
+                if matches!(s, proto::CatalogueStatus::LoggedOut) {
+                    other_device_gone(&hub).await;
                 }
                 *hub.catalogue_status.lock().await = Some(s.clone());
                 let _ = hub.events.send(Event::Catalogue(s));
@@ -754,7 +765,13 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
             CatEvent::ToEngine(cmd) => to_player(&hub, cmd).await,
             CatEvent::Error(message) => hub.report(message),
             // tasks inside the Catalogue report their own deaths; the health view names them (A1)
-            CatEvent::TaskStopped(name, why) => hub.task_stopped(name, &why).await,
+            CatEvent::TaskStopped(name, why) => {
+                // with the Catalogue gone, so is what Connect told us (C5); it says again once it's back
+                if name == "the Catalogue" {
+                    other_device_gone(&hub).await;
+                }
+                hub.task_stopped(name, &why).await
+            }
             CatEvent::TaskStarted(name) => hub.task_running(name).await,
             // these couldn't be looked up: clear the marks so a later playback state asks again (A8; the Catalogue
             // keeps them from being asked about too often)
@@ -1139,6 +1156,27 @@ mod tests {
     }
 
     /// A1: a background task that panics is named in the health view and started again.
+    /// C5 (2026-11-20 bug hunt): logged out, "another device is playing" stayed, so the bar kept showing that device's
+    /// song and our transport buttons kept going to it.
+    #[tokio::test]
+    async fn logging_out_lets_go_of_the_other_device() {
+        let hub = test_hub();
+        let phone = PlaybackState { context_uri: Some("spotify:playlist:on-the-phone".into()), ..Default::default() };
+        *hub.remote.lock().await = Some(phone.clone());
+        *hub.playback.lock().await = phone;
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(run_catalogue(rx, hub.clone()));
+        tx.send(CatEvent::Status(proto::CatalogueStatus::LoggedOut)).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while hub.remote.lock().await.is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the other device is still remembered after logout");
+        assert_eq!(*hub.playback.lock().await, *hub.engine_playback.lock().await, "the bar is back on this computer");
+    }
+
     #[tokio::test]
     async fn a_background_task_that_panics_is_restarted_and_named() {
         let hub = test_hub();
