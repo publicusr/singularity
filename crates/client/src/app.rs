@@ -588,9 +588,8 @@ pub struct App {
     pub view: Option<TrackView>,
     /// the open artist page
     pub artist: Option<crate::artist::ArtistView>,
-    /// the search page (kept while you browse its results, so back returns to them)
-    pub search: Option<crate::search::SearchView>,
-    search_kept: Option<crate::search::SearchView>,
+    /// Search (D74): open while its page shows; kept as it was while you browse its results, so back returns to them
+    pub search: crate::search::Search,
     /// the Stats page, while it's open (#36)
     pub stats_view: Option<crate::stats::StatsView>,
     pub settings_view: Option<crate::settings::SettingsView>,
@@ -609,7 +608,6 @@ pub struct App {
     pub top_week_tracks: bool,
     /// how far the wheel has scrolled its entries
     pub top_week_scroll: crate::scroll::TextScroll,
-    pub recent: Vec<String>,
     pub devices: Vec<singularity_proto::Device>,
     /// the account's Jam (D64)
     pub jam: Option<singularity_proto::Jam>,
@@ -757,8 +755,7 @@ impl App {
             lists: HashMap::new(),
             view: None,
             artist: None,
-            search: None,
-            search_kept: None,
+            search: Default::default(),
             stats_view: None,
             settings_view: None,
             pending_episode: None,
@@ -769,7 +766,6 @@ impl App {
             stats: Default::default(),
             top_week_tracks: false,
             top_week_scroll: Default::default(),
-            recent: vec![],
             devices: vec![],
             jam: None,
             confirm_end_jam: None,
@@ -944,7 +940,7 @@ impl App {
             || self.cover_form.is_some()
             || self.settings_typing()
             || self.view.as_ref().is_some_and(|v| v.filtering)
-            || (self.search.is_some() && self.focus == "home")
+            || (self.search.is_open() && self.focus == "home")
     }
 
     // ── idle takeover ─────────────────────────────────────────────────
@@ -1363,7 +1359,7 @@ impl App {
         if self.move_mode.is_some() {
             return self.move_key(k);
         }
-        if self.focus == "home" && self.search.is_some() && self.search_key(k) {
+        if self.focus == "home" && self.search.is_open() && self.search_key(k) {
             return;
         }
         if self.focus == "home" && !shift && self.stats_view.is_some() && self.stats_key(k) {
@@ -1379,7 +1375,7 @@ impl App {
             return;
         }
         // Esc on an artist or search page goes back, never quits
-        if (self.artist.is_some() || self.search.is_some() || self.stats_view.is_some() || self.settings_view.is_some()) && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
+        if (self.artist.is_some() || self.search.is_open() || self.stats_view.is_some() || self.settings_view.is_some()) && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
             return self.run(Action::Back);
         }
         if self.focus == "library" && !shift && self.side_key(k) {
@@ -1514,7 +1510,7 @@ impl App {
     /// Keys for the focused Home; returns false for keys it doesn't use.
     fn home_key(&mut self, k: KeyEvent) -> bool {
         // the search bar holds the selection: Enter or typing opens Search (with what was typed), ↓ leaves it
-        if self.search.is_none() && self.artist.is_none() && self.home_view.on_bar {
+        if !self.search.is_open() && self.artist.is_none() && self.home_view.on_bar {
             let ctrl = k.modifiers.contains(KeyModifiers::CONTROL) || k.modifiers.contains(KeyModifiers::ALT);
             match k.code {
                 KeyCode::Enter => {
@@ -1523,10 +1519,7 @@ impl App {
                 }
                 KeyCode::Char(c) if !ctrl => {
                     self.navigate(Page::Search);
-                    if let Some(s) = self.search.as_mut() {
-                        s.query.push(c);
-                        s.typed();
-                    }
+                    self.search.type_text(c.encode_utf8(&mut [0; 4]));
                     return true;
                 }
                 KeyCode::Up => return true,
@@ -1643,8 +1636,17 @@ impl App {
         }
     }
 
+    /// Search, while its page is open.
+    pub fn searching(&self) -> Option<&crate::search::Search> {
+        Some(&self.search).filter(|s| s.is_open())
+    }
+
+    pub fn searching_mut(&mut self) -> Option<&mut crate::search::Search> {
+        Some(&mut self.search).filter(|s| s.is_open())
+    }
+
     pub fn current_page(&self) -> Page {
-        if self.search.is_some() {
+        if self.search.is_open() {
             return Page::Search;
         }
         if let Some(a) = &self.artist {
@@ -1695,13 +1697,11 @@ impl App {
         self.artist = None;
         self.stats_view = None;
         self.settings_view = None;
-        if let Some(s) = self.search.take() {
-            self.search_kept = Some(s);
-        }
+        self.search.set_open(false);
         self.focus = "home".into();
         match p {
             Page::Home => {}
-            Page::Search => self.search = Some(self.search_kept.take().unwrap_or_default()),
+            Page::Search => self.search.set_open(true),
             Page::Stats => {
                 self.stats_view = Some(crate::stats::StatsView { period: self.stats_period, ..Default::default() });
                 self.send(Command::GetStats { period: self.stats_period });
@@ -1754,7 +1754,7 @@ impl App {
 
     /// The Shelves on screen (Home's, or the artist page's) and their view state.
     fn active_feed(&self) -> Option<&singularity_proto::HomeFeed> {
-        if let Some(s) = &self.search {
+        if let Some(s) = self.searching() {
             return Some(&s.feed);
         }
         match &self.artist {
@@ -1764,8 +1764,8 @@ impl App {
     }
 
     pub fn feed_view(&mut self) -> &mut HomeView {
-        if let Some(s) = self.search.as_mut() {
-            return &mut s.shelves;
+        if self.search.is_open() {
+            return &mut self.search.shelves;
         }
         match self.artist.as_mut() {
             Some(a) => &mut a.shelves,
@@ -1775,27 +1775,15 @@ impl App {
 
     /// Keys on the search page: typing goes to the query; arrows move through songs, then the Shelves.
     fn search_key(&mut self, k: KeyEvent) -> bool {
-        let Some(s) = self.search.as_mut() else { return false };
+        let Some(s) = self.searching_mut() else { return false };
         let songs = s.songs();
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL) || k.modifiers.contains(KeyModifiers::ALT);
         match k.code {
-            KeyCode::Char(c) if !ctrl => {
-                s.query.push(c);
-                s.typed();
-            }
-            KeyCode::Backspace => {
-                if s.query.pop().is_none() {
-                    return false; // empty: Backspace means back
-                }
-                s.typed();
-                if s.query.trim().is_empty() {
-                    s.results = None;
-                }
-            }
-            KeyCode::Esc if !s.query.is_empty() => {
-                s.query.clear();
-                s.results = None;
-                s.typed();
+            KeyCode::Char(c) if !ctrl => s.type_text(c.encode_utf8(&mut [0; 4])),
+            // empty: Backspace and Esc mean back
+            KeyCode::Backspace => return s.erase(),
+            KeyCode::Esc if !s.query().is_empty() => {
+                s.clear();
             }
             KeyCode::Tab => {
                 let c = s.chip + 1;
@@ -1805,15 +1793,10 @@ impl App {
                 let c = s.chip + crate::search::CHIPS.len() - 1;
                 s.set_chip(c);
             }
-            KeyCode::Down if s.query.trim().is_empty() => s.recent_sel = (s.recent_sel + 1).min(self.recent.len().saturating_sub(1)),
-            KeyCode::Up if s.query.trim().is_empty() => s.recent_sel = s.recent_sel.saturating_sub(1),
-            KeyCode::Enter if s.failed.is_some() => s.retry(),
-            KeyCode::Enter if s.query.trim().is_empty() => {
-                if let Some(q) = self.recent.get(s.recent_sel).cloned() {
-                    s.query = q;
-                    s.typed();
-                }
-            }
+            KeyCode::Down if s.query().trim().is_empty() => s.recent_sel = (s.recent_sel + 1).min(s.recent().len().saturating_sub(1)),
+            KeyCode::Up if s.query().trim().is_empty() => s.recent_sel = s.recent_sel.saturating_sub(1),
+            // a failed search asks again; an empty query runs the highlighted recent search
+            KeyCode::Enter if s.failed().is_some() || s.query().trim().is_empty() => s.submit(),
             KeyCode::Down if s.track_sel.is_none_or(|i| i + 1 < songs) && songs > 0 && s.shelves.sel.is_none() => s.track_sel = Some(s.track_sel.map_or(0, |i| i + 1)),
             KeyCode::Down if s.track_sel.is_some() => {
                 // past the last song: into the Shelves
@@ -1825,6 +1808,8 @@ impl App {
                 let i = s.track_sel.unwrap_or(0);
                 self.play_search_track(i);
             }
+            // nothing highlighted and no answer for these words yet: they go out now, without waiting for a pause
+            KeyCode::Enter if s.shelves.sel.is_none() && !s.answered() => s.submit(),
             _ => {
                 // the Shelves take arrows and Enter like Home's
                 return self.home_key(k);
@@ -1876,11 +1861,9 @@ impl App {
     }
 
     fn play_search_track(&mut self, i: usize) {
-        let Some(s) = self.search.as_ref() else { return };
-        let Some(t) = s.rows().get(i) else { return };
-        let (uri, q) = (t.uri.clone(), s.query.clone());
-        crate::search::remember(&mut self.recent, &q);
-        crate::search::save_recent(&self.recent);
+        let Some(s) = self.searching_mut() else { return };
+        let Some(uri) = s.rows().get(i).map(|t| t.uri.clone()) else { return };
+        s.remember();
         self.send(Command::Play { uri: Some(uri) });
     }
 
@@ -1903,9 +1886,8 @@ impl App {
     fn open_card(&mut self, c: CardRef) {
         self.feed_view().sel = Some(c);
         // opening a result is what makes a search worth remembering
-        if let Some(q) = self.search.as_ref().map(|s| s.query.clone()) {
-            crate::search::remember(&mut self.recent, &q);
-            crate::search::save_recent(&self.recent);
+        if let Some(s) = self.searching_mut() {
+            s.remember();
         }
         if let Some(k) = self.card(c).cloned() {
             // a track has no page: it plays
@@ -2467,7 +2449,7 @@ impl App {
         self.last_tick = Instant::now();
         self.hole.advance(dt, self.meters.frame.as_ref());
         // search while typing, once typing pauses
-        if let Some(q) = self.search.as_mut().and_then(|s| s.due()) {
+        if let Some(q) = self.searching_mut().and_then(|s| s.due()) {
             self.send(Command::Search { query: q });
         }
         // lyrics follow the track, if a lyrics or karaoke Pane is on screen; a karaoke Pane wants word timing too, so
@@ -2680,7 +2662,7 @@ impl App {
                         }
                     }
                     Some(Hit::SearchTrack(i)) => {
-                        let t = self.search.as_ref().and_then(|s| s.rows().get(i).cloned());
+                        let t = self.searching().and_then(|s| s.rows().get(i).cloned());
                         if let Some(t) = t {
                             self.open_track_menu(t.uri, t.name, at);
                         }
@@ -2792,20 +2774,18 @@ impl App {
                     Some(Hit::Link(l)) => self.open_link(&l),
                     Some(Hit::DeviceRow(i)) => self.transfer_to(i),
                     Some(Hit::Chip(i)) => {
-                        if let Some(s) = self.search.as_mut() {
+                        if let Some(s) = self.searching_mut() {
                             s.set_chip(i);
                         }
                     }
                     Some(Hit::Recent(i)) => {
-                        let q = self.recent.get(i).cloned();
-                        if let (Some(s), Some(q)) = (self.search.as_mut(), q) {
-                            s.query = q;
-                            s.typed();
+                        if let Some(s) = self.searching_mut() {
+                            s.pick(i);
                         }
                     }
                     Some(Hit::SearchTrack(i)) => {
                         let double = self.last_click.is_some_and(|(t, j)| j == usize::MAX / 2 - i && t.elapsed() < DOUBLE_CLICK);
-                        if let Some(s) = self.search.as_mut() {
+                        if let Some(s) = self.searching_mut() {
                             s.track_sel = Some(i);
                         }
                         if double {
@@ -3130,7 +3110,7 @@ impl App {
     pub(crate) fn home_row_at(&self, x: u16, y: u16) -> Option<usize> {
         match self.hit_at(x, y)? {
             Hit::Card(c) => {
-                let rows = match (&self.search, &self.artist) {
+                let rows = match (self.searching(), &self.artist) {
                     (Some(s), _) => &s.shelves.rows,
                     (_, Some(a)) => &a.shelves.rows,
                     _ => &self.home_view.rows,

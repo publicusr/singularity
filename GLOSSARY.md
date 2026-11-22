@@ -118,6 +118,11 @@ The filled line on top of Home that reads "Search" (D70). Clicking it, Ctrl+L, o
 typing opens Search, whose query sits in the same bar in the same place. The library has no Search row (D71).
 _Avoid_: search box, search field, omnibox
 
+**Recent search**:
+A query run before, kept on this computer only and listed newest first under the Search bar while it's empty.
+Picking one runs it again at once (D74).
+_Avoid_: history, search history
+
 **Track list**:
 The tracks of Liked Songs, a playlist or an album, shown in the main Pane. Sorting and filtering change only what
 you see; playing a row always starts the list at that track.

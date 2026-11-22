@@ -93,6 +93,7 @@ so it cannot be settled by talking)
 | D71 | The library is only the library | D13 | settled (2026-11-20) | Owner: "library should be completely separate from home and home should have the search built in". The library's Search row is gone (`sidebar::FIXED` = 1); Home stays its first row. Ctrl+L and the palette still open Search anywhere. |
 | D72 | The Search page uses Home's bar | D70 | settled (2026-11-20) | The query line is the same bar (`search::bar`) in the same place, so opening Search brings the bar to life instead of jumping. |
 | D73 | Linux on ARM (aarch64) | D10, D49 | settled (2026-11-20), built in code, untested on hardware | Owner: "add support for linux ARM based … ill run a session later". The Daemon downloads Soloist's arm64 build (`update::cdn_for`, published next to the x86_64 one; both checked live 2026-11-20); `auto` on a Linux CPU without a Soloist build is librespot; CI tests on `ubuntu-24.04-arm` (public repo only), a release adds `aarch64-unknown-linux-gnu` built on `ubuntu-22.04-arm`. A cross type-check from the x86 PC stops at C dependencies needing an aarch64 sysroot; the owner's ARM session does the first real build and run. |
+| D74 | Search owns its query (architecture review candidate 1; issue #8) | D70, D72 | settled (2026-11-22), built on `deepen/search-query` | Owner accepted all seven: **Client only** (the Daemon's half of #8, searches queued behind Connect work, is candidate 4); a picked Recent search or Enter on typed words goes out **at once** (typing keeps the 300 ms pause); results **kept by query** (16, 15 min: the owner raised it from 5 on review; matched ignoring case and outer spaces, as the Daemon matches), shown at once while a fresh answer is asked for; the **recent searches and the kept page live inside Search** (no `App.recent`, no `search_kept`); an interface of **methods** named for what the user does (`type_text`, `erase`, `clear`, `pick`, `submit`, `receive`, `remember`, `due`); **tests at Search's interface** plus a pty scenario; glossary term **Recent search**. Calls made while building: Enter with nothing highlighted still steps into the results once the answer for these words is on screen (it only sends while no answer has come); the results stay on screen while typing on, as before, and clear only when the query empties. |
 
 ```mermaid
 flowchart LR
@@ -1177,3 +1178,13 @@ flowchart LR
   link was refused; root's own links are accepted now (only root can make one; anyone else's is still refused).
   cargo deny: rusqlite 0.41 (libsqlite3-sys 0.39, SQLite 3.54) for RUSTSEC-2026-0459; chrono (unmaintained, only under
   librespot's oauth2) ignored with its reason.
+
+- **Architecture review, candidate 1: Search owns its query** (2026-11-22, D74; issue #8). The review (mattpocock-skills
+  `improve-codebase-architecture`, two read-only agents) listed ten deepening candidates; the owner picked this one first.
+  Cause of #8, confirmed: Esc cleared the query but not the record of what was sent, so picking that same Recent search sent
+  nothing and the page said "searching…" forever (also after Backspace to empty, and after leaving and coming back).
+  `search::Search` now owns the query, what was sent, the recent searches and results kept by query; App holds one for
+  its whole life (`is_open`, `searching()`/`searching_mut()`). Tests: `picking_the_recent_search_just_cleared_runs_it_again`
+  (App keys; failed on the old code) and ten at Search's interface (`a_cleared_search_picked_again_goes_out_at_once`, kept
+  results shown at once and expiring, Enter, retry, older answers kept). pty `search-recent`. Not closed: #8's slowness is
+  the Daemon's (candidate 4).

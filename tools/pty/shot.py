@@ -1928,7 +1928,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast", "resize", "karaoke") else "0"
@@ -1963,6 +1963,9 @@ def main():
         # recent searches, more than a short Pane shows
         os.makedirs(f"{env['XDG_STATE_HOME']}/singularity", exist_ok=True)
         open(f"{env['XDG_STATE_HOME']}/singularity/recent-searches.json", "w").write(json.dumps([f"recent query {i}" for i in range(12)]))
+    if scenario == "search-recent":
+        os.makedirs(f"{env['XDG_STATE_HOME']}/singularity", exist_ok=True)
+        open(f"{env['XDG_STATE_HOME']}/singularity/recent-searches.json", "w").write(json.dumps(["mix", "orbit"]))
     if scenario == "resize":
         os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity/layouts", exist_ok=True)
         open(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/wide.toml", "w").write(RESIZE_LAYOUT)
@@ -2098,6 +2101,26 @@ def main():
             t.send(b"mix", 1.2)
             t.shot(f"{out}/0-search.png")
             t.send(b"q", 0.1)
+            t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.3)
+            t.send(b"q", 0.5)
+            return
+        if scenario == "search-recent":
+            # #8: a search, cleared with Esc, then picked again from the recent searches (Enter, then a click)
+            t.pump(1.0)
+            t.send(b"\x0c", 0.3)  # Ctrl+L
+            t.send(b"mix", 1.2)
+            t.shot(f"{out}/0-searched.png")
+            t.send(b"\x1b", 0.5)
+            t.shot(f"{out}/1-cleared.png")
+            print("recent searches listed:", bool(t.find("Recent searches")))
+            t.send(b"\r", 0.6)
+            t.shot(f"{out}/2-enter.png")
+            print("Enter on the recent search shows results:", bool(t.find("mix song 1")))
+            t.send(b"\x1b", 0.5)
+            x, y = t.find("  orbit")
+            mouse(t, 0, x + 3, y); mouse(t, 0, x + 3, y, release=True, wait=0.6)
+            t.shot(f"{out}/3-click.png")
+            print("a click on a recent search shows results:", bool(t.find("orbit song 1")))
             t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.3)
             t.send(b"q", 0.5)
             return
