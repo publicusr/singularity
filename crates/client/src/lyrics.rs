@@ -60,6 +60,32 @@ pub struct Wrapped {
     pub(crate) scroll: usize,
 }
 
+impl Wrapped {
+    /// The width of the song's longer lines (`typical`), worked out once for the lyrics in hand.
+    fn typical(&mut self, lines: &[LyricLine]) -> Option<f32> {
+        *self.typical.get_or_insert_with(|| typical(lines))
+    }
+
+    /// Every line's rows for a layout (`key`: the text width, or the big text's size) as `wrap` breaks a line: wrapped
+    /// again only for another layout (new lyrics start afresh). Whether they were wrapped just now.
+    fn wrap(&mut self, lines: &[LyricLine], key: u64, wrap: impl Fn(&str) -> Vec<String>) -> bool {
+        if self.key == Some(key) {
+            return false;
+        }
+        self.key = Some(key);
+        self.rows.clear();
+        self.starts.clear();
+        self.ends.clear();
+        for (i, line) in lines.iter().enumerate() {
+            self.starts.push(self.rows.len());
+            let words = if line.text.trim().is_empty() { "♪" } else { line.text.as_str() };
+            self.rows.extend(wrap(words).into_iter().map(|t| (i, t)));
+            self.ends.push(self.rows.len());
+        }
+        true
+    }
+}
+
 /// How far continuation rows are indented.
 const INDENT: usize = 2;
 /// The timestamp column, `[mm:ss] `.
@@ -270,33 +296,16 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     // a big Pane on the pixel tier: big text, rows `pitch` cells tall
     let cpx = app.pixel_text_for(r);
     let Some((lyr, cache)) = app.lyrics.lyrics_view() else { return };
-    if cpx.is_some() && cache.typical.is_none() {
-        cache.typical = Some(typical(&lyr.lines));
-    }
-    let big = cpx.zip(cache.typical.flatten()).and_then(|(cpx, t)| big_fit(&f, r.width, cpx, t).map(|b| (b, cpx)));
+    let big = cpx.and_then(|cpx| cache.typical(&lyr.lines).map(|t| (cpx, t))).and_then(|(cpx, t)| big_fit(&f, r.width, cpx, t).map(|b| (b, cpx)));
     let (body, anchor) = match big {
         Some((b, _)) => ((f.body / b.pitch) as usize, (f.body / b.pitch) as usize / 3),
         None => (f.body as usize, f.anchor as usize),
     };
-    // every line's rows, and where each line's rows are: wrapped again only for new lyrics or another width
-    let key = Some(big.map_or(f.text_w as u64, |(b, _)| b.key()));
-    let fresh = cache.key != key;
-    if fresh {
-        cache.key = key;
-        cache.rows.clear();
-        cache.starts.clear();
-        cache.ends.clear();
-        for (i, line) in lyr.lines.iter().enumerate() {
-            cache.starts.push(cache.rows.len());
-            let words = if line.text.trim().is_empty() { "♪" } else { line.text.as_str() };
-            let rows = match big {
-                Some((b, _)) => crate::bigtext::wrap(words, b.text_w, b.indent, |s| crate::bigtext::width(s, b.px, true)),
-                None => wrap(words, f.text_w as usize),
-            };
-            cache.rows.extend(rows.into_iter().map(|t| (i, t)));
-            cache.ends.push(cache.rows.len());
-        }
-    }
+    // every line's rows, and where each line's rows are
+    let fresh = match big {
+        Some((b, _)) => cache.wrap(&lyr.lines, b.key(), |s| crate::bigtext::wrap(s, b.text_w, b.indent, |s| crate::bigtext::width(s, b.px, true))),
+        None => cache.wrap(&lyr.lines, f.text_w as u64, |s| wrap(s, f.text_w as usize)),
+    };
     let now = if lyr.synced { current(&lyr.lines, pos) } else { None };
     let total = cache.rows.len();
     // big text glides by cells: where the view's top is between rows (-1: on a row)

@@ -14,6 +14,8 @@ pub struct SongLyrics {
     lyrics: Option<Lyrics>,
     /// the song lyrics were asked for, and whether with word timing (a Karaoke Pane was on screen)
     asked: Option<(String, bool)>,
+    /// whether an answer for that song has come since
+    answered: bool,
     /// the lyrics Widget's rows and view
     view: crate::lyrics::Wrapped,
     /// the Karaoke Widget's timed lines, sizes and view
@@ -31,12 +33,12 @@ pub struct Sung<'a> {
 }
 
 impl SongLyrics {
-    /// Lyrics from the Daemon. Kept only for the song playing (an answer for one already skipped is dropped); the
-    /// same answer again (asked again after a reconnect) changes nothing.
+    /// Lyrics from the Daemon. Kept only for the song playing (an answer for one already skipped is dropped).
     pub fn receive(&mut self, l: Lyrics, playing: Option<&str>) {
-        if playing != Some(l.uri.as_str()) || self.lyrics.as_ref() == Some(&l) {
+        if playing != Some(l.uri.as_str()) {
             return;
         }
+        self.answered |= self.asked.as_ref().is_some_and(|(u, _)| *u == l.uri);
         self.lyrics = Some(l);
         self.view = Default::default();
         self.karaoke.new_lyrics();
@@ -51,12 +53,15 @@ impl SongLyrics {
             return None;
         }
         self.asked = Some((playing.to_string(), words));
+        self.answered = false;
         Some(words)
     }
 
-    /// The link to the Daemon came back: what was asked before may never have been answered, so it is asked again.
+    /// The link to the Daemon came back: a request not answered yet may have been lost with it, so it is asked again.
     pub fn reconnected(&mut self) {
-        self.asked = None;
+        if !self.answered {
+            self.asked = None;
+        }
     }
 
     /// The lyrics in hand if they are `uri`'s.
@@ -187,15 +192,26 @@ mod tests {
     }
 
     #[test]
-    fn the_same_answer_again_keeps_the_view() {
+    fn a_reconnect_leaves_an_answered_request_alone() {
+        let mut s = SongLyrics::default();
+        assert_eq!(s.ask(URI, true, false), Some(false));
+        s.receive(lyrics(false), Some(URI));
+        s.reconnected();
+        assert_eq!(s.ask(URI, true, false), None, "the lyrics are in hand: nothing to ask again");
+        // word timing asked for and lost with the link: asked again
+        assert_eq!(s.ask(URI, true, true), Some(true));
+        s.reconnected();
+        assert_eq!(s.ask(URI, true, true), Some(true));
+    }
+
+    #[test]
+    fn an_arrival_starts_the_view_afresh() {
         let mut s = SongLyrics::default();
         let mut l = lyrics(false);
         l.synced = false;
         s.receive(l.clone(), Some(URI));
         assert!(s.wheel_lyrics(6));
-        s.receive(l.clone(), Some(URI));
-        assert_eq!(s.lyrics_view().unwrap().1.scroll, 6, "asked again after a reconnect: the reader's place stays");
-        l.lines.pop();
+        assert_eq!(s.lyrics_view().unwrap().1.scroll, 6);
         s.receive(l, Some(URI));
         assert_eq!(s.lyrics_view().unwrap().1.scroll, 0, "new lyrics: from the top");
     }
