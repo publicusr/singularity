@@ -185,7 +185,7 @@ impl App {
         if !complete {
             // pages are still arriving by offset: start over rather than shift them
             self.open.drop_list(LIKED);
-            if self.open.view().is_some_and(|v| v.uri == LIKED) {
+            if self.open.is_open(LIKED) {
                 self.send(Command::GetTracks { uri: LIKED.into() });
             }
             return;

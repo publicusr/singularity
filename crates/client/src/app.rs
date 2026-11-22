@@ -10,7 +10,7 @@ use crate::visual::BlackHole;
 use crate::visual::well::Hole;
 use crate::scrub::{Bar, Scrub};
 use crate::sidebar::Sidebar;
-use crate::tracks::{Col, TrackList, TrackView};
+use crate::tracks::{Col, TrackView};
 use std::collections::HashMap;
 use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -621,6 +621,8 @@ pub struct App {
     pub back: Vec<Page>,
     pub forward: Vec<Page>,
     last_click: Option<(Instant, usize)>,
+    /// the row a click on the open list was on, for telling a double-click (D81)
+    last_row: Option<crate::openlist::RowId>,
     pub meters: Meters,
     pub stream: Option<singularity_proto::StreamInfo>,
     pub health: Option<singularity_proto::Health>,
@@ -765,6 +767,7 @@ impl App {
             back: vec![],
             forward: vec![],
             last_click: None,
+            last_row: None,
             meters: Meters::default(),
             stream: None,
             health: None,
@@ -1917,24 +1920,15 @@ impl App {
         false
     }
 
-    /// The view's visible order and the list length.
-    pub(crate) fn view_order(&self) -> std::rc::Rc<[usize]> {
-        match (self.open.view(), self.open.view().and_then(|v| self.open.list(&v.uri))) {
-            (Some(v), Some(l)) => v.order(l),
-            _ => std::rc::Rc::new([]),
-        }
-    }
-
     /// Play the row at view position `vi`: the context starts at that track's place in the original list.
     fn play_row(&mut self, vi: usize) {
-        let order = self.open.order();
-        let (Some(v), Some(&ri)) = (self.open.view(), order.get(vi)) else { return };
-        let Some(row) = self.open.list(&v.uri).and_then(|l| l.rows().get(ri)) else { return };
+        let (Some(v), Some((ri, row))) = (self.open.view(), self.open.row_at(vi)) else { return };
         if !row.playable {
             return self.say("This track isn't available");
         }
-        let cmd = Command::PlayFrom { context_uri: v.uri.clone(), index: ri as u32, track_uri: Some(row.uri.clone()) };
-        if self.book_refused(&v.uri.clone()) {
+        let uri = v.uri.clone();
+        let cmd = Command::PlayFrom { context_uri: uri.clone(), index: ri as u32, track_uri: Some(row.uri.clone()) };
+        if self.book_refused(&uri) {
             return;
         }
         self.send(cmd);
@@ -1996,7 +1990,7 @@ impl App {
                 self.remove_row(sel);
             }
             // Esc clears the filter, then goes back to Home (it never quits from inside a list)
-            KeyCode::Esc if !v.filter.is_empty() => v.set_filter(String::new()),
+            KeyCode::Esc if !v.filter.is_empty() => self.open.set_filter(String::new()),
             KeyCode::Esc => self.run(Action::Back),
             _ => return false,
         }
@@ -2006,25 +2000,23 @@ impl App {
     fn filter_key(&mut self, k: KeyEvent) {
         let len = self.open.order().len();
         let Some(v) = self.open.view_mut() else { return };
-        match k.code {
+        let filter = match k.code {
             KeyCode::Esc => {
                 v.filtering = false;
-                v.set_filter(String::new());
+                String::new()
             }
-            KeyCode::Enter => v.filtering = false,
+            KeyCode::Enter => return v.filtering = false,
             KeyCode::Backspace => {
                 let mut f = v.filter.clone();
                 f.pop();
-                v.set_filter(f);
+                f
             }
-            KeyCode::Up => v.move_sel(-1, len),
-            KeyCode::Down => v.move_sel(1, len),
-            KeyCode::Char(c) => {
-                let f = format!("{}{c}", v.filter);
-                v.set_filter(f);
-            }
-            _ => {}
-        }
+            KeyCode::Up => return v.move_sel(-1, len),
+            KeyCode::Down => return v.move_sel(1, len),
+            KeyCode::Char(c) => format!("{}{c}", v.filter),
+            _ => return,
+        };
+        self.open.set_filter(filter);
     }
 
     fn side_key(&mut self, k: KeyEvent) -> bool {
@@ -2086,6 +2078,7 @@ impl App {
 
     /// Right-click on a track-list row.
     pub fn open_row_menu(&mut self, vi: usize, at: Option<(u16, u16)>) {
+        let Some(id) = self.open.id_at(vi) else { return };
         if let Some(v) = self.open.view_mut() {
             v.sel = vi;
         }
@@ -2094,7 +2087,6 @@ impl App {
         if self.rows_removable() {
             items.push(("Remove from this playlist".into(), MenuAct::RemoveFromPlaylist));
         }
-        let Some(id) = self.open.id_at(vi) else { return };
         if let Some((uri, ..)) = self.target_track(&Target::Row(id.clone())) {
             items.extend(self.save_entry(&uri));
         }
@@ -2204,7 +2196,7 @@ impl App {
             return;
         };
         // where a row shows now
-        let row_at = |app: &App| match &m.target {
+        let shown_at = |app: &App| match &m.target {
             Target::Row(id) => app.open.find(id).map(|(vi, _)| vi),
             _ => None,
         };
@@ -2215,7 +2207,7 @@ impl App {
                 _ => self.send(Command::Play { uri: Some(uri) }),
             },
             MenuAct::PlayHere => {
-                if let Some(vi) = row_at(self) {
+                if let Some(vi) = shown_at(self) {
                     self.play_row(vi);
                 }
             }
@@ -2248,7 +2240,7 @@ impl App {
             MenuAct::Save => self.toggle_saved(&uri, &name),
             MenuAct::AddToPlaylist => self.ask_add(vec![uri], &name),
             MenuAct::RemoveFromPlaylist => {
-                if let Some(vi) = row_at(self) {
+                if let Some(vi) = shown_at(self) {
                     self.remove_row(vi);
                 }
             }
@@ -2329,9 +2321,9 @@ impl App {
         } else if let Some(p) = self.palette.as_mut() {
             p.query.push_str(s);
             p.selected = 0;
-        } else if let Some(v) = self.open.view_mut().filter(|v| v.filtering) {
+        } else if let Some(v) = self.open.view().filter(|v| v.filtering) {
             let f = format!("{}{s}", v.filter);
-            v.set_filter(f);
+            self.open.set_filter(f);
         }
     }
 
@@ -2679,7 +2671,10 @@ impl App {
                     Some(Hit::Track(vi)) => {
                         self.focus = "home".into();
                         // a second click on the same row soon after plays it
-                        let double = self.last_click.is_some_and(|(t, i)| i == vi && t.elapsed() < DOUBLE_CLICK);
+                        // (by identity: a page arriving between the clicks doesn't make it another song, D81)
+                        let id = self.open.id_at(vi);
+                        let double = self.last_click.is_some_and(|(t, i)| i == vi && t.elapsed() < DOUBLE_CLICK) && id.is_some() && self.last_row == id;
+                        self.last_row = id;
                         if let Some(v) = self.open.view_mut() {
                             v.sel = vi;
                         }
@@ -2689,7 +2684,7 @@ impl App {
                         } else {
                             self.last_click = Some((Instant::now(), vi));
                             // a drag from here reorders your own playlist
-                            self.playlists.press = self.rows_removable().then_some(vi);
+                            self.playlists.press = self.rows_removable().then(|| self.open.id_at(vi)).flatten();
                         }
                     }
                     Some(Hit::SortCol(c)) => self.sort(c),

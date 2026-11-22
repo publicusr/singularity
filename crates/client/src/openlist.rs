@@ -40,6 +40,7 @@ impl OpenList {
         self.lists.contains_key(uri)
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.lists.len()
     }
@@ -123,6 +124,19 @@ impl OpenList {
 
     pub(crate) fn put_view(&mut self, v: TrackView) {
         self.view = Some(v);
+    }
+
+    /// What the open list is filtered by. The selected row stays selected, on its line, while it still shows;
+    /// once the filter hides it, the row that took its place is.
+    pub fn set_filter(&mut self, filter: String) {
+        let Some(uri) = self.view.as_ref().map(|v| v.uri.clone()) else { return };
+        let before = self.anchor(&uri);
+        let Some(v) = self.view.as_mut() else { return };
+        v.filter = filter;
+        if before.is_none() {
+            (v.sel, v.top) = (0, 0);
+        }
+        self.settle(before);
     }
 
     // ── rows of the open list ──
@@ -255,6 +269,21 @@ mod tests {
         assert_eq!(selected(&o), "c");
         o.edit("spotify:playlist:p").unwrap().take_uid("u2");
         assert_eq!(selected(&o), "a", "the last row went: the one now last");
+    }
+
+    #[test]
+    fn a_filter_keeps_the_selected_row_while_it_shows_and_then_the_one_in_its_place() {
+        let mut o = open_sorted(&["alpha", "beta", "gamma", "delta"], 4);
+        // shown alpha beta delta gamma; select delta
+        o.view_mut().unwrap().sel = 2;
+        o.set_filter("a".into()); // all four still show
+        assert_eq!(selected(&o), "delta");
+        o.set_filter("ta".into()); // beta delta
+        assert_eq!((selected(&o), o.view().unwrap().sel), ("delta".into(), 1));
+        o.set_filter("bet".into()); // beta only: delta is hidden, beta took its place
+        assert_eq!(selected(&o), "beta");
+        o.set_filter(String::new());
+        assert_eq!(selected(&o), "beta", "and stays on it when the filter goes");
     }
 
     #[test]

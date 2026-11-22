@@ -243,11 +243,6 @@ impl TrackView {
         }
     }
 
-    pub fn set_filter(&mut self, f: String) {
-        self.filter = f;
-        self.sel = 0;
-        self.top = 0;
-    }
 }
 
 /// Widest a title column gets; artist and album columns stop at `NAME_MAX`.
@@ -590,9 +585,9 @@ mod tests {
     #[test]
     fn filter_matches_all_words_across_fields() {
         let mut v = TrackView::new("u", "t");
-        v.set_filter("nova cor".into());
+        v.filter = "nova cor".into();
         assert_eq!(v.compute_order(&rows()), [2]);
-        v.set_filter("MIRA".into());
+        v.filter = "MIRA".into();
         assert_eq!(v.compute_order(&rows()), [1]);
     }
 

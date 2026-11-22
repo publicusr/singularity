@@ -75,7 +75,8 @@ pub struct Playlists {
     /// rows taken out before Spotify answered, by (playlist, uid): where they were
     removing: HashMap<(String, String), (usize, singularity_proto::TrackRow)>,
     /// the row pressed on (a drag from it reorders), and the drag under way
-    pub press: Option<usize>,
+    /// the row pressed, by identity (D81: a row taken out before the drag lands doesn't make it move another)
+    pub press: Option<crate::openlist::RowId>,
     pub row_drag: Option<RowDrag>,
     /// rows moved before Spotify answered, by (playlist, uid): where they were, and how many moves are unanswered
     moving: HashMap<(String, String), (usize, usize)>,
@@ -405,7 +406,7 @@ impl App {
         let mine = self.playlists.asked.iter().position(|n| n == name).map(|i| self.playlists.asked.remove(i)).is_some();
         match outcome {
             AddOutcome::Added => {
-                if self.open.view().is_some_and(|v| v.uri == playlist) {
+                if self.open.is_open(playlist) {
                     self.send(Command::GetTracks { uri: playlist.into() });
                 } else {
                     self.open.drop_list(playlist);
@@ -435,17 +436,13 @@ impl App {
         let Some(playlist) = self.open.view().map(|v| v.uri.clone()).filter(|u| self.own_playlist(u).is_some()) else {
             return self.say("Only your own playlists can lose songs");
         };
-        let order = self.open.order();
-        let Some(row) = order.get(vi).and_then(|&i| self.open.list(&playlist)?.rows().get(i)).cloned() else { return };
+        let Some((_, row)) = self.open.row_at(vi).map(|(i, r)| (i, r.clone())) else { return };
         let Some(uid) = row.uid.clone() else {
             return self.say("Spotify didn't say which row this is; open the playlist again");
         };
         let Some(taken) = self.open.edit(&playlist).and_then(|mut l| l.take_uid(&uid)) else { return };
+        // (the selection settles on the row that took its place)
         self.playlists.removing.insert((playlist.clone(), uid.clone()), taken);
-        let len = self.open.order().len();
-        if let Some(v) = self.open.view_mut() {
-            v.sel = v.sel.min(len.saturating_sub(1));
-        }
         self.send(Command::RemoveFromPlaylist { playlist, uids: vec![uid] });
         self.say(format!("Removed {}", row.name));
     }
@@ -486,7 +483,7 @@ impl App {
 
     /// The pointer moved with the button held after pressing a row: start or follow a drag.
     pub fn drag_row_to(&mut self, y: u16) {
-        let Some(from) = self.playlists.press else { return };
+        let Some(from) = self.pressed_at() else { return };
         // the row under the pointer (rows are drawn in the preview's order), clamped to the visible ones
         let rows: Vec<(u16, usize)> = self.hits.iter().filter_map(|(r, h)| if let Hit::Track(k) = h { Some((r.y, *k)) } else { None }).collect();
         let to = match rows.iter().find(|(ry, _)| *ry == y) {
@@ -506,7 +503,7 @@ impl App {
             self.playlists.row_drag = Some(RowDrag { from, to: from });
         }
         if let Some(d) = self.playlists.row_drag.as_mut() {
-            d.to = to;
+            (d.from, d.to) = (from, to);
         }
         if let Some(v) = self.open.view_mut() {
             v.sel = to;
@@ -515,12 +512,19 @@ impl App {
 
     /// The button let go: a drag lands.
     pub fn drop_row(&mut self) {
+        let from = self.pressed_at();
         self.playlists.press = None;
-        if let Some(d) = self.playlists.row_drag.take()
-            && d.to != d.from
-        {
-            self.move_row(d.from, d.to);
+        let Some(d) = self.playlists.row_drag.take() else { return };
+        match from {
+            Some(from) if from != d.to => self.move_row(from, d.to),
+            Some(_) => {}
+            None => self.say("That song isn't in the list any more"),
         }
+    }
+
+    /// Where the pressed row shows now.
+    fn pressed_at(&self) -> Option<usize> {
+        self.open.find(self.playlists.press.as_ref()?).map(|(vi, _)| vi)
     }
 
     /// Alt+↑↓ on the selected row.
@@ -538,7 +542,7 @@ impl App {
     /// Move row `from` to `to` (positions in the playlist's own order): at once here, then one move on Spotify,
     /// anchored to the row it lands before (or after, at the end).
     fn move_row(&mut self, from: usize, to: usize) {
-        let Some(playlist) = self.open.view().map(|v| v.uri.clone()) else { return };
+        let Some((playlist, top)) = self.open.view().map(|v| (v.uri.clone(), v.top)) else { return };
         let moved = {
             let Some(mut list) = self.open.edit(&playlist) else { return };
             list.rows().get(from).and_then(|r| r.uid.clone()).map(|uid| {
@@ -552,8 +556,10 @@ impl App {
             return self.say("Spotify didn't say which row this is; open the playlist again");
         };
         self.playlists.moving.entry((playlist.clone(), uid.clone())).or_insert((from, 0)).1 += 1;
+        // the moved row is selected where it lands, and the list doesn't scroll under it
         if let Some(v) = self.open.view_mut() {
-            v.sel = to;
+            (v.sel, v.top) = (to, top);
+            v.reveal();
         }
         self.send(Command::MoveInPlaylist { playlist, uids: vec![uid], before, after });
     }
@@ -581,7 +587,7 @@ impl App {
                     self.say("Spotify didn't take the move; it's back where it was");
                 }
                 (None, true) => {
-                    if self.open.view().is_some_and(|v| v.uri == playlist) {
+                    if self.open.is_open(playlist) {
                         self.send(Command::GetTracks { uri: playlist.into() });
                     } else {
                         self.open.drop_list(playlist);
@@ -958,7 +964,7 @@ mod tests {
         draw(&mut app);
         let y = |app: &App, k: usize| app.hit_rect(&Hit::Track(k)).unwrap().y;
         // press row 0, drag down onto row 3: the preview shows it there before the drop
-        app.playlists.press = Some(0);
+        app.playlists.press = app.open.id_at(0);
         let (y0, y3) = (y(&app, 0), y(&app, 3));
         app.drag_row_to(y0);
         assert!(app.playlists.row_drag.is_none(), "a shaky click isn't a drag");
