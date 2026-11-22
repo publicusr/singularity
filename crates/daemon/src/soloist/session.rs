@@ -1,8 +1,8 @@
 //! One run of Soloist as a state machine: what the Daemon makes of what Soloist says (its WebSocket events and its
 //! log), of our commands, of a staged build and of the clock. No I/O: [`Session::step`] takes one input and the time,
-//! and returns what to do (send to Soloist, tell the Daemon, stop Soloist). `run_once` only pumps the process and the
-//! socket into it, so the order in which login, a track change, the queue answer, a quiet moment and a dry spell
-//! interact is all here, and testable with a made-up clock.
+//! and returns what to do (send to Soloist, tell the Daemon, stop Soloist). `pump` in `soloist.rs` only moves the
+//! process and the socket in and out, so the order in which login, a track change, the queue answer, a quiet moment
+//! and a dry spell interact is all here, and testable with a made-up clock.
 
 use super::LogNews;
 use crate::engine::{EngineEvent, Resume};
@@ -313,7 +313,7 @@ impl Session {
                 out.push(Action::Event(EngineEvent::Notice("Spotify still isn't sending audio: is the connection (or a VPN) down?".into())));
             } else {
                 tracing::warn!("no audio data for {} s while playing: restarting Soloist to reconnect", DRY_STUCK.as_secs());
-                out.push(Action::Event(EngineEvent::Notice("No audio from Spotify for 20 s: reconnecting the player…".into())));
+                out.push(Action::Event(EngineEvent::Notice(format!("No audio from Spotify for {} s: reconnecting the player…", DRY_STUCK.as_secs()))));
                 self.handover.unstuck_at = Some(now.at);
                 self.handover.resume = resume_point(&self.st.playback, false, now.ms);
                 out.push(Action::Stop(Stop::Restart));

@@ -585,7 +585,7 @@ struct Started {
     #[cfg(target_os = "macos")]
     in_vm: Option<Arc<crate::soloist_vm::VmHost>>,
     /// (the VM's Soloist session: closing its stdin stops Soloist, so it's held for the run)
-    _session: Option<tokio::process::ChildStdin>,
+    _vm_stdin: Option<tokio::process::ChildStdin>,
 }
 
 /// Start Soloist, its output parsed for news and written on to the log.
@@ -686,7 +686,7 @@ async fn start(engine: &SoloistEngine, key: &str) -> anyhow::Result<Started> {
         vm_ws,
         #[cfg(target_os = "macos")]
         in_vm,
-        _session: session_stdin,
+        _vm_stdin: session_stdin,
     })
 }
 
@@ -776,7 +776,11 @@ async fn pump(engine: &SoloistEngine, run: &mut Started, s: &mut Session, cmd_rx
         }
         while let Ok(n) = news_rx.try_recv() {
             tap(&n, &mut zeroconf);
-            // (nothing is sent before the WebSocket is up: log news only tells the Daemon)
+            // before the WebSocket is up, only the build's lifetime and why it can't start count (as ever); log news
+            // sends nothing to Soloist either way
+            if !matches!(n, LogNews::Lifetime(_) | LogNews::BadKey | LogNews::Locked) {
+                continue;
+            }
             if let Some(stop) = carry_out(s.step(Input::Log(n), Now::real()), &mut futures_util::sink::drain(), engine, ev_tx).await? {
                 return stopped(child, stop).await;
             }
