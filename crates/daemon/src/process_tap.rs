@@ -254,7 +254,7 @@ pub async fn manage(hub: Arc<crate::Hub>, feed: Arc<crate::tap::Feed>) {
                 }
             };
         }
-        let playing = hub.playback.lock().await.status == singularity_proto::PlayStatus::Playing;
+        let playing = hub.playback().status == singularity_proto::PlayStatus::Playing;
         if let Some((t, _, since)) = &tap
             && playing
             && !t.heard()

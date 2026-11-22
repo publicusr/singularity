@@ -367,7 +367,7 @@ pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
         while !listening(&hub) {
             hub.spectrum_wake.notified().await;
         }
-        let pb = hub.playback.lock().await.clone();
+        let pb = hub.playback();
         if volume.is_some_and(|v| v != pb.volume) {
             an.reset_gain();
         }
@@ -387,7 +387,7 @@ pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
                         }
                         continue;
                     };
-                    let v = hub.playback.lock().await.volume;
+                    let v = hub.playback().volume;
                     if volume.is_some_and(|old| old != v) {
                         an.reset_gain();
                     }
@@ -408,7 +408,7 @@ pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs_f32(DT));
                 while listening(&hub) {
                     tick.tick().await;
-                    let pb = hub.playback.lock().await.clone();
+                    let pb = hub.playback();
                     if volume.is_some_and(|v| v != pb.volume) {
                         an.reset_gain();
                     }
@@ -470,7 +470,7 @@ async fn capture(hub: &crate::Hub, an: &mut Analyzer, of: StreamOf) -> anyhow::R
     let mut stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("parec has no stdout"))?;
     let mut bytes = vec![0u8; HOP * 8];
     let mut have = 0;
-    let mut volume = hub.playback.lock().await.volume;
+    let mut volume = hub.playback().volume;
     let mut last_check = std::time::Instant::now();
     while hub.spectrum_listeners.load(Ordering::SeqCst) > 0 {
         let wait = if an.is_quiet() { std::time::Duration::from_secs(1) } else { std::time::Duration::from_secs_f32(DT) };
@@ -504,7 +504,7 @@ async fn capture(hub: &crate::Hub, an: &mut Analyzer, of: StreamOf) -> anyhow::R
         let samples: Vec<f32> = bytes[..whole].as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
         bytes.copy_within(whole..have, 0);
         have -= whole;
-        let v = hub.playback.lock().await.volume;
+        let v = hub.playback().volume;
         if v != volume {
             volume = v;
             an.reset_gain();

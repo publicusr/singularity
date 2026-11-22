@@ -120,7 +120,7 @@ mod mac {
         }
         let mut events = hub.events.subscribe();
         let mut news = TrackNews::default();
-        let state = hub.playback.lock().await.clone();
+        let state = hub.playback();
         show(&state);
         news.news(&state, false);
         tracing::info!("Now Playing: on");

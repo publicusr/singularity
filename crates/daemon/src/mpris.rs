@@ -34,7 +34,7 @@ pub async fn run(hub: Arc<Hub>, opts: Options) {
 async fn serve(hub: Arc<Hub>, opts: Options) -> zbus::Result<()> {
     // subscribe first, so nothing between the snapshot and the loop is missed
     let mut events = hub.events.subscribe();
-    let state = hub.playback.lock().await.clone();
+    let state = hub.playback();
     let builder = match &opts.address {
         Some(a) => zbus::connection::Builder::address(a.as_str()),
         None => zbus::connection::Builder::session(),
