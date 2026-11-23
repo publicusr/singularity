@@ -284,7 +284,8 @@ Where a dragged Pane would land: another Pane's centre (swap), one of its edges 
 outermost column, or past the top or bottom of the Panes). Only zones that change the arrangement (not just sizes)
 and keep every Pane above its minimum size are offered; a split only where both halves stay comfortable (at least 24
 columns or 8 rows each), so a small Pane is a swap target. The zone under the pointer becomes the preview after a
-short pause on it (the dwell); a release drops on the zone under the pointer at once.
+short pause on it (the dwell); a release drops on the zone the preview shows, and with none shown the Pane goes back
+(#21, for the owner to confirm: it used to drop on the zone under the pointer at once).
 _Avoid_: target, dock
 
 **Move mode**:

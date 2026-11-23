@@ -60,6 +60,27 @@ pub struct Divider {
     pub grip: Rect,
 }
 
+impl Divider {
+    /// Where the split's area starts along the divider's axis, and how long it is.
+    fn span(&self) -> (u16, u16) {
+        match self.axis {
+            Axis::Horizontal => (self.area.x, self.area.width),
+            Axis::Vertical => (self.area.y, self.area.height),
+        }
+    }
+}
+
+impl Size {
+    /// The first side's length, in cells, out of `total` (before the minimums).
+    fn cells(&self, total: u16) -> u16 {
+        match *self {
+            Size::Cells(c) => c,
+            Size::Ratio(r) => (total as f32 * r.clamp(0.05, 0.95)).round() as u16,
+            Size::Last(c) => total.saturating_sub(c),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Computed {
     pub slots: Vec<(String, Rect)>,
@@ -228,11 +249,7 @@ impl Node {
                     Axis::Vertical => area.height,
                 };
                 let (min_a, min_b) = (a.min_len(*axis), b.min_len(*axis));
-                let want = match first {
-                    Size::Cells(c) => *c,
-                    Size::Ratio(r) => (total as f32 * r.clamp(0.05, 0.95)).round() as u16,
-                    Size::Last(c) => total.saturating_sub(*c),
-                };
+                let want = first.cells(total);
                 // keep both sides at least as big as their own Panes need when there is room; otherwise share the
                 // room in proportion to those needs
                 let want = match nudge {
@@ -272,13 +289,17 @@ impl Node {
         }
     }
 
+    /// Where `d`'s boundary sits: the column/row `drag` would leave it at.
+    pub fn boundary(&self, d: &Divider) -> Option<u16> {
+        let (start, total) = d.span();
+        let Some(Node::Split { first, .. }) = self.at_path(&d.path) else { return None };
+        Some(start + first.cells(total))
+    }
+
     /// Move a divider so the boundary sits at mouse column/row `pos`. Keeps the size's kind
     /// (fixed cells stay fixed, ratios stay ratios) so window resizes behave as the preset intended.
     pub fn drag(&mut self, d: &Divider, pos: u16) {
-        let (start, total) = match d.axis {
-            Axis::Horizontal => (d.area.x, d.area.width),
-            Axis::Vertical => (d.area.y, d.area.height),
-        };
+        let (start, total) = d.span();
         let Some(Node::Split { a, b, .. }) = self.at_path_mut(&d.path) else { return };
         let (min_a, min_b) = (a.min_len(d.axis), b.min_len(d.axis));
         if total < min_a + min_b {

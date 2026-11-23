@@ -4,6 +4,7 @@
 //! period of the input rate after the last. The loop sleeps until a frame is due or input arrives (no busy-wait), and
 //! after falling behind by a whole period it starts the grid again from now instead of drawing a burst to catch up.
 
+use ratatui::crossterm::event::{Event, MouseEventKind};
 use std::time::{Duration, Instant};
 
 pub fn period(fps: u64) -> Duration {
@@ -40,6 +41,42 @@ impl Pacer {
         self.hurry = None;
         self.last = if now.saturating_duration_since(due) >= period(fps) { now } else { due };
     }
+}
+
+/// Pointer moves wait for the frame: of a run of moves of the same kind (hovering, or dragging with the same button
+/// and keys) only the last counts (a mouse sends hundreds a second). Any other event lets the waiting move through
+/// first, so a release is never handled before the move that came ahead of it.
+#[derive(Default)]
+pub struct Moves {
+    waiting: Option<(Instant, Event)>,
+}
+
+impl Moves {
+    /// An event arrived at `at`: what to handle now, in order.
+    pub fn push(&mut self, at: Instant, ev: Event) -> [Option<(Instant, Event)>; 2] {
+        if is_move(&ev) {
+            let before = self.waiting.take().filter(|(_, w)| !same_kind(w, &ev));
+            self.waiting = Some((at, ev));
+            return [before, None];
+        }
+        [self.waiting.take(), Some((at, ev))]
+    }
+
+    /// The frame is due: the move that waited for it.
+    pub fn flush(&mut self) -> Option<(Instant, Event)> {
+        self.waiting.take()
+    }
+}
+
+/// A pointer move: hovering or dragging.
+fn is_move(ev: &Event) -> bool {
+    matches!(ev, Event::Mouse(m) if matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)))
+}
+
+/// Two pointer moves of the same kind (both hovering, or dragging with the same button and keys): the later one
+/// replaces the earlier.
+fn same_kind(a: &Event, b: &Event) -> bool {
+    matches!((a, b), (Event::Mouse(x), Event::Mouse(y)) if x.kind == y.kind && x.modifiers == y.modifiers)
 }
 
 #[cfg(test)]

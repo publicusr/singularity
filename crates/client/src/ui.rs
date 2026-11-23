@@ -391,7 +391,11 @@ fn close_button(buf: &mut Buffer, rect: Rect, th: &Theme, focused: bool, slot: &
 }
 
 fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme, float: Option<Rect>) {
-    app.body = body;
+    if app.body != body {
+        app.body = body;
+        // a new window size moves every zone: a held Pane's is found again
+        app.tile_resized();
+    }
     // while a Pane is held over a drop zone, the whole layout is drawn as dropping there would make it
     let tree = app.shown_layout().into_owned();
     let moving = app.moving().map(String::from);

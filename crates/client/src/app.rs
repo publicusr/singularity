@@ -965,7 +965,7 @@ impl App {
         })
     }
 
-    fn hit_at(&self, x: u16, y: u16) -> Option<Hit> {
+    pub(crate) fn hit_at(&self, x: u16, y: u16) -> Option<Hit> {
         self.hits.iter().rev().find(|(r, _)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom()).map(|(_, h)| h.clone())
     }
 
@@ -2570,6 +2570,8 @@ impl App {
             (None, Some(Hit::Divider(i))) => Some(i),
             _ => None,
         };
+        // a release we never heard ends what it held, before anything else sees the event (even one that only wakes)
+        self.release_unheard(m.kind);
         // any mouse event wakes the idle UI, and does nothing else
         if self.wake() {
             return;
