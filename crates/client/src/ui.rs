@@ -567,8 +567,10 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
         f.render_widget(block, *rect);
         return;
     }
+    // smaller than its Widget is usable in: a plain frame round one dim line, `needs W × H` (#36)
+    let short = w.is_some_and(|w| crate::needs::too_small(w, *rect));
     // the well draws its own (sagging) frame; held up, it is a plain Pane round the hole
-    if w == Some(Widget::Well) && !raised {
+    if w == Some(Widget::Well) && !raised && !short {
         crate::visual::well::draw(f.buffer_mut(), *rect, app, th);
         if closable {
             close_button(f.buffer_mut(), *rect, th, focused, p.id, swaps);
@@ -597,8 +599,10 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     if closable {
         close_button(f.buffer_mut(), *rect, th, focused, p.id, swaps);
     }
-    if let Some(w) = w {
-        widget(f.buffer_mut(), *rect, inner, w, todo, app, th);
+    match w {
+        Some(w) if short => crate::needs::draw(f.buffer_mut(), inner, w, th),
+        Some(w) => widget(f.buffer_mut(), *rect, inner, w, todo, app, th),
+        None => {}
     }
 }
 
