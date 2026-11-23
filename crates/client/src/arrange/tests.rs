@@ -78,7 +78,7 @@ fn a_title_press_without_movement_is_a_click() {
     release(&mut a, x + 1, y);
     assert_eq!(a.focus, "queue");
     assert_eq!(a.layout, before);
-    assert!(a.tile.is_none() && a.naming.is_none());
+    assert!(a.tile.is_none() && a.naming().is_none());
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn esc_or_a_drop_nowhere_leaves_the_layout_alone() {
     assert!(!render(&mut a, W, H).contains("drop here"));
     release(&mut a, x + 5, y + 4);
     assert_eq!(a.layout, before);
-    assert!(a.naming.is_none());
+    assert!(a.naming().is_none());
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn a_drop_that_would_squash_a_pane_is_not_offered() {
     assert_eq!(pane(&a, "queue"), q, "the original layout stays");
     release(&mut a, edge.0, edge.1);
     assert_eq!(a.layout, before);
-    assert!(a.naming.is_none());
+    assert!(a.naming().is_none());
     // the queue's edge, 12 columns wide, is no split (it would squash, and be uncomfortable anyway): its centre's
     press(&mut a, x, y);
     drag(&mut a, q.right() - 1, q.y + q.height / 2);
@@ -215,7 +215,7 @@ fn splitting_offers_only_widgets_not_on_screen_and_adds_the_one_picked() {
     let mut a = app();
     a.focus = "fft".into();
     a.run(Action::SplitRight);
-    let p = a.widget_pick.as_ref().expect("the Widget list opens");
+    let p = a.widget_pick().expect("the Widget list opens");
     assert!(p.items.contains(&"scope") && !p.items.contains(&"fft") && !p.items.contains(&"lyrics") && !p.items.contains(&"home"), "{:?}", p.items);
     let at = p.items.iter().position(|w| *w == "scope").unwrap();
     let shot = render(&mut a, W, H);
@@ -224,16 +224,16 @@ fn splitting_offers_only_widgets_not_on_screen_and_adds_the_one_picked() {
         key(&mut a, KeyCode::Down);
     }
     key(&mut a, KeyCode::Enter);
-    assert!(a.widget_pick.is_none() && a.layout.has("scope") && a.layout.has("fft"));
+    assert!(a.widget_pick().is_none() && a.layout.has("scope") && a.layout.has("fft"));
     render(&mut a, W, H);
     let (f, s) = (pane(&a, "fft"), pane(&a, "scope"));
     assert_eq!((f.y, f.height, f.right()), (s.y, s.height, s.x));
     assert_eq!(a.focus, "scope");
     // the tree stays unique: splitting again never offers what's there
     a.run(Action::SplitDown);
-    assert!(!a.widget_pick.as_ref().unwrap().items.contains(&"scope"));
+    assert!(!a.widget_pick().unwrap().items.contains(&"scope"));
     key(&mut a, KeyCode::Esc);
-    assert!(a.widget_pick.is_none());
+    assert!(a.widget_pick().is_none());
 }
 
 #[test]
@@ -243,7 +243,7 @@ fn a_split_with_no_room_says_so() {
     a.focus = "library".into();
     // 60x20: nothing in Singularity can be halved again
     a.run(Action::SplitRight);
-    assert!(a.widget_pick.is_none() && a.toast.as_ref().is_some_and(|(t, _)| t.contains("No room")), "{:?}", a.toast);
+    assert!(a.widget_pick().is_none() && a.toast.as_ref().is_some_and(|(t, _)| t.contains("No room")), "{:?}", a.toast);
 }
 
 #[test]
@@ -251,17 +251,17 @@ fn right_clicking_a_title_offers_split_move_and_close() {
     let mut a = app();
     let (x, y) = title_spot(&a, "fft");
     mouse(&mut a, MouseEventKind::Down(MouseButton::Right), x, y);
-    let items: Vec<String> = a.menu.as_ref().unwrap().items.iter().map(|(l, _)| l.clone()).collect();
+    let items: Vec<String> = a.menu().unwrap().items.iter().map(|(l, _)| l.clone()).collect();
     assert_eq!(items, ["Split right", "Split down", "Move pane", "Close pane"]);
     let shot = render(&mut a, W, H);
     assert!(shot.contains("Split down"));
     key(&mut a, KeyCode::Down);
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.widget_pick.as_ref().unwrap().side, Side::Bottom);
+    assert_eq!(a.widget_pick().unwrap().side, Side::Bottom);
     key(&mut a, KeyCode::Esc);
     let (x, y) = title_spot(&a, "home");
     mouse(&mut a, MouseEventKind::Down(MouseButton::Right), x, y);
-    assert!(!a.menu.as_ref().unwrap().items.iter().any(|(l, _)| l == "Close pane"), "Home can't close");
+    assert!(!a.menu().unwrap().items.iter().any(|(l, _)| l == "Close pane"), "Home can't close");
 }
 
 #[test]
@@ -272,7 +272,7 @@ fn the_first_edit_of_a_built_in_design_asks_for_a_name_and_the_design_follows_it
     press(&mut a, x, y);
     drag(&mut a, centre(q).0, centre(q).1);
     release(&mut a, centre(q).0, centre(q).1);
-    let n = a.naming.clone().expect("the naming prompt");
+    let n = a.naming().cloned().expect("the naming prompt");
     assert_eq!((n.text.as_str(), n.purpose), ("Singularity 2", crate::app::NameFor::Fork));
     let shot = render(&mut a, W, H);
     assert!(shot.contains("Keep your changes as a design") && shot.contains("Singularity 2"), "{shot}");
@@ -296,7 +296,7 @@ fn the_first_edit_of_a_built_in_design_asks_for_a_name_and_the_design_follows_it
     press(&mut a, x, y);
     drag(&mut a, centre(lyrics).0, centre(lyrics).1);
     release(&mut a, centre(lyrics).0, centre(lyrics).1);
-    assert!(a.naming.is_none());
+    assert!(a.naming().is_none());
     let on_disk = crate::layouts::load_dir(&dir.path().join("layouts")).0;
     assert_eq!(on_disk.len(), 1);
     assert_eq!(on_disk[0].tree, a.layout);
@@ -315,7 +315,7 @@ fn a_name_already_taken_is_refused_and_suggestions_count_up() {
     a.reset_design();
     a.layout = Node::singularity().swapped("stream", "queue").unwrap();
     a.edited();
-    assert_eq!(a.naming.as_ref().unwrap().text, "Singularity 3", "2 is taken");
+    assert_eq!(a.naming().unwrap().text, "Singularity 3", "2 is taken");
     for _ in 0..13 {
         key(&mut a, KeyCode::Backspace);
     }
@@ -323,7 +323,7 @@ fn a_name_already_taken_is_refused_and_suggestions_count_up() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
-    assert!(a.naming.is_some(), "still asking");
+    assert!(a.naming().is_some(), "still asking");
     assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("already")));
     assert_eq!(crate::layouts::load_dir(&dir.path().join("layouts")).0.len(), 1);
 }
@@ -335,7 +335,7 @@ fn esc_keeps_one_unnamed_edit_per_design_that_later_edits_overwrite() {
     a.layout = Node::singularity().swapped("stream", "queue").unwrap();
     a.edited();
     key(&mut a, KeyCode::Esc);
-    assert!(a.naming.is_none());
+    assert!(a.naming().is_none());
     assert_eq!(a.layout_name.as_deref(), Some("singularity-edited"));
     let saved = crate::layouts::load_dir(&layouts).0;
     assert_eq!(saved.len(), 1);
@@ -343,13 +343,13 @@ fn esc_keeps_one_unnamed_edit_per_design_that_later_edits_overwrite() {
     // more edits overwrite it, never a pile
     a.layout = a.layout.swapped("home", "lyrics").unwrap();
     a.edited();
-    assert!(a.naming.is_none());
+    assert!(a.naming().is_none());
     let saved = crate::layouts::load_dir(&layouts).0;
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].tree, a.layout);
     // it is in the Design picker, and survives a restart
     a.run(Action::PickDesign);
-    assert!(a.picker.as_ref().unwrap().items.iter().any(|i| i.1 == "Singularity (edited)"));
+    assert!(a.picker().unwrap().items.iter().any(|i| i.1 == "Singularity (edited)"));
     key(&mut a, KeyCode::Esc);
     let mut again = App::new(None);
     again.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
@@ -402,9 +402,9 @@ fn letting_go_of_a_divider_is_an_edit() {
     let grip = a.dividers[0].grip;
     press(&mut a, grip.x, grip.y + 5);
     drag(&mut a, grip.x + 8, grip.y + 5);
-    assert!(a.naming.is_none(), "not while it moves");
+    assert!(a.naming().is_none(), "not while it moves");
     release(&mut a, grip.x + 8, grip.y + 5);
-    assert!(a.naming.is_some());
+    assert!(a.naming().is_some());
 }
 
 #[test]
@@ -507,13 +507,13 @@ fn popups_and_move_mode_do_not_let_the_mouse_through() {
     let (x, y) = title_spot(&a, "fft");
     drag(&mut a, x, y);
     mouse(&mut a, MouseEventKind::Down(MouseButton::Right), x, y);
-    assert!(a.menu.is_none() && a.tile.is_none() && a.layout == before);
+    assert!(a.menu().is_none() && a.tile.is_none() && a.layout == before);
     // while the naming prompt is up, the keyboard goes to it, not to Move mode
     let (mut b, _d) = with_dirs();
     b.focus = "queue".into();
     key(&mut b, KeyCode::Char('m'));
     key(&mut b, KeyCode::Up);
-    assert!(b.naming.is_some());
+    assert!(b.naming().is_some());
     let at = b.layout.clone();
     key(&mut b, KeyCode::Down);
     assert_eq!(b.layout, at);
@@ -574,7 +574,7 @@ fn random_gestures_leave_every_design_valid() {
                     4 => {
                         a.focus = s;
                         a.run(if next() % 2 == 0 { Action::SplitRight } else { Action::SplitDown });
-                        if let Some(p) = a.widget_pick.as_ref() {
+                        if let Some(p) = a.widget_pick() {
                             let i = (next() % p.items.len() as u64) as usize;
                             a.widget_chosen(i);
                         }
@@ -592,7 +592,7 @@ fn random_gestures_leave_every_design_valid() {
                 let tree = a.layout.clone();
                 assert!(tree.valid(a.pane_area(), a.cell_aspect()), "{} {w}x{h}: {tree:?}", design.id);
                 assert!(["home", "library", "queue", "lyrics"].iter().all(|c| tree.has(c)));
-                assert!(a.tile.is_none() && a.widget_pick.is_none());
+                assert!(a.tile.is_none() && a.widget_pick().is_none());
             }
         }
     }
@@ -765,7 +765,7 @@ fn near_its_own_neighbours_edge_a_pane_is_not_just_resized() {
     assert_eq!(pane(&a, "home"), h, "home keeps its size");
     release(&mut a, h.x + 20, h.bottom() - 2);
     assert_eq!(a.layout, before);
-    assert!(a.naming.is_none() && !a.history.can_undo(), "no edit, no fork");
+    assert!(a.naming().is_none() && !a.history.can_undo(), "no edit, no fork");
     // higher up, in Home's top band, it does move: above Home
     press(&mut a, x, y);
     drag(&mut a, h.x + 20, h.y + 2);
@@ -781,7 +781,7 @@ fn near_its_own_neighbours_edge_a_pane_is_not_just_resized() {
     key(&mut a, KeyCode::Char('m'));
     shift(&mut a, KeyCode::Left);
     assert_eq!(a.layout, before);
-    assert!(a.naming.is_none());
+    assert!(a.naming().is_none());
     assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("already spans the left edge")), "{:?}", a.toast);
     let shot = render(&mut a, W, H);
     assert!(shot.lines().last().unwrap().contains("already spans the left edge"), "said in the bar");
@@ -943,7 +943,7 @@ fn every_kind_of_edit_is_one_undo_step() {
     // split, with the Widget list
     a.focus = "loudness".into();
     a.run(Action::SplitRight);
-    let i = a.widget_pick.as_ref().unwrap().items.iter().position(|w| *w == "scope").unwrap();
+    let i = a.widget_pick().unwrap().items.iter().position(|w| *w == "scope").unwrap();
     a.widget_chosen(i);
     trees.push(a.layout.clone());
     // Move mode: a swap, a split beside, a size step
@@ -1008,12 +1008,12 @@ fn undo_of_the_first_edit_of_a_built_in_design_goes_back_to_it_and_leaves_no_fil
     // 1. undone while it still asks for a name: the prompt goes, nothing was written; redo asks again
     swap(&mut a);
     let edit = a.layout.clone();
-    assert!(a.naming.is_some());
+    assert!(a.naming().is_some());
     ctrl(&mut a, 'z');
-    assert!(a.naming.is_none() && a.layout == built_in && a.layout_name.is_none() && files().is_empty());
+    assert!(a.naming().is_none() && a.layout == built_in && a.layout_name.is_none() && files().is_empty());
     ctrl(&mut a, 'y');
     assert_eq!(a.layout, edit);
-    assert_eq!(a.naming.as_ref().map(|n| n.purpose), Some(crate::app::NameFor::Fork));
+    assert_eq!(a.naming().map(|n| n.purpose), Some(crate::app::NameFor::Fork));
     // 2. Esc kept it as "Singularity (edited)": undo removes that file again and the config forgets it; redo brings it back
     key(&mut a, KeyCode::Esc);
     assert_eq!(files().len(), 1);

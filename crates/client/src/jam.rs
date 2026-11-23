@@ -60,7 +60,7 @@ pub fn height(app: &App, room: u16) -> u16 {
 /// Draw the section from row `y` of the picker's inside `inner`; `row` is the Jam row's index in the picker.
 pub fn draw(buf: &mut Buffer, inner: Rect, mut y: u16, row: usize, app: &mut App, th: &Theme) {
     y += 1;
-    let sel = app.devices_sel == row;
+    let sel = app.devices_sel() == Some(row);
     let bg = if sel { th.selection.color() } else { th.bg.color() };
     blank(buf, inner.x, y, inner.width, th.base().bg(bg));
     let engine = app.devices.iter().find(|d| d.is_engine).map(|d| d.name.clone()).unwrap_or_else(|| "this device".into());

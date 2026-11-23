@@ -110,13 +110,13 @@ impl App {
         let Some(name) = self.own_playlist(uri).map(|i| i.name.clone()) else {
             return self.say("Only your own playlists can get a new cover");
         };
-        self.cover_form = Some(CoverForm { playlist: uri.into(), name, path: String::new(), ready: None, error: None });
+        self.open_popup(crate::app::Popup::Cover(CoverForm { playlist: uri.into(), name, path: String::new(), ready: None, error: None }));
     }
 
     pub fn cover_key(&mut self, k: KeyEvent) {
-        let Some(f) = self.cover_form.as_mut() else { return };
+        let Some(f) = self.cover_form_mut() else { return };
         match k.code {
-            KeyCode::Esc => self.cover_form = None,
+            KeyCode::Esc => self.close_if_open(crate::app::Modal::Cover),
             KeyCode::Enter if f.ready.is_some() => self.upload_cover(),
             KeyCode::Enter => self.load_cover(),
             KeyCode::Backspace => {
@@ -137,14 +137,14 @@ impl App {
 
     /// A dropped file arrives as a pasted path: it replaces what's typed and previews at once.
     pub fn cover_paste(&mut self, s: &str) {
-        if let Some(f) = self.cover_form.as_mut() {
+        if let Some(f) = self.cover_form_mut() {
             f.path = s.chars().filter(|c| !c.is_control()).collect();
             self.load_cover();
         }
     }
 
     fn load_cover(&mut self) {
-        let Some(f) = self.cover_form.as_mut() else { return };
+        let Some(f) = self.cover_form_mut() else { return };
         f.path = clean_path(&f.path);
         if f.path.is_empty() {
             f.error = Some("Type a path, or drop a picture file here".into());
@@ -152,9 +152,10 @@ impl App {
         }
         match load(&f.path) {
             Ok(p) => {
-                self.covers.insert(&preview_key(&f.playlist), p.image.clone());
+                let (key, image) = (preview_key(&f.playlist), p.image.clone());
                 f.ready = Some(p);
                 f.error = None;
+                self.covers.insert(&key, image);
             }
             Err(e) => {
                 f.ready = None;
@@ -165,7 +166,7 @@ impl App {
 
     /// Enter on a preview: the new cover shows at once, then goes to Spotify.
     fn upload_cover(&mut self) {
-        let Some(f) = self.cover_form.take() else { return };
+        let Some(f) = self.take_cover_form() else { return };
         let Some(p) = f.ready else { return };
         self.show_cover(&f.playlist, Some(preview_key(&f.playlist)));
         self.send(Command::SetPlaylistCover { playlist: f.playlist, jpeg: Some(crate::gfx::base64(&p.jpeg)) });
@@ -227,7 +228,7 @@ pub fn rect(area: Rect) -> Rect {
 }
 
 pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
-    let Some(f) = app.cover_form.clone() else { return };
+    let Some(f) = app.cover_form().cloned() else { return };
     let inner = crate::ui::popup(buf, rect(area), th, &format!("Cover for {}", f.name));
     let (x, w) = (inner.x + 1, inner.width.saturating_sub(2));
     text(buf, x, inner.y, w, "Picture file (type a path, or drop one here)", th.s(th.dim));
@@ -317,17 +318,17 @@ mod tests {
         app.hear(singularity_proto::Event::Library(Library { items: vec![item("spotify:playlist:mine", true), item("spotify:playlist:theirs", false)] }));
         let sent = |rx: &mut tokio::sync::mpsc::Receiver<Command>| std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
         app.ask_cover("spotify:playlist:theirs");
-        assert!(app.cover_form.is_none(), "only your own");
+        assert!(app.cover_form().is_none(), "only your own");
         app.ask_cover("spotify:playlist:mine");
         // a missing file says so
         app.paste("/nowhere/at/all.png");
-        assert!(app.cover_form.as_ref().unwrap().error.as_ref().unwrap().contains("No file"));
+        assert!(app.cover_form().unwrap().error.as_ref().unwrap().contains("No file"));
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("my pic.png");
         std::fs::write(&file, png(400, 500, false)).unwrap();
         // dropped as a file:// URI with an encoded space
         app.paste(&format!("file://{}", file.display().to_string().replace(' ', "%20")));
-        let f = app.cover_form.as_ref().unwrap();
+        let f = app.cover_form().unwrap();
         assert!(f.ready.as_ref().is_some_and(|p| p.image.dimensions() == (400, 400)), "{:?}", f.error);
         assert!(sent(&mut rx).is_empty(), "nothing goes before Enter");
         app.key(KeyEvent::from(KeyCode::Enter));

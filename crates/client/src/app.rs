@@ -536,11 +536,9 @@ pub struct App {
     pub catalogue: Option<CatalogueStatus>,
     pub home: Option<HomeFeed>,
     pub focus: String,
-    pub palette: Option<Palette>,
-    pub help: bool,
-    /// how far the help, the health check and the wizard are scrolled (when taller than the screen)
-    pub help_scroll: crate::scroll::TextScroll,
-    pub health_scroll: crate::scroll::TextScroll,
+    /// the popup open, if any (D83): one at a time
+    pub(crate) popup: Option<Popup>,
+    /// how far the wizard is scrolled (when taller than the screen)
     pub wizard_scroll: crate::scroll::TextScroll,
     pub toast: Option<(String, Instant)>,
     pub quit: bool,
@@ -565,7 +563,6 @@ pub struct App {
     /// differently (or a state that changed under it) can't stay on screen inverted (the owner, 2026-11-05)
     held_answer: Option<singularity_proto::PlaybackState>,
     pub home_view: HomeView,
-    pub menu: Option<Menu>,
     pub covers: Covers,
     /// the pixel tier, when the terminal speaks the kitty graphics protocol
     pub kitty: Option<Kitty>,
@@ -613,8 +610,6 @@ pub struct App {
     pub jam: Option<singularity_proto::Jam>,
     /// ending a Jam asks again within 10 s
     confirm_end_jam: Option<Instant>,
-    pub devices_open: bool,
-    pub devices_sel: usize,
     artist_pages: HashMap<String, singularity_proto::ArtistPage>,
     /// when each list and artist page last arrived: one older than [`KEPT_FOR`] is fetched again when opened, and only
     /// the newest [`KEPT`] are kept (B6: a Client left open for days showed last week's lists)
@@ -631,7 +626,6 @@ pub struct App {
     /// the local listening log, summed up (#23)
     pub listening: Option<singularity_proto::ListeningSummary>,
     confirm_delete: Option<Instant>,
-    pub health_open: bool,
     health_asked: Option<Instant>,
     pub setup: crate::setup::Setup,
     pub hole: BlackHole,
@@ -652,24 +646,21 @@ pub struct App {
     pub config: singularity_config::Config,
     pub keymap: crate::keymap::Keymap,
     config_files: Option<ConfigFiles>,
-    /// the design on screen (index into `design::DESIGNS`), the user's themes, the picker (#18)
+    /// the design on screen (index into `design::DESIGNS`) and the user's themes (#18)
     pub design: usize,
     pub user_themes: Vec<crate::theme::Theme>,
     pub theme_dir: Option<crate::looks::ThemeDir>,
-    pub picker: Option<crate::looks::Picker>,
     /// state of the Widgets other designs bring (rain, scope, top)
     pub widgets: crate::widgets::State,
     /// the ambient Widgets' own state (starfield, marquee, glow)
     pub ambient: crate::ambient::State,
-    /// the saved layout on screen (its file name), the ones there are, and the name being typed for a new one (#19)
+    /// the saved layout on screen (its file name) and the ones there are (#19)
     pub layout_name: Option<String>,
     pub saved_layouts: Vec<crate::layouts::Saved>,
-    pub naming: Option<Naming>,
-    /// free tiling (D66): a Pane being dragged by its title, the Pane in Move mode, the Widget list for a new Pane,
-    /// and the area the Panes were last drawn in
+    /// free tiling (D66): a Pane being dragged by its title, the Pane in Move mode, and the area the Panes were last
+    /// drawn in
     pub tile: Option<crate::arrange::TileDrag>,
     pub move_mode: Option<String>,
-    pub widget_pick: Option<crate::arrange::WidgetPick>,
     pub body: Rect,
     /// the layout as it was when a divider was grabbed (a changed one counts as an edit on release)
     pub(crate) divider_from: Option<Node>,
@@ -687,8 +678,7 @@ pub struct App {
     /// layout undo / redo, and when the last edit offered its "undo"
     pub(crate) history: crate::arrange::history::History<crate::arrange::Snapshot>,
     pub(crate) undo_offer: Option<(Instant, Action)>,
-    /// the "Change cover" popup (#56), and covers shown before Spotify answered: (library's, header's) to put back
-    pub cover_form: Option<crate::cover::CoverForm>,
+    /// covers shown before Spotify answered (#56): (library's, header's) to put back
     pub covers_was: HashMap<String, (Option<String>, Option<String>)>,
     pub layouts_dir: Option<std::path::PathBuf>,
     /// whether we asked the Daemon for spectrum frames
@@ -716,10 +706,7 @@ impl App {
             catalogue: None,
             home: None,
             focus: "home".into(),
-            palette: None,
-            help: false,
-            help_scroll: Default::default(),
-            health_scroll: Default::default(),
+            popup: None,
             wizard_scroll: Default::default(),
             toast: None,
             quit: false,
@@ -735,7 +722,6 @@ impl App {
             play_hold: None,
             held_answer: None,
             home_view: HomeView::default(),
-            menu: None,
             covers: Covers::offline(),
             kitty: None,
             cell_px: None,
@@ -763,8 +749,6 @@ impl App {
             devices: vec![],
             jam: None,
             confirm_end_jam: None,
-            devices_open: false,
-            devices_sel: 0,
             artist_pages: HashMap::new(),
             fetched: HashMap::new(),
             back: vec![],
@@ -776,7 +760,6 @@ impl App {
             health: None,
             listening: None,
             confirm_delete: None,
-            health_open: false,
             health_asked: None,
             setup: Default::default(),
             hole: BlackHole::default(),
@@ -793,15 +776,12 @@ impl App {
             design: 0,
             user_themes: vec![],
             theme_dir: None,
-            picker: None,
             widgets: Default::default(),
             ambient: Default::default(),
             layout_name: None,
             saved_layouts: vec![],
-            naming: None,
             tile: None,
             move_mode: None,
-            widget_pick: None,
             body: Rect::default(),
             divider_from: None,
             grip_hover: None,
@@ -812,7 +792,6 @@ impl App {
             floating: false,
             history: Default::default(),
             undo_offer: None,
-            cover_form: None,
             covers_was: HashMap::new(),
             layouts_dir: None,
             spectrum_on: false,
@@ -920,14 +899,8 @@ impl App {
 
     /// Typing goes to a text field, so letters aren't shortcuts.
     fn typing(&self) -> bool {
-        self.palette.is_some()
-            || (crate::setup::wanted(self) && crate::setup::step(self) == crate::setup::Step::Key)
-            || self.picker.is_some()
-            || self.naming.is_some()
-            || self.widget_pick.is_some()
-            || self.playlists.details.is_some()
-            || self.playlists.adding.is_some()
-            || self.cover_form.is_some()
+        matches!(self.modal(), Some(Modal::Palette | Modal::Picker | Modal::Naming | Modal::Widgets | Modal::Details | Modal::Adding | Modal::Cover))
+            || (self.modal() == Some(Modal::Wizard) && crate::setup::step(self) == crate::setup::Step::Key)
             || self.settings_typing()
             || self.open.view().is_some_and(|v| v.filtering)
             || (self.search.is_open() && self.focus == "home")
@@ -1148,7 +1121,7 @@ impl App {
             Action::NextVariant => self.next_variant(),
             Action::PickDesign => self.open_picker(crate::looks::PickerKind::Design),
             Action::PickTheme => self.open_picker(crate::looks::PickerKind::Theme),
-            Action::SaveLayout => self.naming = Some(Naming::layout()),
+            Action::SaveLayout => self.open_popup(Popup::Naming(Naming::layout())),
             Action::NewPlaylist => self.ask_new_playlist(),
             Action::EditPlaylist => self.edit_this_playlist(),
             Action::ChangeCover => self.cover_this_playlist(),
@@ -1182,8 +1155,8 @@ impl App {
             Action::SortAdded => self.sort(Col::Added),
             Action::SortDuration => self.sort(Col::Duration),
             Action::Devices | Action::Jam => {
-                self.devices_open = true;
-                self.devices_sel = if a == Action::Jam { self.devices.len() } else { self.devices.iter().position(|d| d.active).unwrap_or(0) };
+                let sel = if a == Action::Jam { self.devices.len() } else { self.devices.iter().position(|d| d.active).unwrap_or(0) };
+                self.open_popup(Popup::Devices { sel });
                 if matches!(self.link, Link::Connected { .. }) {
                     self.send(Command::GetDevices);
                 }
@@ -1207,8 +1180,7 @@ impl App {
                 }
             }
             Action::Health => {
-                self.health_open = true;
-                self.health_scroll.reset();
+                self.open_popup(Popup::Health { scroll: Default::default() });
                 self.health_asked = None;
             }
             Action::Setup => {
@@ -1237,17 +1209,14 @@ impl App {
             Action::ResetLayout => self.reset_design(),
             Action::UndoLayout => self.undo_layout(),
             Action::RedoLayout => self.redo_layout(),
-            Action::Palette => self.palette = Some(Palette { query: String::new(), selected: 0 }),
-            Action::Help => {
-                self.help = true;
-                self.help_scroll.reset();
-            }
+            Action::Palette => self.open_popup(Popup::Palette(Palette { query: String::new(), selected: 0 })),
+            Action::Help => self.open_popup(Popup::Help { scroll: Default::default() }),
             Action::Quit => self.quit = true,
         }
     }
 
     pub fn palette_items(&self) -> Vec<Action> {
-        let q = self.palette.as_ref().map(|p| p.query.to_lowercase()).unwrap_or_default();
+        let q = self.palette().map(|p| p.query.to_lowercase()).unwrap_or_default();
         let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
         // what you typed, as typed: at the start first, then anywhere, then loose matches
         let q = q.trim();
@@ -1275,67 +1244,48 @@ impl App {
             Some(code) if !self.typing() => KeyEvent::new(code, KeyModifiers::NONE),
             _ => k,
         };
-        if self.palette.is_some() {
-            return self.palette_key(k);
-        }
-        if self.picker.is_some() {
-            return self.picker_key(k);
-        }
-        if self.naming.is_some() {
-            return self.naming_key(k);
-        }
-        if self.widget_pick.is_some() {
-            return self.widget_key(k);
+        // what's on top takes the keys (D83)
+        match self.modal() {
+            Some(Modal::Palette) => return self.palette_key(k),
+            Some(Modal::Picker) => return self.picker_key(k),
+            Some(Modal::Naming) => return self.naming_key(k),
+            Some(Modal::Widgets) => return self.widget_key(k),
+            Some(Modal::Details) => return self.details_key(k),
+            Some(Modal::Adding) => return self.adding_key(k),
+            Some(Modal::Cover) => return self.cover_key(k),
+            Some(Modal::Devices) => return self.devices_key(k),
+            Some(Modal::Health) => {
+                match k.code {
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => self.close_if_open(Modal::Health),
+                    code => {
+                        if let Some(s) = self.text_scroll(Modal::Health) {
+                            s.by(text_rows(code));
+                        }
+                    }
+                }
+                return;
+            }
+            Some(Modal::Menu) => return self.menu_key(k),
+            // any key closes the help, but the ones that scroll it when it's taller than the screen
+            Some(Modal::Help) => {
+                match (text_rows(k.code), self.text_scroll(Modal::Help)) {
+                    (0, _) | (_, None) => self.close_if_open(Modal::Help),
+                    (rows, Some(s)) => s.by(rows),
+                }
+                return;
+            }
+            Some(Modal::Wizard) => return self.wizard_key(k),
+            // the login code isn't typed into: Esc hides it, other keys go on to what's under it
+            Some(Modal::Login) if k.code == KeyCode::Esc => {
+                self.login_hidden = true;
+                return;
+            }
+            Some(Modal::Login | Modal::Move) | None => {}
         }
         // a Pane being dragged: Esc puts it back, nothing else gets through
         if self.tile.is_some() {
             if k.code == KeyCode::Esc {
                 self.tile_cancel();
-            }
-            return;
-        }
-        if self.playlists.details.is_some() {
-            return self.details_key(k);
-        }
-        if self.playlists.adding.is_some() {
-            return self.adding_key(k);
-        }
-        if self.cover_form.is_some() {
-            return self.cover_key(k);
-        }
-        if crate::setup::wanted(self) {
-            return self.wizard_key(k);
-        }
-        if self.devices_open {
-            match k.code {
-                KeyCode::Up => self.devices_sel = self.devices_sel.saturating_sub(1),
-                // the row after the devices is the Jam's
-                KeyCode::Down => self.devices_sel = (self.devices_sel + 1).min(self.devices.len()),
-                KeyCode::Char('j') => self.jam_row(),
-                KeyCode::Enter => {
-                    let i = self.devices_sel;
-                    self.transfer_to(i);
-                }
-                KeyCode::Esc | KeyCode::Char('d') | KeyCode::Char('q') => self.devices_open = false,
-                _ => {}
-            }
-            return;
-        }
-        if self.health_open {
-            match k.code {
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => self.health_open = false,
-                code => self.health_scroll.by(text_rows(code)),
-            }
-            return;
-        }
-        if self.menu.is_some() {
-            return self.menu_key(k);
-        }
-        // any key closes the help, but the ones that scroll it when it's taller than the screen
-        if self.help {
-            match text_rows(k.code) {
-                0 => self.help = false,
-                rows => self.help_scroll.by(rows),
             }
             return;
         }
@@ -1379,10 +1329,6 @@ impl App {
             return;
         }
         if self.focus == "queue" && !shift && self.queue_key(k) {
-            return;
-        }
-        if k.code == KeyCode::Esc && matches!(self.catalogue, Some(CatalogueStatus::LoginPending { .. })) {
-            self.login_hidden = true;
             return;
         }
         // the keymap (keys.toml); arrows a focused Pane didn't use fall through to here and seek
@@ -1834,12 +1780,29 @@ impl App {
         }
     }
 
+    fn devices_key(&mut self, k: KeyEvent) {
+        let n = self.devices.len();
+        let Some(Popup::Devices { sel }) = self.popup.as_mut() else { return };
+        match k.code {
+            KeyCode::Up => *sel = sel.saturating_sub(1),
+            // the row after the devices is the Jam's
+            KeyCode::Down => *sel = (*sel + 1).min(n),
+            KeyCode::Char('j') => self.jam_row(),
+            KeyCode::Enter => {
+                let i = *sel;
+                self.transfer_to(i);
+            }
+            KeyCode::Esc | KeyCode::Char('d') | KeyCode::Char('q') => self.close_if_open(Modal::Devices),
+            _ => {}
+        }
+    }
+
     /// Move playback to device `i` of the list (and close the picker); the row after the devices is the Jam's.
     fn transfer_to(&mut self, i: usize) {
         if i == self.devices.len() {
             return self.jam_row();
         }
-        self.devices_open = false;
+        self.close_if_open(Modal::Devices);
         let Some(d) = self.devices.get(i).cloned() else { return };
         if d.active {
             return self.say(format!("Already playing on {}", d.name));
@@ -2076,7 +2039,7 @@ impl App {
         items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::Card(c)).map(|r| (r.x + 2, r.y + 1))).unwrap_or((0, 0));
         self.feed_view().sel = Some(c);
-        self.menu = Some(Menu { at, target: Target::Card(c), items, selected: 0 });
+        self.open_popup(Popup::Menu(Menu { at, target: Target::Card(c), items, selected: 0 }));
     }
 
     /// Right-click on a track-list row.
@@ -2095,7 +2058,7 @@ impl App {
         }
         items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::Track(vi)).map(|r| (r.x + 4, r.y + 1))).unwrap_or((0, 0));
-        self.menu = Some(Menu { at, target: Target::Row(id), items, selected: 0 });
+        self.open_popup(Popup::Menu(Menu { at, target: Target::Row(id), items, selected: 0 }));
     }
 
     /// Right-click on a queue entry.
@@ -2145,7 +2108,7 @@ impl App {
         items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::QueueRow(i)).map(|r| (r.x + 4, r.y + 1))).unwrap_or((0, 0));
         let target = Target::Queued { uri: q.item.uri.clone(), uid: q.uid.clone(), name: q.item.name.clone(), queued };
-        self.menu = Some(Menu { at, target, items, selected: 0 });
+        self.open_popup(Popup::Menu(Menu { at, target, items, selected: 0 }));
     }
 
     /// Right-click on any other track (search results, an artist's popular tracks).
@@ -2156,7 +2119,7 @@ impl App {
         }
         items.extend(self.save_entry(&uri));
         items.push(("Copy link".into(), MenuAct::CopyLink));
-        self.menu = Some(Menu { at: at.unwrap_or((0, 0)), target: Target::Track { uri, name }, items, selected: 0 });
+        self.open_popup(Popup::Menu(Menu { at: at.unwrap_or((0, 0)), target: Target::Track { uri, name }, items, selected: 0 }));
     }
 
     /// A ♥ / Save / Follow button. Removing a playlist takes a second click (it may be your own).
@@ -2186,7 +2149,7 @@ impl App {
     }
 
     pub(crate) fn menu_run(&mut self, i: usize) {
-        let Some(m) = self.menu.take() else { return };
+        let Some(m) = self.take_menu() else { return };
         let Some((_, act)) = m.items.get(i).cloned() else { return };
         if let Target::Pane(slot) = &m.target {
             return self.pane_menu_run(slot, act);
@@ -2257,9 +2220,9 @@ impl App {
     }
 
     fn menu_key(&mut self, k: KeyEvent) {
-        let Some(m) = self.menu.as_mut() else { return };
+        let Some(m) = self.menu_mut() else { return };
         match k.code {
-            KeyCode::Esc => self.menu = None,
+            KeyCode::Esc => self.close_if_open(Modal::Menu),
             KeyCode::Up => m.selected = m.selected.saturating_sub(1),
             KeyCode::Down => m.selected = (m.selected + 1).min(m.items.len().saturating_sub(1)),
             KeyCode::Enter => {
@@ -2310,21 +2273,23 @@ impl App {
             return;
         }
         let s = s.trim();
-        if crate::setup::wanted(self) && crate::setup::step(self) == crate::setup::Step::Key {
+        // into what's on top (D83)
+        let top = self.modal();
+        if top == Some(Modal::Wizard) && crate::setup::step(self) == crate::setup::Step::Key {
             self.setup.key.push_str(s);
-        } else if self.cover_form.is_some() {
+        } else if top == Some(Modal::Cover) {
             self.cover_paste(s);
-        } else if self.playlists.details.is_some() {
+        } else if top == Some(Modal::Details) {
             self.details_paste(s);
-        } else if let Some(a) = self.playlists.adding.as_mut() {
+        } else if let Some(a) = self.adding_mut() {
             a.filter.extend(s.chars().filter(|c| !c.is_control()).take(100));
             a.sel = 0;
-        } else if let Some(n) = self.naming.as_mut() {
+        } else if let Some(n) = self.naming_mut() {
             n.text.extend(s.chars().filter(|c| !c.is_control()).take(100usize.saturating_sub(n.text.chars().count())));
-        } else if let Some(p) = self.palette.as_mut() {
+        } else if let Some(p) = self.palette_mut() {
             p.query.push_str(s);
             p.selected = 0;
-        } else if let Some(v) = self.open.view().filter(|v| v.filtering) {
+        } else if self.popup.is_none() && let Some(v) = self.open.view().filter(|v| v.filtering) {
             let f = format!("{}{s}", v.filter);
             self.open.set_filter(f);
         }
@@ -2332,9 +2297,9 @@ impl App {
 
     fn palette_key(&mut self, k: KeyEvent) {
         let n = self.palette_items().len();
-        let Some(p) = self.palette.as_mut() else { return };
+        let Some(p) = self.palette_mut() else { return };
         match k.code {
-            KeyCode::Esc => self.palette = None,
+            KeyCode::Esc => self.close_if_open(Modal::Palette),
             KeyCode::Up => p.selected = p.selected.saturating_sub(1),
             KeyCode::Down => p.selected = (p.selected + 1).min(n.saturating_sub(1)),
             KeyCode::Backspace => {
@@ -2348,7 +2313,7 @@ impl App {
             KeyCode::Enter => {
                 let sel = p.selected;
                 if let Some(a) = self.palette_items().get(sel).copied() {
-                    self.palette = None;
+                    self.close_if_open(Modal::Palette);
                     self.run(a);
                 }
             }
@@ -2461,7 +2426,7 @@ impl App {
             self.recheck_saved(&uri);
         }
         // the health check refreshes itself while it's open
-        if self.health_open && self.health_asked.is_none_or(|t| t.elapsed() > Duration::from_secs(3)) {
+        if self.is_open(Modal::Health) && self.health_asked.is_none_or(|t| t.elapsed() > Duration::from_secs(3)) {
             self.health_asked = Some(Instant::now());
             if matches!(self.link, Link::Connected { .. }) {
                 self.send(Command::GetHealth);
@@ -2617,7 +2582,7 @@ impl App {
         }
         match m.kind {
             MouseEventKind::Down(MouseButton::Right) => {
-                self.menu = None;
+                self.close_if_open(Modal::Menu);
                 let at = Some((m.column, m.row));
                 match self.hit_at(m.column, m.row) {
                     Some(Hit::Card(c)) => {
@@ -2824,7 +2789,7 @@ impl App {
                     Some(Hit::Action(a)) => self.run(a),
                     Some(Hit::PaletteItem(i)) => {
                         if let Some(a) = self.palette_items().get(i).copied() {
-                            self.palette = None;
+                            self.close_if_open(Modal::Palette);
                             self.run(a);
                         }
                     }
@@ -2838,7 +2803,7 @@ impl App {
                             self.scrub = Some(Scrub::press(bar, r, max, fx, precise));
                         }
                     }
-                    None => self.palette = None,
+                    None => self.close_if_open(Modal::Palette),
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -2902,11 +2867,13 @@ impl App {
 /// Declares `Modal` and `Modal::ALL` from one list, so a test can open every popup there is.
 macro_rules! modals {
     ($($(#[$doc:meta])* $v:ident,)*) => {
-        /// A popup that owns the mouse (and the keyboard) while it's open, in the order `key` offers them input.
+        /// What can be on top of the Panes, owning the mouse (and the keyboard): a [`Popup`], the setup wizard, the
+        /// login code or Move mode. [`App::layers`] gives the one order they stack in (D83).
         ///
-        /// Adding a popup? Make it a variant here and give it a place in `App::modal`; the compiler then asks for its
-        /// arm in `App::modal_scroll` (what the wheel does in it), and the popup test in `ui.rs` opens it with every
-        /// wheel there is. Lists scroll with `scroll::moved`, tall text with a `scroll::TextScroll`.
+        /// Adding a popup? Make it a variant here and in [`Popup`]; the compiler then asks for its arms in
+        /// `Popup::modal`, `App::modal_scroll` (what the wheel does in it), the key and click handling and `ui`'s
+        /// `layer_rect`/`draw_layer`, and the popup tests in `ui.rs` open it with every wheel there is and over the
+        /// wizard. Lists scroll with `scroll::moved`, tall text with a `scroll::TextScroll`.
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
         pub(crate) enum Modal {
             $($(#[$doc])* $v,)*
@@ -2939,41 +2906,134 @@ modals! {
     Login,
 }
 
+/// The popup open, holding what it shows (D83). One at a time: opening one replaces the one open. The setup wizard,
+/// the login code and Move mode aren't popups you open; they follow from state ([`App::layers`]).
+pub(crate) enum Popup {
+    Palette(Palette),
+    Picker(crate::looks::Picker),
+    Naming(Naming),
+    Widgets(crate::arrange::WidgetPick),
+    Details(crate::playlists::Details),
+    Adding(crate::playlists::Adding),
+    Cover(crate::cover::CoverForm),
+    /// the highlighted row (the one after the devices is the Jam's)
+    Devices { sel: usize },
+    Health { scroll: crate::scroll::TextScroll },
+    Menu(Menu),
+    Help { scroll: crate::scroll::TextScroll },
+}
+
+impl Popup {
+    pub(crate) fn modal(&self) -> Modal {
+        match self {
+            Popup::Palette(_) => Modal::Palette,
+            Popup::Picker(_) => Modal::Picker,
+            Popup::Naming(_) => Modal::Naming,
+            Popup::Widgets(_) => Modal::Widgets,
+            Popup::Details(_) => Modal::Details,
+            Popup::Adding(_) => Modal::Adding,
+            Popup::Cover(_) => Modal::Cover,
+            Popup::Devices { .. } => Modal::Devices,
+            Popup::Health { .. } => Modal::Health,
+            Popup::Menu(_) => Modal::Menu,
+            Popup::Help { .. } => Modal::Help,
+        }
+    }
+}
+
+/// `App::palette()`, `palette_mut()` and `take_palette()` and the like: the open popup's data, if it's that one.
+macro_rules! popup_data {
+    ($($get:ident, $get_mut:ident, $take:ident: $v:ident($t:ty);)*) => {
+        impl App {
+            $(
+                pub(crate) fn $get(&self) -> Option<&$t> {
+                    match &self.popup {
+                        Some(Popup::$v(x)) => Some(x),
+                        _ => None,
+                    }
+                }
+                pub(crate) fn $get_mut(&mut self) -> Option<&mut $t> {
+                    match &mut self.popup {
+                        Some(Popup::$v(x)) => Some(x),
+                        _ => None,
+                    }
+                }
+                /// Close it, if it's the one open, and hand back what it held (not every popup needs this).
+                #[allow(dead_code)]
+                pub(crate) fn $take(&mut self) -> Option<$t> {
+                    match self.popup.take() {
+                        Some(Popup::$v(x)) => Some(x),
+                        other => {
+                            self.popup = other;
+                            None
+                        }
+                    }
+                }
+            )*
+        }
+    };
+}
+
+popup_data! {
+    palette, palette_mut, take_palette: Palette(Palette);
+    picker, picker_mut, take_picker: Picker(crate::looks::Picker);
+    naming, naming_mut, take_naming: Naming(Naming);
+    widget_pick, widget_pick_mut, take_widget_pick: Widgets(crate::arrange::WidgetPick);
+    details, details_mut, take_details: Details(crate::playlists::Details);
+    adding, adding_mut, take_adding: Adding(crate::playlists::Adding);
+    cover_form, cover_form_mut, take_cover_form: Cover(crate::cover::CoverForm);
+    menu, menu_mut, take_menu: Menu(Menu);
+}
+
 impl App {
-    /// The popup on top, if any. Every popup the UI draws over the Panes must be listed here: this is what keeps
-    /// mouse events from reaching what's behind it.
+    /// Open `p`, replacing the popup open (popups don't nest).
+    pub(crate) fn open_popup(&mut self, p: Popup) {
+        self.popup = Some(p);
+    }
+
+    /// Close popup `m`, if it's the one open (an action it ran may have opened another: that one stays).
+    pub(crate) fn close_if_open(&mut self, m: Modal) {
+        if self.is_open(m) {
+            self.popup = None;
+        }
+    }
+
+    /// Whether popup `m` is the one open.
+    pub(crate) fn is_open(&self, m: Modal) -> bool {
+        self.popup.as_ref().is_some_and(|p| p.modal() == m)
+    }
+
+    /// The devices picker's highlighted row, while it's open.
+    pub(crate) fn devices_sel(&self) -> Option<usize> {
+        match self.popup {
+            Some(Popup::Devices { sel }) => Some(sel),
+            _ => None,
+        }
+    }
+
+    /// The help's or the health check's scroll, while it's open.
+    pub(crate) fn text_scroll(&self, m: Modal) -> Option<&crate::scroll::TextScroll> {
+        match (&self.popup, m) {
+            (Some(Popup::Help { scroll }), Modal::Help) | (Some(Popup::Health { scroll }), Modal::Health) => Some(scroll),
+            _ => None,
+        }
+    }
+
+    /// What's over the Panes, the top first: the popup you opened, then the setup wizard, then the login code, then
+    /// Move mode (D83). This is the one order: keys, the pointer, the wheel and drawing all follow it.
+    pub(crate) fn layers(&self) -> Vec<Modal> {
+        let wizard = crate::setup::wanted(self);
+        // the wizard shows the code itself
+        let login = !wizard && matches!(self.catalogue, Some(CatalogueStatus::LoginPending { .. })) && !self.login_hidden;
+        let mut layers: Vec<Modal> = self.popup.as_ref().map(Popup::modal).into_iter().collect();
+        layers.extend([(wizard, Modal::Wizard), (login, Modal::Login), (self.move_mode.is_some(), Modal::Move)].into_iter().filter_map(|(on, m)| on.then_some(m)));
+        layers
+    }
+
+    /// The thing on top, if any ([`App::layers`]). Whatever the UI draws over the Panes is in there: this is what
+    /// keeps mouse events from reaching what's behind it.
     pub(crate) fn modal(&self) -> Option<Modal> {
-        Some(if self.palette.is_some() {
-            Modal::Palette
-        } else if self.picker.is_some() {
-            Modal::Picker
-        } else if self.naming.is_some() {
-            Modal::Naming
-        } else if self.widget_pick.is_some() {
-            Modal::Widgets
-        } else if self.playlists.details.is_some() {
-            Modal::Details
-        } else if self.playlists.adding.is_some() {
-            Modal::Adding
-        } else if self.cover_form.is_some() {
-            Modal::Cover
-        } else if crate::setup::wanted(self) {
-            Modal::Wizard
-        } else if self.devices_open {
-            Modal::Devices
-        } else if self.health_open {
-            Modal::Health
-        } else if self.menu.is_some() {
-            Modal::Menu
-        } else if self.help {
-            Modal::Help
-        } else if self.move_mode.is_some() {
-            Modal::Move
-        } else if matches!(self.catalogue, Some(singularity_proto::CatalogueStatus::LoginPending { .. })) && !self.login_hidden {
-            Modal::Login
-        } else {
-            return None;
-        })
+        self.layers().first().copied()
     }
 
     /// The wheel in `modal`, `rows` rows down (negative: up), wherever the pointer is. Every popup decides here: no
@@ -2983,13 +3043,13 @@ impl App {
         match modal {
             Modal::Palette => {
                 let n = self.palette_items().len();
-                if let Some(p) = self.palette.as_mut() {
+                if let Some(p) = self.palette_mut() {
                     p.selected = moved(p.selected, rows, n);
                 }
             }
             // each step previews: only when the selection really moves
             Modal::Picker => {
-                if let Some(p) = self.picker.as_ref() {
+                if let Some(p) = self.picker() {
                     let to = moved(p.sel, rows, p.items.len());
                     if to != p.sel {
                         self.picker_select(to);
@@ -2997,24 +3057,32 @@ impl App {
                 }
             }
             Modal::Widgets => {
-                if let Some(p) = self.widget_pick.as_mut() {
+                if let Some(p) = self.widget_pick_mut() {
                     p.sel = moved(p.sel, rows, p.items.len());
                 }
             }
             Modal::Adding => self.adding_move(rows),
             // the row after the devices is the Jam's
-            Modal::Devices => self.devices_sel = moved(self.devices_sel, rows, self.devices.len() + 1),
+            Modal::Devices => {
+                let n = self.devices.len() + 1;
+                if let Some(Popup::Devices { sel }) = self.popup.as_mut() {
+                    *sel = moved(*sel, rows, n);
+                }
+            }
             Modal::Menu => {
-                if let Some(m) = self.menu.as_mut() {
+                if let Some(m) = self.menu_mut() {
                     m.selected = moved(m.selected, rows, m.items.len());
                 }
             }
-            Modal::Help => self.help_scroll.by(rows),
-            Modal::Health => self.health_scroll.by(rows),
+            Modal::Help | Modal::Health => {
+                if let Some(s) = self.text_scroll(modal) {
+                    s.by(rows);
+                }
+            }
             Modal::Wizard => self.wizard_scroll.by(rows),
             // a long description: back up through it (it shows its end, where you type)
             Modal::Details => {
-                if let Some(d) = self.playlists.details.as_ref() {
+                if let Some(d) = self.details() {
                     d.scroll.by(-rows);
                 }
             }
@@ -3037,7 +3105,7 @@ impl App {
                 match modal {
                     Modal::Adding => match hit {
                         Some(Hit::AddPick(i)) => self.add_pick(i),
-                        _ => self.playlists.adding = None,
+                        _ => self.close_if_open(Modal::Adding),
                     },
                     Modal::Picker => match hit {
                         Some(Hit::PickerItem(i)) => {
@@ -3049,24 +3117,24 @@ impl App {
                     // a click elsewhere only closes the menu
                     Modal::Menu => match hit {
                         Some(Hit::MenuItem(i)) => self.menu_run(i),
-                        _ => self.menu = None,
+                        _ => self.close_if_open(Modal::Menu),
                     },
                     Modal::Devices => match hit {
                         Some(Hit::DeviceRow(i)) => self.transfer_to(i),
-                        _ => self.devices_open = false,
+                        _ => self.close_if_open(Modal::Devices),
                     },
                     Modal::Palette => match hit {
                         Some(Hit::PaletteItem(i)) => {
                             if let Some(a) = self.palette_items().get(i).copied() {
-                                self.palette = None;
+                                self.close_if_open(Modal::Palette);
                                 self.run(a);
                             }
                         }
                         // outside the popup closes it; inside, between items, nothing
-                        _ if !self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom()) => self.palette = None,
+                        _ if !self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom()) => self.close_if_open(Modal::Palette),
                         _ => {}
                     },
-                    Modal::Help => self.help = false,
+                    Modal::Help => self.close_if_open(Modal::Help),
                     // the bar's "undo" works in Move mode; any other click ends it
                     Modal::Move => match hit {
                         Some(Hit::Action(a @ (Action::UndoLayout | Action::RedoLayout))) => self.run(a),
@@ -3074,7 +3142,7 @@ impl App {
                     },
                     Modal::Widgets => match hit {
                         Some(Hit::WidgetItem(i)) => self.widget_chosen(i),
-                        _ => self.widget_pick = None,
+                        _ => self.close_if_open(Modal::Widgets),
                     },
                     // forms and the wizard are typed into; a click on or around them does nothing
                     Modal::Naming | Modal::Details | Modal::Cover | Modal::Wizard | Modal::Health | Modal::Login => {}

@@ -363,7 +363,7 @@ impl App {
 
     fn snapshot(&self) -> Snapshot {
         let file = self.layout_name.as_ref().and_then(|id| self.saved_layouts.iter().find(|s| s.id == *id)).map(|s| (s.name.clone(), s.design.clone(), s.edited));
-        let forking = self.naming.as_ref().is_some_and(|n| n.purpose == NameFor::Fork);
+        let forking = self.naming().is_some_and(|n| n.purpose == NameFor::Fork);
         Snapshot { tree: self.layout.clone(), name: self.layout_name.clone(), file, forking, focus: self.focus.clone() }
     }
 
@@ -411,8 +411,8 @@ impl App {
     fn restore(&mut self, s: Snapshot) {
         let was = self.layout_name.clone().and_then(|id| self.saved_layouts.iter().find(|x| x.id == id).cloned());
         // the first edit's naming prompt: nothing was written yet, and the edit is going
-        if self.naming.as_ref().is_some_and(|n| n.purpose == NameFor::Fork) {
-            self.naming = None;
+        if self.naming().is_some_and(|n| n.purpose == NameFor::Fork) {
+            self.close_if_open(crate::app::Modal::Naming);
         }
         self.layout = s.tree;
         self.focus = if self.layout.has(&s.focus) { s.focus } else { "home".into() };
@@ -460,9 +460,9 @@ impl App {
             Some(s) => self.write_layout(&s.id, &s.name, &s.design, s.edited),
             None => {
                 self.layout_name = None;
-                if self.layouts_dir.is_some() && self.naming.is_none() {
+                if self.layouts_dir.is_some() && self.naming().is_none() {
                     let name = self.suggest_name();
-                    self.naming = Some(Naming::fork(name));
+                    self.open_popup(crate::app::Popup::Naming(Naming::fork(name)));
                 }
             }
         }
@@ -561,11 +561,11 @@ impl App {
             let name = crate::ui::pane_name(self.design, target);
             return self.say(format!("No room to split {name} here"));
         }
-        self.widget_pick = Some(WidgetPick { target: target.into(), side, items, sel: 0 });
+        self.open_popup(crate::app::Popup::Widgets(WidgetPick { target: target.into(), side, items, sel: 0 }));
     }
 
     pub fn widget_key(&mut self, k: KeyEvent) {
-        let Some(p) = self.widget_pick.as_mut() else { return };
+        let Some(p) = self.widget_pick_mut() else { return };
         let n = p.items.len();
         match k.code {
             KeyCode::Up => p.sel = p.sel.saturating_sub(1),
@@ -576,13 +576,13 @@ impl App {
                 let i = p.sel;
                 self.widget_chosen(i);
             }
-            KeyCode::Esc | KeyCode::Char('q') => self.widget_pick = None,
+            KeyCode::Esc | KeyCode::Char('q') => self.close_if_open(crate::app::Modal::Widgets),
             _ => {}
         }
     }
 
     pub fn widget_chosen(&mut self, i: usize) {
-        let Some(p) = self.widget_pick.take() else { return };
+        let Some(p) = self.take_widget_pick() else { return };
         let Some(w) = p.items.get(i).copied() else { return };
         match self.layout.beside(&p.target, w, p.side).filter(|t| self.fits(t)) {
             Some(tree) => {
@@ -599,7 +599,7 @@ impl App {
             items.push(("Close pane".into(), MenuAct::ClosePane));
         }
         self.focus = slot.clone();
-        self.menu = Some(Menu { at: at.unwrap_or((0, 0)), target: Target::Pane(slot), items, selected: 0 });
+        self.open_popup(crate::app::Popup::Menu(Menu { at: at.unwrap_or((0, 0)), target: Target::Pane(slot), items, selected: 0 }));
     }
 
     pub fn pane_menu_run(&mut self, slot: &str, act: MenuAct) {
@@ -700,7 +700,7 @@ pub fn widgets_rect(area: Rect, p: &WidgetPick) -> Rect {
 
 /// The list of Widgets a new Pane can show.
 pub fn draw_widgets(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
-    let Some(p) = app.widget_pick.as_ref() else { return };
+    let Some(p) = app.widget_pick() else { return };
     let r = widgets_rect(area, p);
     let inner = popup(buf, r, th, &format!("New pane {} {}", p.side.word_beside(), crate::ui::pane_name(app.design, &p.target)));
     let (items, sel) = (p.items.clone(), p.sel);

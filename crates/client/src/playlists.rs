@@ -62,10 +62,8 @@ pub struct Playlists {
     creating: Option<String>,
     /// "Delete playlist" was chosen once for this URI
     confirm: Option<(String, Instant)>,
-    pub details: Option<Details>,
     /// details shown before Spotify answered: what to put back if it refuses
     was: HashMap<String, (String, String)>,
-    pub adding: Option<Adding>,
     /// songs for the playlist being named in the naming popup ("New playlist" in the picker)
     with: Vec<String>,
     /// playlists (by name) this Client asked to add to: their answers toast here
@@ -103,7 +101,7 @@ impl App {
 
     pub fn ask_new_playlist(&mut self) {
         self.playlists.with.clear();
-        self.naming = Some(Naming::playlist());
+        self.open_popup(crate::app::Popup::Naming(Naming::playlist()));
     }
 
     /// Enter in the naming popup for a new playlist.
@@ -198,9 +196,9 @@ impl App {
 
     /// A track page arrived: the form waiting for this playlist's description gets it.
     pub fn details_arrived(&mut self, uri: &str) {
-        if self.playlists.details.as_ref().is_some_and(|d| d.uri == uri && !d.known) {
+        if self.details().is_some_and(|d| d.uri == uri && !d.known) {
             let description = self.description_of(uri);
-            let d = self.playlists.details.as_mut().unwrap();
+            let d = self.details_mut().unwrap();
             d.description = format!("{description}{}", d.description);
             d.known = true;
         }
@@ -222,16 +220,16 @@ impl App {
             self.send(Command::GetTracks { uri: uri.into() });
         }
         let description = self.description_of(uri);
-        self.playlists.details = Some(Details { uri: uri.into(), name, description, on_description: false, known, scroll: Default::default() });
+        self.open_popup(crate::app::Popup::Details(Details { uri: uri.into(), name, description, on_description: false, known, scroll: Default::default() }));
     }
 
     pub fn details_key(&mut self, k: KeyEvent) {
-        let Some(d) = self.playlists.details.as_mut() else { return };
+        let Some(d) = self.details_mut() else { return };
         d.scroll.reset();
         let field = if d.on_description { &mut d.description } else { &mut d.name };
         let max = if d.on_description { DESCRIPTION_MAX } else { NAME_MAX };
         match k.code {
-            KeyCode::Esc => self.playlists.details = None,
+            KeyCode::Esc => self.close_if_open(crate::app::Modal::Details),
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => d.on_description = !d.on_description,
             KeyCode::Enter => self.save_details(),
             KeyCode::Backspace if k.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -249,7 +247,7 @@ impl App {
 
     /// Pasted text goes into the field being typed (line breaks become spaces).
     pub fn details_paste(&mut self, s: &str) {
-        let Some(d) = self.playlists.details.as_mut() else { return };
+        let Some(d) = self.details_mut() else { return };
         d.scroll.reset();
         let (field, max) = if d.on_description { (&mut d.description, DESCRIPTION_MAX) } else { (&mut d.name, NAME_MAX) };
         let room = max.saturating_sub(field.chars().count());
@@ -258,7 +256,7 @@ impl App {
 
     /// Enter: show the new details at once and send them; nothing changed just closes.
     fn save_details(&mut self) {
-        let Some(d) = self.playlists.details.clone() else { return };
+        let Some(d) = self.details().cloned() else { return };
         let (name, description) = (d.name.trim().to_string(), d.description.trim().to_string());
         if name.is_empty() {
             return self.say("A playlist needs a name");
@@ -266,7 +264,7 @@ impl App {
         if !d.known {
             return self.say("Still fetching the description…");
         }
-        self.playlists.details = None;
+        self.close_if_open(crate::app::Modal::Details);
         let Some(old) = self.own_playlist(&d.uri).map(|i| i.name.clone()) else { return };
         let old = (old, self.description_of(&d.uri));
         if old == (name.clone(), description.clone()) {
@@ -329,7 +327,7 @@ impl App {
             items.push(("Copy link".into(), MenuAct::CopyLink));
         }
         let at = at.or_else(|| self.hit_rect(&crate::app::Hit::Side(row)).map(|r| (r.x + 2, r.y + 1))).unwrap_or((0, 0));
-        self.menu = Some(crate::app::Menu { at, target: Target::Library { uri: it.uri, name: it.name }, items, selected: 0 });
+        self.open_popup(crate::app::Popup::Menu(crate::app::Menu { at, target: Target::Library { uri: it.uri, name: it.name }, items, selected: 0 }));
     }
 }
 
@@ -339,12 +337,12 @@ impl App {
         if uris.iter().any(|u| !u.starts_with("spotify:track:") && !u.starts_with("spotify:episode:")) {
             return self.say("Only songs and episodes go into playlists");
         }
-        self.playlists.adding = Some(Adding { uris, label: label.into(), filter: String::new(), sel: 0 });
+        self.open_popup(crate::app::Popup::Adding(Adding { uris, label: label.into(), filter: String::new(), sel: 0 }));
     }
 
     /// The picker's rows: "New playlist" first, then your playlists whose names have the filter in them.
     pub fn adding_rows(&self) -> Vec<(Option<String>, String)> {
-        let Some(a) = &self.playlists.adding else { return vec![] };
+        let Some(a) = self.adding() else { return vec![] };
         let f = a.filter.trim().to_lowercase();
         let new = if f.is_empty() { "+ New playlist…".to_string() } else { format!("+ New playlist “{}”", a.filter.trim()) };
         let mut rows = vec![(None, new)];
@@ -354,9 +352,9 @@ impl App {
     }
 
     pub fn adding_key(&mut self, k: KeyEvent) {
-        let Some(a) = self.playlists.adding.as_mut() else { return };
+        let Some(a) = self.adding_mut() else { return };
         match k.code {
-            KeyCode::Esc => self.playlists.adding = None,
+            KeyCode::Esc => self.close_if_open(crate::app::Modal::Adding),
             KeyCode::Up => self.adding_move(-1),
             KeyCode::Down => self.adding_move(1),
             KeyCode::Enter => {
@@ -377,7 +375,7 @@ impl App {
 
     pub fn adding_move(&mut self, d: i32) {
         let n = self.adding_rows().len();
-        if let Some(a) = self.playlists.adding.as_mut() {
+        if let Some(a) = self.adding_mut() {
             a.sel = (a.sel as i64 + d as i64).clamp(0, n.saturating_sub(1) as i64) as usize;
         }
     }
@@ -385,11 +383,11 @@ impl App {
     /// Picker row `i`: a new playlist (named by the filter, else in the naming popup) or one of yours.
     pub fn add_pick(&mut self, i: usize) {
         let Some((uri, name)) = self.adding_rows().get(i).cloned() else { return };
-        let Some(a) = self.playlists.adding.take() else { return };
+        let Some(a) = self.take_adding() else { return };
         let Some(uri) = uri else {
             self.playlists.with = a.uris;
             if a.filter.trim().is_empty() {
-                self.naming = Some(Naming::playlist());
+                self.open_popup(crate::app::Popup::Naming(Naming::playlist()));
             } else {
                 self.create_playlist(&a.filter);
             }
@@ -605,7 +603,7 @@ pub fn adding_rect(area: Rect, rows: usize) -> Rect {
 
 /// The "Add to playlist" picker: the filter, "New playlist", your playlists.
 pub fn draw_adding(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
-    let Some(a) = app.playlists.adding.clone() else { return };
+    let Some(a) = app.adding().cloned() else { return };
     let rows = app.adding_rows();
     let title = format!("Add “{}” to", a.label);
     let inner = crate::ui::popup(buf, adding_rect(area, rows.len()), th, &title);
@@ -662,7 +660,7 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
 
 /// The "Edit details" form: Name, Description (wrapped), and how to save.
 pub fn draw_details(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
-    let Some(d) = &app.playlists.details else { return };
+    let Some(d) = app.details() else { return };
     let inner = crate::ui::popup(buf, details_rect(area), th, "Edit details");
     let (x, w) = (inner.x + 1, inner.width.saturating_sub(2));
     let label = |on: bool| th.s(if on { th.accent } else { th.dim });
@@ -706,14 +704,14 @@ mod tests {
     }
 
     fn menu_labels(app: &App) -> Vec<String> {
-        app.menu.as_ref().unwrap().items.iter().map(|(l, _)| l.clone()).collect()
+        app.menu().unwrap().items.iter().map(|(l, _)| l.clone()).collect()
     }
 
     #[test]
     fn a_new_playlist_is_named_created_and_opened() {
         let (mut app, mut rx) = app();
         app.run(Action::NewPlaylist);
-        assert!(app.naming.is_some());
+        assert!(app.naming().is_some());
         app.paste("   ");
         app.key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Enter));
         assert!(sent(&mut rx).is_empty(), "no empty names");
@@ -738,11 +736,11 @@ mod tests {
         // the sidebar menu: Delete only on your own
         app.open_side_menu(crate::sidebar::FIXED + 2, None);
         assert!(!menu_labels(&app).iter().any(|l| l.starts_with("Delete")), "{:?}", menu_labels(&app));
-        app.menu = None;
+        app.close_if_open(crate::app::Modal::Menu);
         app.open_side_menu(crate::sidebar::FIXED + 1, None);
         let labels = menu_labels(&app);
         assert!(labels.contains(&"New playlist…".to_string()) && labels.contains(&"Delete playlist…".to_string()), "{labels:?}");
-        let del = app.menu.as_ref().unwrap().items.iter().position(|(_, a)| *a == MenuAct::DeletePlaylist).unwrap();
+        let del = app.menu().unwrap().items.iter().position(|(_, a)| *a == MenuAct::DeletePlaylist).unwrap();
         app.menu_run(del);
         assert!(sent(&mut rx).is_empty(), "the first time only asks");
         assert!(app.toast.as_ref().unwrap().0.contains("again"));
@@ -775,29 +773,29 @@ mod tests {
         // others' playlists: nothing offered, nothing sent
         app.open_side_menu(crate::sidebar::FIXED + 2, None);
         assert!(!menu_labels(&app).contains(&"Edit details…".to_string()));
-        app.menu = None;
+        app.close_if_open(crate::app::Modal::Menu);
         app.edit_details("spotify:playlist:theirs");
-        assert!(app.playlists.details.is_none());
+        assert!(app.details().is_none());
         app.open("spotify:playlist:mine", "Mine", "", "playlist");
         // until the first page brings the description, Enter can't clear it by mistake
         app.run(Action::EditPlaylist);
-        assert!(!app.playlists.details.as_ref().unwrap().known);
+        assert!(!app.details().unwrap().known);
         key(&mut app, KeyCode::Enter);
-        assert!(sent(&mut rx).is_empty() && app.playlists.details.is_some());
+        assert!(sent(&mut rx).is_empty() && app.details().is_some());
         let header = ListHeader { subtitle: "Playlist · me".into(), description: "Old words".into(), ..Default::default() };
         app.track_page(TrackPage { uri: "spotify:playlist:mine".into(), offset: 0, total: 0, tracks: vec![], header: Some(header) });
-        assert_eq!(app.playlists.details.as_ref().unwrap().description, "Old words");
+        assert_eq!(app.details().unwrap().description, "Old words");
         // an empty name is refused; the form stays
-        app.playlists.details.as_mut().unwrap().name.clear();
+        app.details_mut().unwrap().name.clear();
         key(&mut app, KeyCode::Enter);
-        assert!(sent(&mut rx).is_empty() && app.playlists.details.is_some());
+        assert!(sent(&mut rx).is_empty() && app.details().is_some());
         typed(&mut app, "Road trip");
         key(&mut app, KeyCode::Tab);
-        app.playlists.details.as_mut().unwrap().description.clear();
+        app.details_mut().unwrap().description.clear();
         app.paste("Songs for\nthe car");
         key(&mut app, KeyCode::Enter);
         assert_eq!(sent(&mut rx), vec![Command::EditPlaylist { uri: "spotify:playlist:mine".into(), name: "Road trip".into(), description: "Songs for the car".into() }]);
-        assert!(app.playlists.details.is_none());
+        assert!(app.details().is_none());
         let shown = |app: &App| (app.own_playlist("spotify:playlist:mine").unwrap().name.clone(), app.current_page(), app.open.list("spotify:playlist:mine").unwrap().header.as_ref().unwrap().description.clone());
         let (name, page, desc) = shown(&app);
         assert!(name == "Road trip" && desc == "Songs for the car" && matches!(page, crate::app::Page::List { title, .. } if title == "Road trip"), "shown at once");
@@ -808,7 +806,7 @@ mod tests {
         // emptying the description clears it; nothing changed sends nothing
         app.edit_details("spotify:playlist:mine");
         key(&mut app, KeyCode::Down);
-        app.playlists.details.as_mut().unwrap().description.clear();
+        app.details_mut().unwrap().description.clear();
         key(&mut app, KeyCode::Enter);
         assert_eq!(sent(&mut rx), vec![Command::EditPlaylist { uri: "spotify:playlist:mine".into(), name: "Mine".into(), description: String::new() }]);
         app.playlist_edited("spotify:playlist:mine", "Mine", "", true);
@@ -832,7 +830,7 @@ mod tests {
         app.library.as_mut().unwrap().items.push(item("spotify:playlist:road", "Road trip", true));
         // every track menu offers it
         app.open_row_menu(0, None);
-        app.menu = None;
+        app.close_if_open(crate::app::Modal::Menu);
         app.ask_add(vec!["spotify:track:t".into()], "Song");
         let names = |app: &App| app.adding_rows().into_iter().map(|(_, n)| n).collect::<Vec<_>>();
         assert_eq!(names(&app), vec!["+ New playlist…", "Mine", "Road trip"], "only your own, New first");
@@ -842,7 +840,7 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         let add = |anyway| Command::AddToPlaylist { playlist: "spotify:playlist:road".into(), name: "Road trip".into(), uris: vec!["spotify:track:t".into()], anyway };
         assert_eq!(sent(&mut rx), vec![add(false)]);
-        assert!(app.playlists.adding.is_none());
+        assert!(app.adding().is_none());
         // it has it: asked, and the same pick again adds it anyway
         app.added_to_playlist("spotify:playlist:road", "Road trip", vec!["spotify:track:t".into()], AddOutcome::AlreadyThere);
         assert!(app.toast.as_ref().unwrap().0.contains("Already in Road trip"));
@@ -865,13 +863,13 @@ mod tests {
         // without a filter, it's named first
         app.ask_add(vec!["spotify:track:u".into()], "Other");
         key(&mut app, KeyCode::Enter);
-        assert!(app.naming.is_some());
+        assert!(app.naming().is_some());
         typed(&mut app, "Named");
         key(&mut app, KeyCode::Enter);
         assert_eq!(sent(&mut rx), vec![Command::CreatePlaylist { name: "Named".into(), uris: vec!["spotify:track:u".into()] }]);
         // albums don't go into playlists
         app.ask_add(vec!["spotify:album:a".into()], "Album");
-        assert!(app.playlists.adding.is_none());
+        assert!(app.adding().is_none());
     }
 
     #[test]
@@ -912,7 +910,7 @@ mod tests {
         app.track_page(TrackPage { uri: "spotify:playlist:theirs".into(), offset: 0, total: 1, tracks: vec![row("c", "x0")], header: None });
         app.open_row_menu(0, None);
         assert!(!menu_labels(&app).iter().any(|l| l.starts_with("Remove")));
-        app.menu = None;
+        app.close_if_open(crate::app::Modal::Menu);
         app.key(ratatui::crossterm::event::KeyEvent::from(KeyCode::Delete));
         assert!(!sent(&mut rx).iter().any(|c| matches!(c, Command::RemoveFromPlaylist { .. })));
     }
@@ -1006,14 +1004,14 @@ mod tests {
         for _ in 0..3 {
             wheel(&mut app, MouseEventKind::ScrollDown, KeyModifiers::NONE);
         }
-        assert_eq!(app.playlists.adding.as_ref().unwrap().sel, 3);
+        assert_eq!(app.adding().unwrap().sel, 3);
         wheel(&mut app, MouseEventKind::ScrollDown, KeyModifiers::SHIFT);
-        assert_eq!(app.playlists.adding.as_ref().unwrap().sel, 13, "Shift: a page");
+        assert_eq!(app.adding().unwrap().sel, 13, "Shift: a page");
         wheel(&mut app, MouseEventKind::ScrollUp, KeyModifiers::NONE);
-        assert_eq!(app.playlists.adding.as_ref().unwrap().sel, 12);
+        assert_eq!(app.adding().unwrap().sel, 12);
         for _ in 0..50 {
             wheel(&mut app, MouseEventKind::ScrollDown, KeyModifiers::NONE);
         }
-        assert_eq!(app.playlists.adding.as_ref().unwrap().sel, app.adding_rows().len() - 1, "stops at the end");
+        assert_eq!(app.adding().unwrap().sel, app.adding_rows().len() - 1, "stops at the end");
     }
 }

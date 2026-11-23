@@ -158,9 +158,9 @@ impl App {
                 self.saved.stash.remove(&uri);
             }
             // an open menu about this shows the right wording
-            let about = self.menu.as_ref().and_then(|m| self.target_track(&m.target)).map(|(u, ..)| u);
+            let about = self.menu().and_then(|m| self.target_track(&m.target)).map(|(u, ..)| u);
             if about.as_deref() == Some(uri.as_str())
-                && let Some(item) = self.menu.as_mut().and_then(|m| m.items.iter_mut().find(|(_, a)| *a == MenuAct::Save))
+                && let Some(item) = self.menu_mut().and_then(|m| m.items.iter_mut().find(|(_, a)| *a == MenuAct::Save))
             {
                 item.0 = label(&uri, saved).into();
             }
