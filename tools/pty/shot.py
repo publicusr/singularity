@@ -30,8 +30,11 @@ def first_font(*paths):
     raise SystemExit(f"none of these fonts is installed: {paths}")
 
 
-BRAILLE = first_font("/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf", "/System/Library/Fonts/Apple Braille.ttf")
+BRAILLE = first_font("/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf", "/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
+                      "/System/Library/Fonts/Apple Braille.ttf")
 FONT = first_font("/usr/share/fonts/nerd-fonts/DejaVuSansMono/DejaVuSansMNerdFontMono-Regular.ttf",
+                  "/usr/share/fonts/TTF/DejaVuSansMNerdFontMono-Regular.ttf", "/usr/share/fonts/TTF/JetBrainsMonoNerdFontMono-Regular.ttf",
+                  "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf",
                   "~/Library/Fonts/DejaVuSansMNerdFontMono-Regular.ttf", "~/Library/Fonts/HackNerdFontMono-Regular.ttf",
                   "/System/Library/Fonts/Menlo.ttc")
 # test sockets (short paths) go here: $XDG_RUNTIME_DIR on Linux, an owner-only dir in /tmp where there is none (macOS)
