@@ -229,7 +229,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         }
     }
     view.top = view.top.min(lines.len().saturating_sub(view.visible));
-    let focused = app.focus == "home";
+    let focused = app.is_focused(crate::layout::Widget::Home);
     let selected = all.get(view.sel).copied();
     let peak = |sec: Section| sec.rows(&s).first().map(|r| r.minutes.max(1)).unwrap_or(1);
     let clock_max = s.by_hour.iter().copied().max().unwrap_or(0).max(1);

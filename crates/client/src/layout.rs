@@ -1,6 +1,8 @@
-//! Split-tree layout engine (D18). A layout is a binary tree of splits whose leaves are Slots.
+//! Split-tree layout engine (D18). A layout is a binary tree of splits whose leaves are Panes (`pane`: each with its
+//! own identity, holding a Widget or nothing).
 //! Built-in designs are preset trees; user layouts are saved trees (#19); free tiling edits the tree (v1.x).
 
+pub use crate::pane::{Pane, PaneId, Widget};
 use ratatui::layout::Rect;
 use serde::{Deserialize, Serialize};
 
@@ -27,11 +29,38 @@ fn exact<S: serde::Serializer>(r: &f32, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_f64(format!("{r}").parse().unwrap_or(*r as f64))
 }
 
+/// The floor plan: splits, and Panes at the leaves. Saved as `{ pane = { id = 3, widget = "home" } }` (an empty Pane
+/// has no `widget`); older files' `{ slot = "home" }` loads as a Pane holding that Widget.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", from = "Stored")]
 pub enum Node {
     Split { axis: Axis, first: Size, a: Box<Node>, b: Box<Node> },
-    Slot(String),
+    Pane(Pane),
+}
+
+/// A tree as a file holds it, old leaves included.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Stored {
+    Split { axis: Axis, first: Size, a: Box<Stored>, b: Box<Stored> },
+    /// before D87: a leaf was its Widget's name
+    Slot(#[serde(deserialize_with = "crate::pane::lenient")] Option<Widget>),
+    Pane(Pane),
+}
+
+impl From<Stored> for Node {
+    fn from(s: Stored) -> Node {
+        fn go(s: Stored) -> Node {
+            match s {
+                Stored::Split { axis, first, a, b } => Node::Split { axis, first, a: Box::new(go(*a)), b: Box::new(go(*b)) },
+                Stored::Slot(widget) => Node::Pane(Pane { id: PaneId::UNSET, widget }),
+                Stored::Pane(p) => Node::Pane(p),
+            }
+        }
+        let mut n = go(s);
+        n.fix_ids();
+        n
+    }
 }
 
 /// Smallest Pane we will ever produce, per axis (borders + one line of content).
@@ -41,8 +70,8 @@ pub const MIN_H: u16 = 3;
 pub const WELL_MIN_H: u16 = 5;
 
 /// Panes that hold the hole: the gravity well (its own frame) and Event Horizon's plain black hole.
-pub fn is_hole(slot: &str) -> bool {
-    matches!(slot, "well" | "hole")
+pub fn is_hole(w: Option<Widget>) -> bool {
+    matches!(w, Some(Widget::Well | Widget::Hole))
 }
 
 /// The gravity well's widest shape, width over height in pixels (4:3, owner round 2; was 16:10); a little wider is let
@@ -83,26 +112,76 @@ impl Size {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Computed {
-    pub slots: Vec<(String, Rect)>,
+    pub panes: Vec<(Pane, Rect)>,
     pub dividers: Vec<Divider>,
 }
 
-impl Node {
-    pub(crate) fn split(axis: Axis, first: Size, a: Node, b: Node) -> Node {
-        Node::Split { axis, first, a: Box::new(a), b: Box::new(b) }
+impl Computed {
+    /// Where the Pane holding `w` is.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn rect_of(&self, w: Widget) -> Option<Rect> {
+        self.panes.iter().find(|(p, _)| p.holds(w)).map(|(_, r)| *r)
     }
-    pub(crate) fn slot(name: &str) -> Node {
-        Node::Slot(name.into())
+    /// Where Pane `id` is.
+    pub fn rect(&self, id: PaneId) -> Option<Rect> {
+        self.panes.iter().find(|(p, _)| p.id == id).map(|(_, r)| *r)
+    }
+}
+
+impl Node {
+    /// `a` beside `b`. Panes of `b` whose identity `a` already has (two trees built apart) get fresh ones.
+    pub(crate) fn split(axis: Axis, first: Size, a: Node, b: Node) -> Node {
+        let mut n = Node::Split { axis, first, a: Box::new(a), b: Box::new(b) };
+        n.fix_ids();
+        n
+    }
+    /// A Pane holding `w`, on its own (`split` makes the identities of the Panes it joins unique).
+    pub(crate) fn pane(w: Widget) -> Node {
+        Node::Pane(Pane { id: PaneId(1), widget: Some(w) })
+    }
+    /// A Pane holding nothing.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn empty() -> Node {
+        Node::Pane(Pane { id: PaneId(1), widget: None })
+    }
+
+    /// Every Pane an identity of its own: one without (`UNSET`) or with one already taken earlier in the tree gets
+    /// a fresh one; the rest keep theirs.
+    pub(crate) fn fix_ids(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        let mut next = self.next_id().0;
+        self.each_pane_mut(&mut |p| {
+            if p.id == PaneId::UNSET || !seen.insert(p.id) {
+                p.id = PaneId(next);
+                seen.insert(p.id);
+                next += 1;
+            }
+        });
+    }
+
+    fn each_pane_mut(&mut self, f: &mut impl FnMut(&mut Pane)) {
+        match self {
+            Node::Pane(p) => f(p),
+            Node::Split { a, b, .. } => {
+                a.each_pane_mut(f);
+                b.each_pane_mut(f);
+            }
+        }
+    }
+
+    /// An identity no Pane in this tree has.
+    pub fn next_id(&self) -> PaneId {
+        PaneId(self.panes().iter().map(|p| p.id.0).max().unwrap_or(0) + 1)
     }
 
     /// The Singularity design (default): library | home+queue | gravity well + lyrics + instruments.
     pub fn singularity() -> Node {
         use Axis::*;
         use Size::*;
-        let left = Node::split(Vertical, Ratio(0.68), Node::slot("library"), Node::slot("stream"));
-        let mid = Node::split(Vertical, Ratio(0.52), Node::slot("home"), Node::slot("queue"));
-        let instruments = Node::split(Horizontal, Ratio(0.5), Node::slot("loudness"), Node::slot("fft"));
-        let right = Node::split(Vertical, Ratio(0.44), Node::slot("well"), Node::split(Vertical, Ratio(0.57), Node::slot("lyrics"), instruments));
+        let left = Node::split(Vertical, Ratio(0.68), Node::pane(Widget::Library), Node::pane(Widget::Stream));
+        let mid = Node::split(Vertical, Ratio(0.52), Node::pane(Widget::Home), Node::pane(Widget::Queue));
+        let instruments = Node::split(Horizontal, Ratio(0.5), Node::pane(Widget::Loudness), Node::pane(Widget::Fft));
+        let right = Node::split(Vertical, Ratio(0.44), Node::pane(Widget::Well), Node::split(Vertical, Ratio(0.57), Node::pane(Widget::Lyrics), instruments));
         Node::split(Horizontal, Cells(30), left, Node::split(Horizontal, Ratio(0.58), mid, right))
     }
 
@@ -110,18 +189,18 @@ impl Node {
     pub fn event_horizon() -> Node {
         use Axis::*;
         use Size::*;
-        let mid = Node::split(Vertical, Ratio(0.62), Node::slot("home"), Node::slot("queue"));
-        let right = Node::split(Vertical, Ratio(0.64), Node::slot("hole"), Node::slot("lyrics"));
-        Node::split(Horizontal, Cells(28), Node::slot("library"), Node::split(Horizontal, Ratio(0.54), mid, right))
+        let mid = Node::split(Vertical, Ratio(0.62), Node::pane(Widget::Home), Node::pane(Widget::Queue));
+        let right = Node::split(Vertical, Ratio(0.64), Node::pane(Widget::Hole), Node::pane(Widget::Lyrics));
+        Node::split(Horizontal, Cells(28), Node::pane(Widget::Library), Node::split(Horizontal, Ratio(0.54), mid, right))
     }
 
     /// Classic+: the desktop app's shape. Library | Home over the queue | Now playing over lyrics.
     pub fn classic() -> Node {
         use Axis::*;
         use Size::*;
-        let mid = Node::split(Vertical, Ratio(0.66), Node::slot("home"), Node::slot("queue"));
-        let right = Node::split(Vertical, Ratio(0.55), Node::slot("nowplaying"), Node::slot("lyrics"));
-        Node::split(Horizontal, Cells(30), Node::slot("library"), Node::split(Horizontal, Last(40), mid, right))
+        let mid = Node::split(Vertical, Ratio(0.66), Node::pane(Widget::Home), Node::pane(Widget::Queue));
+        let right = Node::split(Vertical, Ratio(0.55), Node::pane(Widget::NowPlaying), Node::pane(Widget::Lyrics));
+        Node::split(Horizontal, Cells(30), Node::pane(Widget::Library), Node::split(Horizontal, Last(40), mid, right))
     }
 
     /// Cockpit: instruments on top (spectrum, stream; loudness, levels, listening), browsing below (Home | queue over
@@ -129,9 +208,9 @@ impl Node {
     pub fn cockpit() -> Node {
         use Axis::*;
         use Size::*;
-        let r1 = Node::split(Horizontal, Ratio(0.66), Node::slot("fft"), Node::slot("stream"));
-        let r2 = Node::split(Horizontal, Ratio(0.3), Node::slot("loudness"), Node::split(Horizontal, Ratio(0.36), Node::slot("levels"), Node::slot("listening")));
-        let r3 = Node::split(Horizontal, Ratio(0.52), Node::slot("home"), Node::split(Horizontal, Ratio(0.55), Node::split(Vertical, Ratio(0.5), Node::slot("queue"), Node::slot("lyrics")), Node::slot("library")));
+        let r1 = Node::split(Horizontal, Ratio(0.66), Node::pane(Widget::Fft), Node::pane(Widget::Stream));
+        let r2 = Node::split(Horizontal, Ratio(0.3), Node::pane(Widget::Loudness), Node::split(Horizontal, Ratio(0.36), Node::pane(Widget::Levels), Node::pane(Widget::Listening)));
+        let r3 = Node::split(Horizontal, Ratio(0.52), Node::pane(Widget::Home), Node::split(Horizontal, Ratio(0.55), Node::split(Vertical, Ratio(0.5), Node::pane(Widget::Queue), Node::pane(Widget::Lyrics)), Node::pane(Widget::Library)));
         Node::split(Vertical, Ratio(0.36), r1, Node::split(Vertical, Ratio(0.3), r2, r3))
     }
 
@@ -139,9 +218,9 @@ impl Node {
     pub fn terminal() -> Node {
         use Axis::*;
         use Size::*;
-        let mid = Node::split(Vertical, Ratio(0.58), Node::slot("home"), Node::split(Horizontal, Ratio(0.5), Node::slot("rain"), Node::slot("lyrics")));
-        let right = Node::split(Vertical, Ratio(0.35), Node::slot("scope"), Node::split(Vertical, Ratio(0.45), Node::slot("queue"), Node::slot("fft")));
-        Node::split(Horizontal, Cells(30), Node::slot("library"), Node::split(Horizontal, Last(36), mid, right))
+        let mid = Node::split(Vertical, Ratio(0.58), Node::pane(Widget::Home), Node::split(Horizontal, Ratio(0.5), Node::pane(Widget::Rain), Node::pane(Widget::Lyrics)));
+        let right = Node::split(Vertical, Ratio(0.35), Node::pane(Widget::Scope), Node::split(Vertical, Ratio(0.45), Node::pane(Widget::Queue), Node::pane(Widget::Fft)));
+        Node::split(Horizontal, Cells(30), Node::pane(Widget::Library), Node::split(Horizontal, Last(36), mid, right))
     }
 
     /// Karaoke: the Karaoke Widget takes the stage; the library over the queue at the side, Home, the whole song's
@@ -149,17 +228,17 @@ impl Node {
     pub fn karaoke() -> Node {
         use Axis::*;
         use Size::*;
-        let left = Node::split(Vertical, Ratio(0.6), Node::slot("library"), Node::slot("queue"));
-        let bottom = Node::split(Horizontal, Ratio(0.42), Node::slot("home"), Node::split(Horizontal, Ratio(0.55), Node::slot("lyrics"), Node::slot("glow")));
-        Node::split(Horizontal, Cells(30), left, Node::split(Vertical, Ratio(0.66), Node::slot("karaoke"), bottom))
+        let left = Node::split(Vertical, Ratio(0.6), Node::pane(Widget::Library), Node::pane(Widget::Queue));
+        let bottom = Node::split(Horizontal, Ratio(0.42), Node::pane(Widget::Home), Node::split(Horizontal, Ratio(0.55), Node::pane(Widget::Lyrics), Node::pane(Widget::Glow)));
+        Node::split(Horizontal, Cells(30), left, Node::split(Vertical, Ratio(0.66), Node::pane(Widget::Karaoke), bottom))
     }
 
-    /// The least room this subtree needs along `axis`: a Slot's minimum, summed along a split's own axis.
+    /// The least room this subtree needs along `axis`: a Pane's minimum, summed along a split's own axis.
     pub(crate) fn min_len(&self, axis: Axis) -> u16 {
         match self {
-            Node::Slot(s) => match axis {
+            Node::Pane(p) => match axis {
                 Axis::Horizontal => MIN_W,
-                Axis::Vertical if is_hole(s) => WELL_MIN_H,
+                Axis::Vertical if is_hole(p.widget) => WELL_MIN_H,
                 Axis::Vertical => MIN_H,
             },
             Node::Split { axis: own, a, b, .. } if *own == axis => a.min_len(axis) + b.min_len(axis),
@@ -167,26 +246,46 @@ impl Node {
         }
     }
 
-    /// The Slots' names, in order.
-    pub fn slot_names(&self) -> Vec<String> {
+    /// The Panes, in order.
+    pub fn panes(&self) -> Vec<Pane> {
         match self {
-            Node::Slot(s) => vec![s.clone()],
+            Node::Pane(p) => vec![*p],
             Node::Split { a, b, .. } => {
-                let mut v = a.slot_names();
-                v.extend(b.slot_names());
+                let mut v = a.panes();
+                v.extend(b.panes());
                 v
             }
         }
     }
 
-    /// Put Widget `to` in the Slot that shows `from`.
-    pub fn swap(&mut self, from: &str, to: &str) -> bool {
+    /// The Widgets on screen, in order (empty Panes add none).
+    pub fn widgets(&self) -> Vec<Widget> {
+        self.panes().into_iter().filter_map(|p| p.widget).collect()
+    }
+
+    /// The Pane holding `w`.
+    pub fn pane_of(&self, w: Widget) -> Option<PaneId> {
+        self.panes().into_iter().find(|p| p.holds(w)).map(|p| p.id)
+    }
+
+    /// Pane `id`, if it is in this tree.
+    pub fn get(&self, id: PaneId) -> Option<Pane> {
+        self.panes().into_iter().find(|p| p.id == id)
+    }
+
+    /// What Pane `id` holds (None: it's empty, or not in this tree).
+    pub fn widget_in(&self, id: PaneId) -> Option<Widget> {
+        self.get(id).and_then(|p| p.widget)
+    }
+
+    /// Put Widget `to` in the Pane that shows `from` (the Pane stays).
+    pub fn swap(&mut self, from: Widget, to: Widget) -> bool {
         match self {
-            Node::Slot(s) if s == from => {
-                *s = to.into();
+            Node::Pane(p) if p.holds(from) => {
+                p.widget = Some(to);
                 true
             }
-            Node::Slot(_) => false,
+            Node::Pane(_) => false,
             Node::Split { a, b, .. } => a.swap(from, to) || b.swap(from, to),
         }
     }
@@ -201,13 +300,13 @@ impl Node {
     /// its extra width to its neighbour across the nearest side-by-side split (in Singularity, the middle column).
     pub fn compute_shaped(&self, area: Rect, cell_aspect: f64) -> Computed {
         let out = self.compute(area);
-        let Some(well) = out.slots.iter().find(|(s, _)| s == "well").map(|(_, r)| *r) else { return out };
+        let Some((id, well)) = out.panes.iter().find(|(p, _)| p.holds(Widget::Well)).map(|(p, r)| (p.id, *r)) else { return out };
         // the inner picture, inside the frame
         let want = ((well.height.saturating_sub(2)) as f64 * cell_aspect * WELL_ASPECT).round() as u16 + 2;
         if well.width <= want + want / 20 {
             return out;
         }
-        let Some(path) = self.path_of("well") else { return out };
+        let Some(path) = self.path_of(id) else { return out };
         let split = (0..path.len()).rev().find(|&k| matches!(self.at_path(&path[..k]), Some(Node::Split { axis: Axis::Horizontal, .. })));
         let Some(k) = split else { return out };
         let extra = (well.width - want) as i32;
@@ -218,12 +317,12 @@ impl Node {
         shaped
     }
 
-    /// Where Slot `name` is: child indices from the root (0 = a, 1 = b).
-    pub(crate) fn path_of(&self, name: &str) -> Option<Vec<u8>> {
+    /// Where Pane `id` is: child indices from the root (0 = a, 1 = b).
+    pub(crate) fn path_of(&self, id: PaneId) -> Option<Vec<u8>> {
         match self {
-            Node::Slot(s) => (s == name).then(Vec::new),
+            Node::Pane(p) => (p.id == id).then(Vec::new),
             Node::Split { a, b, .. } => [a, b].into_iter().enumerate().find_map(|(i, c)| {
-                let mut p = c.path_of(name)?;
+                let mut p = c.path_of(id)?;
                 p.insert(0, i as u8);
                 Some(p)
             }),
@@ -242,7 +341,7 @@ impl Node {
     /// `nudge`: the split at this path moves its boundary by that many cells (minimums still hold).
     fn compute_into(&self, area: Rect, path: &mut Vec<u8>, nudge: Option<(&[u8], i32)>, out: &mut Computed) {
         match self {
-            Node::Slot(name) => out.slots.push((name.clone(), area)),
+            Node::Pane(p) => out.panes.push((*p, area)),
             Node::Split { axis, first, a, b } => {
                 let total = match axis {
                     Axis::Horizontal => area.width,
@@ -326,11 +425,11 @@ mod tests {
         for ((w, h), d) in [(80, 24), (120, 40), (300, 80), (40, 10)].into_iter().flat_map(|s| designs.iter().map(move |d| (s, d))) {
             let area = Rect::new(0, 0, w, h);
             let c = d.compute(area);
-            let cells: u32 = c.slots.iter().map(|(_, r)| r.width as u32 * r.height as u32).sum();
+            let cells: u32 = c.panes.iter().map(|(_, r)| r.width as u32 * r.height as u32).sum();
             assert_eq!(cells, w as u32 * h as u32, "{w}x{h}");
-            for (i, (_, a)) in c.slots.iter().enumerate() {
+            for (i, (_, a)) in c.panes.iter().enumerate() {
                 assert!(a.width > 0 && a.height > 0, "zero-size slot at {w}x{h}");
-                for (_, b) in c.slots.iter().skip(i + 1) {
+                for (_, b) in c.panes.iter().skip(i + 1) {
                     assert!(a.intersection(*b).is_empty(), "overlap at {w}x{h}");
                 }
             }
@@ -350,11 +449,11 @@ mod tests {
                         n.drag(&d, p);
                     }
                     let c = n.compute(area);
-                    let cells: u32 = c.slots.iter().map(|(_, r)| r.width as u32 * r.height as u32).sum();
+                    let cells: u32 = c.panes.iter().map(|(_, r)| r.width as u32 * r.height as u32).sum();
                     assert_eq!(cells, w as u32 * h as u32, "{w}x{h} after dragging to {pos}");
-                    for (i, (sa, a)) in c.slots.iter().enumerate() {
-                        assert!(a.width >= MIN_W.min(w / 4) && a.height >= MIN_H.min(h / 6), "{sa} shrank to {a:?} at {w}x{h} (pos {pos})");
-                        for (_, b) in c.slots.iter().skip(i + 1) {
+                    for (i, (sa, a)) in c.panes.iter().enumerate() {
+                        assert!(a.width >= MIN_W.min(w / 4) && a.height >= MIN_H.min(h / 6), "{sa:?} shrank to {a:?} at {w}x{h} (pos {pos})");
+                        for (_, b) in c.panes.iter().skip(i + 1) {
                             assert!(a.intersection(*b).is_empty(), "overlap at {w}x{h}");
                         }
                     }
@@ -367,9 +466,9 @@ mod tests {
     fn every_design_has_home_the_library_the_queue_and_lyrics() {
         // owner rule (D43): the rest is each Design's own
         for (name, d) in [("singularity", Node::singularity()), ("event-horizon", Node::event_horizon()), ("classic", Node::classic()), ("cockpit", Node::cockpit()), ("terminal", Node::terminal()), ("karaoke", Node::karaoke())] {
-            let slots = d.slot_names();
-            for must in ["home", "library", "queue", "lyrics"] {
-                assert!(slots.iter().any(|s| s == must), "{name} has no {must}: {slots:?}");
+            let slots = d.widgets();
+            for must in [Widget::Home, Widget::Library, Widget::Queue, Widget::Lyrics] {
+                assert!(slots.contains(&must), "{name} has no {must}: {slots:?}");
             }
         }
     }
@@ -380,14 +479,14 @@ mod tests {
         for (w, h, aspect) in [(256u16, 68u16, 2.0), (256, 68, 2.2), (400, 60, 2.0), (140, 40, 2.0)] {
             let area = Rect::new(0, 0, w, h);
             let (plain, shaped) = (n.compute(area), n.compute_shaped(area, aspect));
-            let get = |c: &Computed, s: &str| c.slots.iter().find(|(n, _)| n == s).unwrap().1;
-            let well = get(&shaped, "well");
+            let get = |c: &Computed, w: Widget| c.rect_of(w).unwrap();
+            let well = get(&shaped, Widget::Well);
             let shape = (well.width - 2) as f64 / ((well.height - 2) as f64 * aspect);
             assert!(shape <= WELL_ASPECT * 1.05 + 0.05, "{w}x{h}: {well:?} is {shape:.2}");
-            let freed = get(&plain, "well").width - well.width;
-            assert_eq!(get(&shaped, "home").width, get(&plain, "home").width + freed, "{w}x{h}: the middle takes it");
-            assert_eq!(get(&shaped, "library").width, get(&plain, "library").width);
-            let cells: u32 = shaped.slots.iter().map(|(_, r)| r.width as u32 * r.height as u32).sum();
+            let freed = get(&plain, Widget::Well).width - well.width;
+            assert_eq!(get(&shaped, Widget::Home).width, get(&plain, Widget::Home).width + freed, "{w}x{h}: the middle takes it");
+            assert_eq!(get(&shaped, Widget::Library).width, get(&plain, Widget::Library).width);
+            let cells: u32 = shaped.panes.iter().map(|(_, r)| r.width as u32 * r.height as u32).sum();
             assert_eq!(cells, w as u32 * h as u32);
         }
         // already well-shaped: nothing moves
@@ -418,7 +517,7 @@ mod tests {
         let root = c.dividers[0].clone();
         n.drag(&root, 2); // way too far left
         let c2 = n.compute(area);
-        let lib = c2.slots.iter().find(|(s, _)| s == "library").unwrap().1;
+        let lib = c2.rect_of(Widget::Library).unwrap();
         assert_eq!(lib.width, MIN_W);
         assert!(matches!(n, Node::Split { first: Size::Cells(_), .. }));
     }

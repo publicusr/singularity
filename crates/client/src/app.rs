@@ -4,7 +4,7 @@
 use crate::covers::Covers;
 use crate::gfx::Kitty;
 use crate::home::{CardId, CardRef, HomeView};
-use crate::layout::{Divider, Node};
+use crate::layout::{Divider, Node, PaneId, Widget};
 use crate::meters::Meters;
 use crate::visual::BlackHole;
 use crate::visual::well::Hole;
@@ -329,7 +329,8 @@ impl Action {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
-    Focus(String),
+    /// a Pane, where the layout puts it (a click focuses it)
+    Focus(PaneId),
     Divider(usize),
     Action(Action),
     PaletteItem(usize),
@@ -373,14 +374,14 @@ pub enum Hit {
     PickerItem(usize),
     /// a row of the "Add to playlist" picker (#53)
     AddPick(usize),
-    /// a Pane's ◂ ▸: the Slot's Widget, and which way to swap it
-    Swap(String, i32),
+    /// a Pane's ◂ ▸: the Pane, and which way to swap its Widget
+    Swap(PaneId, i32),
     /// the main Pane's ◂ ▸: back / forward through the pages seen
     History(i32),
     /// a Pane's title bar (D66): drag it to move the Pane
-    Title(String),
+    Title(PaneId),
     /// a Pane's ×
-    Close(String),
+    Close(PaneId),
     /// a row of the Widget picker for a new Pane
     WidgetItem(usize),
     /// a period tab on the Stats page
@@ -445,8 +446,8 @@ pub enum Target {
     Track { uri: String, name: String },
     /// a sidebar row: a playlist, album, artist or folder of the library
     Library { uri: String, name: String },
-    /// a Pane, by its Slot
-    Pane(String),
+    /// a Pane, by its identity
+    Pane(PaneId),
 }
 
 /// The naming popup: a name being typed, and what it's for.
@@ -536,7 +537,8 @@ pub struct App {
     pub playback: PlaybackState,
     pub catalogue: Option<CatalogueStatus>,
     pub home: Option<HomeFeed>,
-    pub focus: String,
+    /// the focused Pane (None: none of the layout's; `focused` says what it shows)
+    pub focus: Option<PaneId>,
     /// the popup open, if any (D83): one at a time
     pub(crate) popup: Option<Popup>,
     /// how far the wizard is scrolled (when taller than the screen)
@@ -661,7 +663,7 @@ pub struct App {
     /// free tiling (D66): a Pane being dragged by its title, the Pane in Move mode, and the area the Panes were last
     /// drawn in
     pub tile: Option<crate::arrange::TileDrag>,
-    pub move_mode: Option<String>,
+    pub move_mode: Option<PaneId>,
     pub body: Rect,
     /// the layout as it was when a divider was grabbed (a changed one counts as an edit on release)
     pub(crate) divider_from: Option<Node>,
@@ -706,7 +708,7 @@ impl App {
             playback: PlaybackState::default(),
             catalogue: None,
             home: None,
-            focus: "home".into(),
+            focus: Node::singularity().pane_of(Widget::Home),
             popup: None,
             wizard_scroll: Default::default(),
             toast: None,
@@ -904,7 +906,7 @@ impl App {
             || (self.modal() == Some(Modal::Wizard) && crate::setup::step(self) == crate::setup::Step::Key)
             || self.settings_typing()
             || self.open.view().is_some_and(|v| v.filtering)
-            || (self.search.is_open() && self.focus == "home")
+            || (self.search.is_open() && self.is_focused(Widget::Home))
     }
 
     // ── idle takeover ─────────────────────────────────────────────────
@@ -957,10 +959,10 @@ impl App {
         self.hits.push((r, h));
     }
 
-    /// The Pane (Slot name) under a point.
-    fn pane_at(&self, x: u16, y: u16) -> Option<String> {
+    /// The Pane under a point.
+    fn pane_at(&self, x: u16, y: u16) -> Option<PaneId> {
         self.hits.iter().rev().find_map(|(r, h)| match h {
-            Hit::Focus(s) if x >= r.x && x < r.right() && y >= r.y && y < r.bottom() => Some(s.clone()),
+            Hit::Focus(p) if x >= r.x && x < r.right() && y >= r.y && y < r.bottom() => Some(*p),
             _ => None,
         })
     }
@@ -1059,21 +1061,17 @@ impl App {
     /// whenever the layout changes.
     pub fn want_widget_data(&mut self) {
         self.want_spectrum();
-        if !self.stats.contains_key(&singularity_proto::StatsPeriod::Week) && self.on_screen("topweek") {
+        if !self.stats.contains_key(&singularity_proto::StatsPeriod::Week) && self.layout.has(Widget::TopWeek) {
             self.send(Command::GetStats { period: singularity_proto::StatsPeriod::Week });
         }
-    }
-
-    /// Whether some Pane of the layout shows `slot`.
-    fn on_screen(&self, slot: &str) -> bool {
-        self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| s == slot)
     }
 
     /// Spectrum frames flow only while a Widget that moves with the music is on screen (the Daemon's tap idles
     /// otherwise); called on connect and whenever the layout changes.
     pub fn want_spectrum(&mut self) {
-        const AUDIO: [&str; 9] = ["fft", "loudness", "levels", "rain", "scope", "well", "hole", "starfield", "glow"];
-        let on = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| AUDIO.contains(&s.as_str()));
+        use Widget::*;
+        const AUDIO: [Widget; 9] = [Fft, Loudness, Levels, Rain, Scope, Well, Hole, Starfield, Glow];
+        let on = self.layout.widgets().iter().any(|w| AUDIO.contains(w));
         if on != self.spectrum_on && matches!(self.link, Link::Connected { .. }) {
             self.spectrum_on = on;
             self.send(Command::Spectrum { on });
@@ -1146,7 +1144,7 @@ impl App {
             Action::Filter => match self.open.view_mut() {
                 Some(v) => {
                     v.filtering = true;
-                    self.focus = "home".into();
+                    self.focus_on(Widget::Home);
                 }
                 None => self.say("Open a playlist, album or Liked Songs to filter it"),
             },
@@ -1189,22 +1187,22 @@ impl App {
                 self.setup.dismissed = false;
             }
             Action::NextLook => {
-                let focus = self.focus.clone();
-                if !self.swap_widget(&focus, 1) {
+                if !self.focus.is_some_and(|p| self.swap_widget(p, 1)) {
                     self.hole.next_look();
                     self.say(format!("Disk look: {}", self.hole.look().name));
                 }
             }
             Action::FocusNext => {
-                let slots: Vec<String> = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.into_iter().map(|(s, _)| s).collect();
-                let i = slots.iter().position(|s| *s == self.focus).map(|i| (i + 1) % slots.len()).unwrap_or(0);
-                self.focus = slots[i].clone();
+                let panes = self.layout.panes();
+                let i = panes.iter().position(|p| Some(p.id) == self.focus).map(|i| (i + 1) % panes.len()).unwrap_or(0);
+                self.focus = Some(panes[i].id);
             }
             Action::SplitRight => self.split_focused(crate::tiling::Side::Right),
             Action::SplitDown => self.split_focused(crate::tiling::Side::Bottom),
             Action::ClosePane => {
-                let slot = self.focused_slot();
-                self.close_pane(&slot);
+                if let Some(p) = self.focused_pane() {
+                    self.close_pane(p);
+                }
             }
             Action::MovePane => self.start_move(),
             Action::ResetLayout => self.reset_design(),
@@ -1307,29 +1305,29 @@ impl App {
         if self.move_mode.is_some() {
             return self.move_key(k);
         }
-        if self.focus == "home" && self.search.is_open() && self.search_key(k) {
+        if self.is_focused(Widget::Home) && self.search.is_open() && self.search_key(k) {
             return;
         }
-        if self.focus == "home" && !shift && self.stats_view.is_some() && self.stats_key(k) {
+        if self.is_focused(Widget::Home) && !shift && self.stats_view.is_some() && self.stats_key(k) {
             return;
         }
-        if self.focus == "home" && self.settings_view.is_some() && (self.settings_typing() || !shift) && self.settings_key(k) {
+        if self.is_focused(Widget::Home) && self.settings_view.is_some() && (self.settings_typing() || !shift) && self.settings_key(k) {
             return;
         }
-        if self.focus == "home" && !shift && self.open.view().is_some() && self.tracks_key(k) {
+        if self.is_focused(Widget::Home) && !shift && self.open.view().is_some() && self.tracks_key(k) {
             return;
         }
-        if self.focus == "home" && !shift && self.open.view().is_none() && self.home_key(k) {
+        if self.is_focused(Widget::Home) && !shift && self.open.view().is_none() && self.home_key(k) {
             return;
         }
         // Esc on an artist or search page goes back, never quits
         if (self.artist.is_some() || self.search.is_open() || self.stats_view.is_some() || self.settings_view.is_some()) && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
             return self.run(Action::Back);
         }
-        if self.focus == "library" && !shift && self.side_key(k) {
+        if self.is_focused(Widget::Library) && !shift && self.side_key(k) {
             return;
         }
-        if self.focus == "queue" && !shift && self.queue_key(k) {
+        if self.is_focused(Widget::Queue) && !shift && self.queue_key(k) {
             return;
         }
         // the keymap (keys.toml); arrows a focused Pane didn't use fall through to here and seek
@@ -1348,7 +1346,7 @@ impl App {
         if let Some(period) = page {
             self.send(Command::GetStats { period });
         }
-        if page != Some(StatsPeriod::Week) && self.on_screen("topweek") {
+        if page != Some(StatsPeriod::Week) && self.layout.has(Widget::TopWeek) {
             self.send(Command::GetStats { period: StatsPeriod::Week });
         }
     }
@@ -1639,7 +1637,7 @@ impl App {
         self.stats_view = None;
         self.settings_view = None;
         self.search.set_open(false);
-        self.focus = "home".into();
+        self.focus_on(Widget::Home);
         match p {
             Page::Home => {}
             Page::Search => self.search.set_open(true),
@@ -1995,7 +1993,7 @@ impl App {
                 let row = self.sidebar.sel;
                 self.open_side(row);
                 if row > 0 && self.open.view().is_some() {
-                    self.focus = "home".into();
+                    self.focus_on(Widget::Home);
                 }
             }
             KeyCode::Menu | KeyCode::F(10) => {
@@ -2161,8 +2159,8 @@ impl App {
     pub(crate) fn menu_run(&mut self, i: usize) {
         let Some(m) = self.take_menu() else { return };
         let Some((_, act)) = m.items.get(i).cloned() else { return };
-        if let Target::Pane(slot) = &m.target {
-            return self.pane_menu_run(slot, act);
+        if let Target::Pane(id) = m.target {
+            return self.pane_menu_run(id, act);
         }
         let Some((uri, name, kind)) = self.target_track(&m.target) else {
             // (another Client took it out, or the list was fetched again without it)
@@ -2424,7 +2422,7 @@ impl App {
             && matches!(self.link, Link::Connected { .. })
         {
             // (a tree walk each frame, no layout maths)
-            let (lyrics, karaoke) = (self.layout.path_of("lyrics").is_some(), self.layout.path_of("karaoke").is_some());
+            let (lyrics, karaoke) = (self.layout.has(Widget::Lyrics), self.layout.has(Widget::Karaoke));
             if let Some(words) = self.lyrics.ask(&uri, lyrics, karaoke) {
                 self.send(Command::GetLyrics { uri, words });
             }
@@ -2590,7 +2588,7 @@ impl App {
         if self.settings_view.is_some() && matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) {
             // (as over the main Pane: it takes the focus, so the highlight shows)
             if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
-                self.pane_wheel(crate::wheel::Widget::Home, m.column, m.row, if m.kind == MouseEventKind::ScrollUp { -1 } else { 1 }, coarse);
+                self.pane_wheel(Widget::Home, m.column, m.row, if m.kind == MouseEventKind::ScrollUp { -1 } else { 1 }, coarse);
             }
             return;
         }
@@ -2600,23 +2598,23 @@ impl App {
                 let at = Some((m.column, m.row));
                 match self.hit_at(m.column, m.row) {
                     Some(Hit::Card(c)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         self.open_menu(c, at);
                     }
                     Some(Hit::Side(row)) => {
-                        self.focus = "library".into();
+                        self.focus_on(Widget::Library);
                         self.open_side_menu(row, at);
                     }
                     Some(Hit::Track(vi)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         self.open_row_menu(vi, at);
                     }
                     Some(Hit::QueueRow(i)) => {
-                        self.focus = "queue".into();
+                        self.focus_on(Widget::Queue);
                         self.open_queue_menu(i, at);
                     }
                     Some(Hit::StatsRow(i)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         if let Some(v) = self.stats_view.as_mut() {
                             v.sel = i;
                         }
@@ -2647,11 +2645,11 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 match self.hit_at(m.column, m.row) {
                     Some(Hit::Side(row)) => {
-                        self.focus = "library".into();
+                        self.focus_on(Widget::Library);
                         self.open_side(row);
                     }
                     Some(Hit::Track(vi)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         // a second click on the same row soon after plays it
                         // (by identity: a page arriving between the clicks doesn't make it another song, D81)
                         let id = self.open.id_at(vi);
@@ -2671,7 +2669,7 @@ impl App {
                     }
                     Some(Hit::SortCol(c)) => self.sort(c),
                     Some(Hit::Setting(i)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         if let Some(v) = self.settings_view.as_mut() {
                             v.sel = i;
                             v.typing = None;
@@ -2680,18 +2678,18 @@ impl App {
                         self.settings_activate(i);
                     }
                     Some(Hit::SettingsTab(t)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         self.settings_tab(t);
                     }
                     Some(Hit::KeyRow(i)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         if let Some(v) = self.settings_view.as_mut() {
                             v.key_sel = i;
                             v.on_tabs = false;
                         }
                     }
                     Some(Hit::SettingStep(i, d)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         if let Some(v) = self.settings_view.as_mut() {
                             v.sel = i;
                             v.typing = None;
@@ -2700,13 +2698,13 @@ impl App {
                         self.settings_step(i, d);
                     }
                     Some(Hit::StatsPeriod(p)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         self.stats_set_period(p);
                     }
                     Some(Hit::TopWeek(i)) => self.top_week_click(i),
                     Some(Hit::TopWeekToggle) => self.top_week_tracks = !self.top_week_tracks,
                     Some(Hit::StatsRow(i)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         if let Some(v) = self.stats_view.as_mut() {
                             v.sel = i;
                         }
@@ -2721,7 +2719,7 @@ impl App {
                         }
                     }
                     Some(Hit::QueueRow(i)) => {
-                        self.focus = "queue".into();
+                        self.focus_on(Widget::Queue);
                         self.queue_view.sel = i;
                         // a queued or context song can be dragged (a context song also up into your queue)
                         self.queue_drag = crate::queue::QueueDrag::start(self, i);
@@ -2729,12 +2727,11 @@ impl App {
                     // click a lyric line: jump there (where the music is when the delayed line shows)
                     Some(Hit::Lyric(ms)) => self.seek_to((ms as i64 + self.config.lyrics.delay()).max(0) as u64),
                     Some(Hit::Well) => {
-                        let hole = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| s == "hole");
-                        self.focus = if hole { "hole" } else { "well" }.into();
+                        self.focus_on(if self.layout.has(Widget::Hole) { Widget::Hole } else { Widget::Well });
                         self.run(Action::NextLook);
                     }
                     Some(Hit::Card(c)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         self.open_card(c);
                     }
                     Some(Hit::PlayView) => self.play_view(),
@@ -2780,14 +2777,14 @@ impl App {
                         }
                     }
                     Some(Hit::MenuItem(_) | Hit::PickerItem(_) | Hit::AddPick(_)) => {}
-                    Some(Hit::Swap(slot, d)) => {
-                        self.swap_widget(&slot, d);
+                    Some(Hit::Swap(p, d)) => {
+                        self.swap_widget(p, d);
                     }
                     Some(Hit::History(d)) if d < 0 => self.go_back(),
                     Some(Hit::History(_)) => self.go_forward(),
-                    Some(Hit::Focus(s)) => self.focus = s,
-                    Some(Hit::Title(s)) => self.tile_down(s, m.column, m.row),
-                    Some(Hit::Close(s)) => self.close_pane(&s),
+                    Some(Hit::Focus(p)) => self.focus = Some(p),
+                    Some(Hit::Title(p)) => self.tile_down(p, m.column, m.row),
+                    Some(Hit::Close(p)) => self.close_pane(p),
                     Some(Hit::WidgetItem(_)) => {}
                     Some(Hit::Divider(i)) => {
                         self.divider_from = Some(self.layout.clone());
@@ -2869,7 +2866,7 @@ impl App {
                     _ => {}
                 }
                 // a Pane, whatever's under the pointer in it: its Widget says what the wheel does there (`wheel.rs`)
-                if let Some(w) = self.pane_at(m.column, m.row).as_deref().and_then(crate::wheel::Widget::of) {
+                if let Some(w) = self.pane_at(m.column, m.row).and_then(|p| self.layout.widget_in(p)) {
                     self.pane_wheel(w, m.column, m.row, rows, coarse);
                 }
             }

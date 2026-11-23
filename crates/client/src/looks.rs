@@ -3,6 +3,7 @@
 
 use crate::app::{App, Hit};
 use crate::design::DESIGNS;
+use crate::layout::{PaneId, Widget};
 use crate::theme::{self, Theme};
 use crate::ui::{centered, popup, text, blank};
 use ratatui::buffer::Buffer;
@@ -60,7 +61,7 @@ impl App {
         self.design = d;
         self.layout = (DESIGNS[d].layout)();
         self.hole.look = DESIGNS[d].look;
-        self.focus = "home".into();
+        self.focus_on(Widget::Home);
         self.theme = theme::builtin(DESIGNS[d].themes[0]).expect("built in").into();
         self.want_widget_data();
     }
@@ -209,7 +210,7 @@ impl App {
         }
         self.layout = s.tree.clone();
         self.layout_name = Some(s.id.clone());
-        self.focus = "home".into();
+        self.focus_on(Widget::Home);
         self.want_widget_data();
     }
 
@@ -288,14 +289,12 @@ impl App {
         }
     }
 
-    /// Swap the Widget in the Slot showing `slot` for the next one in its group. False if that Slot can't swap.
-    pub fn swap_widget(&mut self, slot: &str, dir: i32) -> bool {
-        let shown = self.layout.slot_names();
-        let Some(to) = crate::layouts::next(slot, &shown, dir) else { return false };
-        self.layout.swap(slot, to);
-        if self.focus == slot {
-            self.focus = to.into();
-        }
+    /// Swap the Widget in Pane `id` for the next one in its group (the Pane, and the focus on it, stay). False if
+    /// that Pane's Widget can't swap.
+    pub fn swap_widget(&mut self, id: PaneId, dir: i32) -> bool {
+        let Some(from) = self.layout.widget_in(id) else { return false };
+        let Some(to) = crate::layouts::next(from, &self.layout.widgets(), dir) else { return false };
+        self.layout.swap(from, to);
         self.want_widget_data();
         true
     }
@@ -340,7 +339,7 @@ impl App {
             self.set_design(p.before.0);
         }
         self.set_theme(&p.before.1);
-        self.layout = p.before.2;
+        self.set_layout(p.before.2);
         self.layout_name = p.before.3;
         self.want_widget_data();
     }
@@ -443,18 +442,19 @@ mod tests {
             app.set_design(d);
             app.meters.push(singularity_proto::SpectrumFrame { bands: vec![120; 64], level: 150, vu: [150, 150], beat: false, out_level: 150, out_vu: [150, 150], out_bands: [120; 3] });
             let s = screen(&render(&mut app));
-            for (slot, _) in app.layout.compute(Rect::new(0, 1, 160, 43)).slots {
-                let usual = match slot.as_str() {
-                    "well" => "gravity well",
-                    "hole" => "black hole",
-                    "nowplaying" => "Now playing",
-                    "scope" => "osc",
-                    "fft" => "fft",
+            for (p, _) in app.layout.compute(Rect::new(0, 1, 160, 43)).panes {
+                let w = p.widget.unwrap();
+                let usual = match w {
+                    Widget::Well => "gravity well",
+                    Widget::Hole => "black hole",
+                    Widget::NowPlaying => "Now playing",
+                    Widget::Scope => "osc",
+                    Widget::Fft => "fft",
                     _ => "",
                 };
-                // most Panes are titled after their Slot
-                let title = match crate::design::title(d, &slot, usual) {
-                    "" => slot.as_str(),
+                // most Panes are titled after their Widget
+                let title = match crate::design::title(d, w, usual) {
+                    "" => w.name(),
                     t => t,
                 };
                 // (the main Pane is titled after what it shows: "home" here)
@@ -494,7 +494,7 @@ mod tests {
         app.run(crate::app::Action::PickDesign);
         key(&mut app, KeyCode::Down);
         assert_eq!(DESIGNS[app.design].id, "event-horizon", "previewed at once");
-        assert!(app.layout.compute(Rect::new(0, 0, 160, 43)).slots.iter().any(|(s, _)| s == "hole"));
+        assert!(app.layout.has(Widget::Hole));
         key(&mut app, KeyCode::Esc);
         assert_eq!((DESIGNS[app.design].id, app.theme.id.as_str()), ("singularity", "singularity"), "Esc puts it back");
         app.run(crate::app::Action::PickDesign);
@@ -533,18 +533,18 @@ mod tests {
     #[test]
     fn slots_swap_with_v_or_a_click_and_never_show_a_widget_twice() {
         let mut app = App::new(None);
-        app.focus = "fft".into();
+        app.focus_on(Widget::Fft);
         key(&mut app, KeyCode::Char('v'));
-        let slots = app.layout.slot_names();
-        assert!(slots.contains(&"levels".to_string()) && !slots.contains(&"fft".to_string()), "{slots:?}");
-        assert_eq!(app.focus, "levels", "focus follows the Widget");
+        let slots = app.layout.widgets();
+        assert!(slots.contains(&Widget::Levels) && !slots.contains(&Widget::Fft), "{slots:?}");
+        assert_eq!(app.focused(), Some(Widget::Levels), "focus follows the Widget");
         // click the ▸ of the loudness Pane: levels is taken, so scope
         render(&mut app);
-        let r = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Swap(s, 1) if s == "loudness").then_some(*r)).expect("a ◂ ▸ on loudness");
+        let r = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Swap(p, 1) if Some(*p) == app.layout.pane_of(Widget::Loudness)).then_some(*r)).expect("a ◂ ▸ on loudness");
         app.mouse(ratatui::crossterm::event::MouseEvent { kind: ratatui::crossterm::event::MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left), column: r.x, row: r.y, modifiers: KeyModifiers::NONE });
-        assert!(app.layout.slot_names().contains(&"scope".to_string()));
+        assert!(app.layout.has(Widget::Scope));
         // the well has no Widgets to swap: v changes its Disk look
-        app.focus = "well".into();
+        app.focus_on(Widget::Well);
         let look = app.hole.look;
         key(&mut app, KeyCode::Char('v'));
         assert_ne!(app.hole.look, look);
@@ -555,17 +555,19 @@ mod tests {
     #[test]
     fn the_swap_arrows_stay_put_whatever_the_widget() {
         let mut app = App::new(None);
-        let arrows = |app: &mut App, slot: &str| {
+        let arrows = |app: &mut App, pane: PaneId| {
             render(app);
-            app.hits.iter().filter(|(_, h)| matches!(h, Hit::Swap(s, _) if s == slot)).map(|(r, _)| r.x).collect::<Vec<_>>()
+            app.hits.iter().filter(|(_, h)| matches!(h, Hit::Swap(p, _) if *p == pane)).map(|(r, _)| r.x).collect::<Vec<_>>()
         };
-        let slot = app.layout.slot_names().into_iter().find(|s| s == "stream" || s == "listening").expect("a swappable side Pane");
-        let before = arrows(&mut app, &slot);
+        let slot = app.layout.widgets().into_iter().find(|s| matches!(s, Widget::Stream | Widget::Listening)).expect("a swappable side Pane");
+        let pane = app.layout.pane_of(slot).unwrap();
+        let before = arrows(&mut app, pane);
         assert_eq!(before.len(), 2);
         // put the queue there (no × on it) and the queue's own Pane gets this one's Widget
-        app.layout.swap("queue", "marquee");
-        app.layout.swap(&slot, "queue");
-        assert_eq!(arrows(&mut app, "queue"), before, "the ◂ ▸ moved");
+        app.layout.swap(Widget::Queue, Widget::Marquee);
+        app.layout.swap(slot, Widget::Queue);
+        assert_eq!(app.layout.pane_of(Widget::Queue), Some(pane));
+        assert_eq!(arrows(&mut app, pane), before, "the ◂ ▸ moved");
     }
 
     #[test]
@@ -574,7 +576,7 @@ mod tests {
         let area = Rect::new(0, 1, 160, 43);
         let d = app.layout.compute(area).dividers[0].clone();
         app.layout.drag(&d, 41);
-        app.swap_widget("fft", 1);
+        app.swap_widget(app.layout.pane_of(Widget::Fft).unwrap(), 1);
         let mine = app.layout.clone();
         app.run(crate::app::Action::SaveLayout);
         for c in "Wide library".chars() {

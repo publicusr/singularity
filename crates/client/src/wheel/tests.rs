@@ -43,8 +43,9 @@ fn cells(buf: &Buffer, r: Rect) -> Vec<Cell> {
     (r.y..r.bottom()).flat_map(|y| (r.x..r.right()).map(move |x| (x, y))).map(|(x, y)| buf[(x, y)].clone()).collect()
 }
 
-fn pane(app: &App, slot: &str) -> Rect {
-    app.hits.iter().rev().find_map(|(r, h)| matches!(h, Hit::Focus(s) if s == slot).then_some(*r)).unwrap_or_else(|| panic!("no Pane shows {slot}"))
+fn pane(app: &App, w: Widget) -> Rect {
+    let id = app.layout.pane_of(w);
+    app.hits.iter().rev().find_map(|(r, h)| matches!(h, Hit::Focus(p) if Some(*p) == id).then_some(*r)).unwrap_or_else(|| panic!("no Pane shows {w}"))
 }
 
 fn wheel(app: &mut App, kind: MouseEventKind, x: u16, y: u16, notches: usize) {
@@ -245,21 +246,21 @@ fn pages() -> Vec<Case> {
 }
 
 /// The layout for `slot`: it beside Home (or the library beside Home), each half the screen.
-fn layout(slot: &str) -> Node {
-    let other = if slot == "home" { "library" } else { "home" };
-    Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::slot(other), Node::slot(slot))
+fn layout(slot: Widget) -> Node {
+    let other = if slot == Widget::Home { Widget::Library } else { Widget::Home };
+    Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::pane(other), Node::pane(slot))
 }
 
-/// Wheel `case` in Pane `slot` at a few places; returns what went wrong.
-fn check(slot: &str, case: &Case) -> Vec<String> {
+/// Wheel `case` in the Pane showing `slot` at a few places; returns what went wrong.
+fn check(slot: Widget, case: &Case) -> Vec<String> {
     let mut bad = vec![];
-    let other = if slot == "home" { "library" } else { "home" };
+    let other = if slot == Widget::Home { Widget::Library } else { Widget::Home };
     // the top of the body, the middle, the bottom (the main Pane's pages have songs on top and Shelves below)
     for at in 0..3 {
         let mut app = app();
         app.layout = layout(slot);
         (case.set)(&mut app);
-        app.focus = other.into();
+        app.focus_on(other);
         render(&mut app);
         let r = pane(&app, slot);
         let inner = Rect::new(r.x + 1, r.y + 1, r.width.saturating_sub(2), r.height.saturating_sub(2));
@@ -272,8 +273,8 @@ fn check(slot: &str, case: &Case) -> Vec<String> {
             render(&mut app);
             continue;
         }
-        if app.focus != slot {
-            bad.push(format!("{what}: the wheel left the focus on {}", app.focus));
+        if !app.is_focused(slot) {
+            bad.push(format!("{what}: the wheel left the focus on {:?}", app.focused()));
         }
         // every notch moves it, all the way (a highlight that leaves the window, or a window that stops short, doesn't)
         let mut last = render(&mut app);
@@ -302,7 +303,7 @@ fn the_wheel_scrolls_every_widget_and_page_that_holds_more_than_fits() {
     let mut bad = vec![];
     for &w in Widget::ALL {
         for case in cases(w) {
-            bad.extend(check(w.slot(), &case));
+            bad.extend(check(w, &case));
         }
     }
     let mut seen = [false; PAGES];
@@ -310,26 +311,16 @@ fn the_wheel_scrolls_every_widget_and_page_that_holds_more_than_fits() {
         let mut app = app();
         (case.set)(&mut app);
         seen[page_index(&app.current_page())] = true;
-        bad.extend(check("home", &case));
+        bad.extend(check(Widget::Home, &case));
     }
     assert!(seen.iter().all(|s| *s), "every page has a case: {seen:?}");
     assert!(bad.is_empty(), "{}", bad.join("\n\n"));
 }
 
-/// Every Slot any Design or the Widget lists can show is a `Widget`, so the wheel knows it.
+/// Every Widget's name in a saved Design reads back as that Widget.
 #[test]
-fn every_slot_is_a_widget() {
-    let mut names: Vec<String> = vec![];
-    for d in 0..crate::design::DESIGNS.len() {
-        let mut app = app();
-        app.set_design(d);
-        names.extend(app.layout.slot_names());
-    }
-    for slot in names.iter().map(String::as_str).chain(crate::layouts::options("lyrics").iter().copied()).chain(crate::layouts::options("fft").iter().copied()) {
-        let w = Widget::of(slot).unwrap_or_else(|| panic!("{slot} isn't a wheel::Widget"));
-        assert_eq!(w.slot(), slot);
-    }
+fn every_widget_name_reads_back() {
     for &w in Widget::ALL {
-        assert_eq!(Widget::of(w.slot()), Some(w));
+        assert_eq!(Widget::of(w.name()), Some(w));
     }
 }

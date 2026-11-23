@@ -67,7 +67,7 @@ pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 
 /// Whether Now playing lists what's next: there is something queued and no queue Pane already shows it.
 fn np_queue(app: &App) -> bool {
-    !app.playback.queue.is_empty() && app.layout.path_of("queue").is_none()
+    !app.playback.queue.is_empty() && !app.layout.has(crate::layout::Widget::Queue)
 }
 
 /// Now playing's words in `r`: the title (in the pixel font when there's room for it big), artists, where it plays
@@ -955,14 +955,14 @@ mod tests {
             nowplaying(&mut buf, Rect::new(0, 0, w, h), app, &th);
             (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
         };
-        app.layout = crate::layout::Node::split(crate::layout::Axis::Horizontal, crate::layout::Size::Ratio(0.5), crate::layout::Node::slot("nowplaying"), crate::layout::Node::slot("lyrics"));
+        app.layout = crate::layout::Node::split(crate::layout::Axis::Horizontal, crate::layout::Size::Ratio(0.5), crate::layout::Node::pane(crate::layout::Widget::NowPlaying), crate::layout::Node::pane(crate::layout::Widget::Lyrics));
         for (w, h) in [(40, 40), (140, 8), (110, 20)] {
             let s = screen(&mut app, w, h);
             assert!(s.contains("Next One"), "no queue Pane: the queue shows ({w}×{h}): {s}");
             assert!(!s.contains('▁') && !s.contains('█'), "no spectrum ({w}×{h}): {s}");
         }
         // a queue Pane opens: the list goes, at once
-        app.layout = crate::layout::Node::split(crate::layout::Axis::Horizontal, crate::layout::Size::Ratio(0.5), crate::layout::Node::slot("nowplaying"), crate::layout::Node::slot("queue"));
+        app.layout = crate::layout::Node::split(crate::layout::Axis::Horizontal, crate::layout::Size::Ratio(0.5), crate::layout::Node::pane(crate::layout::Widget::NowPlaying), crate::layout::Node::pane(crate::layout::Widget::Queue));
         assert!(!screen(&mut app, 40, 40).contains("Next"));
     }
 

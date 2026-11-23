@@ -75,7 +75,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     if n > 0 {
         text(buf, x, y, w, "Popular", th.s(th.accent).add_modifier(Modifier::BOLD));
         y += 1;
-        let focused = app.focus == "home";
+        let focused = app.is_focused(crate::layout::Widget::Home);
         let playing = app.playback.item.as_ref().map(|i| i.uri.clone());
         // the rows that fit, a window that follows the highlight (wheel, clicks)
         let skip = crate::scroll::window(v.top_sel, n, page.top_tracks.len());

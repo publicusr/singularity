@@ -17,7 +17,7 @@ pub mod motion;
 
 use crate::app::{Action, App, Hit, Menu, MenuAct, NameFor, Naming, Target};
 use crate::design::DESIGNS;
-use crate::layout::{Divider, MIN_H, MIN_W, Node, WELL_MIN_H, is_hole};
+use crate::layout::{Divider, MIN_H, MIN_W, Node, Pane, PaneId, WELL_MIN_H, Widget, is_hole};
 use crate::theme::{Rgb, Theme};
 use crate::tiling::{CORE, Side, Zone, edge_ratio, neighbour, zone_near};
 use crate::ui::{blank, centered, popup, text};
@@ -45,7 +45,8 @@ const TRAIL: usize = 8;
 /// A Pane held by its title: where the press was, where the pointer is, and (once it has moved far enough to be a
 /// drag rather than a click) the drop zone under the pointer, the zone shown and the layout dropping there would make.
 pub struct TileDrag {
-    pub slot: String,
+    /// the Pane held (as it was when picked up: its identity stays, wherever it goes)
+    pub pane: Pane,
     from: (u16, u16),
     pub at: (u16, u16),
     pub live: bool,
@@ -82,14 +83,14 @@ pub struct Snapshot {
     /// (name, design, edited) from the Design's file
     file: Option<(String, String, bool)>,
     forking: bool,
-    focus: String,
+    focus: Option<PaneId>,
 }
 
 /// Where a held Pane floats: its own size, at most `LIFT_MAX` of the layout either way (never under its minimum),
 /// with the spot it was grabbed by under the pointer, and inside the layout with room for its shadow. `lift` (0 → 1)
 /// is how far it has grown or shrunk from its size in the layout to that; it follows the pointer from the start.
 pub fn float_target(t: &TileDrag, body: Rect, lift: f32) -> Rect {
-    let min_h = if is_hole(&t.slot) { WELL_MIN_H } else { MIN_H };
+    let min_h = if is_hole(t.pane.widget) { WELL_MIN_H } else { MIN_H };
     let cap = |len: u16, total: u16, min: u16| len.min((total as f32 * LIFT_MAX) as u16).max(min).min(total.saturating_sub(1).max(1));
     let mix = |a: u16, b: u16| (a as f32 + (b as f32 - a as f32) * lift.clamp(0.0, 1.0)).round() as u16;
     let fit = |len: u16, total: u16| len.min(total.saturating_sub(1).max(1));
@@ -130,9 +131,9 @@ pub fn with_shadow(r: Rect, area: Rect) -> Rect {
 
 /// The Widget list for a new Pane: what to split, which side, and the Widgets that fit.
 pub struct WidgetPick {
-    pub target: String,
+    pub target: PaneId,
     pub side: Side,
-    pub items: Vec<&'static str>,
+    pub items: Vec<Widget>,
     pub sel: usize,
 }
 
@@ -151,9 +152,31 @@ impl App {
         tree.valid(self.pane_area(), self.cell_aspect())
     }
 
-    /// The Pane to act on: the focused one, or Home if the focus is on something this layout hasn't got.
-    pub fn focused_slot(&self) -> String {
-        if self.layout.has(&self.focus) { self.focus.clone() } else { "home".into() }
+    /// The Pane to act on: the focused one, or Home's if the focus is on none of this layout's.
+    pub fn focused_pane(&self) -> Option<PaneId> {
+        self.focus.filter(|p| self.layout.contains(*p)).or_else(|| self.layout.pane_of(Widget::Home))
+    }
+
+    /// What the focused Pane shows (None: nothing is focused, or its Pane is empty).
+    pub fn focused(&self) -> Option<Widget> {
+        self.focus.and_then(|p| self.layout.widget_in(p))
+    }
+
+    /// Whether the focused Pane shows `w`.
+    pub fn is_focused(&self, w: Widget) -> bool {
+        self.focused() == Some(w)
+    }
+
+    /// Focus the Pane showing `w` (no Pane, if none does).
+    pub fn focus_on(&mut self, w: Widget) {
+        self.focus = self.layout.pane_of(w);
+    }
+
+    /// Show `tree` with the focus on the Widget it was on (the Panes of another tree are other Panes).
+    pub fn set_layout(&mut self, tree: Node) {
+        let was = self.focused();
+        self.layout = tree;
+        self.focus = was.and_then(|w| self.layout.pane_of(w));
     }
 
     /// The layout to draw: the one a drop would make while a Pane is held over a zone, else the real one.
@@ -165,18 +188,19 @@ impl App {
     }
 
     /// The Pane being moved this frame (held by the mouse, or in Move mode): drawn highlighted.
-    pub fn moving(&self) -> Option<&str> {
-        self.tile.as_ref().filter(|t| t.live).map(|t| t.slot.as_str()).or(self.move_mode.as_deref())
+    pub fn moving(&self) -> Option<PaneId> {
+        self.tile.as_ref().filter(|t| t.live).map(|t| t.pane.id).or(self.move_mode)
     }
 
     // ── the mouse ─────────────────────────────────────────────────────
 
     /// A press on a Pane's title bar: a click unless the pointer moves a few cells before the release.
-    pub fn tile_down(&mut self, slot: String, x: u16, y: u16) {
-        self.focus = slot.clone();
-        let orig = self.layout.compute_shaped(self.pane_area(), self.cell_aspect()).slots.into_iter().find(|(s, _)| *s == slot).map(|(_, r)| r).unwrap_or_default();
+    pub fn tile_down(&mut self, id: PaneId, x: u16, y: u16) {
+        self.focus = Some(id);
+        let orig = self.layout.compute_shaped(self.pane_area(), self.cell_aspect()).rect(id).unwrap_or_default();
+        let pane = self.layout.get(id).unwrap_or(Pane { id, widget: None });
         let at = self.input_time();
-        self.tile = Some(TileDrag { slot, from: (x, y), at: (x, y), live: false, cand: None, since: at, aim: None, zone: None, preview: None, orig, trail: vec![(at, x, y)] });
+        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, cand: None, since: at, aim: None, zone: None, preview: None, orig, trail: vec![(at, x, y)] });
     }
 
     /// When the input being handled arrived (the input thread stamps it), else now.
@@ -196,19 +220,19 @@ impl App {
 
     /// The layout what a dropped zone would make, if it can be dropped there: it changes the arrangement, fits the
     /// window and, for a split, leaves both halves comfortable.
-    fn drop_tree(&self, slot: &str, zone: &Zone) -> Option<Node> {
+    fn drop_tree(&self, id: PaneId, zone: &Zone) -> Option<Node> {
         let (body, aspect) = (self.pane_area(), self.cell_aspect());
-        self.layout.moved(slot, zone).filter(|c| *c != self.layout && self.fits(c) && crate::tiling::comfortable(c, slot, zone, body, aspect))
+        self.layout.moved(id, zone).filter(|c| *c != self.layout && self.fits(c) && crate::tiling::comfortable(c, id, zone, body, aspect))
     }
 
     /// The held Pane let go (dropped or put back): it flies from where it floats into its place in the layout.
     fn land(&mut self, t: &TileDrag) {
         let body = self.pane_area();
         let from = motion::clamp(float_target(t, body, self.motion.lifted_by()), body);
-        let to = self.layout.compute_shaped(body, self.cell_aspect()).slots.into_iter().find(|(s, _)| *s == t.slot).map(|(_, r)| r);
+        let to = self.layout.compute_shaped(body, self.cell_aspect()).rect(t.pane.id);
         match to {
-            Some(to) => self.motion.land(&t.slot, from, to),
-            None => self.motion.land(&t.slot, from, from),
+            Some(to) => self.motion.land(t.pane.id, from, to),
+            None => self.motion.land(t.pane.id, from, from),
         }
     }
 
@@ -246,8 +270,8 @@ impl App {
     /// pointer can't change because of what the preview did), and sticky at its borders.
     fn zone_under(&self, t: &TileDrag, x: u16, y: u16) -> Option<Zone> {
         let (body, aspect) = (self.pane_area(), self.cell_aspect());
-        let slots = self.layout.compute_shaped(body, aspect).slots;
-        zone_near(&slots, body, &t.slot, x, y, t.cand.as_ref())
+        let panes = self.layout.compute_shaped(body, aspect).panes;
+        zone_near(&panes, body, t.pane.id, x, y, t.cand.as_ref())
     }
 
     fn tile_move(&mut self, x: u16, y: u16) {
@@ -286,7 +310,7 @@ impl App {
             return;
         }
         let cand = t.cand.clone();
-        let preview = cand.as_ref().and_then(|z| self.drop_tree(&t.slot, z));
+        let preview = cand.as_ref().and_then(|z| self.drop_tree(t.pane.id, z));
         if let Some(t) = self.tile.as_mut() {
             // a zone that can't take the drop isn't offered: nothing highlighted, the original layout shown
             t.zone = cand.clone().filter(|_| preview.is_some());
@@ -301,11 +325,11 @@ impl App {
     /// move; blanking it until a dwell would blink); if none was, it shows after its dwell as usual.
     pub fn tile_resized(&mut self) {
         let Some(t) = self.tile.as_ref().filter(|t| t.live) else { return };
-        let (slot, (x, y), was) = (t.slot.clone(), t.at, t.zone.is_some());
+        let (id, (x, y), was) = (t.pane.id, t.at, t.zone.is_some());
         let since = t.trail.last().map_or(t.since, |p| p.0);
         // (not sticky: the border it would stick to is the old window's)
-        let cand = zone_near(&self.layout.compute_shaped(self.pane_area(), self.cell_aspect()).slots, self.pane_area(), &slot, x, y, None);
-        let preview = cand.as_ref().filter(|_| was).and_then(|z| self.drop_tree(&slot, z));
+        let cand = zone_near(&self.layout.compute_shaped(self.pane_area(), self.cell_aspect()).panes, self.pane_area(), id, x, y, None);
+        let preview = cand.as_ref().filter(|_| was).and_then(|z| self.drop_tree(id, z));
         if let Some(t) = self.tile.as_mut() {
             t.zone = cand.clone().filter(|_| preview.is_some());
             t.aim = cand.clone().filter(|_| was);
@@ -321,16 +345,16 @@ impl App {
         let Some(t) = self.tile.take() else { return };
         if !t.live {
             // a click on the title: the focus moved at the press; the hole's Pane also changes its look
-            if is_hole(&t.slot) {
+            if is_hole(t.pane.widget) {
                 self.run(Action::NextLook);
             }
             return;
         }
         // checked again: the terminal can have changed size since it was shown
         if let Some(tree) = t.preview.clone().filter(|p| self.fits(p)) {
-            self.focus = t.slot.clone();
+            self.focus = Some(t.pane.id);
             self.commit_layout(tree);
-        } else if t.preview.is_none() && self.zone_under(&t, x, y).and_then(|z| self.layout.moved_any(&t.slot, &z)).is_some_and(|c| c.same_arrangement(&self.layout)) {
+        } else if t.preview.is_none() && self.zone_under(&t, x, y).and_then(|z| self.layout.moved_any(t.pane.id, &z)).is_some_and(|c| c.same_arrangement(&self.layout)) {
             // a drop that would only change sizes is no move (owner, 2026-11-01); say how sizes are changed instead
             // (owner, 2026-11-02: "it snaps right back and doesn't let me")
             self.say("That would only change sizes · drag the border between two Panes to resize them");
@@ -411,7 +435,7 @@ impl App {
     fn snapshot(&self) -> Snapshot {
         let file = self.layout_name.as_ref().and_then(|id| self.saved_layouts.iter().find(|s| s.id == *id)).map(|s| (s.name.clone(), s.design.clone(), s.edited));
         let forking = self.naming().is_some_and(|n| n.purpose == NameFor::Fork);
-        Snapshot { tree: self.layout.clone(), name: self.layout_name.clone(), file, forking, focus: self.focus.clone() }
+        Snapshot { tree: self.layout.clone(), name: self.layout_name.clone(), file, forking, focus: self.focus }
     }
 
     /// An edit replaced `was`: undo can go back to it, and the bar offers that for a few seconds.
@@ -462,8 +486,8 @@ impl App {
             self.close_if_open(crate::app::Modal::Naming);
         }
         self.layout = s.tree;
-        self.focus = if self.layout.has(&s.focus) { s.focus } else { "home".into() };
-        if self.move_mode.as_ref().is_some_and(|m| !self.layout.has(m)) {
+        self.focus = s.focus.filter(|p| self.layout.contains(*p)).or_else(|| self.layout.pane_of(Widget::Home));
+        if self.move_mode.is_some_and(|m| !self.layout.contains(m)) {
             self.move_mode = None;
         }
         self.want_widget_data();
@@ -572,43 +596,47 @@ impl App {
 
     // ── close and split ───────────────────────────────────────────────
 
-    pub fn close_pane(&mut self, slot: &str) {
-        if !self.layout.has(slot) {
-            return;
-        }
-        let name = crate::ui::pane_name(self.design, slot);
-        if CORE.contains(&slot) {
+    pub fn close_pane(&mut self, id: PaneId) {
+        let Some(pane) = self.layout.get(id) else { return };
+        let name = self.name_of(pane);
+        if pane.widget.is_some_and(|w| CORE.contains(&w)) {
             return self.say(format!("{name} can be moved, but never closed"));
         }
-        let Some(tree) = self.layout.closed(slot).filter(|t| self.fits(t)) else {
+        let Some(tree) = self.layout.closed(id).filter(|t| self.fits(t)) else {
             return self.say(format!("Closing {name} would squash the others"));
         };
-        if self.focus == slot {
-            self.focus = "home".into();
+        if self.focus == Some(id) {
+            self.focus = tree.pane_of(Widget::Home);
         }
-        if self.move_mode.as_deref() == Some(slot) {
+        if self.move_mode == Some(id) {
             self.move_mode = None;
         }
         self.commit_layout(tree);
         self.say(format!("Closed {name}"));
     }
 
+    /// What Pane `p` is called on screen (its Widget's title; an empty Pane is "an empty pane").
+    pub fn name_of(&self, p: Pane) -> String {
+        p.widget.map_or_else(|| "an empty pane".into(), |w| crate::ui::pane_name(self.design, w))
+    }
+
     pub fn split_focused(&mut self, side: Side) {
-        let target = self.focused_slot();
-        self.split_pane(&target, side);
+        if let Some(target) = self.focused_pane() {
+            self.split_pane(target, side);
+        }
     }
 
     /// Open the Widget list for a new Pane beside `target`: Widgets not on screen, and only those that fit there.
-    pub fn split_pane(&mut self, target: &str, side: Side) {
-        let holeless = !self.layout.has("well") && !self.layout.has("hole");
-        let mut items: Vec<&'static str> = crate::layouts::all_widgets().chain(if holeless { ["well", "hole"].into_iter().collect::<Vec<_>>() } else { vec![] }).collect();
+    pub fn split_pane(&mut self, target: PaneId, side: Side) {
+        let holeless = !self.layout.has(Widget::Well) && !self.layout.has(Widget::Hole);
+        let mut items: Vec<Widget> = crate::layouts::all_widgets().chain(if holeless { vec![Widget::Well, Widget::Hole] } else { vec![] }).collect();
         items.dedup();
-        items.retain(|w| !self.layout.has(w) && self.layout.beside(target, w, side).is_some_and(|t| self.fits(&t)));
+        items.retain(|w| !self.layout.has(*w) && self.layout.beside(target, *w, side).is_some_and(|t| self.fits(&t)));
         if items.is_empty() {
-            let name = crate::ui::pane_name(self.design, target);
+            let name = self.layout.get(target).map(|p| self.name_of(p)).unwrap_or_default();
             return self.say(format!("No room to split {name} here"));
         }
-        self.open_popup(crate::app::Popup::Widgets(WidgetPick { target: target.into(), side, items, sel: 0 }));
+        self.open_popup(crate::app::Popup::Widgets(WidgetPick { target, side, items, sel: 0 }));
     }
 
     pub fn widget_key(&mut self, k: KeyEvent) {
@@ -631,31 +659,31 @@ impl App {
     pub fn widget_chosen(&mut self, i: usize) {
         let Some(p) = self.take_widget_pick() else { return };
         let Some(w) = p.items.get(i).copied() else { return };
-        match self.layout.beside(&p.target, w, p.side).filter(|t| self.fits(t)) {
+        match self.layout.beside(p.target, w, p.side).filter(|t| self.fits(t)) {
             Some(tree) => {
-                self.focus = w.into();
+                self.focus = tree.pane_of(w);
                 self.commit_layout(tree);
             }
             None => self.say("No room for it there"),
         }
     }
 
-    pub fn open_pane_menu(&mut self, slot: String, at: Option<(u16, u16)>) {
+    pub fn open_pane_menu(&mut self, id: PaneId, at: Option<(u16, u16)>) {
         let mut items = vec![("Split right".to_string(), MenuAct::SplitRight), ("Split down".into(), MenuAct::SplitDown), ("Move pane".into(), MenuAct::MovePane)];
-        if !CORE.contains(&slot.as_str()) {
+        if !self.layout.widget_in(id).is_some_and(|w| CORE.contains(&w)) {
             items.push(("Close pane".into(), MenuAct::ClosePane));
         }
-        self.focus = slot.clone();
-        self.open_popup(crate::app::Popup::Menu(Menu { at: at.unwrap_or((0, 0)), target: Target::Pane(slot), items, selected: 0 }));
+        self.focus = Some(id);
+        self.open_popup(crate::app::Popup::Menu(Menu { at: at.unwrap_or((0, 0)), target: Target::Pane(id), items, selected: 0 }));
     }
 
-    pub fn pane_menu_run(&mut self, slot: &str, act: MenuAct) {
-        self.focus = slot.into();
+    pub fn pane_menu_run(&mut self, id: PaneId, act: MenuAct) {
+        self.focus = Some(id);
         match act {
-            MenuAct::SplitRight => self.split_pane(slot, Side::Right),
-            MenuAct::SplitDown => self.split_pane(slot, Side::Bottom),
+            MenuAct::SplitRight => self.split_pane(id, Side::Right),
+            MenuAct::SplitDown => self.split_pane(id, Side::Bottom),
             MenuAct::MovePane => self.start_move(),
-            MenuAct::ClosePane => self.close_pane(slot),
+            MenuAct::ClosePane => self.close_pane(id),
             _ => {}
         }
     }
@@ -663,31 +691,31 @@ impl App {
     // ── Move mode ─────────────────────────────────────────────────────
 
     pub fn start_move(&mut self) {
-        let slot = self.focused_slot();
-        if self.layout.slot_names().len() < 2 {
+        let Some(id) = self.focused_pane() else { return };
+        if self.layout.panes().len() < 2 {
             return self.say("Nothing to move it around");
         }
-        self.move_mode = Some(slot);
+        self.move_mode = Some(id);
     }
 
     /// Keys in Move mode: arrows swap with the neighbour that way, Shift+arrows put the Pane on that side of it as a
     /// split (at the screen's edge if there is no neighbour), `+` `-` size it, `x` closes it, `u` undoes (`U`
     /// redoes), Enter or Esc ends. What can't be done is said in the bar, and nothing changes.
     pub fn move_key(&mut self, k: KeyEvent) {
-        let Some(slot) = self.move_mode.clone().filter(|s| self.layout.has(s)) else {
+        let Some(id) = self.move_mode.filter(|p| self.layout.contains(*p)) else {
             self.move_mode = None;
             return;
         };
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         match k.code {
             KeyCode::Esc | KeyCode::Enter => self.move_mode = None,
-            KeyCode::Left => self.move_step(&slot, Side::Left, shift),
-            KeyCode::Right => self.move_step(&slot, Side::Right, shift),
-            KeyCode::Up => self.move_step(&slot, Side::Top, shift),
-            KeyCode::Down => self.move_step(&slot, Side::Bottom, shift),
-            KeyCode::Char('+' | '=') => self.resize_step(&slot, true),
-            KeyCode::Char('-' | '_') => self.resize_step(&slot, false),
-            KeyCode::Char('x' | 'X') => self.close_pane(&slot),
+            KeyCode::Left => self.move_step(id, Side::Left, shift),
+            KeyCode::Right => self.move_step(id, Side::Right, shift),
+            KeyCode::Up => self.move_step(id, Side::Top, shift),
+            KeyCode::Down => self.move_step(id, Side::Bottom, shift),
+            KeyCode::Char('+' | '=') => self.resize_step(id, true),
+            KeyCode::Char('-' | '_') => self.resize_step(id, false),
+            KeyCode::Char('x' | 'X') => self.close_pane(id),
             KeyCode::Char('u') => self.undo_layout(),
             KeyCode::Char('U') => self.redo_layout(),
             _ => {}
@@ -697,42 +725,41 @@ impl App {
     /// One step that way: a swap with the neighbour, or (Shift) on its far side as a split, or with nothing that
     /// way, a whole column / row at the screen's edge. Refused, with the reason, if it wouldn't fit or would only
     /// change sizes (a Pane already spanning that edge).
-    fn move_step(&mut self, slot: &str, dir: Side, shift: bool) {
+    fn move_step(&mut self, id: PaneId, dir: Side, shift: bool) {
         let (body, aspect) = (self.pane_area(), self.cell_aspect());
-        let slots = self.layout.compute_shaped(body, aspect).slots;
-        let name = crate::ui::pane_name(self.design, slot);
-        let zone = match (neighbour(&slots, slot, dir), shift) {
+        let panes = self.layout.compute_shaped(body, aspect).panes;
+        let Some((pane, me)) = panes.iter().find(|(p, _)| p.id == id).copied() else { return };
+        let name = self.name_of(pane);
+        let named = |n: PaneId| self.layout.get(n).map(|p| self.name_of(p)).unwrap_or_default();
+        let zone = match (neighbour(&panes, id, dir), shift) {
             (Some(n), false) => Zone::Swap(n),
             (Some(n), true) => Zone::Beside(n, dir),
-            (None, true) => {
-                let Some(me) = slots.iter().find(|(s, _)| s == slot).map(|(_, r)| *r) else { return };
-                Zone::Edge(dir, edge_ratio(dir, slot, me, body))
-            }
+            (None, true) => Zone::Edge(dir, edge_ratio(dir, pane, me, body)),
             (None, false) => return self.say(format!("Nothing {} {name} · ⇧{} makes it a whole {}", dir.word_beside(), dir.arrow(), dir.line())),
         };
-        let Some(tree) = self.layout.moved_any(slot, &zone) else { return self.say("It can't go there") };
+        let Some(tree) = self.layout.moved_any(id, &zone) else { return self.say("It can't go there") };
         if tree.same_arrangement(&self.layout) {
             return self.say(format!("{name} already spans the {} edge", dir.edge()));
         }
         if !self.fits(&tree) {
             return self.say(match &zone {
-                Zone::Beside(n, _) => format!("No room for {name} {} {} · {} swaps", dir.word_beside(), crate::ui::pane_name(self.design, n), dir.arrow()),
+                Zone::Beside(n, _) => format!("No room for {name} {} {} · {} swaps", dir.word_beside(), named(*n), dir.arrow()),
                 Zone::Edge(..) => format!("No room for {name} as a whole {}", dir.line()),
-                Zone::Swap(n) => format!("{name} won't fit where {} is", crate::ui::pane_name(self.design, n)),
+                Zone::Swap(n) => format!("{name} won't fit where {} is", named(*n)),
             });
         }
         if let Zone::Beside(n, _) = &zone
-            && !crate::tiling::comfortable(&tree, slot, &zone, body, aspect)
+            && !crate::tiling::comfortable(&tree, id, &zone, body, aspect)
         {
             let thin = if dir.axis() == crate::layout::Axis::Vertical { "short" } else { "narrow" };
-            return self.say(format!("{} is too {thin} to split with {name} · {} swaps", crate::ui::pane_name(self.design, n), dir.arrow()));
+            return self.say(format!("{} is too {thin} to split with {name} · {} swaps", named(*n), dir.arrow()));
         }
-        self.focus = slot.into();
+        self.focus = Some(id);
         self.commit_layout(tree);
     }
 
-    fn resize_step(&mut self, slot: &str, grow: bool) {
-        match self.layout.resized(slot, grow, self.pane_area()).filter(|t| self.fits(t)) {
+    fn resize_step(&mut self, id: PaneId, grow: bool) {
+        match self.layout.resized(id, grow, self.pane_area()).filter(|t| self.fits(t)) {
             Some(tree) => self.commit_layout(tree),
             None => self.say(if grow { "Can't grow it more" } else { "Can't shrink it more" }),
         }
@@ -749,7 +776,8 @@ pub fn widgets_rect(area: Rect, p: &WidgetPick) -> Rect {
 pub fn draw_widgets(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     let Some(p) = app.widget_pick() else { return };
     let r = widgets_rect(area, p);
-    let inner = popup(buf, r, th, &format!("New pane {} {}", p.side.word_beside(), crate::ui::pane_name(app.design, &p.target)));
+    let target = app.layout.get(p.target).map(|t| app.name_of(t)).unwrap_or_default();
+    let inner = popup(buf, r, th, &format!("New pane {} {target}", p.side.word_beside()));
     let (items, sel) = (p.items.clone(), p.sel);
     let rows = inner.height.saturating_sub(1).max(1) as usize;
     let first = crate::scroll::window(sel, rows, items.len());
@@ -758,8 +786,8 @@ pub fn draw_widgets(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
         let bg = if i == sel { th.selection.color() } else { th.bg.color() };
         blank(buf, inner.x, y, inner.width, th.base().bg(bg));
         text(buf, inner.x + 1, y, 2, if i == sel { "›" } else { " " }, th.s(th.accent).bg(bg));
-        text(buf, inner.x + 3, y, 24, &crate::ui::pane_name(app.design, w), (if i == sel { th.title() } else { th.s(th.fg) }).bg(bg));
-        text(buf, inner.x + 28, y, inner.width.saturating_sub(29), w, th.s(th.dim).bg(bg));
+        text(buf, inner.x + 3, y, 24, &crate::ui::pane_name(app.design, *w), (if i == sel { th.title() } else { th.s(th.fg) }).bg(bg));
+        text(buf, inner.x + 28, y, inner.width.saturating_sub(29), w.name(), th.s(th.dim).bg(bg));
         app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::WidgetItem(i));
     }
     text(buf, inner.x + 1, inner.bottom().saturating_sub(1), inner.width.saturating_sub(2), "↑↓ choose · Enter add · Esc cancel", th.s(th.dim));

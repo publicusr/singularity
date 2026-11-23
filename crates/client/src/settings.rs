@@ -344,7 +344,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let mut hits: Vec<(Rect, Hit)> = vec![];
     let mut y = r.y;
     // the tabs (one per file), the file's path, and what's wrong with it
-    let focused = app.focus == "home";
+    let focused = app.is_focused(crate::layout::Widget::Home);
     let mut tx = x;
     for (t, label) in [(Tab::Config, " config.toml "), (Tab::Keys, " keys.toml ")] {
         let n = label.chars().count() as u16;
@@ -450,7 +450,7 @@ fn draw_keys(buf: &mut Buffer, r: Rect, app: &App, th: &Theme, view: &mut Settin
         view.key_top = view.key_sel + 1 - view.visible;
     }
     view.key_top = view.key_top.min(n.saturating_sub(view.visible));
-    let focused = app.focus == "home";
+    let focused = app.is_focused(crate::layout::Widget::Home);
     let keys_of = |a: Action| app.keymap.keys_of(a).iter().map(|c| c.short()).collect::<Vec<_>>().join("  ");
     // the keys column fits the longest keys, up to a third of the page
     let kw = (Action::ALL.iter().map(|a| keys_of(*a).chars().count()).max().unwrap_or(0) as u16 + 3).clamp(NAME_W, (w / 3).max(NAME_W));

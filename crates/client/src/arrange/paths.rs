@@ -97,7 +97,7 @@ impl Replay {
         a.motion.on = true;
         a.config.visuals.motion_fps = fps as _;
         let t0 = Instant::now() + Duration::from_secs(3600);
-        let mut r = Replay { a, t0, combine, size: (W, H), frames: vec![], draw: false, drawn: None, drops: vec![], start: Node::Slot(String::new()), divider: None, moves: Moves::default(), pacer: Pacer::new(t0) };
+        let mut r = Replay { a, t0, combine, size: (W, H), frames: vec![], draw: false, drawn: None, drops: vec![], start: Node::empty(), divider: None, moves: Moves::default(), pacer: Pacer::new(t0) };
         r.render();
         r.start = r.a.layout.clone();
         r
@@ -218,13 +218,13 @@ impl Replay {
     }
 
     /// The Pane's rectangle in the layout as it stands.
-    fn rect(&self, slot: &str) -> Rect {
-        self.a.layout.compute_shaped(self.a.pane_area(), self.a.cell_aspect()).slots.into_iter().find(|(s, _)| s == slot).map(|(_, r)| r).unwrap_or_else(|| panic!("no {slot}"))
+    fn rect(&self, w: Widget) -> Rect {
+        self.a.layout.compute_shaped(self.a.pane_area(), self.a.cell_aspect()).rect_of(w).unwrap_or_else(|| panic!("no {w}"))
     }
 
     /// A spot on the Pane's title bar to grab it by.
-    fn title(&self, slot: &str) -> (u16, u16) {
-        let r = self.rect(slot);
+    fn title(&self, w: Widget) -> (u16, u16) {
+        let r = self.rect(w);
         (r.x + 3, r.y)
     }
 
@@ -427,12 +427,12 @@ const RIGS: [(u64, bool); 3] = [(60, true), (144, true), (60, false)];
 
 /// The Pane a path picks up in `layout`: the stream if there is one, else the first that isn't the queue, the
 /// library or Home.
-fn held_in(layout: &Node) -> String {
-    let names = layout.slot_names();
-    if names.iter().any(|s| s == "stream") { "stream".into() } else { names.into_iter().find(|s| !["queue", "library", "home"].contains(&s.as_str())).unwrap() }
+fn held_in(layout: &Node) -> Widget {
+    let names = layout.widgets();
+    if names.contains(&Widget::Stream) { Widget::Stream } else { names.into_iter().find(|s| ![Widget::Queue, Widget::Library, Widget::Home].contains(s)).unwrap() }
 }
 /// The Pane a path picks up now.
-fn held(r: &Replay) -> String {
+fn held(r: &Replay) -> Widget {
     held_in(&r.a.layout)
 }
 
@@ -459,16 +459,21 @@ fn every_way(name: &str, shape: impl Fn(&Replay, &mut Hand)) -> Vec<(String, Rep
 
 /// What dropping the held Pane on `zone` makes of the layout the path started from.
 fn dropped_on(r: &Replay, zone: Zone) -> Node {
-    r.start.moved(&held_in(&r.start), &zone).unwrap()
+    r.start.moved(pid(&r.start, held_in(&r.start)), &zone).unwrap()
+}
+
+/// The Pane showing `w` in `n`.
+fn pid(n: &Node, w: Widget) -> PaneId {
+    n.pane_of(w).unwrap_or_else(|| panic!("no Pane shows {w}"))
 }
 
 #[test]
 fn a_fast_fling_across_panes_shows_nothing_and_puts_the_pane_back() {
     for (what, r) in every_way("fling", |r, h| {
         let me = held(r);
-        let (x, y) = r.title(&me);
+        let (x, y) = r.title(me);
         h.press(x, y);
-        for s in r.a.layout.slot_names().iter().filter(|s| **s != me) {
+        for s in r.a.layout.widgets().into_iter().filter(|s| *s != me) {
             let c = centre(r.rect(s));
             h.glide(c.0, c.1, 50.0);
         }
@@ -482,8 +487,8 @@ fn a_fast_fling_across_panes_shows_nothing_and_puts_the_pane_back() {
 #[test]
 fn a_slow_creep_into_a_pane_shows_it_and_drops_there() {
     for (what, r) in every_way("creep", |r, h| {
-        let (x, y) = r.title(&held(r));
-        let q = r.rect("queue");
+        let (x, y) = r.title(held(r));
+        let q = r.rect(Widget::Queue);
         let (qx, qy) = centre(q);
         h.press(x, y).glide(q.x as f64 - 6.0, qy, 150.0);
         let mut cx = q.x as f64 - 6.0;
@@ -493,7 +498,7 @@ fn a_slow_creep_into_a_pane_shows_it_and_drops_there() {
         }
         h.rest(60.0).release();
     }) {
-        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap("queue".into())), "{what}");
+        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap(pid(&r.start, Widget::Queue))), "{what}");
     }
 }
 
@@ -502,8 +507,8 @@ fn jitter_on_a_border_between_two_zones_does_not_flicker() {
     // on the border between the queue's left band and its centre, and on the border between two Panes
     for (name, band) in [("jitter on a band", true), ("jitter on a border", false)] {
         for (what, r) in every_way(name, |r, h| {
-            let (x, y) = r.title(&held(r));
-            let q = r.rect("queue");
+            let (x, y) = r.title(held(r));
+            let q = r.rect(Widget::Queue);
             let qy = centre(q).1;
             let at = if band { q.x as f64 + (q.width as f64 * 0.2).round() } else { q.x as f64 };
             h.press(x, y).glide(at, qy, 200.0).jitter(if band { 2.0 } else { -3.0 }, 0.0, 10, 30.0).rest(60.0).release();
@@ -516,36 +521,36 @@ fn jitter_on_a_border_between_two_zones_does_not_flicker() {
 #[test]
 fn overshooting_a_pane_and_coming_back_drops_on_it() {
     every_way("overshoot, let go at once", |r, h| {
-        let (x, y) = r.title(&held(r));
-        let (qx, qy) = centre(r.rect("queue"));
+        let (x, y) = r.title(held(r));
+        let (qx, qy) = centre(r.rect(Widget::Queue));
         h.press(x, y).glide(qx + 30.0, qy + 4.0, 160.0).glide(qx, qy, 120.0).rest(20.0).release();
     });
     for (what, r) in every_way("overshoot and rest", |r, h| {
-        let (x, y) = r.title(&held(r));
-        let (qx, qy) = centre(r.rect("queue"));
+        let (x, y) = r.title(held(r));
+        let (qx, qy) = centre(r.rect(Widget::Queue));
         h.press(x, y).glide(qx + 30.0, qy + 4.0, 160.0).glide(qx, qy, 120.0).rest(250.0).release();
     }) {
-        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap("queue".into())), "{what}");
+        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap(pid(&r.start, Widget::Queue))), "{what}");
     }
 }
 
 #[test]
 fn a_pause_on_one_pane_then_going_on_to_another_drops_on_the_second() {
     for (what, r) in every_way("pause, then on", |r, h| {
-        let (x, y) = r.title(&held(r));
-        let (qx, qy) = centre(r.rect("queue"));
-        let lib = centre(r.rect("library"));
+        let (x, y) = r.title(held(r));
+        let (qx, qy) = centre(r.rect(Widget::Queue));
+        let lib = centre(r.rect(Widget::Library));
         h.press(x, y).glide(qx, qy, 200.0).rest(300.0).glide(lib.0, lib.1, 250.0).rest(200.0).release();
     }) {
-        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap("library".into())), "{what}");
+        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap(pid(&r.start, Widget::Library))), "{what}");
         assert!(r.changes() <= 3, "{what}: {} changes for two pauses", r.changes());
     }
 }
 
 /// Picked up, rested on the queue, then out of the window to the right.
 fn out_of_the_window(r: &Replay, h: &mut Hand) {
-    let (x, y) = r.title(&held(r));
-    let (qx, qy) = centre(r.rect("queue"));
+    let (x, y) = r.title(held(r));
+    let (qx, qy) = centre(r.rect(Widget::Queue));
     h.press(x, y).glide(qx, qy, 200.0).rest(200.0).glide(W as f64 + 20.0, qy, 120.0);
 }
 
@@ -575,11 +580,11 @@ fn a_release_the_client_never_heard_puts_the_pane_back() {
     // …or the next thing is a fresh press: the Pane goes back and the press is a press
     for (what, r) in every_way("pressed again", |r, h| {
         out_of_the_window(r, h);
-        let (lx, ly) = r.title("library");
+        let (lx, ly) = r.title(Widget::Library);
         h.then(300.0, Ev::Press(lx, ly)).then(30.0, Ev::Release(lx, ly));
     }) {
         assert_eq!(r.a.layout, r.start, "{what}: put back where it was");
-        assert_eq!(r.a.focus, "library", "{what}: the press clicked the library's title");
+        assert_eq!(r.a.focused(), Some(Widget::Library), "{what}: the press clicked the library's title");
     }
 }
 
@@ -589,18 +594,18 @@ fn letting_go_over_the_top_bar_or_the_player_drops_what_was_shown() {
         let y_out = if top { 0.0 } else { H as f64 - 2.0 };
         // from the queue straight out and let go: the queue was shown, so the queue it is
         for (what, r) in every_way(if top { "let go over the top bar" } else { "let go over the player" }, |r, h| {
-            let (x, y) = r.title(&held(r));
-            let (qx, qy) = centre(r.rect("queue"));
-            let hx = centre(r.rect("home")).0;
+            let (x, y) = r.title(held(r));
+            let (qx, qy) = centre(r.rect(Widget::Queue));
+            let hx = centre(r.rect(Widget::Home)).0;
             h.press(x, y).glide(qx, qy, 200.0).rest(200.0).glide(hx, y_out, 150.0).rest(20.0).release();
         }) {
-            assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap("queue".into())), "{what}");
+            assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap(pid(&r.start, Widget::Queue))), "{what}");
         }
         // resting there: whatever it shows (a whole row at that edge, or the Pane next to it, whose zone holds on
         // for a row) is the drop
         every_way(if top { "rest over the top bar" } else { "rest over the player" }, |r, h| {
-            let (x, y) = r.title(&held(r));
-            let hx = centre(r.rect("home")).0;
+            let (x, y) = r.title(held(r));
+            let hx = centre(r.rect(Widget::Home)).0;
             h.press(x, y).glide(hx, y_out, 200.0).rest(250.0).release();
         });
     }
@@ -609,8 +614,8 @@ fn letting_go_over_the_top_bar_or_the_player_drops_what_was_shown() {
 #[test]
 fn a_resize_mid_drag_keeps_every_preview_and_the_drop_in_the_new_window() {
     let grab = |r: &Replay, h: &mut Hand| {
-        let (x, y) = r.title(&held(r));
-        let (qx, qy) = centre(r.rect("queue"));
+        let (x, y) = r.title(held(r));
+        let (qx, qy) = centre(r.rect(Widget::Queue));
         h.press(x, y).glide(qx, qy, 200.0).rest(200.0).then(5.0, Ev::Resize(100, 30));
         *h = std::mem::replace(h, Hand::new(MOUSE, 0, 0.0)).within(100, 30);
         h.at = (qx.min(90.0), qy.min(25.0));
@@ -628,13 +633,14 @@ fn a_resize_mid_drag_keeps_every_preview_and_the_drop_in_the_new_window() {
     // under the pointer in the new window (or nothing), never the one the old window had there
     for (x, y) in [(20u16, 8u16), (40, 15), (60, 20), (80, 10), (30, 22), (85, 24)] {
         for (what, r) in every_way(&format!("rest at {x},{y}, resized, let go"), |r, h| {
-            let (tx, ty) = r.title(&held(r));
+            let (tx, ty) = r.title(held(r));
             h.press(tx, ty).glide(x as f64, y as f64, 200.0).rest(250.0).then(1.0, Ev::Drag(x, y)).then(5.0, Ev::Resize(100, 30)).then(20.0, Ev::Release(x, y));
         }) {
             let me = held_in(&r.start);
             let (area, aspect) = (r.a.pane_area(), r.a.cell_aspect());
-            let here = crate::tiling::zone_at(&r.start.compute_shaped(area, aspect).slots, area, &me, x, y);
-            let new = here.and_then(|z| r.start.moved(&me, &z));
+            let me = pid(&r.start, me);
+            let here = crate::tiling::zone_at(&r.start.compute_shaped(area, aspect).panes, area, me, x, y);
+            let new = here.and_then(|z| r.start.moved(me, &z));
             assert!(r.a.layout == r.start || Some(&r.a.layout) == new.as_ref(), "{what}: dropped on a zone of the old window");
         }
     }
@@ -643,12 +649,12 @@ fn a_resize_mid_drag_keeps_every_preview_and_the_drop_in_the_new_window() {
 #[test]
 fn a_right_click_mid_drag_does_not_drop_the_pane() {
     for (what, r) in every_way("right click", |r, h| {
-        let (x, y) = r.title(&held(r));
-        let (qx, qy) = centre(r.rect("queue"));
-        let lib = centre(r.rect("library"));
+        let (x, y) = r.title(held(r));
+        let (qx, qy) = centre(r.rect(Widget::Queue));
+        let lib = centre(r.rect(Widget::Library));
         h.press(x, y).glide(qx, qy, 200.0).rest(200.0).then(5.0, Ev::RightClick(qx as u16, qy as u16)).glide(lib.0, lib.1, 150.0).rest(200.0).release();
     }) {
-        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap("library".into())), "{what}: still held, dropped on the library");
+        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap(pid(&r.start, Widget::Library))), "{what}: still held, dropped on the library");
     }
 }
 
@@ -730,9 +736,9 @@ fn random_human_paths_keep_every_property() {
         let (fps, combine) = RIGS[(rng.next() % RIGS.len() as u64) as usize];
         let dev = if rng.next().is_multiple_of(2) { MOUSE } else { TRACKPAD };
         let mut r = Replay::new(design, fps, combine);
-        let names = r.a.layout.slot_names();
-        let me = names[(rng.next() % names.len() as u64) as usize].clone();
-        let (x, y) = r.title(&me);
+        let names = r.a.layout.widgets();
+        let me = names[(rng.next() % names.len() as u64) as usize];
+        let (x, y) = r.title(me);
         let mut h = Hand::new(dev, rng.next(), 10.0);
         h.press(x, y);
         for _ in 0..1 + rng.next() % 6 {
@@ -786,9 +792,9 @@ fn a_drag_drawn_frame_by_frame_stays_inside_the_layout() {
     for (dev, combine) in [(MOUSE, true), (TRACKPAD, false)] {
         let mut r = Replay::new(0, 120, combine);
         r.draw = true;
-        let (x, y) = r.title("stream");
-        let (qx, qy) = centre(r.rect("queue"));
-        let lib = centre(r.rect("library"));
+        let (x, y) = r.title(Widget::Stream);
+        let (qx, qy) = centre(r.rect(Widget::Queue));
+        let lib = centre(r.rect(Widget::Library));
         let mut h = Hand::new(dev, 5, 10.0);
         h.press(x, y).glide(qx, qy, 200.0).rest(200.0).glide(lib.0, lib.1, 150.0).rest(200.0).release();
         let path = h.done();
@@ -796,7 +802,7 @@ fn a_drag_drawn_frame_by_frame_stays_inside_the_layout() {
         r.check("drawn");
         let body = r.a.pane_area();
         assert!(r.a.drawn.iter().all(|d| d.x >= body.x && d.y >= body.y && d.right() <= body.right() && d.bottom() <= body.bottom()));
-        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap("library".into())));
+        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap(pid(&r.start, Widget::Library))));
     }
 }
 
