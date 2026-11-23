@@ -8,7 +8,7 @@
 //! bends the path from the speed it already has instead of starting a fresh curve (the owner's "teleporting" when a
 //! fast drag changed the target every few frames, 2026-11-01).
 
-use crate::layout::PaneId;
+use crate::layout::{Node, PaneId};
 use ratatui::layout::Rect;
 use std::time::Instant;
 #[cfg(test)]
@@ -223,6 +223,18 @@ impl Motion {
         if moved {
             self.float = None;
             self.landing = None;
+        }
+    }
+
+    /// The layout `old` was replaced by `new` as a whole (another Design, a saved one, undo): its Panes are other
+    /// Panes, so each spring goes to the Pane that now shows its Widget (it springs from where that Widget was); the
+    /// rest are forgotten and appear in place.
+    pub fn rekey(&mut self, old: &Node, new: &Node) {
+        let to = |id: PaneId| old.widget_in(id).and_then(|w| new.pane_of(w));
+        self.panes = std::mem::take(&mut self.panes).into_iter().filter_map(|(id, s)| Some((to(id)?, s))).collect();
+        self.landing = self.landing.and_then(to);
+        if self.landing.is_none() {
+            self.float = None;
         }
     }
 

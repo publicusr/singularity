@@ -172,9 +172,11 @@ impl App {
         self.focus = self.layout.pane_of(w);
     }
 
-    /// Show `tree` with the focus on the Widget it was on (the Panes of another tree are other Panes).
+    /// Show `tree` in place of the whole layout: the Panes of another tree are other Panes, so the focus stays on the
+    /// Widget it was on and each Widget springs from where it was.
     pub fn set_layout(&mut self, tree: Node) {
         let was = self.focused();
+        self.motion.rekey(&self.layout, &tree);
         self.layout = tree;
         self.focus = was.and_then(|w| self.layout.pane_of(w));
     }
@@ -485,7 +487,7 @@ impl App {
         if self.naming().is_some_and(|n| n.purpose == NameFor::Fork) {
             self.close_if_open(crate::app::Modal::Naming);
         }
-        self.layout = s.tree;
+        self.set_layout(s.tree);
         self.focus = s.focus.filter(|p| self.layout.contains(*p)).or_else(|| self.layout.pane_of(Widget::Home));
         if self.move_mode.is_some_and(|m| !self.layout.contains(m)) {
             self.move_mode = None;

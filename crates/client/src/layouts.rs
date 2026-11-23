@@ -212,7 +212,7 @@ mod tests {
     }
 
     /// An empty Pane (nothing makes one yet) is saved as a Pane without a Widget and comes back empty, its identity
-    /// kept; a Widget this build hasn't got loads as an empty Pane rather than losing the file.
+    /// kept; a Widget this build hasn't got and two Panes claiming one identity load too.
     #[test]
     fn an_empty_pane_is_saved_and_loaded() {
         use crate::layout::{Axis, PaneId, Size};
@@ -238,11 +238,52 @@ mod tests {
         let (all, problems) = load_dir(dir.path());
         assert!(problems.is_empty(), "{problems:?}");
         let t = &all.iter().find(|s| s.id == "odd").unwrap().tree;
-        assert_eq!(t.panes().iter().map(|p| p.widget).collect::<Vec<_>>(), vec![Some(Widget::Home), None, Some(Widget::Queue)]);
+        assert_eq!(t.panes().iter().map(|p| p.widget.map(|w| w.name())).collect::<Vec<_>>(), vec![Some("home"), Some("hologram"), Some("queue")]);
         let mut ids: Vec<PaneId> = t.panes().iter().map(|p| p.id).collect();
         assert_eq!(ids[0], PaneId(4), "the first keeps its identity");
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), 3, "the others get their own: {t:?}");
+    }
+
+    /// A Widget from another build (newer, or one since retired) survives this one: it loads, shows as "?" and is
+    /// written back unchanged when the Design is saved again (review of #35: it used to be erased).
+    #[test]
+    fn a_widget_this_build_has_not_got_survives_a_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = "name = \"Odd\"\ndesign = \"singularity\"\ntree = { split = { axis = \"horizontal\", first = { ratio = 0.5 }, a = { slot = \"home\" }, b = { pane = { id = 7, widget = \"hologram\" } } } }\n";
+        std::fs::write(dir.path().join("odd.toml"), file).unwrap();
+        let (all, problems) = load_dir(dir.path());
+        assert!(problems.is_empty(), "{problems:?}");
+        let tree = all[0].tree.clone();
+        assert_eq!(Widget::of("hologram"), None, "(not a Widget of this build)");
+        assert_eq!(crate::ui::pane_name(0, tree.widgets()[1]), "?");
+        save(dir.path(), "Odd", "singularity", "", &tree).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("odd.toml")).unwrap();
+        assert!(text.contains("{ pane = { id = 7, widget = \"hologram\" } }"), "{text}");
+        assert_eq!(load_dir(dir.path()).0[0].tree, tree);
+    }
+
+    /// Identities near the top of the range (a hand-edited file) neither overflow nor collide: the tree is numbered
+    /// afresh, and new Panes still get identities of their own.
+    #[test]
+    fn huge_identities_are_numbered_afresh() {
+        use crate::layout::PaneId;
+        let dir = tempfile::tempdir().unwrap();
+        let file = format!(
+            "name = \"Big\"\ndesign = \"singularity\"\ntree = {{ split = {{ axis = \"horizontal\", first = {{ ratio = 0.5 }}, a = {{ pane = {{ id = {}, widget = \"home\" }} }}, b = {{ pane = {{ widget = \"queue\" }} }} }} }}\n",
+            u32::MAX
+        );
+        std::fs::write(dir.path().join("big.toml"), file).unwrap();
+        let (all, problems) = load_dir(dir.path());
+        assert!(problems.is_empty(), "{problems:?}");
+        let t = &all[0].tree;
+        let ids: Vec<PaneId> = t.panes().iter().map(|p| p.id).collect();
+        assert!(ids[0] != ids[1] && !ids.contains(&PaneId::UNSET), "{ids:?}");
+        let m = t.beside(ids[1], Widget::Fft, crate::tiling::Side::Right).unwrap();
+        let mut all_ids: Vec<PaneId> = m.panes().iter().map(|p| p.id).collect();
+        all_ids.sort();
+        all_ids.dedup();
+        assert_eq!(all_ids.len(), 3);
     }
 }

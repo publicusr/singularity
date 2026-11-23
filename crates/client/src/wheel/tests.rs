@@ -138,6 +138,7 @@ fn cases(w: Widget) -> Vec<Case> {
         Widget::Starfield => still("starfield"),
         Widget::Well => still("well"),
         Widget::Hole => still("hole"),
+        Widget::Unknown(_) => vec![],
     }
 }
 

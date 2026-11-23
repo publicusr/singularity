@@ -44,7 +44,7 @@ pub enum Node {
 enum Stored {
     Split { axis: Axis, first: Size, a: Box<Stored>, b: Box<Stored> },
     /// before D87: a leaf was its Widget's name
-    Slot(#[serde(deserialize_with = "crate::pane::lenient")] Option<Widget>),
+    Slot(Widget),
     Pane(Pane),
 }
 
@@ -53,7 +53,7 @@ impl From<Stored> for Node {
         fn go(s: Stored) -> Node {
             match s {
                 Stored::Split { axis, first, a, b } => Node::Split { axis, first, a: Box::new(go(*a)), b: Box::new(go(*b)) },
-                Stored::Slot(widget) => Node::Pane(Pane { id: PaneId::UNSET, widget }),
+                Stored::Slot(w) => Node::Pane(Pane { id: PaneId::UNSET, widget: Some(w) }),
                 Stored::Pane(p) => Node::Pane(p),
             }
         }
@@ -62,6 +62,9 @@ impl From<Stored> for Node {
         n
     }
 }
+
+/// The highest Pane identity a tree keeps as it is (`Node::fix_ids`); the room above is for new Panes.
+const ID_ROOM: u32 = 1 << 30;
 
 /// Smallest Pane we will ever produce, per axis (borders + one line of content).
 pub const MIN_W: u16 = 12;
@@ -147,7 +150,17 @@ impl Node {
 
     /// Every Pane an identity of its own: one without (`UNSET`) or with one already taken earlier in the tree gets
     /// a fresh one; the rest keep theirs.
+    /// Identities past `ID_ROOM` (a hand-edited file) leave too little room above them for new Panes: the whole tree
+    /// is numbered afresh from 1.
     pub(crate) fn fix_ids(&mut self) {
+        if self.panes().iter().any(|p| p.id.0 > ID_ROOM) {
+            let mut n = 0;
+            self.each_pane_mut(&mut |p| {
+                n += 1;
+                p.id = PaneId(n);
+            });
+            return;
+        }
         let mut seen = std::collections::HashSet::new();
         let mut next = self.next_id().0;
         self.each_pane_mut(&mut |p| {
@@ -171,7 +184,8 @@ impl Node {
 
     /// An identity no Pane in this tree has.
     pub fn next_id(&self) -> PaneId {
-        PaneId(self.panes().iter().map(|p| p.id.0).max().unwrap_or(0) + 1)
+        // (a tree's identities stay at most `ID_ROOM` plus its edits since: never near the top of the range)
+        PaneId(self.panes().iter().map(|p| p.id.0).max().unwrap_or(0).saturating_add(1))
     }
 
     /// The Singularity design (default): library | home+queue | gravity well + lyrics + instruments.

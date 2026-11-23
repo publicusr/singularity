@@ -54,6 +54,8 @@ impl App {
             // they scale to their Pane (size tiers) rather than cut anything off, or are Visuals: nothing to scroll
             Widget::Stream | Widget::NowPlaying | Widget::Top | Widget::Listening | Widget::Today | Widget::Marquee | Widget::Glow => {}
             Widget::Fft | Widget::Loudness | Widget::Levels | Widget::Scope | Widget::Rain | Widget::Starfield | Widget::Well | Widget::Hole => {}
+            // another build's Widget: nothing is drawn in it
+            Widget::Unknown(_) => {}
         }
     }
 

@@ -15,9 +15,13 @@ macro_rules! widgets {
         #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
         pub enum Widget {
             $($(#[$doc])* $v,)*
+            /// one a saved Design names that this build hasn't got (another build's): shown as "?", saved back as it
+            /// was named
+            Unknown(&'static str),
         }
 
         impl Widget {
+            /// Every Widget this build has.
             #[cfg_attr(not(test), allow(dead_code))]
             pub const ALL: &[Widget] = &[$(Widget::$v),*];
 
@@ -25,6 +29,7 @@ macro_rules! widgets {
             pub fn name(self) -> &'static str {
                 match self {
                     $(Widget::$v => $name,)*
+                    Widget::Unknown(name) => name,
                 }
             }
 
@@ -76,16 +81,25 @@ impl Serialize for Widget {
     }
 }
 
+/// A name a saved Design gives a Widget; one this build hasn't got is kept as `Widget::Unknown`, so the file loses
+/// nothing when it is saved again.
 impl<'de> Deserialize<'de> for Widget {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Widget, D::Error> {
         let name = String::deserialize(d)?;
-        Widget::of(&name).ok_or_else(|| serde::de::Error::custom(format!("no Widget is called {name:?}")))
+        Ok(Widget::of(&name).unwrap_or_else(|| Widget::Unknown(intern(name))))
     }
 }
 
-/// A Widget a saved Design names, or None if this build hasn't got it (that Pane then loads empty).
-pub(crate) fn lenient<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Widget>, D::Error> {
-    Ok(Option::<String>::deserialize(d)?.as_deref().and_then(Widget::of))
+/// `name` for good, each one once (only names of Widgets another build has end up here: a handful at most).
+fn intern(name: String) -> &'static str {
+    static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(n) = names.iter().find(|n| **n == name) {
+        return n;
+    }
+    let n: &'static str = Box::leak(name.into_boxed_str());
+    names.push(n);
+    n
 }
 
 /// A Pane's identity: unique within its tree, kept while the tree around it changes (and in the saved Design).
@@ -99,7 +113,7 @@ pub struct Pane {
     /// (0 in a hand-written file without one: the tree gives it a fresh one)
     #[serde(default = "PaneId::unset")]
     pub id: PaneId,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub widget: Option<Widget>,
 }
 

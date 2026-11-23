@@ -59,7 +59,7 @@ impl App {
     pub fn set_design(&mut self, d: usize) {
         let d = d.min(DESIGNS.len() - 1);
         self.design = d;
-        self.layout = (DESIGNS[d].layout)();
+        self.set_layout((DESIGNS[d].layout)());
         self.hole.look = DESIGNS[d].look;
         self.focus_on(Widget::Home);
         self.theme = theme::builtin(DESIGNS[d].themes[0]).expect("built in").into();
@@ -208,7 +208,7 @@ impl App {
         if let Some(t) = s.theme.as_deref() {
             self.set_theme(t);
         }
-        self.layout = s.tree.clone();
+        self.set_layout(s.tree.clone());
         self.layout_name = Some(s.id.clone());
         self.focus_on(Widget::Home);
         self.want_widget_data();

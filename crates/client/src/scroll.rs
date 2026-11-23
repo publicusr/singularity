@@ -1,5 +1,5 @@
 //! Scrolling, wherever there's more than fits. Every popup is an `app::Modal` and `App::modal_scroll` says what the
-//! wheel does in it; every Widget is a `wheel::Widget` and every main-Pane page an `app::Page`, and `App::pane_wheel`
+//! wheel does in it; every Widget is a `pane::Widget` and every main-Pane page an `app::Page`, and `App::pane_wheel`
 //! says what it does over them. A list moves its selection with [`moved`] and shows a [`window`] that follows it, text
 //! taller than its box scrolls with a [`TextScroll`], and a view that follows the song (lyrics) is a [`Follow`].
 

@@ -1187,7 +1187,9 @@ impl App {
                 self.setup.dismissed = false;
             }
             Action::NextLook => {
-                if !self.focus.is_some_and(|p| self.swap_widget(p, 1)) {
+                // an empty Pane has nothing to swap, and isn't the hole's: nothing happens
+                let empty = self.focus.and_then(|p| self.layout.get(p)).is_some_and(|p| p.widget.is_none());
+                if !empty && !self.focus.is_some_and(|p| self.swap_widget(p, 1)) {
                     self.hole.next_look();
                     self.say(format!("Disk look: {}", self.hole.look().name));
                 }

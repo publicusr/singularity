@@ -1378,3 +1378,25 @@ fn the_resize_pointer_goes_back_off_the_border_in_every_terminal() {
     mouse(&mut a, MouseEventKind::Moved, home.x + 3, gy);
     assert_eq!(a.pointer_shape(), "", "a waking move off the border");
 }
+
+/// A whole new tree (another Design, a saved one, undo) springs each Widget from where that Widget was, not from the
+/// spot of whichever Pane had the same identity (review of #35: Singularity to Classic+ flew Home in from the well).
+#[test]
+fn a_new_design_springs_each_widget_from_its_own_place() {
+    let mut a = app();
+    a.motion.on = true;
+    render(&mut a, W, H);
+    let (home, queue) = (drawn(&a, Widget::Home), drawn(&a, Widget::Queue));
+    a.set_design(crate::design::by_id("classic").unwrap());
+    render(&mut a, W, H);
+    assert_eq!((drawn(&a, Widget::Home), drawn(&a, Widget::Queue)), (home, queue), "the first frame is where they were");
+    a.motion.skip(motion::SETTLE);
+    render(&mut a, W, H);
+    let classic_home = drawn(&a, Widget::Home);
+    assert_ne!(classic_home, home);
+    // and back by a saved one put on screen
+    let s = crate::layouts::Saved { name: "S".into(), design: "singularity".into(), theme: None, tree: Node::singularity(), edited: false, id: "s".into() };
+    a.use_layout(&s);
+    render(&mut a, W, H);
+    assert_eq!(drawn(&a, Widget::Home), classic_home, "from Classic+'s Home");
+}

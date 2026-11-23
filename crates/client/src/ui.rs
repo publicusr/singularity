@@ -41,6 +41,8 @@ fn slot_info(w: Widget) -> (&'static str, &'static str) {
         Widget::Starfield => ("starfield", ""),
         Widget::Marquee => ("marquee", ""),
         Widget::Glow => ("glow", ""),
+        // another build's Widget: as before Panes had an identity, a "?" and nothing in it
+        Widget::Unknown(_) => ("?", ""),
     }
 }
 
@@ -3751,5 +3753,9 @@ mod tests {
         assert!(!rows[0].chars().any(char::is_alphanumeric) && rows[0].contains("┌──"), "no title: {:?}", rows[0]);
         assert!(rows[1..rows.len() - 1].iter().all(|l| l.chars().skip(1).take(r.width as usize - 2).all(|c| c == ' ')), "nothing inside:\n{}", rows.join("\n"));
         assert!(app.hits.iter().any(|(_, h)| *h == Hit::Focus(gap.id)), "a click focuses it");
+        // v on it: nothing to swap, and it isn't the hole's, so the Disk look stays
+        let (look, layout) = (app.hole.look, app.layout.clone());
+        app.run(Action::NextLook);
+        assert_eq!((app.hole.look, &app.layout), (look, &layout));
     }
 }
