@@ -14,8 +14,12 @@ For users, the README's "Build and run" and "macOS quirks" sections say the same
 **Linux on ARM (D73):** aarch64 Linux is the same build as x86_64 Linux: no `target_arch` code except the two below.
 The Daemon downloads Soloist's arm64 build (Spotify publishes it next to the x86_64 one, `update::cdn_for`), and on a
 Linux CPU with no Soloist build `auto` means librespot. CI tests on GitHub's `ubuntu-24.04-arm` runner, and a release
-carries an `aarch64-unknown-linux-gnu` archive. Status: 🔶 not built yet (a cross type-check from the x86 PC stops at C dependencies that need an aarch64 sysroot); CI builds and tests it on the first push, and nothing has run on ARM hardware yet (the
-owner's ARM session will check it). The feature rows below are for x86_64 Linux until then.
+carries an `aarch64-unknown-linux-gnu` archive. Status (first run on ARM hardware, 2026-11-23, the M2 Air on Asahi
+Linux, 8 GB): ✅ builds natively (dev ~2 min, release ~2 min 45 s at `-j4`, no memory trouble) and `tools/check.sh` is
+green; ✅ the Visuals run on the GPU (Asahi's Vulkan driver, `libvulkan_asahi`); ✅ librespot logs in, plays
+(320 kbps Vorbis), feeds the audio Widgets in-process and shows synced lyrics; ✅ pixel tier (covers) in Ghostty;
+✅ MPRIS registers and Pause works. 🔶 Soloist's arm64 build: not run yet (needs the key and a phone pairing);
+🔶 notifications and media keys: not tried. The other feature rows are for x86_64 Linux until then.
 
 `[engine] kind` in `config.toml` (Settings page too), read when the Daemon starts. `auto` = Soloist on Linux, librespot
 on macOS (D54, D56: standalone, lightest, the audio Widgets work out of the box; for lossless on macOS, `soloist` (the
