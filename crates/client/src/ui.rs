@@ -1,6 +1,7 @@
 //! Rendering. Pure function of `App` state, plus hit-box registration for the mouse.
 
 use crate::app::{Action, App, Hit, Link, Menu, Modal};
+use crate::layout::{Pane, PaneId, Widget};
 use crate::scrub::{self, Bar};
 use crate::theme::{Rgb, Theme};
 use ratatui::Frame;
@@ -12,35 +13,36 @@ use ratatui::widgets::{Block, Borders, Clear};
 use singularity_proto::{CatalogueStatus, EngineStatus, PlayStatus};
 
 /// A Pane's title as the Design on screen words it (not the main Pane's, which follows the page).
-pub fn pane_name(design: usize, slot: &str) -> String {
-    crate::design::title(design, slot, slot_info(slot).0).to_string()
+pub fn pane_name(design: usize, w: Widget) -> String {
+    crate::design::title(design, w, slot_info(w).0).to_string()
 }
 
 /// Pane titles, and which ticket brings each Pane's real Widget.
-fn slot_info(slot: &str) -> (&'static str, &'static str) {
-    match slot {
-        "library" => ("~/library", "library sidebar arrives with #9"),
-        "stream" => ("stream", ""),
-        "home" => ("home", ""),
-        "queue" => ("queue", ""),
-        "well" => ("gravity well", "the black hole arrives with #16"),
-        "lyrics" => ("tail -f lyrics.log", ""),
-        "karaoke" => ("karaoke", ""),
-        "loudness" => ("loudness", "arrives with #15"),
-        "fft" => ("fft", "arrives with #15"),
-        "hole" => ("black hole", ""),
-        "nowplaying" => ("Now playing", ""),
-        "levels" => ("levels", ""),
-        "listening" => ("listening · 26 weeks", ""),
-        "rain" => ("rain", ""),
-        "scope" => ("osc", ""),
-        "top" => ("top · system", ""),
-        "today" => ("today", ""),
-        "topweek" => ("top this week", ""),
-        "starfield" => ("starfield", ""),
-        "marquee" => ("marquee", ""),
-        "glow" => ("glow", ""),
-        _ => ("?", ""),
+fn slot_info(w: Widget) -> (&'static str, &'static str) {
+    match w {
+        Widget::Library => ("~/library", "library sidebar arrives with #9"),
+        Widget::Stream => ("stream", ""),
+        Widget::Home => ("home", ""),
+        Widget::Queue => ("queue", ""),
+        Widget::Well => ("gravity well", "the black hole arrives with #16"),
+        Widget::Lyrics => ("tail -f lyrics.log", ""),
+        Widget::Karaoke => ("karaoke", ""),
+        Widget::Loudness => ("loudness", "arrives with #15"),
+        Widget::Fft => ("fft", "arrives with #15"),
+        Widget::Hole => ("black hole", ""),
+        Widget::NowPlaying => ("Now playing", ""),
+        Widget::Levels => ("levels", ""),
+        Widget::Listening => ("listening · 26 weeks", ""),
+        Widget::Rain => ("rain", ""),
+        Widget::Scope => ("osc", ""),
+        Widget::Top => ("top · system", ""),
+        Widget::Today => ("today", ""),
+        Widget::TopWeek => ("top this week", ""),
+        Widget::Starfield => ("starfield", ""),
+        Widget::Marquee => ("marquee", ""),
+        Widget::Glow => ("glow", ""),
+        // another build's Widget: as before Panes had an identity, a "?" and nothing in it
+        Widget::Unknown(_) => ("?", ""),
     }
 }
 
@@ -114,11 +116,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     crate::visual::idle::draw(f.buffer_mut(), body, app, &th);
     player_bar(f, player, app, &th);
-    match app.move_mode.clone() {
+    match app.move_mode {
         // Move mode's notices ("no room…") go in its bar, where the eye is
-        Some(slot) => {
+        Some(id) => {
             let said = app.toast.as_ref().map(|(m, _)| m.as_str());
-            crate::arrange::draw_move_hint(f.buffer_mut(), hints, &pane_name(app.design, &slot), said, &th);
+            let name = app.layout.widget_in(id).map(|w| pane_name(app.design, w)).unwrap_or_default();
+            crate::arrange::draw_move_hint(f.buffer_mut(), hints, &name, said, &th);
         }
         None => hint_bar(f.buffer_mut(), hints, &th, &app.keymap),
     }
@@ -384,10 +387,10 @@ fn superscript(n: usize) -> String {
 }
 
 /// The × that closes a Pane, in the last cells of its title bar.
-fn close_button(buf: &mut Buffer, rect: Rect, th: &Theme, focused: bool, slot: &str, hits: &mut Vec<(Rect, Hit)>) {
+fn close_button(buf: &mut Buffer, rect: Rect, th: &Theme, focused: bool, id: PaneId, hits: &mut Vec<(Rect, Hit)>) {
     let x = rect.right().saturating_sub(5);
     text(buf, x, rect.y, 3, " × ", th.s(if focused { th.accent } else { th.dim }));
-    hits.push((Rect::new(x, rect.y, 3, 1), Hit::Close(slot.into())));
+    hits.push((Rect::new(x, rect.y, 3, 1), Hit::Close(id)));
 }
 
 fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme, float: Option<Rect>) {
@@ -398,30 +401,31 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme, float: Option<Rec
     }
     // while a Pane is held over a drop zone, the whole layout is drawn as dropping there would make it
     let tree = app.shown_layout().into_owned();
-    let moving = app.moving().map(String::from);
+    let moving = app.moving();
     let computed = tree.compute_shaped(body, app.cell_aspect());
     // where each Pane is drawn this frame: on its way to where the layout puts it (a divider being dragged follows the
     // pointer at once)
     let mut drawn = std::mem::take(&mut app.drawn);
     let snap = app.divider_from.is_some();
-    app.motion.step(&computed.slots, body, snap, &mut drawn);
+    let targets: Vec<(PaneId, Rect)> = computed.panes.iter().map(|(p, r)| (p.id, *r)).collect();
+    app.motion.step(&targets, body, snap, &mut drawn);
     // the Pane held by the mouse leaves an empty slot where it would land; one landing is drawn over the rest
-    let lifted = app.tile.as_ref().filter(|t| t.live).map(|t| t.slot.clone());
-    let raised = lifted.clone().or_else(|| app.motion.landing.clone().filter(|_| float.is_some()));
+    let lifted = app.tile.as_ref().filter(|t| t.live).map(|t| t.pane.id);
+    let raised = lifted.or_else(|| app.motion.landing.filter(|_| float.is_some()));
     let landing_ok = app.tile.as_ref().is_some_and(|t| t.zone.is_some());
     // the ◂ ▸ swaps sit on a border a divider's grip may cover: registered after the grips, so they win
     let mut swaps: Vec<(Rect, Hit)> = vec![];
-    let n = computed.slots.len();
-    for (i, ((slot, target), rect)) in computed.slots.iter().zip(drawn.iter().copied()).enumerate() {
-        if raised.as_deref() == Some(slot.as_str()) {
-            app.hit(*target, Hit::Focus(slot.clone()));
-            swaps.push((Rect::new(target.x + 1, target.y, target.width.saturating_sub(2), 1), Hit::Title(slot.clone())));
+    let n = computed.panes.len();
+    for (i, ((p, target), rect)) in computed.panes.iter().zip(drawn.iter().copied()).enumerate() {
+        if raised == Some(p.id) {
+            app.hit(*target, Hit::Focus(p.id));
+            swaps.push((Rect::new(target.x + 1, target.y, target.width.saturating_sub(2), 1), Hit::Title(p.id)));
             if lifted.is_some() {
                 crate::arrange::draw_slot(f.buffer_mut(), rect, landing_ok, float, th);
             }
             continue;
         }
-        pane(f, app, th, (i, n), slot, rect, *target, moving.as_deref(), false, &mut swaps);
+        pane(f, app, th, (i, n), *p, rect, *target, moving, false, &mut swaps);
     }
     // space bends around the hole: neighbouring border lines curve toward it
     if let Some(hole) = app.hole_at {
@@ -441,13 +445,15 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme, float: Option<Rec
     app.dividers = computed.dividers;
     // the held (or landing) Pane floats over everything, its own Widget drawn live in cells (pixels under a Pane that
     // moves every frame would smear), with no hit boxes: the pointer is the drag's
-    if let (Some(r), Some(slot)) = (float, raised) {
-        let i = computed.slots.iter().position(|(s, _)| *s == slot).unwrap_or(0);
+    if let (Some(r), Some(id)) = (float, raised) {
+        let i = computed.panes.iter().position(|(p, _)| p.id == id).unwrap_or(0);
+        let held = app.tile.as_ref().map(|t| t.pane).filter(|p| p.id == id);
+        let p = computed.panes.iter().map(|(p, _)| *p).find(|p| p.id == id).or(held).unwrap_or(Pane { id, widget: None });
         let keep = app.hits.len();
         app.floating = true;
         let area = f.area();
         crate::arrange::draw_shadow(f.buffer_mut(), r, area, th);
-        pane(f, app, th, (i, n), &slot, r, r, None, true, &mut swaps);
+        pane(f, app, th, (i, n), p, r, r, None, true, &mut swaps);
         app.floating = false;
         app.hits.truncate(keep);
     }
@@ -458,7 +464,8 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme, float: Option<Rec
 /// finds). `raised`: the Pane held by the mouse, drawn in the accent without its buttons. Smaller than a Pane can be
 /// (on its way somewhere), it is just its frame.
 #[allow(clippy::too_many_arguments)]
-fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), slot: &str, rect: Rect, target: Rect, moving: Option<&str>, raised: bool, swaps: &mut Vec<(Rect, Hit)>) {
+fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p: Pane, rect: Rect, target: Rect, moving: Option<PaneId>, raised: bool, swaps: &mut Vec<(Rect, Hit)>) {
+    let w = p.widget;
     let rect = &rect;
     // whatever was drawn here (a Pane it passes over on its way, or the one it floats over) goes
     if raised || rect != &target {
@@ -466,35 +473,36 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), sl
     }
     // its title bar: drag it to move the Pane (registered with the ◂ ▸ after the dividers' grips, so it wins over
     // them on the row below a horizontal divider; the buttons are registered after it and win in turn)
-    swaps.push((Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(2), 1), Hit::Title(slot.to_string())));
-    let (title, todo) = slot_info(slot);
-    let title = crate::design::title(app.design, slot, title);
+    swaps.push((Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(2), 1), Hit::Title(p.id)));
+    // (an empty Pane has no title yet)
+    let (title, todo) = w.map_or(("", ""), slot_info);
+    let title = w.map_or(title, |w| crate::design::title(app.design, w, title));
     // the main Pane is titled after what it shows
-    let title = match (slot, app.open.view(), &app.artist) {
-        ("home", _, _) if app.search.is_open() => "search".to_string(),
-        ("home", _, _) if app.stats_view.is_some() => "stats".to_string(),
-        ("home", _, _) if app.settings_view.is_some() => "settings".to_string(),
-        ("home", _, Some(a)) => a.name.clone(),
-        ("home", Some(v), _) => v.title.clone(),
+    let title = match (w, app.open.view(), &app.artist) {
+        (Some(Widget::Home), _, _) if app.search.is_open() => "search".to_string(),
+        (Some(Widget::Home), _, _) if app.stats_view.is_some() => "stats".to_string(),
+        (Some(Widget::Home), _, _) if app.settings_view.is_some() => "settings".to_string(),
+        (Some(Widget::Home), _, Some(a)) => a.name.clone(),
+        (Some(Widget::Home), Some(v), _) => v.title.clone(),
         // its title is the switch between artists and tracks
-        ("topweek", _, _) if app.top_week_tracks => "top tracks · week ⇄".to_string(),
-        ("topweek", _, _) => "top artists · week ⇄".to_string(),
+        (Some(Widget::TopWeek), _, _) if app.top_week_tracks => "top tracks · week ⇄".to_string(),
+        (Some(Widget::TopWeek), _, _) => "top artists · week ⇄".to_string(),
         _ => title.to_string(),
     };
     let number = if th.numbered { superscript(i + 1) } else { String::new() };
-    let focused = slot == app.focus;
-    let held = moving == Some(slot);
+    let focused = app.focus == Some(p.id);
+    let held = moving == Some(p.id);
     let title_st = if focused || held || raised { th.title() } else { th.s(th.accent) };
     // a Pane that can close has a × at the right end of its title (the four every Design keeps don't)
-    let closable = !raised && !crate::tiling::CORE.contains(&slot) && total > 1 && rect.width >= 14;
+    let closable = !raised && !w.is_some_and(|w| crate::tiling::CORE.contains(&w)) && total > 1 && rect.width >= 14;
     let tail: u16 = if closable { 3 } else { 0 };
     // held up: the grip says it moves
     let mut spans = vec![Span::styled(if raised { " ⠿ ".to_string() } else { format!(" {number}") }, title_st)];
     // the main Pane: ← → through the pages seen, while there are any, at the right end of its title like every
     // Pane's arrows (D44); dim when there's nowhere to go that way
-    let history = !raised && slot == "home" && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20;
-    // a Slot that can show other Widgets always keeps its ◂ ▸ (7 cells at the right): a long title gives way
-    let can_swap = !raised && ((!crate::layouts::options(slot).is_empty() && slot != "well") || history);
+    let history = !raised && w == Some(Widget::Home) && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20;
+    // a Pane whose Widget can give way to others always keeps its ◂ ▸ (7 cells at the right): a long title gives way
+    let can_swap = !raised && (w.is_some_and(|w| !crate::layouts::options(w).is_empty() && w != Widget::Well) || history);
     // the ◂ ▸ keep their place whether or not the Widget shown can close: cycling onto the queue (no ×) moved them
     // three cells, and the next click on ▸ landed on ◂, so the Pane went back and forth between two Widgets
     let tail: u16 = if can_swap && rect.width >= 14 { 3 } else { tail };
@@ -514,7 +522,11 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), sl
         title
     };
     spans.push(Span::styled(format!("{title} "), title_st));
-    if slot == "topweek" {
+    // an empty Pane has no title at all (not even the spaces round one)
+    if w.is_none() && !raised {
+        spans.clear();
+    }
+    if w == Some(Widget::TopWeek) {
         let tw = spans.iter().map(|s| s.content.chars().count()).sum::<usize>() as u16;
         swaps.push((Rect::new(rect.x + 1, rect.y, tw.min(rect.width.saturating_sub(2)), 1), Hit::TopWeekToggle));
     }
@@ -532,20 +544,20 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), sl
         .style(th.base());
     let inner = block.inner(*rect);
     // the Pane's own hit first, so the things inside it win (where it is going: mid-way, a click lands there)
-    app.hit(target, Hit::Focus(slot.to_string()));
-    // a Slot that can show other Widgets says so: ◂ ▸ in its title swap them (so does v)
+    app.hit(target, Hit::Focus(p.id));
+    // a Pane whose Widget can give way to others says so: ◂ ▸ in its title swap them (so does v)
     let swappable = can_swap && rect.width >= 12;
     // on its way somewhere and smaller than a Pane can be: just its frame
-    let min_h = if crate::layout::is_hole(slot) { crate::layout::WELL_MIN_H } else { crate::layout::MIN_H };
+    let min_h = if crate::layout::is_hole(w) { crate::layout::WELL_MIN_H } else { crate::layout::MIN_H };
     if rect.width < crate::layout::MIN_W || rect.height < min_h {
         f.render_widget(block, *rect);
         return;
     }
     // the well draws its own (sagging) frame; held up, it is a plain Pane round the hole
-    if slot == "well" && !raised {
+    if w == Some(Widget::Well) && !raised {
         crate::visual::well::draw(f.buffer_mut(), *rect, app, th);
         if closable {
-            close_button(f.buffer_mut(), *rect, th, focused, slot, swaps);
+            close_button(f.buffer_mut(), *rect, th, focused, p.id, swaps);
         }
         return;
     }
@@ -565,94 +577,98 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), sl
         let (x, y) = (rect.right().saturating_sub(7 + tail), rect.y);
         let buf = f.buffer_mut();
         text(buf, x, y, 5, " ◂ ▸ ", th.s(if focused { th.accent } else { th.dim }));
-        swaps.push((Rect::new(x, y, 2, 1), Hit::Swap(slot.to_string(), -1)));
-        swaps.push((Rect::new(x + 2, y, 3, 1), Hit::Swap(slot.to_string(), 1)));
+        swaps.push((Rect::new(x, y, 2, 1), Hit::Swap(p.id, -1)));
+        swaps.push((Rect::new(x + 2, y, 3, 1), Hit::Swap(p.id, 1)));
     }
     if closable {
-        close_button(f.buffer_mut(), *rect, th, focused, slot, swaps);
+        close_button(f.buffer_mut(), *rect, th, focused, p.id, swaps);
     }
-    widget(f.buffer_mut(), *rect, inner, slot, todo, app, th);
+    if let Some(w) = w {
+        widget(f.buffer_mut(), *rect, inner, w, todo, app, th);
+    }
 }
 
-/// What Pane `slot` shows inside its frame (`rect` the Pane, `inner` inside the frame): the one place each Widget is
+/// What a Pane showing `w` draws inside its frame (`rect` the Pane, `inner` inside the frame): the one place each
+/// Widget is
 /// drawn, so tests can draw every Widget at any size the way a Pane does.
-pub fn widget(buf: &mut Buffer, rect: Rect, inner: Rect, slot: &str, todo: &str, app: &mut App, th: &Theme) {
-    match slot {
-        "hole" | "well" => crate::visual::well::draw_plain(buf, rect, inner, app, th),
-        "nowplaying" => crate::widgets::nowplaying(buf, inner, app, th),
-        "levels" => crate::widgets::levels(buf, inner, app, th),
-        "listening" => {
+pub fn widget(buf: &mut Buffer, rect: Rect, inner: Rect, w: Widget, todo: &str, app: &mut App, th: &Theme) {
+    use Widget::*;
+    match w {
+        Hole | Well => crate::visual::well::draw_plain(buf, rect, inner, app, th),
+        NowPlaying => crate::widgets::nowplaying(buf, inner, app, th),
+        Levels => crate::widgets::levels(buf, inner, app, th),
+        Listening => {
             crate::widgets::listening(buf, inner, app, th);
             // a click opens the whole story
             app.hit(inner, Hit::Action(Action::Stats));
         }
-        "rain" => crate::widgets::rain(buf, inner, app, th),
-        "scope" => crate::widgets::scope(buf, inner, app, th),
-        "top" => crate::widgets::top(buf, inner, app, th),
-        "today" => {
+        Rain => crate::widgets::rain(buf, inner, app, th),
+        Scope => crate::widgets::scope(buf, inner, app, th),
+        Top => crate::widgets::top(buf, inner, app, th),
+        Today => {
             crate::stats::today(buf, inner, app, th);
             app.hit(inner, Hit::Action(Action::Stats));
         }
-        "topweek" => crate::stats::top_week(buf, inner, app, th),
-        "starfield" => crate::ambient::starfield(buf, inner, app, th),
-        "marquee" => crate::ambient::marquee(buf, inner, app, th),
-        "glow" => crate::ambient::glow(buf, inner, app, th),
-        "karaoke" => crate::karaoke::draw(buf, inner, app, th),
+        TopWeek => crate::stats::top_week(buf, inner, app, th),
+        Starfield => crate::ambient::starfield(buf, inner, app, th),
+        Marquee => crate::ambient::marquee(buf, inner, app, th),
+        Glow => crate::ambient::glow(buf, inner, app, th),
+        Karaoke => crate::karaoke::draw(buf, inner, app, th),
         _ => {}
     }
-    if matches!(slot, "hole" | "well" | "nowplaying" | "levels" | "listening" | "rain" | "scope" | "top" | "today" | "topweek" | "starfield" | "marquee" | "glow" | "karaoke") {
+    if matches!(w, Hole | Well | NowPlaying | Levels | Listening | Rain | Scope | Top | Today | TopWeek | Starfield | Marquee | Glow | Karaoke) {
         return;
     }
-    if slot == "library" {
+    if w == Library {
         crate::sidebar::draw(buf, inner, app, th);
         return;
     }
-    if slot == "lyrics" {
+    if w == Lyrics {
         crate::lyrics::draw(buf, inner, app, th);
         return;
     }
-    if slot == "queue" {
+    if w == Queue {
         crate::queue::draw(buf, inner, app, th);
         return;
     }
-    if slot == "stream" {
+    if w == Stream {
         crate::setup::draw_stream(buf, inner, app, th);
         return;
     }
-    if slot == "fft" {
+    if w == Fft {
         crate::meters::spectrum(buf, inner, &app.meters, th);
         return;
     }
-    if slot == "loudness" {
+    if w == Loudness {
         crate::meters::loudness(buf, inner, &app.meters, th);
         return;
     }
-    if slot == "home" && app.search.is_open() {
+    if w == Home && app.search.is_open() {
         crate::search::draw(buf, inner, app, th);
         return;
     }
-    if slot == "home" && app.stats_view.is_some() {
+    if w == Home && app.stats_view.is_some() {
         crate::stats::draw(buf, inner, app, th);
         return;
     }
-    if slot == "home" && app.settings_view.is_some() {
+    if w == Home && app.settings_view.is_some() {
         crate::settings::draw(buf, inner, app, th);
         return;
     }
-    if slot == "home" && app.artist.is_some() {
+    if w == Home && app.artist.is_some() {
         crate::artist::draw(buf, inner, app, th);
         return;
     }
-    if slot == "home" && app.open.view().is_some() {
+    if w == Home && app.open.view().is_some() {
         crate::tracks::draw(buf, inner, app, th);
         return;
     }
-    if slot == "home" {
+    if w == Home {
         // Search is built into Home (D70): the bar on top, the feed under it
         let mut feed_area = inner;
         if inner.height >= 6 && inner.width >= 12 {
             let (x, w) = (inner.x + 1, inner.width.saturating_sub(2));
-            let on = app.focus == "home" && app.home_view.on_bar;
+            let on = app.is_focused(Home) && app.home_view.on_bar;
             let hint = if on { "type or Enter".to_string() } else { app.keymap.label(Action::Search) };
             crate::search::bar(buf, Rect::new(x, inner.y, w, 1), "", on, &hint, th);
             app.hit(Rect::new(x, inner.y, w, 1), Hit::SearchBar);
@@ -1036,23 +1052,24 @@ mod tests {
                 app.playback.queue = queue();
                 // the Panes this design leaves: are any of them down to one row of body (borders included)?
                 let body = Rect::new(0, 1, w, h.saturating_sub(5));
-                one_row |= app.layout.compute_shaped(body, 2.0).slots.iter().any(|(_, r)| r.height <= 3);
+                one_row |= app.layout.compute_shaped(body, 2.0).panes.iter().any(|(_, r)| r.height <= 3);
                 let _ = render(&mut app, w, h);
             }
         }
         assert!(one_row, "the sizes above squeeze a Pane to its minimum");
         // and the worst layouts: every Widget in one Pane after another, nested halving, so most of them are one
         // row high or none at all
-        let names = ["library", "home", "queue", "lyrics", "fft", "loudness", "well", "nowplaying", "levels", "listening", "rain", "scope", "top", "today", "topweek", "starfield", "marquee", "glow", "hole", "stream", "karaoke"];
-        let mut stack = Node::Slot(names[0].into());
+        use Widget::*;
+        let names = [Library, Home, Queue, Lyrics, Fft, Loudness, Well, NowPlaying, Levels, Listening, Rain, Scope, Top, Today, TopWeek, Starfield, Marquee, Glow, Hole, Stream, Karaoke];
+        let mut stack = Node::pane(names[0]);
         for name in &names[1..] {
-            stack = Node::Split { axis: Axis::Vertical, first: Size::Ratio(0.5), a: Box::new(stack), b: Box::new(Node::Slot((*name).into())) };
+            stack = Node::split(Axis::Vertical, Size::Ratio(0.5), stack, Node::pane(*name));
         }
         for (w, h) in [(60, 14), (80, 20), (120, 40)] {
             let (mut app, _rx) = playing_app(200_000);
             app.layout = stack.clone();
             app.playback.queue = queue();
-            assert!(app.layout.compute(Rect::new(0, 1, w, h - 5)).slots.iter().any(|(_, r)| r.height <= 1), "{w}x{h}: the stack squeezes a Pane below two rows");
+            assert!(app.layout.compute(Rect::new(0, 1, w, h - 5)).panes.iter().any(|(_, r)| r.height <= 1), "{w}x{h}: the stack squeezes a Pane below two rows");
             let _ = render(&mut app, w, h);
         }
     }
@@ -1095,9 +1112,9 @@ mod tests {
     fn clicking_a_pane_focuses_it() {
         let mut app = App::new(None);
         render(&mut app, 160, 48);
-        let well = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "well").unwrap().1;
+        let well = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).rect_of(Widget::Well).unwrap();
         click(&mut app, well.x + 5, well.y + 3);
-        assert_eq!(app.focus, "well");
+        assert_eq!(app.focused(), Some(Widget::Well));
     }
 
     #[test]
@@ -1105,12 +1122,12 @@ mod tests {
         let mut app = App::new(None);
         let body = Rect::new(0, 1, 160, 48 - 5);
         render(&mut app, 160, 48);
-        let before = app.layout.compute(body).slots[0].1.width;
+        let before = app.layout.compute(body).panes[0].1.width;
         let grip = app.dividers[0].grip;
         app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: grip.x, row: grip.y + 5, modifiers: KeyModifiers::NONE });
         app.mouse(MouseEvent { kind: MouseEventKind::Drag(MouseButton::Left), column: grip.x + 10, row: grip.y + 5, modifiers: KeyModifiers::NONE });
         app.mouse(MouseEvent { kind: MouseEventKind::Up(MouseButton::Left), column: grip.x + 10, row: grip.y + 5, modifiers: KeyModifiers::NONE });
-        let after = app.layout.compute(body).slots[0].1.width;
+        let after = app.layout.compute(body).panes[0].1.width;
         assert_eq!(after, before + 10);
     }
 
@@ -1398,7 +1415,7 @@ mod tests {
 
     /// Wheel Home down until the Shelf's first Card is on screen.
     fn scroll_to(app: &mut App, shelf: usize) -> Rect {
-        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).rect_of(Widget::Home).unwrap();
         for _ in 0..400 {
             render(app, 200, 64);
             if let Some(r) = try_card_rect(app, shelf, 0).filter(|r| r.height > 2) {
@@ -1460,7 +1477,7 @@ mod tests {
         let (mut app, _rx) = home_app();
         let s = render(&mut app, 200, 64);
         assert!(s.contains("⌕ Search"), "the bar reads Search:\n{s}");
-        let lib = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "library").unwrap().1;
+        let lib = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).rect_of(Widget::Library).unwrap();
         let lib_text = |l: &str| l.chars().skip(lib.x as usize).take(lib.width as usize).collect::<String>();
         assert!(!s.lines().skip(lib.y as usize).take(4).any(|l| lib_text(l).contains("Search")), "no Search row in the library");
         let bar = app.hits.iter().find_map(|(r, h)| (*h == Hit::SearchBar).then_some(*r)).expect("a clickable bar");
@@ -1468,7 +1485,7 @@ mod tests {
         assert_eq!(app.current_page(), crate::app::Page::Search);
         app.run(Action::GoHome);
         render(&mut app, 200, 64);
-        app.focus = "home".into();
+        app.focus_on(Widget::Home);
         for k in [KeyCode::Down, KeyCode::Up, KeyCode::Up] {
             app.key(KeyEvent::new(k, KeyModifiers::NONE));
         }
@@ -1489,7 +1506,7 @@ mod tests {
         assert!(s.contains('▀'), "covers drawn as half-blocks in the cell tier");
         assert!(s.contains('›'), "long Shelves can scroll sideways");
         // never a Card cut in half at the bottom
-        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).rect_of(Widget::Home).unwrap();
         assert!(app.hits.iter().all(|(r, h)| !matches!(h, Hit::Card(_)) || r.bottom() < home.bottom()));
     }
 
@@ -1539,7 +1556,7 @@ mod tests {
         render(&mut app, 200, 64);
         let back = app.hits.iter().find_map(|(r, h)| (*h == Hit::History(-1)).then_some(*r)).expect("← shown with history");
         // at the right end of the title, where every Pane keeps its arrows (D44)
-        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).rect_of(Widget::Home).unwrap();
         assert!(back.x > home.x + home.width / 2, "{back:?} in {home:?}");
         assert!(render(&mut app, 200, 64).contains("← →"));
         assert!(app.open.view().is_some());
@@ -1560,7 +1577,7 @@ mod tests {
         click(&mut app, r.x + 2, r.y + 1);
         // never plays on a click: the list opens in the main Pane
         assert_eq!(sent(&mut rx), vec![Command::GetTracks { uri: "spotify:playlist:mfy1".into() }]);
-        assert_eq!(app.focus, "home");
+        assert_eq!(app.focused(), Some(Widget::Home));
         let s = render(&mut app, 200, 64);
         assert!(s.contains("Daily Mix 1") && s.contains("▶ Play"), "{s}");
         let play = app.hits.iter().find_map(|(r, h)| (*h == Hit::PlayView).then_some(*r)).unwrap();
@@ -1585,7 +1602,7 @@ mod tests {
     fn arrows_browse_home_and_enter_opens() {
         use singularity_proto::Command;
         let (mut app, mut rx) = home_app();
-        app.focus = "home".into();
+        app.focus_on(Widget::Home);
         render(&mut app, 200, 64);
         let key = |app: &mut App, c| app.key(KeyEvent::new(c, KeyModifiers::NONE));
         key(&mut app, KeyCode::Down); // selects the first Card
@@ -1680,7 +1697,7 @@ mod tests {
         app.home_view.offset = shelf_y + 3;
         render(&mut app, 200, 64);
         let r = card_rect(&app, 1, 0);
-        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).rect_of(Widget::Home).unwrap();
         // the feed starts under the search bar and its blank line (D70)
         assert_eq!(r.y, home.y + 3, "the Card is clipped at the feed's top, not dropped");
         // pixel tier: the same cover placed with a crop of its lower part
@@ -1827,18 +1844,18 @@ mod tests {
             app.meters.push(singularity_proto::SpectrumFrame { bands, level: 180, vu: [220, 200], beat: i % 15 == 0, out_level: 180, out_vu: [220, 200], out_bands: [200; 3] });
         }
         let s = render(&mut app, 160, 48);
-        let slots = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).slots;
-        let pane = |name: &str| slots.iter().find(|(s, _)| s == name).unwrap().1;
+        let slots = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0);
+        let pane = |w: Widget| slots.rect_of(w).unwrap();
         let region = |r: Rect| s.lines().skip(r.y as usize + 1).take(r.height as usize - 2).map(|l| l.chars().skip(r.x as usize + 1).take(r.width as usize - 2).collect::<String>()).collect::<Vec<_>>().join("\n");
-        assert!(region(pane("fft")).contains('█'), "{}", region(pane("fft")));
-        let loud = region(pane("loudness"));
+        assert!(region(pane(Widget::Fft)).contains('█'), "{}", region(pane(Widget::Fft)));
+        let loud = region(pane(Widget::Loudness));
         assert!(loud.starts_with("L ▬") && loud.contains('█'), "{loud}");
         assert!(!s.contains("arrives with #15"));
         // the loudness Pane follows the real output level, not the gained one
         app.meters = Default::default();
         app.meters.push(singularity_proto::SpectrumFrame { bands: vec![200; 64], level: 230, vu: [230, 230], out_vu: [20, 20], ..Default::default() });
         let s = render(&mut app, 160, 48);
-        let loud = s.lines().nth(pane("loudness").y as usize + 1).unwrap().chars().skip(pane("loudness").x as usize + 1).take(pane("loudness").width as usize - 2).collect::<String>();
+        let loud = s.lines().nth(pane(Widget::Loudness).y as usize + 1).unwrap().chars().skip(pane(Widget::Loudness).x as usize + 1).take(pane(Widget::Loudness).width as usize - 2).collect::<String>();
         assert!(loud.matches('▬').count() <= 3, "a quiet output shows a short meter: {loud}");
     }
 
@@ -1849,9 +1866,9 @@ mod tests {
         assert!(s.contains("gravity well") && s.contains("◂ Inferno ▸"));
         app.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert!(render(&mut app, 160, 48).contains("◂ Gargantua ▸"));
-        let well = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "well").unwrap().1;
+        let well = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).rect_of(Widget::Well).unwrap();
         click(&mut app, well.x + well.width / 2, well.y + well.height / 2);
-        assert!(render(&mut app, 160, 48).contains("◂ M87* ▸") && app.focus == "well");
+        assert!(render(&mut app, 160, 48).contains("◂ M87* ▸") && app.is_focused(Widget::Well));
         // pixel tier: one animated frame per draw, covering the well's inside
         app.kitty = Some(crate::gfx::Kitty::new(false));
         app.cell_px = Some((10.0, 20.0));
@@ -1901,7 +1918,7 @@ mod tests {
         assert_eq!(v.sel, 2 + 3 * vis);
         assert!(v.sel >= v.top && v.sel < v.top + v.visible, "the highlight stays in view");
         // the library sidebar
-        let lib = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "library").unwrap().1;
+        let lib = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).rect_of(Widget::Library).unwrap();
         for _ in 0..50 {
             mouse(&mut app, MouseEventKind::ScrollDown, lib.x as f64 + 3.5, lib.y + 3, false);
         }
@@ -1923,7 +1940,7 @@ mod tests {
         assert!(s.contains("listening · 26 weeks") && s.contains("1.8 h this year · top: Nova Drift · streak 2 days"), "{s}");
         // this week is the last column, Monday on top, two days a cell (Cockpit's Pane is short): Wednesday over
         // Thursday (today, the brightest) in the second row; a week ago too; Friday on hasn't come
-        let r = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "listening").unwrap().1;
+        let r = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).rect_of(Widget::Listening).unwrap();
         let (x0, y0) = (r.x + 2, r.y + 1);
         let last = ((r.width - 2) / 2).min(26) - 1;
         let buf = {
@@ -2065,7 +2082,7 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(sent(&mut rx), vec![Command::RemoveFromQueue { uri: "spotify:track:Mine".into(), uid: Some("uid-Mine".into()) }]);
         // a context track can be played next, not removed
-        app.focus = "queue".into();
+        app.focus_on(Widget::Queue);
         app.queue_view.sel = 1;
         app.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
         assert!(sent(&mut rx).is_empty());
@@ -2080,12 +2097,12 @@ mod tests {
         let e = |i: usize| QueueEntry { item: Item { uri: format!("spotify:track:{i}"), name: format!("Song {i}"), ..Default::default() }, source: if i < 5 { "queue" } else { "context" }.into(), uid: format!("u{i}") };
         app.playback.queue = (0..120).map(e).collect();
         render(&mut app, 160, 48);
-        let pane = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(s) if s == "queue").then_some(*r)).unwrap();
+        let pane = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if Some(*p) == app.layout.pane_of(Widget::Queue)).then_some(*r)).unwrap();
         // over a heading, a row or "now playing": anywhere in the Pane
         for _ in 0..7 {
             mouse(&mut app, MouseEventKind::ScrollDown, pane.x as f64 + 3.5, pane.y + 1, false);
         }
-        assert_eq!((app.queue_view.sel, app.focus.as_str()), (7, "queue"));
+        assert_eq!((app.queue_view.sel, app.focused()), (7, Some(Widget::Queue)));
         mouse(&mut app, MouseEventKind::ScrollUp, pane.x as f64 + 3.5, pane.y + 1, false);
         assert_eq!(app.queue_view.sel, 6);
         // Shift: a page; the list follows the highlight, which stays on screen
@@ -2167,7 +2184,7 @@ mod tests {
         app.search = crate::search::Search::with_recent((0..12).map(|i| format!("query {i}")).collect());
         app.run(Action::Search);
         render(&mut app, 120, 24);
-        let home = app.layout.compute(Rect::new(0, 1, 120, 24 - 5)).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        let home = app.layout.compute(Rect::new(0, 1, 120, 24 - 5)).rect_of(Widget::Home).unwrap();
         for _ in 0..11 {
             mouse(&mut app, MouseEventKind::ScrollDown, home.x as f64 + 3.5, home.y + 5, false);
         }
@@ -2459,7 +2476,7 @@ mod tests {
                     app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
                 }
                 let s = render(&mut app, w, h);
-                let home = app.layout.compute_shaped(Rect::new(0, 1, w, h - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+                let home = app.layout.compute_shaped(Rect::new(0, 1, w, h - 5), 2.0).rect_of(Widget::Home).unwrap();
                 assert!(s.contains("stats"), "{w}x{h}: titled");
                 assert!(s.contains("This week") || (s.contains("Week") && s.contains("All")), "{w}x{h}: every tab: {s}");
                 assert!(s.contains("plays"), "{w}x{h}: the summary is in view");
@@ -2527,7 +2544,7 @@ mod tests {
         let s = render(&mut app, 140, 40);
         // it wraps rather than being cut
         assert!(s.contains("nothing logged yet in this period") && s.contains("half a short track)"), "{s}");
-        let home = app.layout.compute_shaped(Rect::new(0, 1, 140, 40 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        let home = app.layout.compute_shaped(Rect::new(0, 1, 140, 40 - 5), 2.0).rect_of(Widget::Home).unwrap();
         let pane: String = s.lines().map(|l| l.chars().skip(home.x as usize).take(home.width as usize).collect::<String>()).collect::<Vec<_>>().join("\n");
         assert!(!pane.contains('…'), "nothing cut: {pane}");
     }
@@ -2547,19 +2564,19 @@ mod tests {
         // every side Slot of every design can show both (a Slot is followed by its place in the layout)
         for d in 0..crate::design::DESIGNS.len() {
             app.set_design(d);
-            let sides: Vec<usize> = app.layout.slot_names().iter().enumerate().filter(|(_, s)| crate::layouts::options(s).contains(&"today")).map(|(i, _)| i).collect();
+            let sides: Vec<usize> = app.layout.widgets().iter().enumerate().filter(|(_, s)| crate::layouts::options(**s).contains(&Widget::Today)).map(|(i, _)| i).collect();
             for at in sides {
-                for want in ["today", "topweek"] {
+                for want in [Widget::Today, Widget::TopWeek] {
                     for _ in 0..12 {
-                        let now = app.layout.slot_names()[at].clone();
-                        if now == want {
+                        let now = app.layout.panes()[at];
+                        if now.holds(want) {
                             break;
                         }
-                        app.swap_widget(&now, 1);
+                        app.swap_widget(now.id, 1);
                     }
-                    assert_eq!(app.layout.slot_names()[at], want, "{}: Slot {at}", crate::design::DESIGNS[d].id);
+                    assert_eq!(app.layout.widgets()[at], want, "{}: Slot {at}", crate::design::DESIGNS[d].id);
                     let s = render(&mut app, 160, 48);
-                    let title = if want == "today" { "today" } else { "top artists" };
+                    let title = if want == Widget::Today { "today" } else { "top artists" };
                     assert!(s.contains(title), "{}: {want} in Slot {at}\n{s}", crate::design::DESIGNS[d].id);
                 }
                 app.set_design(d);
@@ -2568,9 +2585,9 @@ mod tests {
         // swapping "top this week" in asks for the week's stats
         app.set_design(0);
         sent_all(&mut rx);
-        while !app.layout.slot_names().contains(&"topweek".to_string()) {
-            let s = app.layout.slot_names().into_iter().find(|s| crate::layouts::options(s).contains(&"topweek")).unwrap();
-            app.swap_widget(&s, 1);
+        while !app.layout.has(Widget::TopWeek) {
+            let s = app.layout.panes().into_iter().find(|p| p.widget.is_some_and(|w| crate::layouts::options(w).contains(&Widget::TopWeek))).unwrap();
+            app.swap_widget(s.id, 1);
         }
         assert!(sent_all(&mut rx).contains(&Command::GetStats { period: StatsPeriod::Week }));
         // and again after a logged Play
@@ -2672,7 +2689,10 @@ mod tests {
     }
 
     /// Every Widget a Slot can show (and the library and Home), as `widget` draws them in a Pane.
-    const EVERY_WIDGET: [&str; 19] = ["lyrics", "queue", "nowplaying", "stream", "top", "listening", "today", "topweek", "marquee", "glow", "fft", "loudness", "levels", "scope", "rain", "starfield", "library", "home", "karaoke"];
+    const EVERY_WIDGET: [Widget; 19] = {
+        use Widget::*;
+        [Lyrics, Queue, NowPlaying, Stream, Top, Listening, Today, TopWeek, Marquee, Glow, Fft, Loudness, Levels, Scope, Rain, Starfield, Library, Home, Karaoke]
+    };
 
     /// `widget_app` playing a song with a cover, a long queue, long synced lyrics (30 s in), the meters moving and a
     /// library: something for every Widget to show.
@@ -2708,7 +2728,7 @@ mod tests {
         let widths = (1u16..=24).chain((26..=300).step_by(23)).chain([300]);
         let heights: Vec<u16> = (1u16..=12).chain((14..=100).step_by(11)).chain([100]).collect();
         // the first failure of each Widget, so one run shows them all
-        let mut bad: Vec<(&str, String)> = vec![];
+        let mut bad: Vec<(Widget, String)> = vec![];
         for w in widths {
             for &h in &heights {
                 for slot in EVERY_WIDGET {
@@ -2737,9 +2757,9 @@ mod tests {
     fn top_this_week_switches_between_artists_and_tracks() {
         use singularity_proto::{Command, StatsPeriod};
         let (mut app, mut rx) = playing_app(200_000);
-        while !app.layout.slot_names().contains(&"topweek".to_string()) {
-            let s = app.layout.slot_names().into_iter().find(|s| crate::layouts::options(s).contains(&"topweek")).unwrap();
-            app.swap_widget(&s, 1);
+        while !app.layout.has(Widget::TopWeek) {
+            let s = app.layout.panes().into_iter().find(|p| p.widget.is_some_and(|w| crate::layouts::options(w).contains(&Widget::TopWeek))).unwrap();
+            app.swap_widget(s.id, 1);
         }
         app.stats.insert(StatsPeriod::Week, seeded_stats(StatsPeriod::Week));
         let s = render(&mut app, 160, 48);
@@ -2772,16 +2792,17 @@ mod tests {
             let mut app = App::new(None);
             app.set_design(d);
             for (w, h) in [(80u16, 24u16), (140, 40)] {
-                let slots: Vec<(String, Rect)> = app.layout.compute_shaped(Rect::new(0, 1, w, h - 5), 2.0).slots.into_iter().filter(|(s, _)| !crate::layouts::options(s).is_empty() && s != "well").collect();
+                let swappable = |p: &Pane| p.widget.is_some_and(|w| !crate::layouts::options(w).is_empty() && w != Widget::Well);
+                let slots: Vec<(Pane, Rect)> = app.layout.compute_shaped(Rect::new(0, 1, w, h - 5), 2.0).panes.into_iter().filter(|(p, _)| swappable(p)).collect();
                 for (k, (_, rect)) in slots.iter().enumerate() {
                     // walk this Slot through its whole cycle; the arrows are there every step
                     for _ in 0..14 {
                         render(&mut app, w, h);
-                        let now = app.layout.compute_shaped(Rect::new(0, 1, w, h - 5), 2.0).slots.into_iter().filter(|(s, _)| !crate::layouts::options(s).is_empty() && s != "well").nth(k).unwrap().0;
+                        let now = app.layout.compute_shaped(Rect::new(0, 1, w, h - 5), 2.0).panes.into_iter().filter(|(p, _)| swappable(p)).nth(k).unwrap().0;
                         if rect.width >= 12 {
-                            assert!(app.hits.iter().any(|(r, h)| *h == Hit::Swap(now.clone(), 1) && r.y == rect.y), "{} {w}x{h}: no ▸ on {now}", crate::design::DESIGNS[d].id);
+                            assert!(app.hits.iter().any(|(r, h)| *h == Hit::Swap(now.id, 1) && r.y == rect.y), "{} {w}x{h}: no ▸ on {now:?}", crate::design::DESIGNS[d].id);
                         }
-                        app.swap_widget(&now, 1);
+                        app.swap_widget(now.id, 1);
                     }
                 }
             }
@@ -2804,7 +2825,7 @@ mod tests {
         wheel(&mut app, link.x + 1, link.y);
         assert_eq!(app.artist.as_ref().unwrap().top_sel, 1);
         // below the songs, over the Shelves (Cards or not): the page scrolls by lines
-        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 48 - 5), 2.0).slots.into_iter().find(|(s, _)| s == "home").unwrap().1;
+        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 48 - 5), 2.0).rect_of(Widget::Home).unwrap();
         wheel(&mut app, home.right() - 3, home.bottom() - 3);
         render(&mut app, 200, 48);
         assert!(app.artist.as_ref().unwrap().shelves.offset > 0, "the Shelves scrolled");
@@ -2883,10 +2904,10 @@ mod tests {
         app.tick();
         assert!(sent(&mut rx).is_empty());
         // a karaoke Pane coming on screen asks again, for word timing too (D67); once
-        assert!(app.layout.swap("lyrics", "karaoke"));
+        assert!(app.layout.swap(Widget::Lyrics, Widget::Karaoke));
         app.tick();
         assert_eq!(sent(&mut rx), vec![Command::GetLyrics { uri: "spotify:track:s".into(), words: true }]);
-        assert!(app.layout.swap("karaoke", "lyrics"));
+        assert!(app.layout.swap(Widget::Karaoke, Widget::Lyrics));
         app.tick();
         assert!(sent(&mut rx).is_empty(), "word timing already asked for: lyrics alone needn't ask again");
         let lines = (0..20).map(|i| LyricLine { start_ms: i * 5_000, text: format!("line {i}"), ..Default::default() }).collect();
@@ -3214,7 +3235,7 @@ mod tests {
 
     /// What a stray event could move behind a popup.
     fn behind(app: &App) -> String {
-        format!("{:?} {:?} {} {} {} {:?}", app.sidebar.sel, app.queue_view.sel, app.focus, app.playback.volume, app.home_view.offset, app.playback.position_ms)
+        format!("{:?} {:?} {:?} {} {} {:?}", app.sidebar.sel, app.queue_view.sel, app.focused(), app.playback.volume, app.home_view.offset, app.playback.position_ms)
     }
 
     /// Every mouse event the terminal can send, at points all over the screen: nothing behind the popup moves.
@@ -3301,7 +3322,7 @@ mod tests {
             Modal::Naming => app.open_popup(crate::app::Popup::Naming(crate::app::Naming::playlist())),
             Modal::Widgets => {
                 let items = crate::layouts::all_widgets().take(8).collect();
-                app.open_popup(crate::app::Popup::Widgets(crate::arrange::WidgetPick { target: "home".into(), side: crate::tiling::Side::Right, items, sel: 0 }));
+                app.open_popup(crate::app::Popup::Widgets(crate::arrange::WidgetPick { target: app.layout.pane_of(Widget::Home).unwrap(), side: crate::tiling::Side::Right, items, sel: 0 }));
             }
             Modal::Details => {
                 let description = (0..40).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
@@ -3711,5 +3732,30 @@ mod tests {
         click(&mut app, b.x + 1, b.y);
         assert_eq!(sent(&mut rx), vec![Command::SetSaved { uri: "spotify:playlist:p".into(), saved: false }]);
         assert!(render(&mut app, 160, 48).contains("♡ Save"));
+    }
+
+    /// An empty Pane (nothing makes one yet, D87) is drawn as a bare frame: no title, nothing inside, and the focus on
+    /// it is on no Widget.
+    #[test]
+    fn an_empty_pane_is_drawn_as_a_bare_frame() {
+        let mut app = App::new(None);
+        use crate::layout::{Axis, Node, Size};
+        app.layout = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::pane(Widget::Home), Node::empty());
+        let gap = app.layout.panes()[1];
+        assert_eq!(gap.widget, None);
+        app.focus = Some(gap.id);
+        assert_eq!(app.focused(), None);
+        assert!(!app.is_focused(Widget::Home));
+        let s = render(&mut app, 120, 40);
+        let r = app.layout.compute_shaped(app.body, 2.0).rect(gap.id).unwrap();
+        let rows: Vec<String> = s.lines().skip(r.y as usize).take(r.height as usize).map(|l| l.chars().skip(r.x as usize).take(r.width as usize).collect()).collect();
+        assert!(rows[0].starts_with('┌') || rows[0].starts_with('╭'), "a frame: {:?}", rows[0]);
+        assert!(!rows[0].chars().any(char::is_alphanumeric) && rows[0].contains("┌──"), "no title: {:?}", rows[0]);
+        assert!(rows[1..rows.len() - 1].iter().all(|l| l.chars().skip(1).take(r.width as usize - 2).all(|c| c == ' ')), "nothing inside:\n{}", rows.join("\n"));
+        assert!(app.hits.iter().any(|(_, h)| *h == Hit::Focus(gap.id)), "a click focuses it");
+        // v on it: nothing to swap, and it isn't the hole's, so the Disk look stays
+        let (look, layout) = (app.hole.look, app.layout.clone());
+        app.run(Action::NextLook);
+        assert_eq!((app.hole.look, &app.layout), (look, &layout));
     }
 }

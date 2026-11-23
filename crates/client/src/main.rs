@@ -2,6 +2,7 @@
 
 mod app;
 mod openlist;
+mod pane;
 mod receive;
 mod arrange;
 mod artist;

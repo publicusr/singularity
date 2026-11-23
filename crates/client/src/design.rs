@@ -1,6 +1,6 @@
 //! Designs (#18, D8): each is a Layout preset and the Themes made for it, shipped together. Singularity is the default.
 
-use crate::layout::Node;
+use crate::layout::{Node, Widget};
 
 pub struct Design {
     /// `ui.design` in config.toml
@@ -15,7 +15,7 @@ pub struct Design {
     /// the player bar's prompt (`singularity:~$`); None: a plain "Playing from …" line
     pub prompt: Option<&'static str>,
     /// Pane titles that differ from the usual ones
-    pub titles: &'static [(&'static str, &'static str)],
+    pub titles: &'static [(Widget, &'static str)],
 }
 
 pub const DESIGNS: [Design; 6] = [
@@ -37,7 +37,7 @@ pub const DESIGNS: [Design; 6] = [
         themes: &["event-horizon"],
         look: 1,
         prompt: None,
-        titles: &[("queue", "up next"), ("lyrics", "lyrics")],
+        titles: &[(Widget::Queue, "up next"), (Widget::Lyrics, "lyrics")],
     },
     Design {
         id: "classic",
@@ -47,7 +47,7 @@ pub const DESIGNS: [Design; 6] = [
         themes: &["classic"],
         look: 0,
         prompt: None,
-        titles: &[("library", "Your Library"), ("home", "Home"), ("queue", "Queue"), ("lyrics", "Lyrics")],
+        titles: &[(Widget::Library, "Your Library"), (Widget::Home, "Home"), (Widget::Queue, "Queue"), (Widget::Lyrics, "Lyrics")],
     },
     Design {
         id: "cockpit",
@@ -57,7 +57,7 @@ pub const DESIGNS: [Design; 6] = [
         themes: &["cockpit-btop", "cockpit-ice", "cockpit-amber", "cockpit-violet", "cockpit-mono"],
         look: 4,
         prompt: None,
-        titles: &[("fft", "spectrum"), ("library", "library")],
+        titles: &[(Widget::Fft, "spectrum"), (Widget::Library, "library")],
     },
     Design {
         id: "terminal",
@@ -67,7 +67,7 @@ pub const DESIGNS: [Design; 6] = [
         themes: &["terminal-green", "terminal-amber", "terminal-ice"],
         look: 1,
         prompt: Some("you@singularity"),
-        titles: &[("library", "tree"), ("rain", "rain --audio")],
+        titles: &[(Widget::Library, "tree"), (Widget::Rain, "rain --audio")],
     },
     Design {
         id: "karaoke",
@@ -77,7 +77,7 @@ pub const DESIGNS: [Design; 6] = [
         themes: &["neon", "sunset", "lagoon"],
         look: 3,
         prompt: None,
-        titles: &[("karaoke", "♪ karaoke"), ("lyrics", "the whole song"), ("glow", "now playing")],
+        titles: &[(Widget::Karaoke, "♪ karaoke"), (Widget::Lyrics, "the whole song"), (Widget::Glow, "now playing")],
     },
 ];
 
@@ -86,8 +86,8 @@ pub fn by_id(id: &str) -> Option<usize> {
 }
 
 /// A Pane's title in design `d`.
-pub fn title(d: usize, slot: &str, usual: &'static str) -> &'static str {
-    DESIGNS[d].titles.iter().find(|(s, _)| *s == slot).map(|(_, t)| *t).unwrap_or(usual)
+pub fn title(d: usize, w: Widget, usual: &'static str) -> &'static str {
+    DESIGNS[d].titles.iter().find(|(s, _)| *s == w).map(|(_, t)| *t).unwrap_or(usual)
 }
 
 #[cfg(test)]
@@ -97,8 +97,8 @@ mod tests {
     #[test]
     fn every_design_has_a_home_pane_and_real_themes() {
         for d in &DESIGNS {
-            let slots = (d.layout)().compute(ratatui::layout::Rect::new(0, 0, 200, 60)).slots;
-            assert!(slots.iter().any(|(s, _)| s == "home"), "{}: browsing needs a home Pane", d.id);
+            let slots = (d.layout)().compute(ratatui::layout::Rect::new(0, 0, 200, 60)).panes;
+            assert!(slots.iter().any(|(p, _)| p.holds(Widget::Home)), "{}: browsing needs a home Pane", d.id);
             for t in d.themes {
                 assert!(crate::theme::builtin(t).is_some(), "{}: {t}", d.id);
             }

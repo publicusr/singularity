@@ -89,7 +89,7 @@ pub fn target(app: &App, d: QueueDrag, y: u16) -> QueueDrag {
     let Some((start, len)) = section(app, d.from) else { return d };
     let nq = queued(app);
     let from_context = app.playback.queue[d.from].source != "queue";
-    let Some(pane) = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(s) if s == "queue").then_some(*r)) else { return d };
+    let Some(pane) = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if app.layout.widget_in(*p) == Some(crate::layout::Widget::Queue)).then_some(*r)) else { return d };
     // lines start under "now playing" and a blank row, inside the frame
     let first = pane.y + 1 + 2;
     let all = lines(app);
@@ -217,7 +217,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         }
     }
     view.top = view.top.min(all.len().saturating_sub(view.visible));
-    let focused = app.focus == "queue";
+    let focused = app.is_focused(crate::layout::Widget::Queue);
     let mut hits = vec![];
     // (a Pane a row or two tall has no rows for the list, but keeps its place in it)
     for line in all.iter().skip(view.top).take(body) {

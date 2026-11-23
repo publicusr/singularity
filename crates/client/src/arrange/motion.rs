@@ -8,6 +8,7 @@
 //! bends the path from the speed it already has instead of starting a fresh curve (the owner's "teleporting" when a
 //! fast drag changed the target every few frames, 2026-11-01).
 
+use crate::layout::{Node, PaneId};
 use ratatui::layout::Rect;
 use std::time::Instant;
 #[cfg(test)]
@@ -112,7 +113,7 @@ pub struct Motion {
     /// off: everything is drawn where the layout puts it (tests, unless they ask)
     pub on: bool,
     area: Rect,
-    panes: Vec<(String, RectSpring)>,
+    panes: Vec<(PaneId, RectSpring)>,
     /// the last frame, and the time since the one before it (s)
     last: Option<Instant>,
     dt: f32,
@@ -122,8 +123,8 @@ pub struct Motion {
     pub lift: Spring,
     /// the Pane flying from where it was let go into its slot
     pub float: Option<RectSpring>,
-    /// that Pane's name: drawn raised until it lands
-    pub landing: Option<String>,
+    /// that Pane: drawn raised until it lands
+    pub landing: Option<PaneId>,
 }
 
 impl Motion {
@@ -167,10 +168,10 @@ impl Motion {
     }
 
     /// The held Pane let go at `from`: it flies to `to`, drawn over the rest until it is there.
-    pub fn land(&mut self, slot: &str, from: Rect, to: Rect) {
+    pub fn land(&mut self, pane: PaneId, from: Rect, to: Rect) {
         if self.on && from != to {
             self.float = Some(RectSpring::from_to(from, to));
-            self.landing = Some(slot.into());
+            self.landing = Some(pane);
         } else {
             self.float = None;
             self.landing = None;
@@ -190,7 +191,7 @@ impl Motion {
     /// This frame's rectangles for `targets` (where the layout puts each Pane) into `out`, index for index. A Pane
     /// whose target changed springs there from where it was, at the speed it had; a new Pane appears in place; `snap`
     /// (a divider being dragged, a new terminal size) puts everything where it belongs at once.
-    pub fn step(&mut self, targets: &[(String, Rect)], area: Rect, snap: bool, out: &mut Vec<Rect>) {
+    pub fn step(&mut self, targets: &[(PaneId, Rect)], area: Rect, snap: bool, out: &mut Vec<Rect>) {
         let moved = area != self.area;
         let snap = snap || !self.on || moved;
         self.area = area;
@@ -199,8 +200,8 @@ impl Motion {
             self.panes.retain(|(s, _)| targets.iter().any(|(t, _)| t == s));
         }
         out.clear();
-        for (name, to) in targets {
-            let r = match self.panes.iter_mut().find(|(s, _)| s == name) {
+        for (id, to) in targets {
+            let r = match self.panes.iter_mut().find(|(s, _)| s == id) {
                 Some((_, sp)) if snap => {
                     *sp = RectSpring::still(*to);
                     *to
@@ -211,7 +212,7 @@ impl Motion {
                     sp.rect()
                 }
                 None => {
-                    self.panes.push((name.clone(), RectSpring::still(*to)));
+                    self.panes.push((*id, RectSpring::still(*to)));
                     *to
                 }
             };
@@ -222,6 +223,18 @@ impl Motion {
         if moved {
             self.float = None;
             self.landing = None;
+        }
+    }
+
+    /// The layout `old` was replaced by `new` as a whole (another Design, a saved one, undo): its Panes are other
+    /// Panes, so each spring goes to the Pane that now shows its Widget (it springs from where that Widget was); the
+    /// rest are forgotten and appear in place.
+    pub fn rekey(&mut self, old: &Node, new: &Node) {
+        let to = |id: PaneId| old.widget_in(id).and_then(|w| new.pane_of(w));
+        self.panes = std::mem::take(&mut self.panes).into_iter().filter_map(|(id, s)| Some((to(id)?, s))).collect();
+        self.landing = self.landing.and_then(to);
+        if self.landing.is_none() {
+            self.float = None;
         }
     }
 
@@ -355,12 +368,12 @@ mod tests {
         let area = Rect::new(0, 1, 100, 40);
         let mut m = Motion::new(true);
         let mut out = vec![];
-        let a = vec![("x".to_string(), Rect::new(0, 1, 50, 40)), ("y".to_string(), Rect::new(50, 1, 50, 40))];
+        let a = vec![(PaneId(1), Rect::new(0, 1, 50, 40)), (PaneId(2), Rect::new(50, 1, 50, 40))];
         m.frame_dt(0.0);
         m.step(&a, area, false, &mut out);
         assert_eq!(out, vec![a[0].1, a[1].1], "the first frame is where they are");
         // swapped: both on their way, then there
-        let b = vec![("x".to_string(), Rect::new(50, 1, 50, 40)), ("y".to_string(), Rect::new(0, 1, 50, 40))];
+        let b = vec![(PaneId(1), Rect::new(50, 1, 50, 40)), (PaneId(2), Rect::new(0, 1, 50, 40))];
         m.frame_dt(0.0);
         m.step(&b, area, false, &mut out);
         assert_eq!(out, vec![a[0].1, a[1].1]);
@@ -377,7 +390,7 @@ mod tests {
         assert_eq!(out, vec![b[0].1, b[1].1]);
         assert!(!m.busy());
         // a third Pane appears where it belongs; one that left is forgotten
-        let c = vec![("x".to_string(), Rect::new(0, 1, 30, 40)), ("z".to_string(), Rect::new(30, 1, 70, 40))];
+        let c = vec![(PaneId(1), Rect::new(0, 1, 30, 40)), (PaneId(3), Rect::new(30, 1, 70, 40))];
         m.step(&c, area, false, &mut out);
         assert_eq!(out[1], c[1].1);
         assert_eq!(m.panes.len(), 2);
@@ -388,7 +401,7 @@ mod tests {
         let small = Rect::new(0, 1, 60, 20);
         m.frame_dt(0.02);
         m.step(&b, area, false, &mut out);
-        m.step(&[("x".to_string(), Rect::new(30, 1, 30, 20))], small, false, &mut out);
+        m.step(&[(PaneId(1), Rect::new(30, 1, 30, 20))], small, false, &mut out);
         assert_eq!(out, vec![Rect::new(30, 1, 30, 20)]);
         // off: always where they belong
         let mut off = Motion::new(false);
@@ -408,7 +421,7 @@ mod tests {
         assert!((0.3..0.8).contains(&m.lifted_by()), "{}", m.lifted_by());
         m.frame_dt(SETTLE.as_secs_f32());
         assert_eq!(m.lifted_by(), 1.0);
-        m.land("p", Rect::new(40, 10, 20, 8), Rect::new(0, 1, 50, 20));
+        m.land(PaneId(1), Rect::new(40, 10, 20, 8), Rect::new(0, 1, 50, 20));
         assert!(m.busy() && m.landing.is_some());
         m.frame_dt(0.05);
         let mid = m.float_at().unwrap();

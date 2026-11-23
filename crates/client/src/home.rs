@@ -339,7 +339,7 @@ pub fn draw_feed(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, feed: Hom
     let aspect = app.cell_px.map(|(w, h)| h / w).unwrap_or(2.0);
     let (rows, m) = rows(&feed, r.width, r.height, aspect);
     view.rows = rows;
-    let focused = app.focus == "home";
+    let focused = app.is_focused(crate::layout::Widget::Home);
     view.height = r.height;
     view.offset = view.offset.min(view.max_offset());
     let x0 = r.x + 1;

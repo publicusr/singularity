@@ -10,65 +10,7 @@
 use crate::app::{App, Hit, Page};
 use crate::scroll::moved;
 
-/// Declares `Widget`, `Widget::ALL` and the Slot names from one list.
-macro_rules! widgets {
-    ($($(#[$doc:meta])* $v:ident = $slot:literal,)*) => {
-        /// What a Pane shows, by its Slot name (`layout::Node::Slot`).
-        ///
-        /// Adding a Widget? Add it here; the compiler then asks for its arm in `App::pane_wheel` (what the wheel does
-        /// over it) and in the wheel test's fixture (something that overflows it).
-        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-        pub(crate) enum Widget {
-            $($(#[$doc])* $v,)*
-        }
-
-        impl Widget {
-            #[cfg_attr(not(test), allow(dead_code))]
-            pub(crate) const ALL: &[Widget] = &[$(Widget::$v),*];
-
-            /// The Slot name a layout uses for it.
-            #[cfg_attr(not(test), allow(dead_code))]
-            pub(crate) fn slot(self) -> &'static str {
-                match self {
-                    $(Widget::$v => $slot,)*
-                }
-            }
-
-            /// The Widget a Slot shows (a saved layout may name one this build doesn't have).
-            pub(crate) fn of(slot: &str) -> Option<Widget> {
-                match slot {
-                    $($slot => Some(Widget::$v),)*
-                    _ => None,
-                }
-            }
-        }
-    };
-}
-
-widgets! {
-    Library = "library",
-    /// the main Pane: what the wheel does depends on its page (`App::page_wheel`)
-    Home = "home",
-    Queue = "queue",
-    Lyrics = "lyrics",
-    Karaoke = "karaoke",
-    Stream = "stream",
-    NowPlaying = "nowplaying",
-    Top = "top",
-    Listening = "listening",
-    Today = "today",
-    TopWeek = "topweek",
-    Marquee = "marquee",
-    Glow = "glow",
-    Fft = "fft",
-    Loudness = "loudness",
-    Levels = "levels",
-    Scope = "scope",
-    Rain = "rain",
-    Starfield = "starfield",
-    Well = "well",
-    Hole = "hole",
-}
+pub(crate) use crate::pane::Widget;
 
 impl App {
     /// The wheel over Pane `w` at (`x`, `y`): `rows` notches down (negative: up), `coarse` with Shift (a page). Every
@@ -76,17 +18,17 @@ impl App {
     pub(crate) fn pane_wheel(&mut self, w: Widget, x: u16, y: u16, rows: i32, coarse: bool) {
         match w {
             Widget::Home => {
-                self.focus = "home".into();
+                self.focus_on(Widget::Home);
                 self.page_wheel(self.current_page(), x, y, rows, coarse);
             }
             Widget::Library => {
-                self.focus = "library".into();
+                self.focus_on(Widget::Library);
                 let n = crate::sidebar::len(self);
                 let step = if coarse { self.sidebar.visible.max(1) as i64 } else { 1 };
                 self.sidebar.move_sel(rows as i64 * step, n);
             }
             Widget::Queue => {
-                self.focus = "queue".into();
+                self.focus_on(Widget::Queue);
                 let n = self.playback.queue.len();
                 let step = if coarse { self.queue_view.visible.max(1) as i64 } else { 1 };
                 self.queue_view.move_sel(rows as i64 * step, n);
@@ -95,23 +37,25 @@ impl App {
             // again; unsynced ones stay where the reader took them
             Widget::Lyrics => {
                 if self.lyrics.wheel_lyrics(rows * if coarse { 10 } else { 3 }) {
-                    self.focus = "lyrics".into();
+                    self.focus_on(Widget::Lyrics);
                 }
             }
             // the line being sung is the whole point when the lyrics are synced (the whole song is the lyrics
             // Widget's); unsynced, it shows the whole text, which the wheel scrolls for a while
             Widget::Karaoke => {
                 if self.lyrics.wheel_karaoke(rows * if coarse { 10 } else { 3 }) {
-                    self.focus = "karaoke".into();
+                    self.focus_on(Widget::Karaoke);
                 }
             }
             Widget::TopWeek => {
-                self.focus = "topweek".into();
+                self.focus_on(Widget::TopWeek);
                 self.top_week_scroll.by(rows * if coarse { 5 } else { 1 });
             }
             // they scale to their Pane (size tiers) rather than cut anything off, or are Visuals: nothing to scroll
             Widget::Stream | Widget::NowPlaying | Widget::Top | Widget::Listening | Widget::Today | Widget::Marquee | Widget::Glow => {}
             Widget::Fft | Widget::Loudness | Widget::Levels | Widget::Scope | Widget::Rain | Widget::Starfield | Widget::Well | Widget::Hole => {}
+            // another build's Widget: nothing is drawn in it
+            Widget::Unknown(_) => {}
         }
     }
 

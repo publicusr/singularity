@@ -334,7 +334,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
     let mut v = std::mem::take(&mut app.search);
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
-    let focused = app.focus == "home";
+    let focused = app.is_focused(crate::layout::Widget::Home);
     // the query, in the same bar Home shows
     bar(buf, Rect::new(x, r.y, w, 1), v.query(), focused, "Tab: filter · Esc: back", th);
     // chips

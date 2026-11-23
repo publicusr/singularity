@@ -40,7 +40,7 @@ pub fn draw(buf: &mut Buffer, outer: Rect, app: &mut App, th: &Theme) {
     if render(buf, inner, app) {
         app.hole_at = Some(Hole { well: outer, cx: inner.x as f32 + inner.width as f32 / 2.0, cy: inner.y as f32 + inner.height as f32 / 2.0 });
     }
-    let focused = app.focus == "well";
+    let focused = app.is_focused(crate::layout::Widget::Well);
     warped_frame(buf, outer, 0.5 + app.hole.bass() * 0.9, if focused { [th.border_focus, th.accent] } else { [th.border, th.dim] });
     text(buf, outer.x + 2, outer.y, 14, " gravity well ", if focused { th.title() } else { th.s(th.accent) });
     look_label(buf, outer, app, th);

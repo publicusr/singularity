@@ -36,20 +36,29 @@ fn shift(app: &mut App, code: KeyCode) {
     app.key(KeyEvent::new(code, KeyModifiers::SHIFT));
 }
 
-/// A drawn Pane's rectangle, from the hit boxes of the last frame.
-fn pane(app: &App, slot: &str) -> Rect {
-    app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(s) if s == slot).then_some(*r)).unwrap_or_else(|| panic!("no pane {slot}"))
+/// The Pane showing `w`.
+fn pid(app: &App, w: Widget) -> PaneId {
+    app.layout.pane_of(w).unwrap_or_else(|| panic!("no Pane shows {w}"))
 }
-/// A spot on a Pane's title bar that is neither a button nor a divider's.
-fn title_spot(app: &App, slot: &str) -> (u16, u16) {
-    let r = pane(app, slot);
+/// The drawn Pane showing `w`'s rectangle, from the hit boxes of the last frame.
+fn pane(app: &App, w: Widget) -> Rect {
+    let id = pid(app, w);
+    app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if *p == id).then_some(*r)).unwrap_or_else(|| panic!("no pane {w}"))
+}
+/// A spot on the title bar of the Pane showing `w` that is neither a button nor a divider's.
+fn title_spot(app: &App, w: Widget) -> (u16, u16) {
+    let r = pane(app, w);
     (r.x + 3, r.y)
+}
+/// `n` with the Panes showing `x` and `y` trading places.
+fn swapped(n: Node, x: Widget, y: Widget) -> Node {
+    n.swapped(n.pane_of(x).unwrap(), n.pane_of(y).unwrap()).unwrap()
 }
 fn centre(r: Rect) -> (u16, u16) {
     (r.x + r.width / 2, r.y + r.height / 2)
 }
-fn rects(app: &App) -> Vec<(String, Rect)> {
-    app.layout.compute_shaped(app.pane_area(), app.cell_aspect()).slots
+fn rects(app: &App) -> Vec<(Pane, Rect)> {
+    app.layout.compute_shaped(app.pane_area(), app.cell_aspect()).panes
 }
 
 const W: u16 = 160;
@@ -73,10 +82,10 @@ fn with_dirs() -> (App, tempfile::TempDir) {
 fn a_title_press_without_movement_is_a_click() {
     let mut a = app();
     let before = a.layout.clone();
-    let (x, y) = title_spot(&a, "queue");
+    let (x, y) = title_spot(&a, Widget::Queue);
     press(&mut a, x, y);
     release(&mut a, x + 1, y);
-    assert_eq!(a.focus, "queue");
+    assert_eq!(a.focused(), Some(Widget::Queue));
     assert_eq!(a.layout, before);
     assert!(a.tile.is_none() && a.naming().is_none());
 }
@@ -84,22 +93,22 @@ fn a_title_press_without_movement_is_a_click() {
 #[test]
 fn dragging_a_title_onto_a_centre_swaps_with_a_live_preview() {
     let mut a = app();
-    let (old_stream, old_queue) = (pane(&a, "stream"), pane(&a, "queue"));
+    let (old_stream, old_queue) = (pane(&a, Widget::Stream), pane(&a, Widget::Queue));
     let before = a.layout.clone();
-    let (x, y) = title_spot(&a, "stream");
+    let (x, y) = title_spot(&a, Widget::Stream);
     press(&mut a, x, y);
     let (cx, cy) = centre(old_queue);
     drag(&mut a, cx, cy);
     // nothing is committed yet, but the whole layout is drawn as it would be
     assert_eq!(a.layout, before);
     let shot = render(&mut a, W, H);
-    assert_eq!(pane(&a, "stream"), old_queue, "the preview puts it where the pointer is");
-    assert_eq!(pane(&a, "queue"), old_stream);
+    assert_eq!(pane(&a, Widget::Stream), old_queue, "the preview puts it where the pointer is");
+    assert_eq!(pane(&a, Widget::Queue), old_stream);
     assert!(shot.contains(" ⠿ stream "), "the held Pane follows the pointer");
     release(&mut a, cx, cy);
     assert!(a.tile.is_none());
-    assert_eq!(rects(&a).iter().find(|(s, _)| s == "stream").unwrap().1, old_queue);
-    assert_eq!(a.focus, "stream");
+    assert_eq!(rects(&a).iter().find(|(p, _)| p.holds(Widget::Stream)).unwrap().1, old_queue);
+    assert_eq!(a.focused(), Some(Widget::Stream));
     let after = render(&mut a, W, H);
     assert!(!after.contains(" ⠿ "), "it is down");
 }
@@ -107,24 +116,24 @@ fn dragging_a_title_onto_a_centre_swaps_with_a_live_preview() {
 #[test]
 fn an_edge_band_splits_the_pane_and_the_screen_edge_makes_a_column() {
     let mut a = app();
-    let q = pane(&a, "queue");
-    let (x, y) = title_spot(&a, "fft");
+    let q = pane(&a, Widget::Queue);
+    let (x, y) = title_spot(&a, Widget::Fft);
     press(&mut a, x, y);
     // the left edge of the queue: fft goes to its left
     drag(&mut a, q.x + 1, q.y + q.height / 2);
     let Some(Zone::Beside(t, Side::Left)) = a.tile.as_ref().unwrap().zone.clone() else { panic!("{:?}", a.tile.as_ref().unwrap().zone) };
-    assert_eq!(t, "queue");
+    assert_eq!(t, pid(&a, Widget::Queue));
     release(&mut a, q.x + 1, q.y + q.height / 2);
     render(&mut a, W, H);
-    let (f, q2) = (pane(&a, "fft"), pane(&a, "queue"));
+    let (f, q2) = (pane(&a, Widget::Fft), pane(&a, Widget::Queue));
     assert_eq!((f.y, f.height, f.right()), (q2.y, q2.height, q2.x), "side by side: {f:?} {q2:?}");
     // the screen's left edge: a column of its own, the full height
-    let (x, y) = title_spot(&a, "lyrics");
+    let (x, y) = title_spot(&a, Widget::Lyrics);
     press(&mut a, x, y);
     drag(&mut a, 0, 20);
     release(&mut a, 0, 20);
     render(&mut a, W, H);
-    let l = pane(&a, "lyrics");
+    let l = pane(&a, Widget::Lyrics);
     assert_eq!((l.x, l.y, l.height), (0, a.pane_area().y, a.pane_area().height));
     assert!((20..=56).contains(&l.width), "{l:?}");
 }
@@ -133,8 +142,8 @@ fn an_edge_band_splits_the_pane_and_the_screen_edge_makes_a_column() {
 fn esc_or_a_drop_nowhere_leaves_the_layout_alone() {
     let mut a = app();
     let before = a.layout.clone();
-    let q = pane(&a, "queue");
-    let (x, y) = title_spot(&a, "stream");
+    let q = pane(&a, Widget::Queue);
+    let (x, y) = title_spot(&a, Widget::Stream);
     press(&mut a, x, y);
     drag(&mut a, centre(q).0, centre(q).1);
     assert!(a.tile.as_ref().unwrap().preview.is_some());
@@ -143,7 +152,7 @@ fn esc_or_a_drop_nowhere_leaves_the_layout_alone() {
     release(&mut a, centre(q).0, centre(q).1);
     assert_eq!(a.layout, before);
     render(&mut a, W, H);
-    assert_eq!(pane(&a, "queue"), q, "drawn as it was");
+    assert_eq!(pane(&a, Widget::Queue), q, "drawn as it was");
     // over its own place: nothing to drop on, and the empty slot says it goes back there
     press(&mut a, x, y);
     drag(&mut a, x + 5, y + 4);
@@ -160,26 +169,26 @@ fn a_drop_that_would_squash_a_pane_is_not_offered() {
     let mut a = App::new(None);
     // 50 columns hold four Panes of 12 side by side, not five
     let row = |x: Node, y: Node| Node::split(Horizontal, Ratio(0.5), x, y);
-    let top = row(Node::slot("library"), row(Node::slot("home"), row(Node::slot("queue"), Node::slot("fft"))));
-    a.layout = Node::split(Vertical, Ratio(0.5), top, Node::slot("lyrics"));
+    let top = row(Node::pane(Widget::Library), row(Node::pane(Widget::Home), row(Node::pane(Widget::Queue), Node::pane(Widget::Fft))));
+    a.layout = Node::split(Vertical, Ratio(0.5), top, Node::pane(Widget::Lyrics));
     render(&mut a, 50, 24);
     let before = a.layout.clone();
-    let (x, y) = title_spot(&a, "lyrics");
+    let (x, y) = title_spot(&a, Widget::Lyrics);
     press(&mut a, x, y);
-    let q = pane(&a, "queue");
+    let q = pane(&a, Widget::Queue);
     // a whole column at the screen's left edge: the four left in the row would be 9 columns each
     let edge = (0, q.y + q.height / 2);
     drag(&mut a, edge.0, edge.1);
     assert!(a.tile.as_ref().unwrap().zone.is_none(), "no highlight");
     assert_eq!(render(&mut a, 50, 24).matches('⠿').count(), 1, "only the ghost");
-    assert_eq!(pane(&a, "queue"), q, "the original layout stays");
+    assert_eq!(pane(&a, Widget::Queue), q, "the original layout stays");
     release(&mut a, edge.0, edge.1);
     assert_eq!(a.layout, before);
     assert!(a.naming().is_none());
     // the queue's edge, 12 columns wide, is no split (it would squash, and be uncomfortable anyway): its centre's
     press(&mut a, x, y);
     drag(&mut a, q.right() - 1, q.y + q.height / 2);
-    assert_eq!(a.tile.as_ref().unwrap().zone, Some(Zone::Swap("queue".into())));
+    assert_eq!(a.tile.as_ref().unwrap().zone, Some(Zone::Swap(pid(&a, Widget::Queue))));
     drag(&mut a, centre(q).0, centre(q).1);
     assert!(matches!(a.tile.as_ref().unwrap().zone, Some(Zone::Swap(_))));
     release(&mut a, centre(q).0, centre(q).1);
@@ -191,47 +200,47 @@ fn the_x_closes_a_pane_and_the_core_four_have_none() {
     let mut a = app();
     let shot = render(&mut a, W, H);
     assert!(shot.contains(" × "));
-    for core in ["home", "library", "queue", "lyrics"] {
-        assert!(!a.hits.iter().any(|(_, h)| matches!(h, Hit::Close(s) if s == core)), "{core} has a ×");
+    for core in crate::tiling::CORE {
+        assert!(!a.hits.iter().any(|(_, h)| matches!(h, Hit::Close(p) if *p == pid(&a, core))), "{core} has a ×");
     }
-    let fft = pane(&a, "fft");
-    let old_loudness = pane(&a, "loudness");
-    let (r, _) = a.hits.iter().find(|(_, h)| matches!(h, Hit::Close(s) if s == "fft")).cloned().unwrap();
+    let fft = pane(&a, Widget::Fft);
+    let old_loudness = pane(&a, Widget::Loudness);
+    let (r, _) = a.hits.iter().find(|(_, h)| matches!(h, Hit::Close(p) if Some(*p) == a.layout.pane_of(Widget::Fft))).cloned().unwrap();
     assert!(r.y == fft.y && r.right() <= fft.right());
     press(&mut a, r.x + 1, r.y);
     release(&mut a, r.x + 1, r.y);
-    assert!(!a.layout.has("fft"));
+    assert!(!a.layout.has(Widget::Fft));
     render(&mut a, W, H);
-    assert_eq!(pane(&a, "loudness").right(), fft.right(), "the neighbour took its room");
-    assert!(pane(&a, "loudness").width > old_loudness.width);
+    assert_eq!(pane(&a, Widget::Loudness).right(), fft.right(), "the neighbour took its room");
+    assert!(pane(&a, Widget::Loudness).width > old_loudness.width);
     // Close refuses on Home with a notice
-    a.focus = "home".into();
+    a.focus_on(Widget::Home);
     a.run(Action::ClosePane);
-    assert!(a.layout.has("home") && a.toast.as_ref().is_some_and(|(t, _)| t.contains("never closed")), "{:?}", a.toast);
+    assert!(a.layout.has(Widget::Home) && a.toast.as_ref().is_some_and(|(t, _)| t.contains("never closed")), "{:?}", a.toast);
 }
 
 #[test]
 fn splitting_offers_only_widgets_not_on_screen_and_adds_the_one_picked() {
     let mut a = app();
-    a.focus = "fft".into();
+    a.focus_on(Widget::Fft);
     a.run(Action::SplitRight);
     let p = a.widget_pick().expect("the Widget list opens");
-    assert!(p.items.contains(&"scope") && !p.items.contains(&"fft") && !p.items.contains(&"lyrics") && !p.items.contains(&"home"), "{:?}", p.items);
-    let at = p.items.iter().position(|w| *w == "scope").unwrap();
+    assert!(p.items.contains(&Widget::Scope) && !p.items.contains(&Widget::Fft) && !p.items.contains(&Widget::Lyrics) && !p.items.contains(&Widget::Home), "{:?}", p.items);
+    let at = p.items.iter().position(|w| *w == Widget::Scope).unwrap();
     let shot = render(&mut a, W, H);
     assert!(shot.contains("New pane right of fft"), "{shot}");
     for _ in 0..at {
         key(&mut a, KeyCode::Down);
     }
     key(&mut a, KeyCode::Enter);
-    assert!(a.widget_pick().is_none() && a.layout.has("scope") && a.layout.has("fft"));
+    assert!(a.widget_pick().is_none() && a.layout.has(Widget::Scope) && a.layout.has(Widget::Fft));
     render(&mut a, W, H);
-    let (f, s) = (pane(&a, "fft"), pane(&a, "scope"));
+    let (f, s) = (pane(&a, Widget::Fft), pane(&a, Widget::Scope));
     assert_eq!((f.y, f.height, f.right()), (s.y, s.height, s.x));
-    assert_eq!(a.focus, "scope");
+    assert_eq!(a.focused(), Some(Widget::Scope));
     // the tree stays unique: splitting again never offers what's there
     a.run(Action::SplitDown);
-    assert!(!a.widget_pick().unwrap().items.contains(&"scope"));
+    assert!(!a.widget_pick().unwrap().items.contains(&Widget::Scope));
     key(&mut a, KeyCode::Esc);
     assert!(a.widget_pick().is_none());
 }
@@ -240,7 +249,7 @@ fn splitting_offers_only_widgets_not_on_screen_and_adds_the_one_picked() {
 fn a_split_with_no_room_says_so() {
     let mut a = App::new(None);
     render(&mut a, 60, 20);
-    a.focus = "library".into();
+    a.focus_on(Widget::Library);
     // 60x20: nothing in Singularity can be halved again
     a.run(Action::SplitRight);
     assert!(a.widget_pick().is_none() && a.toast.as_ref().is_some_and(|(t, _)| t.contains("No room")), "{:?}", a.toast);
@@ -249,7 +258,7 @@ fn a_split_with_no_room_says_so() {
 #[test]
 fn right_clicking_a_title_offers_split_move_and_close() {
     let mut a = app();
-    let (x, y) = title_spot(&a, "fft");
+    let (x, y) = title_spot(&a, Widget::Fft);
     mouse(&mut a, MouseEventKind::Down(MouseButton::Right), x, y);
     let items: Vec<String> = a.menu().unwrap().items.iter().map(|(l, _)| l.clone()).collect();
     assert_eq!(items, ["Split right", "Split down", "Move pane", "Close pane"]);
@@ -259,7 +268,7 @@ fn right_clicking_a_title_offers_split_move_and_close() {
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.widget_pick().unwrap().side, Side::Bottom);
     key(&mut a, KeyCode::Esc);
-    let (x, y) = title_spot(&a, "home");
+    let (x, y) = title_spot(&a, Widget::Home);
     mouse(&mut a, MouseEventKind::Down(MouseButton::Right), x, y);
     assert!(!a.menu().unwrap().items.iter().any(|(l, _)| l == "Close pane"), "Home can't close");
 }
@@ -267,8 +276,8 @@ fn right_clicking_a_title_offers_split_move_and_close() {
 #[test]
 fn the_first_edit_of_a_built_in_design_asks_for_a_name_and_the_design_follows_its_file() {
     let (mut a, dir) = with_dirs();
-    let (x, y) = title_spot(&a, "stream");
-    let q = pane(&a, "queue");
+    let (x, y) = title_spot(&a, Widget::Stream);
+    let q = pane(&a, Widget::Queue);
     press(&mut a, x, y);
     drag(&mut a, centre(q).0, centre(q).1);
     release(&mut a, centre(q).0, centre(q).1);
@@ -291,8 +300,8 @@ fn the_first_edit_of_a_built_in_design_asks_for_a_name_and_the_design_follows_it
     assert!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap().contains("layout = \"mine\""));
     // further edits save into the same file without asking
     render(&mut a, W, H);
-    let lyrics = pane(&a, "lyrics");
-    let (x, y) = title_spot(&a, "loudness");
+    let lyrics = pane(&a, Widget::Lyrics);
+    let (x, y) = title_spot(&a, Widget::Loudness);
     press(&mut a, x, y);
     drag(&mut a, centre(lyrics).0, centre(lyrics).1);
     release(&mut a, centre(lyrics).0, centre(lyrics).1);
@@ -313,7 +322,7 @@ fn a_name_already_taken_is_refused_and_suggestions_count_up() {
     let (mut a, dir) = with_dirs();
     a.save_layout("Singularity 2");
     a.reset_design();
-    a.layout = Node::singularity().swapped("stream", "queue").unwrap();
+    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
     a.edited();
     assert_eq!(a.naming().unwrap().text, "Singularity 3", "2 is taken");
     for _ in 0..13 {
@@ -332,7 +341,7 @@ fn a_name_already_taken_is_refused_and_suggestions_count_up() {
 fn esc_keeps_one_unnamed_edit_per_design_that_later_edits_overwrite() {
     let (mut a, dir) = with_dirs();
     let layouts = dir.path().join("layouts");
-    a.layout = Node::singularity().swapped("stream", "queue").unwrap();
+    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
     a.edited();
     key(&mut a, KeyCode::Esc);
     assert!(a.naming().is_none());
@@ -341,7 +350,7 @@ fn esc_keeps_one_unnamed_edit_per_design_that_later_edits_overwrite() {
     assert_eq!(saved.len(), 1);
     assert!(saved[0].edited && saved[0].name == "Singularity (edited)" && saved[0].tree == a.layout);
     // more edits overwrite it, never a pile
-    a.layout = a.layout.swapped("home", "lyrics").unwrap();
+    a.layout = swapped(a.layout.clone(), Widget::Home, Widget::Lyrics);
     a.edited();
     assert!(a.naming().is_none());
     let saved = crate::layouts::load_dir(&layouts).0;
@@ -357,7 +366,7 @@ fn esc_keeps_one_unnamed_edit_per_design_that_later_edits_overwrite() {
     // from the built-in Design again, an unnamed edit replaces it
     a.set_design(0);
     a.layout_name = None;
-    a.layout = Node::singularity().swapped("fft", "loudness").unwrap();
+    a.layout = swapped(Node::singularity(), Widget::Fft, Widget::Loudness);
     a.edited();
     key(&mut a, KeyCode::Esc);
     let saved = crate::layouts::load_dir(&layouts).0;
@@ -366,7 +375,7 @@ fn esc_keeps_one_unnamed_edit_per_design_that_later_edits_overwrite() {
     // another Design has its own
     a.set_design(3);
     a.layout_name = None;
-    a.layout = Node::cockpit().swapped("fft", "loudness").unwrap();
+    a.layout = swapped(Node::cockpit(), Widget::Fft, Widget::Loudness);
     a.edited();
     key(&mut a, KeyCode::Esc);
     assert_eq!(crate::layouts::load_dir(&layouts).0.len(), 2);
@@ -376,7 +385,7 @@ fn esc_keeps_one_unnamed_edit_per_design_that_later_edits_overwrite() {
 fn reset_design_goes_back_to_the_built_in_one() {
     let (mut a, dir) = with_dirs();
     let layouts = dir.path().join("layouts");
-    a.layout = Node::singularity().swapped("stream", "queue").unwrap();
+    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
     a.edited();
     key(&mut a, KeyCode::Esc);
     a.run(Action::ResetLayout);
@@ -384,9 +393,9 @@ fn reset_design_goes_back_to_the_built_in_one() {
     assert_eq!(a.layout_name, None);
     assert!(crate::layouts::load_dir(&layouts).0.is_empty(), "the unnamed edit is dropped");
     // a Design of your own stays where it was saved
-    a.layout = Node::singularity().swapped("stream", "queue").unwrap();
+    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
     a.save_layout("Mine");
-    a.layout = a.layout.swapped("home", "lyrics").unwrap();
+    a.layout = swapped(a.layout.clone(), Widget::Home, Widget::Lyrics);
     a.edited();
     a.run(Action::ResetLayout);
     assert_eq!(a.layout, Node::singularity());
@@ -412,59 +421,59 @@ fn a_divider_will_not_squash_the_well() {
     let mut a = app();
     // the divider below the well, dragged as far up as it goes, then as far down
     for target in [0u16, 100] {
-        let well = pane(&a, "well");
+        let well = pane(&a, Widget::Well);
         let d = a.dividers.iter().find(|d| d.grip.y + 1 == well.bottom() && d.axis == crate::layout::Axis::Vertical).cloned().unwrap();
         press(&mut a, d.grip.x + 3, d.grip.y);
         drag(&mut a, d.grip.x + 3, target);
         release(&mut a, d.grip.x + 3, target);
         render(&mut a, W, H);
         assert!(a.layout.valid(a.pane_area(), a.cell_aspect()));
-        assert!(pane(&a, "well").height >= crate::layout::WELL_MIN_H);
+        assert!(pane(&a, Widget::Well).height >= crate::layout::WELL_MIN_H);
     }
 }
 
 #[test]
 fn move_mode_swaps_splits_resizes_and_closes_from_the_keyboard() {
     let mut a = app();
-    a.focus = "queue".into();
+    a.focus_on(Widget::Queue);
     key(&mut a, KeyCode::Char('m'));
-    assert_eq!(a.move_mode.as_deref(), Some("queue"));
+    assert_eq!(a.move_mode.and_then(|p| a.layout.widget_in(p)), Some(Widget::Queue));
     let shot = render(&mut a, W, H);
     assert!(shot.contains("MOVE queue") && shot.contains("swap"), "the bar says so");
     // ↑ swaps with the neighbour above
-    let (q, h) = (pane(&a, "queue"), pane(&a, "home"));
+    let (q, h) = (pane(&a, Widget::Queue), pane(&a, Widget::Home));
     assert_eq!(q.x, h.x, "queue sits under home");
     key(&mut a, KeyCode::Up);
     render(&mut a, W, H);
-    assert_eq!(pane(&a, "queue"), h);
-    assert_eq!(pane(&a, "home"), q);
+    assert_eq!(pane(&a, Widget::Queue), h);
+    assert_eq!(pane(&a, Widget::Home), q);
     // Shift+→ puts it on the right of what's to its right, as a split
     shift(&mut a, KeyCode::Right);
     render(&mut a, W, H);
-    let (qq, nb) = (pane(&a, "queue"), pane(&a, "well"));
+    let (qq, nb) = (pane(&a, Widget::Queue), pane(&a, Widget::Well));
     assert_eq!(qq.x, nb.right(), "beside the well, on its right: {qq:?} {nb:?}");
     // + grows, - shrinks
-    let w = pane(&a, "queue").width;
+    let w = pane(&a, Widget::Queue).width;
     key(&mut a, KeyCode::Char('-'));
     render(&mut a, W, H);
-    assert_eq!(pane(&a, "queue").width, w - 2);
+    assert_eq!(pane(&a, Widget::Queue).width, w - 2);
     key(&mut a, KeyCode::Char('+'));
     key(&mut a, KeyCode::Char('+'));
     render(&mut a, W, H);
-    assert_eq!(pane(&a, "queue").width, w + 2);
+    assert_eq!(pane(&a, Widget::Queue).width, w + 2);
     // the mouse doesn't act behind it: a click only ends the mode
-    let (x, y) = title_spot(&a, "lyrics");
+    let (x, y) = title_spot(&a, Widget::Lyrics);
     press(&mut a, x, y);
     assert!(a.move_mode.is_none() && a.tile.is_none());
     // x closes a Pane that may close; the four stay
-    a.focus = "fft".into();
+    a.focus_on(Widget::Fft);
     key(&mut a, KeyCode::Char('m'));
     key(&mut a, KeyCode::Char('x'));
-    assert!(!a.layout.has("fft") && a.move_mode.is_none());
-    a.focus = "home".into();
+    assert!(!a.layout.has(Widget::Fft) && a.move_mode.is_none());
+    a.focus_on(Widget::Home);
     key(&mut a, KeyCode::Char('m'));
     key(&mut a, KeyCode::Char('x'));
-    assert!(a.layout.has("home") && a.move_mode.is_some(), "refused, still moving");
+    assert!(a.layout.has(Widget::Home) && a.move_mode.is_some(), "refused, still moving");
     key(&mut a, KeyCode::Enter);
     assert!(a.move_mode.is_none());
     key(&mut a, KeyCode::Char('m'));
@@ -475,14 +484,14 @@ fn move_mode_swaps_splits_resizes_and_closes_from_the_keyboard() {
 #[test]
 fn move_mode_at_the_screen_edge_makes_a_column() {
     let mut a = app();
-    a.focus = "lyrics".into();
+    a.focus_on(Widget::Lyrics);
     key(&mut a, KeyCode::Char('m'));
     // nothing to the right of it: → says so, ⇧→ is a column on the screen's right edge
     key(&mut a, KeyCode::Right);
     assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("Nothing right of") && t.contains("⇧→ makes it a whole column")), "{:?}", a.toast);
     shift(&mut a, KeyCode::Right);
     render(&mut a, W, H);
-    let l = pane(&a, "lyrics");
+    let l = pane(&a, Widget::Lyrics);
     assert_eq!((l.right(), l.y, l.height), (W, a.pane_area().y, a.pane_area().height));
 }
 
@@ -490,7 +499,7 @@ fn move_mode_at_the_screen_edge_makes_a_column() {
 fn a_move_with_no_room_changes_nothing() {
     let mut b = App::new(None);
     render(&mut b, 60, 20);
-    b.focus = "stream".into();
+    b.focus_on(Widget::Stream);
     key(&mut b, KeyCode::Char('m'));
     let before = b.layout.clone();
     shift(&mut b, KeyCode::Right);
@@ -501,16 +510,16 @@ fn a_move_with_no_room_changes_nothing() {
 #[test]
 fn popups_and_move_mode_do_not_let_the_mouse_through() {
     let mut a = app();
-    a.focus = "queue".into();
+    a.focus_on(Widget::Queue);
     key(&mut a, KeyCode::Char('m'));
     let before = a.layout.clone();
-    let (x, y) = title_spot(&a, "fft");
+    let (x, y) = title_spot(&a, Widget::Fft);
     drag(&mut a, x, y);
     mouse(&mut a, MouseEventKind::Down(MouseButton::Right), x, y);
     assert!(a.menu().is_none() && a.tile.is_none() && a.layout == before);
     // while the naming prompt is up, the keyboard goes to it, not to Move mode
     let (mut b, _d) = with_dirs();
-    b.focus = "queue".into();
+    b.focus_on(Widget::Queue);
     key(&mut b, KeyCode::Char('m'));
     key(&mut b, KeyCode::Up);
     assert!(b.naming().is_some());
@@ -539,8 +548,8 @@ fn random_gestures_leave_every_design_valid() {
             a.motion.on = true;
             render(&mut a, w, h);
             for _ in 0..120 {
-                let slots: Vec<String> = a.layout.slot_names();
-                let s = slots[(next() % slots.len() as u64) as usize].clone();
+                let slots: Vec<Widget> = a.layout.widgets();
+                let s = slots[(next() % slots.len() as u64) as usize];
                 match next() % 8 {
                     6 => ctrl(&mut a, 'z'),
                     7 => ctrl(&mut a, 'y'),
@@ -549,7 +558,7 @@ fn random_gestures_leave_every_design_valid() {
                         // press there swaps that Pane's Widget, the queue's for the now-playing one)
                         a.motion.skip(motion::SETTLE);
                         render(&mut a, w, h);
-                        let (x, y) = title_spot(&a, &s);
+                        let (x, y) = title_spot(&a, s);
                         press(&mut a, x, y);
                         for _ in 0..3 {
                             drag(&mut a, (next() % w as u64) as u16, (next() % (h - 1) as u64) as u16);
@@ -563,7 +572,7 @@ fn random_gestures_leave_every_design_valid() {
                         release(&mut a, x, y);
                     }
                     3 => {
-                        a.focus = s;
+                        a.focus_on(s);
                         key(&mut a, KeyCode::Char('m'));
                         for _ in 0..4 {
                             let code = [KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down, KeyCode::Char('+'), KeyCode::Char('-')][(next() % 6) as usize];
@@ -572,7 +581,7 @@ fn random_gestures_leave_every_design_valid() {
                         key(&mut a, KeyCode::Esc);
                     }
                     4 => {
-                        a.focus = s;
+                        a.focus_on(s);
                         a.run(if next() % 2 == 0 { Action::SplitRight } else { Action::SplitDown });
                         if let Some(p) = a.widget_pick() {
                             let i = (next() % p.items.len() as u64) as usize;
@@ -580,8 +589,8 @@ fn random_gestures_leave_every_design_valid() {
                         }
                     }
                     _ => {
-                        a.focus = s.clone();
-                        a.close_pane(&s);
+                        a.focus_on(s);
+                        a.close_pane(pid(&a, s));
                     }
                 }
                 render(&mut a, w, h);
@@ -591,7 +600,7 @@ fn random_gestures_leave_every_design_valid() {
                 assert!(a.drawn.iter().all(|r| r.width >= 1 && r.height >= 1 && r.x >= body.x && r.y >= body.y && r.right() <= body.right() && r.bottom() <= body.bottom()), "{} {w}x{h}: {:?}", design.id, a.drawn);
                 let tree = a.layout.clone();
                 assert!(tree.valid(a.pane_area(), a.cell_aspect()), "{} {w}x{h}: {tree:?}", design.id);
-                assert!(["home", "library", "queue", "lyrics"].iter().all(|c| tree.has(c)));
+                assert!(crate::tiling::CORE.iter().all(|c| tree.has(*c)));
                 assert!(a.tile.is_none() && a.widget_pick().is_none());
             }
         }
@@ -612,9 +621,9 @@ fn row(buf: &Buffer, y: u16, x0: u16, x1: u16) -> String {
 }
 
 /// Where a Pane is drawn this frame (on its way somewhere, maybe), from the last render.
-fn drawn(a: &App, slot: &str) -> Rect {
-    let slots = a.shown_layout().compute_shaped(a.pane_area(), a.cell_aspect()).slots;
-    a.drawn[slots.iter().position(|(s, _)| s == slot).unwrap()]
+fn drawn(a: &App, w: Widget) -> Rect {
+    let panes = a.shown_layout().compute_shaped(a.pane_area(), a.cell_aspect()).panes;
+    a.drawn[panes.iter().position(|(p, _)| p.holds(w)).unwrap()]
 }
 
 fn ctrl(app: &mut App, c: char) {
@@ -624,8 +633,8 @@ fn ctrl(app: &mut App, c: char) {
 #[test]
 fn a_held_pane_floats_live_over_the_empty_slot_it_would_land_in() {
     let mut a = app();
-    let (q, s) = (pane(&a, "queue"), pane(&a, "stream"));
-    let (x, y) = title_spot(&a, "stream");
+    let (q, s) = (pane(&a, Widget::Queue), pane(&a, Widget::Stream));
+    let (x, y) = title_spot(&a, Widget::Stream);
     press(&mut a, x, y);
     let (cx, cy) = centre(q);
     drag(&mut a, cx, cy);
@@ -645,20 +654,20 @@ fn a_held_pane_floats_live_over_the_empty_slot_it_would_land_in() {
     // where it lands (the queue's place, the queue having gone to the stream's) is an empty slot, outlined, that says so
     assert!((q.y..q.bottom()).any(|y| row(&buf, y, q.x, q.right()).contains("drop here")), "said where the held Pane doesn't hide it");
     assert_eq!((buf[(q.x, q.y)].symbol(), buf[(q.x + 2, q.y)].symbol(), buf[(q.x, q.y + 2)].symbol()), ("╭", "╌", "╎"));
-    assert_eq!(pane(&a, "queue"), s, "the others are where the drop would put them");
+    assert_eq!(pane(&a, Widget::Queue), s, "the others are where the drop would put them");
     // it has no hit boxes of its own: what's under it is still the layout's
-    assert!(!a.hits.iter().any(|(r, h)| matches!(h, Hit::Title(t) if t == "stream") && *r == Rect::new(f.x + 1, f.y, f.width - 2, 1)));
+    assert!(!a.hits.iter().any(|(r, h)| matches!(h, Hit::Title(t) if *t == pid(&a, Widget::Stream)) && *r == Rect::new(f.x + 1, f.y, f.width - 2, 1)));
     release(&mut a, cx, cy);
     let after = render(&mut a, W, H);
     assert!(!after.contains("drop here") && !after.contains('⠿'), "nothing floats after the drop");
-    assert_eq!(pane(&a, "stream"), q);
+    assert_eq!(pane(&a, Widget::Stream), q);
 }
 
 #[test]
 fn a_big_pane_floats_smaller_and_never_leaves_the_layout() {
     let mut a = app();
     let body = a.pane_area();
-    let (x, y) = title_spot(&a, "home");
+    let (x, y) = title_spot(&a, Widget::Home);
     press(&mut a, x, y);
     for (px, py) in [(150u16, 40u16), (0, 1), (W - 1, H - 1), (80, 20)] {
         drag(&mut a, px, py);
@@ -681,28 +690,28 @@ fn panes_ease_to_their_new_places_and_the_held_one_lands_in_its_slot() {
     a.motion.on = true;
     render(&mut a, W, H);
     let body = a.pane_area();
-    let (q, st) = (pane(&a, "queue"), pane(&a, "stream"));
-    let (x, y) = title_spot(&a, "stream");
+    let (q, st) = (pane(&a, Widget::Queue), pane(&a, Widget::Stream));
+    let (x, y) = title_spot(&a, Widget::Stream);
     press(&mut a, x, y);
     let (cx, cy) = centre(q);
     drag(&mut a, cx, cy);
     // the candidate changed: the queue sets off from where it was…
     render(&mut a, W, H);
-    let q0 = drawn(&a, "queue");
+    let q0 = drawn(&a, Widget::Queue);
     assert!(q0.x.abs_diff(q.x) <= 2 && q0.y.abs_diff(q.y) <= 2, "{q0:?}");
     assert!(a.motion.busy());
     assert_eq!((a.frame_rate(false), a.frame_rate(true)), (120, 120), "the motion rate while things move, even unfocused");
     // …is on its way half-way through (every edge between the two places)…
     a.motion.skip(Duration::from_millis(50));
     render(&mut a, W, H);
-    let qm = drawn(&a, "queue");
+    let qm = drawn(&a, Widget::Queue);
     let between = |v: u16, p: u16, r: u16| (p.min(r)..=p.max(r)).contains(&v);
     assert!(qm != q && qm != st, "{qm:?}");
     assert!(between(qm.x, q.x, st.x) && between(qm.y, q.y, st.y) && between(qm.right(), q.right(), st.right()) && between(qm.bottom(), q.bottom(), st.bottom()), "{qm:?}");
     // …and exactly there at the end; the held Pane has shrunk from its place to its floating size and follows the pointer
     a.motion.skip(SETTLE);
     render(&mut a, W, H);
-    assert_eq!(drawn(&a, "queue"), st);
+    assert_eq!(drawn(&a, Widget::Queue), st);
     let target = float_target(a.tile.as_ref().unwrap(), body, 1.0);
     assert_eq!(a.float_rect(body), Some(target));
     // never a rect outside the layout or under a cell, at any moment
@@ -711,7 +720,7 @@ fn panes_ease_to_their_new_places_and_the_held_one_lands_in_its_slot() {
     }
     // let go: it flies from where it floats into its slot, drawn over the rest until it lands
     release(&mut a, cx, cy);
-    assert_eq!(a.motion.landing.as_deref(), Some("stream"));
+    assert_eq!(a.motion.landing, Some(pid(&a, Widget::Stream)));
     render(&mut a, W, H);
     a.motion.skip(Duration::from_millis(50));
     let shot = render(&mut a, W, H);
@@ -722,23 +731,23 @@ fn panes_ease_to_their_new_places_and_the_held_one_lands_in_its_slot() {
     let shot = render(&mut a, W, H);
     assert!(a.motion.landing.is_none() && a.float_rect(body).is_none(), "landed");
     assert!(!shot.contains('⠿'));
-    assert_eq!(drawn(&a, "stream"), q);
+    assert_eq!(drawn(&a, Widget::Stream), q);
     // Esc while held: the others go back, the held one flies back to its own place
-    let h = pane(&a, "home");
-    let (x, y) = title_spot(&a, "home");
+    let h = pane(&a, Widget::Home);
+    let (x, y) = title_spot(&a, Widget::Home);
     press(&mut a, x, y);
-    let lib = pane(&a, "library");
+    let lib = pane(&a, Widget::Library);
     drag(&mut a, centre(lib).0, centre(lib).1);
     render(&mut a, W, H);
     a.motion.skip(SETTLE);
     render(&mut a, W, H);
-    assert_eq!(drawn(&a, "library"), h, "the library would take home's place");
+    assert_eq!(drawn(&a, Widget::Library), h, "the library would take home's place");
     key(&mut a, KeyCode::Esc);
-    assert_eq!(a.motion.landing.as_deref(), Some("home"));
+    assert_eq!(a.motion.landing, Some(pid(&a, Widget::Home)));
     render(&mut a, W, H);
     a.motion.skip(SETTLE * 2);
     render(&mut a, W, H);
-    assert_eq!((drawn(&a, "library"), drawn(&a, "home")), (lib, h));
+    assert_eq!((drawn(&a, Widget::Library), drawn(&a, Widget::Home)), (lib, h));
     assert!(a.motion.landing.is_none());
     assert!(!a.motion.busy());
 }
@@ -754,15 +763,15 @@ fn near_its_own_neighbours_edge_a_pane_is_not_just_resized() {
     a.set_design(2);
     render(&mut a, W, H);
     let before = a.layout.clone();
-    let h = pane(&a, "home");
-    let (x, y) = title_spot(&a, "queue");
+    let h = pane(&a, Widget::Home);
+    let (x, y) = title_spot(&a, Widget::Queue);
     press(&mut a, x, y);
     drag(&mut a, h.x + 20, h.bottom() - 2);
     let t = a.tile.as_ref().unwrap();
     assert!(t.zone.is_none() && t.preview.is_none(), "{:?}", t.zone);
     let shot = render(&mut a, W, H);
     assert!(!shot.contains("drop here"));
-    assert_eq!(pane(&a, "home"), h, "home keeps its size");
+    assert_eq!(pane(&a, Widget::Home), h, "home keeps its size");
     release(&mut a, h.x + 20, h.bottom() - 2);
     assert_eq!(a.layout, before);
     assert!(a.naming().is_none() && !a.history.can_undo(), "no edit, no fork");
@@ -777,7 +786,7 @@ fn near_its_own_neighbours_edge_a_pane_is_not_just_resized() {
     a.layout_name = None;
     render(&mut a, W, H);
     let before = a.layout.clone();
-    a.focus = "library".into();
+    a.focus_on(Widget::Library);
     key(&mut a, KeyCode::Char('m'));
     shift(&mut a, KeyCode::Left);
     assert_eq!(a.layout, before);
@@ -791,7 +800,7 @@ fn near_its_own_neighbours_edge_a_pane_is_not_just_resized() {
 fn shift_arrow_refusals_say_why_in_the_bar_and_change_nothing() {
     let mut a = app();
     // lyrics, under the gravity well: there is no room above the well for another Pane
-    a.focus = "lyrics".into();
+    a.focus_on(Widget::Lyrics);
     key(&mut a, KeyCode::Char('m'));
     let before = a.layout.clone();
     shift(&mut a, KeyCode::Up);
@@ -808,9 +817,9 @@ fn shift_arrow_refusals_say_why_in_the_bar_and_change_nothing() {
     // fft's neighbour on the left is loudness, its own sibling: the two would be too narrow side by side, so ⇧←
     // says so (the comfort rule) and ← swaps them
     let mut b = app();
-    b.focus = "fft".into();
+    b.focus_on(Widget::Fft);
     let before = b.layout.clone();
-    let (f, l) = (pane(&b, "fft"), pane(&b, "loudness"));
+    let (f, l) = (pane(&b, Widget::Fft), pane(&b, Widget::Loudness));
     assert!(f.width + l.width < 2 * crate::tiling::COMFY_W, "{f:?} {l:?}");
     key(&mut b, KeyCode::Char('m'));
     shift(&mut b, KeyCode::Left);
@@ -819,12 +828,12 @@ fn shift_arrow_refusals_say_why_in_the_bar_and_change_nothing() {
     assert!(said.contains("too narrow to split") && said.ends_with("← swaps"), "{said}");
     key(&mut b, KeyCode::Left);
     render(&mut b, W, H);
-    assert_eq!(pane(&b, "fft").right(), pane(&b, "loudness").x);
+    assert_eq!(pane(&b, Widget::Fft).right(), pane(&b, Widget::Loudness).x);
     // in a Pane with room for two, ⇧ splits: the queue below Home in Classic, as a row of its own
     let mut c = app();
     c.set_design(2);
     render(&mut c, W, H);
-    c.focus = "lyrics".into();
+    c.focus_on(Widget::Lyrics);
     key(&mut c, KeyCode::Char('m'));
     let before = c.layout.clone();
     shift(&mut c, KeyCode::Left);
@@ -843,14 +852,14 @@ fn shift_arrows_always_move_the_pane_that_way_or_say_why_not() {
             render(&mut a, w, h);
             let base = a.layout.clone();
             let body = a.pane_area();
-            for s in base.slot_names() {
+            for s in base.widgets() {
                 for (code, side) in [(KeyCode::Left, Side::Left), (KeyCode::Right, Side::Right), (KeyCode::Up, Side::Top), (KeyCode::Down, Side::Bottom)] {
                     a.layout = base.clone();
                     a.toast = None;
                     a.history = Default::default();
                     render(&mut a, w, h);
-                    let old = rects(&a).into_iter().find(|(x, _)| *x == s).unwrap().1;
-                    a.focus = s.clone();
+                    let old = rects(&a).into_iter().find(|(p, _)| p.holds(s)).unwrap().1;
+                    a.focus_on(s);
                     key(&mut a, KeyCode::Char('m'));
                     shift(&mut a, code);
                     let ctx = format!("{} {w}x{h} {s} ⇧{side:?}", design.id);
@@ -865,7 +874,7 @@ fn shift_arrows_always_move_the_pane_that_way_or_say_why_not() {
                         moved += 1;
                         assert!(!a.layout.same_arrangement(&base), "{ctx}: only sizes changed");
                         assert!(a.layout.valid(body, a.cell_aspect()), "{ctx}");
-                        let new = rects(&a).into_iter().find(|(x, _)| *x == s).unwrap().1;
+                        let new = rects(&a).into_iter().find(|(p, _)| p.holds(s)).unwrap().1;
                         let c = |r: Rect| (2 * r.x + r.width, 2 * r.y + r.height);
                         let (c0, c1) = (c(old), c(new));
                         let ok = match side {
@@ -893,8 +902,8 @@ fn shift_arrows_always_move_the_pane_that_way_or_say_why_not() {
 fn ctrl_z_undoes_a_drop_and_ctrl_y_redoes_it_and_the_bar_offers_it() {
     let mut a = app();
     let before = a.layout.clone();
-    let (x, y) = title_spot(&a, "stream");
-    let q = pane(&a, "queue");
+    let (x, y) = title_spot(&a, Widget::Stream);
+    let q = pane(&a, Widget::Queue);
     press(&mut a, x, y);
     drag(&mut a, centre(q).0, centre(q).1);
     release(&mut a, centre(q).0, centre(q).1);
@@ -938,16 +947,16 @@ fn every_kind_of_edit_is_one_undo_step() {
     let start = a.layout.clone();
     let mut trees = vec![start.clone()];
     // close
-    a.close_pane("fft");
+    a.close_pane(pid(&a, Widget::Fft));
     trees.push(a.layout.clone());
     // split, with the Widget list
-    a.focus = "loudness".into();
+    a.focus_on(Widget::Loudness);
     a.run(Action::SplitRight);
-    let i = a.widget_pick().unwrap().items.iter().position(|w| *w == "scope").unwrap();
+    let i = a.widget_pick().unwrap().items.iter().position(|w| *w == Widget::Scope).unwrap();
     a.widget_chosen(i);
     trees.push(a.layout.clone());
     // Move mode: a swap, a split beside, a size step
-    a.focus = "queue".into();
+    a.focus_on(Widget::Queue);
     key(&mut a, KeyCode::Char('m'));
     key(&mut a, KeyCode::Up);
     trees.push(a.layout.clone());
@@ -978,7 +987,7 @@ fn every_kind_of_edit_is_one_undo_step() {
         assert_eq!(&a.layout, t);
     }
     // in Move mode, u and U
-    a.focus = "home".into();
+    a.focus_on(Widget::Home);
     key(&mut a, KeyCode::Char('m'));
     let here = a.layout.clone();
     key(&mut a, KeyCode::Char('u'));
@@ -999,8 +1008,8 @@ fn undo_of_the_first_edit_of_a_built_in_design_goes_back_to_it_and_leaves_no_fil
     let built_in = a.layout.clone();
     let swap = |a: &mut App| {
         render(a, W, H);
-        let (x, y) = title_spot(a, "stream");
-        let q = pane(a, "queue");
+        let (x, y) = title_spot(a, Widget::Stream);
+        let q = pane(a, Widget::Queue);
         press(a, x, y);
         drag(a, centre(q).0, centre(q).1);
         release(a, centre(q).0, centre(q).1);
@@ -1048,10 +1057,10 @@ fn undo_of_the_first_edit_of_a_built_in_design_goes_back_to_it_and_leaves_no_fil
 fn undo_in_a_design_of_your_own_rewrites_its_file() {
     let (mut a, dir) = with_dirs();
     let layouts = dir.path().join("layouts");
-    a.layout = Node::singularity().swapped("stream", "queue").unwrap();
+    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
     a.save_layout("Mine");
     let saved = a.layout.clone();
-    a.close_pane("fft");
+    a.close_pane(pid(&a, Widget::Fft));
     let closed = a.layout.clone();
     assert_eq!(crate::layouts::load_dir(&layouts).0[0].tree, closed, "it saves itself");
     ctrl(&mut a, 'z');
@@ -1080,10 +1089,10 @@ fn an_undo_that_would_not_fit_the_window_is_refused() {
     // a size where Singularity doesn't fit but Singularity without fft does
     let (w, h) = (40..160u16).flat_map(|w| (14..48u16).map(move |h| (w, h))).find(|&(w, h)| {
         let body = Rect::new(0, 1, w, h - 5);
-        !Node::singularity().valid(body, 2.0) && Node::singularity().closed("fft").unwrap().valid(body, 2.0) && !crate::mini::wanted(Rect::new(0, 0, w, h))
+        !Node::singularity().valid(body, 2.0) && Node::singularity().closed(Node::singularity().pane_of(Widget::Fft).unwrap()).unwrap().valid(body, 2.0) && !crate::mini::wanted(Rect::new(0, 0, w, h))
     }).expect("such a size");
     let mut a = app();
-    a.close_pane("fft");
+    a.close_pane(pid(&a, Widget::Fft));
     let closed = a.layout.clone();
     render(&mut a, w, h);
     ctrl(&mut a, 'z');
@@ -1118,20 +1127,20 @@ fn a_fast_sweep_across_panes_leaves_the_preview_and_a_pause_shows_it() {
     let mut a = app();
     let before = a.layout.clone();
     let t0 = Instant::now();
-    let (x, y) = title_spot(&a, "stream");
+    let (x, y) = title_spot(&a, Widget::Stream);
     a.input_at = Some(t0);
     press(&mut a, x, y);
-    let names = ["queue", "home", "library", "lyrics", "fft"];
-    let spots: Vec<(u16, u16)> = names.iter().map(|s| centre(pane(&a, s))).collect();
+    let names = [Widget::Queue, Widget::Home, Widget::Library, Widget::Lyrics, Widget::Fft];
+    let spots: Vec<(u16, u16)> = names.iter().map(|s| centre(pane(&a, *s))).collect();
     // across five Panes in 100 ms, a frame every 10 ms: each is the one under the pointer for a moment, none is shown
     for (i, &(px, py)) in spots.iter().enumerate() {
         let t = t0 + ms(20 * (i as u64 + 1));
         sweep_at(&mut a, t, px, py);
-        assert_eq!(a.tile.as_ref().unwrap().cand, Some(Zone::Swap(names[i].into())));
+        assert_eq!(a.tile.as_ref().unwrap().cand, Some(Zone::Swap(pid(&a, names[i]))));
         a.tile_settle(t + ms(10));
         assert_eq!((shown(&a), a.tile.as_ref().unwrap().preview.is_some()), (None, false), "{}", names[i]);
         let shot = render(&mut a, W, H);
-        assert_eq!(pane(&a, names[i]), rects(&a).iter().find(|(s, _)| s == names[i]).unwrap().1, "nothing rearranges");
+        assert_eq!(pane(&a, names[i]), rects(&a).iter().find(|(p, _)| p.holds(names[i])).unwrap().1, "nothing rearranges");
         assert!(shot.contains('⠿'), "the held Pane follows the pointer all the way");
     }
     // resting on fft: still moving fast a moment ago, so not yet; once the pointer has been still for the speed
@@ -1140,28 +1149,28 @@ fn a_fast_sweep_across_panes_leaves_the_preview_and_a_pause_shows_it() {
     a.tile_settle(last + QUICK_DWELL);
     assert_eq!(shown(&a), None);
     a.tile_settle(last + WINDOW + ms(1));
-    assert_eq!(shown(&a), Some(Zone::Swap("fft".into())));
+    assert_eq!(shown(&a), Some(Zone::Swap(pid(&a, Widget::Fft))));
     render(&mut a, W, H);
-    assert_eq!(pane(&a, "stream"), before.compute_shaped(a.pane_area(), a.cell_aspect()).slots.iter().find(|(s, _)| s == "fft").unwrap().1);
+    assert_eq!(pane(&a, Widget::Stream), before.compute_shaped(a.pane_area(), a.cell_aspect()).rect_of(Widget::Fft).unwrap());
     // a flick across the queue keeps that preview…
     let t = last + ms(200);
-    let q = centre(pane(&a, "queue"));
+    let q = centre(pane(&a, Widget::Queue));
     sweep_at(&mut a, t, q.0, q.1);
     a.tile_settle(t + ms(10));
-    assert_eq!(shown(&a), Some(Zone::Swap("fft".into())));
+    assert_eq!(shown(&a), Some(Zone::Swap(pid(&a, Widget::Fft))));
     // …and let go there at once, the drop is what was shown (#21): with fft, not the queue it was never shown over
     release(&mut a, q.0, q.1);
-    assert_eq!(a.layout, before.swapped("stream", "fft").unwrap());
+    assert_eq!(a.layout, swapped(before.clone(), Widget::Stream, Widget::Fft));
 }
 
 #[test]
 fn a_dwell_shows_the_zone_and_a_creeping_pointer_shows_it_sooner() {
     let mut a = app();
     let t0 = Instant::now();
-    let (x, y) = title_spot(&a, "stream");
+    let (x, y) = title_spot(&a, Widget::Stream);
     a.input_at = Some(t0);
     press(&mut a, x, y);
-    let q = pane(&a, "queue");
+    let q = pane(&a, Widget::Queue);
     let (cx, cy) = centre(q);
     // jumps in and stays, the hand twitching a couple of cells every 15 ms (never still): shown after the dwell
     sweep_at(&mut a, t0 + ms(10), cx, cy);
@@ -1184,7 +1193,7 @@ fn a_dwell_shows_the_zone_and_a_creeping_pointer_shows_it_sooner() {
     let mut t = t1 + ms(300);
     sweep_at(&mut a, t, start.0, start.1);
     let mut x = start.0;
-    while a.tile.as_ref().unwrap().cand != Some(Zone::Swap("queue".into())) {
+    while a.tile.as_ref().unwrap().cand != Some(Zone::Swap(pid(&a, Widget::Queue))) {
         t += ms(100);
         x += 1;
         sweep_at(&mut a, t, x, start.1);
@@ -1193,9 +1202,9 @@ fn a_dwell_shows_the_zone_and_a_creeping_pointer_shows_it_sooner() {
     }
     assert!(a.tile.as_ref().unwrap().speed(t) < SLOW);
     a.tile_settle(t + QUICK_DWELL - ms(1));
-    assert_ne!(shown(&a), Some(Zone::Swap("queue".into())), "not yet");
+    assert_ne!(shown(&a), Some(Zone::Swap(pid(&a, Widget::Queue))), "not yet");
     a.tile_settle(t + QUICK_DWELL);
-    assert_eq!(shown(&a), Some(Zone::Swap("queue".into())));
+    assert_eq!(shown(&a), Some(Zone::Swap(pid(&a, Widget::Queue))));
 }
 
 #[test]
@@ -1203,31 +1212,31 @@ fn a_new_preview_mid_flight_turns_the_panes_without_a_jump() {
     let mut a = app();
     a.motion.on = true;
     render(&mut a, W, H);
-    let (x, y) = title_spot(&a, "stream");
+    let (x, y) = title_spot(&a, Widget::Stream);
     press(&mut a, x, y);
-    let (q, lib) = (pane(&a, "queue"), pane(&a, "library"));
+    let (q, lib) = (pane(&a, Widget::Queue), pane(&a, Widget::Library));
     drag(&mut a, centre(q).0, centre(q).1);
     render(&mut a, W, H);
     a.motion.skip(ms(40));
     render(&mut a, W, H);
-    let mid = drawn(&a, "queue");
+    let mid = drawn(&a, Widget::Queue);
     assert_ne!(mid, q, "on its way");
     // the pointer pauses over the library instead: the queue heads back from where it is, at the speed it had
     drag(&mut a, centre(lib).0, centre(lib).1);
     render(&mut a, W, H);
-    let now = drawn(&a, "queue");
+    let now = drawn(&a, Widget::Queue);
     assert!(now.x.abs_diff(mid.x) <= 1 && now.y.abs_diff(mid.y) <= 1 && now.width.abs_diff(mid.width) <= 2, "{mid:?} → {now:?}");
     let mut prev = now;
     for _ in 0..30 {
         a.motion.skip(ms(1000 / 240));
         render(&mut a, W, H);
-        let r = drawn(&a, "queue");
+        let r = drawn(&a, Widget::Queue);
         assert!(r.x.abs_diff(prev.x) <= 4 && r.y.abs_diff(prev.y) <= 4, "a step of a 240 fps frame: {prev:?} → {r:?}");
         prev = r;
     }
     a.motion.skip(motion::SETTLE);
     render(&mut a, W, H);
-    assert_eq!(drawn(&a, "queue"), q, "back where it was");
+    assert_eq!(drawn(&a, Widget::Queue), q, "back where it was");
     key(&mut a, KeyCode::Esc);
 }
 
@@ -1236,7 +1245,7 @@ fn the_frame_rate_is_the_motion_rate_while_anything_moves() {
     let mut a = app();
     a.config.visuals.unfocused_fps = 10;
     assert_eq!((a.frame_rate(true), a.frame_rate(false)), (30, 10), "idle: as before");
-    let (x, y) = title_spot(&a, "stream");
+    let (x, y) = title_spot(&a, Widget::Stream);
     press(&mut a, x, y);
     assert_eq!(a.frame_rate(true), 30, "a press is no drag yet");
     drag(&mut a, x + 10, y + 5);
@@ -1269,27 +1278,27 @@ fn a_short_wide_pane_is_swapped_with_not_sandwiched() {
     // the instruments in a short row under Home: fft dropped anywhere on loudness swaps the two
     use crate::layout::{Axis::*, Size::*};
     let mut a = app();
-    let s = |x| Node::slot(x);
-    let row = Node::split(Horizontal, Ratio(0.5), s("fft"), s("loudness"));
-    a.layout = Node::split(Horizontal, Cells(30), s("library"), Node::split(Vertical, Ratio(0.7), Node::split(Vertical, Ratio(0.6), s("home"), s("queue")), Node::split(Horizontal, Ratio(0.8), row, s("lyrics"))));
+    let s = Node::pane;
+    let row = Node::split(Horizontal, Ratio(0.5), s(Widget::Fft), s(Widget::Loudness));
+    a.layout = Node::split(Horizontal, Cells(30), s(Widget::Library), Node::split(Vertical, Ratio(0.7), Node::split(Vertical, Ratio(0.6), s(Widget::Home), s(Widget::Queue)), Node::split(Horizontal, Ratio(0.8), row, s(Widget::Lyrics))));
     render(&mut a, W, H);
     let before = a.layout.clone();
-    let l = pane(&a, "loudness");
+    let l = pane(&a, Widget::Loudness);
     assert!(l.height < 2 * crate::tiling::COMFY_H && l.width >= 2 * crate::tiling::COMFY_W, "{l:?}");
     for (px, py) in [(l.x + l.width / 2, l.y), (l.x + l.width / 2, l.bottom() - 1), (l.x + l.width / 2, l.y + l.height / 2)] {
-        let (x, y) = title_spot(&a, "fft");
+        let (x, y) = title_spot(&a, Widget::Fft);
         press(&mut a, x, y);
         drag(&mut a, px, py);
-        assert_eq!(shown(&a), Some(Zone::Swap("loudness".into())), "({px}, {py}) in {l:?}");
+        assert_eq!(shown(&a), Some(Zone::Swap(pid(&a, Widget::Loudness))), "({px}, {py}) in {l:?}");
         key(&mut a, KeyCode::Esc);
         release(&mut a, px, py);
     }
     // and dropped there, the two trade places
-    let (x, y) = title_spot(&a, "fft");
+    let (x, y) = title_spot(&a, Widget::Fft);
     press(&mut a, x, y);
     drag(&mut a, l.x + l.width / 2, l.y);
     release(&mut a, l.x + l.width / 2, l.y);
-    assert_eq!(a.layout, before.swapped("fft", "loudness").unwrap());
+    assert_eq!(a.layout, swapped(before.clone(), Widget::Fft, Widget::Loudness));
 }
 
 /// The owner (2026-11-02): "I can't drag the lyrics pane to take up a bit of Home, it snaps right back". A drop that
@@ -1299,11 +1308,11 @@ fn a_short_wide_pane_is_swapped_with_not_sandwiched() {
 fn a_size_only_drop_says_to_drag_the_border_which_lights_up_and_resizes() {
     use crate::layout::{Axis, Size};
     let mut a = app();
-    a.layout = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::slot("home"), Node::slot("lyrics"));
+    a.layout = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::pane(Widget::Home), Node::pane(Widget::Lyrics));
     render(&mut a, W, H);
-    let (home, before) = (pane(&a, "home"), a.layout.clone());
+    let (home, before) = (pane(&a, Widget::Home), a.layout.clone());
     // lyrics by its title onto Home's right edge: the same two Panes side by side, only resized
-    let (tx, ty) = title_spot(&a, "lyrics");
+    let (tx, ty) = title_spot(&a, Widget::Lyrics);
     press(&mut a, tx, ty);
     drag(&mut a, home.right() - 3, home.y + home.height / 2);
     release(&mut a, home.right() - 3, home.y + home.height / 2);
@@ -1323,7 +1332,7 @@ fn a_size_only_drop_says_to_drag_the_border_which_lights_up_and_resizes() {
     sweep(&mut a, gx - 20, gy);
     release(&mut a, gx - 20, gy);
     render(&mut a, W, H);
-    assert_eq!(pane(&a, "home").width, home.width - 20);
+    assert_eq!(pane(&a, Widget::Home).width, home.width - 20);
 }
 
 /// The owner (2026-11-05): "the cursor bugging out and having the arrow left, dot in the middle and arrow right like
@@ -1336,9 +1345,9 @@ fn the_resize_pointer_goes_back_off_the_border_in_every_terminal() {
     assert_eq!(crate::arrange::pointer_shape_seq(""), "\x1b]22;default\x1b\\");
     assert_eq!(crate::arrange::pointer_shape_seq("ew-resize"), "\x1b]22;ew-resize\x1b\\");
     let mut a = app();
-    a.layout = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::slot("home"), Node::slot("lyrics"));
+    a.layout = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::pane(Widget::Home), Node::pane(Widget::Lyrics));
     render(&mut a, W, H);
-    let home = pane(&a, "home");
+    let home = pane(&a, Widget::Home);
     let (gx, gy) = (home.right() - 1, home.y + home.height / 2);
     let on = |a: &mut App| {
         mouse(a, MouseEventKind::Moved, gx, gy);
@@ -1353,7 +1362,7 @@ fn the_resize_pointer_goes_back_off_the_border_in_every_terminal() {
     assert_eq!(a.pointer_shape(), "", "let go off the border");
     // a click elsewhere straight after hovering it (a terminal that sent no move in between)
     render(&mut a, W, H);
-    let home = pane(&a, "home");
+    let home = pane(&a, Widget::Home);
     let (gx, gy) = (home.right() - 1, home.y + home.height / 2);
     mouse(&mut a, MouseEventKind::Moved, gx, gy);
     assert_eq!(a.pointer_shape(), "ew-resize");
@@ -1368,4 +1377,26 @@ fn the_resize_pointer_goes_back_off_the_border_in_every_terminal() {
     a.idle_since = Some(std::time::Instant::now());
     mouse(&mut a, MouseEventKind::Moved, home.x + 3, gy);
     assert_eq!(a.pointer_shape(), "", "a waking move off the border");
+}
+
+/// A whole new tree (another Design, a saved one, undo) springs each Widget from where that Widget was, not from the
+/// spot of whichever Pane had the same identity (review of #35: Singularity to Classic+ flew Home in from the well).
+#[test]
+fn a_new_design_springs_each_widget_from_its_own_place() {
+    let mut a = app();
+    a.motion.on = true;
+    render(&mut a, W, H);
+    let (home, queue) = (drawn(&a, Widget::Home), drawn(&a, Widget::Queue));
+    a.set_design(crate::design::by_id("classic").unwrap());
+    render(&mut a, W, H);
+    assert_eq!((drawn(&a, Widget::Home), drawn(&a, Widget::Queue)), (home, queue), "the first frame is where they were");
+    a.motion.skip(motion::SETTLE);
+    render(&mut a, W, H);
+    let classic_home = drawn(&a, Widget::Home);
+    assert_ne!(classic_home, home);
+    // and back by a saved one put on screen
+    let s = crate::layouts::Saved { name: "S".into(), design: "singularity".into(), theme: None, tree: Node::singularity(), edited: false, id: "s".into() };
+    a.use_layout(&s);
+    render(&mut a, W, H);
+    assert_eq!(drawn(&a, Widget::Home), classic_home, "from Classic+'s Home");
 }
