@@ -11,14 +11,62 @@ use crate::ui::{text, blank};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
-use singularity_proto::HomeFeed;
+use singularity_proto::{HomeFeed, Shelf};
 use std::collections::HashMap;
 
-/// A Card by position in the feed: Shelf index, Card index.
+/// A Card by position in the Home feed as drawn: Shelf index, Card index. Good for one frame only: what outlives a
+/// new Home feed (a menu, the selection) holds a [`CardId`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CardRef {
     pub shelf: usize,
     pub card: usize,
+}
+
+/// A Shelf by identity: its title and kind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ShelfId {
+    title: String,
+    kind: String,
+}
+
+impl ShelfId {
+    fn of(s: &Shelf) -> ShelfId {
+        ShelfId { title: s.title.clone(), kind: s.kind.clone() }
+    }
+
+    /// Its index in `feed` now.
+    fn find(&self, feed: &HomeFeed) -> Option<usize> {
+        feed.shelves.iter().position(|s| s.title == self.title && s.kind == self.kind)
+    }
+}
+
+/// A Card by identity (#23, like D81's rows): its URI, and the Shelf it's on, since one URI can be on two Shelves (a
+/// playlist in the shortcuts and in "Made For You").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardId {
+    shelf: ShelfId,
+    uri: String,
+}
+
+impl CardId {
+    pub fn of(feed: &HomeFeed, c: CardRef) -> Option<CardId> {
+        let s = feed.shelves.get(c.shelf)?;
+        Some(CardId { shelf: ShelfId::of(s), uri: s.cards.get(c.card)?.uri.clone() })
+    }
+
+    /// Where the Card is in `feed` now: on its own Shelf, else the same URI on another one; None once it's gone.
+    pub fn find(&self, feed: &HomeFeed) -> Option<CardRef> {
+        self.on_its_shelf(feed).or_else(|| (0..feed.shelves.len()).find_map(|si| on(feed, si, &self.uri)))
+    }
+
+    fn on_its_shelf(&self, feed: &HomeFeed) -> Option<CardRef> {
+        on(feed, self.shelf.find(feed)?, &self.uri)
+    }
+}
+
+/// The Card `uri` on Shelf `si`.
+fn on(feed: &HomeFeed, si: usize, uri: &str) -> Option<CardRef> {
+    feed.shelves[si].cards.iter().position(|k| k.uri == uri).map(|card| CardRef { shelf: si, card })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,6 +196,20 @@ pub struct HomeView {
 }
 
 impl HomeView {
+    /// A new Home feed replaces `old` (#23): the selection stays on its Card while that is still on its Shelf (else on
+    /// the Card that took its place), and each Shelf keeps its sideways scroll.
+    pub fn refeed(&mut self, old: &HomeFeed, new: &HomeFeed) {
+        if let Some(s) = self.sel {
+            let moved = CardId::of(old, s).and_then(|id| id.on_its_shelf(new));
+            let in_place = new.shelves.get(s.shelf).is_some_and(|sh| s.card < sh.cards.len()).then_some(s);
+            self.sel = moved.or(in_place);
+        }
+        self.scroll = std::mem::take(&mut self.scroll)
+            .into_iter()
+            .filter_map(|(i, first)| Some((ShelfId::of(old.shelves.get(i)?).find(new)?, first)))
+            .collect();
+    }
+
     fn first(&self, shelf: usize) -> usize {
         self.scroll.get(&shelf).copied().unwrap_or(0)
     }
@@ -452,7 +514,7 @@ pub fn cover_at(buf: &mut Buffer, x: u16, y: i32, w: u16, h: u16, pane: Rect, ur
 #[cfg(test)]
 mod tests {
     use super::*;
-    use singularity_proto::{Card, Shelf};
+    use singularity_proto::Card;
 
     fn feed() -> HomeFeed {
         let card = |n: usize| Card { uri: format!("spotify:playlist:{n}"), name: format!("Mix {n}"), subtitle: String::new(), image_url: None, kind: "playlist".into() };
@@ -551,6 +613,35 @@ mod tests {
         assert_eq!(v.offset, v.row_y(v.rows.len()) - v.height - 3, "by lines");
         v.scroll_shelf(2, 100);
         assert_eq!(v.first(1), 10 - per);
+    }
+
+    #[test]
+    fn a_new_feed_keeps_the_selection_on_its_card_and_each_shelf_its_scroll() {
+        // (#23) the second Shelf selected four Cards in, scrolled sideways by two
+        let mut old = feed();
+        for (i, s) in old.shelves.iter_mut().enumerate() {
+            s.title = format!("Shelf {i}");
+            s.cards.iter_mut().for_each(|c| c.uri = format!("{}/{i}", c.uri));
+        }
+        let mut v = HomeView { sel: Some(CardRef { shelf: 1, card: 4 }), ..Default::default() };
+        v.scroll.insert(1, 2);
+        // a Shelf arrives on top and the selected Card moves one along
+        let mut new = old.clone();
+        new.shelves.insert(0, Shelf { title: "New".into(), kind: "shelf".into(), cards: feed().shelves[2].cards.clone() });
+        let first = new.shelves[2].cards.remove(0);
+        new.shelves[2].cards.push(first);
+        v.refeed(&old, &new);
+        assert_eq!(v.sel, Some(CardRef { shelf: 2, card: 3 }), "the same Card, on its own Shelf");
+        assert_eq!(v.scroll.get(&2), Some(&2), "the Shelf kept its scroll");
+        assert_eq!(v.scroll.get(&1), None);
+        // the selected Card goes: the one that took its place
+        // (it moves to another Shelf: the selection stays where it was, on the Card that took its place)
+        let mut gone = new.clone();
+        let moved = gone.shelves[2].cards.remove(3);
+        gone.shelves[3].cards.push(moved);
+        v.refeed(&new, &gone);
+        assert_eq!(v.sel, Some(CardRef { shelf: 2, card: 3 }));
+        assert_eq!(gone.shelves[2].cards[3].uri, "spotify:playlist:5/1");
     }
 
     #[test]

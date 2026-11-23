@@ -1415,8 +1415,39 @@ mod tests {
         assert_eq!(buf[(9, 1)].symbol(), "e");
         let (mut app, _rx) = home_app();
         render(&mut app, 200, 64);
-        app.open_popup(crate::app::Popup::Menu(Menu { at: (20, 58), target: crate::app::Target::Card(crate::home::CardRef { shelf: 1, card: 0 }), items: vec![("Play".into(), crate::app::MenuAct::Play); 4], selected: 0 }));
+        app.open_popup(crate::app::Popup::Menu(Menu { at: (20, 58), target: crate::app::Target::Card(crate::home::CardId::of(app.home.as_ref().unwrap(), crate::home::CardRef { shelf: 1, card: 0 }).unwrap()), items: vec![("Play".into(), crate::app::MenuAct::Play); 4], selected: 0 }));
         render(&mut app, 80, 24);
+    }
+
+    /// #23: a Card's menu remembered where the Card was drawn, so a Home feed arriving while it was open made the
+    /// action run on whatever Card then sat there.
+    #[test]
+    fn a_card_menu_acts_on_its_card_even_if_home_is_refreshed_while_it_is_open() {
+        use singularity_proto::{Card, Shelf};
+        let (mut app, _rx) = home_app();
+        render(&mut app, 200, 64);
+        let feed = app.home.clone().unwrap();
+        let mfy = feed.shelves[1].cards[0].uri.clone();
+        app.open_menu(crate::home::CardRef { shelf: 1, card: 0 }, None);
+        // a new Shelf arrives on top: every Shelf moves down one
+        let mut shifted = feed.clone();
+        let card = Card { uri: "spotify:album:new".into(), name: "New".into(), subtitle: String::new(), image_url: None, kind: "album".into() };
+        shifted.shelves.insert(1, Shelf { title: "New releases".into(), kind: "shelf".into(), cards: vec![card.clone(), card] });
+        app.hear(singularity_proto::Event::Home(shifted.clone()));
+        let copy = |app: &App| app.menu().unwrap().items.iter().position(|(l, _)| l == "Copy link").unwrap();
+        app.menu_run(copy(&app));
+        assert_eq!(app.clipboard.take(), Some(crate::app::web_link(&mfy)), "the Card the menu was opened on");
+        // the keyboard selection is still on that Card too
+        let sel = app.home_view.sel.unwrap();
+        assert_eq!(shifted.shelves[sel.shelf].cards[sel.card].uri, mfy);
+        // a Card gone while its menu is open: nothing happens, and the bar says why
+        app.open_menu(sel, None);
+        let mut gone = shifted.clone();
+        gone.shelves[2].cards.remove(0);
+        app.hear(singularity_proto::Event::Home(gone));
+        app.menu_run(copy(&app));
+        assert_eq!(app.clipboard, None);
+        assert!(app.toast.as_ref().unwrap().0.contains("isn't here any more"), "{:?}", app.toast);
     }
 
     #[test]

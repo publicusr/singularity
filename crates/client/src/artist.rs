@@ -27,7 +27,9 @@ impl ArtistView {
 
     pub fn set_page(&mut self, p: ArtistPage) {
         self.name = p.name.clone();
-        self.feed = HomeFeed { fetched_unix_ms: 0, shelves: p.shelves.clone() };
+        let feed = HomeFeed { fetched_unix_ms: 0, shelves: p.shelves.clone() };
+        self.shelves.refeed(&self.feed, &feed);
+        self.feed = feed;
         self.page = Some(p);
     }
 }

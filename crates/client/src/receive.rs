@@ -38,7 +38,13 @@ impl App {
                 }
                 self.catalogue = Some(c);
             }
-            ConnEvent::Msg(DaemonMsg::Event(Event::Home(h))) => self.home = Some(h),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Home(h))) => {
+                // the selection stays on its Card (#23)
+                if let Some(old) = &self.home {
+                    self.home_view.refeed(old, &h);
+                }
+                self.home = Some(h);
+            }
             ConnEvent::Msg(DaemonMsg::Event(Event::Library(l))) => self.library = Some(l),
             ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistCreated { uri, name })) => self.playlist_created(&uri, &name),
             ConnEvent::Msg(DaemonMsg::Event(Event::AddedToPlaylist { playlist, name, uris, outcome })) => self.added_to_playlist(&playlist, &name, uris, outcome),
