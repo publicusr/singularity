@@ -19,7 +19,7 @@ hasn't been checked by hand on a Mac yet (see the issues). Spec in `docs/SPEC.md
 
 Linux and macOS have the same features (the rule is D49); `docs/PLATFORMS.md` lists every feature's exact status on
 each, and the few real differences. **Linux on ARM** (aarch64, e.g. a Raspberry Pi 5 or an ARM laptop) builds the
-same way and runs Soloist's arm64 build, but hasn't been tried on ARM hardware yet.
+same way and runs Soloist's arm64 build (tried on an Apple-silicon laptop under Asahi Linux with librespot; Soloist there not yet).
 
 ## Not affiliated with Spotify
 
