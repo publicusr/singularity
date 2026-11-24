@@ -71,7 +71,7 @@ mod tests {
         let filler = if widget == Widget::Home { Widget::Library } else { Widget::Home };
         let rest = if widget == Widget::Queue { Widget::Lyrics } else { Widget::Queue };
         let top = Node::split(Axis::Horizontal, Size::Cells(w), Node::pane(widget), Node::pane(filler));
-        app.layout = Node::split(Axis::Vertical, Size::Cells(h), top, Node::pane(rest));
+        app.layout = Node::split(Axis::Vertical, Size::Cells(h), top, Node::pane(rest)).into();
         let mut t = Terminal::new(TestBackend::new(160, 60)).unwrap();
         t.draw(|f| crate::ui::draw(f, app)).unwrap();
         let buf = t.backend().buffer().clone();
