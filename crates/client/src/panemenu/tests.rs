@@ -610,7 +610,7 @@ fn esc_leaves_the_new_pane_empty_and_it_says_so() {
     a.run(Action::SplitRight);
     let other = a.widget_picker().unwrap().target;
     click(&mut a, 0, H - 1);
-    assert!(a.modal().is_none() && a.layout.get(other).is_some_and(|p| p.widget.is_none()));
+    assert!(a.modal() == Some(Modal::Arrange) && a.layout.get(other).is_some_and(|p| p.widget.is_none()));
     // the picker fills an empty Pane later: Replace widget… on it
     a.open_widget_picker(new);
     typed(&mut a, "rain");

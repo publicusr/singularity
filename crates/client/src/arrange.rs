@@ -567,9 +567,12 @@ impl App {
 
     /// The Tray strip scrolled `by` Widgets (the wheel, its ‹ ›).
     pub fn tray_scroll(&mut self, by: i32) {
-        let n = self.layout.tray().len();
+        let Some(now) = self.arranging.as_ref().map(|a| a.tray_first) else { return };
+        let want = (now as i64 + by as i64).max(0) as usize;
+        // no further than the last start that still fills the strip
+        let first = tray_layout(self, self.tray_rect(), want).first;
         if let Some(a) = self.arranging.as_mut() {
-            a.tray_first = (a.tray_first as i64 + by as i64).clamp(0, n.saturating_sub(1) as i64) as usize;
+            a.tray_first = first;
         }
     }
 

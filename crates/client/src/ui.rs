@@ -3505,7 +3505,12 @@ mod tests {
             Modal::Menu => app.open_queue_menu(0, Some((20, 3))),
             Modal::Help => app.run(Action::Help),
             Modal::Move => app.start_move(),
-            Modal::Arrange => app.enter_arrange(),
+            // with more in the Tray than fits, so it scrolls
+            Modal::Arrange => {
+                let off: Vec<Widget> = Widget::ALL.iter().copied().filter(|w| !app.layout.has(*w)).collect();
+                app.layout = crate::arrangement::Arrangement::new(app.layout.plan().clone(), off);
+                app.enter_arrange();
+            }
             Modal::Login => app.hear(singularity_proto::Event::Catalogue(CatalogueStatus::LoginPending { url: "https://example.com/pair".into(), code: "ABCD".into() })),
         }
     }
@@ -3620,7 +3625,7 @@ mod tests {
     fn a_popup_opened_over_the_wizard_is_on_top_for_the_eye_the_mouse_and_the_keys() {
         use crate::app::Modal;
         let (w, h) = (160u16, 48u16);
-        let popups: Vec<Modal> = Modal::ALL.iter().copied().filter(|m| !matches!(m, Modal::Wizard | Modal::Login | Modal::Move)).collect();
+        let popups: Vec<Modal> = Modal::ALL.iter().copied().filter(|m| !matches!(m, Modal::Wizard | Modal::Login | Modal::Move | Modal::Arrange)).collect();
         assert!(popups.len() >= 11);
         let over_wizard = |m: Modal| {
             let (mut app, rx) = popup_app();

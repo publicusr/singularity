@@ -148,12 +148,14 @@ const POOL: [W; 18] = [W::Well, W::Hole, W::Fft, W::Loudness, W::Levels, W::Scop
 /// What an Arrangement must always be, whatever got it there.
 fn assert_sound(a: &Arrangement, body: Rect, file: bool, ctx: &str) {
     assert!(a.fits(body), "{ctx}: the floor plan isn't valid at {body:?}\n{a:?}");
-    let names = a.widgets();
+    let mut names = a.widgets();
+    names.extend(a.tray());
     let mut u = names.clone();
     u.sort();
     u.dedup();
     assert_eq!(u.len(), names.len(), "{ctx}: a Widget twice: {names:?}");
-    assert!(names.contains(&W::Home), "{ctx}: Home is gone");
+    assert!(names.contains(&W::Home), "{ctx}: Home is gone (from the Panes and the Tray)");
+    assert!(a.tray().iter().all(|w| !a.has(*w)), "{ctx}: a Widget both on screen and in the Tray");
     let c = a.compute(body);
     let cells: u32 = c.panes.iter().map(|(_, r)| r.width as u32 * r.height as u32).sum();
     assert_eq!(cells, body.width as u32 * body.height as u32, "{ctx}: the Panes don't tile the screen");
@@ -166,7 +168,7 @@ fn assert_sound(a: &Arrangement, body: Rect, file: bool, ctx: &str) {
     assert_eq!(&back, a.plan(), "{ctx}: TOML changed it");
     if file {
         let dir = tempfile::tempdir().unwrap();
-        let saved = crate::layouts::save(dir.path(), "p", "singularity", "singularity", a.plan()).unwrap();
+        let saved = crate::layouts::save(dir.path(), "p", "singularity", "singularity", a).unwrap();
         assert_eq!(crate::layouts::load_dir(dir.path()).0, vec![saved], "{ctx}: a saved file changed it");
     }
 }
@@ -197,9 +199,9 @@ fn random_edit_sequences_keep_every_arrangement_sound() {
                     let ctx = format!("{} {w}x{h} seed {seed} step {step}", design.id);
                     let panes = now.panes();
                     let pick = |rng: &mut Rng| panes[rng.below(panes.len())].id;
-                    let roll = rng.below(12);
-                    if roll >= 10 {
-                        let undo = roll == 10;
+                    let roll = rng.below(14);
+                    if roll >= 12 {
+                        let undo = roll == 12;
                         let ok = |a: &Arrangement| a.fits(body);
                         let got = if undo { hist.undo(now.clone(), ok) } else { hist.redo(now.clone(), ok) };
                         let want = if undo { back.pop() } else { fwd.pop() };
@@ -224,6 +226,7 @@ fn random_edit_sequences_keep_every_arrangement_sound() {
                                     b.sort();
                                     assert_eq!(a, b, "{ctx}: a swap changed what's on screen");
                                     assert_eq!((n.widget_in(x), n.widget_in(y)), (now.widget_in(y), now.widget_in(x)), "{ctx}: not swapped");
+                                    assert_eq!(n.tray(), now.tray(), "{ctx}: a swap changed the Tray");
                                     swaps += 1;
                                 }
                                 Err(e) => assert!(x == y && *e == Refused::SamePane || now.widget_in(x).is_none() && now.widget_in(y).is_none() && *e == Refused::NothingToMove, "{ctx}: swap refused: {e:?}"),
@@ -265,9 +268,52 @@ fn random_edit_sequences_keep_every_arrangement_sound() {
                             }
                             (false, got)
                         }
+                        // the Tray: a Pane's Widget set aside (Home too: it waits there)
+                        10 => {
+                            let p = pick(&mut rng);
+                            let got = now.to_tray(p);
+                            match &got {
+                                Ok(n) => assert!(n.widget_in(p).is_none() && n.tray().last() == now.widget_in(p).as_ref() && n.tray().len() == now.tray().len() + 1, "{ctx}: to the Tray"),
+                                Err(e) => assert!(*e == Refused::Empty && now.widget_in(p).is_none(), "{ctx}: to the Tray refused: {e:?}"),
+                            }
+                            (true, got)
+                        }
+                        // from the Tray onto a Pane, one removed, or Clear Tray: Home is never lost
+                        11 => {
+                            if now.tray().is_empty() {
+                                continue;
+                            }
+                            let w = now.tray()[rng.below(now.tray().len())];
+                            let got = match rng.below(3) {
+                                0 => {
+                                    let p = pick(&mut rng);
+                                    let got = now.out_of_tray(w, p);
+                                    let n = got.as_ref().unwrap_or_else(|e| panic!("{ctx}: out of the Tray refused: {e:?}"));
+                                    assert_eq!(n.widget_in(p), Some(w), "{ctx}");
+                                    // nothing lost: what the Pane showed waits where `w` was
+                                    assert_eq!(n.tray().len(), now.tray().len() - usize::from(now.widget_in(p).is_none()), "{ctx}");
+                                    got
+                                }
+                                1 => {
+                                    let got = now.remove_from_tray(w);
+                                    assert!(got.is_ok() != required(Some(w)), "{ctx}: removing {w:?}: {got:?}");
+                                    got
+                                }
+                                _ => {
+                                    let n = now.clear_tray();
+                                    assert_eq!(n.tray().contains(&W::Home), now.tray().contains(&W::Home), "{ctx}: Clear Tray lost Home");
+                                    assert!(n.tray().iter().all(|w| required(Some(*w))), "{ctx}");
+                                    Ok(n)
+                                }
+                            };
+                            (true, got)
+                        }
                         _ => {
                             let p = pick(&mut rng);
                             let got = now.close(p, body);
+                            if let Ok(n) = &got {
+                                assert_eq!(n.tray().len(), now.tray().len() + usize::from(now.widget_in(p).is_some()), "{ctx}: closing destroyed its Widget");
+                            }
                             if let Err(e) = got {
                                 let core = required(now.widget_in(p));
                                 assert!(core && matches!(e, Refused::Required(_)) || !core && matches!(e, Refused::NoRoom | Refused::LastPane), "{ctx}: close refused: {e:?}");

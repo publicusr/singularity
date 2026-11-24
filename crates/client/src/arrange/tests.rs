@@ -1108,3 +1108,233 @@ fn a_popup_opening_mid_drag_lets_the_widget_go() {
     assert!(a.tile.is_none() && !shot.contains("⠿ stream"));
     release(&mut a, q.0, q.1);
 }
+
+// ── Arrange mode and the Tray (#41) ───────────────────────────────────
+
+/// The middle of the Tray strip (Arrange mode: the player's three rows).
+fn tray_spot(a: &App) -> (u16, u16) {
+    let t = a.tray_rect();
+    (t.x + t.width / 2, t.y + 1)
+}
+/// The middle of the chip of the Widget at place `i` in the Tray, as last drawn.
+fn tray_item(a: &App, i: usize) -> (u16, u16) {
+    let r = a.hit_rect(&Hit::TrayItem(i)).unwrap_or_else(|| panic!("no Tray item {i}"));
+    (r.x + r.width / 2, r.y)
+}
+/// (as macros, so the spots can be worked out from the App the gesture then goes to)
+macro_rules! click {
+    ($a:expr, $at:expr) => {{
+        let at = $at;
+        click_at($a, at)
+    }};
+}
+macro_rules! drag_to {
+    ($a:expr, $from:expr, $to:expr) => {{
+        let (from, to) = ($from, $to);
+        drag_at($a, from, to)
+    }};
+}
+fn click_at(a: &mut App, (x, y): (u16, u16)) {
+    press(a, x, y);
+    release(a, x, y);
+}
+/// A drag from (x, y) to (tx, ty), the way a hand does it: a few steps, then the release there.
+fn drag_at(a: &mut App, (x, y): (u16, u16), (tx, ty): (u16, u16)) {
+    press(a, x, y);
+    drag(a, x + 4, y.saturating_sub(2).max(1));
+    drag(a, tx, ty);
+    release(a, tx, ty);
+    render(a, W, H);
+}
+
+#[test]
+fn a_title_drag_turns_arrange_mode_on_and_a_drop_on_the_tray_sets_the_widget_aside() {
+    let mut a = app();
+    let before = a.layout.clone();
+    let stream = pid(&a, Widget::Stream);
+    let floor = drawn_panes(&a);
+    let (x, y) = title_spot(&a, Widget::Stream);
+    press(&mut a, x, y);
+    drag(&mut a, x + 4, y + 2);
+    assert!(a.arranging.is_some(), "the drag turned it on");
+    let shot = render(&mut a, W, H);
+    assert_eq!(drawn_panes(&a), floor, "no Pane moved for it");
+    assert!(shot.contains(" Tray ") && shot.contains("ARRANGE") && shot.contains(" Done "), "{shot}");
+    let (tx, ty) = tray_spot(&a);
+    drag(&mut a, tx, ty);
+    assert!(a.tile.as_ref().is_some_and(|t| t.tray && t.over.is_none()), "the Tray is highlighted");
+    assert!(render(&mut a, W, H).contains(" set aside here "));
+    assert_eq!(drawn_panes(&a), floor);
+    release(&mut a, tx, ty);
+    assert_eq!(a.layout.tray(), [Widget::Stream]);
+    assert_eq!(a.layout.widget_in(stream), None, "its Pane is left empty");
+    assert_eq!(crate::arrangement::outline(a.layout.plan()), crate::arrangement::outline(before.plan()));
+    assert!(a.arranging.is_some(), "still arranging after the drop");
+    let shot = render(&mut a, W, H);
+    assert!(shot.contains("⠿ stream") && shot.contains("empty"), "{shot}");
+}
+
+#[test]
+fn a_widget_from_the_tray_fills_an_empty_pane_or_swaps_with_what_is_there() {
+    let mut a = app();
+    let (stream, queue) = (pid(&a, Widget::Stream), pid(&a, Widget::Queue));
+    drag_to!(&mut a, title_spot(&a, Widget::Stream), tray_spot(&a));
+    // onto the queue: the queue goes into the Tray in its place
+    let to = centre(pane(&a, Widget::Queue));
+    let from = tray_item(&a, 0);
+    press(&mut a, from.0, from.1);
+    drag(&mut a, from.0 + 3, from.1 - 3);
+    drag(&mut a, to.0, to.1);
+    assert!(render(&mut a, W, H).contains(" swap with queue "));
+    release(&mut a, to.0, to.1);
+    assert_eq!((a.layout.widget_in(queue), a.layout.tray()), (Some(Widget::Stream), &[Widget::Queue][..]));
+    render(&mut a, W, H);
+    // onto the empty Pane: it fills it, and the Tray is empty
+    let to = centre(drawn_panes(&a).into_iter().find(|(p, _)| *p == stream).unwrap().1);
+    drag_to!(&mut a, tray_item(&a, 0), to);
+    assert_eq!(a.layout.widget_in(stream), Some(Widget::Queue));
+    assert!(a.layout.tray().is_empty());
+    assert!(render(&mut a, W, H).contains("drop a Widget here to set it aside"));
+    // a click on a Widget in the Tray, or a drop back on the Tray, changes nothing
+    drag_to!(&mut a, title_spot(&a, Widget::Fft), tray_spot(&a));
+    let now = a.layout.clone();
+    click!(&mut a, tray_item(&a, 0));
+    let (tx, ty) = tray_spot(&a);
+    drag_to!(&mut a, tray_item(&a, 0), (tx + 20, ty));
+    assert_eq!(a.layout, now);
+}
+
+#[test]
+fn closing_sends_the_widget_to_the_tray_and_clear_tray_never_removes_home() {
+    let mut a = app();
+    a.run(Action::Arrange);
+    render(&mut a, W, H);
+    let fft = pid(&a, Widget::Fft);
+    // each Pane has a split and a close button
+    assert!(a.hit_rect(&Hit::SplitPane(fft)).is_some() && a.hit_rect(&Hit::Close(fft)).is_some());
+    let r = a.hit_rect(&Hit::Close(fft)).unwrap();
+    click!(&mut a, (r.x + 1, r.y));
+    assert!(!a.layout.contains(fft), "the neighbour took the room");
+    assert_eq!(a.layout.tray(), [Widget::Fft]);
+    render(&mut a, W, H);
+    // Home into the Tray: Done is unavailable, and says why
+    drag_to!(&mut a, title_spot(&a, Widget::Home), tray_spot(&a));
+    assert_eq!(a.layout.tray(), [Widget::Fft, Widget::Home]);
+    let shot = render(&mut a, W, H);
+    assert!(shot.lines().last().unwrap().contains("Home still needs a Pane"), "{}", shot.lines().last().unwrap());
+    key(&mut a, KeyCode::Esc);
+    let done = a.hit_rect(&Hit::ArrangeDone).unwrap();
+    click!(&mut a, (done.x + 1, done.y));
+    assert!(a.arranging.is_some(), "neither Esc nor Done ends it");
+    // Home has no × in the Tray; Clear Tray removes the rest
+    assert!(a.hit_rect(&Hit::TrayRemove(1)).is_none() && a.hit_rect(&Hit::TrayRemove(0)).is_some());
+    let c = a.hit_rect(&Hit::ClearTray).unwrap();
+    click!(&mut a, (c.x + 1, c.y));
+    assert_eq!(a.layout.tray(), [Widget::Home]);
+    render(&mut a, W, H);
+    assert!(a.hit_rect(&Hit::ClearTray).is_none(), "nothing left it could clear");
+    // Home back into its (empty) Pane: Done ends Arrange mode, and the app looks as it did
+    let empty = a.layout.panes().into_iter().find(|p| p.widget.is_none()).unwrap().id;
+    let to = centre(drawn_panes(&a).into_iter().find(|(p, _)| *p == empty).unwrap().1);
+    drag_to!(&mut a, tray_item(&a, 0), to);
+    key(&mut a, KeyCode::Esc);
+    assert!(a.arranging.is_none() && a.layout.has(Widget::Home));
+    let shot = render(&mut a, W, H);
+    assert!(!shot.contains(" Tray ") && !shot.contains("ARRANGE") && !shot.contains('⊞'), "{shot}");
+}
+
+#[test]
+fn the_x_on_one_widget_in_the_tray_removes_it_and_undo_redo_cover_tray_edits() {
+    let mut a = app();
+    let start = a.layout.clone();
+    drag_to!(&mut a, title_spot(&a, Widget::Stream), tray_spot(&a));
+    drag_to!(&mut a, title_spot(&a, Widget::Fft), tray_spot(&a));
+    let two = a.layout.clone();
+    let x = a.hit_rect(&Hit::TrayRemove(0)).unwrap();
+    click!(&mut a, (x.x, x.y));
+    assert_eq!(a.layout.tray(), [Widget::Fft], "only that one went");
+    assert!(!a.layout.has(Widget::Stream));
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout, two);
+    ctrl(&mut a, 'z');
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout, start);
+    ctrl(&mut a, 'y');
+    assert_eq!(a.layout.tray(), [Widget::Stream]);
+    assert!(a.arranging.is_some(), "undo and redo work in Arrange mode");
+}
+
+#[test]
+fn the_palette_and_the_pane_menu_turn_arrange_mode_on_and_outside_it_nothing_looks_different() {
+    let mut a = app();
+    let plain = render(&mut a, W, H);
+    a.run(Action::Palette);
+    for c in "arrange".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    assert_eq!(a.palette_items().first(), Some(&Action::Arrange));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.modal(), Some(Modal::Arrange));
+    let shot = render(&mut a, W, H);
+    assert!(shot.contains('⊞') && shot.contains("Esc done"), "{shot}");
+    key(&mut a, KeyCode::Esc);
+    assert!(a.modal().is_none());
+    a.toast = None;
+    assert_eq!(render(&mut a, W, H), plain, "the app looks as before");
+    // the Pane menu's Arrange (not offered while arranging)
+    let (x, y) = title_spot(&a, Widget::Queue);
+    mouse(&mut a, MouseEventKind::Down(MouseButton::Right), x, y);
+    let i = a.menu().unwrap().items.iter().position(|(l, _)| l == "Arrange").unwrap();
+    for _ in 0..i {
+        key(&mut a, KeyCode::Down);
+    }
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.modal(), Some(Modal::Arrange));
+    render(&mut a, W, H);
+    mouse(&mut a, MouseEventKind::Down(MouseButton::Right), x, y);
+    assert!(!a.menu().unwrap().items.iter().any(|(l, _)| l == "Arrange"));
+}
+
+#[test]
+fn a_tray_holding_more_than_fits_scrolls() {
+    let (w, h) = (100, 40);
+    let mut a = App::new(None);
+    let off: Vec<Widget> = Widget::ALL.iter().copied().filter(|w| !a.layout.has(*w)).collect();
+    let n = off.len();
+    a.layout = Arrangement::new(a.layout.plan().clone(), off);
+    a.run(Action::Arrange);
+    let shot = render(&mut a, w, h);
+    let shown = (0..n).filter(|i| a.hit_rect(&Hit::TrayItem(*i)).is_some()).count();
+    assert!(shown < n && a.hit_rect(&Hit::TrayScroll(1)).is_some() && a.hit_rect(&Hit::TrayScroll(-1)).is_none(), "{shot}");
+    // the wheel, anywhere, and the ›
+    mouse(&mut a, MouseEventKind::ScrollDown, 50, 20);
+    render(&mut a, w, h);
+    assert!(a.hit_rect(&Hit::TrayItem(0)).is_none() && a.hit_rect(&Hit::TrayScroll(-1)).is_some());
+    for _ in 0..n {
+        if let Some(r) = a.hit_rect(&Hit::TrayScroll(1)) {
+            press(&mut a, r.x, r.y);
+            render(&mut a, w, h);
+        }
+    }
+    assert!(a.hit_rect(&Hit::TrayItem(n - 1)).is_some() && a.hit_rect(&Hit::TrayScroll(1)).is_none(), "it reaches the end");
+}
+
+#[test]
+fn the_tray_is_saved_with_the_design_and_survives_a_restart() {
+    let (mut a, dir) = with_dirs();
+    drag_to!(&mut a, title_spot(&a, Widget::Stream), tray_spot(&a));
+    let text = std::fs::read_to_string(dir.path().join("layouts/singularity-edited.toml")).unwrap();
+    assert!(text.contains("tray = [\"stream\"]"), "{text}");
+    let mut again = App::new(None);
+    again.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
+    assert_eq!(again.layout, a.layout);
+    assert_eq!(again.layout.tray(), [Widget::Stream]);
+    let shot = render(&mut again, W, H);
+    assert!(again.arranging.is_none() && !shot.contains(" Tray "), "the Tray only shows in Arrange mode");
+    // a Design left with Home in the Tray comes back in Arrange mode, where Done waits for it
+    drag_to!(&mut a, title_spot(&a, Widget::Home), tray_spot(&a));
+    let mut again = App::new(None);
+    again.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
+    render(&mut again, W, H);
+    assert_eq!(again.modal(), Some(Modal::Arrange));
+}
