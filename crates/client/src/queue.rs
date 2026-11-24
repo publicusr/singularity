@@ -157,8 +157,8 @@ fn fitting(all: &[Line], top: usize, rows: usize, big: bool) -> usize {
 }
 
 /// A queue this big shows each song on two rows with its cover beside it, and a cover for what's playing (#59): the
-/// area inside a Pane of 90×30 with its frame.
-pub const BIG: (u16, u16) = (88, 28);
+/// area inside a Pane of 90×32 with its frame.
+pub const BIG: (u16, u16) = (88, 30);
 
 pub fn is_big(r: Rect) -> bool {
     r.width >= BIG.0 && r.height >= BIG.1
@@ -661,14 +661,14 @@ mod tests {
 
     #[test]
     fn a_big_queue_shows_no_heading_without_its_first_song() {
-        // nine queued songs fill 19 of the 21 rows under what's playing; "Next from" would sit alone on the 20th
-        let r = Rect::new(0, 0, BIG.0, BIG.1);
-        let mut app = full_app(27);
+        // eleven queued songs fill 23 of the 24 rows under what's playing; "Next from" would sit alone on the 24th
+        let r = Rect::new(0, 0, BIG.0, BIG.1 + 1);
+        let mut app = full_app(33);
         let (buf, _, (top, visible, list_y)) = drawn(r, &mut app, draw);
         assert_eq!((top, list_y), (0, NOW_COVER.1 + 1));
         let screen: Vec<String> = (0..r.height).map(|y| row_text(&buf, 0, r.width, y)).collect();
         assert!(!screen.iter().any(|l| l.contains("Next from")), "{screen:#?}");
-        assert_eq!(visible, 10, "the queued songs and their heading");
+        assert_eq!(visible, 12, "the queued songs and their heading");
         // a row more and its first song comes with it
         let (buf, _, _) = drawn(Rect { height: r.height + 2, ..r }, &mut app, draw);
         assert!((0..r.height + 2).any(|y| row_text(&buf, 0, r.width, y).contains("Next from")));
