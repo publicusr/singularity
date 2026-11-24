@@ -27,7 +27,8 @@
 //! The keyboard (#43, replacing Move mode) keeps the same pick up → aim → drop shape: arrows move the focus between
 //! Panes; Enter picks up the focused Widget (the same lit Pane and chip as the mouse's), arrows aim, Enter drops
 //! (swap, or fill an empty Pane) and Esc puts it back. `t` sends the focused Widget to the Tray, `s` then an arrow
-//! splits its Pane that way, `x` closes it, `+` `-` move its line; Esc with nothing picked up is Done.
+//! splits its Pane that way, `x` closes it, `+` (or `=`) `-` move its border left or right of it and `]` `[` the one
+//! above or below it, `w` opens "+ Widget"'s picker; Esc (or `m`) with nothing picked up is Done.
 //!
 //! The Design files (owner, Q33): the name prompt never interrupts an edit. An edit to a built-in Design is kept at
 //! once as its one unnamed "<Design> (edited)" (the built-in itself never changes; Reset design goes back): outside
@@ -47,7 +48,7 @@ pub mod history;
 use crate::app::{Action, App, Hit, Menu, MenuAct, Modal, NameFor, Naming, Target};
 use crate::design::DESIGNS;
 use crate::arrangement::{Arrangement, Refused};
-use crate::layout::{Divider, Node, Pane, PaneId, Widget, is_hole};
+use crate::layout::{Axis, Divider, Node, Pane, PaneId, Widget, is_hole};
 use crate::theme::Theme;
 use crate::tiling::{Side, neighbour};
 use crate::ui::{blank, text};
@@ -60,7 +61,8 @@ use std::time::{Duration, Instant};
 /// How long the bar offers "undo" after an edit.
 pub const OFFER: Duration = Duration::from_secs(4);
 
-/// The chip by the pointer is at most this wide, and this far right of it.
+/// The chip by the pointer is at most this wide, and this far right of it (by the screen's right edge it stops there
+/// and the pointer goes on over it: it never jumps to the pointer's other side).
 pub const CHIP_MAX: u16 = 20;
 const CHIP_GAP: u16 = 2;
 
@@ -83,6 +85,8 @@ pub struct TileDrag {
     pub aim: Option<Aim>,
     /// picked up with Enter: the layout it was picked up on (any other edit meanwhile ends the pick-up)
     on: Option<Arrangement>,
+    /// the row the target's label was drawn on last frame (and its Pane): it stays there while the chip leaves it free
+    label: Option<(PaneId, u16)>,
 }
 
 /// What a Widget picked up with Enter is aimed at: a Pane, or the Tray (↑ leaves it into the Pane above column `x`).
@@ -230,7 +234,7 @@ impl App {
     pub fn tile_down(&mut self, id: PaneId, x: u16, y: u16) {
         self.focus = Some(id);
         let pane = self.layout.get(id).unwrap_or(Pane { id, widget: None });
-        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: false, aim: None, on: None });
+        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: false, aim: None, on: None, label: None });
     }
 
     /// A press on Widget `w` in the Tray: a drag takes it onto a Pane.
@@ -239,7 +243,7 @@ impl App {
             return;
         }
         let pane = Pane { id: PaneId::UNSET, widget: Some(w) };
-        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: true, aim: None, on: None });
+        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: true, aim: None, on: None, label: None });
     }
 
     /// Where the Tray strip is in Arrange mode: under the player bar, which is under the Panes (Q39).
@@ -414,12 +418,22 @@ impl App {
         Some((target, format!("⠿ {}", crate::ui::pane_name(design, w))))
     }
 
-    /// The chip by the pointer for `text`: one row, at most `CHIP_MAX` wide, right of the pointer (left of it where
-    /// the screen ends), inside `area`. Picked up with Enter: in the Pane aimed at, under its middle (where a target's
-    /// label goes).
+    /// The chip by the pointer for `text`: one row, at most `CHIP_MAX` wide, on the pointer's row and a fixed step right
+    /// of it, inside `area` (where the screen ends it stops, rather than jumping to the pointer's left: a small move
+    /// there flipped it back and forth). Picked up with Enter: in the Pane aimed at, under its middle (where a target's
+    /// label goes); aimed from a Pane into the Tray, in the Tray's row after what waits there (where it would land).
     pub fn chip_rect(&self, area: Rect, text: &str) -> Option<Rect> {
         let t = self.tile.as_ref().filter(|t| t.live)?;
         let w = (text.chars().count() as u16 + 2).min(CHIP_MAX).min(area.width);
+        if let (Some(Aim::Tray(_)), false) = (t.aim, t.from_tray) {
+            // inside the Tray's frame, after its last Widget shown (or at its start, empty)
+            let r = self.tray_rect();
+            let (x0, x1) = (r.x + 2, r.right().saturating_sub(2));
+            let w = w.min(x1.saturating_sub(x0));
+            let first = self.arranging.as_ref().map_or(0, |a| a.tray_first);
+            let after = tray_layout(self, r, first).items.last().map_or(x0, |(_, c, close)| close.unwrap_or(*c).right() + 1);
+            return Some(Rect::new(after.min(x1.saturating_sub(w)).max(x0), r.y + 1, w, 1));
+        }
         if let Some(Aim::Tray(x)) = t.aim {
             // on the Tray's top edge, over the column it was aimed down at
             let r = self.tray_rect();
@@ -433,9 +447,23 @@ impl App {
             return Some(Rect::new(r.x + (r.width - w) / 2, y.min(r.bottom().saturating_sub(1)), w, 1));
         }
         let (x, y) = t.at;
-        let right = x.saturating_add(CHIP_GAP);
-        let x = if right + w <= area.right() { right } else { x.saturating_sub(CHIP_GAP + w).max(area.x) };
+        let x = x.saturating_add(CHIP_GAP).min(area.right().saturating_sub(w)).max(area.x);
         Some(Rect::new(x, y.clamp(area.y, area.bottom().saturating_sub(1)), w, 1))
+    }
+
+    /// Where the label of target `id` (at `r`) goes this frame, clear of the chip, and remembered: it stays on its row
+    /// while the chip leaves that free, so a pointer moving a row up and down doesn't make it hop round the chip.
+    pub fn place_label(&mut self, id: PaneId, r: Rect, label: &str, chip: Option<Rect>) -> Option<Rect> {
+        let l = label_rect(r, label, chip, self.label_row(id));
+        if let Some(t) = self.tile.as_mut() {
+            t.label = l.map(|l| (id, l.y));
+        }
+        l
+    }
+
+    /// The row target `id`'s label was drawn on last.
+    pub fn label_row(&self, id: PaneId) -> Option<u16> {
+        self.tile.as_ref()?.label.filter(|(p, _)| *p == id).map(|(_, y)| y)
     }
 
     /// The divider to light up: the one being dragged, else the one under the pointer.
@@ -755,14 +783,18 @@ impl App {
 
     /// Keys in Arrange mode (the shortcuts with Ctrl or Alt work as everywhere; no Pane takes keys): arrows move the
     /// focus between Panes, Enter picks up the focused Widget, `t` sends it to the Tray, `s` then an arrow splits its
-    /// Pane that way, `x` closes it, `+` `-` move its line, Esc is Done. With a Widget picked up, arrows aim, Enter
-    /// drops and Esc puts it back. The playback keys these don't take work as ever (the player bar stays).
+    /// Pane that way, `x` closes it, `+` (or `=`) `-` move its border left or right of it, `]` `[` the one above or
+    /// below it, `w` opens "+ Widget"'s picker, Esc (or `m`, the key that came in, Q70) is Done. With a Widget picked
+    /// up, arrows aim, Enter drops and Esc (or `m`) puts it back. The playback keys these don't take work as ever (the
+    /// player bar stays).
     pub fn arrange_key(&mut self, k: KeyEvent) {
         use ratatui::crossterm::event::KeyModifiers;
         // a divider held by the mouse: the release ends it (and records it); no arrange key meanwhile
         if self.drag.is_some() {
             return;
         }
+        // the key that came into Arrange mode leaves it: it does what Esc does (Q70)
+        let k = if self.keymap.action(k) == Some(Action::Arrange) { KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE) } else { k };
         self.pick_up_check();
         // (a focus on a Widget that left the Tray, or on no Pane of this layout: the keys act from a real Pane)
         let tray = self.layout.tray().to_vec();
@@ -789,7 +821,7 @@ impl App {
             KeyCode::Down => Some(Side::Bottom),
             _ => None,
         };
-        let arrange_key = bare && (arrow.is_some() || matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('t' | 's' | 'x' | '+' | '-')));
+        let arrange_key = bare && (arrow.is_some() || matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('t' | 's' | 'x' | '+' | '=' | '-' | ']' | '[' | 'w')));
         if !arrange_key {
             return self.playback_key(k);
         }
@@ -819,6 +851,7 @@ impl App {
                     TrayStop::Widget(w) => self.pick_up_from_tray(w),
                     TrayStop::Add => self.open_tray_picker(),
                 },
+                (KeyCode::Char('w'), _) => self.open_tray_picker(),
                 (KeyCode::Esc, _) => self.arrange_esc(),
                 // (the keys for a Pane have none here)
                 _ => {}
@@ -839,8 +872,11 @@ impl App {
                 }
             }
             (KeyCode::Char('x'), _, Some(id)) => self.close_pane(id),
-            (KeyCode::Char('+'), _, Some(id)) => self.resize_step(id, true),
-            (KeyCode::Char('-'), _, Some(id)) => self.resize_step(id, false),
+            (KeyCode::Char('+' | '='), _, Some(id)) => self.resize_step(id, true, Axis::Horizontal),
+            (KeyCode::Char('-'), _, Some(id)) => self.resize_step(id, false, Axis::Horizontal),
+            (KeyCode::Char(']'), _, Some(id)) => self.resize_step(id, true, Axis::Vertical),
+            (KeyCode::Char('['), _, Some(id)) => self.resize_step(id, false, Axis::Vertical),
+            (KeyCode::Char('w'), ..) => self.open_tray_picker(),
             _ if !arrange_key => self.playback_key(k),
             _ => {}
         }
@@ -1210,7 +1246,7 @@ impl App {
         let x = self.tray_chip_x(w);
         let pane = Pane { id: PaneId::UNSET, widget: Some(w) };
         let on = Some(self.layout.clone());
-        self.tile = Some(TileDrag { pane, from: (0, 0), at: (0, 0), live: true, over: None, tray: false, from_tray: true, aim: Some(Aim::Tray(x)), on });
+        self.tile = Some(TileDrag { pane, from: (0, 0), at: (0, 0), live: true, over: None, tray: false, from_tray: true, aim: Some(Aim::Tray(x)), on, label: None });
     }
 
     /// Enter on Pane `id`: its Widget is picked up (lit, with the chip), aimed at its own Pane until an arrow says
@@ -1218,7 +1254,7 @@ impl App {
     fn pick_up(&mut self, id: PaneId) {
         let Some(pane) = self.layout.get(id).filter(|p| p.widget.is_some()) else { return };
         let on = Some(self.layout.clone());
-        self.tile = Some(TileDrag { pane, from: (0, 0), at: (0, 0), live: true, over: None, tray: false, from_tray: false, aim: Some(Aim::Pane(id)), on });
+        self.tile = Some(TileDrag { pane, from: (0, 0), at: (0, 0), live: true, over: None, tray: false, from_tray: false, aim: Some(Aim::Pane(id)), on, label: None });
     }
 
     /// An arrow with a Widget picked up: the aim goes to the next Pane that way, lit with what Enter would do (back on
@@ -1283,9 +1319,11 @@ impl App {
         }
     }
 
-    fn resize_step(&mut self, id: PaneId, grow: bool) {
+    /// `+` `-` (`axis` Horizontal: its border left or right of it) or `]` `[` (Vertical: above or below it): the
+    /// focused Pane a step bigger or smaller that way.
+    fn resize_step(&mut self, id: PaneId, grow: bool, axis: Axis) {
         let area = self.pane_area();
-        match self.layout.step_line(id, grow, area) {
+        match self.layout.step_line(id, grow, area, axis) {
             Ok(tree) => self.commit_layout(tree),
             Err(_) => self.say(if grow { "Can't grow it more" } else { "Can't shrink it more" }),
         }
@@ -1294,9 +1332,9 @@ impl App {
 
 // ── drawing ───────────────────────────────────────────────────────────
 
-/// The Pane a release would drop on: its frame lit in the accent, and a label in its middle saying what happens
-/// (clear of the chip, `chip`).
-pub fn draw_target(buf: &mut Buffer, r: Rect, label: &str, chip: Option<Rect>, th: &Theme) {
+/// The Pane a release would drop on: its frame lit in the accent, and a label saying what happens at `at` (from
+/// `App::place_label`: in its middle, clear of the chip).
+pub fn draw_target(buf: &mut Buffer, r: Rect, label: &str, at: Option<Rect>, th: &Theme) {
     let lit = th.s(th.accent).add_modifier(Modifier::BOLD);
     let (right, bottom) = (r.right().saturating_sub(1), r.bottom().saturating_sub(1));
     let edge = (r.x..r.right()).flat_map(|x| [(x, r.y), (x, bottom)]).chain((r.y..r.bottom()).flat_map(|y| [(r.x, y), (right, y)]));
@@ -1307,14 +1345,15 @@ pub fn draw_target(buf: &mut Buffer, r: Rect, label: &str, chip: Option<Rect>, t
             c.set_style(lit);
         }
     }
-    if let Some(l) = label_rect(r, label, chip) {
+    if let Some(l) = at {
         text(buf, l.x, l.y, l.width, &fit(label, l.width), th.chip(th.accent));
     }
 }
 
-/// Where a target's label goes: centred in it, cut to fit inside its frame, on the middle row or the nearest one the
-/// chip (`chip`) leaves free.
-pub fn label_rect(r: Rect, label: &str, chip: Option<Rect>) -> Option<Rect> {
+/// Where a target's label goes: centred in it, cut to fit inside its frame, on row `stay` (where it was last frame)
+/// while the chip (`chip`) leaves that free, else on the middle row if free, else on the row nearest the middle at
+/// least two rows from the chip (a move of one row doesn't reach it again), else the nearest free one.
+pub fn label_rect(r: Rect, label: &str, chip: Option<Rect>, stay: Option<u16>) -> Option<Rect> {
     let w = (label.chars().count() as u16 + 2).min(r.width.saturating_sub(2));
     if r.height < 3 || w < 3 {
         return None;
@@ -1322,8 +1361,13 @@ pub fn label_rect(r: Rect, label: &str, chip: Option<Rect>) -> Option<Rect> {
     let mid = r.y + r.height / 2;
     let at = |y: u16| Rect::new(r.x + (r.width - w) / 2, y, w, 1);
     let free = |l: &Rect| chip.is_none_or(|c| !c.intersects(*l));
-    let rows = (r.y + 1..r.bottom() - 1).map(|y| (y.abs_diff(mid), y));
-    rows.map(|(_, y)| at(y)).filter(free).min_by_key(|l| l.y.abs_diff(mid)).or(Some(at(mid)))
+    let inside = |y: u16| y > r.y && y < r.bottom() - 1;
+    if let Some(l) = stay.filter(|&y| inside(y)).or(Some(mid)).map(at).filter(free) {
+        return Some(l);
+    }
+    let rows = || (r.y + 1..r.bottom() - 1).map(at).filter(free);
+    let clear = |l: &Rect| chip.is_none_or(|c| l.y.abs_diff(c.y) >= 2);
+    rows().filter(clear).min_by_key(|l| l.y.abs_diff(mid)).or_else(|| rows().min_by_key(|l| l.y.abs_diff(mid))).or(Some(at(mid)))
 }
 
 /// ` text ` in `w` columns: cut with an ellipsis if it is longer.
@@ -1422,7 +1466,9 @@ pub fn draw_tray(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         a.tray_first = l.first;
     }
     let tray = app.layout.tray().to_vec();
-    if tray.is_empty() {
+    // (a Widget aimed here with the keys shows where it lands, in its place)
+    let landing = app.tile.as_ref().is_some_and(|t| t.live && t.tray && t.aim.is_some());
+    if tray.is_empty() && !landing {
         let s = "drop a Widget here to set it aside";
         text(buf, r.x + 2, r.y + 1, r.width.saturating_sub(4), s, th.s(th.dim));
     }
@@ -1488,21 +1534,26 @@ pub fn draw_legend(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let key = |a| app.keymap.label(a);
     // the keys of the moment: a Widget picked up, `s` waiting for its arrow, or the lot
     let held = app.tile.as_ref().is_some_and(|t| t.aim.is_some());
+    // Esc, and the key that came in (Q70)
+    let esc = match key(Action::Arrange) {
+        k if k.is_empty() => "Esc".to_string(),
+        k => format!("Esc/{k}"),
+    };
     // each with how long it stays when the line is short: the mouse's gesture goes first, then undo / redo, then the
     // keys (the arrows and Enter last)
     let mut parts: Vec<(u8, String)> = if held {
-        vec![(9, "←↑↓→ aim".into()), (9, "Enter drop".into()), (9, "Esc put back".into())]
+        vec![(9, "←↑↓→ aim".into()), (9, "Enter drop".into()), (9, format!("{esc} put back"))]
     } else if app.arranging.as_ref().is_some_and(|a| a.split_next) {
         vec![(9, "←↑↓→ split that way".into())]
     } else {
-        let mut parts = vec![(0, "drag a title onto a Pane or the Tray".to_string()), (8, "←↑↓→ Enter pick up".into()), (6, "t Tray".into()), (5, "⊞ s+arrow split".into()), (5, "× x close".into()), (4, "+ − size".into())];
+        let mut parts = vec![(0, "drag a title onto a Pane or the Tray".to_string()), (8, "←↑↓→ Enter pick up".into()), (6, "t Tray".into()), (5, "⊞ s+arrow split".into()), (5, "× x close".into()), (4, "+ − width".into()), (4, "[ ] height".into()), (3, "w + Widget".into())];
         for (a, what) in [(Action::UndoLayout, "undo"), (Action::RedoLayout, "redo")] {
             let k = key(a);
             if !k.is_empty() {
                 parts.push((1, format!("{k} {what}")));
             }
         }
-        parts.push((7, "Esc done".into()));
+        parts.push((7, format!("{esc} done")));
         parts
     };
     let x = r.x + tw + 2;

@@ -172,11 +172,12 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   name in a title, `w` on the focused Pane, or Ctrl+K → Replace widget… open the picker too (Home's Pane keeps Home).
   Ctrl+K also has Split left / right / up / down, Close pane, Arrange and Reset design. In Arrange mode the keyboard
   does the same: arrows move between Panes, Enter picks up the focused Widget (the same lit Pane and chip as a drag),
-  arrows aim and Enter drops it there (Esc puts it back); `t` sends the focused Widget to the Tray, `s` then an arrow
-  splits its Pane that way, `x` closes it, `+` `-` move its border, and Esc is Done. ↓ from a bottom Pane goes onto
-  the Tray: ← → move along it, Enter picks a Widget up, ↑ aims back into the Panes and Enter puts it there (a Widget
-  picked up from a Pane and aimed down at the Tray waits there); after its last Widget (or alone, when it's empty)
-  comes **+ Widget**, where Enter opens the picker. In keys.toml, `move_pane` is another name for
+  arrows aim and Enter drops it there (Esc or `m` puts it back); `t` sends the focused Widget to the Tray, `s` then an
+  arrow splits its Pane that way, `x` closes it, `+` (or `=`) and `-` move its border left or right of it, `]` and `[`
+  the one above or below it, `w` opens the **+ Widget** picker, and Esc or `m` is Done. ↓ from a bottom Pane goes
+  onto the Tray: ← → move along it, Enter picks a Widget up, ↑ aims back into the Panes and Enter puts it there (a
+  Widget picked up from a Pane and aimed down at the Tray waits there, shown in the Tray's row where it will go);
+  after its last Widget (or alone, when it's empty) comes **+ Widget**, where Enter opens the picker. In keys.toml, `move_pane` is another name for
   `arrange`. Ctrl+Z undoes a layout change and
   Ctrl+Y (or Ctrl+Shift+Z) redoes it; the bar offers "undo" for a few seconds after each one. Home can move but never close (the built-in
   Designs also have the library, the queue and lyrics; your own may let them go: Ctrl+K → Your Library / Queue then

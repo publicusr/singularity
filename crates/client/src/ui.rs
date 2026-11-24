@@ -133,14 +133,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let mut overlays: Vec<Rect> = layers.iter().filter_map(|&m| layer_rect(area, app, m)).collect();
     overlays.extend(app.toast.as_ref().map(|(msg, _)| toast_rect(area, msg)));
     app.overlays = overlays;
-    let holes: Vec<Rect> = target.as_ref().and_then(|(r, l)| crate::arrange::label_rect(*r, l, chip.as_ref().map(|c| c.0))).into_iter().chain(chip.as_ref().map(|(r, _)| *r)).collect();
+    let label_at = marks.as_ref().and_then(|(t, _)| t.as_ref()).zip(target.as_ref()).and_then(|((id, _), (r, l))| app.place_label(*id, *r, l, chip.as_ref().map(|c| c.0)));
+    let holes: Vec<Rect> = label_at.into_iter().chain(chip.as_ref().map(|(r, _)| *r)).collect();
     if let Some(k) = app.kitty.as_mut() {
         k.holes = holes;
     }
     top_bar(f, top, app, &th);
     panes(f, body, app, &th);
     if let Some((r, label)) = &target {
-        crate::arrange::draw_target(f.buffer_mut(), *r, label, chip.as_ref().map(|c| c.0), &th);
+        crate::arrange::draw_target(f.buffer_mut(), *r, label, label_at, &th);
     }
     if th.scanlines {
         scanlines(f.buffer_mut(), body);
@@ -1827,7 +1828,7 @@ mod tests {
                 // (where the Panes are now: the drag turned Arrange mode on, which makes room for the Tray, Q39)
                 let r = app.layout.compute(app.pane_area()).rect(id).unwrap();
                 v.extend([Rect::new(r.x, r.y, r.width, 1), Rect::new(r.x, r.bottom() - 1, r.width, 1), Rect::new(r.x, r.y, 1, r.height), Rect::new(r.right() - 1, r.y, 1, r.height)]);
-                v.extend(crate::arrange::label_rect(r, &label, chip_r));
+                v.extend(crate::arrange::label_rect(r, &label, chip_r, app.label_row(id)));
             }
             v
         };

@@ -14,7 +14,7 @@ BIN = os.environ.get("PTY_BIN") or f"{ROOT}/target/debug"
 WRAP = os.environ.get("PTY_WRAP", "").split()
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
 # the tiling scenario wants room for the whole Singularity layout
-if sys.argv[1:2] in (["tiling"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"], ["paneless"], ["arrange"], ["arrange-keys"], ["new-design"]):
+if sys.argv[1:2] in (["tiling"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"], ["paneless"], ["arrange"], ["arrange-keys"], ["arrange-fixes"], ["new-design"]):
     COLS, ROWS = int(os.environ.get("PTY_COLS", 160)), int(os.environ.get("PTY_ROWS", 48))
 # the wheel everywhere: short Panes, so everything holds more than fits
 if sys.argv[1:2] == ["wheel-all"]:
@@ -2223,6 +2223,87 @@ def arrange_keys(t, out):
     t.send(b"q", 0.5)
 
 
+def arrange_fixes(t, out):
+    """The owner's Arrange-mode test (#41, #43): the chip by a dragged title over small pointer moves (pixel mouse
+    reports, as Ghostty sends them: prints the chip's cell against the pointer's for each move); the queue picked up
+    with Enter and aimed ↓ into the Tray (the chip in the Tray's row, where it would land); `=` `-` `]` `[` on the
+    focused Pane's borders (prints the sizes); `w` opens "+ Widget"'s picker; `m` leaves Arrange mode. Pixel tier and
+    pixel mouse, 160x48; start from an empty output folder."""
+    t.pump(6.0)
+    t.send(b" ", 0.5)
+    UP, DOWN = b"\x1b[A", b"\x1b[B"
+    t.shot(f"{out}/00-start.png")
+
+    def px(code, x, y, release=False, wait=0.05):
+        # pixel reports (SGR-Pixels), 1-based
+        t.send(f"\x1b[<{code};{int(x) + 1};{int(y) + 1}{'m' if release else 'M'}".encode(), wait)
+
+    def legend():
+        return t.screen.display[ROWS - 1].strip()
+
+    # 1. a title held and wiggled a few pixels at a time, up, down and sideways: the chip keeps its place by the pointer
+    sx, sy = t.find("┌ stream")
+    px(0, (sx + 3.5) * CW, (sy + 0.5) * CH)
+    cx, cy = 60.3 * CW, 22.5 * CH
+    px(32, cx, cy, wait=0.3)
+    offsets = []
+    for i in range(48):
+        dx = [0, 3, -3, 6, -2, 1][i % 6]
+        dy = [0, 7, 14, 4, -6, -12, -3, 9][i % 8]
+        x, y = cx + i * 1.7 + dx, cy + dy
+        px(32, x, y, wait=0.2)
+        at = t.find("⠿ stream")
+        offsets.append(None if not at else (at[0] - int(x // CW), at[1] - int(y // CH)))
+        if i == 20:
+            t.shot(f"{out}/01-chip-mid-wiggle.png")
+    print("chip - pointer (cells) over", len(offsets), "moves:", sorted(set(offsets), key=str))
+    t.send(b"\x1b", 0.3)
+    px(0, cx, cy, release=True, wait=0.5)
+    t.send(b"\x1b", 0.6)
+    # 2. the keyboard: m (the focus on the stream's Pane, where the drag left it: a bottom one), Enter picks it up, ↓
+    # aims past the bottom of the Panes into the Tray
+    t.send(b"m", 0.5)
+    t.shot(f"{out}/02-arrange.png")
+    print("legend:", legend())
+    t.send(b"\r", 0.4)
+    t.shot(f"{out}/03-picked-up.png")
+    t.send(DOWN, 0.4)
+    t.shot(f"{out}/04-aimed-into-tray.png")
+    at = t.find("⠿ stream")
+    print("aimed into the Tray: chip at", at, "· the Tray's frame rows", ROWS - 4, "to", ROWS - 2, "· in its inner row:", bool(at) and at[1] == ROWS - 3)
+    t.send(b"\r", 0.4)
+    t.shot(f"{out}/05-set-aside.png")
+    print("after Enter, the Tray row:", t.screen.display[ROWS - 3].strip()[:100])
+    t.send(b"\x1a", 0.4)
+    # 3. Home focused (a click on it): `=` grows like `+`, `-` shrinks; `]` taller, `[` shorter. Prints where the
+    # titles of Home and the queue under it are
+    hx, hy = t.find("home")
+    px(0, (hx + 20) * CW, (hy + 8) * CH)
+    px(0, (hx + 20) * CW, (hy + 8) * CH, release=True, wait=0.3)
+
+    def where():
+        return {w: t.find(w) for w in ("┌ queue", "┌ home")}
+    for name, keys in [("06-eq", b"=="), ("07-minus", b"--"), ("08-taller", b"]]"), ("09-shorter", b"[["), ("10-plus", b"+")]:
+        before = where()
+        for k in keys:
+            t.send(bytes([k]), 0.3)
+        t.shot(f"{out}/{name}.png")
+        print(name, "titles (x, y):", before, "->", where())
+    # 4. `w`: the "+ Widget" picker, from a Pane
+    t.send(b"w", 0.5)
+    t.shot(f"{out}/11-w-picker.png")
+    print("after w:", [l.strip()[:70] for l in t.screen.display if "Widget" in l or "widget" in l][:3])
+    t.send(b"\x1b", 0.4)
+    # 5. `m` leaves Arrange mode as Esc does (something changed: the name prompt; Esc keeps it unnamed)
+    t.send(b"m", 0.6)
+    t.shot(f"{out}/12-m-done.png")
+    print("m: name prompt:", bool(t.find("Keep your changes as a design")), "· legend:", legend()[:60])
+    t.send(b"\x1b", 0.6)
+    t.shot(f"{out}/13-after.png")
+    print("after: arranging:", "ARRANGE" in legend())
+    t.send(b"q", 0.5)
+
+
 def new_design(t, out, env):
     """D87, #42: a whole New design… build. Ctrl+K → New design…, Esc at once (the Design as before), then again: one
     empty Pane filling the screen and Home in the Tray; the Tray's "+ Widget" (the picker, the queue picked into the
@@ -2633,17 +2714,17 @@ def main():
         env.pop(k, None)
     # big text in the font these shots draw the cells with, as a terminal's own font (#53)
     env.setdefault("SINGULARITY_BIG_FONT", FONT.getname()[0])
-    if scenario == "pixel":
+    if scenario in ("pixel", "arrange-fixes"):
         env["SINGULARITY_PIXEL_MOUSE"] = "1"
     cat = ["--no-catalogue"]
     if scenario.startswith("idle"):
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-fast", "tiling-paths", "resize", "karaoke") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-fast", "tiling-paths", "resize", "karaoke", "arrange-fixes") else "0"
         if scenario == "design-sizes":
             env["SINGULARITY_PIXEL"] = os.environ.get("PTY_PIXEL", "1")
         if scenario == "sizes":
@@ -2800,6 +2881,8 @@ def main():
             return arrange(t, out)
         if scenario == "arrange-keys":
             return arrange_keys(t, out)
+        if scenario == "arrange-fixes":
+            return arrange_fixes(t, out)
         if scenario == "pane-menu":
             return pane_menu(t, out)
         if scenario == "new-design":

@@ -121,8 +121,8 @@ fn split_close_and_steps_keep_the_floor_plan_valid_or_say_why() {
     }
     let one = Arrangement::from(Node::pane(W::Fft));
     assert_eq!(one.close(PaneId(1), AREA), Err(Refused::LastPane));
-    assert_eq!(a.step_line(PaneId(999), true, AREA), Err(Refused::NoPane));
-    assert!(a.step_line(id(&a, W::Library), true, AREA).is_ok());
+    assert_eq!(a.step_line(PaneId(999), true, AREA, Axis::Horizontal), Err(Refused::NoPane));
+    assert!(a.step_line(id(&a, W::Library), true, AREA, Axis::Horizontal).is_ok());
     assert_eq!(Refused::Required(W::Home).why(|w| w.name().to_string()), "home can be moved, but never removed");
 }
 
@@ -258,7 +258,7 @@ fn random_edit_sequences_keep_every_arrangement_sound() {
                             let d = ds[rng.below(ds.len())].clone();
                             (false, Ok(now.move_line(&d, rng.below(w as usize + 20) as u16, body)))
                         }
-                        7 => (false, now.step_line(pick(&mut rng), rng.below(2) == 0, body)),
+                        7 => (false, now.step_line(pick(&mut rng), rng.below(2) == 0, body, [Axis::Horizontal, Axis::Vertical][rng.below(2)])),
                         8 => {
                             let side = [Left, Right, Top, Bottom][rng.below(4)];
                             let what = if rng.below(2) == 0 { None } else { Some(w_new) };
