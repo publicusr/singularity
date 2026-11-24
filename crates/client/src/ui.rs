@@ -278,7 +278,9 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
                 edited += &format!(" · {undo} undo");
             }
             let (title, hint) = match n.purpose {
-                crate::app::NameFor::Layout | crate::app::NameFor::NewDesign => ("Save design as", "Enter save · Esc cancel · find it in Ctrl+K → Pick a design"),
+                crate::app::NameFor::Layout => ("Save design as", "Enter save · Esc cancel · find it in Ctrl+K → Pick a design"),
+                // (Esc goes back to building, owner after #42)
+                crate::app::NameFor::NewDesign => ("Save design as", "Enter save · Esc keep building · Ctrl+D discard it"),
                 crate::app::NameFor::Fork => ("Keep your changes as a design", edited.as_str()),
                 crate::app::NameFor::NewPlaylist => ("New playlist", "Enter create · Esc cancel"),
             };
@@ -289,9 +291,9 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
             let shown: String = n.text.chars().skip(n.text.chars().count().saturating_sub(w)).collect();
             text(buf, inner.x + 1, inner.y, inner.width.saturating_sub(2), &format!("› {shown}▏"), th.s(th.fg).add_modifier(Modifier::BOLD));
             text(buf, inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), hint, th.s(th.dim));
-            // a New design… can be thrown away from here (owner, after #42)
+            // a New design's: the hint the others have, on a row of its own
             if n.purpose == crate::app::NameFor::NewDesign && inner.height > 2 {
-                text(buf, inner.x + 1, inner.y + 2, inner.width.saturating_sub(2), "Ctrl+D discard it, back to the design you had", th.s(th.dim));
+                text(buf, inner.x + 1, inner.y + 2, inner.width.saturating_sub(2), "find it in Ctrl+K → Pick a design", th.s(th.dim));
             }
         }
         Modal::Details => crate::playlists::draw_details(f.buffer_mut(), area, app, th),
@@ -304,7 +306,7 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
 }
 
 fn naming_rect(area: Rect, app: &App) -> Rect {
-    // a New design's has a row more: how to throw it away
+    // a New design's has a row more (Esc, Ctrl+D and where to find it don't fit on one)
     let discard = app.naming().is_some_and(|n| n.purpose == crate::app::NameFor::NewDesign);
     centered(area, 64, if discard { 5 } else { 4 })
 }
@@ -3406,8 +3408,16 @@ mod tests {
             };
             let rows = inside(&mut app);
             assert!(rows[2].contains("S1") && rows[3].contains("S2"), "{w} wide: {rows:#?}");
+            // ↑ (or ←, →) on the first song: nothing moves, and the Shelves get no highlight of their own (review of #79:
+            // the Shelves showed while Enter played the hidden song)
+            app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+            for code in [KeyCode::Up, KeyCode::Left, KeyCode::Right, KeyCode::Up] {
+                app.key(KeyEvent::new(code, KeyModifiers::NONE));
+                assert!(app.searching().is_some_and(|s| s.track_sel == Some(0) && s.shelves.sel.is_none()), "{code:?}");
+            }
+            assert_eq!(inside(&mut app)[2..], rows[2..], "the songs still show");
             // ↓ to the last song: the window follows it
-            for _ in 0..4 {
+            for _ in 0..3 {
                 app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
             }
             let rows = inside(&mut app);

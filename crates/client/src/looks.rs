@@ -238,6 +238,19 @@ impl App {
         }
     }
 
+    /// Discard new design (Ctrl+D on its name prompt, or the palette's, owner Q78): the build is thrown away and the
+    /// Design you had comes back, untouched; the bar says so.
+    pub fn discard_new_design(&mut self) {
+        if !self.building() {
+            return;
+        }
+        if self.naming().is_some() {
+            self.take_naming();
+        }
+        self.cancel_new_design();
+        self.say("New design discarded".to_string());
+    }
+
     /// Typing a name: for "Save design as…" (#19) or a new playlist (#51).
     pub fn naming_key(&mut self, k: KeyEvent) {
         let Some(purpose) = self.naming().map(|n| n.purpose) else { return };
@@ -252,8 +265,7 @@ impl App {
         }
         // a New design… thrown away (owner, after #42): the Design that was on screen comes back, untouched
         if purpose == crate::app::NameFor::NewDesign && k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('d' | 'D')) {
-            self.take_naming();
-            return self.cancel_new_design();
+            return self.discard_new_design();
         }
         match k.code {
             KeyCode::Esc => {

@@ -124,6 +124,8 @@ pub enum TrayStop {
 struct Fresh {
     before: Snapshot,
     history: history::History<Snapshot>,
+    /// the Theme on screen when it began (a Theme picked meanwhile goes too when it's thrown away)
+    theme: String,
 }
 
 /// What undo goes back to: the layout, the Design it was (None: the built-in one) and what its file said about it,
@@ -653,7 +655,7 @@ impl App {
         self.want_widget_data();
         self.enter_arrange();
         if let Some(a) = self.arranging.as_mut() {
-            a.fresh = Some(Box::new(Fresh { before, history }));
+            a.fresh = Some(Box::new(Fresh { before, history, theme: self.theme.id.clone() }));
         }
     }
 
@@ -667,17 +669,20 @@ impl App {
         self.arranging.as_ref()?.fresh.as_ref()?.before.name.clone()
     }
 
-    /// Esc on a New design… before anything is placed, or Ctrl+D on its name prompt: the Design that was on screen, as
-    /// it was, and its undo history.
+    /// Esc on a New design… before anything is placed, or Discard: the Design that was on screen, as it was, with its
+    /// Theme and its undo history.
     pub fn cancel_new_design(&mut self) {
         let Some(f) = self.arranging.take().and_then(|a| a.fresh) else { return };
-        let Fresh { before, history } = *f;
+        let Fresh { before, history, theme } = *f;
         self.tile = None;
         self.undo_offer = None;
         self.layout = before.tree;
         self.layout_name = before.name;
         self.focus = before.focus.filter(|p| self.layout.contains(*p)).or_else(|| self.layout.pane_of(Widget::Home));
         self.history = history;
+        if theme != self.theme.id && self.set_theme(&theme) {
+            self.save_ui();
+        }
         self.want_widget_data();
         self.relayout();
     }

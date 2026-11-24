@@ -186,7 +186,8 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   names one any time, Reset design goes back to the built-in one, and a Design of your own saves itself. Ctrl+K →
   **New design…** starts from a blank slate: Arrange mode with one empty Pane filling the screen and Home in the Tray;
   split it, fill it from the Tray, and Done asks for a name and saves it with the current Theme (Esc before anything is
-  placed, or Ctrl+D on the name prompt, goes back to the Design you had, untouched).
+  placed, Ctrl+D on the name prompt or Ctrl+K → Discard new design goes back to the Design you had, untouched; Esc on
+  the prompt keeps building).
 - **Idle**: after 3 minutes without input the black hole drifts over the screen; any key wakes it (and does nothing
   else). Shift+I or `[idle]` in config.toml switches it off or changes the delay.
 - **Listening log** (private, local): every track you hear for 30 s is logged in `~/.local/share/singularity/`, and

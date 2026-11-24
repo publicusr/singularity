@@ -2105,8 +2105,9 @@ fn esc_on_a_new_design_before_anything_is_placed_leaves_the_design_untouched() {
     assert!(a.layout.has(Widget::Fft));
 }
 
-/// Owner, after #42: a New design… with things placed can be thrown away: Ctrl+D on its name prompt (which says so)
-/// brings back the Design that was on screen, untouched (its files, its look, its undo); nothing of the build is kept.
+/// Owner, after #42: a New design… with things placed can be thrown away: Ctrl+D on its name prompt (which says so,
+/// and that Esc keeps building) brings back the Design that was on screen, untouched (its files, its look, its undo);
+/// nothing of the build is kept, and the bar says it was discarded.
 #[test]
 fn ctrl_d_on_a_new_designs_name_prompt_throws_it_away() {
     let (mut a, dir) = with_dirs();
@@ -2121,15 +2122,49 @@ fn ctrl_d_on_a_new_designs_name_prompt_throws_it_away() {
     assert!(a.layout.has(Widget::Home) && a.layout != layout);
     key(&mut a, KeyCode::Esc);
     assert_eq!(a.naming().map(|n| n.purpose), Some(crate::app::NameFor::NewDesign));
-    assert!(render(&mut a, W, H).contains("Ctrl+D discard it, back to the design you had"));
+    let shot = render(&mut a, W, H);
+    assert!(shot.contains("Enter save · Esc keep building · Ctrl+D discard it") && shot.contains("find it in Ctrl+K → Pick a design"), "{shot}");
     typed(&mut a, "Half");
     ctrl(&mut a, 'd');
     assert!(a.naming().is_none() && a.arranging.is_none() && a.modal().is_none());
+    assert!(a.toast.as_ref().is_some_and(|t| t.0 == "New design discarded"), "{:?}", a.toast);
+    a.toast = None;
     assert_eq!((a.layout.clone(), a.layout_name.clone(), files(dir.path())), (layout, name, on_disk));
     assert_eq!(render(&mut a, W, H), plain, "the app as before");
     // the close from before the build is still undoable
     ctrl(&mut a, 'z');
     assert!(a.layout.has(Widget::Fft));
+}
+
+/// Owner Q78: while a New design… is built the palette offers "Discard new design", the same as Ctrl+D on the prompt;
+/// a Theme picked during the build goes too (on screen and in config.toml). Not offered otherwise.
+#[test]
+fn the_palettes_discard_new_design_puts_the_theme_back_too() {
+    let (mut a, dir) = with_dirs();
+    let config = || std::fs::read_to_string(dir.path().join("config.toml")).unwrap_or_default();
+    a.run(Action::Palette);
+    typed(&mut a, "discard");
+    assert!(!a.palette_items().contains(&Action::DiscardNewDesign), "only while one is built");
+    key(&mut a, KeyCode::Esc);
+    let (layout, theme, on_disk) = (a.layout.clone(), a.theme.id.clone(), config());
+    a.run(Action::NewDesign);
+    render(&mut a, W, H);
+    drag_to!(&mut a, tray_item(&a, 0), centre(drawn_panes(&a)[0].1));
+    // another Theme while building: on screen and in config.toml
+    a.run(Action::NextVariant);
+    assert_ne!(a.theme.id, theme);
+    assert_ne!(config(), on_disk);
+    a.run(Action::Palette);
+    typed(&mut a, "discard");
+    assert_eq!(a.palette_items().first(), Some(&Action::DiscardNewDesign));
+    assert!(render(&mut a, W, H).contains("Discard new design"));
+    key(&mut a, KeyCode::Enter);
+    assert!(a.arranging.is_none() && a.modal().is_none());
+    assert_eq!((a.layout.clone(), a.theme.id.clone()), (layout, theme.clone()));
+    assert!(a.toast.as_ref().is_some_and(|t| t.0 == "New design discarded"), "{:?}", a.toast);
+    let mut again = App::new(None);
+    again.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
+    assert_eq!(again.theme.id, theme, "config.toml names the Theme you had:\n{}", config());
 }
 
 /// The other name prompts have no such row, and Ctrl+D there is no discard.
