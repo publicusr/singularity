@@ -18,9 +18,12 @@ pub struct QueueView {
     pub sel: usize,
     /// first visible line
     pub top: usize,
+    /// how many lines are in view (in a big queue, where a song takes two rows, fewer than rows)
     pub visible: usize,
     /// the screen row of the list's first line, as last drawn (in its Pane or its popup): where a drag aims
     pub list_y: u16,
+    /// whether it was last drawn big (#59): a song two rows tall, its cover beside it
+    pub big: bool,
 }
 
 impl QueueView {
@@ -96,10 +99,7 @@ pub fn target(app: &App, d: QueueDrag, y: u16) -> QueueDrag {
     let all = lines(app);
     // only at what's in view: past the list's edge it stays on the first or last line shown (above the first line of
     // the whole list means "first of your queue")
-    let top = app.queue_view.top as i64;
-    let lo = if top == 0 { -1 } else { top };
-    let hi = (top + app.queue_view.visible.max(1) as i64 - 1).min(all.len() as i64 - 1);
-    let line = (y as i64 - first as i64 + top).clamp(lo, hi.max(lo));
+    let line = line_at(&all, &app.queue_view, y as i64 - first as i64);
     let at = |k: i64| all.get(k.max(0) as usize).cloned();
     // the entry a line means: a heading means the entry right after it
     let mut k = line;
@@ -118,6 +118,47 @@ pub fn target(app: &App, d: QueueDrag, y: u16) -> QueueDrag {
         return QueueDrag { to, into_queue: true, ..d };
     }
     QueueDrag { to: i.clamp(start, start + len - 1), into_queue: false, ..d }
+}
+
+/// The line on screen row `dy` of the list (0: its first row), only among what's in view: past the list's edge it
+/// stays on the first or last line shown; above the first line of the whole list it is -1.
+fn line_at(all: &[Line], view: &QueueView, dy: i64) -> i64 {
+    let top = view.top as i64;
+    let lo = if top == 0 { -1 } else { top };
+    let hi = (top + view.visible.max(1) as i64 - 1).min(all.len() as i64 - 1).max(lo);
+    if dy < 0 {
+        return lo;
+    }
+    let mut row = 0;
+    for (k, l) in all.iter().enumerate().skip(view.top) {
+        row += height(l, view.big) as i64;
+        if dy < row {
+            return (k as i64).min(hi);
+        }
+    }
+    hi
+}
+
+/// The rows line `l` takes: a song two in a big queue (its title, then its artists and album), else one.
+fn height(l: &Line, big: bool) -> u16 {
+    if big && matches!(l, Line::Entry(_)) { 2 } else { 1 }
+}
+
+/// How many lines from `top` fit whole in `rows` rows.
+fn fitting(all: &[Line], top: usize, rows: usize, big: bool) -> usize {
+    let mut used = 0;
+    all.iter().skip(top).take_while(|l| {
+        used += height(l, big) as usize;
+        used <= rows
+    }).count()
+}
+
+/// A queue this big shows each song on two rows with its cover beside it, and a cover for what's playing (#59): the
+/// area inside a Pane of 90×30 with its frame.
+pub const BIG: (u16, u16) = (88, 28);
+
+pub fn is_big(r: Rect) -> bool {
+    r.width >= BIG.0 && r.height >= BIG.1
 }
 
 /// The queue as it would be after the drag (the dragged song moved, and queued if it went up there).
@@ -180,22 +221,41 @@ fn clip(s: &str, w: usize) -> String {
     o
 }
 
+/// The cover beside a song in a big queue, and the one of what's playing above it (cells: about square).
+const COVER: (u16, u16) = (4, 2);
+const NOW_COVER: (u16, u16) = (12, 6);
+
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     if r.height == 0 || w < 8 {
         return;
     }
+    let big = is_big(r);
     // now playing
     let mut y = r.y;
-    match &app.playback.item {
+    match app.playback.item.clone() {
+        Some(i) if big => {
+            let url = i.cover_url.clone().unwrap_or_default();
+            crate::home::cover(buf, Rect::new(x, y, NOW_COVER.0, NOW_COVER.1), &url, "♪", app, th);
+            let (tx, tw) = (x + NOW_COVER.0 + 2, w - NOW_COVER.0 - 2);
+            let (artists, album) = (i.artists.join(", "), i.album.clone().unwrap_or_default());
+            let rows = [("Now playing", th.s(th.dim)), (i.name.as_str(), th.s(th.accent).add_modifier(Modifier::BOLD)), (artists.as_str(), th.s(th.fg)), (album.as_str(), th.s(th.dim))];
+            for (k, (s, st)) in rows.into_iter().enumerate() {
+                text(buf, tx, y + 1 + k as u16, tw, &crate::sidebar::clip(s, tw), st);
+            }
+            y += NOW_COVER.1 + 1;
+        }
         Some(i) => {
             text(buf, x, y, 2, "♪", th.s(th.accent));
             let line = format!("{} — {}", i.name, i.artists.join(", "));
             text(buf, x + 2, y, w.saturating_sub(2), &clip(&line, w.saturating_sub(2) as usize), th.s(th.accent).add_modifier(Modifier::BOLD));
+            y += 2;
         }
-        None => text(buf, x, y, w, "nothing playing", th.s(th.dim)),
+        None => {
+            text(buf, x, y, w, "nothing playing", th.s(th.dim));
+            y += 2;
+        }
     }
-    y += 2;
     // while dragging, the list as it would be after the drop
     let q = preview(&app.playback.queue, app.queue_drag.clone());
     let all = lines_of(&q, app.playback.context_name.as_deref());
@@ -211,24 +271,34 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         return;
     }
     let body = r.bottom().saturating_sub(y) as usize;
+    let rows = body.max(1);
     let mut view = app.queue_view;
     view.list_y = y;
-    view.visible = body.max(1);
+    view.big = big;
     view.sel = view.sel.min(app.playback.queue.len().saturating_sub(1));
     // keep the selection in view
     if let Some(at) = all.iter().position(|l| *l == Line::Entry(view.sel)) {
         if at < view.top {
             view.top = at.saturating_sub(1);
-        } else if at >= view.top + view.visible {
-            view.top = at + 1 - view.visible;
+        } else {
+            while at >= view.top + fitting(&all, view.top, rows, big).max(1) {
+                view.top += 1;
+            }
         }
     }
-    view.top = view.top.min(all.len().saturating_sub(view.visible));
+    // no empty rows under the list's end
+    let last_top = (0..all.len()).find(|&t| fitting(&all, t, rows, big) == all.len() - t).unwrap_or(all.len());
+    view.top = view.top.min(last_top);
+    view.visible = if big { fitting(&all, view.top, rows, big).max(1) } else { rows };
     // (its popup, where no Pane shows it, has the keys as a focused Pane has them)
     let focused = app.is_focused(crate::layout::Widget::Queue) || app.is_open(crate::app::Modal::Queue);
     let mut hits = vec![];
     // (a Pane a row or two tall has no rows for the list, but keeps its place in it)
-    for line in all.iter().skip(view.top).take(body) {
+    for line in all.iter().skip(view.top) {
+        let h = height(line, big);
+        if y + h > r.bottom() {
+            break;
+        }
         match line {
             Line::Heading(h) => text(buf, x, y, w, &clip(h, w as usize), th.s(th.dim).add_modifier(Modifier::BOLD)),
             Line::Entry(i) => {
@@ -236,23 +306,38 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                 let dragged = app.queue_drag.as_ref().is_some_and(|d| d.to == *i);
                 let selected = (focused && *i == view.sel && app.queue_drag.is_none()) || dragged;
                 let bg = if selected { th.selection.color() } else { th.bg.color() };
-                blank(buf, x, y, w, th.base().bg(bg));
+                for k in 0..h {
+                    blank(buf, x, y + k, w, th.base().bg(bg));
+                }
                 let auto = e.source == "autoplay";
                 let name = if e.item.name.is_empty() { "…".to_string() } else { e.item.name.clone() };
                 let dur = if e.item.duration_ms > 0 { fmt_ms(e.item.duration_ms) } else { String::new() };
                 let tag = if auto { "autoplay " } else { "" };
                 let right = format!("{tag}{dur:>5}");
                 let rw = right.chars().count() as u16;
-                let lw = w.saturating_sub(rw + 1) as usize;
                 let artists = e.item.artists.join(", ");
-                let left = if artists.is_empty() { name.clone() } else { format!("{name} · {artists}") };
                 let name_st = if dragged { th.s(th.accent).add_modifier(Modifier::BOLD) } else if e.source == "queue" { th.s(th.fg).add_modifier(Modifier::BOLD) } else if auto { th.s(th.dim).add_modifier(Modifier::ITALIC) } else { th.s(th.fg) };
-                text(buf, x, y, lw as u16, &clip(&left, lw), name_st.bg(bg));
-                text(buf, x + w - rw, y, rw, &right, th.s(if auto { th.border } else { th.dim }).bg(bg));
-                hits.push((Rect::new(x, y, w, 1), Hit::QueueRow(*i)));
+                if big {
+                    // its cover, then the title (and the length) over the artists and album
+                    let url = e.item.cover_url.clone().unwrap_or_default();
+                    crate::home::cover(buf, Rect::new(x, y, COVER.0, COVER.1), &url, "♪", app, th);
+                    let tx = x + COVER.0 + 2;
+                    let lw = (x + w).saturating_sub(tx + rw + 1);
+                    text(buf, tx, y, lw, &crate::sidebar::clip(&name, lw), name_st.bg(bg));
+                    let album = e.item.album.clone().unwrap_or_default();
+                    let sub = [artists, album].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+                    text(buf, tx, y + 1, lw, &crate::sidebar::clip(&sub, lw), th.s(th.dim).bg(bg));
+                } else {
+                    let lw = w.saturating_sub(rw + 1) as usize;
+                    let left = if artists.is_empty() { name.clone() } else { format!("{name} · {artists}") };
+                    text(buf, x, y, lw as u16, &clip(&left, lw), name_st.bg(bg));
+                }
+                // (a length wider than a narrow Pane goes where a release build always put it, not to a debug panic)
+                text(buf, (x + w).wrapping_sub(rw), y, rw, &right, th.s(if auto { th.border } else { th.dim }).bg(bg));
+                hits.push((Rect::new(x, y, w, h), Hit::QueueRow(*i)));
             }
         }
-        y += 1;
+        y += h;
     }
     for (rect, h) in hits {
         app.hit(rect, h);
@@ -309,5 +394,285 @@ mod tests {
         assert_eq!(no_uid.index_in(&now), Some(4));
         let gone = vec![entry("a", "queue")];
         assert_eq!(d.index_in(&gone), None);
+    }
+
+    /// The queue as it was drawn before the big look (#59), kept as it was: every size under the gate must still draw
+    /// exactly this.
+    fn draw_before_59(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
+        let (x, w) = (r.x + 1, r.width.saturating_sub(2));
+        if r.height == 0 || w < 8 {
+            return;
+        }
+        let mut y = r.y;
+        match &app.playback.item {
+            Some(i) => {
+                text(buf, x, y, 2, "♪", th.s(th.accent));
+                let line = format!("{} — {}", i.name, i.artists.join(", "));
+                text(buf, x + 2, y, w.saturating_sub(2), &clip(&line, w.saturating_sub(2) as usize), th.s(th.accent).add_modifier(Modifier::BOLD));
+            }
+            None => text(buf, x, y, w, "nothing playing", th.s(th.dim)),
+        }
+        y += 2;
+        let q = preview(&app.playback.queue, app.queue_drag.clone());
+        let all = lines_of(&q, app.playback.context_name.as_deref());
+        if all.is_empty() {
+            for row in crate::lyrics::wrap_indented("nothing queued · right-click a track → Add to queue", w as usize, 0) {
+                if y >= r.bottom() {
+                    break;
+                }
+                text(buf, x, y, w, &row, th.s(th.dim));
+                y += 1;
+            }
+            return;
+        }
+        let body = r.bottom().saturating_sub(y) as usize;
+        let mut view = app.queue_view;
+        view.list_y = y;
+        view.visible = body.max(1);
+        view.sel = view.sel.min(app.playback.queue.len().saturating_sub(1));
+        if let Some(at) = all.iter().position(|l| *l == Line::Entry(view.sel)) {
+            if at < view.top {
+                view.top = at.saturating_sub(1);
+            } else if at >= view.top + view.visible {
+                view.top = at + 1 - view.visible;
+            }
+        }
+        view.top = view.top.min(all.len().saturating_sub(view.visible));
+        let focused = app.is_focused(crate::layout::Widget::Queue) || app.is_open(crate::app::Modal::Queue);
+        let mut hits = vec![];
+        for line in all.iter().skip(view.top).take(body) {
+            match line {
+                Line::Heading(h) => text(buf, x, y, w, &clip(h, w as usize), th.s(th.dim).add_modifier(Modifier::BOLD)),
+                Line::Entry(i) => {
+                    let e = &q[*i];
+                    let dragged = app.queue_drag.as_ref().is_some_and(|d| d.to == *i);
+                    let selected = (focused && *i == view.sel && app.queue_drag.is_none()) || dragged;
+                    let bg = if selected { th.selection.color() } else { th.bg.color() };
+                    blank(buf, x, y, w, th.base().bg(bg));
+                    let auto = e.source == "autoplay";
+                    let name = if e.item.name.is_empty() { "…".to_string() } else { e.item.name.clone() };
+                    let dur = if e.item.duration_ms > 0 { fmt_ms(e.item.duration_ms) } else { String::new() };
+                    let tag = if auto { "autoplay " } else { "" };
+                    let right = format!("{tag}{dur:>5}");
+                    let rw = right.chars().count() as u16;
+                    let lw = w.saturating_sub(rw + 1) as usize;
+                    let artists = e.item.artists.join(", ");
+                    let left = if artists.is_empty() { name.clone() } else { format!("{name} · {artists}") };
+                    let name_st = if dragged { th.s(th.accent).add_modifier(Modifier::BOLD) } else if e.source == "queue" { th.s(th.fg).add_modifier(Modifier::BOLD) } else if auto { th.s(th.dim).add_modifier(Modifier::ITALIC) } else { th.s(th.fg) };
+                    text(buf, x, y, lw as u16, &clip(&left, lw), name_st.bg(bg));
+                    text(buf, (x + w).wrapping_sub(rw), y, rw, &right, th.s(if auto { th.border } else { th.dim }).bg(bg));
+                    hits.push((Rect::new(x, y, w, 1), Hit::QueueRow(*i)));
+                }
+            }
+            y += 1;
+        }
+        for (rect, h) in hits {
+            app.hit(rect, h);
+        }
+        app.queue_view = view;
+    }
+
+    /// A queue of all three kinds, with covers, albums, long and wide titles: what a big queue shows more of.
+    fn full_app(n: usize) -> App {
+        let mut app = App::new(None);
+        app.playback.context_name = Some("Night Drive".into());
+        app.playback.item = Some(Item { uri: "spotify:track:now".into(), name: "What Plays".into(), artists: vec!["Nova Drift".into()], album: Some("Orbit EP".into()), cover_url: Some("https://i.scdn.co/image/now".into()), duration_ms: 200_000, ..Default::default() });
+        app.playback.queue = (0..n)
+            .map(|i| {
+                let name = match i % 5 {
+                    3 => format!("Song {i} with a title much longer than any Pane has room for, on and on and on and on and on"),
+                    4 => format!("夜明けのオーケストラと長い長い日本語のタイトル {i} 夜明けのオーケストラと長い長い日本語のタイトル"),
+                    _ => format!("Song {i}"),
+                };
+                let source = if i < n / 3 { "queue" } else if i < n * 2 / 3 { "context" } else { "autoplay" };
+                QueueEntry { item: Item { uri: format!("spotify:track:{i}"), name, artists: vec!["Mira Vale".into()], album: Some(format!("Album {i}")), cover_url: Some(format!("https://i.scdn.co/image/c{i}")), duration_ms: 120_000 + i as u64 * 1000, ..Default::default() }, source: source.into(), uid: format!("u{i}") }
+            })
+            .collect();
+        app.focus_on(crate::layout::Widget::Queue);
+        app
+    }
+
+    /// What a drawing leaves: the cells, the hits, and the list's (top, visible, list_y).
+    type Drawn = (Buffer, Vec<(Rect, Hit)>, (usize, usize, u16));
+
+    fn drawn(r: Rect, app: &mut App, f: fn(&mut Buffer, Rect, &mut App, &Theme)) -> Drawn {
+        let th = Theme::singularity();
+        let mut buf = Buffer::empty(r);
+        app.hits.clear();
+        f(&mut buf, r, app, &th);
+        let v = app.queue_view;
+        (buf, app.hits.clone(), (v.top, v.visible, v.list_y))
+    }
+
+    #[test]
+    fn every_size_under_the_gate_draws_as_before_cell_for_cell() {
+        // the whole range of widths and heights a Pane can give it, but the big ones; a selection at the start, in the
+        // middle and at the end (scrolled), something playing or not, a song held in a drag
+        let mut sizes = 0;
+        // (selection, something playing, a song held in a drag), each an App for the new drawing and one for the old
+        let setups = [(0, true, false), (9, false, false), (26, true, false), (9, true, true)];
+        let mut apps: Vec<(App, App)> = setups
+            .iter()
+            .map(|&(sel, playing, drag)| {
+                let (mut a, mut b) = (full_app(27), full_app(27));
+                for app in [&mut a, &mut b] {
+                    app.queue_view.sel = sel;
+                    if !playing {
+                        app.playback.item = None;
+                    }
+                    if drag {
+                        app.queue_drag = QueueDrag::start(app, 12).map(|d| QueueDrag { to: 14, ..d });
+                    }
+                }
+                (a, b)
+            })
+            .collect();
+        for w in 0..=140u16 {
+            for h in 0..=50u16 {
+                let r = Rect::new(3, 2, w, h);
+                if is_big(r) {
+                    continue;
+                }
+                for ((a, b), setup) in apps.iter_mut().zip(setups) {
+                    // from the top of the list each size; two frames: the second starts where the first left it
+                    a.queue_view.top = 0;
+                    b.queue_view.top = 0;
+                    for _ in 0..2 {
+                        let new = drawn(r, a, draw);
+                        let old = drawn(r, b, draw_before_59);
+                        assert!(new == old, "{w}×{h}, {setup:?}: drawn differently");
+                    }
+                }
+                sizes += 1;
+            }
+        }
+        assert!(sizes > 5900, "{sizes}");
+        // the gate's edge: one column or row short of it is still the old look
+        for (w, h) in [(BIG.0 - 1, BIG.1), (BIG.0, BIG.1 - 1), (BIG.0 - 1, 60), (200, BIG.1 - 1)] {
+            let r = Rect::new(0, 0, w, h);
+            assert!(!is_big(r));
+            assert!(drawn(r, &mut full_app(27), draw).0 == drawn(r, &mut full_app(27), draw_before_59).0, "{w}×{h}");
+        }
+        assert!(is_big(Rect::new(0, 0, BIG.0, BIG.1)));
+    }
+
+    fn row_text(buf: &Buffer, x0: u16, x1: u16, y: u16) -> String {
+        (x0..x1).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    #[test]
+    fn a_big_queue_shows_each_song_on_two_rows_beside_its_cover() {
+        let r = Rect::new(0, 0, BIG.0, BIG.1);
+        let mut app = full_app(27);
+        let (buf, hits, (top, visible, list_y)) = drawn(r, &mut app, draw);
+        // what's playing: its cover (missing here: a placeholder like Home's), then its words beside it
+        assert_eq!(buf[(1 + NOW_COVER.0 / 2, NOW_COVER.1 / 2)].symbol(), "♪", "the now-playing cover's placeholder");
+        let tx = 1 + NOW_COVER.0 + 2;
+        for (k, want) in ["Now playing", "What Plays", "Nova Drift", "Orbit EP"].into_iter().enumerate() {
+            assert!(row_text(&buf, tx, r.width, 1 + k as u16).starts_with(want), "{want}");
+        }
+        assert_eq!(list_y, NOW_COVER.1 + 1);
+        assert!(row_text(&buf, 1, r.width, list_y).starts_with("Next in queue"));
+        // each song: two rows, its hit covering both; the cover's placeholder, the title and length, then the rest
+        let rows: Vec<Rect> = (0..27).filter_map(|i| hits.iter().find_map(|(rr, h)| (*h == Hit::QueueRow(i)).then_some(*rr))).collect();
+        assert!(rows.len() >= 9 && rows.iter().all(|rr| rr.height == 2 && rr.width == r.width - 2), "{rows:?}");
+        let first = rows[0];
+        assert_eq!(buf[(1 + COVER.0 / 2, first.y + COVER.1 / 2)].symbol(), "♪");
+        let tx = 1 + COVER.0 + 2;
+        assert!(row_text(&buf, tx, r.width, first.y).starts_with("Song 0 "));
+        assert!(row_text(&buf, tx, r.width, first.y).trim_end().ends_with("2:00"));
+        assert!(row_text(&buf, tx, r.width, first.y + 1).starts_with("Mira Vale · Album 0"));
+        // whole songs only, the selection in view; nothing drawn past the bottom
+        assert_eq!(top, 0);
+        assert!(rows.last().unwrap().bottom() <= r.bottom());
+        assert!(visible >= rows.len());
+    }
+
+    #[test]
+    fn a_big_queues_long_and_wide_titles_are_cut_by_their_width() {
+        let r = Rect::new(0, 0, BIG.0, BIG.1 + 20);
+        let mut app = full_app(27);
+        let (buf, hits, _) = drawn(r, &mut app, draw);
+        let tx = 1 + COVER.0 + 2;
+        for i in [3, 4] {
+            let rr = hits.iter().find_map(|(rr, h)| (*h == Hit::QueueRow(i)).then_some(*rr)).unwrap();
+            let dur = fmt_ms(app.playback.queue[i].item.duration_ms);
+            // the title's cells, up to the gap before the length (a cut by characters would lose the ellipsis to the
+            // edge: a wide character takes two cells)
+            let gap = rr.right() - 5 - 1;
+            let title = row_text(&buf, tx, gap, rr.y);
+            assert!(title.trim_end().ends_with('…'), "{i}: {title:?}");
+            assert_eq!(buf[(gap, rr.y)].symbol(), " ", "{i}: the title runs into its length");
+            assert!(row_text(&buf, gap, rr.right(), rr.y).ends_with(&dur), "{i}");
+        }
+    }
+
+    #[test]
+    fn a_big_queues_covers_draw_when_they_arrive() {
+        let r = Rect::new(0, 0, BIG.0, BIG.1);
+        let mut app = full_app(27);
+        let cover = image::RgbImage::from_pixel(8, 8, image::Rgb([200, 40, 40]));
+        app.covers.insert("https://i.scdn.co/image/c0", cover.clone());
+        app.covers.insert("https://i.scdn.co/image/now", cover);
+        let (buf, hits, _) = drawn(r, &mut app, draw);
+        let first = hits.iter().find_map(|(rr, h)| (*h == Hit::QueueRow(0)).then_some(*rr)).unwrap();
+        // the cell tier: half-blocks in the cover's colour, no placeholder
+        for (x, y) in [(1, first.y), (1 + COVER.0 - 1, first.y + 1), (1, 0), (NOW_COVER.0, NOW_COVER.1 - 1)] {
+            let c = &buf[(x, y)];
+            assert!(c.symbol() == "▀" || c.symbol() == "▄", "({x}, {y}): {:?}", c.symbol());
+            assert_eq!(c.fg, ratatui::style::Color::Rgb(200, 40, 40));
+        }
+        // the next song's cover hasn't come: its placeholder
+        let second = hits.iter().find_map(|(rr, h)| (*h == Hit::QueueRow(1)).then_some(*rr)).unwrap();
+        assert_eq!(buf[(1 + COVER.0 / 2, second.y + COVER.1 / 2)].symbol(), "♪");
+        // the pixel tier: the two that came are placed as images (blank cells under them), the rest wait as placeholders
+        app.kitty = Some(crate::gfx::Kitty::new(false));
+        app.cell_px = Some((10.0, 20.0));
+        let (buf, _, _) = drawn(r, &mut app, draw);
+        let mut out = vec![];
+        app.kitty.as_mut().unwrap().flush(&mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!((out.matches("a=t,").count(), out.matches("a=p,").count()), (2, 2), "two covers sent and placed");
+        assert!((0..COVER.0).all(|dx| buf[(1 + dx, first.y)].symbol() == " " && buf[(1 + dx, first.y + 1)].symbol() == " "));
+        assert!(!row_text(&buf, 0, r.width, first.y).contains('▀'), "no half-blocks in the pixel tier");
+        assert_eq!(buf[(1 + COVER.0 / 2, second.y + COVER.1 / 2)].symbol(), "♪");
+    }
+
+    #[test]
+    fn a_big_queue_follows_its_highlight_one_song_at_a_time() {
+        let r = Rect::new(0, 0, BIG.0 + 10, BIG.1 + 4);
+        let mut app = full_app(60);
+        let mut last_top = 0;
+        for sel in 0..60 {
+            app.queue_view.sel = sel;
+            let (_, hits, (top, visible, _)) = drawn(r, &mut app, draw);
+            assert!(hits.iter().any(|(_, h)| *h == Hit::QueueRow(sel)), "{sel}: the highlighted song is drawn");
+            // the list moves a line or two at a time (a heading comes with its first song), never back while going down
+            assert!(top >= last_top && top <= last_top + 2, "{sel}: {last_top} → {top}");
+            assert!(visible >= 9);
+            last_top = top;
+        }
+        // at the end, no empty rows under the last song
+        let (_, hits, _) = drawn(r, &mut app, draw);
+        let last = hits.iter().find_map(|(rr, h)| (*h == Hit::QueueRow(59)).then_some(*rr)).unwrap();
+        assert!(r.bottom() - last.bottom() < 2, "{last:?}");
+    }
+
+    #[test]
+    fn a_drag_in_a_big_queue_aims_at_the_song_under_either_of_its_rows() {
+        let r = Rect::new(0, 0, BIG.0, BIG.1);
+        let mut app = full_app(27);
+        let (_, hits, _) = drawn(r, &mut app, draw);
+        let row = |i: usize| hits.iter().find_map(|(rr, h)| (*h == Hit::QueueRow(i)).then_some(*rr)).unwrap();
+        let d = QueueDrag::start(&app, 1).unwrap();
+        // queued songs 0..9: onto song 5's title row and its second row alike
+        for y in [row(5).y, row(5).y + 1] {
+            assert_eq!(target(&app, d.clone(), y).to, 5, "row {y}");
+        }
+        // above the list: first of your queue; below what's shown: the last queued song in view
+        assert_eq!(target(&app, d.clone(), 0).to, 0);
+        let c = QueueDrag::start(&app, 12).unwrap();
+        assert_eq!((target(&app, c.clone(), row(2).y + 1).to, target(&app, c.clone(), row(2).y + 1).into_queue), (2, true));
+        assert_eq!(target(&app, c.clone(), r.bottom() + 5), target(&app, c, r.bottom() - 1), "past the bottom: the last line in view");
     }
 }
