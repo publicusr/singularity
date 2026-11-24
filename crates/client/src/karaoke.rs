@@ -8,8 +8,9 @@
 //! a smooth image of its own instead of a `●` stepping through cells. On the pixel tier a bigger Pane draws the line in
 //! big text instead (`bigtext`, `plan_px`): one size for the whole song, as big as lets its longer lines span the
 //! Pane, long lines wrapped; the line is two images (sung and waiting) split where the fill has got to, and the ball
-//! lands on each word's middle as the font measures it. Word times come with the lyrics when the source
-//! has them, else they're estimated (`timing.rs`); the credit line says which.
+//! lands on each word's middle as the font measures it. A narrow, tall Pane runs the rest of the song above and
+//! below the line like a lyric sheet, each line wrapped whole (`narrow_tall`). Word times come with the lyrics when
+//! the source has them, else they're estimated (`timing.rs`); the credit line says which.
 
 pub mod timing;
 
