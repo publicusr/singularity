@@ -1287,12 +1287,10 @@ impl App {
             };
             t.tray = matches!(to, Aim::Tray(_)) && !from_tray;
         }
-        // a Pane's Widget aimed at the Tray lands after its last Widget: the strip shows its end, where the chip is
+        // a Pane's Widget aimed at the Tray lands after its last Widget: the strip shows its end, with room for the
+        // chip there
         if matches!(to, Aim::Tray(_)) && !from_tray {
-            let end = tray_layout(self, self.tray_rect(), usize::MAX).first;
-            if let Some(a) = self.arranging.as_mut() {
-                a.tray_first = end;
-            }
+            self.tray_to_end();
         }
     }
 
@@ -1324,8 +1322,20 @@ impl App {
                     }
                 }
                 self.commit_layout(a);
+                // set aside: the strip shows where it went
+                if to.is_none() {
+                    self.tray_to_end();
+                }
             }
             Err(e) => self.refused(e),
+        }
+    }
+
+    /// The Tray strip scrolled to its end (as far as it goes).
+    fn tray_to_end(&mut self) {
+        let end = tray_layout(self, self.tray_rect(), usize::MAX).first;
+        if let Some(a) = self.arranging.as_mut() {
+            a.tray_first = end;
         }
     }
 
@@ -1423,12 +1433,16 @@ pub fn tray_layout(app: &App, r: Rect, first: usize) -> TrayLayout {
     let (x0, x1) = (r.x + 2, r.right().saturating_sub(2));
     let width = |w: Widget| tray_chip(&crate::ui::pane_name(app.design, w)).chars().count() as u16 + if crate::arrangement::required(Some(w)) { 0 } else { 2 };
     let widths: Vec<u16> = tray.iter().map(|w| width(*w)).collect();
-    let all: u16 = widths.iter().map(|w| w + 1).sum();
+    // a Pane's Widget aimed here with the keys: room for its chip after the last one, where it lands
+    let reserve = app.tile.as_ref().filter(|t| t.live && t.tray && t.aim.is_some()).and_then(|t| t.pane.widget).map_or(0, |w| {
+        (crate::ui::pane_name(app.design, w).chars().count() as u16 + 4).min(CHIP_MAX) + 1
+    });
+    let all: u16 = widths.iter().map(|w| w + 1).sum::<u16>() + reserve;
     let over = all > x1.saturating_sub(x0) + 1;
     let (from, to) = if over { (x0 + 2, x1.saturating_sub(2)) } else { (x0, x1) };
     // the last place to start from that still fills the row
     let mut last = tray.len().saturating_sub(1);
-    let mut used = 0;
+    let mut used = reserve;
     for (i, w) in widths.iter().enumerate().rev() {
         used += w + 1;
         if used > to.saturating_sub(from) + 1 {
@@ -1544,26 +1558,21 @@ pub fn draw_legend(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let key = |a| app.keymap.label(a);
     // the keys of the moment: a Widget picked up, `s` waiting for its arrow, or the lot
     let held = app.tile.as_ref().is_some_and(|t| t.aim.is_some());
-    // Esc, and the key that came in (Q70)
-    let esc = match key(Action::Arrange) {
-        k if k.is_empty() => "Esc".to_string(),
-        k => format!("Esc/{k}"),
-    };
     // each with how long it stays when the line is short: `w` goes first, then the mouse's gesture, then undo / redo,
     // then the keys (the arrows and Enter last)
     let mut parts: Vec<(u8, String)> = if held {
-        vec![(9, "←↑↓→ aim".into()), (9, "Enter drop".into()), (9, format!("{esc} put back"))]
+        vec![(9, "←↑↓→ aim".into()), (9, "Enter drop".into()), (9, "Esc put back".into())]
     } else if app.arranging.as_ref().is_some_and(|a| a.split_next) {
         vec![(9, "←↑↓→ split that way".into())]
     } else {
-        let mut parts = vec![(1, "drag a title onto a Pane or the Tray".to_string()), (8, "←↑↓→ Enter pick up".into()), (6, "t Tray".into()), (5, "⊞ s+arrow split".into()), (5, "× x close".into()), (4, "+−[] size".into()), (0, "w + Widget".into())];
+        let mut parts = vec![(1, "drag a title onto a Pane or the Tray".to_string()), (8, "←↑↓→ Enter pick up".into()), (6, "t Tray".into()), (5, "⊞ s+arrow split".into()), (5, "× x close".into()), (4, "+−[]size".into()), (0, "w + Widget".into())];
         for (a, what) in [(Action::UndoLayout, "undo"), (Action::RedoLayout, "redo")] {
             let k = key(a);
             if !k.is_empty() {
                 parts.push((2, format!("{k} {what}")));
             }
         }
-        parts.push((7, format!("{esc} done")));
+        parts.push((7, "Esc done".into()));
         parts
     };
     let x = r.x + tw + 2;

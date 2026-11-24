@@ -520,7 +520,7 @@ fn m_enters_arrange_mode_and_arrows_move_the_focus_between_panes() {
     // the legend shows the keys
     let shot = render(&mut a, W, H);
     let legend = shot.lines().last().unwrap();
-    for k in ["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "+−[] size", "Esc/m done"] {
+    for k in ["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "+−[]size", "Esc done"] {
         assert!(legend.contains(k), "{k:?} in {legend:?}");
     }
 }
@@ -537,7 +537,7 @@ fn enter_picks_up_arrows_aim_and_enter_swaps_while_nothing_moves() {
     assert_eq!(a.moving(), Some(pid(&a, Widget::Queue)), "its Pane is lit");
     let shot = render(&mut a, W, H);
     assert!(shot.contains("⠿ queue"), "the chip: {shot}");
-    assert!(shot.lines().last().unwrap().contains("←↑↓→ aim · Enter drop · Esc/m put back"));
+    assert!(shot.lines().last().unwrap().contains("←↑↓→ aim · Enter drop · Esc put back"));
     // ↑ aims at home: lit, saying what Enter does; nothing moved
     key(&mut a, KeyCode::Up);
     let home = crate::ui::pane_name(a.design, Widget::Home);
@@ -764,7 +764,7 @@ fn the_focus_always_lands_on_a_real_pane() {
 /// The legend drops what doesn't fit from the mouse's gesture and undo / redo first: the keys stay longest.
 #[test]
 fn the_legend_keeps_the_keys_on_small_screens() {
-    for (w, h, want) in [(100u16, 30u16, &["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "Esc/m done"][..]), (90, 50, &["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "Esc/m done"][..])] {
+    for (w, h, want) in [(100u16, 30u16, &["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "Esc done"][..]), (90, 50, &["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "Esc done"][..])] {
         let mut a = App::new(None);
         render(&mut a, w, h);
         key(&mut a, KeyCode::Char('m'));
@@ -1719,7 +1719,7 @@ fn the_palette_and_the_pane_menu_turn_arrange_mode_on_and_outside_it_nothing_loo
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.modal(), Some(Modal::Arrange));
     let shot = render(&mut a, W, H);
-    assert!(shot.contains('⊞') && shot.contains("Esc/m done"), "{shot}");
+    assert!(shot.contains('⊞') && shot.contains("Esc done"), "{shot}");
     key(&mut a, KeyCode::Esc);
     assert!(a.modal().is_none());
     a.toast = None;
@@ -2465,11 +2465,17 @@ fn a_widget_aimed_at_a_full_tray_shows_its_end() {
     }
     let buf = render_buf(&mut a, 100, 40);
     let tray = a.tray_rect();
-    let shown = spot(&buf, &format!(" ⠿ {last_name} ")).expect("the last Widget shown");
-    let chip = spot(&buf, "⠿ queue").expect("the chip");
-    assert!(chip.1 == tray.y + 1 && chip.0 > shown.0, "after the last Widget: {chip:?} {shown:?}");
+    // the last Widget whole, with its ×, then the chip whole, clear of it and of the ›
+    let item = format!(" ⠿ {last_name} × ");
+    let shown = spot(&buf, &item).expect("the last Widget shown whole");
+    let chip = spot(&buf, "⠿ queue ").expect("the chip whole");
+    assert!(chip.1 == tray.y + 1 && chip.0 > shown.0 + item.chars().count() as u16, "after the last Widget: {chip:?} {shown:?}");
+    assert!(chip.0 + 7 < tray.right() - 2, "inside the strip: {chip:?}");
+    // set aside there: the strip shows it
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.layout.tray().last(), Some(&Widget::Queue));
+    let buf = render_buf(&mut a, 100, 40);
+    assert!(spot(&buf, " ⠿ queue × ").is_some_and(|(_, y)| y == tray.y + 1), "{}", row(&buf, tray.y + 1, 0, 100));
 }
 
 /// `arrange` bound to a key with Ctrl (keys.toml): pressed while arranging it leaves, as Esc does (the legend says so).
@@ -2481,8 +2487,6 @@ fn arrange_bound_with_ctrl_leaves_arrange_mode_too() {
     assert!(a.keymap.problems.is_empty(), "{:?}", a.keymap.problems);
     ctrl(&mut a, 'e');
     assert!(a.arranging.is_some());
-    let legend = render(&mut a, W, H).lines().last().unwrap().to_string();
-    assert!(legend.contains("Esc/^E done"), "{legend}");
     // a Widget picked up: put back first
     a.focus_on(Widget::Queue);
     key(&mut a, KeyCode::Enter);

@@ -2245,24 +2245,34 @@ def arrange_fixes(t, out):
     sx, sy = t.find("┌ stream")
     px(0, (sx + 3.5) * CW, (sy + 0.5) * CH)
     cx, cy = 60.3 * CW, 22.5 * CH
-    px(32, cx, cy, wait=0.3)
+    px(32, cx, cy, wait=1.0)
     offsets = []
+
+    def settled(want):
+        # (under load a frame can come late: wait up to 3 s for the chip to get where this move puts it)
+        at = None
+        for _ in range(30):
+            t.pump(0.1)
+            at = t.find("⠿ stream")
+            if at == want:
+                break
+        return at
     for i in range(48):
         dx = [0, 3, -3, 6, -2, 1][i % 6]
         dy = [0, 7, 14, 4, -6, -12, -3, 9][i % 8]
         x, y = cx + i * 1.7 + dx, cy + dy
-        px(32, x, y, wait=0.2)
-        at = t.find("⠿ stream")
+        px(32, x, y, wait=0.05)
+        at = settled((int(x // CW) + 3, int(y // CH)))
         offsets.append(None if not at else (at[0] - int(x // CW), at[1] - int(y // CH)))
         if i == 20:
             t.shot(f"{out}/01-chip-mid-wiggle.png")
     print("chip - pointer (cells) over", len(offsets), "moves:", sorted(set(offsets), key=str))
-    t.send(b"\x1b", 0.3)
-    px(0, cx, cy, release=True, wait=0.5)
-    t.send(b"\x1b", 0.6)
+    t.send(b"\x1b", 1.0)
+    px(0, cx, cy, release=True, wait=1.0)
+    t.send(b"\x1b", 1.5)
     # 2. the keyboard: m (the focus on the stream's Pane, where the drag left it: a bottom one), Enter picks it up, ↓
     # aims past the bottom of the Panes into the Tray
-    t.send(b"m", 0.5)
+    t.send(b"m", 1.0)
     t.shot(f"{out}/02-arrange.png")
     print("legend:", legend())
     t.send(b"\r", 0.4)
