@@ -136,7 +136,7 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 - **Jam**: `d` opens the device picker; its last row starts a Jam on this device (`j` there too). Friends scan the QR
   or open the link to add songs and skip; Enter on the row twice ends it, and the music keeps playing. Hosting needs
   Premium.
-- Keys worth knowing: Space play/pause, Shift+←/→ seek, Ctrl+K palette, Ctrl+L search, `d` devices, `v` swaps the focused Pane's Widget (on the black hole: its Disk look),
+- Keys worth knowing: Space play/pause, Shift+←/→ seek, Ctrl+K palette, Ctrl+L search, `d` devices, `v` swaps the focused Pane's Widget (on the black hole: its Disk look), `w` picks any Widget for it,
   Alt+←/→ back/forward, `l` like, `?` help. Everything is clickable too. `q` (or Esc) quits the Client; the music
   keeps playing.
 - **Settings**: Ctrl+K → "Settings", or `~/.config/singularity/config.toml` and `keys.toml` (written with comments on
@@ -156,8 +156,11 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   `visuals.motion_fps` (Settings; 30–240, default 120: set it to your monitor's refresh rate). Your terminal caps it
   too: Ghostty follows the monitor; in kitty lower `repaint_delay` (and keep `sync_to_monitor`); otherwise see your
   terminal's repaint settings. `×` in a
-  title closes a Pane, right-click a title to split or close, Ctrl+K has Split right / Split down / Close pane / Move
-  pane / Reset design. `m` moves the focused Pane from the keyboard: arrows swap with the neighbour, ⇧arrows split
+  title closes a Pane. Right-click a Pane's title (or its body, where that has no menu of its own) for its menu:
+  Replace widget… opens the Widget picker (type to filter; Widgets not on screen first, those on screen dimmed below a
+  line, and picking one swaps the two Panes' Widgets), then Split right / Split down / Close pane / Move pane. A click
+  on the Widget's name in a title, `w` on the focused Pane, or Ctrl+K → Replace widget… open the picker too (Home's
+  Pane keeps Home). Ctrl+K also has Split right / Split down / Close pane / Move pane / Reset design. `m` moves the focused Pane from the keyboard: arrows swap with the neighbour, ⇧arrows split
   beside it, `+` `-` size it, `x` closes it, `u` undoes, Enter or Esc ends. Ctrl+Z undoes a layout change and
   Ctrl+Y (or Ctrl+Shift+Z) redoes it; the bar offers "undo" for a few seconds after each one. Home, the library, the queue and lyrics can move but
   never close, and nothing can be dropped where a Pane would get too small. The first edit of a built-in Design asks

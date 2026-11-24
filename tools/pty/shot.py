@@ -14,7 +14,7 @@ BIN = os.environ.get("PTY_BIN") or f"{ROOT}/target/debug"
 WRAP = os.environ.get("PTY_WRAP", "").split()
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
 # the tiling scenario wants room for the whole Singularity layout
-if sys.argv[1:2] in (["tiling"], ["tiling-lift"], ["tiling-fast"], ["tiling-paths"]):
+if sys.argv[1:2] in (["tiling"], ["tiling-lift"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"]):
     COLS, ROWS = int(os.environ.get("PTY_COLS", 160)), int(os.environ.get("PTY_ROWS", 48))
 # the wheel everywhere: short Panes, so everything holds more than fits
 if sys.argv[1:2] == ["wheel-all"]:
@@ -572,6 +572,7 @@ def popup_wheel(t, out):
     at = t.find("┌ ~/library") or t.find("~/library")
     mouse(t, 2, at[0] + 3, at[1]); mouse(t, 2, at[0] + 3, at[1], release=True, wait=0.4)
     t.shot(f"{out}/5-title-menu.png")
+    t.send(b"\x1b[B", 0.2)  # past Replace widget…
     t.send(b"\r", 0.6)  # Split right
     t.shot(f"{out}/6-widget-list.png")
     # three notches: inside, on the border, far off it; then two back, over the library and the bar
@@ -1733,7 +1734,7 @@ def tiling(t, out, env):
     x0, y0 = title_at("~/library")
     mouse(t, 2, x0, y0); mouse(t, 2, x0, y0, release=True, wait=0.4)
     t.shot(f"{out}/12-title-menu.png")
-    t.send(b"\x1b[B", 0.2)
+    t.send(b"\x1b[B\x1b[B", 0.2)  # past Replace widget… and Split right
     t.send(b"\r", 0.5)
     t.shot(f"{out}/13-widget-list.png")
     t.send(b"\x1b[B", 0.2)
@@ -1758,6 +1759,93 @@ def tiling(t, out, env):
     # 9. Reset design
     t.send(b"\x0b", 0.3); t.send(b"reset design", 0.3); t.send(b"\r", 0.6)
     t.shot(f"{out}/19-reset.png")
+    t.send(b"q", 0.5)
+
+
+def pane_menu(t, out):
+    """D87, #37: the Pane menu and the Widget picker. A right-click on a title (Replace widget… first), the picker
+    (Widgets not on screen, then the on-screen ones dimmed below a line), typing to filter, a replace; a right-click on
+    a body; a click on the Widget's name, a pick from the on-screen part (a swap); Home's menu and the `w` key on Home.
+    Prints each menu's items and what each Pane shows. 160×48, cell tier, an empty output folder."""
+    t.pump(1.0)
+    t.send(b" ", 0.5)
+
+    def title_at(title):
+        at = t.find("\u250c " + title)
+        if at:
+            return at[0] + 2, at[1]
+        x, y = t.find(title)
+        return x, y
+
+    def menu_items():
+        # the menu's rows: between its rounded corners
+        at = next(((x, y) for y, line in enumerate(t.screen.display) for x in [line.find("\u256d")] if x >= 0), None)
+        if not at:
+            return None
+        x, y = at
+        items = []
+        for line in t.screen.display[y + 1:]:
+            if line[x] != "\u2502":
+                break
+            items.append(line[x + 1:line.index("\u2502", x + 1)].strip())
+        return items
+
+    def titles():
+        return [w for w in ("fft", "stream", "queue", "starfield", "karaoke", "loudness", "tail -f lyrics.log") if t.find("\u250c " + w) or t.find(w + " ")]
+
+    t.shot(f"{out}/00-start.png")
+    # 1. right-click fft's title: its menu
+    x, y = title_at("fft")
+    mouse(t, 2, x + 6, y); mouse(t, 2, x + 6, y, release=True, wait=0.4)
+    t.shot(f"{out}/01-title-menu.png")
+    print("fft's menu:", menu_items())
+    # 2. Replace widget…: the picker
+    t.send(b"\r", 0.5)
+    t.shot(f"{out}/02-picker.png")
+    # 3. typed: filtered
+    t.send(b"star", 0.4)
+    t.shot(f"{out}/03-picker-typed.png")
+    t.send(b"\r", 0.6)
+    # the first edit of a built-in Design asks for a name: Esc keeps it unnamed
+    t.shot(f"{out}/04-replaced-naming.png")
+    t.send(b"\x1b", 0.5)
+    t.shot(f"{out}/05-replaced.png")
+    print("after replacing fft:", titles())
+    # 4. right-click the lyrics' body: the same menu
+    lx, ly = title_at("tail -f lyrics.log")
+    mouse(t, 2, lx + 10, ly + 6); mouse(t, 2, lx + 10, ly + 6, release=True, wait=0.4)
+    t.shot(f"{out}/06-body-menu.png")
+    print("lyrics body menu:", menu_items())
+    t.send(b"\x1b", 0.4)
+    # 5. a click on the Widget's name in stream's title: the picker; the wheel down into the on-screen part
+    sx, sy = title_at("stream")
+    mouse(t, 0, sx + 1, sy); mouse(t, 0, sx + 1, sy, release=True, wait=0.5)
+    t.shot(f"{out}/07-name-click-picker.png")
+    px, py = t.find("Replace stream")
+    for _ in range(40):
+        t.send(f"\x1b[<65;{px + 6};{py + 4}M".encode(), 0.03)
+    t.pump(0.4)
+    t.shot(f"{out}/08-picker-on-screen.png")
+    t.send(b"\x1b[A" * 3, 0.4)
+    t.shot(f"{out}/09-picker-on-screen-up.png")
+    t.send(b"\r", 0.6)
+    t.shot(f"{out}/10-swapped.png")
+    print("after the swap:", titles())
+    # 6. Home's menu: no Replace widget; `w` on Home says why
+    hx, hy = title_at("home")
+    mouse(t, 2, hx + 8, hy); mouse(t, 2, hx + 8, hy, release=True, wait=0.4)
+    t.shot(f"{out}/11-home-menu.png")
+    print("home's menu:", menu_items())
+    t.send(b"\x1b", 0.3)
+    mouse(t, 0, hx + 8, hy + 3); mouse(t, 0, hx + 8, hy + 3, release=True, wait=0.3)
+    t.send(b"w", 0.4)
+    t.shot(f"{out}/12-home-w.png")
+    # 7. `w` on the queue: only trades places
+    qx, qy = title_at("queue")
+    mouse(t, 0, qx + 12, qy); mouse(t, 0, qx + 12, qy, release=True, wait=0.3)
+    t.send(b"w", 0.5)
+    t.shot(f"{out}/13-queue-picker.png")
+    t.send(b"\x1b", 0.3)
     t.send(b"q", 0.5)
 
 
@@ -1978,7 +2066,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast", "tiling-paths", "resize", "karaoke") else "0"
@@ -2130,6 +2218,8 @@ def main():
             return layouts(t, out, env)
         if scenario == "tiling":
             return tiling(t, out, env)
+        if scenario == "pane-menu":
+            return pane_menu(t, out)
         if scenario == "tiling-lift":
             return tiling_lift(t, out, env)
         if scenario == "tiling-fast":

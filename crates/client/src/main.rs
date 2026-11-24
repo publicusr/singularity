@@ -23,6 +23,7 @@ mod lyrics;
 mod meters;
 mod mini;
 mod pace;
+mod panemenu;
 mod cover;
 mod playlists;
 mod queue;

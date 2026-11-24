@@ -256,14 +256,15 @@ fn a_split_with_no_room_says_so() {
 }
 
 #[test]
-fn right_clicking_a_title_offers_split_move_and_close() {
+fn right_clicking_a_title_offers_replace_split_close_and_move() {
     let mut a = app();
     let (x, y) = title_spot(&a, Widget::Fft);
     mouse(&mut a, MouseEventKind::Down(MouseButton::Right), x, y);
     let items: Vec<String> = a.menu().unwrap().items.iter().map(|(l, _)| l.clone()).collect();
-    assert_eq!(items, ["Split right", "Split down", "Move pane", "Close pane"]);
+    assert_eq!(items, ["Replace widget…", "Split right", "Split down", "Close pane", "Move pane"]);
     let shot = render(&mut a, W, H);
     assert!(shot.contains("Split down"));
+    key(&mut a, KeyCode::Down);
     key(&mut a, KeyCode::Down);
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.widget_pick().unwrap().side, Side::Bottom);
