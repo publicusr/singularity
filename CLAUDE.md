@@ -28,8 +28,8 @@
   `$HOME`, `~/src/singularity`. Fixtures recorded from live answers get fake values, not the owner's. The scrub and
   its history plan are in `docs/research/2026-10-history-scrub.md`.
 - Every popup is a `Popup` variant holding its data and a `Modal` variant (`crates/client/src/app.rs`); one is open
-  at a time (`App::popup`). `App::layers` is the one order of what's on top (popup, wizard, login code, Move mode,
-  D83): keys, the mouse, the wheel and drawing follow it. The compiler asks for its arms in `App::modal_scroll` (what
+  at a time (`App::popup`). `App::layers` is the one order of what's on top (popup, wizard, login code, Arrange mode,
+  D83, D87): keys, the mouse, the wheel and drawing follow it. The compiler asks for its arms in `App::modal_scroll` (what
   the wheel does in it) and `ui`'s `layer_rect`/`draw_layer`, and the popup tests open it. Lists scroll with
   `scroll::moved`/`scroll::window`, tall text with a `scroll::TextScroll`.
 - The same for everything else the wheel can be over: every Widget is a `pane::Widget` variant

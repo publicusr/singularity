@@ -155,7 +155,7 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   border, a split or a close changes those. While the chip moves the Client draws at `visuals.motion_fps` (Settings;
   30–240, default 120: set it to your monitor's refresh rate). Your terminal caps it too: Ghostty follows the
   monitor; in kitty lower `repaint_delay` (and keep `sync_to_monitor`); otherwise see your terminal's repaint
-  settings. Dragging a title starts **Arrange mode** (so does Ctrl+K → Arrange, or Arrange in a Pane's menu): the
+  settings. Dragging a title starts **Arrange mode** (so does `m`, Ctrl+K → Arrange, or Arrange in a Pane's menu): the
   **Tray** shows under the player bar (which keeps working, so the music goes on; the Panes give up the Tray's rows
   until Done), each Pane gets ` ⊞ ` (split) and `×` (close), and the bottom line
   shows the keys and **Done** (or Esc). Drop a Widget on the Tray to set it aside (its Pane stays, empty); drag it from
@@ -170,9 +170,14 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   it), Close pane, Arrange. A split makes a new empty Pane on that side and opens the picker on it: pick what it
   shows, or Esc to leave it empty (it says so) and arrange; a split and its pick are one undo step. A click on the Widget's
   name in a title, `w` on the focused Pane, or Ctrl+K → Replace widget… open the picker too (Home's Pane keeps Home).
-  Ctrl+K also has Split left / right / up / down, Close pane, Arrange, Move pane and Reset design. `m` moves the
-  focused Pane's Widget from the keyboard: arrows swap it with the neighbour's, `+` `-` size its Pane, `x` closes it,
-  `u` undoes, Enter or Esc ends. Ctrl+Z undoes a layout change and
+  Ctrl+K also has Split left / right / up / down, Close pane, Arrange and Reset design. In Arrange mode the keyboard
+  does the same: arrows move between Panes, Enter picks up the focused Widget (the same lit Pane and chip as a drag),
+  arrows aim and Enter drops it there (Esc puts it back); `t` sends the focused Widget to the Tray, `s` then an arrow
+  splits its Pane that way, `x` closes it, `+` `-` move its border, and Esc is Done. ↓ from a bottom Pane goes onto
+  the Tray: ← → move along it, Enter picks a Widget up, ↑ aims back into the Panes and Enter puts it there (a Widget
+  picked up from a Pane and aimed down at the Tray waits there); after its last Widget (or alone, when it's empty)
+  comes **+ Widget**, where Enter opens the picker. In keys.toml, `move_pane` is another name for
+  `arrange`. Ctrl+Z undoes a layout change and
   Ctrl+Y (or Ctrl+Shift+Z) redoes it; the bar offers "undo" for a few seconds after each one. Home can move but never close (the built-in
   Designs also have the library, the queue and lyrics; your own may let them go: Ctrl+K → Your Library / Queue then
   opens them as a popup, and focuses their Pane where they have one), and no border drag, split or close can leave a Pane too small. An edit never interrupts you and never
