@@ -94,7 +94,12 @@ pub fn target(app: &App, d: QueueDrag, y: u16) -> QueueDrag {
     // lines start under "now playing" and a blank row
     let first = app.queue_view.list_y;
     let all = lines(app);
-    let line = (y as i64 - first as i64 + app.queue_view.top as i64).clamp(-1, all.len() as i64 - 1);
+    // only at what's in view: past the list's edge it stays on the first or last line shown (above the first line of
+    // the whole list means "first of your queue")
+    let top = app.queue_view.top as i64;
+    let lo = if top == 0 { -1 } else { top };
+    let hi = (top + app.queue_view.visible.max(1) as i64 - 1).min(all.len() as i64 - 1);
+    let line = (y as i64 - first as i64 + top).clamp(lo, hi.max(lo));
     let at = |k: i64| all.get(k.max(0) as usize).cloned();
     // the entry a line means: a heading means the entry right after it
     let mut k = line;

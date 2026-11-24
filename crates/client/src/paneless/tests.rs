@@ -165,3 +165,110 @@ fn without_a_queue_pane_queue_opens_it_as_a_popup_to_see_reorder_and_remove() {
     key(&mut a, KeyCode::Esc);
     assert_eq!(a.modal(), None);
 }
+
+/// The library with `n` playlists.
+fn library_of(a: &mut App, n: usize) {
+    use singularity_proto::{Library, LibraryItem};
+    let item = |i: usize| LibraryItem { uri: format!("spotify:playlist:p{i}"), name: format!("List {i}"), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: false };
+    a.hear(singularity_proto::Event::Library(Library { items: (0..n).map(item).collect() }));
+}
+
+fn queue_of(a: &mut App, n: usize) {
+    use singularity_proto::{Item, QueueEntry};
+    a.playback.queue = (0..n).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:q{i}"), name: format!("Song {i}"), duration_ms: 150_000, ..Default::default() }, source: "queue".into(), uid: format!("u{i}") }).collect();
+}
+
+#[test]
+fn esc_mid_drag_ends_the_queue_popups_drag_too() {
+    let (mut a, mut rx) = app();
+    without(&mut a, Widget::Queue);
+    palette(&mut a, "queue");
+    render(&mut a);
+    sent(&mut rx);
+    let (x, from) = row(&a, Hit::QueueRow(3));
+    let (_, to) = row(&a, Hit::QueueRow(0));
+    mouse(&mut a, MouseEventKind::Down(MouseButton::Left), x, from);
+    mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), x, to);
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.modal(), None);
+    assert!(a.queue_drag.is_none(), "the drag ended with the popup");
+    // the pointer goes on and lets go: nothing moves out of sight
+    mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), x, to);
+    mouse(&mut a, MouseEventKind::Up(MouseButton::Left), x, to);
+    assert!(sent(&mut rx).iter().all(|c| !matches!(c, Command::MoveInQueue { .. })));
+    let order: String = a.playback.queue.iter().map(|q| q.item.name.chars().last().unwrap()).collect();
+    assert_eq!(order, "0123");
+}
+
+#[test]
+fn the_library_popup_keeps_its_highlight_in_view() {
+    let (mut a, _rx) = app();
+    library_of(&mut a, 60);
+    render(&mut a);
+    // far down the tall library Pane
+    a.focus_on(Widget::Library);
+    for _ in 0..40 {
+        key(&mut a, KeyCode::Down);
+    }
+    render(&mut a);
+    assert_eq!(a.sidebar.sel, 40);
+    without(&mut a, Widget::Library);
+    palette(&mut a, "your library");
+    render(&mut a);
+    assert!(a.hit_rect(&Hit::Side(40)).is_some(), "the highlight is in the popup's window");
+    // keys before the popup's first frame, with the Pane's old size
+    key(&mut a, KeyCode::Esc);
+    palette(&mut a, "your library");
+    for _ in 0..25 {
+        key(&mut a, KeyCode::Up);
+    }
+    render(&mut a);
+    assert!(a.hit_rect(&Hit::Side(a.sidebar.sel)).is_some(), "row {} is drawn", a.sidebar.sel);
+    // a refresh shortens the library under the highlight: it stays on a row there is
+    for _ in 0..30 {
+        key(&mut a, KeyCode::Down);
+    }
+    library_of(&mut a, 2);
+    render(&mut a);
+    assert_eq!(a.sidebar.sel, crate::sidebar::FIXED + 1, "the last row");
+    assert!(a.hit_rect(&Hit::Side(a.sidebar.sel)).is_some());
+    // a row that isn't there opens nothing, and the popup stays
+    a.library_popup_open(40);
+    assert_eq!(a.modal(), Some(Modal::Library));
+}
+
+#[test]
+fn a_drag_past_the_queue_popups_edge_lands_on_the_last_song_in_view() {
+    let (mut a, mut rx) = app();
+    queue_of(&mut a, 40);
+    without(&mut a, Widget::Queue);
+    palette(&mut a, "queue");
+    render(&mut a);
+    sent(&mut rx);
+    let last = (0..40).filter(|i| a.hit_rect(&Hit::QueueRow(*i)).is_some()).max().unwrap();
+    assert!(last < 39, "the popup shows part of the queue");
+    let (x, from) = row(&a, Hit::QueueRow(0));
+    mouse(&mut a, MouseEventKind::Down(MouseButton::Left), x, from);
+    mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), x, H - 1);
+    mouse(&mut a, MouseEventKind::Up(MouseButton::Left), x, H - 1);
+    assert_eq!(sent(&mut rx), vec![Command::MoveInQueue { uri: "spotify:track:q0".into(), uid: Some("u0".into()), to: last, into_queue: false }]);
+}
+
+#[test]
+fn the_queue_popup_holds_still_while_a_song_is_held() {
+    let (mut a, _rx) = app();
+    without(&mut a, Widget::Queue);
+    palette(&mut a, "queue");
+    render(&mut a);
+    let before = a.overlays[0];
+    let (x, from) = row(&a, Hit::QueueRow(3));
+    mouse(&mut a, MouseEventKind::Down(MouseButton::Left), x, from);
+    // songs arrive mid-drag
+    queue_of(&mut a, 10);
+    mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), x, from - 1);
+    render(&mut a);
+    assert_eq!(a.overlays[0], before, "the box stays where it was while the song is held");
+    mouse(&mut a, MouseEventKind::Up(MouseButton::Left), x, from - 1);
+    render(&mut a);
+    assert!(a.overlays[0].height > before.height, "then it fits the longer queue");
+}

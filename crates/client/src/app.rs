@@ -2606,6 +2606,11 @@ impl App {
         if let Some(modal) = self.modal() {
             return self.modal_pointer(modal, m, coarse);
         }
+        // a song held in the queue popup, which has closed (another popup took its place, a key closed it): the drag
+        // aimed at a list that's gone, so it ends without moving anything
+        if self.queue_drag.is_some() && !self.layout.has(Widget::Queue) {
+            self.queue_drag = None;
+        }
         // a Pane held by its title: the pointer is the Pane's until it lets go
         if self.tile.is_some() {
             return self.tile_pointer(m);
@@ -2966,8 +2971,9 @@ pub(crate) enum Popup {
     WidgetPicker(crate::panemenu::WidgetPicker),
     /// the library without a Pane (D87): its list, its selection (`App::sidebar`) and its keys
     Library,
-    /// the queue without a Pane (D87): its list, its selection (`App::queue_view`) and its keys
-    Queue,
+    /// the queue without a Pane (D87): its list, its selection (`App::queue_view`) and its keys; `h` is the height it
+    /// was last drawn at, which it keeps while a song is held (a queue changing mid-drag doesn't move the box)
+    Queue { h: u16 },
     Details(crate::playlists::Details),
     Adding(crate::playlists::Adding),
     Cover(crate::cover::CoverForm),
@@ -2987,7 +2993,7 @@ impl Popup {
             Popup::Widgets(_) => Modal::Widgets,
             Popup::WidgetPicker(_) => Modal::WidgetPicker,
             Popup::Library => Modal::Library,
-            Popup::Queue => Modal::Queue,
+            Popup::Queue { .. } => Modal::Queue,
             Popup::Details(_) => Modal::Details,
             Popup::Adding(_) => Modal::Adding,
             Popup::Cover(_) => Modal::Cover,
@@ -3255,7 +3261,7 @@ impl App {
                             self.queue_view.sel = i;
                             self.queue_drag = crate::queue::QueueDrag::start(self, i);
                         }
-                        _ if !inside => self.close_if_open(Modal::Queue),
+                        _ if !inside => self.close_queue_popup(),
                         _ => {}
                     },
                     // forms and the wizard are typed into; a click on or around them does nothing
