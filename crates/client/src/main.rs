@@ -26,6 +26,7 @@ mod mini;
 mod needs;
 mod pace;
 mod panemenu;
+mod paneless;
 mod cover;
 mod playlists;
 mod queue;

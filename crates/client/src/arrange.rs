@@ -25,7 +25,7 @@ use crate::design::DESIGNS;
 use crate::arrangement::{Arrangement, Refused};
 use crate::layout::{Divider, Pane, PaneId, Widget, is_hole};
 use crate::theme::Theme;
-use crate::tiling::{CORE, Side, neighbour};
+use crate::tiling::{Side, neighbour};
 use crate::ui::{blank, centered, popup, text};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
@@ -578,7 +578,7 @@ impl App {
             items.push(("Replace widget…".to_string(), MenuAct::ReplaceWidget));
         }
         items.extend([("Split right".to_string(), MenuAct::SplitRight), ("Split down".into(), MenuAct::SplitDown)]);
-        if !self.layout.widget_in(id).is_some_and(|w| CORE.contains(&w)) {
+        if !crate::arrangement::required(self.layout.widget_in(id)) {
             items.push(("Close pane".into(), MenuAct::ClosePane));
         }
         // an empty Pane has nothing to move

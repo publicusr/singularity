@@ -6,9 +6,6 @@
 use crate::layout::{Axis, MIN_H, MIN_W, Node, Pane, PaneId, Size, WELL_ASPECT, Widget, is_hole};
 use ratatui::layout::Rect;
 
-/// Widgets that can be moved but never closed (D43: every Design keeps them).
-pub const CORE: [Widget; 4] = [Widget::Home, Widget::Library, Widget::Queue, Widget::Lyrics];
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
     Left,

@@ -117,14 +117,18 @@ fn split_close_and_steps_keep_the_floor_plan_valid_or_say_why() {
     }
     assert_eq!(refused, Some(Refused::NoRoom), "split until there is no room");
     assert!(b.fits(tiny, 2.0));
-    for c in CORE {
-        assert_eq!(a.close(id(&a, c), AREA, 2.0), Err(Refused::Required(c)));
+    // D87: only Home is required; the library, the queue and lyrics close and can be replaced
+    assert_eq!(a.close(id(&a, W::Home), AREA, 2.0), Err(Refused::Required(W::Home)));
+    assert_eq!(a.replace(id(&a, W::Home), W::Fft), Err(Refused::Required(W::Home)));
+    for w in [W::Library, W::Queue, W::Lyrics] {
+        assert!(a.close(id(&a, w), AREA, 2.0).is_ok_and(|b| !b.has(w)), "{w} closes");
+        assert!(a.replace(id(&a, w), W::Starfield).is_ok_and(|b| !b.has(w) && b.has(W::Starfield)), "{w} is replaced");
     }
     let one = Arrangement::from(Node::pane(W::Fft));
     assert_eq!(one.close(PaneId(1), AREA, 2.0), Err(Refused::LastPane));
     assert_eq!(a.step_line(PaneId(999), true, AREA, 2.0), Err(Refused::NoPane));
     assert!(a.step_line(id(&a, W::Library), true, AREA, 2.0).is_ok());
-    assert_eq!(Refused::Required(W::Queue).why(|w| w.name().to_string()), "queue can be moved, but never removed");
+    assert_eq!(Refused::Required(W::Home).why(|w| w.name().to_string()), "home can be moved, but never removed");
 }
 
 // ── the property test ─────────────────────────────────────────────────
@@ -271,7 +275,7 @@ fn random_edit_sequences_keep_every_arrangement_sound() {
                             let p = pick(&mut rng);
                             let got = now.close(p, body, aspect);
                             if let Err(e) = got {
-                                let core = now.widget_in(p).is_some_and(|x| CORE.contains(&x));
+                                let core = required(now.widget_in(p));
                                 assert!(core && matches!(e, Refused::Required(_)) || !core && matches!(e, Refused::NoRoom | Refused::LastPane), "{ctx}: close refused: {e:?}");
                             }
                             (false, got)

@@ -19,6 +19,8 @@ pub struct QueueView {
     /// first visible line
     pub top: usize,
     pub visible: usize,
+    /// the screen row of the list's first line, as last drawn (in its Pane or its popup): where a drag aims
+    pub list_y: u16,
 }
 
 impl QueueView {
@@ -89,9 +91,8 @@ pub fn target(app: &App, d: QueueDrag, y: u16) -> QueueDrag {
     let Some((start, len)) = section(app, d.from) else { return d };
     let nq = queued(app);
     let from_context = app.playback.queue[d.from].source != "queue";
-    let Some(pane) = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if app.layout.widget_in(*p) == Some(crate::layout::Widget::Queue)).then_some(*r)) else { return d };
-    // lines start under "now playing" and a blank row, inside the frame
-    let first = pane.y + 1 + 2;
+    // lines start under "now playing" and a blank row
+    let first = app.queue_view.list_y;
     let all = lines(app);
     let line = (y as i64 - first as i64 + app.queue_view.top as i64).clamp(-1, all.len() as i64 - 1);
     let at = |k: i64| all.get(k.max(0) as usize).cloned();
@@ -206,6 +207,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
     let body = r.bottom().saturating_sub(y) as usize;
     let mut view = app.queue_view;
+    view.list_y = y;
     view.visible = body.max(1);
     view.sel = view.sel.min(app.playback.queue.len().saturating_sub(1));
     // keep the selection in view
@@ -217,7 +219,8 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         }
     }
     view.top = view.top.min(all.len().saturating_sub(view.visible));
-    let focused = app.is_focused(crate::layout::Widget::Queue);
+    // (its popup, where no Pane shows it, has the keys as a focused Pane has them)
+    let focused = app.is_focused(crate::layout::Widget::Queue) || app.is_open(crate::app::Modal::Queue);
     let mut hits = vec![];
     // (a Pane a row or two tall has no rows for the list, but keeps its place in it)
     for line in all.iter().skip(view.top).take(body) {

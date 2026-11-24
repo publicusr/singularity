@@ -226,6 +226,8 @@ fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
             app.widget_picker().filter(|p| app.layout.contains(p.target))?;
             crate::panemenu::rect(area, app)
         }
+        Modal::Library => crate::paneless::library_rect(area, app),
+        Modal::Queue => crate::paneless::queue_rect(area, app),
         Modal::Details => crate::playlists::details_rect(area),
         Modal::Adding => crate::playlists::adding_rect(area, app.adding_rows().len()),
         Modal::Cover => crate::cover::rect(area),
@@ -253,6 +255,8 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
         Modal::Picker => crate::looks::draw_picker(f.buffer_mut(), area, app, th),
         Modal::Widgets => crate::arrange::draw_widgets(f.buffer_mut(), area, app, th),
         Modal::WidgetPicker => crate::panemenu::draw(f.buffer_mut(), area, app, th),
+        Modal::Library => crate::paneless::draw_library(f.buffer_mut(), area, app, th),
+        Modal::Queue => crate::paneless::draw_queue(f.buffer_mut(), area, app, th),
         Modal::Naming => {
             let Some(n) = app.naming().cloned() else { return };
             let mut edited = format!("Enter save · Esc keep it as “{} (edited)”", crate::design::DESIGNS[app.design].name);
@@ -473,8 +477,8 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     let focused = app.focus == Some(p.id);
     let held = app.moving() == Some(p.id);
     let title_st = if focused || held { th.title() } else { th.s(th.accent) };
-    // a Pane that can close has a × at the right end of its title (the four every Design keeps don't)
-    let closable = !w.is_some_and(|w| crate::tiling::CORE.contains(&w)) && total > 1 && rect.width >= 14;
+    // a Pane that can close has a × at the right end of its title (Home's, the Required Widget's, doesn't)
+    let closable = !crate::arrangement::required(w) && total > 1 && rect.width >= 14;
     let tail: u16 = if closable { 3 } else { 0 };
     let mut spans = vec![Span::styled(format!(" {number}"), title_st)];
     // the main Pane: ← → through the pages seen, while there are any, at the right end of its title like every
@@ -3294,7 +3298,10 @@ mod tests {
 
     /// What a stray event could move behind a popup.
     fn behind(app: &App) -> String {
-        format!("{:?} {:?} {:?} {} {} {:?}", app.sidebar.sel, app.queue_view.sel, app.focused(), app.playback.volume, app.home_view.offset, app.playback.position_ms)
+        // (the library's and the queue's popups have their Panes' selection: it isn't behind them)
+        let side = (!app.is_open(crate::app::Modal::Library)).then_some(app.sidebar.sel);
+        let queue = (!app.is_open(crate::app::Modal::Queue)).then_some(app.queue_view.sel);
+        format!("{:?} {:?} {:?} {} {} {:?}", side, queue, app.focused(), app.playback.volume, app.home_view.offset, app.playback.position_ms)
     }
 
     /// Every mouse event the terminal can send, at points all over the screen: nothing behind the popup moves.
@@ -3380,6 +3387,12 @@ mod tests {
             Modal::Picker => app.open_picker(crate::looks::PickerKind::Theme),
             Modal::Naming => app.open_popup(crate::app::Popup::Naming(crate::app::Naming::playlist())),
             Modal::WidgetPicker => app.open_widget_picker(app.layout.pane_of(Widget::Stream).unwrap()),
+            // a Design without their Panes (D87)
+            Modal::Library | Modal::Queue => {
+                let w = if m == Modal::Library { Widget::Library } else { Widget::Queue };
+                app.layout = app.layout.close(app.layout.pane_of(w).unwrap(), app.pane_area(), app.cell_aspect()).unwrap();
+                app.run(if m == Modal::Library { Action::ShowLibrary } else { Action::ShowQueue });
+            }
             Modal::Widgets => {
                 let items = crate::layouts::all_widgets().take(8).collect();
                 app.open_popup(crate::app::Popup::Widgets(crate::arrange::WidgetPick { target: app.layout.pane_of(Widget::Home).unwrap(), side: crate::tiling::Side::Right, items, sel: 0 }));
@@ -3423,6 +3436,8 @@ mod tests {
             Modal::Picker => app.picker().map(|p| p.sel),
             Modal::Widgets => app.widget_pick().map(|p| p.sel),
             Modal::WidgetPicker => app.widget_picker().map(|p| p.sel),
+            Modal::Library => Some(app.sidebar.sel),
+            Modal::Queue => Some(app.queue_view.sel),
             Modal::Details => app.details().map(|d| d.scroll.offset()),
             Modal::Adding => app.adding().map(|a| a.sel),
             Modal::Wizard => Some(app.wizard_scroll.offset()),
@@ -3557,18 +3572,18 @@ mod tests {
             let (mut app, _rx) = over_wizard(m);
             render(&mut app, w, h);
             click(&mut app, 0, 0);
-            let closes = matches!(m, Modal::Palette | Modal::Picker | Modal::Widgets | Modal::WidgetPicker | Modal::Adding | Modal::Devices | Modal::Menu | Modal::Help);
+            let closes = matches!(m, Modal::Palette | Modal::Picker | Modal::Widgets | Modal::WidgetPicker | Modal::Library | Modal::Queue | Modal::Adding | Modal::Devices | Modal::Menu | Modal::Help);
             assert_eq!(app.modal(), Some(if closes { Modal::Wizard } else { m }), "{m:?}: the click");
             // the click on its first row, inside its box: the row is chosen (the popup has done its job and gone)
             let (mut app, _rx) = over_wizard(m);
             render(&mut app, w, h);
-            let row = app.hits.iter().find(|(_, hit)| matches!(hit, Hit::PaletteItem(0) | Hit::PickerItem(0) | Hit::WidgetItem(0) | Hit::PickWidget(0) | Hit::AddPick(0) | Hit::DeviceRow(0) | Hit::MenuItem(0))).map(|(r, _)| *r);
+            let row = app.hits.iter().find(|(_, hit)| matches!(hit, Hit::PaletteItem(0) | Hit::PickerItem(0) | Hit::WidgetItem(0) | Hit::PickWidget(0) | Hit::AddPick(0) | Hit::DeviceRow(0) | Hit::MenuItem(0)) || (m == Modal::Library && *hit == Hit::Side(0))).map(|(r, _)| *r);
             if let Some(r) = row {
                 click(&mut app, r.x + 1, r.y);
                 assert_ne!(app.modal(), Some(m), "{m:?}: the click on its row went to the wizard");
                 assert!(app.layers().contains(&Modal::Wizard), "{m:?}: the wizard stays");
             } else {
-                assert!(!matches!(m, Modal::Palette | Modal::Picker | Modal::Widgets | Modal::WidgetPicker | Modal::Adding | Modal::Devices | Modal::Menu), "{m:?}: a list popup has rows to click");
+                assert!(!matches!(m, Modal::Palette | Modal::Picker | Modal::Widgets | Modal::WidgetPicker | Modal::Library | Modal::Adding | Modal::Devices | Modal::Menu), "{m:?}: a list popup has rows to click");
             }
         }
     }

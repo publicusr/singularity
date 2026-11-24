@@ -210,12 +210,15 @@ fn every_drop_is_allowed_even_into_a_pane_smaller_than_the_widget_likes() {
 }
 
 #[test]
-fn the_x_closes_a_pane_and_the_core_four_have_none() {
+fn the_x_closes_a_pane_and_only_homes_has_none() {
     let mut a = app();
     let shot = render(&mut a, W, H);
     assert!(shot.contains(" × "));
-    for core in crate::tiling::CORE {
-        assert!(!a.hits.iter().any(|(_, h)| matches!(h, Hit::Close(p) if *p == pid(&a, core))), "{core} has a ×");
+    let closes = |a: &App, w: Widget| a.hits.iter().any(|(_, h)| matches!(h, Hit::Close(p) if *p == pid(a, w)));
+    assert!(!closes(&a, Widget::Home), "Home has a ×");
+    // D87: the library, the queue and lyrics may go (without a Pane, the first two open as popups)
+    for w in [Widget::Library, Widget::Queue, Widget::Lyrics] {
+        assert!(closes(&a, w), "{w} has no ×");
     }
     let fft = pane(&a, Widget::Fft);
     let old_loudness = pane(&a, Widget::Loudness);
@@ -597,7 +600,7 @@ fn random_gestures_leave_every_design_valid() {
                 assert!(drawn_panes(&a).iter().all(|(_, r)| r.width >= 1 && r.height >= 1 && r.x >= body.x && r.y >= body.y && r.right() <= body.right() && r.bottom() <= body.bottom()), "{} {w}x{h}", design.id);
                 let tree = a.layout.clone();
                 assert!(tree.fits(a.pane_area(), a.cell_aspect()), "{} {w}x{h}: {tree:?}", design.id);
-                assert!(crate::tiling::CORE.iter().all(|c| tree.has(*c)));
+                assert!(crate::arrangement::REQUIRED.iter().all(|c| tree.has(*c)));
                 assert!(a.tile.is_none() && a.widget_pick().is_none());
             }
         }

@@ -56,7 +56,8 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let pitch: u16 = if tall { 2 } else { 1 };
     side.visible = (r.height / pitch).max(1) as usize;
     side.top = side.top.min(n.saturating_sub(side.visible));
-    let focused = app.is_focused(crate::layout::Widget::Library);
+    // (its popup, where no Pane shows it, has the keys as a focused Pane has them)
+    let focused = app.is_focused(crate::layout::Widget::Library) || app.is_open(crate::app::Modal::Library);
     let open = app.open.view().map(|v| v.uri.clone());
     let page = app.current_page();
     let mut hits = vec![];

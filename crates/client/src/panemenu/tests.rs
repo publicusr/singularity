@@ -255,17 +255,29 @@ fn picking_one_on_screen_swaps_the_two_panes_widgets() {
 }
 
 #[test]
-fn the_library_queue_and_lyrics_only_trade_places() {
-    let mut a = app();
-    a.focus_on(Widget::Queue);
-    key(&mut a, KeyCode::Char('w'));
-    let list = rows(&a);
-    assert!(!list.is_empty() && list.iter().all(|(_, on)| *on), "{list:?}");
-    let shot = render(&mut a);
-    assert!(shot.contains("stays on screen") && shot.contains("Esc cancel"), "{shot}");
-    // picking one swaps: the queue is still on screen
-    key(&mut a, KeyCode::Enter);
-    assert!(a.layout.has(Widget::Queue));
+fn the_library_queue_and_lyrics_can_be_replaced_away() {
+    // D87: Home is the only Required Widget; an edit forks the built-in Design, and the fork may let them go
+    for w in [Widget::Library, Widget::Queue, Widget::Lyrics] {
+        let mut a = app();
+        let id = pid(&a, w);
+        let (x, y) = title_spot(&a, w);
+        right_click(&mut a, x, y);
+        assert_eq!(menu_items(&a), ["Replace widget…", "Split right", "Split down", "Close pane", "Move pane"], "{w}");
+        key(&mut a, KeyCode::Enter);
+        let list = rows(&a);
+        assert!(list.first().is_some_and(|(_, on)| !on), "{w}: Widgets off screen come first: {list:?}");
+        let shot = render(&mut a);
+        assert!(!shot.contains("stays on screen") && shot.contains("Enter puts it here"), "{w}: {shot}");
+        let first = list[0].0;
+        key(&mut a, KeyCode::Enter);
+        assert!(!a.layout.has(w), "{w} left the screen");
+        assert_eq!(a.layout.widget_in(id), Some(first), "{w}: its Pane shows what was picked");
+    }
+    // the built-in Designs themselves still have all four (D43; their trees don't change)
+    for d in crate::design::DESIGNS {
+        let tree = (d.layout)();
+        assert!([Widget::Home, Widget::Library, Widget::Queue, Widget::Lyrics].iter().all(|c| tree.has(*c)), "{}", d.id);
+    }
 }
 
 #[test]
