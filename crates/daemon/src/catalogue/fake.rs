@@ -39,7 +39,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                     created += 1;
                     let uri = format!("spotify:playlist:fakenew{created}");
                     let at = lib.items.iter().position(|i| i.kind != "liked").unwrap_or(lib.items.len());
-                    lib.items.insert(at, singularity_proto::LibraryItem { uri: uri.clone(), name: name.clone(), subtitle: "Playlist · fake".into(), kind: "playlist".into(), image_url: None, depth: 0, own: true });
+                    lib.items.insert(at, singularity_proto::LibraryItem { uri: uri.clone(), name: name.clone(), subtitle: "Playlist · fake".into(), kind: "playlist".into(), image_url: None, depth: 0, own: true, authors: vec!["fake".into()] });
                     let mut ev = vec![CatEvent::Created { uri: uri.clone(), name: name.clone() }];
                     if !uris.is_empty() {
                         added.entry(uri.clone()).or_default().extend(uris.iter().cloned());
@@ -192,7 +192,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                         if uri.starts_with("spotify:show:") {
                             lib.items.retain(|i| i.uri != uri);
                             if want {
-                                lib.items.insert(1, singularity_proto::LibraryItem { uri: uri.clone(), name: "Fake Show".into(), subtitle: "Podcast · Fake Publisher".into(), kind: "show".into(), image_url: None, depth: 0, own: false });
+                                lib.items.insert(1, singularity_proto::LibraryItem { uri: uri.clone(), name: "Fake Show".into(), subtitle: "Podcast · Fake Publisher".into(), kind: "show".into(), image_url: None, depth: 0, own: false, authors: vec!["Fake Publisher".into()] });
                             }
                             shows = Some(CatEvent::Library(lib.clone()));
                         }
@@ -356,12 +356,13 @@ fn fake_library(home: &HomeFeed) -> Library {
         image_url: None,
         depth: 0,
         own: false,
+        authors: vec![],
     }];
     for c in home.shelves.iter().take(2).flat_map(|s| &s.cards).filter(|c| c.uri != "spotify:playlist:liked") {
-        items.push(singularity_proto::LibraryItem { uri: c.uri.clone(), name: c.name.clone(), subtitle: c.subtitle.clone(), kind: c.kind.clone(), image_url: c.image_url.clone(), depth: 0, own: false });
+        items.push(singularity_proto::LibraryItem { uri: c.uri.clone(), name: c.name.clone(), subtitle: c.subtitle.clone(), kind: c.kind.clone(), image_url: c.image_url.clone(), depth: 0, own: false, authors: vec![] });
     }
     // one playlist of the fake user's own, to edit
-    items.push(singularity_proto::LibraryItem { uri: "spotify:playlist:fakemine".into(), name: "Fake Mixtape".into(), subtitle: "Playlist · fake".into(), kind: "playlist".into(), image_url: None, depth: 0, own: true });
+    items.push(singularity_proto::LibraryItem { uri: "spotify:playlist:fakemine".into(), name: "Fake Mixtape".into(), subtitle: "Playlist · fake".into(), kind: "playlist".into(), image_url: None, depth: 0, own: true, authors: vec!["fake".into()] });
     Library { items }
 }
 

@@ -47,7 +47,7 @@ fn app() -> (App, Receiver<Command>) {
     let (tx, rx) = tokio::sync::mpsc::channel(64);
     let mut a = App::new(Some(tx));
     a.link = crate::app::Link::Connected { version: "test".into() };
-    let item = |uri: &str, name: &str, kind: &str| LibraryItem { uri: uri.into(), name: name.into(), subtitle: String::new(), kind: kind.into(), image_url: None, depth: 0, own: false };
+    let item = |uri: &str, name: &str, kind: &str| LibraryItem { uri: uri.into(), name: name.into(), subtitle: String::new(), kind: kind.into(), image_url: None, depth: 0, own: false, authors: vec![] };
     a.hear(singularity_proto::Event::Library(Library { items: vec![item("spotify:collection", "Liked Songs", "liked"), item("spotify:playlist:p", "Night Drive", "playlist"), item("spotify:folder:f", "Moods", "folder")] }));
     a.playback.queue = (0..4).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:q{i}"), name: format!("Song {i}"), duration_ms: 150_000, ..Default::default() }, source: "queue".into(), uid: format!("u{i}") }).collect();
     render(&mut a);
@@ -169,7 +169,7 @@ fn without_a_queue_pane_queue_opens_it_as_a_popup_to_see_reorder_and_remove() {
 /// The library with `n` playlists.
 fn library_of(a: &mut App, n: usize) {
     use singularity_proto::{Library, LibraryItem};
-    let item = |i: usize| LibraryItem { uri: format!("spotify:playlist:p{i}"), name: format!("List {i}"), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: false };
+    let item = |i: usize| LibraryItem { uri: format!("spotify:playlist:p{i}"), name: format!("List {i}"), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: false, authors: vec![] };
     a.hear(singularity_proto::Event::Library(Library { items: (0..n).map(item).collect() }));
 }
 

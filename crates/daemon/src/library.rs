@@ -128,7 +128,16 @@ pub fn parse_library(v: &Value, depth: u8, me: &str) -> LibraryPage {
             _ => continue,
         };
         let own = kind == "playlist" && !me.is_empty() && d["ownerV2"]["data"]["username"].as_str() == Some(me);
-        page.items.push(LibraryItem { uri, name, subtitle, kind: kind.into(), image_url: img, depth, own });
+        // who made it, each name whole (a name can hold a comma: "Tyler, The Creator"), for the library's short tag (#56)
+        let one = |v: &Value| v.as_str().map(|s| vec![s.to_string()]).unwrap_or_default();
+        let authors = match d["__typename"].as_str().unwrap_or("") {
+            "Playlist" => one(&d["ownerV2"]["data"]["name"]),
+            "Album" => names(&d["artists"]["items"]),
+            "Podcast" => one(&d["publisher"]["name"]),
+            "Audiobook" => d["authorsV2"].as_array().into_iter().flatten().filter_map(|a| a["name"].as_str().map(String::from)).collect(),
+            _ => vec![],
+        };
+        page.items.push(LibraryItem { uri, name, subtitle, kind: kind.into(), image_url: img, depth, own, authors });
     }
     page
 }
@@ -547,6 +556,9 @@ mod tests {
         assert_eq!(kinds, ["liked", "playlist", "folder", "album", "artist"]);
         assert_eq!(p.items[0].subtitle, "321 songs");
         assert_eq!(p.items[1].subtitle, "Playlist · Nova Drift");
+        // who made each, whole (#56): the owner, the album's artists; no one for Liked Songs, a folder or an artist
+        let authors: Vec<&[String]> = p.items.iter().map(|i| i.authors.as_slice()).collect();
+        assert_eq!(authors, [&[][..], &["Nova Drift".to_string()][..], &[][..], &["Lumen Fields".to_string()][..], &[][..]]);
         assert_eq!(p.items[2].uri, "spotify:user:someone:folder:f00");
         assert_eq!(p.total, 5);
         assert!(p.items[3].image_url.as_deref().unwrap().ends_with("300"));
@@ -619,6 +631,7 @@ mod tests {
         let p = parse_library(&v, 0, "me");
         let i = &p.items[0];
         assert_eq!((i.kind.as_str(), i.name.as_str(), i.subtitle.as_str(), i.image_url.as_deref()), ("show", "A Show", "Podcast · Pub", Some("https://i/s")));
+        assert_eq!(i.authors, ["Pub"]);
     }
 
     #[test]
@@ -746,6 +759,7 @@ mod tests {
         let lib = json!({ "data": { "me": { "libraryV3": { "totalCount": 1, "items": [{ "item": { "data": meta["data"]["podcastUnionV2"] } }] } } } });
         let page = parse_library(&lib, 0, "me");
         assert_eq!((page.items[0].kind.as_str(), page.items[0].subtitle.as_str()), ("show", "Listen free until Oct 31 · Ada Quill"));
+        assert_eq!(page.items[0].authors, ["Ada Quill"]);
     }
 
     #[test]

@@ -131,7 +131,7 @@ impl App {
             && !lib.items.iter().any(|i| i.uri == uri)
         {
             let at = lib.items.iter().position(|i| i.kind != "liked").unwrap_or(lib.items.len());
-            lib.items.insert(at, LibraryItem { uri: uri.into(), name: name.into(), subtitle: "Playlist".into(), kind: "playlist".into(), image_url: None, depth: 0, own: true });
+            lib.items.insert(at, LibraryItem { uri: uri.into(), name: name.into(), subtitle: "Playlist".into(), kind: "playlist".into(), image_url: None, depth: 0, own: true, authors: vec![] });
         }
         self.open(uri, name, "Playlist", "playlist");
         self.say(format!("Created {name}"));
@@ -688,7 +688,7 @@ mod tests {
     use singularity_proto::{Command, Library, LibraryItem};
 
     fn item(uri: &str, name: &str, own: bool) -> LibraryItem {
-        LibraryItem { uri: uri.into(), name: name.into(), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own }
+        LibraryItem { uri: uri.into(), name: name.into(), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own, authors: vec![] }
     }
 
     fn app() -> (App, tokio::sync::mpsc::Receiver<Command>) {
