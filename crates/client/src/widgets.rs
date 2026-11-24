@@ -33,8 +33,9 @@ fn bands3(app: &App) -> [f32; 3] {
 
 /// Cover, title and artists, and what's next (only while no queue Pane is on screen: the layout is checked every
 /// frame, so opening or closing one takes effect at once). No meters of its own: a Pane holds one thing. A Pane too
-/// small for a cover gets the words; a wide one puts the cover at its left and the rest beside it; a tall one stacks
-/// them; a big one spells the title in the pixel font.
+/// small for a cover gets the words, a tiny one a library entry's look; a wide one puts the cover at its left and the
+/// rest beside it; a tall one stacks them; a big one spells the title in the pixel font (with a smaller cover, the
+/// whole in the middle, where a cover as tall as the Pane would leave it no room).
 pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let m = u16::from(r.width >= 12);
     let (x, w) = (r.x + m, r.width.saturating_sub(2 * m));
@@ -50,8 +51,12 @@ pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     // wide: a cover as tall as the Pane (twice as wide in cells: about square), the rest beside it
     if r.height >= 4 && w >= r.height * 2 + 24 {
         let cw = r.height * 2;
-        crate::home::cover(buf, Rect::new(x, r.y, cw, r.height), &url, "♪", app, th);
         let ix = x + cw + 2;
+        // big: beside a cover as tall as the Pane the title would stay small (`np_info` spells it big from 40 columns)
+        if r.height >= 24 && (x + w).saturating_sub(ix) < 40 && np_big(buf, Rect::new(x, r.y, w, r.height), &item, &url, app, queue, th) {
+            return;
+        }
+        crate::home::cover(buf, Rect::new(x, r.y, cw, r.height), &url, "♪", app, th);
         return np_info(buf, Rect::new(ix, r.y, (x + w).saturating_sub(ix), r.height), &item, app, queue, th);
     }
     // tall: a square cover on top, as big as leaves the words (and, taller, what's next) their rows
@@ -62,7 +67,57 @@ pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         crate::home::cover(buf, Rect::new(x + (w - cw) / 2, r.y, cw, ch), &url, "♪", app, th);
         return np_info(buf, Rect::new(x, r.y + ch + 1, w, r.height - ch - 1), &item, app, queue, th);
     }
+    // tiny: a library entry's look (a two-row cover, the name over the artists beside it), in the middle of the Pane
+    if r.height >= 3 && w >= 12 {
+        let y = r.y + (r.height - 2) / 2;
+        crate::home::cover(buf, Rect::new(x, y, 4, 2), &url, "♪", app, th);
+        text(buf, x + 6, y, w - 6, &item.name, th.s(th.fg).add_modifier(Modifier::BOLD));
+        text(buf, x + 6, y + 1, w - 6, &item.artists.join(", "), th.s(th.dim));
+        return;
+    }
     np_info(buf, Rect::new(x, r.y, w, r.height), &item, app, queue, th);
+}
+
+/// Room a big Pane's words get beside its cover: enough for most titles in the pixel font.
+const BIG_INFO_W: u16 = 56;
+/// Columns between a big Pane's cover and its words.
+const BIG_GAP: u16 = 3;
+
+/// A big Pane where a cover as tall as the Pane would leave the title small (#57): a smaller cover, so the words get
+/// [`BIG_INFO_W`] columns and the title its pixel font, and the cover and the words together in the middle of the
+/// Pane. False (nothing drawn) when the cover would come out under half the Pane's height.
+fn np_big(buf: &mut Buffer, r: Rect, item: &singularity_proto::Item, url: &str, app: &mut App, queue: bool, th: &Theme) -> bool {
+    let ch = (r.width.saturating_sub(BIG_GAP + BIG_INFO_W) / 2).min(r.height);
+    if ch < r.height / 2 {
+        return false;
+    }
+    let cw = ch * 2;
+    // the words drawn aside first, to know the room they take
+    let iw = r.width - cw - BIG_GAP;
+    let area = Rect::new(0, 0, iw, r.height);
+    let mut words = Buffer::empty(area);
+    np_info(&mut words, area, item, app, queue, th);
+    let blank = ratatui::buffer::Cell::default();
+    let (mut ww, mut wh) = (0, 0);
+    for y in 0..r.height {
+        for x in 0..iw {
+            if words[(x, y)] != blank {
+                (ww, wh) = (ww.max(x + 1), wh.max(y + 1));
+            }
+        }
+    }
+    let (bw, bh) = (cw + BIG_GAP + ww, ch.max(wh));
+    let (x, y) = (r.x + (r.width - bw) / 2, r.y + (r.height - bh) / 2);
+    crate::home::cover(buf, Rect::new(x, y, cw, ch), url, "♪", app, th);
+    let ix = x + cw + BIG_GAP;
+    for wy in 0..wh.min(r.bottom() - y) {
+        for wx in 0..ww {
+            if let Some(c) = buf.cell_mut((ix + wx, y + wy)) {
+                *c = words[(wx, wy)].clone();
+            }
+        }
+    }
+    true
 }
 
 /// Whether Now playing lists what's next: there is something queued and no queue Pane already shows it.
@@ -1058,5 +1113,42 @@ mod tests {
         let tall = rows(&mut app, 30, 30);
         let y = tall.iter().position(|r| r.contains("Song")).unwrap();
         assert!(y > 8, "{tall:#?}");
+    }
+
+    #[test]
+    fn a_tiny_now_playing_is_a_library_entry_and_a_big_one_spells_its_title_beside_a_smaller_cover() {
+        let th = Theme::singularity();
+        let mut app = App::new(None);
+        app.playback.item = Some(singularity_proto::Item { name: "Track 2".into(), artists: vec!["Fake Artist".into()], ..Default::default() });
+        let draw = |app: &mut App, w: u16, h: u16| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+            nowplaying(&mut buf, Rect::new(0, 0, w, h), app, &th);
+            buf
+        };
+        let row = |buf: &Buffer, y: u16| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
+        let cover = |buf: &Buffer, x: u16, y: u16| buf[(x, y)].bg == th.selection.color();
+        // tiny (the sheet's 20×6 Pane): a two-row cover with the name over the artists beside it, in the middle
+        let tiny = draw(&mut app, 18, 4);
+        assert!((1..3).all(|y| (1..5).all(|x| cover(&tiny, x, y))) && !cover(&tiny, 1, 0) && !cover(&tiny, 1, 3), "{tiny:?}");
+        let from = |buf: &Buffer, y: u16, x: usize| row(buf, y).chars().skip(x).collect::<String>();
+        assert!(from(&tiny, 1, 7).starts_with("Track 2") && from(&tiny, 2, 7).starts_with("Fake Arti"), "{tiny:?}");
+        // big (120×40): the title in the pixel font as on the full screen, beside a cover shorter than the Pane, the
+        // two together in the middle
+        let big = draw(&mut app, 118, 38);
+        let tall = (0..38).filter(|&y| (0..118).any(|x| cover(&big, x, y))).count() as u16;
+        assert!((19..38).contains(&tall), "a smaller cover, {tall} rows");
+        let top = (0..38).find(|&y| (0..118).any(|x| cover(&big, x, y))).unwrap();
+        assert_eq!(top, (38 - tall) / 2, "centred top to bottom");
+        let used: Vec<u16> = (0..118).filter(|&x| (0..38).any(|y| buf_used(&big, x, y))).collect();
+        let (l, r) = (used[0], 117 - used[used.len() - 1]);
+        assert!(l.abs_diff(r) <= 1, "centred left to right: {l} and {r} columns free");
+        assert!((top..top + 5).any(|y| row(&big, y).contains('█')), "the title in the pixel font");
+        // the full screen (180×49) keeps its cover as tall as the Pane
+        let full = draw(&mut app, 178, 47);
+        assert!((0..47).all(|y| cover(&full, 1, y)));
+    }
+
+    fn buf_used(buf: &Buffer, x: u16, y: u16) -> bool {
+        buf[(x, y)] != ratatui::buffer::Cell::default()
     }
 }
