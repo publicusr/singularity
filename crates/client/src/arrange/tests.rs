@@ -60,7 +60,14 @@ fn drawn_panes(app: &App) -> Vec<(PaneId, Rect)> {
 }
 /// Every Pane's rectangle where Arrange mode puts it: the floor plan laid out in the window less the Tray's rows.
 fn arranged_floor(app: &App) -> Vec<(PaneId, Rect)> {
-    let body = crate::ui::rows(app.window, true)[1];
+    floor_in(app, true)
+}
+/// Every Pane's rectangle where it belongs now (arranging or not).
+fn laid_out(app: &App) -> Vec<(PaneId, Rect)> {
+    floor_in(app, app.arranging.is_some())
+}
+fn floor_in(app: &App, arranging: bool) -> Vec<(PaneId, Rect)> {
+    let body = crate::ui::rows(app.window, arranging)[1];
     let mut v: Vec<(PaneId, Rect)> = app.layout.compute(body).panes.into_iter().map(|(p, r)| (p.id, r)).collect();
     v.sort_by_key(|(p, _)| *p);
     v
@@ -593,15 +600,23 @@ fn random_gestures_leave_every_design_valid() {
                     0..=2 => {
                         render(&mut a, w, h);
                         let (x, y) = title_spot(&a, s);
+                        let unpressed = drawn_panes(&a);
                         press(&mut a, x, y);
-                        // (once the drag is on, Arrange mode is: the Panes made room for the Tray then, Q39)
+                        render(&mut a, w, h);
+                        assert_eq!(drawn_panes(&a), unpressed, "{} {w}x{h}: a press moved a Pane", design.id);
+                        // (once the drag is on, Arrange mode is: the Panes made room for the Tray then, Q39; until
+                        // then nothing moves)
                         let mut floor = None;
                         for _ in 0..3 {
                             drag(&mut a, (next() % w as u64) as u16, (next() % (h - 1) as u64) as u16);
                             render(&mut a, w, h);
+                            let now = drawn_panes(&a);
+                            assert_eq!(now, laid_out(&a), "{} {w}x{h}: the Panes aren't the floor plan in their area", design.id);
                             if a.tile.as_ref().is_some_and(|t| t.live) {
-                                let now = drawn_panes(&a);
+                                assert!(a.arranging.is_some());
                                 assert_eq!(floor.get_or_insert_with(|| now.clone()), &now, "{} {w}x{h}: a Pane moved mid-drag", design.id);
+                            } else {
+                                assert_eq!(now, unpressed, "{} {w}x{h}: a press without a drag moved a Pane", design.id);
                             }
                         }
                         if next() % 4 == 0 {
@@ -1526,4 +1541,38 @@ fn the_panes_make_room_for_the_tray_by_one_rule_and_done_gives_it_back() {
     assert!(a.history.can_undo());
     a.run(Action::UndoLayout);
     assert!(a.layout.has(Widget::Fft), "the one undo step is the close");
+}
+
+/// A drag that turns Arrange mode on makes the Panes shorter at once, before any frame is drawn: a release in the
+/// same batch of input, on the queue where it is now (a cell that was another Pane's, where there is one), swaps with
+/// the queue. Every Design that has a queue.
+#[test]
+fn a_drag_that_turns_arrange_mode_on_drops_on_the_pane_where_it_now_is() {
+    let mut tried = 0;
+    for (d, design) in DESIGNS.iter().enumerate() {
+        let mut a = App::new(None);
+        a.set_design(d);
+        render(&mut a, W, H);
+        if !a.layout.has(Widget::Queue) || a.arranging.is_some() {
+            continue;
+        }
+        tried += 1;
+        let before = a.layout.clone();
+        let held = before.widgets().into_iter().find(|w| *w != Widget::Queue).unwrap();
+        let old = pane(&a, Widget::Queue);
+        let (x, y) = title_spot(&a, held);
+        press(&mut a, x, y);
+        drag(&mut a, x + 4, y + 2);
+        assert!(a.arranging.is_some(), "{}: the drag turned Arrange mode on", design.id);
+        assert_eq!(a.pane_area(), crate::ui::rows(a.window, true)[1], "{}: the Panes' area is shorter at once", design.id);
+        let new = a.layout.compute(a.pane_area()).rect_of(Widget::Queue).unwrap();
+        assert!(new.height < old.height || new.y < old.y, "{}: the queue moved up or shrank", design.id);
+        // a cell of the queue now that wasn't before, if any; else its middle
+        let inside = |r: Rect, (cx, cy): (u16, u16)| cx >= r.x && cx < r.right() && cy >= r.y && cy < r.bottom();
+        let spot = (new.y..new.bottom()).map(|cy| (new.x + new.width / 2, cy)).find(|c| !inside(old, *c)).unwrap_or(centre(new));
+        drag(&mut a, spot.0, spot.1);
+        release(&mut a, spot.0, spot.1);
+        assert_eq!(a.layout, swapped(before, held, Widget::Queue), "{}: released at {spot:?} on the queue's new {new:?}", design.id);
+    }
+    assert!(tried >= 3, "Designs with a queue: {tried}");
 }

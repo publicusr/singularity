@@ -900,6 +900,12 @@ fn a_drag_drawn_frame_by_frame_moves_nothing_but_the_chip_and_the_highlight() {
         let held: Vec<&Frame> = r.frames.iter().filter(|f| f.held).collect();
         // (the drag turned Arrange mode on: the Panes made room for the Tray once, at its start, Q39)
         assert!(held.len() > 20 && held.iter().all(|f| f.rects == held[0].rects), "every frame of the drag drew every Pane where it was");
+        // and that is the floor plan in the Panes' area less the Tray's rows; before the press, in the whole area
+        assert_eq!((r.frames[0].body, held[0].body), (body(r.size, false), body(r.size, true)));
+        assert_eq!(held[0].body.height + crate::arrange::TRAY_H, r.frames[0].body.height);
+        let mut arranged: Vec<(PaneId, Rect)> = r.start.compute(held[0].body).panes.into_iter().map(|(p, r)| (p.id, r)).collect();
+        arranged.sort_by_key(|(p, _)| *p);
+        assert_eq!(held[0].rects, arranged, "the held frames show the arranged floor plan");
         assert!(r.changes() >= 2, "the highlight went from Pane to Pane");
         assert_eq!(r.a.layout, swapped_with(&r, Widget::Library));
     }
