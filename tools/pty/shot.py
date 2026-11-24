@@ -1509,7 +1509,7 @@ def bar_track(t):
 
 def bar_secs(t):
     """Where the song is, as the player bar shows it (the time before the song's length, 3:20), or None."""
-    for line in t.screen.display:
+    for line in t.screen.display[-4:]:
         m = re.search(r"(\d+):(\d\d)\s.*3:20", line)
         if m:
             return int(m[1]) * 60 + int(m[2])
@@ -1639,14 +1639,19 @@ def contact_sheet(env, out):
     shot. Then every built-in Design full-terminal at SHEET_TERMS (the PC's 264×68, a 13-inch laptop's 180×54 full
     screen and 90×50 half-screen window with Retina-sized 16×34 px cells) on both tiers. Raw shots go to `out`; the
     sheet (one captioned image per Widget, each cell on its own, the Design shots and an index.html to mark them in)
-    goes to PTY_SHEET (default `out/sheet`), which must be outside the repo if it is to be kept. PTY_WIDGETS /
+    goes to PTY_SHEET (default `<out>/sheet` when `out` is an ignored `out-*` folder, else
+    `tools/pty/out-contact-sheet/sheet`); set it outside the repo to keep the sheet. PTY_WIDGETS /
     PTY_SIZES / PTY_TIERS (cells,pixels) / PTY_DESIGNS pick a subset; PTY_DESIGNS= skips the Designs."""
     global COLS, ROWS
     widgets = os.environ.get("PTY_WIDGETS", ",".join(SHEET_WIDGETS)).split(",")
     sizes = os.environ.get("PTY_SIZES", ",".join(SHEET_SIZES)).split(",")
     tiers = os.environ.get("PTY_TIERS", "cells,pixels").split(",")
     designs = [d for d in os.environ.get("PTY_DESIGNS", ",".join(DESIGNS)).split(",") if d]
-    sheet = os.environ.get("PTY_SHEET") or f"{out}/sheet"
+    # by default under the output folder when it is an ignored `out-*` one, else under tools/pty/out-contact-sheet: the
+    # sheet's index.html and captions.json must never land untracked in the repo
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = out if os.path.basename(os.path.abspath(out)).startswith("out-") else f"{here}/out-contact-sheet"
+    sheet = os.environ.get("PTY_SHEET") or f"{base}/sheet"
     os.makedirs(f"{sheet}/cells", exist_ok=True)
     os.makedirs(f"{sheet}/designs", exist_ok=True)
     cfg = f"{env['XDG_CONFIG_HOME']}/singularity"

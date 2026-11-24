@@ -117,6 +117,58 @@ mod tests {
         assert!(hole(&rows), "{rows:#?}");
     }
 
+    /// Cells under twice as tall as wide (a common 10×19 or 9×17 px font): the well's shape nudge never makes it narrower
+    /// than its own smallest size, so a 6-row well still draws its hole.
+    #[test]
+    fn a_well_at_its_smallest_size_draws_with_squatter_cells() {
+        let (sw, sh) = smallest(Widget::Well);
+        let hole = |p: &[String]| p.iter().any(|r| r.contains('▀') || r.contains('▄'));
+        for px in [(10.0, 19.0), (9.0, 17.0)] {
+            let mut app = App::new(None);
+            app.cell_px = Some(px);
+            let (rows, _) = screen(&mut app, Widget::Well, sw, sh);
+            assert!(hole(&rows) && !rows.iter().any(|r| r.contains("needs")), "{px:?}:\n{}", rows.join("\n"));
+        }
+    }
+
+    /// A Pane showing its needs line doesn't act for the Widget it hides: no wheel, no keys, no title switch, and the
+    /// idle takeover doesn't start from a hole that isn't drawn.
+    #[test]
+    fn a_pane_too_small_takes_no_wheel_keys_or_clicks() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+        use singularity_proto::{Item, QueueEntry};
+        let mut app = App::new(None);
+        app.playback.queue = (0..40).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:q{i}"), name: format!("Queued {i}"), duration_ms: 150_000, ..Default::default() }, source: "queue".into(), uid: format!("u{i}") }).collect();
+        let (sw, sh) = smallest(Widget::Queue);
+        let (rows, _) = screen(&mut app, Widget::Queue, sw.max(20), sh - 1);
+        let (y0, p) = pane(&rows);
+        assert!(p.iter().any(|r| r.contains("needs")), "{p:#?}");
+        app.focus = app.layout.pane_of(Widget::Queue);
+        let (x, y) = (3, y0 + 1);
+        for _ in 0..3 {
+            app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: x, row: y, modifiers: KeyModifiers::NONE }, x as f64 + 0.5, false);
+        }
+        assert_eq!(app.queue_view.sel, 0, "the wheel moved a hidden highlight");
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.queue_view.sel, 0, "a key moved a hidden highlight");
+        // big enough again: the same wheel moves it
+        screen(&mut app, Widget::Queue, sw.max(20), sh + 4);
+        app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: x, row: y, modifiers: KeyModifiers::NONE }, x as f64 + 0.5, false);
+        assert_eq!(app.queue_view.sel, 1, "a Pane big enough takes the wheel");
+        // top this week's title is its switch only while its list shows
+        let mut app = App::new(None);
+        let (sw, sh) = smallest(Widget::TopWeek);
+        screen(&mut app, Widget::TopWeek, sw, sh - 1);
+        assert!(!app.hits.iter().any(|(_, h)| *h == crate::app::Hit::TopWeekToggle), "a hidden list's switch");
+        // the hole's origin goes with the hole
+        let mut app = App::new(None);
+        let (sw, sh) = smallest(Widget::Hole);
+        screen(&mut app, Widget::Hole, sw, sh);
+        assert!(app.hole_origin.is_some());
+        screen(&mut app, Widget::Hole, sw, sh - 1);
+        assert!(app.hole_origin.is_none(), "{:?}", app.hole_origin.map(|o| (o.cx, o.cy)));
+    }
+
     #[test]
     fn a_pane_below_its_widgets_smallest_size_says_what_it_needs() {
         let mut app = App::new(None);

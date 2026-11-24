@@ -532,7 +532,16 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     if w.is_none() && !raised {
         spans.clear();
     }
-    if w == Some(Widget::TopWeek) {
+    // smaller than its Widget is usable in: a plain frame round one dim line, `needs W × H` (#36); the Pane then takes
+    // no wheel, keys or clicks for the Widget it hides, and the idle takeover doesn't start from an unseen hole
+    let short = w.is_some_and(|w| crate::needs::too_small(w, *rect));
+    if short {
+        app.short_panes.push(p.id);
+        if crate::layout::is_hole(w) {
+            app.hole_origin = None;
+        }
+    }
+    if w == Some(Widget::TopWeek) && !short {
         let tw = spans.iter().map(|s| s.content.chars().count()).sum::<usize>() as u16;
         swaps.push((Rect::new(rect.x + 1, rect.y, tw.min(rect.width.saturating_sub(2)), 1), Hit::TopWeekToggle));
     } else if !raised && w.is_some() && app.can_replace(p.id) {
@@ -567,8 +576,6 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
         f.render_widget(block, *rect);
         return;
     }
-    // smaller than its Widget is usable in: a plain frame round one dim line, `needs W × H` (#36)
-    let short = w.is_some_and(|w| crate::needs::too_small(w, *rect));
     // the well draws its own (sagging) frame; held up, it is a plain Pane round the hole
     if w == Some(Widget::Well) && !raised && !short {
         crate::visual::well::draw(f.buffer_mut(), *rect, app, th);

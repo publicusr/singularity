@@ -317,6 +317,8 @@ impl Node {
         let Some((id, well)) = out.panes.iter().find(|(p, _)| p.holds(Widget::Well)).map(|(p, r)| (p.id, *r)) else { return out };
         // the inner picture, inside the frame
         let want = ((well.height.saturating_sub(2)) as f64 * cell_aspect * WELL_ASPECT).round() as u16 + 2;
+        // never below its own smallest size (squatter cells than 2:1 would leave a short well a needs line, #36)
+        let want = want.max(crate::needs::smallest(Widget::Well).0);
         if well.width <= want + want / 20 {
             return out;
         }

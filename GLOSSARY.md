@@ -192,7 +192,7 @@ shows on the page. The file is the one source of truth; the page is a view of it
 _Avoid_: preferences, options, settings screen (the spec's old word)
 
 **Smallest size**:
-The smallest Pane (columns × rows, frame included) a Widget is still usable in, picked from the size contact sheet; the black hole's is its shape rule (4:3 over four rows). In a smaller Pane the Widget gives way to one dim, centred line, `needs 30 × 10`; a Pane too small even for that shows only its frame, the Widget's name in its title.
+The smallest Pane (columns × rows, frame included) a Widget is still usable in; the black hole's is its shape rule. In a smaller Pane the Widget gives way to one dim, centred line, `needs 30 × 10`; a Pane too small even for that shows only its frame, the Widget's name in its title.
 _Avoid_: minimum size (that's the Pane's own, which the floor plan keeps), min dimensions
 
 **Mini-player**:
