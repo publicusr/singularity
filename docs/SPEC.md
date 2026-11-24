@@ -294,7 +294,8 @@ audio, and looks spectacular.
     allowed. All edits go through Arrangement (the floor plan, which Widget is in which Pane, and the Tray).
     **Arrange mode and the Tray (D87, #41):** a title drag, Ctrl+K → Arrange, the Pane menu's Arrange (it replaced
     Move pane) or Esc in a split's picker start Arrange mode; Done or Esc end it once Home has a Pane ("Home still needs
-    a Pane"). The Tray takes the player's rows (no Pane moves), each Pane gets split and close buttons, a one-line
+    a Pane"). The Tray sits under the player bar, which stays usable (Q39, #69: the Panes' area is the Tray's height
+    shorter while arranging, the floor plan's proportions and the saved Design unchanged), each Pane gets split and close buttons, a one-line
     legend sits at the bottom. A Widget dropped on the Tray waits there (its Pane stays empty); from the Tray onto a
     Pane it takes that Pane (its Widget goes into the Tray); `×` closes into the Tray; `×` on a Tray Widget and Clear
     Tray remove Widgets (never Home). The Tray is saved per Design and covered by undo. **Naming (Q33, replaces the

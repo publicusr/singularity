@@ -156,7 +156,8 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   30–240, default 120: set it to your monitor's refresh rate). Your terminal caps it too: Ghostty follows the
   monitor; in kitty lower `repaint_delay` (and keep `sync_to_monitor`); otherwise see your terminal's repaint
   settings. Dragging a title starts **Arrange mode** (so does Ctrl+K → Arrange, or Arrange in a Pane's menu): the
-  **Tray** takes the player's place at the bottom, each Pane gets ` ⊞ ` (split) and `×` (close), and the bottom line
+  **Tray** shows under the player bar (which keeps working, so the music goes on; the Panes give up the Tray's rows
+  until Done), each Pane gets ` ⊞ ` (split) and `×` (close), and the bottom line
   shows the keys and **Done** (or Esc). Drop a Widget on the Tray to set it aside (its Pane stays, empty); drag it from
   the Tray onto a Pane to put it there (that Pane's Widget waits in the Tray instead). Closing a Pane sends its Widget
   to the Tray too. `×` on a Widget in the Tray, or Clear Tray, removes them (Home stays). Done waits until Home has a
