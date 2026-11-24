@@ -413,3 +413,17 @@ fn a_required_widget_missing_from_a_file_waits_in_the_tray() {
     assert_eq!(Arrangement::new(plan.clone(), vec![W::Lyrics]).tray(), [W::Lyrics, W::Home]);
     assert_eq!(Arrangement::new(plan, vec![W::Home, W::Home]).tray(), [W::Home], "once");
 }
+
+/// #42: the Tray's "+ Widget" adds a Widget that is neither on screen nor waiting, at the Tray's end; the floor plan
+/// stays as it was.
+#[test]
+fn a_widget_added_to_the_tray_waits_at_its_end() {
+    let a = Arrangement::new(Node::empty(), vec![]);
+    assert_eq!(a.tray(), [W::Home]);
+    let b = a.add_to_tray(W::Queue).unwrap();
+    assert_eq!(b.tray(), [W::Home, W::Queue]);
+    assert_eq!(b.plan(), a.plan());
+    assert_eq!(b.add_to_tray(W::Queue), Err(Refused::InTray(W::Queue)));
+    let c = b.out_of_tray(W::Queue, b.panes()[0].id).unwrap();
+    assert_eq!(c.add_to_tray(W::Queue), Err(Refused::OnScreen(W::Queue)));
+}

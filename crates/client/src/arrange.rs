@@ -19,6 +19,11 @@
 //! the Tray in its place. On its own Pane, off the Panes, on Esc, or when the release was never heard, the drag ends
 //! and nothing changes. Every drop is allowed: no drop changes the floor plan.
 //!
+//! "New design…" (#42) starts Arrange mode from one empty Pane filling the screen, with Home waiting in the Tray, whose
+//! "+ Widget" opens the Widget picker to put any Widget there. Nothing is written while it is built: Done asks for a
+//! name and saves it as a Design of the user's own with the current Theme; Esc before anything is placed goes back to
+//! the Design that was on screen, untouched.
+//!
 //! The Design files (owner, Q33): the name prompt never interrupts an edit. An edit to a built-in Design is kept at
 //! once as its one unnamed "<Design> (edited)" (the built-in itself never changes; Reset design goes back): outside
 //! Arrange mode the bar says so ("Kept as …"), and in Arrange mode Done asks for a name, if anything changed. A Design
@@ -37,7 +42,7 @@ pub mod history;
 use crate::app::{Action, App, Hit, Menu, MenuAct, Modal, NameFor, Naming, Target};
 use crate::design::DESIGNS;
 use crate::arrangement::{Arrangement, Refused};
-use crate::layout::{Divider, Pane, PaneId, Widget, is_hole};
+use crate::layout::{Divider, Node, Pane, PaneId, Widget, is_hole};
 use crate::theme::Theme;
 use crate::tiling::{Side, neighbour};
 use crate::ui::{blank, text};
@@ -81,6 +86,16 @@ pub struct Arranging {
     /// an edit was made in it (previewing other Designs in the picker isn't one)
     edited: bool,
     pub tray_first: usize,
+    /// a New design… being built (#42)
+    fresh: Option<Box<Fresh>>,
+}
+
+/// A New design… being built (#42): what was on screen before it (Esc before anything is placed puts it back,
+/// untouched) and the undo history from before it (the build's own steps don't reach into it). Nothing is written
+/// until Done names it.
+struct Fresh {
+    before: Snapshot,
+    history: history::History<Snapshot>,
 }
 
 /// What undo goes back to: the layout, the Design it was (None: the built-in one) and what its file said about it,
@@ -519,6 +534,10 @@ impl App {
     pub fn edited(&mut self) {
         if let Some(a) = self.arranging.as_mut() {
             a.edited = true;
+            // a New design… is written when Done names it
+            if a.fresh.is_some() {
+                return;
+            }
         }
         let own = self.layout_name.clone().and_then(|id| self.saved_layouts.iter().find(|s| s.id == id).cloned());
         match own {
@@ -555,9 +574,77 @@ impl App {
     pub fn enter_arrange(&mut self) {
         if self.arranging.is_none() {
             self.move_mode = None;
-            self.arranging = Some(Arranging { since: self.layout.clone(), edited: false, tray_first: 0 });
+            self.arranging = Some(Arranging { since: self.layout.clone(), edited: false, tray_first: 0, fresh: None });
             self.relayout();
         }
+    }
+
+    /// "New design…" (#42): Arrange mode from one empty Pane filling the screen, with Home waiting in the Tray. The
+    /// Design on screen stays as it is (in its file too) until Done names the new one; Esc before anything is placed
+    /// goes back to it.
+    pub fn new_design(&mut self) {
+        if self.building() {
+            return;
+        }
+        let before = self.snapshot();
+        let history = std::mem::take(&mut self.history);
+        // (from Arrange mode: what was arranged is kept as it is, and the build starts from the blank one)
+        self.arranging = None;
+        self.tile = None;
+        self.move_mode = None;
+        self.undo_offer = None;
+        self.layout = Arrangement::new(Node::empty(), vec![]);
+        self.layout_name = None;
+        self.focus = self.layout.panes().first().map(|p| p.id);
+        self.want_widget_data();
+        self.enter_arrange();
+        if let Some(a) = self.arranging.as_mut() {
+            a.fresh = Some(Box::new(Fresh { before, history }));
+        }
+    }
+
+    /// Whether a New design… is being built.
+    pub fn building(&self) -> bool {
+        self.arranging.as_ref().is_some_and(|a| a.fresh.is_some())
+    }
+
+    /// The saved Design that was on screen when a New design… began (config.toml keeps naming it meanwhile).
+    pub fn building_from(&self) -> Option<String> {
+        self.arranging.as_ref()?.fresh.as_ref()?.before.name.clone()
+    }
+
+    /// Esc on a New design… before anything is placed: the Design that was on screen, as it was, and its undo history.
+    fn cancel_new_design(&mut self) {
+        let Some(f) = self.arranging.take().and_then(|a| a.fresh) else { return };
+        let Fresh { before, history } = *f;
+        self.tile = None;
+        self.undo_offer = None;
+        self.layout = before.tree;
+        self.layout_name = before.name;
+        self.focus = before.focus.filter(|p| self.layout.contains(*p)).or_else(|| self.layout.pane_of(Widget::Home));
+        self.history = history;
+        self.want_widget_data();
+        self.relayout();
+    }
+
+    /// The name typed on Done's prompt for a New design…: saved as a Design of your own with the current Theme, and
+    /// Arrange mode ends. The build's undo steps go with it: the new Design starts its own history.
+    pub fn save_new_design(&mut self, name: &str) {
+        self.save_layout(name);
+        // (not saved: still building, so nothing is lost; without a config folder there is nowhere to save it)
+        if self.layout_name.is_none() && self.layouts_dir.is_some() {
+            return;
+        }
+        self.arranging = None;
+        self.tile = None;
+        self.history = Default::default();
+        self.undo_offer = None;
+        self.relayout();
+    }
+
+    /// The Tray's "+ Widget": the Widget picker, adding the pick to the Tray (#42).
+    pub fn open_tray_picker(&mut self) {
+        self.open_popup(crate::app::Popup::WidgetPicker(crate::panemenu::WidgetPicker { target: PaneId::UNSET, query: String::new(), sel: 0, after_split: false, tray: true }));
     }
 
     /// Before each frame: Home always has a Pane outside Arrange mode. A Design whose Home waits in the Tray (one left
@@ -584,6 +671,13 @@ impl App {
         if self.done_blocked().is_some() {
             return;
         }
+        // a New design…: Done asks for its name, and Arrange mode stays on until it has one (#42)
+        if self.building() {
+            if self.naming().is_none() {
+                self.open_popup(crate::app::Popup::Naming(Naming::new_design()));
+            }
+            return;
+        }
         let Some(a) = self.arranging.take() else { return };
         self.tile = None;
         self.relayout();
@@ -598,6 +692,10 @@ impl App {
     /// work as ever (the player bar stays); no Pane takes keys.
     pub fn arrange_key(&mut self, k: KeyEvent) {
         if k.code == KeyCode::Esc {
+            // a New design… with nothing placed yet: back to the Design that was on screen, untouched (#42)
+            if self.arranging.as_ref().is_some_and(|a| a.fresh.is_some() && a.since == self.layout) {
+                return self.cancel_new_design();
+            }
             return self.arrange_done();
         }
         use Action::*;
@@ -656,6 +754,7 @@ impl App {
                 Some(Hit::TrayItem(w)) => self.tray_down(w, x, y),
                 Some(Hit::TrayRemove(w)) => self.tray_remove(w),
                 Some(Hit::ClearTray) => self.clear_tray(),
+                Some(Hit::TrayAdd) => self.open_tray_picker(),
                 Some(Hit::TrayScroll(d)) => self.tray_scroll(d),
                 Some(Hit::ArrangeDone) => self.arrange_done(),
                 Some(Hit::Action(a @ (Action::UndoLayout | Action::RedoLayout))) => self.run(a),
@@ -989,14 +1088,19 @@ pub fn draw_move_hint(buf: &mut Buffer, r: Rect, name: &str, said: Option<&str>,
 }
 
 /// Where the parts of the Tray strip go: each Widget shown (its place in the Tray, its chip, its × unless it is
-/// Home), the ‹ › while they don't all fit, Clear Tray, and the first Widget shown.
+/// Home), the ‹ › while they don't all fit, "+ Widget", Clear Tray, and the first Widget shown.
 pub struct TrayLayout {
     pub items: Vec<(usize, Rect, Option<Rect>)>,
     pub prev: Option<Rect>,
     pub next: Option<Rect>,
+    pub add: Option<Rect>,
     pub clear: Option<Rect>,
     pub first: usize,
 }
+
+/// The Tray's title on its frame, and its "+ Widget" button beside it (#42).
+const TRAY_TITLE: &str = " Tray ";
+const TRAY_ADD: &str = " + Widget ";
 
 /// A Widget's chip in the Tray: its grip and name.
 fn tray_chip(name: &str) -> String {
@@ -1042,7 +1146,10 @@ pub fn tray_layout(app: &App, r: Rect, first: usize) -> TrayLayout {
     let next = (over && shown_to < tray.len()).then(|| Rect::new(x1.saturating_sub(1), y, 1, 1));
     let clear_label = " Clear Tray ";
     let clear = tray.iter().any(|w| !crate::arrangement::required(Some(*w))).then(|| Rect::new(r.right().saturating_sub(clear_label.chars().count() as u16 + 2), r.y, clear_label.chars().count() as u16, 1));
-    TrayLayout { items, prev, next, clear, first }
+    // "+ Widget" on the frame after the title (where it fits before Clear Tray)
+    let add = Rect::new(r.x + 1 + TRAY_TITLE.chars().count() as u16 + 1, r.y, TRAY_ADD.chars().count() as u16, 1);
+    let add = (add.right() < clear.map_or(r.right().saturating_sub(1), |c| c.x)).then_some(add);
+    TrayLayout { items, prev, next, add, clear, first }
 }
 
 /// The Tray strip (Arrange mode, under the player bar): what waits there, each with its ×, Clear Tray, and while a
@@ -1054,7 +1161,7 @@ pub fn draw_tray(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
     let lit = app.tile.as_ref().is_some_and(|t| t.live && t.tray);
     let border = if lit { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.border) };
-    Block::default().borders(Borders::ALL).border_set(th.borders).border_style(border).title(ratatui::text::Span::styled(" Tray ", th.s(th.accent))).style(th.base()).render(r, buf);
+    Block::default().borders(Borders::ALL).border_set(th.borders).border_style(border).title(ratatui::text::Span::styled(TRAY_TITLE, th.s(th.accent))).style(th.base()).render(r, buf);
     let first = app.arranging.as_ref().map_or(0, |a| a.tray_first);
     let l = tray_layout(app, r, first);
     if let Some(a) = app.arranging.as_mut() {
@@ -1079,6 +1186,10 @@ pub fn draw_tray(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             text(buf, a.x, a.y, 1, glyph, th.s(th.accent));
             app.hit(a, Hit::TrayScroll(d));
         }
+    }
+    if let Some(a) = l.add {
+        text(buf, a.x, a.y, a.width, TRAY_ADD, th.s(th.dim));
+        app.hit(a, Hit::TrayAdd);
     }
     if let Some(c) = l.clear {
         text(buf, c.x, c.y, c.width, " Clear Tray ", th.s(th.dim));

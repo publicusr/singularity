@@ -240,7 +240,7 @@ fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
         Modal::Naming => naming_rect(area),
         Modal::WidgetPicker => {
             // (its Pane gone: drawing it closes it)
-            app.widget_picker().filter(|p| app.layout.contains(p.target))?;
+            app.widget_picker().filter(|p| p.tray || app.layout.contains(p.target))?;
             crate::panemenu::rect(area, app)
         }
         Modal::Library => crate::paneless::library_rect(area, app),
@@ -282,7 +282,7 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
                 edited += &format!(" · {undo} undo");
             }
             let (title, hint) = match n.purpose {
-                crate::app::NameFor::Layout => ("Save design as", "Enter save · Esc cancel · find it in Ctrl+K → Pick a design"),
+                crate::app::NameFor::Layout | crate::app::NameFor::NewDesign => ("Save design as", "Enter save · Esc cancel · find it in Ctrl+K → Pick a design"),
                 crate::app::NameFor::Fork => ("Keep your changes as a design", edited.as_str()),
                 crate::app::NameFor::NewPlaylist => ("New playlist", "Enter create · Esc cancel"),
             };

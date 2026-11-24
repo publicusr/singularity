@@ -14,7 +14,7 @@ BIN = os.environ.get("PTY_BIN") or f"{ROOT}/target/debug"
 WRAP = os.environ.get("PTY_WRAP", "").split()
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
 # the tiling scenario wants room for the whole Singularity layout
-if sys.argv[1:2] in (["tiling"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"], ["paneless"], ["arrange"]):
+if sys.argv[1:2] in (["tiling"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"], ["paneless"], ["arrange"], ["new-design"]):
     COLS, ROWS = int(os.environ.get("PTY_COLS", 160)), int(os.environ.get("PTY_ROWS", 48))
 # the wheel everywhere: short Panes, so everything holds more than fits
 if sys.argv[1:2] == ["wheel-all"]:
@@ -2122,6 +2122,89 @@ def arrange(t, out):
     t.send(b"q", 0.5)
 
 
+def new_design(t, out, env):
+    """D87, #42: a whole New design… build. Ctrl+K → New design…, Esc at once (the Design as before), then again: one
+    empty Pane filling the screen and Home in the Tray; the Tray's "+ Widget" (the picker, the queue picked into the
+    Tray); the Pane's ⊞ split, the picker left with Esc; Home and the queue dragged from the Tray into the two Panes;
+    Done's name prompt, a name; the saved file. Prints what each step left. 160×48, cell tier, an empty output folder."""
+    t.pump(1.0)
+    t.send(b" ", 0.5)
+    tray_y = ROWS - 3
+    layouts = f"{env['XDG_CONFIG_HOME']}/singularity/layouts"
+
+    def on_row(s, y, after=0):
+        x = t.screen.display[y].find(s, after)
+        return (x, y) if x >= 0 else None
+
+    def legend():
+        return t.screen.display[ROWS - 1].strip()
+
+    def click(x, y, wait=0.6):
+        mouse(t, 0, x, y); mouse(t, 0, x, y, release=True, wait=wait)
+
+    def drag(frm, to):
+        (x, y), (tx, ty) = frm, to
+        mouse(t, 0, x, y)
+        mouse(t, 32, x + 3, max(1, y - 2), wait=0.15)
+        mouse(t, 32, tx, ty, wait=0.4)
+        mouse(t, 0, tx, ty, release=True, wait=0.6)
+
+    def palette(word):
+        t.send(b"\x0b", 0.3); t.send(word.encode(), 0.3); t.send(b"\r", 0.8)
+
+    def empties():
+        return [(line.find("empty"), y) for y, line in enumerate(t.screen.display) if 0 < y < tray_y - 3 and "empty" in line]
+
+    t.shot(f"{out}/00-start.png")
+    before = list(t.screen.display)
+    # 1. New design…, Esc before anything is placed: the Design as it was
+    palette("new design")
+    t.shot(f"{out}/01-blank.png")
+    print("blank: empty Panes:", len(empties()), "· Home in the Tray:", bool(on_row("⠿ home", tray_y)), "· legend:", legend())
+    t.send(b"\x1b", 0.8)
+    t.shot(f"{out}/01b-esc.png")
+    titles = lambda d: [x for x in ("┌ ~/library", "┌ home", "┌ queue", "┌ stream", "gravity well", "┌ loudness") if any(x in l for l in d)]
+    print("Esc at once: the same Panes as before:", titles(t.screen.display) == titles(before), titles(before), "· no Tray:", "ARRANGE" not in legend(), "· layouts written:", os.listdir(layouts) if os.path.isdir(layouts) else [])
+    # 2. again; "+ Widget" on the Tray: the picker; the queue goes into the Tray
+    palette("new design")
+    ax, _ = on_row("+ Widget", tray_y - 1)
+    click(ax + 2, tray_y - 1)
+    t.shot(f"{out}/02-tray-picker.png")
+    t.send(b"queue", 0.4)
+    t.send(b"\r", 0.6)
+    t.shot(f"{out}/03-queue-in-the-tray.png")
+    print("in the Tray:", [w for w in ("⠿ home", "⠿ queue") if on_row(w, tray_y)])
+    # 3. the floor plan first: the Pane's ⊞ splits it; Esc leaves the new Pane empty
+    x, y = on_row("⊞", 1)
+    click(x, y)
+    t.send(b"\x1b", 0.6)
+    t.shot(f"{out}/04-split.png")
+    print("after the split: empty Panes:", len(empties()))
+    # 4. then the contents: Home into the first empty Pane, the queue into the other
+    lx, ly = empties()[0]
+    hx, _ = on_row("⠿ home", tray_y)
+    drag((hx + 3, tray_y), (lx + 2, ly))
+    t.shot(f"{out}/05-home-placed.png")
+    lx, ly = empties()[0]
+    qx, _ = on_row("⠿ queue", tray_y)
+    drag((qx + 3, tray_y), (lx + 2, ly))
+    t.shot(f"{out}/06-filled.png")
+    print("filled: empty Panes:", len(empties()), "· legend:", legend())
+    # 5. Done: the name prompt; a name saves it
+    dx, _ = on_row(" Done ", ROWS - 1)
+    click(dx + 2, ROWS - 1)
+    t.shot(f"{out}/07-name.png")
+    print("Done asks for a name:", bool(t.find("Save design as")))
+    t.send(b"Built", 0.4)
+    t.send(b"\r", 0.8)
+    t.shot(f"{out}/08-saved.png")
+    path = f"{layouts}/built.toml"
+    print("after: no Tray:", "ARRANGE" not in legend(), "· saved:", os.path.exists(path))
+    if os.path.exists(path):
+        print(open(path).read())
+    t.send(b"q", 0.5)
+
+
 def pane_menu(t, out):
     """D87, #37: the Pane menu and the Widget picker. A right-click on a title (Replace widget… first), the picker
     (Widgets not on screen, then the on-screen ones dimmed below a line), typing to filter, a replace; a right-click on
@@ -2616,6 +2699,8 @@ def main():
             return arrange(t, out)
         if scenario == "pane-menu":
             return pane_menu(t, out)
+        if scenario == "new-design":
+            return new_design(t, out, env)
         if scenario == "tiling-fast":
             return tiling_fast(t, out, env)
         if scenario == "tiling-paths":

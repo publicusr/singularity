@@ -91,6 +91,7 @@ pub enum Action {
     ClosePane,
     MovePane,
     Arrange,
+    NewDesign,
     ResetLayout,
     UndoLayout,
     RedoLayout,
@@ -100,7 +101,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 65] = [
+    pub const ALL: [Action; 66] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -160,6 +161,7 @@ impl Action {
         Action::ClosePane,
         Action::MovePane,
         Action::Arrange,
+        Action::NewDesign,
         Action::ResetLayout,
         Action::UndoLayout,
         Action::RedoLayout,
@@ -228,6 +230,7 @@ impl Action {
             Action::ClosePane => "Close pane",
             Action::MovePane => "Move pane",
             Action::Arrange => "Arrange",
+            Action::NewDesign => "New design…",
             Action::ResetLayout => "Reset design",
             Action::UndoLayout => "Undo layout",
             Action::RedoLayout => "Redo layout",
@@ -343,6 +346,7 @@ impl Action {
             Action::ClosePane => "close_pane",
             Action::MovePane => "move_pane",
             Action::Arrange => "arrange",
+            Action::NewDesign => "new_design",
             Action::ResetLayout => "reset_layout",
             Action::UndoLayout => "undo_layout",
             Action::RedoLayout => "redo_layout",
@@ -385,6 +389,8 @@ pub enum Hit {
     TrayRemove(Widget),
     /// Clear Tray
     ClearTray,
+    /// the Tray's "+ Widget": the Widget picker, adding to the Tray (#42)
+    TrayAdd,
     /// the Tray's ‹ ›, when it holds more than fits
     TrayScroll(i32),
     /// Done: Arrange mode ends
@@ -513,6 +519,8 @@ pub enum NameFor {
     NewPlaylist,
     /// Done in Arrange mode asks what to call the changes kept as "<Design> (edited)" (Q33; was D66's first edit)
     Fork,
+    /// Done on a New design… asks what to call it (#42)
+    NewDesign,
 }
 
 impl Naming {
@@ -522,6 +530,9 @@ impl Naming {
     /// Prefilled with a free suggestion.
     pub fn fork(text: String) -> Naming {
         Naming { text, purpose: NameFor::Fork }
+    }
+    pub fn new_design() -> Naming {
+        Naming { text: String::new(), purpose: NameFor::NewDesign }
     }
     pub fn playlist() -> Naming {
         Naming { text: String::new(), purpose: NameFor::NewPlaylist }
@@ -1264,6 +1275,7 @@ impl App {
             }
             Action::MovePane => self.start_move(),
             Action::Arrange => self.enter_arrange(),
+            Action::NewDesign => self.new_design(),
             Action::ResetLayout => self.reset_design(),
             Action::UndoLayout => self.undo_layout(),
             Action::RedoLayout => self.redo_layout(),
@@ -2882,7 +2894,7 @@ impl App {
                     Some(Hit::PickWidget(_)) => {}
                     Some(Hit::Divider(i)) => self.grab_divider(i, m.column, m.row),
                     // (only drawn in Arrange mode, which takes its own clicks)
-                    Some(Hit::SplitPane(_) | Hit::TrayItem(_) | Hit::TrayRemove(_) | Hit::ClearTray | Hit::TrayScroll(_) | Hit::ArrangeDone) => {}
+                    Some(Hit::SplitPane(_) | Hit::TrayItem(_) | Hit::TrayRemove(_) | Hit::ClearTray | Hit::TrayAdd | Hit::TrayScroll(_) | Hit::ArrangeDone) => {}
                     Some(Hit::Action(a)) => self.run(a),
                     Some(Hit::PaletteItem(i)) => {
                         if let Some(a) = self.palette_items().get(i).copied() {

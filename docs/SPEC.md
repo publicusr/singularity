@@ -303,6 +303,10 @@ audio, and looks spectacular.
     first-edit prompt above):** an edit never asks: a built-in Design's edit is kept at once as "<Design> (edited)"
     (the bar says "Kept as …" outside Arrange mode); Done asks for a name only if something changed while arranging;
     Save design as… names one any time.
+    **New design… (D87, #42):** Ctrl+K → New design… starts Arrange mode from one empty Pane filling the screen, with
+    Home in the Tray; "+ Widget" on the Tray opens the Widget picker and puts the pick in the Tray. Done (once Home has a
+    Pane) asks for a name and saves a Design of your own with the current Theme; nothing is written before that. Esc
+    before anything is placed goes back to the Design on screen, untouched.
 86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready. Started 2026-10-19 (D48),
     tickets #63–#70, parity rule D49; the light librespot Engine on both OSes (D52, #70).
 

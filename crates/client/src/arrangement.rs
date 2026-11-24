@@ -58,6 +58,8 @@ pub enum Refused {
     Empty,
     /// a Widget that isn't in the Tray
     NotInTray(Widget),
+    /// a Widget that waits in the Tray already
+    InTray(Widget),
     /// a second black hole on screen (this one is there already)
     OneHole(Widget),
 }
@@ -76,6 +78,7 @@ impl Refused {
             Refused::NoRoom => "No room for that".into(),
             Refused::Empty => "That Pane is empty".into(),
             Refused::NotInTray(w) => format!("{} isn't in the Tray", name(w)),
+            Refused::InTray(w) => format!("{} is in the Tray already", name(w)),
             Refused::OneHole(w) => format!("One black hole at a time: {} is on screen", name(w)),
         }
     }
@@ -247,6 +250,19 @@ impl Arrangement {
             }
         }
         Ok(Arrangement { plan, tray })
+    }
+
+    /// Widget `w` (neither on screen nor waiting) into the Tray, at its end: the Tray's "+ Widget" (#42).
+    pub fn add_to_tray(&self, w: Widget) -> Result<Arrangement, Refused> {
+        if self.plan.has(w) {
+            return Err(Refused::OnScreen(w));
+        }
+        if self.tray.contains(&w) {
+            return Err(Refused::InTray(w));
+        }
+        let mut tray = self.tray.clone();
+        tray.push(w);
+        Ok(Arrangement { plan: self.plan.clone(), tray })
     }
 
     /// Without `w` in the Tray (its `×`): it is gone, until the Widget picker brings it back. Home is never removed.
