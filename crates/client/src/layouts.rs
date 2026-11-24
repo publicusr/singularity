@@ -200,7 +200,7 @@ mod tests {
             let (got, problems) = load_dir(dir.path());
             assert!(problems.is_empty(), "{}: {problems:?}\n{old}", d.id);
             let back = &got[0].tree;
-            let shown = |n: &Node| n.compute_shaped(area, 2.0).panes.into_iter().map(|(p, r)| (p.widget, r)).collect::<Vec<_>>();
+            let shown = |n: &Node| n.compute(area).panes.into_iter().map(|(p, r)| (p.widget, r)).collect::<Vec<_>>();
             assert_eq!(shown(back), shown(&tree), "{}: the same screen", d.id);
             assert!(back.panes().iter().all(|p| p.id != crate::layout::PaneId::UNSET), "{}: every Pane has an identity", d.id);
             let s = save(dir.path(), &format!("Old {i}"), d.id, "", back).unwrap();
@@ -224,7 +224,7 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), 3, "an identity each: {tree:?}");
         assert_eq!(tree.widgets(), vec![Widget::Home, Widget::Queue]);
-        assert!(tree.valid(ratatui::layout::Rect::new(0, 1, 120, 40), 2.0));
+        assert!(tree.valid(ratatui::layout::Rect::new(0, 1, 120, 40)));
         let s = save(dir.path(), "Gap", "singularity", "", &tree).unwrap();
         let text = std::fs::read_to_string(dir.path().join("gap.toml")).unwrap();
         assert!(text.contains(&format!("{{ pane = {{ id = {} }} }}", gap.0)), "{text}");

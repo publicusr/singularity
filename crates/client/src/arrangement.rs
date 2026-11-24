@@ -1,8 +1,7 @@
 //! Arrangement (D87, ADR 0005): the floor plan (where the Panes' outlines are) and which Widget is in which Pane.
 //! Everything that changes either goes through its edits, and each edit keeps two promises or is refused, saying why:
 //! the floor plan stays valid (every Pane at least the Pane minimum, `MIN_W` × `MIN_H`) and each Widget is on screen at
-//! most once. A floor plan edit also keeps what the Widgets ask for (the gravity well's height and shape) if they all
-//! had it before; a contents edit never asks.
+//! most once. Neither asks what a Pane holds (#48: the gravity well letterboxes its picture in whatever Pane it gets).
 //!
 //! The two jobs are kept apart: moving contents (swap two Panes' Widgets, fill an empty Pane, replace a Pane's Widget)
 //! never touches the floor plan, so every such edit is allowed whatever the sizes (a Widget in a Pane below its own
@@ -12,7 +11,7 @@
 //! Edits are values: each returns the new Arrangement and leaves this one as it was, so undo can keep the old one.
 //! Reading goes through `Deref` to the floor plan (`Node`): where a Pane is, what it holds; writing never does.
 
-use crate::layout::{Divider, MIN_H, MIN_W, Node, PaneId, Widget};
+use crate::layout::{Divider, Node, PaneId, Widget};
 use crate::tiling::{CORE, Side};
 use ratatui::layout::Rect;
 
@@ -93,28 +92,9 @@ impl Arrangement {
     }
 
     /// Whether the floor plan is valid at `area`: Panes with identities of their own, each Widget at most once, sizes
-    /// that mean something, and every Pane at least the Pane minimum where it is drawn. What a Widget would like on
-    /// top of that (the well's height and shape) is not the floor plan's business: see `comfortable`.
-    pub fn fits(&self, area: Rect, aspect: f64) -> bool {
-        let panes = self.plan.panes();
-        let mut ids: Vec<PaneId> = panes.iter().map(|p| p.id).collect();
-        ids.sort();
-        ids.dedup();
-        let mut widgets = self.plan.widgets();
-        let n = widgets.len();
-        widgets.sort();
-        widgets.dedup();
-        if panes.is_empty() || ids.len() != panes.len() || widgets.len() != n || !self.plan.sizes_sane() {
-            return false;
-        }
-        let out = self.plan.compute_shaped(area, aspect);
-        out.panes.len() == panes.len() && out.panes.iter().all(|(_, r)| r.width >= MIN_W && r.height >= MIN_H)
-    }
-
-    /// `fits`, and every Widget has the room it asks for (the gravity well's height and shape): what a line moved
-    /// by hand keeps while it can.
-    pub fn comfortable(&self, area: Rect, aspect: f64) -> bool {
-        self.fits(area, aspect) && self.plan.valid(area, aspect)
+    /// that mean something, and every Pane at least the Pane minimum where it is drawn, whatever it holds.
+    pub fn fits(&self, area: Rect) -> bool {
+        self.plan.valid(area)
     }
 
     // ── contents: never the floor plan ────────────────────────────────
@@ -166,19 +146,17 @@ impl Arrangement {
 
     // ── the floor plan ────────────────────────────────────────────────
 
-    /// Line `d` moved to `pos`, or as far toward it as it goes: the furthest cell where the floor plan is still valid
-    /// (and, if every Widget had the room it asks for, still has it), so a fast drag past the limit stops at the limit,
-    /// not short of it (#21). Never refused: at worst the line stays.
-    pub fn move_line(&self, d: &Divider, pos: u16, area: Rect, aspect: f64) -> Arrangement {
-        let comfy = self.comfortable(area, aspect);
-        let ok = |a: &Arrangement| a.fits(area, aspect) && (!comfy || a.comfortable(area, aspect));
+    /// Line `d` moved to `pos`, or as far toward it as it goes: the furthest cell where the floor plan is still valid,
+    /// so a fast drag past the limit stops at the limit, not short of it (#21). Never refused: at worst the line stays.
+    pub fn move_line(&self, d: &Divider, pos: u16, area: Rect) -> Arrangement {
+        let ok = |a: &Arrangement| a.fits(area);
         let to = |p: u16| {
             let mut plan = self.plan.clone();
             plan.drag(d, p);
             Arrangement { plan }
         };
         let t = to(pos);
-        if ok(&t) || !self.fits(area, aspect) {
+        if ok(&t) || !self.fits(area) {
             return t;
         }
         // from where the line is now (it fits), the furthest cell toward `pos` that still does (found by halving)
@@ -193,16 +171,16 @@ impl Arrangement {
 
     /// Pane `pane`'s line a step further out (`grow`) or in: 2 columns or 1 row, the nearest line around it that can
     /// move and still leaves the floor plan valid.
-    pub fn step_line(&self, pane: PaneId, grow: bool, area: Rect, aspect: f64) -> Result<Arrangement, Refused> {
+    pub fn step_line(&self, pane: PaneId, grow: bool, area: Rect) -> Result<Arrangement, Refused> {
         if !self.plan.contains(pane) {
             return Err(Refused::NoPane);
         }
         let plan = self.plan.resized(pane, grow, area).ok_or(Refused::NoRoom)?;
-        self.checked(plan, area, aspect)
+        self.checked(plan, area)
     }
 
     /// A new Pane on `side` of Pane `pane`, taking half its room, holding `w` (one not on screen) or nothing.
-    pub fn split(&self, pane: PaneId, side: Side, w: Option<Widget>, area: Rect, aspect: f64) -> Result<Arrangement, Refused> {
+    pub fn split(&self, pane: PaneId, side: Side, w: Option<Widget>, area: Rect) -> Result<Arrangement, Refused> {
         if !self.plan.contains(pane) {
             return Err(Refused::NoPane);
         }
@@ -210,11 +188,11 @@ impl Arrangement {
             return Err(Refused::OnScreen(w));
         }
         let plan = self.plan.split_beside(pane, w, side).ok_or(Refused::NoPane)?;
-        self.checked(plan, area, aspect)
+        self.checked(plan, area)
     }
 
     /// Without Pane `pane` (its neighbour takes the room); refused for a Widget every Design keeps.
-    pub fn close(&self, pane: PaneId, area: Rect, aspect: f64) -> Result<Arrangement, Refused> {
+    pub fn close(&self, pane: PaneId, area: Rect) -> Result<Arrangement, Refused> {
         match self.plan.get(pane) {
             None => return Err(Refused::NoPane),
             Some(p) => {
@@ -224,14 +202,13 @@ impl Arrangement {
             }
         }
         let plan = self.plan.without(pane).ok_or(Refused::LastPane)?;
-        self.checked(plan, area, aspect)
+        self.checked(plan, area)
     }
 
-    /// A new floor plan, if it keeps the promises: valid, and every Widget with the room it asks for if each had it.
-    fn checked(&self, plan: Node, area: Rect, aspect: f64) -> Result<Arrangement, Refused> {
+    /// A new floor plan, if it keeps the promise: valid at `area`.
+    fn checked(&self, plan: Node, area: Rect) -> Result<Arrangement, Refused> {
         let a = Arrangement { plan };
-        let ok = a.fits(area, aspect) && (!self.comfortable(area, aspect) || a.comfortable(area, aspect));
-        if ok { Ok(a) } else { Err(Refused::NoRoom) }
+        if a.fits(area) { Ok(a) } else { Err(Refused::NoRoom) }
     }
 }
 

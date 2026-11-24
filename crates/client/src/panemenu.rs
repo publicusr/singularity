@@ -8,11 +8,9 @@
 //!
 //! The picker names a Pane, not a Widget, so it can fill an empty one too (a split's new Pane, #39).
 //!
-//! Until #36: moving the gravity well (into another Pane, or replacing it in its own) reshapes the columns via
-//! `compute_shaped` (its shape nudge and its taller minimum), so a Replace or a swap involving it changes Pane sizes;
-//! D87 wants only the contents to change (the ignored test `a_replace_or_swap_never_changes_any_panes_rect`). And
-//! the picker lists only Widgets that would fit there, against ADR 0005's "every drop is allowed": a stop-gap until
-//! #36 gives each Widget its `needs W × H` line (#39 removes the filter).
+//! A Replace or a swap changes only the contents, never a Pane's outline, the gravity well's included (#48: it
+//! letterboxes its picture in whatever Pane it gets). The picker still checks that the result fits, against ADR 0005's
+//! "every drop is allowed": a stop-gap that no longer filters anything out (#39 removes it).
 
 use crate::app::{App, Hit, Modal, Popup};
 use crate::arrangement::Arrangement;
@@ -110,8 +108,8 @@ impl App {
     /// (until #36) Whether `tree` may replace the layout: it fits the window, or the layout doesn't either (a window too small for
     /// the Design, which then shows the mini-player: a change can't make that worse).
     fn room_for(&self, a: &Arrangement) -> bool {
-        let (area, aspect) = (self.pane_area(), self.cell_aspect());
-        a.comfortable(area, aspect) || !self.layout.comfortable(area, aspect)
+        let area = self.pane_area();
+        a.fits(area) || !self.layout.fits(area)
     }
 
     /// The picker's Pane went (a Design reloaded, a resize, an undo): the picker closes instead of offering Widgets

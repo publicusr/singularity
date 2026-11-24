@@ -3,17 +3,17 @@
 //! that line shows only its frame, the Widget's name in its title. Every drop is allowed, so this is what a Widget in
 //! too small a Pane looks like. Picked from the size contact sheet (`tools/pty`'s `contact-sheet`).
 
-use crate::layout::{MIN_H, MIN_W, WELL_ASPECT, WELL_MIN_H};
+use crate::layout::{MIN_H, MIN_W, WELL_ASPECT};
 use crate::pane::Widget;
 use crate::theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 /// The black hole's (the gravity well's and Event Horizon's) smallest size, its shape rule: four rows inside the frame
-/// (one more than `WELL_MIN_H` leaves, where the picture is a bare ring), and as wide as `WELL_ASPECT` (4:3 in pixels,
-/// cells twice as tall as wide) over them.
+/// (with three the picture is a bare ring), and as wide as `WELL_ASPECT` (4:3 in pixels, cells twice as tall as wide)
+/// over them.
 const HOLE: (u16, u16) = {
-    let h = WELL_MIN_H + 1;
+    let h = 6;
     let rows = (h - 2) as f64;
     ((rows * 2.0 * WELL_ASPECT + 0.5) as u16 + 2, h)
 };
@@ -94,10 +94,9 @@ mod tests {
             let (sw, sh) = smallest(w);
             assert!(sw >= crate::layout::MIN_W && sh >= crate::layout::MIN_H, "{w}: {sw}×{sh} is under any Pane");
         }
-        // the black hole: at least the well's height, and as wide as 4:3 over the rows inside the frame
+        // the black hole: as wide as 4:3 over the rows inside the frame
         for w in [Widget::Well, Widget::Hole] {
             let (sw, sh) = smallest(w);
-            assert!(sh >= WELL_MIN_H, "{w}");
             let shape = (sw - 2) as f64 / ((sh - 2) as f64 * 2.0);
             assert!((shape - WELL_ASPECT).abs() < 0.15, "{w}: {sw}×{sh} is {shape:.2} wide, not the well's 4:3");
         }
@@ -117,8 +116,8 @@ mod tests {
         assert!(hole(&rows), "{rows:#?}");
     }
 
-    /// Cells under twice as tall as wide (a common 10×19 or 9×17 px font): the well's shape nudge never makes it narrower
-    /// than its own smallest size, so a 6-row well still draws its hole.
+    /// Cells under twice as tall as wide (a common 10×19 or 9×17 px font): a well at its smallest size still draws its
+    /// hole (its picture letterboxes, the Pane stays as wide as it is).
     #[test]
     fn a_well_at_its_smallest_size_draws_with_squatter_cells() {
         let (sw, sh) = smallest(Widget::Well);

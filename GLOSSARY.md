@@ -247,7 +247,7 @@ A Pane whose Widget the user can swap, limited to the Visuals the current design
 _Avoid_: hero, container
 
 **Gravity well**:
-The Pane that holds the black hole in the Singularity design. Its frame sags toward the hole; content elsewhere never moves.
+The Pane that holds the black hole in the Singularity design. Its frame sags toward the hole; content elsewhere never moves. Its picture is at most 4:3: in a wider Pane it is letterboxed, centred, and the Pane keeps its outline (the well never reshapes the columns).
 _Avoid_: hole pane, black hole widget
 
 **Idle mode**:

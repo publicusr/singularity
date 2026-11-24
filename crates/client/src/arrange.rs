@@ -102,11 +102,6 @@ impl App {
         if self.body.width > 0 { self.body } else { Rect::new(0, 1, 200, 55) }
     }
 
-    /// The size the Panes are drawn at, as the Arrangement's edits want it.
-    fn room(&self) -> (Rect, f64) {
-        (self.pane_area(), self.cell_aspect())
-    }
-
     /// Why an edit was refused, in the bar's words.
     pub(crate) fn refused(&mut self, e: Refused) {
         let design = self.design;
@@ -157,8 +152,8 @@ impl App {
 
     /// The Pane under (x, y), in the layout as it is drawn.
     pub fn pane_under(&self, x: u16, y: u16) -> Option<PaneId> {
-        let (area, aspect) = self.room();
-        self.layout.compute_shaped(area, aspect).panes.into_iter().find(|(_, r)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom()).map(|(p, _)| p.id)
+        let area = self.pane_area();
+        self.layout.compute(area).panes.into_iter().find(|(_, r)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom()).map(|(p, _)| p.id)
     }
 
     /// Esc while a Widget is held: nothing changes.
@@ -307,8 +302,8 @@ impl App {
     /// A divider dragged to `pos`, or as far toward it as it goes without leaving a Pane too small (or the well out of
     /// shape): a fast drag past that stops at the limit, not short of it (#21).
     pub fn drag_divider(&mut self, d: &Divider, pos: u16) {
-        let (area, aspect) = self.room();
-        self.layout = self.layout.move_line(d, pos, area, aspect);
+        let area = self.pane_area();
+        self.layout = self.layout.move_line(d, pos, area);
     }
 
     /// A divider let go: a layout that changed is an edit.
@@ -357,9 +352,9 @@ impl App {
     fn step_history(&mut self, back: bool) {
         // a held Widget is let go first; the keyboard and the bar never reach here mid-drag, but be sure
         self.tile = None;
-        let (area, aspect) = self.room();
+        let area = self.pane_area();
         let now = self.snapshot();
-        let fits = |s: &Snapshot| s.tree.fits(area, aspect);
+        let fits = |s: &Snapshot| s.tree.fits(area);
         let got = if back { self.history.undo(now, fits) } else { self.history.redo(now, fits) };
         let (any, what) = if back { (self.history.can_undo(), "undo") } else { (self.history.can_redo(), "redo") };
         match got {
@@ -499,8 +494,8 @@ impl App {
     pub fn close_pane(&mut self, id: PaneId) {
         let Some(pane) = self.layout.get(id) else { return };
         let name = self.name_of(pane);
-        let (area, aspect) = self.room();
-        let tree = match self.layout.close(id, area, aspect) {
+        let area = self.pane_area();
+        let tree = match self.layout.close(id, area) {
             Ok(t) => t,
             Err(Refused::Required(_)) => return self.say(format!("{name} can be moved, but never closed")),
             Err(Refused::NoRoom | Refused::LastPane) => return self.say(format!("Closing {name} would squash the others")),
@@ -532,8 +527,8 @@ impl App {
         let holeless = !self.layout.has(Widget::Well) && !self.layout.has(Widget::Hole);
         let mut items: Vec<Widget> = crate::layouts::all_widgets().chain(if holeless { vec![Widget::Well, Widget::Hole] } else { vec![] }).collect();
         items.dedup();
-        let (area, aspect) = self.room();
-        items.retain(|w| self.layout.split(target, side, Some(*w), area, aspect).is_ok());
+        let area = self.pane_area();
+        items.retain(|w| self.layout.split(target, side, Some(*w), area).is_ok());
         if items.is_empty() {
             let name = self.layout.get(target).map(|p| self.name_of(p)).unwrap_or_default();
             return self.say(format!("No room to split {name} here"));
@@ -561,8 +556,8 @@ impl App {
     pub fn widget_chosen(&mut self, i: usize) {
         let Some(p) = self.take_widget_pick() else { return };
         let Some(w) = p.items.get(i).copied() else { return };
-        let (area, aspect) = self.room();
-        match self.layout.split(p.target, p.side, Some(w), area, aspect) {
+        let area = self.pane_area();
+        match self.layout.split(p.target, p.side, Some(w), area) {
             Ok(tree) => {
                 self.focus = tree.pane_of(w);
                 self.commit_layout(tree);
@@ -640,8 +635,8 @@ impl App {
 
     /// One step that way: the Widget swaps with the neighbour's, and Move mode (and the focus) go with it.
     fn move_step(&mut self, id: PaneId, dir: Side) {
-        let (area, aspect) = self.room();
-        let panes = self.layout.compute_shaped(area, aspect).panes;
+        let area = self.pane_area();
+        let panes = self.layout.compute(area).panes;
         let Some(pane) = self.layout.get(id) else { return };
         let Some(n) = neighbour(&panes, id, dir) else {
             return self.say(format!("Nothing {} {}", dir.word_beside(), self.name_of(pane)));
@@ -657,8 +652,8 @@ impl App {
     }
 
     fn resize_step(&mut self, id: PaneId, grow: bool) {
-        let (area, aspect) = self.room();
-        match self.layout.step_line(id, grow, area, aspect) {
+        let area = self.pane_area();
+        match self.layout.step_line(id, grow, area) {
             Ok(tree) => self.commit_layout(tree),
             Err(_) => self.say(if grow { "Can't grow it more" } else { "Can't shrink it more" }),
         }

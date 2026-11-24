@@ -1,6 +1,6 @@
 use super::*;
 use crate::arrange::history::{CAP, History};
-use crate::layout::{Axis, Size, Widget as W};
+use crate::layout::{Axis, MIN_H, MIN_W, Size, Widget as W};
 use Side::*;
 
 const AREA: Rect = Rect { x: 0, y: 1, width: 160, height: 43 };
@@ -30,32 +30,32 @@ fn a_swap_trades_widgets_and_the_panes_stay_put() {
 fn a_swap_with_an_empty_pane_fills_it_and_leaves_the_other_empty() {
     let a = Arrangement::from(Node::classic());
     let q = id(&a, W::Queue);
-    let a = a.split(q, Right, None, AREA, 2.0).unwrap();
+    let a = a.split(q, Right, None, AREA).unwrap();
     let empty = a.panes().into_iter().find(|p| p.widget.is_none()).unwrap().id;
     let b = a.swap(q, empty).unwrap();
     assert_eq!((b.widget_in(q), b.widget_in(empty)), (None, Some(W::Queue)));
     assert_eq!(outline(b.plan()), outline(a.plan()));
     // two empty Panes: nothing to move
-    let c = b.split(q, Bottom, None, AREA, 2.0).unwrap();
+    let c = b.split(q, Bottom, None, AREA).unwrap();
     let other = c.panes().into_iter().find(|p| p.widget.is_none() && p.id != q).unwrap().id;
     assert_eq!(c.swap(q, other), Err(Refused::NothingToMove));
 }
 
 #[test]
 fn every_swap_is_allowed_even_below_a_widgets_smallest_size() {
-    // the gravity well (it asks for 5 rows and its own shape) into Singularity's small loudness Pane
+    // the gravity well (it needs 6 rows and its own shape) into Singularity's small loudness Pane
     let a = Arrangement::from(Node::singularity());
     let small = Rect::new(0, 1, 100, 25);
-    assert!(a.fits(small, 2.0));
+    assert!(a.fits(small));
     let b = a.swap(id(&a, W::Well), id(&a, W::Loudness)).unwrap();
-    assert!(b.fits(small, 2.0), "the floor plan is as valid as it was");
+    assert!(b.fits(small), "the floor plan is as valid as it was");
     assert_eq!(outline(b.plan()), outline(a.plan()));
 }
 
 #[test]
 fn fill_puts_a_widget_not_on_screen_into_an_empty_pane() {
     let a = Arrangement::from(Node::classic());
-    let a = a.split(id(&a, W::Queue), Bottom, None, AREA, 2.0).unwrap();
+    let a = a.split(id(&a, W::Queue), Bottom, None, AREA).unwrap();
     let empty = a.panes().into_iter().find(|p| p.widget.is_none()).unwrap().id;
     let b = a.fill(empty, W::Fft).unwrap();
     assert_eq!(b.widget_in(empty), Some(W::Fft));
@@ -80,34 +80,29 @@ fn replace_shows_another_widget_and_home_is_never_replaced() {
 #[test]
 fn a_line_moved_past_its_limit_stops_at_the_furthest_fit() {
     let a = Arrangement::from(Node::classic());
-    let d = a.compute_shaped(AREA, 2.0).dividers[0].clone();
-    let b = a.move_line(&d, 0, AREA, 2.0);
-    assert_eq!(b.compute_shaped(AREA, 2.0).rect_of(W::Library).unwrap().width, MIN_W, "at the minimum, not short of it");
-    assert!(b.fits(AREA, 2.0));
-    let c = a.move_line(&d, 40, AREA, 2.0);
-    assert_eq!(c.compute_shaped(AREA, 2.0).rect_of(W::Library).unwrap().width, 40);
-    // the well keeps its height while it has it
+    let d = a.compute(AREA).dividers[0].clone();
+    let b = a.move_line(&d, 0, AREA);
+    assert_eq!(b.compute(AREA).rect_of(W::Library).unwrap().width, MIN_W, "at the minimum, not short of it");
+    assert!(b.fits(AREA));
+    let c = a.move_line(&d, 40, AREA);
+    assert_eq!(c.compute(AREA).rect_of(W::Library).unwrap().width, 40);
+    // the gravity well's Pane goes down to the Pane minimum like any other (#48: what a Pane holds asks for nothing)
     let col = Node::split(Axis::Vertical, Size::Cells(10), Node::pane(W::Well), Node::pane(W::Queue));
     let a = Arrangement::from(Node::split(Axis::Horizontal, Size::Ratio(0.2), col, Node::pane(W::Home)));
-    let d = a.compute_shaped(AREA, 2.0).dividers.iter().find(|d| d.axis == Axis::Vertical).unwrap().clone();
-    assert!(a.comfortable(AREA, 2.0));
-    let b = a.move_line(&d, 0, AREA, 2.0);
-    let well = b.compute_shaped(AREA, 2.0).rect_of(W::Well).unwrap();
-    assert!(well.height >= crate::layout::WELL_MIN_H && well.height < 10 && b.comfortable(AREA, 2.0), "{well:?}");
-    let mut further = b.plan().clone();
-    further.drag(&d, b.boundary(&d).unwrap() - 1);
-    assert!(!Arrangement::from(further).comfortable(AREA, 2.0), "one row more and the well is out of shape");
+    let d = a.compute(AREA).dividers.iter().find(|d| d.axis == Axis::Vertical).unwrap().clone();
+    let b = a.move_line(&d, 0, AREA);
+    assert_eq!(b.compute(AREA).rect_of(W::Well).unwrap().height, MIN_H);
 }
 
 #[test]
 fn split_close_and_steps_keep_the_floor_plan_valid_or_say_why() {
     let a = Arrangement::from(Node::classic());
-    assert_eq!(a.split(id(&a, W::Queue), Left, Some(W::Home), AREA, 2.0), Err(Refused::OnScreen(W::Home)));
+    assert_eq!(a.split(id(&a, W::Queue), Left, Some(W::Home), AREA), Err(Refused::OnScreen(W::Home)));
     let tiny = Rect::new(0, 1, 60, 15);
     let mut b = Arrangement::from(Node::classic());
     let mut refused = None;
     for _ in 0..10 {
-        match b.split(id(&b, W::Library), Bottom, None, tiny, 2.0) {
+        match b.split(id(&b, W::Library), Bottom, None, tiny) {
             Ok(n) => b = n,
             Err(e) => {
                 refused = Some(e);
@@ -116,14 +111,14 @@ fn split_close_and_steps_keep_the_floor_plan_valid_or_say_why() {
         }
     }
     assert_eq!(refused, Some(Refused::NoRoom), "split until there is no room");
-    assert!(b.fits(tiny, 2.0));
+    assert!(b.fits(tiny));
     for c in CORE {
-        assert_eq!(a.close(id(&a, c), AREA, 2.0), Err(Refused::Required(c)));
+        assert_eq!(a.close(id(&a, c), AREA), Err(Refused::Required(c)));
     }
     let one = Arrangement::from(Node::pane(W::Fft));
-    assert_eq!(one.close(PaneId(1), AREA, 2.0), Err(Refused::LastPane));
-    assert_eq!(a.step_line(PaneId(999), true, AREA, 2.0), Err(Refused::NoPane));
-    assert!(a.step_line(id(&a, W::Library), true, AREA, 2.0).is_ok());
+    assert_eq!(one.close(PaneId(1), AREA), Err(Refused::LastPane));
+    assert_eq!(a.step_line(PaneId(999), true, AREA), Err(Refused::NoPane));
+    assert!(a.step_line(id(&a, W::Library), true, AREA).is_ok());
     assert_eq!(Refused::Required(W::Queue).why(|w| w.name().to_string()), "queue can be moved, but never removed");
 }
 
@@ -144,18 +139,18 @@ impl Rng {
 }
 
 /// Widgets an edit may bring in (on screen or not: an edit must refuse the ones that are).
-const POOL: [W; 16] = [W::Fft, W::Loudness, W::Levels, W::Scope, W::Rain, W::Starfield, W::Stream, W::Top, W::Listening, W::Today, W::Marquee, W::Glow, W::Karaoke, W::Queue, W::Lyrics, W::Home];
+const POOL: [W; 18] = [W::Well, W::Hole, W::Fft, W::Loudness, W::Levels, W::Scope, W::Rain, W::Starfield, W::Stream, W::Top, W::Listening, W::Today, W::Marquee, W::Glow, W::Karaoke, W::Queue, W::Lyrics, W::Home];
 
 /// What an Arrangement must always be, whatever got it there.
-fn assert_sound(a: &Arrangement, body: Rect, aspect: f64, file: bool, ctx: &str) {
-    assert!(a.fits(body, aspect), "{ctx}: the floor plan isn't valid at {body:?}\n{a:?}");
+fn assert_sound(a: &Arrangement, body: Rect, file: bool, ctx: &str) {
+    assert!(a.fits(body), "{ctx}: the floor plan isn't valid at {body:?}\n{a:?}");
     let names = a.widgets();
     let mut u = names.clone();
     u.sort();
     u.dedup();
     assert_eq!(u.len(), names.len(), "{ctx}: a Widget twice: {names:?}");
     assert!(names.contains(&W::Home), "{ctx}: Home is gone");
-    let c = a.compute_shaped(body, aspect);
+    let c = a.compute(body);
     let cells: u32 = c.panes.iter().map(|(_, r)| r.width as u32 * r.height as u32).sum();
     assert_eq!(cells, body.width as u32 * body.height as u32, "{ctx}: the Panes don't tile the screen");
     for (i, (p, r)) in c.panes.iter().enumerate() {
@@ -185,8 +180,7 @@ fn random_edit_sequences_keep_every_arrangement_sound() {
         for &(w, h) in &sizes {
             let body = Rect::new(0, 1, w, h - 5);
             for seed in 1..=40u64 {
-                let aspect = [1.8, 2.0, 2.2][seed as usize % 3];
-                if !base.fits(body, aspect) {
+                if !base.fits(body) {
                     skipped += 1;
                     continue;
                 }
@@ -202,13 +196,13 @@ fn random_edit_sequences_keep_every_arrangement_sound() {
                     let roll = rng.below(12);
                     if roll >= 10 {
                         let undo = roll == 10;
-                        let ok = |a: &Arrangement| a.fits(body, aspect);
+                        let ok = |a: &Arrangement| a.fits(body);
                         let got = if undo { hist.undo(now.clone(), ok) } else { hist.redo(now.clone(), ok) };
                         let want = if undo { back.pop() } else { fwd.pop() };
                         assert_eq!(got, want, "{ctx}: {}", if undo { "undo" } else { "redo" });
                         if let Some(a) = got {
                             if undo { fwd.push(now.clone()) } else { back.push(now.clone()) }
-                            assert_sound(&a, body, aspect, false, &ctx);
+                            assert_sound(&a, body, false, &ctx);
                             now = a;
                             undone += 1;
                         }
@@ -250,18 +244,18 @@ fn random_edit_sequences_keep_every_arrangement_sound() {
                             (true, got)
                         }
                         5 | 6 => {
-                            let ds = now.compute_shaped(body, aspect).dividers;
+                            let ds = now.compute(body).dividers;
                             if ds.is_empty() {
                                 continue;
                             }
                             let d = ds[rng.below(ds.len())].clone();
-                            (false, Ok(now.move_line(&d, rng.below(w as usize + 20) as u16, body, aspect)))
+                            (false, Ok(now.move_line(&d, rng.below(w as usize + 20) as u16, body)))
                         }
-                        7 => (false, now.step_line(pick(&mut rng), rng.below(2) == 0, body, aspect)),
+                        7 => (false, now.step_line(pick(&mut rng), rng.below(2) == 0, body)),
                         8 => {
                             let side = [Left, Right, Top, Bottom][rng.below(4)];
                             let what = if rng.below(2) == 0 { None } else { Some(w_new) };
-                            let got = now.split(pick(&mut rng), side, what, body, aspect);
+                            let got = now.split(pick(&mut rng), side, what, body);
                             if let Err(e) = got {
                                 assert!(e == Refused::NoRoom || what.is_some_and(|x| e == Refused::OnScreen(x) && now.has(x)), "{ctx}: split refused: {e:?}");
                             }
@@ -269,7 +263,7 @@ fn random_edit_sequences_keep_every_arrangement_sound() {
                         }
                         _ => {
                             let p = pick(&mut rng);
-                            let got = now.close(p, body, aspect);
+                            let got = now.close(p, body);
                             if let Err(e) = got {
                                 let core = now.widget_in(p).is_some_and(|x| CORE.contains(&x));
                                 assert!(core && matches!(e, Refused::Required(_)) || !core && matches!(e, Refused::NoRoom | Refused::LastPane), "{ctx}: close refused: {e:?}");
@@ -281,8 +275,11 @@ fn random_edit_sequences_keep_every_arrangement_sound() {
                         Ok(n) if n != now => {
                             if contents {
                                 assert_eq!(outline(n.plan()), outline(now.plan()), "{ctx}: a contents edit moved the floor plan");
+                                // and where the Panes are drawn: no Widget (the gravity well included) reshapes them
+                                let drawn = |a: &Arrangement| a.compute(body).panes.into_iter().map(|(p, r)| (p.id, r)).collect::<Vec<_>>();
+                                assert_eq!(drawn(&n), drawn(&now), "{ctx}: a contents edit moved a Pane on screen");
                             }
-                            assert_sound(&n, body, aspect, committed % 6 == 0, &ctx);
+                            assert_sound(&n, body, committed % 6 == 0, &ctx);
                             hist.push(now.clone());
                             back.push(now.clone());
                             if back.len() > CAP {
@@ -298,7 +295,7 @@ fn random_edit_sequences_keep_every_arrangement_sound() {
                 }
                 // and it still lays out, without a panic or an overlap, at any other size
                 for (w2, h2) in [(40, 10), (90, 30), (250, 80)] {
-                    let c = now.compute_shaped(Rect::new(0, 1, w2, h2), aspect);
+                    let c = now.compute(Rect::new(0, 1, w2, h2));
                     let cells: u32 = c.panes.iter().map(|(_, r)| r.width as u32 * r.height as u32).sum();
                     assert_eq!(cells, w2 as u32 * h2 as u32, "{} {w}x{h} seed {seed} shown at {w2}x{h2}", design.id);
                 }

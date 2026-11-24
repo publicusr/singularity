@@ -1,9 +1,9 @@
 //! The split tree's edits as pure functions, under `Arrangement` (which is what the App edits through): every edit
-//! returns a new tree (or None); `valid` says whether a tree gives every Widget the room it asks for at a terminal
-//! size. Edits name Panes by their identity (`PaneId`), which stays where it is. (D66's drop zones, live reflow and
-//! the dwell went with D87: a drag only moves contents now.)
+//! returns a new tree (or None); `valid` says whether a tree can be shown at a terminal size (every Pane at least the
+//! Pane minimum, whatever it holds). Edits name Panes by their identity (`PaneId`), which stays where it is. (D66's
+//! drop zones, live reflow and the dwell went with D87: a drag only moves contents now.)
 
-use crate::layout::{Axis, MIN_H, MIN_W, Node, Pane, PaneId, Size, WELL_ASPECT, Widget, is_hole};
+use crate::layout::{Axis, MIN_H, MIN_W, Node, Pane, PaneId, Size, Widget};
 use ratatui::layout::Rect;
 
 /// Widgets that can be moved but never closed (D43: every Design keeps them).
@@ -51,9 +51,9 @@ pub fn neighbour(panes: &[(Pane, Rect)], id: PaneId, dir: Side) -> Option<PaneId
 }
 
 impl Node {
-    /// Whether the tree could be shown at `area` as it is: unique Panes and Widgets, sane sizes, every Pane at least
-    /// its minimum (the well and the hole taller than the rest) and the well no wider than its shape allows.
-    pub fn valid(&self, area: Rect, cell_aspect: f64) -> bool {
+    /// Whether the tree could be shown at `area` as it is: unique Panes and Widgets, sane sizes and every Pane at least
+    /// the Pane minimum, whatever it holds (D87, #48: a Widget in too small a Pane says so itself).
+    pub fn valid(&self, area: Rect) -> bool {
         let panes = self.panes();
         let mut ids: Vec<PaneId> = panes.iter().map(|p| p.id).collect();
         ids.sort();
@@ -68,13 +68,8 @@ impl Node {
         if self.min_len(Axis::Horizontal) > area.width || self.min_len(Axis::Vertical) > area.height {
             return false;
         }
-        let out = self.compute_shaped(area, cell_aspect);
-        out.panes.len() == panes.len()
-            && out.panes.iter().all(|(p, r)| {
-                let min_h = if is_hole(p.widget) { crate::layout::WELL_MIN_H } else { MIN_H };
-                let shape = (r.width.saturating_sub(2)) as f64 / ((r.height.saturating_sub(2)).max(1) as f64 * cell_aspect);
-                r.width >= MIN_W && r.height >= min_h && (!p.holds(Widget::Well) || shape <= WELL_ASPECT * 1.05 + 0.12)
-            })
+        let out = self.compute(area);
+        out.panes.len() == panes.len() && out.panes.iter().all(|(_, r)| r.width >= MIN_W && r.height >= MIN_H)
     }
 
     /// Ratios in range and fixed sizes that mean something.
@@ -252,32 +247,27 @@ mod tests {
             m = m.resized(id(&m, W::Library), false, AREA).unwrap_or(m);
         }
         assert_eq!(rect(&m, AREA, W::Library).width, MIN_W);
-        assert!(m.valid(AREA, 2.0));
+        assert!(m.valid(AREA));
     }
 
     #[test]
     fn validity_catches_small_trees_dupes_and_bad_sizes() {
         let n = Node::singularity();
-        assert!(n.valid(AREA, 2.0));
-        assert!(!n.valid(Rect::new(0, 0, 20, 8), 2.0), "no room for this many Panes");
+        assert!(n.valid(AREA));
+        assert!(!n.valid(Rect::new(0, 0, 20, 8)), "no room for this many Panes");
         let dup = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::pane(W::Home), Node::pane(W::Home));
-        assert!(!dup.valid(AREA, 2.0));
+        assert!(!dup.valid(AREA));
         let bad = Node::split(Axis::Horizontal, Size::Ratio(1.5), Node::pane(W::Home), Node::pane(W::Queue));
-        assert!(!bad.valid(AREA, 2.0));
+        assert!(!bad.valid(AREA));
         let nan = Node::split(Axis::Horizontal, Size::Ratio(f32::NAN), Node::pane(W::Home), Node::pane(W::Queue));
-        assert!(!nan.valid(AREA, 2.0));
+        assert!(!nan.valid(AREA));
         let zero = Node::split(Axis::Horizontal, Size::Cells(0), Node::pane(W::Home), Node::pane(W::Queue));
-        assert!(!zero.valid(AREA, 2.0));
-        // the well wants more height than a plain Pane
+        assert!(!zero.valid(AREA));
+        // whatever a Pane holds: a flat gravity well, or one across the whole width, is a valid floor plan (it says
+        // `needs W × H`, or letterboxes its picture)
         let col = |h| Node::split(Axis::Vertical, Size::Cells(h), Node::pane(W::Well), Node::pane(W::Queue));
-        let flat = Node::split(Axis::Horizontal, Size::Ratio(0.3), col(4), Node::pane(W::Home));
-        assert!(!flat.valid(AREA, 2.0));
-        // too wide for its shape, but a split beside it can take the width
-        let ok = Node::split(Axis::Horizontal, Size::Ratio(0.3), col(8), Node::pane(W::Home));
-        assert!(ok.valid(AREA, 2.0));
-        // a well across the whole width has no neighbour to give it to
-        let wide = Node::split(Axis::Vertical, Size::Cells(8), Node::pane(W::Well), Node::pane(W::Home));
-        assert!(!wide.valid(AREA, 2.0));
+        assert!(Node::split(Axis::Horizontal, Size::Ratio(0.3), col(MIN_H), Node::pane(W::Home)).valid(AREA));
+        assert!(Node::split(Axis::Vertical, Size::Cells(8), Node::pane(W::Well), Node::pane(W::Home)).valid(AREA));
     }
 
     #[test]
