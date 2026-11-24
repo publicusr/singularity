@@ -155,21 +155,28 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   border, a split or a close changes those. While the chip moves the Client draws at `visuals.motion_fps` (Settings;
   30–240, default 120: set it to your monitor's refresh rate). Your terminal caps it too: Ghostty follows the
   monitor; in kitty lower `repaint_delay` (and keep `sync_to_monitor`); otherwise see your terminal's repaint
-  settings. `×` in a
+  settings. Dragging a title starts **Arrange mode** (so does Ctrl+K → Arrange, or Arrange in a Pane's menu): the
+  **Tray** takes the player's place at the bottom, each Pane gets ` ⊞ ` (split) and `×` (close), and the bottom line
+  shows the keys and **Done** (or Esc). Drop a Widget on the Tray to set it aside (its Pane stays, empty); drag it from
+  the Tray onto a Pane to put it there (that Pane's Widget waits in the Tray instead). Closing a Pane sends its Widget
+  to the Tray too. `×` on a Widget in the Tray, or Clear Tray, removes them (Home stays). Done waits until Home has a
+  Pane. Each Design keeps its Tray, across restarts; the Tray only shows in Arrange mode. `×` in a
   title closes a Pane. Right-click a Pane's title (or its body, where that has no menu of its own) for its menu:
   Replace widget… opens the Widget picker (type to filter; Widgets not on screen first, those on screen dimmed below a
   line, and picking one swaps the two Panes' Widgets; one too big for the Pane says what it needs), then
   `Split  ←  →  ↑  ↓` (click an arrow; the word Split goes the lit way, the Pane's longer side at first, and ← → move
-  it), Close pane, Move pane. A split makes a new empty Pane on that side and opens the picker on it: pick what it
-  shows, or Esc to leave it empty (it says so); a split and its pick are one undo step. A click on the Widget's
+  it), Close pane, Arrange. A split makes a new empty Pane on that side and opens the picker on it: pick what it
+  shows, or Esc to leave it empty (it says so) and arrange; a split and its pick are one undo step. A click on the Widget's
   name in a title, `w` on the focused Pane, or Ctrl+K → Replace widget… open the picker too (Home's Pane keeps Home).
-  Ctrl+K also has Split left / right / up / down, Close pane, Move pane and Reset design. `m` moves the
+  Ctrl+K also has Split left / right / up / down, Close pane, Arrange, Move pane and Reset design. `m` moves the
   focused Pane's Widget from the keyboard: arrows swap it with the neighbour's, `+` `-` size its Pane, `x` closes it,
   `u` undoes, Enter or Esc ends. Ctrl+Z undoes a layout change and
   Ctrl+Y (or Ctrl+Shift+Z) redoes it; the bar offers "undo" for a few seconds after each one. Home can move but never close (the built-in
   Designs also have the library, the queue and lyrics; your own may let them go: Ctrl+K → Your Library / Queue then
-  opens them as a popup, and focuses their Pane where they have one), and no border drag, split or close can leave a Pane too small. The first edit of a built-in Design asks
-  what to call your Design (Esc keeps one unnamed "Singularity (edited)"); after that it saves itself.
+  opens them as a popup, and focuses their Pane where they have one), and no border drag, split or close can leave a Pane too small. An edit never interrupts you and never
+  changes a built-in Design: it is kept at once as "Singularity (edited)" (outside Arrange mode the bar says so), and
+  Done asks what to call it if you changed something while arranging (Esc keeps it unnamed). Ctrl+K → Save design as…
+  names one any time, Reset design goes back to the built-in one, and a Design of your own saves itself.
 - **Idle**: after 3 minutes without input the black hole drifts over the screen; any key wakes it (and does nothing
   else). Shift+I or `[idle]` in config.toml switches it off or changes the delay.
 - **Listening log** (private, local): every track you hear for 30 s is logged in `~/.local/share/singularity/`, and

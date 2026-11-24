@@ -1,27 +1,36 @@
-//! Arranging in the running Client (D87, ADR 0005): a title drag that moves a Widget onto another Pane, Move mode on
-//! the keyboard, close and split (a split makes an empty Pane on any of the four sides and opens the Widget picker on
-//! it, #39), and what an edit does to the Design on screen (a
-//! built-in Design is never overwritten: the first edit asks for a name; a Design of the user's own saves itself).
-//! The edits themselves are `Arrangement`'s; layout undo is `history`.
+//! Arranging in the running Client (D87, ADR 0005): Arrange mode and the Tray, a title drag that moves a Widget onto
+//! another Pane or the Tray, Move mode on the keyboard, close and split (a split makes an empty Pane on any of the
+//! four sides and opens the Widget picker on it, #39), and what an edit does to the Design on screen. The edits
+//! themselves are `Arrangement`'s; layout undo is `history`.
 //!
-//! A drag only moves contents: while a Widget is held nothing on screen moves but a highlight on the Pane under the
-//! pointer (at once, no dwell, saying what a release would do) and a chip with the Widget's name by the pointer. The
-//! release drops on the Pane under the pointer: the two Widgets swap (or an empty Pane is filled). On its own Pane,
-//! off the Panes, on Esc, or when the release was never heard, the drag ends and nothing changes. Every drop is
-//! allowed: a swap never changes the floor plan.
+//! Arrange mode is a layer (`App::layers`): the Tray strip takes the player's rows and the legend and Done the hints'
+//! row, so no Pane moves when it starts or ends; each Pane's title gets a split and a close button. A title drag
+//! starts it (so a quick swap is one gesture: the mode stays on after the drop), as do the palette's and the Pane
+//! menu's "Arrange", and Esc in a split's Widget picker. Done (or Esc) ends it, once Home has a Pane again.
 //!
-//! Undo and the Design files (owner, 2026-11-01): every committed edit (a drop, close, split, Move mode step, size
-//! step, divider release, Reset design) can be undone, back to 50 edits, for the session. Undo restores the
-//! Arrangement and which Design it was, and the files follow: a Design of the user's gets the restored tree written
-//! to its file (and one that a Reset dropped comes back). Undoing the first edit of a built-in Design returns to the
-//! built-in one: the unnamed "<Design> (edited)" that edit made is removed again (no orphan), while a Design the user
-//! named stays in the picker as saved (it was a deliberate save, like after Reset design). With the naming prompt
-//! still up, undo just closes it: nothing was written yet. A state whose floor plan no longer fits the window is
-//! refused with a notice.
+//! A drag only moves contents: while a Widget is held nothing on screen moves but a highlight on the Pane (or the
+//! Tray) under the pointer (at once, no dwell, saying what a release would do) and a chip with the Widget's name by
+//! the pointer. The release drops there: on a Pane the two Widgets swap (or an empty Pane is filled); on the Tray the
+//! Widget waits there and its Pane is left empty; from the Tray onto a Pane it takes that Pane, whose Widget goes into
+//! the Tray in its place. On its own Pane, off the Panes, on Esc, or when the release was never heard, the drag ends
+//! and nothing changes. Every drop is allowed: no drop changes the floor plan.
+//!
+//! The Design files (owner, Q33): the name prompt never interrupts an edit. An edit to a built-in Design is kept at
+//! once as its one unnamed "<Design> (edited)" (the built-in itself never changes; Reset design goes back): outside
+//! Arrange mode the bar says so ("Kept as …"), and in Arrange mode Done asks for a name, if anything changed. A Design
+//! of the user's own saves itself. Save design as… names one any time.
+//!
+//! Undo (owner, 2026-11-01): every committed edit (a drop, close, split, Tray edit, Move mode step, size step, divider
+//! release, Reset design) can be undone, back to 50 edits, for the session. Undo restores the Arrangement and which
+//! Design it was, and the files follow: a Design of the user's gets the restored tree written to its file (and one
+//! that a Reset dropped comes back). Undoing the first edit of a built-in Design returns to the built-in one: the
+//! unnamed "<Design> (edited)" that edit made is removed again (no orphan), while a Design the user named stays in the
+//! picker as saved (it was a deliberate save, like after Reset design). With Done's name prompt up, undo closes it. A
+//! state whose floor plan no longer fits the window is refused with a notice.
 
 pub mod history;
 
-use crate::app::{Action, App, Hit, Menu, MenuAct, NameFor, Naming, Target};
+use crate::app::{Action, App, Hit, Menu, MenuAct, Modal, NameFor, Naming, Target};
 use crate::design::DESIGNS;
 use crate::arrangement::{Arrangement, Refused};
 use crate::layout::{Divider, Pane, PaneId, Widget, is_hole};
@@ -41,27 +50,40 @@ pub const OFFER: Duration = Duration::from_secs(4);
 pub const CHIP_MAX: u16 = 20;
 const CHIP_GAP: u16 = 2;
 
-/// A Widget held by its Pane's title: where the press was, where the pointer is, and (once it has moved far enough to
-/// be a drag rather than a click) the Pane under the pointer, if it is another one: the one a release drops on.
+/// A Widget held by its Pane's title (or picked up from the Tray): where the press was, where the pointer is, and
+/// (once it has moved far enough to be a drag rather than a click) what is under the pointer: another Pane, or the
+/// Tray: what a release drops on.
 pub struct TileDrag {
-    /// the Pane picked up (its Widget is what moves)
+    /// the Pane picked up (its Widget is what moves); from the Tray, no Pane of the layout's (`PaneId::UNSET`)
     pub pane: Pane,
     from: (u16, u16),
     pub at: (u16, u16),
     pub live: bool,
     /// the Pane under the pointer, other than its own: highlighted, and where a release drops
     pub over: Option<PaneId>,
+    /// the pointer is on the Tray (and the Widget comes from a Pane): highlighted, and a release puts it there
+    pub tray: bool,
+    /// picked up from the Tray
+    pub from_tray: bool,
+}
+
+/// Arrange mode, while it is on: the Arrangement when it began and whether an edit was made since, so Done can
+/// tell whether anything changed, and the first Widget the Tray strip shows (when it holds more than fits).
+pub struct Arranging {
+    since: Arrangement,
+    /// an edit was made in it (previewing other Designs in the picker isn't one)
+    edited: bool,
+    pub tray_first: usize,
 }
 
 /// What undo goes back to: the layout, the Design it was (None: the built-in one) and what its file said about it,
-/// whether the naming prompt of a first edit was up, and the focus.
+/// and the focus.
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     tree: Arrangement,
     name: Option<String>,
     /// (name, design, edited) from the Design's file
     file: Option<(String, String, bool)>,
-    forking: bool,
     focus: Option<PaneId>,
 }
 
@@ -134,8 +156,6 @@ impl App {
     /// Show `tree` in place of the whole layout (a Design, an undo): the Panes of another tree are other Panes, so the
     /// focus stays on the Widget it was on.
     pub fn set_layout(&mut self, tree: impl Into<Arrangement>) {
-        // another layout (a Design, an undo): a naming prompt held back for the old one isn't wanted any more
-        self.name_after_picker = false;
         let was = self.focused();
         self.layout = tree.into();
         self.focus = was.and_then(|w| self.layout.pane_of(w));
@@ -152,7 +172,32 @@ impl App {
     pub fn tile_down(&mut self, id: PaneId, x: u16, y: u16) {
         self.focus = Some(id);
         let pane = self.layout.get(id).unwrap_or(Pane { id, widget: None });
-        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None });
+        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: false });
+    }
+
+    /// A press on Widget `w` in the Tray: a drag takes it onto a Pane.
+    fn tray_down(&mut self, w: Widget, x: u16, y: u16) {
+        if !self.layout.tray().contains(&w) {
+            return;
+        }
+        let pane = Pane { id: PaneId::UNSET, widget: Some(w) };
+        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: true });
+    }
+
+    /// Where the Tray strip is in Arrange mode: the player's rows, under the Panes (so no Pane moves for it).
+    pub fn tray_rect(&self) -> Rect {
+        let b = self.pane_area();
+        Rect::new(b.x, b.bottom(), b.width, 3)
+    }
+
+    /// What a release at (x, y) would drop on, for a Widget held from Pane `own` (or the Tray): the Pane under it
+    /// other than its own, or (for a Pane's Widget) the Tray.
+    fn aim(&self, x: u16, y: u16, own: PaneId, from_tray: bool) -> (Option<PaneId>, bool) {
+        let t = self.tray_rect();
+        if self.arranging.is_some() && x >= t.x && x < t.right() && y >= t.y && y < t.bottom() {
+            return (None, !from_tray);
+        }
+        (self.pane_under(x, y).filter(|p| *p != own), false)
     }
 
     /// The Pane under (x, y), in the layout as it is drawn.
@@ -190,18 +235,21 @@ impl App {
     }
 
     /// The pointer at (x, y) with the button down: past a few cells it is a drag (an empty Pane has nothing to carry),
-    /// and the Pane under it is the one highlighted, at once.
+    /// which turns Arrange mode on, and what is under it is the one highlighted, at once.
     fn tile_move(&mut self, x: u16, y: u16) {
         let Some(t) = self.tile.as_ref() else { return };
         if !t.live && (x.abs_diff(t.from.0) < 3 && y.abs_diff(t.from.1) < 2 || t.pane.widget.is_none()) {
             return;
         }
-        let own = t.pane.id;
-        let over = self.pane_under(x, y).filter(|p| *p != own);
+        let (own, from_tray) = (t.pane.id, t.from_tray);
+        // on while the Widget is held, and after the drop: a quick swap stays one gesture (D87)
+        self.enter_arrange();
+        let (over, tray) = self.aim(x, y, own, from_tray);
         if let Some(t) = self.tile.as_mut() {
             t.live = true;
             t.at = (x, y);
             t.over = over;
+            t.tray = tray;
         }
     }
 
@@ -210,25 +258,32 @@ impl App {
     pub fn window_resized(&mut self, w: u16, h: u16) {
         // the top bar above, the player (3 rows) and the hints below: as `ui::draw` lays them out
         self.body = Rect::new(0, 1, w, h.saturating_sub(5));
+        self.mini = crate::mini::wanted(Rect::new(0, 0, w, h));
         self.tile_resized();
     }
 
     /// The window changed size while a Widget is held: the Panes moved under the pointer, so the one under it is found
     /// again (#21: a release dropped on a Pane of the old window).
     pub fn tile_resized(&mut self) {
-        let Some((own, (x, y))) = self.tile.as_ref().filter(|t| t.live).map(|t| (t.pane.id, t.at)) else { return };
-        let over = self.pane_under(x, y).filter(|p| *p != own);
+        let Some((own, from_tray, (x, y))) = self.tile.as_ref().filter(|t| t.live).map(|t| (t.pane.id, t.from_tray, t.at)) else { return };
+        let (over, tray) = self.aim(x, y, own, from_tray);
         if let Some(t) = self.tile.as_mut() {
             t.over = over;
+            t.tray = tray;
         }
     }
 
-    /// Let go at (x, y): on another Pane the two Widgets swap (an empty one is filled); anywhere else nothing changes.
+    /// Let go at (x, y): on another Pane the two Widgets swap (an empty one is filled); on the Tray the Widget waits
+    /// there; from the Tray onto a Pane it takes the Pane (its Widget goes into the Tray). Anywhere else nothing changes.
     fn tile_up(&mut self, x: u16, y: u16) {
         let Some(t) = self.tile.as_ref() else { return };
         if !t.live {
-            let (id, from, w) = (t.pane.id, t.from, t.pane.widget);
+            let (id, from, w, from_tray) = (t.pane.id, t.from, t.pane.widget, t.from_tray);
             self.tile = None;
+            // a click on a Widget in the Tray does nothing
+            if from_tray {
+                return;
+            }
             // a click on the Widget's name: the Widget picker (D87)
             if self.hit_at(from.0, from.1) == Some(Hit::TitleName(id)) {
                 return self.open_widget_picker(id);
@@ -242,10 +297,17 @@ impl App {
         // the release's own cell is the last word (a finger slips as it lifts; moves can come combined)
         self.tile_move(x, y);
         let Some(t) = self.tile.take() else { return };
-        let Some(to) = t.over else { return };
-        match self.layout.swap(t.pane.id, to) {
-            Ok(a) => {
-                self.focus = Some(to);
+        let edit = match (t.from_tray, t.pane.widget, t.over) {
+            (true, Some(w), Some(to)) => self.layout.out_of_tray(w, to).map(|a| (a, Some(to))),
+            (false, _, _) if t.tray => self.layout.to_tray(t.pane.id).map(|a| (a, None)),
+            (false, _, Some(to)) => self.layout.swap(t.pane.id, to).map(|a| (a, Some(to))),
+            _ => return,
+        };
+        match edit {
+            Ok((a, to)) => {
+                if to.is_some() {
+                    self.focus = to;
+                }
                 self.commit_layout(a);
             }
             Err(e) => self.refused(e),
@@ -283,7 +345,7 @@ impl App {
     pub fn grip_lit(&self) -> Option<usize> {
         match &self.drag {
             Some(Hit::Divider(i)) => Some(*i),
-            _ if self.tile.is_none() && self.modal().is_none() => self.grip_hover,
+            _ if self.tile.is_none() && matches!(self.modal(), None | Some(Modal::Arrange)) => self.grip_hover,
             _ => None,
         }
     }
@@ -342,8 +404,7 @@ impl App {
 
     fn snapshot(&self) -> Snapshot {
         let file = self.layout_name.as_ref().and_then(|id| self.saved_layouts.iter().find(|s| s.id == *id)).map(|s| (s.name.clone(), s.design.clone(), s.edited));
-        let forking = self.naming().is_some_and(|n| n.purpose == NameFor::Fork);
-        Snapshot { tree: self.layout.clone(), name: self.layout_name.clone(), file, forking, focus: self.focus }
+        Snapshot { tree: self.layout.clone(), name: self.layout_name.clone(), file, focus: self.focus }
     }
 
     /// An edit replaced `was`: undo can go back to it, and the bar offers that for a few seconds.
@@ -389,7 +450,7 @@ impl App {
     /// Put `s` back on screen, and its Design's file with it.
     fn restore(&mut self, s: Snapshot) {
         let was = self.layout_name.clone().and_then(|id| self.saved_layouts.iter().find(|x| x.id == id).cloned());
-        // the first edit's naming prompt: nothing was written yet, and the edit is going
+        // Done's name prompt: the changes it would name are going
         if self.naming().is_some_and(|n| n.purpose == NameFor::Fork) {
             self.close_if_open(crate::app::Modal::Naming);
         }
@@ -423,30 +484,197 @@ impl App {
                     }
                     None => {}
                 }
-                // redoing a first edit asks for its name again
-                if s.forking {
-                    self.edited();
-                }
             }
         }
     }
 
     /// The layout was edited. A Design of the user's own (or the unnamed edit of a built-in one) follows in its file;
-    /// the first edit of a built-in Design asks what to call the Design it makes.
+    /// an edit of a built-in Design is kept at once as its "<Design> (edited)", never asking (Q33): outside Arrange
+    /// mode the bar says so, and in Arrange mode Done asks for a name.
     pub fn edited(&mut self) {
-        // (the naming prompt a split's picker held back is this one)
-        self.name_after_picker = false;
+        if let Some(a) = self.arranging.as_mut() {
+            a.edited = true;
+        }
         let own = self.layout_name.clone().and_then(|id| self.saved_layouts.iter().find(|s| s.id == id).cloned());
         match own {
             Some(s) => self.write_layout(&s.id, &s.name, &s.design, s.edited),
             None => {
                 self.layout_name = None;
-                if self.layouts_dir.is_some() && self.naming().is_none() {
-                    let name = self.suggest_name();
-                    self.open_popup(crate::app::Popup::Naming(Naming::fork(name)));
+                if self.layouts_dir.is_some() {
+                    self.keep_edited();
+                    if self.arranging.is_none() && self.layout_name.is_some() {
+                        self.say(format!("Kept as {} (edited)", DESIGNS[self.design].name));
+                    }
                 }
             }
         }
+    }
+
+    /// Whether the Design on screen is the unnamed "<Design> (edited)" of a built-in one.
+    fn on_edited_copy(&self) -> bool {
+        self.layout_name.as_ref().is_some_and(|id| self.saved_layouts.iter().any(|s| s.id == *id && s.edited))
+    }
+
+    /// The unnamed "<Design> (edited)" on screen got a name (Done's prompt): its file goes, the named one has it all.
+    pub fn named_edited_copy(&mut self, was: Option<String>) {
+        let Some(id) = was.filter(|id| self.layout_name.as_ref() != Some(id) && self.saved_layouts.iter().any(|s| s.id == *id && s.edited)) else { return };
+        if let Some(dir) = &self.layouts_dir {
+            let _ = std::fs::remove_file(dir.join(format!("{id}.toml")));
+        }
+        self.reload_layouts();
+    }
+
+    // ── Arrange mode ──────────────────────────────────────────────────
+
+    /// Arrange mode on (the palette's and the Pane menu's "Arrange", a title drag, Esc in a split's picker).
+    pub fn enter_arrange(&mut self) {
+        if self.arranging.is_none() {
+            self.move_mode = None;
+            self.arranging = Some(Arranging { since: self.layout.clone(), edited: false, tray_first: 0 });
+        }
+    }
+
+    /// Before each frame: Home always has a Pane outside Arrange mode. A Design whose Home waits in the Tray (one left
+    /// that way when the app quit) comes up in Arrange mode, where Done waits for it.
+    pub fn arrange_if_homeless(&mut self) {
+        // (not while the Design picker previews one: a preview isn't a Design you have)
+        if self.arranging.is_none() && self.picker().is_none() && self.layout.unplaced().is_some() {
+            self.enter_arrange();
+        }
+    }
+
+    /// What keeps Done unavailable: "Home still needs a Pane", while it waits in the Tray.
+    pub fn done_blocked(&self) -> Option<String> {
+        let w = self.layout.unplaced()?;
+        let name = crate::ui::pane_name(self.design, w);
+        let mut c = name.chars();
+        let name = c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default();
+        Some(format!("{name} still needs a Pane"))
+    }
+
+    /// Done (or Esc): Arrange mode ends, once Home has a Pane. If anything changed in it and the changes went to a
+    /// built-in Design's "<Design> (edited)", the name prompt comes now (Esc keeps it unnamed).
+    pub fn arrange_done(&mut self) {
+        if self.done_blocked().is_some() {
+            return;
+        }
+        let Some(a) = self.arranging.take() else { return };
+        self.tile = None;
+        let changed = a.edited && a.since != self.layout;
+        if changed && self.on_edited_copy() && self.naming().is_none() {
+            let name = self.suggest_name();
+            self.open_popup(crate::app::Popup::Naming(Naming::fork(name)));
+        }
+    }
+
+    /// Keys in Arrange mode (the shortcuts with Ctrl or Alt work as everywhere): Esc is Done, and the playback keys
+    /// work as ever (the player bar is the Tray's meanwhile); no Pane takes keys.
+    pub fn arrange_key(&mut self, k: KeyEvent) {
+        if k.code == KeyCode::Esc {
+            return self.arrange_done();
+        }
+        use Action::*;
+        if let Some(a) = self.keymap.action(k).filter(|a| matches!(a, TogglePlay | Next | Previous | SeekForward | SeekBack | SeekForwardFine | SeekBackFine | VolumeUp | VolumeDown | Shuffle | Repeat | Like)) {
+            self.run(a);
+        }
+    }
+
+    /// The Tray strip scrolled `by` Widgets (the wheel, its ‹ ›).
+    pub fn tray_scroll(&mut self, by: i32) {
+        let Some(now) = self.arranging.as_ref().map(|a| a.tray_first) else { return };
+        let want = (now as i64 + by as i64).max(0) as usize;
+        // no further than the last start that still fills the strip
+        let first = tray_layout(self, self.tray_rect(), want).first;
+        if let Some(a) = self.arranging.as_mut() {
+            a.tray_first = first;
+        }
+    }
+
+    /// The `×` of Widget `w` in the Tray: it is removed (Home never; one already gone: nothing).
+    fn tray_remove(&mut self, w: Widget) {
+        if !self.layout.tray().contains(&w) {
+            return;
+        }
+        match self.layout.remove_from_tray(w) {
+            Ok(a) => self.commit_layout(a),
+            Err(e) => self.refused(e),
+        }
+    }
+
+    /// Clear Tray: what's in it is removed, but Home.
+    fn clear_tray(&mut self) {
+        let a = self.layout.clear_tray();
+        if a != self.layout {
+            self.commit_layout(a);
+        }
+    }
+
+    /// A mouse event in Arrange mode (on top of everything but popups): title drags, dividers, a Pane's split and
+    /// close buttons, the Tray and Done; a right click opens the Pane's menu; the wheel scrolls the Tray. Nothing else
+    /// in the Panes takes a click (a click focuses the Pane).
+    pub(crate) fn arrange_pointer(&mut self, m: MouseEvent, coarse: bool) {
+        if self.tile.is_some() {
+            return self.tile_pointer(m);
+        }
+        let (x, y) = (m.column, m.row);
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => match self.hit_at(x, y) {
+                Some(Hit::Title(p) | Hit::TitleName(p)) => self.tile_down(p, x, y),
+                Some(Hit::Close(p)) => self.close_pane(p),
+                Some(Hit::SplitPane(p)) => {
+                    let side = self.default_split(p);
+                    self.split_pane(p, side);
+                }
+                Some(Hit::Divider(i)) => self.grab_divider(i, x, y),
+                Some(Hit::TrayItem(w)) => self.tray_down(w, x, y),
+                Some(Hit::TrayRemove(w)) => self.tray_remove(w),
+                Some(Hit::ClearTray) => self.clear_tray(),
+                Some(Hit::TrayScroll(d)) => self.tray_scroll(d),
+                Some(Hit::ArrangeDone) => self.arrange_done(),
+                Some(Hit::Action(a @ (Action::UndoLayout | Action::RedoLayout))) => self.run(a),
+                _ => {
+                    if let Some(p) = self.pane_under(x, y) {
+                        self.focus = Some(p);
+                    }
+                }
+            },
+            MouseEventKind::Down(MouseButton::Right) => {
+                if let Some(p) = self.pane_under(x, y) {
+                    self.open_pane_menu(p, Some((x, y)));
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(Hit::Divider(i)) = self.drag.clone()
+                    && let Some(d) = self.dividers.get(i).cloned()
+                {
+                    let pos = if d.axis == crate::layout::Axis::Vertical { y } else { x };
+                    self.drag_divider(&d, (pos as i32 + self.drag_offset).max(0) as u16);
+                }
+            }
+            MouseEventKind::Up(_) => {
+                if self.drag.take().is_some() {
+                    self.divider_released();
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let rows = if m.kind == MouseEventKind::ScrollUp { -1 } else { 1 };
+                self.modal_scroll(Modal::Arrange, rows * if coarse { 10 } else { 1 });
+            }
+            _ => {}
+        }
+    }
+
+    /// A press on divider `i`'s grip at (x, y): it follows the pointer until the release.
+    pub(crate) fn grab_divider(&mut self, i: usize, x: u16, y: u16) {
+        self.divider_from = Some(self.layout.clone());
+        if let Some(d) = self.dividers.get(i) {
+            let (boundary, grab) = match d.axis {
+                crate::layout::Axis::Horizontal => (d.grip.x + 1, x),
+                crate::layout::Axis::Vertical => (d.grip.y + 1, y),
+            };
+            self.drag_offset = boundary as i32 - grab as i32;
+        }
+        self.drag = Some(Hit::Divider(i));
     }
 
     /// "Singularity 2", "Singularity 3"…: the first not taken by a Design of the user's.
@@ -522,8 +750,13 @@ impl App {
         if self.move_mode == Some(id) {
             self.move_mode = None;
         }
+        let built_in = self.layout_name.is_none();
         self.commit_layout(tree);
-        self.say(format!("Closed {name}"));
+        // (the bar's one line: what the edit did, and where a built-in Design's edit went)
+        match built_in && self.layout_name.is_some() && self.arranging.is_none() {
+            true => self.say(format!("Closed {name} · kept as {} (edited)", DESIGNS[self.design].name)),
+            false => self.say(format!("Closed {name}")),
+        }
     }
 
     /// What Pane `p` is called on screen (its Widget's title; an empty Pane is "an empty pane").
@@ -549,17 +782,11 @@ impl App {
         };
         let Some(new) = tree.panes().into_iter().map(|p| p.id).find(|id| !self.layout.contains(*id)) else { return };
         self.commit_layout(tree);
-        // the first edit of a built-in Design asks for a name: after the picker, so the two don't fight over the top
-        let naming = self.naming().is_some_and(|n| n.purpose == NameFor::Fork);
-        if naming {
-            self.close_if_open(crate::app::Modal::Naming);
-        }
         self.focus = Some(new);
         self.open_widget_picker(new);
         if let Some(p) = self.widget_picker_mut() {
             p.after_split = true;
         }
-        self.name_after_picker = naming;
     }
 
     /// The side a split of Pane `id` takes unless told otherwise: along its longer side in real proportions (wider than
@@ -590,9 +817,8 @@ impl App {
         if !crate::arrangement::required(self.layout.widget_in(id)) {
             items.push(("Close pane".into(), MenuAct::ClosePane));
         }
-        // an empty Pane has nothing to move
-        if self.layout.widget_in(id).is_some() {
-            items.push(("Move pane".into(), MenuAct::MovePane));
+        if self.arranging.is_none() {
+            items.push(("Arrange".into(), MenuAct::Arrange));
         }
         self.focus = Some(id);
         self.open_popup(crate::app::Popup::Menu(Menu { at: at.unwrap_or((0, 0)), target: Target::Pane(id), items, selected: 0 }));
@@ -603,7 +829,7 @@ impl App {
         match act {
             MenuAct::ReplaceWidget => self.open_widget_picker(id),
             MenuAct::Split(side) => self.split_pane(id, side),
-            MenuAct::MovePane => self.start_move(),
+            MenuAct::Arrange => self.enter_arrange(),
             MenuAct::ClosePane => self.close_pane(id),
             _ => {}
         }
@@ -733,6 +959,154 @@ pub fn draw_move_hint(buf: &mut Buffer, r: Rect, name: &str, said: Option<&str>,
         None => ("←↑↓→ swap · + − size · x close · u undo · Enter done", th.s(th.dim)),
     };
     text(buf, r.x + w + 2, r.y, r.width.saturating_sub(w + 3), line, st);
+}
+
+/// Where the parts of the Tray strip go: each Widget shown (its place in the Tray, its chip, its × unless it is
+/// Home), the ‹ › while they don't all fit, Clear Tray, and the first Widget shown.
+pub struct TrayLayout {
+    pub items: Vec<(usize, Rect, Option<Rect>)>,
+    pub prev: Option<Rect>,
+    pub next: Option<Rect>,
+    pub clear: Option<Rect>,
+    pub first: usize,
+}
+
+/// A Widget's chip in the Tray: its grip and name.
+fn tray_chip(name: &str) -> String {
+    format!(" ⠿ {name} ")
+}
+
+/// The Tray strip at `r` (three rows: its frame round one row of Widgets), from Widget `first` on, or as near it as
+/// still fills the row: when they don't all fit, ‹ › at the ends scroll it.
+pub fn tray_layout(app: &App, r: Rect, first: usize) -> TrayLayout {
+    let tray = app.layout.tray();
+    let y = r.y + 1;
+    let (x0, x1) = (r.x + 2, r.right().saturating_sub(2));
+    let width = |w: Widget| tray_chip(&crate::ui::pane_name(app.design, w)).chars().count() as u16 + if crate::arrangement::required(Some(w)) { 0 } else { 2 };
+    let widths: Vec<u16> = tray.iter().map(|w| width(*w)).collect();
+    let all: u16 = widths.iter().map(|w| w + 1).sum();
+    let over = all > x1.saturating_sub(x0) + 1;
+    let (from, to) = if over { (x0 + 2, x1.saturating_sub(2)) } else { (x0, x1) };
+    // the last place to start from that still fills the row
+    let mut last = tray.len().saturating_sub(1);
+    let mut used = 0;
+    for (i, w) in widths.iter().enumerate().rev() {
+        used += w + 1;
+        if used > to.saturating_sub(from) + 1 {
+            break;
+        }
+        last = i;
+    }
+    let first = if over { first.min(last) } else { 0 };
+    let mut items = vec![];
+    let mut x = from;
+    for (i, w) in tray.iter().enumerate().skip(first) {
+        let cw = width(*w);
+        if x + cw > to {
+            break;
+        }
+        let chip = tray_chip(&crate::ui::pane_name(app.design, *w)).chars().count() as u16;
+        let close = (!crate::arrangement::required(Some(*w))).then(|| Rect::new(x + chip, y, 2, 1));
+        items.push((i, Rect::new(x, y, chip, 1), close));
+        x += cw + 1;
+    }
+    let shown_to = items.last().map_or(first, |(i, ..)| *i + 1);
+    let prev = (over && first > 0).then(|| Rect::new(x0, y, 1, 1));
+    let next = (over && shown_to < tray.len()).then(|| Rect::new(x1.saturating_sub(1), y, 1, 1));
+    let clear_label = " Clear Tray ";
+    let clear = tray.iter().any(|w| !crate::arrangement::required(Some(*w))).then(|| Rect::new(r.right().saturating_sub(clear_label.chars().count() as u16 + 2), r.y, clear_label.chars().count() as u16, 1));
+    TrayLayout { items, prev, next, clear, first }
+}
+
+/// The Tray strip (Arrange mode, where the player was): what waits there, each with its ×, Clear Tray, and while a
+/// Pane's Widget is held over it, lit with what a release does.
+pub fn draw_tray(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
+    use ratatui::widgets::{Block, Borders, Widget as _};
+    if r.height < 3 || r.width < 20 {
+        return;
+    }
+    let lit = app.tile.as_ref().is_some_and(|t| t.live && t.tray);
+    let border = if lit { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.border) };
+    Block::default().borders(Borders::ALL).border_set(th.borders).border_style(border).title(ratatui::text::Span::styled(" Tray ", th.s(th.accent))).style(th.base()).render(r, buf);
+    let first = app.arranging.as_ref().map_or(0, |a| a.tray_first);
+    let l = tray_layout(app, r, first);
+    if let Some(a) = app.arranging.as_mut() {
+        a.tray_first = l.first;
+    }
+    let tray = app.layout.tray().to_vec();
+    if tray.is_empty() {
+        let s = "drop a Widget here to set it aside";
+        text(buf, r.x + 2, r.y + 1, r.width.saturating_sub(4), s, th.s(th.dim));
+    }
+    for (i, chip, close) in &l.items {
+        let name = crate::ui::pane_name(app.design, tray[*i]);
+        text(buf, chip.x, chip.y, chip.width, &tray_chip(&name), th.chip(th.accent2));
+        app.hit(*chip, Hit::TrayItem(tray[*i]));
+        if let Some(c) = close {
+            text(buf, c.x, c.y, c.width, "× ", th.s(th.dim));
+            app.hit(Rect::new(c.x, c.y, 1, 1), Hit::TrayRemove(tray[*i]));
+        }
+    }
+    for (a, glyph, d) in [(l.prev, "‹", -1), (l.next, "›", 1)] {
+        if let Some(a) = a {
+            text(buf, a.x, a.y, 1, glyph, th.s(th.accent));
+            app.hit(a, Hit::TrayScroll(d));
+        }
+    }
+    if let Some(c) = l.clear {
+        text(buf, c.x, c.y, c.width, " Clear Tray ", th.s(th.dim));
+        app.hit(c, Hit::ClearTray);
+    }
+    if lit {
+        let label = " set aside here ";
+        let w = label.chars().count() as u16;
+        text(buf, r.x + r.width.saturating_sub(w) / 2, r.bottom() - 1, w, label, th.chip(th.accent));
+    }
+}
+
+/// Arrange mode's line at the bottom: its keys and gestures, then Done (unavailable, saying why, while Home waits in
+/// the Tray).
+pub fn draw_legend(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
+    blank(buf, r.x, r.y, r.width, th.base());
+    let tag = " ARRANGE ";
+    let tw = tag.chars().count() as u16;
+    text(buf, r.x + 1, r.y, tw, tag, th.chip(th.accent));
+    let done = " Done ";
+    let dw = done.chars().count() as u16;
+    let dx = r.right().saturating_sub(dw + 1);
+    let blocked = app.done_blocked();
+    let mut end = dx;
+    match &blocked {
+        Some(why) => {
+            let ww = why.chars().count() as u16;
+            let wx = dx.saturating_sub(ww + 2);
+            text(buf, wx, r.y, ww, why, th.s(th.accent2));
+            text(buf, dx, r.y, dw, done, th.s(th.dim));
+            end = wx;
+        }
+        None => text(buf, dx, r.y, dw, done, th.chip(th.accent)),
+    }
+    app.hit(Rect::new(dx, r.y, dw, 1), Hit::ArrangeDone);
+    let key = |a| app.keymap.label(a);
+    let mut parts = vec!["drag a title onto a Pane or the Tray".to_string(), "⊞ split".into(), "× close".into()];
+    for (a, what) in [(Action::UndoLayout, "undo"), (Action::RedoLayout, "redo")] {
+        let k = key(a);
+        if !k.is_empty() {
+            parts.push(format!("{k} {what}"));
+        }
+    }
+    parts.push("Esc done".into());
+    let x = r.x + tw + 2;
+    let room = end.saturating_sub(x + 1) as usize;
+    // as many as fit, whole, from the end's (the keys) back to the gestures
+    let mut line = parts.join(" · ");
+    while line.chars().count() > room && parts.len() > 1 {
+        parts.remove(0);
+        line = parts.join(" · ");
+    }
+    if line.chars().count() <= room {
+        text(buf, x, r.y, room as u16, &line, th.s(th.dim));
+    }
 }
 
 /// For a few seconds after a layout edit, the bar's right end offers to undo it (after an undo, to redo it).

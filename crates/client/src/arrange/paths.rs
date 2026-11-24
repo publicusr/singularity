@@ -58,8 +58,8 @@ struct Frame {
     t: f64,
     held: bool,
     /// the Pane highlighted, and the one under the pointer by the geometry (other than the held Widget's own)
-    over: Option<PaneId>,
-    under: Option<PaneId>,
+    over: Option<Spot>,
+    under: Option<Spot>,
     /// where every Pane is drawn, and the size it is drawn at
     rects: Vec<(PaneId, Rect)>,
     body: Rect,
@@ -67,14 +67,30 @@ struct Frame {
     fits: bool,
 }
 
+/// Where a release drops: a Pane, or the Tray.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Spot {
+    Pane(PaneId),
+    Tray,
+}
+
+impl Spot {
+    /// What a held Widget highlights.
+    fn of(t: &crate::arrange::TileDrag) -> Option<Spot> {
+        if t.tray { Some(Spot::Tray) } else { t.over.map(Spot::Pane) }
+    }
+}
+
 /// One hold that ended: the Arrangement before, how it ended (a release heard at a cell, and the Pane under that
 /// cell other than the held one's own, by the geometry; or not a release), the Pane held, and the Arrangement after.
 struct Drop {
     before: Arrangement,
-    released: Option<Option<PaneId>>,
+    released: Option<Option<Spot>>,
     /// the highlight as the release found it, if the release came on the cell of the last move
-    shown: Option<Option<PaneId>>,
+    shown: Option<Option<Spot>>,
     held: PaneId,
+    /// the Widget, when it was picked up from the Tray (no Pane of its own: `held` is `PaneId::UNSET`)
+    from_tray: Option<Widget>,
     after: Arrangement,
 }
 
@@ -133,10 +149,15 @@ impl Replay {
         self.drawn = Some(self.a.layout.clone());
     }
 
-    /// The Pane under (x, y) by the geometry alone, other than `own`.
-    fn under(&self, x: u16, y: u16, own: PaneId) -> Option<PaneId> {
+    /// What is under (x, y) by the geometry alone: a Pane other than `own`, or the Tray (Arrange mode's strip where
+    /// the player was).
+    fn under(&self, x: u16, y: u16, own: PaneId) -> Option<Spot> {
+        let t = Rect::new(0, self.a.pane_area().bottom(), self.a.pane_area().width, 3);
+        if self.a.arranging.is_some() && own != PaneId::UNSET && x < t.right() && y >= t.y && y < t.bottom() {
+            return Some(Spot::Tray);
+        }
         let c = self.a.layout.compute(self.a.pane_area());
-        c.panes.iter().find(|(_, r)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom()).map(|(p, _)| p.id).filter(|p| *p != own)
+        c.panes.iter().find(|(_, r)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom()).map(|(p, _)| p.id).filter(|p| *p != own).map(Spot::Pane)
     }
 
     /// A frame due at `due`: the move that waited for it, then it is drawn.
@@ -159,7 +180,7 @@ impl Replay {
         let t = self.a.tile.as_ref().filter(|t| t.live);
         let under = t.and_then(|t| self.under(t.at.0, t.at.1, t.pane.id));
         let ms = self.ms(due);
-        self.frames.push(Frame { t: ms, held: t.is_some(), over: t.and_then(|t| t.over), under, rects, body: area, fits });
+        self.frames.push(Frame { t: ms, held: t.is_some(), over: t.and_then(Spot::of), under, rects, body: area, fits });
     }
 
     /// Frames up to `until`, each when the pacer says it is due.
@@ -178,13 +199,13 @@ impl Replay {
     /// One event handled, as `main.rs`'s `handle` does; a hold it ends is recorded with how it ended.
     fn handle(&mut self, at: Instant, ev: Event) {
         self.a.input_at = Some(at);
-        let held = self.a.tile.as_ref().filter(|t| t.live).map(|t| (t.pane.id, t.over));
+        let held = self.a.tile.as_ref().filter(|t| t.live).map(|t| (t.pane.id, Spot::of(t), t.pane.widget.filter(|_| t.from_tray)));
         let before = self.a.layout.clone();
         match ev {
             Event::Mouse(m) => {
                 let up = m.kind == MouseEventKind::Up(MouseButton::Left);
-                let released = held.filter(|_| up).map(|(own, _)| self.under(m.column, m.row, own));
-                let shown = held.filter(|_| up && self.last_drag == Some((m.column, m.row))).map(|(_, over)| over);
+                let released = held.filter(|_| up).map(|(own, ..)| self.under(m.column, m.row, own));
+                let shown = held.filter(|_| up && self.last_drag == Some((m.column, m.row))).map(|(_, over, _)| over);
                 if m.kind == MouseEventKind::Drag(MouseButton::Left) {
                     self.last_drag = Some((m.column, m.row));
                 }
@@ -192,8 +213,8 @@ impl Replay {
                 if let (MouseEventKind::Down(MouseButton::Left), Some(Hit::Divider(i))) = (m.kind, &self.a.drag) {
                     self.divider = Some(*i);
                 }
-                if let Some((own, _)) = held.filter(|_| self.a.tile.is_none()) {
-                    self.drops.push(Drop { before, released, shown, held: own, after: self.a.layout.clone() });
+                if let Some((own, _, from_tray)) = held.filter(|_| self.a.tile.is_none()) {
+                    self.drops.push(Drop { before, released, shown, held: own, from_tray, after: self.a.layout.clone() });
                 }
             }
             Event::FocusLost => self.a.pointer_gone(),
@@ -268,8 +289,12 @@ impl Replay {
         // a release drops on the Pane under it, which is the one highlighted at release: the two Widgets swap and the
         // floor plan stays; a hold that ended any other way (Esc, unheard, on its own Pane, off the Panes) changes nothing
         for (i, d) in self.drops.iter().enumerate() {
-            let want = match d.released {
-                Some(Some(to)) => d.before.swap(d.held, to).unwrap_or_else(|e| panic!("{what}: drop {i} refused: {e:?}")),
+            let want = match (d.released, d.from_tray) {
+                // from the Tray onto a Pane: it takes the Pane, whose Widget waits in its place
+                (Some(Some(Spot::Pane(to))), Some(w)) => d.before.out_of_tray(w, to).unwrap_or_else(|e| panic!("{what}: drop {i} refused: {e:?}")),
+                (_, Some(_)) => d.before.clone(),
+                (Some(Some(Spot::Pane(to))), None) => d.before.swap(d.held, to).unwrap_or_else(|e| panic!("{what}: drop {i} refused: {e:?}")),
+                (Some(Some(Spot::Tray)), None) => d.before.to_tray(d.held).unwrap_or_else(|e| panic!("{what}: drop {i} refused: {e:?}")),
                 _ => d.before.clone(),
             };
             assert_eq!(d.after, want, "{what}: drop {i} landed somewhere other than the Pane under the release");
@@ -466,11 +491,17 @@ fn held(r: &Replay) -> Widget {
 /// `shape` played on every Design with a mouse and a trackpad, at every frame rate and with moves combined or not,
 /// each checked; the replays come back for what a test checks on top.
 fn every_way(name: &str, shape: impl Fn(&Replay, &mut Hand)) -> Vec<(String, Replay)> {
+    every_way_from(name, |_| {}, shape)
+}
+
+/// `every_way`, from a start `setup` makes (the Design on screen before the path).
+fn every_way_from(name: &str, setup: impl Fn(&mut Replay), shape: impl Fn(&Replay, &mut Hand)) -> Vec<(String, Replay)> {
     let mut out = vec![];
     for (design, d) in DESIGNS.iter().enumerate() {
         for (dev, kind) in [(MOUSE, "mouse"), (TRACKPAD, "trackpad")] {
             for (seed, &(fps, combine)) in RIGS.iter().enumerate() {
                 let mut r = Replay::new(design, fps, combine);
+                setup(&mut r);
                 let mut h = Hand::new(dev, seed as u64 + 1, 10.0);
                 shape(&r, &mut h);
                 let path = h.done();
@@ -493,6 +524,49 @@ fn swapped_with(r: &Replay, w: Widget) -> Arrangement {
 /// The Pane showing `w` in `n`.
 fn pid(n: &Node, w: Widget) -> PaneId {
     n.pane_of(w).unwrap_or_else(|| panic!("no Pane shows {w}"))
+}
+
+/// Arrange mode on, with the Widget a path would hold waiting in the Tray (its Pane left empty).
+fn from_the_tray(r: &mut Replay) {
+    let w = held(r);
+    r.a.enter_arrange();
+    r.a.layout = r.a.layout.to_tray(pid(&r.a.layout, w)).unwrap();
+    r.start = r.a.layout.clone();
+    r.render();
+}
+
+/// Where the chip of the Widget waiting in the Tray was drawn.
+fn tray_chip(r: &Replay) -> (f64, f64) {
+    let rect = r.a.hits.iter().find_map(|(rect, h)| matches!(h, Hit::TrayItem(_)).then_some(*rect)).expect("a chip in the Tray");
+    (rect.x as f64 + rect.width as f64 / 2.0, rect.y as f64)
+}
+
+#[test]
+fn a_widget_dragged_from_the_tray_lands_on_the_pane_under_the_release() {
+    // onto an occupied Pane (its Widget goes into the Tray), onto its own empty Pane (it fills it), and back onto the
+    // Tray (nothing changes)
+    for target in ["occupied", "empty", "tray"] {
+        for (what, r) in every_way_from(&format!("from the Tray onto {target}"), from_the_tray, |r, h| {
+            let (x, y) = tray_chip(r);
+            let to = match target {
+                "occupied" => centre(r.rect(Widget::Home)),
+                "empty" => {
+                    let empty = r.a.layout.panes().into_iter().find(|p| p.widget.is_none()).unwrap().id;
+                    let rect = r.a.layout.compute(r.a.pane_area()).rect(empty).unwrap();
+                    centre(rect)
+                }
+                _ => (x + 30.0, y),
+            };
+            h.press(x as u16, y as u16).glide(to.0, to.1, 250.0).rest(60.0).release();
+        }) {
+            let w = r.start.tray()[0];
+            match target {
+                "occupied" => assert!(r.a.layout.pane_of(w).is_some() && r.a.layout.tray() == [Widget::Home], "{what}: {:?}", r.a.layout),
+                "empty" => assert!(r.a.layout.pane_of(w).is_some() && r.a.layout.tray().is_empty(), "{what}"),
+                _ => assert_eq!(r.a.layout, r.start, "{what}: nothing changes"),
+            }
+        }
+    }
 }
 
 #[test]
@@ -612,16 +686,23 @@ fn a_release_the_client_never_heard_changes_nothing() {
 }
 
 #[test]
-fn letting_go_over_the_top_bar_or_the_player_changes_nothing() {
-    for top in [true, false] {
-        let y_out = if top { 0.0 } else { H as f64 - 2.0 };
-        for (what, r) in every_way(if top { "let go over the top bar" } else { "let go over the player" }, |r, h| {
+fn letting_go_over_the_top_bar_changes_nothing_and_over_the_tray_sets_it_aside() {
+    for (y_out, name) in [(0.0, "the top bar"), (H as f64 - 3.0, "the Tray")] {
+        for (what, r) in every_way(&format!("let go over {name}"), |r, h| {
             let (x, y) = r.title(held(r));
             let (qx, qy) = centre(r.rect(Widget::Queue));
             let hx = centre(r.rect(Widget::Home)).0;
             h.press(x, y).glide(qx, qy, 200.0).rest(200.0).glide(hx, y_out, 150.0).rest(20.0).release();
         }) {
-            assert_eq!(r.a.layout, r.start, "{what}: no Pane there, no drop");
+            // (Arrange mode began with the drag, so the player's rows are the Tray's)
+            match name {
+                "the Tray" => {
+                    let w = r.start.widget_in(r.drops[0].held).unwrap();
+                    assert_eq!(r.a.layout.tray(), [w], "{what}: it waits in the Tray");
+                    assert_eq!(r.a.layout.widget_in(r.drops[0].held), None, "{what}: its Pane is left empty");
+                }
+                _ => assert_eq!(r.a.layout, r.start, "{what}: no Pane there, no drop"),
+            }
         }
     }
 }

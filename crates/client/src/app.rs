@@ -90,6 +90,7 @@ pub enum Action {
     SplitDown,
     ClosePane,
     MovePane,
+    Arrange,
     ResetLayout,
     UndoLayout,
     RedoLayout,
@@ -99,7 +100,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 64] = [
+    pub const ALL: [Action; 65] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -158,6 +159,7 @@ impl Action {
         Action::SplitDown,
         Action::ClosePane,
         Action::MovePane,
+        Action::Arrange,
         Action::ResetLayout,
         Action::UndoLayout,
         Action::RedoLayout,
@@ -225,6 +227,7 @@ impl Action {
             Action::SplitDown => "Split down",
             Action::ClosePane => "Close pane",
             Action::MovePane => "Move pane",
+            Action::Arrange => "Arrange",
             Action::ResetLayout => "Reset design",
             Action::UndoLayout => "Undo layout",
             Action::RedoLayout => "Redo layout",
@@ -247,6 +250,7 @@ impl Action {
             Action::SplitDown => "tile add pane widget below",
             Action::ClosePane => "tile remove delete widget",
             Action::MovePane => "tile arrange swap drag layout keyboard",
+            Action::Arrange => "tray tile move swap drag layout split close pane widget",
             Action::ResetLayout => "layout tiling undo original default",
             Action::UndoLayout => "tiling pane change back revert move drop close split",
             Action::RedoLayout => "tiling pane change again forward",
@@ -338,6 +342,7 @@ impl Action {
             Action::SplitDown => "split_down",
             Action::ClosePane => "close_pane",
             Action::MovePane => "move_pane",
+            Action::Arrange => "arrange",
             Action::ResetLayout => "reset_layout",
             Action::UndoLayout => "undo_layout",
             Action::RedoLayout => "redo_layout",
@@ -372,6 +377,18 @@ pub enum Hit {
     MenuItem(usize),
     /// an arrow of a Pane menu's Split row: a new empty Pane on that side
     MenuSplit(crate::tiling::Side),
+    /// Arrange mode (D87): a Pane's split button (the way the Pane menu's Split row splits it first)
+    SplitPane(PaneId),
+    /// a Widget waiting in the Tray: drag it onto a Pane (by the Widget, so a burst of clicks can't reach the next)
+    TrayItem(Widget),
+    /// the × of a Widget in the Tray: it is removed
+    TrayRemove(Widget),
+    /// Clear Tray
+    ClearTray,
+    /// the Tray's ‹ ›, when it holds more than fits
+    TrayScroll(i32),
+    /// Done: Arrange mode ends
+    ArrangeDone,
     /// a sidebar row (0 = Home)
     Side(usize),
     /// a track-list row, by position in the view
@@ -460,7 +477,7 @@ pub enum MenuAct {
     /// the Split row: ← → ↑ ↓, each clickable; the side is the lit arrow, the one the word Split (and Enter) splits
     /// toward: the Pane's longer side at first (`App::default_split`), then wherever ← → move it
     Split(crate::tiling::Side),
-    MovePane,
+    Arrange,
     ClosePane,
 }
 
@@ -494,7 +511,7 @@ pub enum NameFor {
     Layout,
     /// "New playlist…" (#51)
     NewPlaylist,
-    /// the first edit of a built-in Design asks what to call the Design it makes (D66)
+    /// Done in Arrange mode asks what to call the changes kept as "<Design> (edited)" (Q33; was D66's first edit)
     Fork,
 }
 
@@ -585,7 +602,7 @@ pub struct App {
     /// a queued song being dragged to a new place
     pub queue_drag: Option<crate::queue::QueueDrag>,
     /// boundary minus grab position, so a divider moves exactly with the mouse whichever grip cell was grabbed
-    drag_offset: i32,
+    pub(crate) drag_offset: i32,
     /// the seek or volume bar being dragged
     pub scrub: Option<Scrub>,
     nudge: Nudge,
@@ -699,9 +716,11 @@ pub struct App {
     /// drawn in
     pub tile: Option<crate::arrange::TileDrag>,
     pub move_mode: Option<PaneId>,
-    /// a split's Widget picker is (or was) up on a built-in Design: the naming prompt of that first edit comes once
-    /// no popup is open (`App::name_if_waiting`)
-    pub name_after_picker: bool,
+    /// Arrange mode (D87), while it is on
+    pub arranging: Option<crate::arrange::Arranging>,
+    /// the window is too small for the Panes: the mini player shows, and Arrange mode waits behind it (its keys and
+    /// clicks are the player's)
+    pub mini: bool,
     pub body: Rect,
     /// the layout as it was when a divider was grabbed (a changed one counts as an edit on release)
     pub(crate) divider_from: Option<crate::arrangement::Arrangement>,
@@ -819,7 +838,8 @@ impl App {
             saved_layouts: vec![],
             tile: None,
             move_mode: None,
-            name_after_picker: false,
+            arranging: None,
+            mini: false,
             body: Rect::default(),
             divider_from: None,
             grip_hover: None,
@@ -1240,6 +1260,7 @@ impl App {
                 }
             }
             Action::MovePane => self.start_move(),
+            Action::Arrange => self.enter_arrange(),
             Action::ResetLayout => self.reset_design(),
             Action::UndoLayout => self.undo_layout(),
             Action::RedoLayout => self.redo_layout(),
@@ -1316,7 +1337,8 @@ impl App {
                 self.login_hidden = true;
                 return;
             }
-            Some(Modal::Login | Modal::Move) | None => {}
+            // (Arrange mode: its keys come below, after a held Widget's Esc and the shortcuts that work everywhere)
+            Some(Modal::Login | Modal::Move | Modal::Arrange) | None => {}
         }
         // a Pane being dragged: Esc puts it back, nothing else gets through
         if self.tile.is_some() {
@@ -1326,7 +1348,8 @@ impl App {
             return;
         }
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
-        if self.open.view().is_some_and(|v| v.filtering) {
+        // (not under Arrange mode, which keeps the keys: a filter left open on the page must not take them)
+        if self.open.view().is_some_and(|v| v.filtering) && self.modal() != Some(Modal::Arrange) {
             return self.filter_key(k);
         }
         // Ctrl+Shift+Z redoes, where the terminal tells it from Ctrl+Z (the keymap reads both as Ctrl+Z)
@@ -1341,6 +1364,9 @@ impl App {
         }
         if self.move_mode.is_some() {
             return self.move_key(k);
+        }
+        if self.arranging.is_some() && !self.mini {
+            return self.arrange_key(k);
         }
         // a focused Pane showing its needs line has no keys of its own: they'd act on what it hides (#36)
         let shown = !self.focus.is_some_and(|p| self.short_panes.contains(&p));
@@ -2264,7 +2290,7 @@ impl App {
             MenuAct::ChangeCover => self.ask_cover(&uri),
             MenuAct::RemoveCover => self.remove_cover(&uri),
             MenuAct::DeletePlaylist => self.delete_playlist(&uri),
-            MenuAct::ReplaceWidget | MenuAct::Split(_) | MenuAct::MovePane | MenuAct::ClosePane => {}
+            MenuAct::ReplaceWidget | MenuAct::Split(_) | MenuAct::Arrange | MenuAct::ClosePane => {}
         }
     }
 
@@ -2614,7 +2640,7 @@ impl App {
         // the border under the pointer, from every event that says where it is (a release off the border, a wake, a
         // popup opening: none of them may leave a stale resize pointer behind; the owner, 2026-11-05)
         self.grip_hover = match (self.modal(), self.hit_at(m.column, m.row)) {
-            (None, Some(Hit::Divider(i))) => Some(i),
+            (None | Some(Modal::Arrange), Some(Hit::Divider(i))) => Some(i),
             _ => None,
         };
         // a release we never heard ends what it held, before anything else sees the event (even one that only wakes)
@@ -2847,17 +2873,9 @@ impl App {
                     Some(Hit::Title(p) | Hit::TitleName(p)) => self.tile_down(p, m.column, m.row),
                     Some(Hit::Close(p)) => self.close_pane(p),
                     Some(Hit::PickWidget(_)) => {}
-                    Some(Hit::Divider(i)) => {
-                        self.divider_from = Some(self.layout.clone());
-                        if let Some(d) = self.dividers.get(i) {
-                            let (boundary, grab) = match d.axis {
-                                crate::layout::Axis::Horizontal => (d.grip.x + 1, m.column),
-                                crate::layout::Axis::Vertical => (d.grip.y + 1, m.row),
-                            };
-                            self.drag_offset = boundary as i32 - grab as i32;
-                        }
-                        self.drag = Some(Hit::Divider(i));
-                    }
+                    Some(Hit::Divider(i)) => self.grab_divider(i, m.column, m.row),
+                    // (only drawn in Arrange mode, which takes its own clicks)
+                    Some(Hit::SplitPane(_) | Hit::TrayItem(_) | Hit::TrayRemove(_) | Hit::ClearTray | Hit::TrayScroll(_) | Hit::ArrangeDone) => {}
                     Some(Hit::Action(a)) => self.run(a),
                     Some(Hit::PaletteItem(i)) => {
                         if let Some(a) = self.palette_items().get(i).copied() {
@@ -2978,6 +2996,9 @@ modals! {
     Help,
     /// Move mode: the keyboard has the Pane, so a click only ends it
     Move,
+    /// Arrange mode (D87): the Panes take title drags, dividers and their split and close buttons; the Tray, the
+    /// legend and Done sit where the player and the hints were
+    Arrange,
     /// the pairing popup: not a keyboard modal, but it covers the screen and so takes the wheel
     Login,
 }
@@ -3105,13 +3126,14 @@ impl App {
     }
 
     /// What's over the Panes, the top first: the popup you opened, then the setup wizard, then the login code, then
-    /// Move mode (D83). This is the one order: keys, the pointer, the wheel and drawing all follow it.
+    /// Move mode, then Arrange mode (D83, D87). This is the one order: keys, the pointer, the wheel and drawing all follow it.
     pub(crate) fn layers(&self) -> Vec<Modal> {
         let wizard = crate::setup::wanted(self);
         // the wizard shows the code itself
         let login = !wizard && matches!(self.catalogue, Some(CatalogueStatus::LoginPending { .. })) && !self.login_hidden;
         let mut layers: Vec<Modal> = self.popup.as_ref().map(Popup::modal).into_iter().collect();
-        layers.extend([(wizard, Modal::Wizard), (login, Modal::Login), (self.move_mode.is_some(), Modal::Move)].into_iter().filter_map(|(on, m)| on.then_some(m)));
+        let on = [(wizard, Modal::Wizard), (login, Modal::Login), (self.move_mode.is_some(), Modal::Move), (self.arranging.is_some() && !self.mini, Modal::Arrange)];
+        layers.extend(on.into_iter().filter_map(|(on, m)| on.then_some(m)));
         layers
     }
 
@@ -3175,6 +3197,8 @@ impl App {
                 }
             }
             Modal::Wizard => self.wizard_scroll.by(rows),
+            // the Tray, when it holds more than fits: one Widget a notch
+            Modal::Arrange => self.tray_scroll(rows),
             // a long description: back up through it (it shows its end, where you type)
             Modal::Details => {
                 if let Some(d) = self.details() {
@@ -3192,6 +3216,10 @@ impl App {
     /// do nothing, but in the library and queue popups, which are their Panes' lists: a right click on a row opens its
     /// menu, and the queue's songs are dragged into a new order.
     fn modal_pointer(&mut self, modal: Modal, m: MouseEvent, coarse: bool) {
+        // Arrange mode is the Panes' own layer: its gestures are the arranging ones (`arrange.rs`)
+        if modal == Modal::Arrange {
+            return self.arrange_pointer(m, coarse);
+        }
         let up = m.kind == MouseEventKind::ScrollUp;
         let inside = self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom());
         match m.kind {
@@ -3275,7 +3303,7 @@ impl App {
                         _ => {}
                     },
                     // forms and the wizard are typed into; a click on or around them does nothing
-                    Modal::Naming | Modal::Details | Modal::Cover | Modal::Wizard | Modal::Health | Modal::Login => {}
+                    Modal::Naming | Modal::Details | Modal::Cover | Modal::Wizard | Modal::Health | Modal::Login | Modal::Arrange => {}
                 }
             }
             // a press that started before the popup opened ends without doing anything

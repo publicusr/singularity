@@ -76,7 +76,7 @@ fn fill(buf: &mut Buffer, r: Rect, th: &Theme) {
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     app.picker_lost_its_pane();
-    app.name_if_waiting();
+    app.arrange_if_homeless();
     app.meters.expire();
     app.begin_frame();
     let area = f.area();
@@ -87,7 +87,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.art_tint = tint;
     fill(f.buffer_mut(), area, &th);
     // too small for any layout: just a player (#47)
-    if crate::mini::wanted(area) {
+    app.mini = crate::mini::wanted(area);
+    if app.mini {
         app.overlays.clear();
         app.tile_cancel();
         if let Some(k) = app.kitty.as_mut() {
@@ -105,7 +106,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // a held Widget: the Pane under the pointer is highlighted with a label, a chip follows the pointer. Neither
     // changes how anything under it is drawn (no step down a tier: that flickered): images are placed around them
     // something drawn on top now (the login code, the wizard): a held Widget is let go, its chip would cover it
-    if app.modal().is_some() {
+    if app.modal().is_some_and(|m| m != Modal::Arrange) {
         app.tile_cancel();
     }
     if app.body != body {
@@ -135,7 +136,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         scanlines(f.buffer_mut(), body);
     }
     crate::visual::idle::draw(f.buffer_mut(), body, app, &th);
-    player_bar(f, player, app, &th);
+    // Arrange mode: the Tray where the player was, the legend and Done where the hints were (D87: no Pane moves)
+    match app.arranging.is_some() {
+        true => crate::arrange::draw_tray(f.buffer_mut(), player, app, &th),
+        false => player_bar(f, player, app, &th),
+    }
     match app.move_mode {
         // Move mode's notices ("no room…") go in its bar, where the eye is
         Some(id) => {
@@ -143,9 +148,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let name = app.layout.widget_in(id).map(|w| pane_name(app.design, w)).unwrap_or_default();
             crate::arrange::draw_move_hint(f.buffer_mut(), hints, &name, said, &th);
         }
+        None if app.arranging.is_some() => crate::arrange::draw_legend(f.buffer_mut(), hints, app, &th),
         None => hint_bar(f.buffer_mut(), hints, &th, &app.keymap),
     }
-    crate::arrange::draw_undo_chip(f.buffer_mut(), hints, app, &th);
+    if app.arranging.is_none() {
+        crate::arrange::draw_undo_chip(f.buffer_mut(), hints, app, &th);
+    }
     // the bottom first, so the one on top is drawn last
     for &m in layers.iter().rev() {
         draw_layer(f, area, app, &th, m);
@@ -233,7 +241,7 @@ fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
         Modal::Adding => crate::playlists::adding_rect(area, app.adding_rows().len()),
         Modal::Cover => crate::cover::rect(area),
         Modal::Menu => menu_rect(area, app.menu()?),
-        Modal::Move => return None,
+        Modal::Move | Modal::Arrange => return None,
     })
 }
 
@@ -283,7 +291,7 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
         Modal::Cover => crate::cover::draw(f.buffer_mut(), area, app, th),
         Modal::Health => crate::setup::draw_health(f.buffer_mut(), crate::setup::health_rect(area), app, th),
         Modal::Wizard => crate::setup::draw_wizard(f.buffer_mut(), crate::setup::rect(area), app, th),
-        Modal::Move => {}
+        Modal::Move | Modal::Arrange => {}
     }
 }
 
@@ -440,6 +448,14 @@ fn close_button(buf: &mut Buffer, rect: Rect, th: &Theme, focused: bool, id: Pan
     hits.push((Rect::new(x, rect.y, 3, 1), Hit::Close(id)));
 }
 
+/// Arrange mode's split button (D87), left of the × (or where it would be): a new empty Pane, the way the Pane menu's
+/// Split row splits it first.
+fn split_button(buf: &mut Buffer, rect: Rect, th: &Theme, focused: bool, closable: bool, id: PaneId, hits: &mut Vec<(Rect, Hit)>) {
+    let x = rect.right().saturating_sub(if closable { 8 } else { 5 });
+    text(buf, x, rect.y, 3, " ⊞ ", th.s(if focused { th.accent } else { th.dim }));
+    hits.push((Rect::new(x, rect.y, 3, 1), Hit::SplitPane(id)));
+}
+
 fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
     let computed = app.layout.compute(body);
     // the ◂ ▸ swaps sit on a border a divider's grip may cover: registered after the grips, so they win
@@ -499,12 +515,15 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     let mut spans = vec![Span::styled(format!(" {number}"), title_st)];
     // the main Pane: ← → through the pages seen, while there are any, at the right end of its title like every
     // Pane's arrows (D44); dim when there's nowhere to go that way
-    let history = w == Some(Widget::Home) && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20;
+    let history = w == Some(Widget::Home) && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20 && app.arranging.is_none();
     // a Pane whose Widget can give way to others always keeps its ◂ ▸ (7 cells at the right): a long title gives way
     let can_swap = w.is_some_and(|w| !crate::layouts::options(w).is_empty() && w != Widget::Well) || history;
+    // Arrange mode (D87): a split button before the ×, and no ◂ ▸ (what a Pane shows changes by dragging there)
+    let split_btn = app.arranging.is_some() && rect.width >= 14;
+    let can_swap = can_swap && !split_btn;
     // the ◂ ▸ keep their place whether or not the Widget shown can close: cycling onto the queue (no ×) moved them
     // three cells, and the next click on ▸ landed on ◂, so the Pane went back and forth between two Widgets
-    let tail: u16 = if can_swap && rect.width >= 14 { 3 } else { tail };
+    let tail: u16 = (if can_swap && rect.width >= 14 { 3 } else { tail }) + if split_btn { 3 } else { 0 };
     let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
     let room = (rect.width as usize).saturating_sub(2 + used + if can_swap { 8 } else { 0 } + tail as usize);
     // the cells before the ◂ ▸ (their leading space ends the title): in a Pane too narrow for `room`, the title used
@@ -572,6 +591,9 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
         if closable {
             close_button(f.buffer_mut(), *rect, th, focused, p.id, swaps);
         }
+        if split_btn {
+            split_button(f.buffer_mut(), *rect, th, focused, closable, p.id, swaps);
+        }
         return;
     }
     f.render_widget(block, *rect);
@@ -595,6 +617,9 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     }
     if closable {
         close_button(f.buffer_mut(), *rect, th, focused, p.id, swaps);
+    }
+    if split_btn {
+        split_button(f.buffer_mut(), *rect, th, focused, closable, p.id, swaps);
     }
     match w {
         Some(w) if short => crate::needs::draw(f.buffer_mut(), inner, w, th),
@@ -3545,6 +3570,12 @@ mod tests {
             Modal::Menu => app.open_queue_menu(0, Some((20, 3))),
             Modal::Help => app.run(Action::Help),
             Modal::Move => app.start_move(),
+            // with more in the Tray than fits, so it scrolls
+            Modal::Arrange => {
+                let off: Vec<Widget> = Widget::ALL.iter().copied().filter(|w| !app.layout.has(*w)).collect();
+                app.layout = crate::arrangement::Arrangement::new(app.layout.plan().clone(), off);
+                app.enter_arrange();
+            }
             Modal::Login => app.hear(singularity_proto::Event::Catalogue(CatalogueStatus::LoginPending { url: "https://example.com/pair".into(), code: "ABCD".into() })),
         }
     }
@@ -3566,6 +3597,7 @@ mod tests {
             Modal::Menu => app.menu().map(|m| m.selected),
             Modal::Help => app.text_scroll(m).map(|s| s.offset()),
             Modal::Naming | Modal::Cover | Modal::Move | Modal::Login => None,
+            Modal::Arrange => app.arranging.as_ref().map(|a| a.tray_first),
         }
     }
 
@@ -3658,7 +3690,7 @@ mod tests {
     fn a_popup_opened_over_the_wizard_is_on_top_for_the_eye_the_mouse_and_the_keys() {
         use crate::app::Modal;
         let (w, h) = (160u16, 48u16);
-        let popups: Vec<Modal> = Modal::ALL.iter().copied().filter(|m| !matches!(m, Modal::Wizard | Modal::Login | Modal::Move)).collect();
+        let popups: Vec<Modal> = Modal::ALL.iter().copied().filter(|m| !matches!(m, Modal::Wizard | Modal::Login | Modal::Move | Modal::Arrange)).collect();
         assert!(popups.len() >= 11);
         let over_wizard = |m: Modal| {
             let (mut app, rx) = popup_app();
