@@ -83,8 +83,10 @@ pub fn starfield(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
     s.stars.truncate(want);
     let (cx, cy) = (r.width as f32 / 2.0, r.height as f32 / 2.0);
-    // a cell is `aspect` times taller than wide: scale y so the field is round
-    let (sx, sy) = (cx, cx / aspect);
+    // a cell is `aspect` times taller than wide: scale y so the field is round, as wide as the Pane or (a Pane taller
+    // than wide) as tall, so the stars reach its top and bottom too (#58)
+    let sx = cx.max(cy * aspect);
+    let sy = sx / aspect;
     let project = |st: &Star, z: f32| (cx + st.x / z * sx * 0.5, cy + st.y / z * sy * 0.5);
     let speed = s.speed;
     let mut seed = s.seed;
@@ -289,29 +291,47 @@ pub fn marquee(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     // is 3×5 pixels: scale 1 is 3 rows, scale 2 is 5)
     let one = |sc: u16| pixel_fit(&item.name, w, room(r.height), sc, 1).filter(|l| pixel_width(l[0].len(), sc) + 4 * (sc - 1) <= w);
     let fit = one(2).filter(|_| r.height >= 9 + under).map(|l| (2, l)).or_else(|| one(1).map(|l| (1, l)));
-    let y_after = if let Some((sc, lines)) = fit {
-        let block = pixel_rows(sc);
-        let total = block + if r.height >= block + under { under } else { 0 };
-        let y = r.y + (r.height - total) / 2;
+    // the title (and the artists under it) as one block in the middle of the Pane's height, counted in half rows: the
+    // small size's last row is only its upper half (#58)
+    let place = |sc: u16| -> (u16, Option<u16>) {
+        let (rows, halves) = (pixel_rows(sc), 5 * sc);
+        let (gap, tight) = (2 * (rows + 2), 2 * (rows + 1));
+        let h2 = r.height * 2;
+        let (block, artist_at) = if under == 0 {
+            (halves, None)
+        } else if h2 >= gap + 4 {
+            (gap, Some(rows + 1))
+        } else if halves % 2 == 1 && h2 >= tight + 4 {
+            // short: the title's empty half row is the gap, so there's a row over the block and one under it
+            (tight, Some(rows))
+        } else if r.height >= rows + under {
+            (gap, Some(rows + 1))
+        } else {
+            (halves, None)
+        };
+        let y = crate::balance::centre_halves(r.y, r.height, block);
+        (y, artist_at.map(|a| y + a))
+    };
+    let artist_y = if let Some((sc, lines)) = fit {
+        let (y, artist_y) = place(sc);
         let lw = pixel_width(lines[0].len(), sc);
         pixel_line(buf, x + (w - lw) / 2, y, w, &lines[0], sc, 0, None, lift, th);
-        y + block
+        artist_y
     } else if r.height >= 3 {
         // one line, scrolling: 8 columns a second, with a gap before it comes round again
         let title: Vec<char> = item.name.chars().collect();
         let gap = 8usize;
         let off = (s.marquee_t * 8.0) as usize % (title.len() * 4 + gap);
-        let y = r.y + r.height.saturating_sub(3 + if r.height >= 3 + under { under } else { 0 }) / 2;
+        let (y, artist_y) = place(1);
         pixel_line(buf, x, y, w, &title, 1, off, Some(gap), lift, th);
-        y + 3
+        artist_y
     } else {
         let y = r.y + r.height.saturating_sub(2) / 2;
         let tw = (item.name.width() as u16).min(w);
         text(buf, x + (w - tw) / 2, y, tw, &item.name, th.s(th.accent).add_modifier(Modifier::BOLD));
-        y
+        Some(y + 1)
     };
-    let ay = y_after + 1;
-    if ay < r.bottom() && !artists.is_empty() {
+    if let Some(ay) = artist_y.filter(|ay| *ay < r.bottom() && !artists.is_empty()) {
         let aw = (artists.width() as u16).min(w);
         text(buf, x + (w - aw) / 2, ay, aw, &artists, th.s(th.dim));
     }
@@ -525,6 +545,54 @@ mod tests {
         assert_eq!(rows(&mut app, 60, 8), 3, "the small size in a short one");
         app.playback.item.as_mut().unwrap().name = "A Title Far Too Long For This Pane".into();
         assert_eq!(rows(&mut app, 60, 20), 3, "a long title scrolls at the small size");
+    }
+
+    #[test]
+    fn the_marquee_sits_in_the_middle_of_a_short_pane() {
+        // #58: in a tiny Pane and a wide, short one the title touched the top
+        let th = Theme::singularity();
+        let mut app = App::new(None);
+        app.playback.item = Some(singularity_proto::Item { name: "Track 2".into(), artists: vec!["Fake Artist".into()], ..Default::default() });
+        // the first row of the title's pixels, and the artist's row
+        let mut at = |w: u16, h: u16| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+            marquee(&mut buf, Rect::new(0, 0, w, h), &mut app, &th);
+            let px = (0..h).find(|&y| (0..w).any(|x| "█▀▄".contains(buf[(x, y)].symbol()) && buf[(x, y)].symbol() != " "));
+            let artist = (0..h).find(|&y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>().contains("Fake Artist"));
+            (px, artist)
+        };
+        // a 2.5-row title in 4 rows: a row over it, half a row under it
+        assert_eq!(at(18, 4), (Some(1), None), "tiny");
+        // the title and the artist in 6 rows: a row over and under them, the title's empty half row between them
+        assert_eq!(at(98, 6), (Some(1), Some(4)), "wide-short");
+        // the others as before
+        assert_eq!(at(22, 28), (Some(11), Some(15)), "narrow-tall");
+        assert_eq!(at(58, 18), (Some(6), Some(10)), "medium");
+        assert_eq!(at(118, 38), (Some(15), Some(21)), "big");
+        assert_eq!(at(178, 47), (Some(20), Some(26)), "full");
+    }
+
+    #[test]
+    fn the_starfield_fills_a_narrow_tall_pane() {
+        // #58: in a Pane taller than wide the stars kept to a band across the middle (the field was as round as the
+        // width), leaving the top and bottom empty
+        let th = Theme::singularity();
+        let mut app = App::new(None);
+        app.cell_px = Some((10.0, 20.0));
+        let (w, h) = (22u16, 28u16);
+        let mut per_row = vec![0u32; h as usize];
+        for _ in 0..600 {
+            app.ambient.stars_last = Some(Instant::now() - std::time::Duration::from_millis(33));
+            let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+            starfield(&mut buf, Rect::new(0, 0, w, h), &mut app, &th);
+            for y in 0..h {
+                per_row[y as usize] += (0..w).filter(|&x| "✦•∙".contains(buf[(x, y)].symbol()) && buf[(x, y)].symbol() != " ").count() as u32;
+            }
+        }
+        let quarter = h as usize / 4;
+        let top: u32 = per_row[..quarter].iter().sum();
+        let middle: u32 = per_row[quarter..h as usize - quarter].iter().sum::<u32>() / 2;
+        assert!(top * 2 >= middle, "the top quarter: {top} stars; a middle quarter: {middle}");
     }
 
     #[test]

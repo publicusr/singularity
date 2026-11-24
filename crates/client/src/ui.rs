@@ -2132,13 +2132,16 @@ mod tests {
         // this week is the last column, Monday on top, two days a cell (Cockpit's Pane is short): Wednesday over
         // Thursday (today, the brightest) in the second row; a week ago too; Friday on hasn't come
         let r = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).rect_of(Widget::Listening).unwrap();
-        let (x0, y0) = (r.x + 2, r.y + 1);
         let last = ((r.width - 2) / 2).min(26) - 1;
         let buf = {
             let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
             t.draw(|f| draw(f, &mut app)).unwrap();
             t.backend().buffer().clone()
         };
+        // (the grid and its totals sit in the middle of the Pane, #58: its first cell, inside the frame)
+        let inner = Rect::new(r.x + 1, r.y + 1, r.width - 2, r.height - 2);
+        let (y0, x0) = (inner.top()..inner.bottom()).find_map(|y| (inner.left()..inner.right()).find(|&x| buf[(x, y)].symbol() == "▀").map(|x| (y, x))).unwrap();
+        assert!(x0 > inner.x + 1, "the grid moved off the left edge");
         let cell = |c: u16, row: u16| &buf[(x0 + c * 2, y0 + row)];
         let th = &app.theme;
         let quiet = th.bg.lerp(th.dim, 0.3).color();
