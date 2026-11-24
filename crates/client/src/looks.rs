@@ -208,7 +208,7 @@ impl App {
         if let Some(t) = s.theme.as_deref() {
             self.set_theme(t);
         }
-        self.set_layout(s.tree.clone());
+        self.set_layout(s.arrangement());
         self.layout_name = Some(s.id.clone());
         self.focus_on(Widget::Home);
         self.want_widget_data();
@@ -241,7 +241,7 @@ impl App {
     pub fn naming_key(&mut self, k: KeyEvent) {
         let Some(purpose) = self.naming().map(|n| n.purpose) else { return };
         let max = if matches!(purpose, crate::app::NameFor::Layout | crate::app::NameFor::Fork) { 40 } else { 100 };
-        // the first edit of a built-in Design can still be undone (or, undone, redone) from its naming prompt
+        // the changes Done's prompt names can still be undone (or, undone, redone) from it
         if purpose == crate::app::NameFor::Fork && k.modifiers.contains(KeyModifiers::CONTROL) {
             match self.keymap.action(k) {
                 Some(crate::app::Action::UndoLayout) if !k.modifiers.contains(KeyModifiers::SHIFT) => return self.undo_layout(),
@@ -269,7 +269,9 @@ impl App {
                             self.say(format!("There is already a design called \"{}\"", n.text.trim()));
                             self.open_popup(crate::app::Popup::Naming(n));
                         } else {
+                            let was = self.layout_name.clone();
                             self.save_layout(&n.text);
+                            self.named_edited_copy(was);
                         }
                     }
                     crate::app::NameFor::NewPlaylist => self.create_playlist(&n.text),

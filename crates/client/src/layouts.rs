@@ -2,6 +2,7 @@
 //! layout (the split tree, sizes included) can be saved under a name to `~/.config/singularity/layouts/` and comes back exactly,
 //! next to the built-in Designs in the picker.
 
+use crate::arrangement::Arrangement;
 use crate::layout::{Node, Widget};
 use serde::Deserialize;
 use std::path::Path;
@@ -38,6 +39,9 @@ pub struct Saved {
     /// the unnamed "<Design> (edited)" a first edit leaves when the user doesn't name it (D66): one per built-in Design
     #[serde(default)]
     pub edited: bool,
+    /// the Widgets waiting in its Tray (D87); none in older files
+    #[serde(default)]
+    pub tray: Vec<Widget>,
     /// file name without `.toml`
     #[serde(skip)]
     pub id: String,
@@ -49,12 +53,19 @@ pub fn file_id(name: &str) -> String {
     id.to_lowercase()
 }
 
-pub fn save(dir: &Path, name: &str, design: &str, theme: &str, tree: &Node) -> Result<Saved, String> {
+impl Saved {
+    /// What it puts on screen: the floor plan, and the Tray it keeps.
+    pub fn arrangement(&self) -> Arrangement {
+        Arrangement::new(self.tree.clone(), self.tray.clone())
+    }
+}
+
+pub fn save(dir: &Path, name: &str, design: &str, theme: &str, a: impl Into<Arrangement>) -> Result<Saved, String> {
     let id = file_id(name);
     if id.is_empty() {
         return Err("a layout needs a name".into());
     }
-    write(dir, &id, name, design, theme, tree, false)
+    write(dir, &id, name, design, theme, &a.into(), false)
 }
 
 /// The file an unnamed edit of built-in Design `design` lives in.
@@ -63,11 +74,16 @@ pub fn edited_id(design: &str) -> String {
 }
 
 /// Write `<id>.toml`; `edited` marks the unnamed edit of a built-in Design.
-pub fn write(dir: &Path, id: &str, name: &str, design: &str, theme: &str, tree: &Node, edited: bool) -> Result<Saved, String> {
-    let saved = Saved { name: name.trim().into(), design: design.into(), theme: Some(theme.into()).filter(|t: &String| !t.is_empty()), tree: tree.clone(), edited, id: id.into() };
+pub fn write(dir: &Path, id: &str, name: &str, design: &str, theme: &str, a: &Arrangement, edited: bool) -> Result<Saved, String> {
+    let tree = a.plan();
+    let saved = Saved { name: name.trim().into(), design: design.into(), theme: Some(theme.into()).filter(|t: &String| !t.is_empty()), tree: tree.clone(), edited, tray: a.tray().to_vec(), id: id.into() };
+    let tray = match saved.tray.as_slice() {
+        [] => String::new(),
+        t => format!("tray = [{}]\n", t.iter().map(|w| singularity_config::toml_edit::Value::from(w.name()).to_string()).collect::<Vec<_>>().join(", ")),
+    };
     let q = |s: &str| singularity_config::toml_edit::Value::from(s).to_string();
     let text = format!(
-        "# A Singularity layout. Pick it with Ctrl+K → Pick a design; delete this file to forget it.\n# Each split puts `a` left of (or above) `b`; `first` sizes `a` (cells, or a ratio), `last` sizes `b`.\n# Each pane has its own id and shows `widget` (none: an empty pane).\nname = {}\ndesign = {}\n{}{}tree = {}\n",
+        "# A Singularity layout. Pick it with Ctrl+K → Pick a design; delete this file to forget it.\n# Each split puts `a` left of (or above) `b`; `first` sizes `a` (cells, or a ratio), `last` sizes `b`.\n# Each pane has its own id and shows `widget` (none: an empty pane); `tray` is what waits in the Tray.\nname = {}\ndesign = {}\n{}{}{tray}tree = {}\n",
         q(saved.name.trim()),
         q(design),
         saved.theme.as_deref().map(|t| format!("theme = {}\n", q(t))).unwrap_or_default(),

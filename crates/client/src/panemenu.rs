@@ -111,20 +111,13 @@ impl App {
         self.layout.compute(self.pane_area()).panes.into_iter().find(|(p, _)| p.id == id).map(|(_, r)| r)
     }
 
-    /// Close the picker without a pick (Esc, a click outside). A split's Pane stays empty; on a built-in Design the
-    /// naming prompt of the first edit comes now.
+    /// Close the picker without a pick (Esc, a click outside). A split's Pane stays empty, and Arrange mode is on, so
+    /// it can be filled by dragging something in (D87).
     pub fn widget_picker_cancel(&mut self) {
+        let split = self.widget_picker().is_some_and(|p| p.after_split);
         self.close_if_open(Modal::WidgetPicker);
-        self.name_if_waiting();
-    }
-
-    /// The naming prompt a split's picker held back (`name_after_picker`), once no popup is open: however the picker
-    /// went (a pick asks itself, through the edit it makes). Called when the picker closes and before each frame, so a
-    /// popup that took the picker's place only delays it.
-    pub fn name_if_waiting(&mut self) {
-        if self.name_after_picker && self.popup.is_none() {
-            self.name_after_picker = false;
-            self.edited();
+        if split {
+            self.enter_arrange();
         }
     }
 
@@ -134,7 +127,6 @@ impl App {
         let gone = self.widget_picker().is_some_and(|p| !self.layout.contains(p.target));
         if gone {
             self.close_if_open(Modal::WidgetPicker);
-            self.name_if_waiting();
         }
         gone
     }

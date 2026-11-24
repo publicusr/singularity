@@ -81,7 +81,7 @@ fn right_clicking_a_title_opens_the_pane_menu_with_replace_widget_first() {
     let mut a = app();
     let (x, y) = title_spot(&a, Widget::Fft);
     right_click(&mut a, x, y);
-    assert_eq!(menu_items(&a), ["Replace widget…", "Split  ←  →  ↑  ↓", "Close pane", "Move pane"]);
+    assert_eq!(menu_items(&a), ["Replace widget…", "Split  ←  →  ↑  ↓", "Close pane", "Arrange"]);
     assert!(matches!(a.menu().unwrap().target, Target::Pane(p) if p == pid(&a, Widget::Fft)));
     assert!(render(&mut a).contains("Replace widget…"));
     // the name in the title opens the same menu on a right-click
@@ -99,7 +99,7 @@ fn homes_pane_has_no_replace_widget() {
     let mut a = app();
     let (x, y) = title_spot(&a, Widget::Home);
     right_click(&mut a, x, y);
-    assert_eq!(menu_items(&a), ["Split  ←  →  ↑  ↓", "Move pane"], "nor Close");
+    assert_eq!(menu_items(&a), ["Split  ←  →  ↑  ↓", "Arrange"], "nor Close");
     key(&mut a, KeyCode::Esc);
     // its title has no name to click, and the key and the palette say why
     assert!(a.hit_rect(&Hit::TitleName(pid(&a, Widget::Home))).is_none());
@@ -161,6 +161,8 @@ fn the_name_the_key_and_the_palette_open_the_picker() {
     mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), x + 10, y + 6);
     assert!(a.tile.as_ref().is_some_and(|t| t.live), "a drag from the name lifts the Pane");
     a.tile_cancel();
+    // (the drag turned Arrange mode on)
+    a.arrange_done();
     render(&mut a);
     // the key, on the focused Pane
     a.focus_on(Widget::Stream);
@@ -262,7 +264,7 @@ fn the_library_queue_and_lyrics_can_be_replaced_away() {
         let id = pid(&a, w);
         let (x, y) = title_spot(&a, w);
         right_click(&mut a, x, y);
-        assert_eq!(menu_items(&a), ["Replace widget…", "Split  ←  →  ↑  ↓", "Close pane", "Move pane"], "{w}");
+        assert_eq!(menu_items(&a), ["Replace widget…", "Split  ←  →  ↑  ↓", "Close pane", "Arrange"], "{w}");
         key(&mut a, KeyCode::Enter);
         let list = rows(&a);
         assert!(list.first().is_some_and(|(_, on)| !on), "{w}: Widgets off screen come first: {list:?}");
@@ -399,7 +401,7 @@ fn the_pane_menu_has_one_split_row_whose_arrows_split_each_way_into_an_empty_pan
         let lyrics = pid(&a, Widget::Lyrics);
         let before = rect_of(&a, lyrics);
         lyrics_menu(&mut a);
-        assert_eq!(menu_items(&a), ["Replace widget…", "Split  ←  →  ↑  ↓", "Close pane", "Move pane"], "one Split row");
+        assert_eq!(menu_items(&a), ["Replace widget…", "Split  ←  →  ↑  ↓", "Close pane", "Arrange"], "one Split row");
         assert!(render(&mut a).contains("Split  ←  →  ↑  ↓"));
         let (x, y) = arrow(&a, side);
         click(&mut a, x, y);
@@ -549,7 +551,7 @@ fn a_split_and_its_pick_are_one_undo_step() {
     key(&mut a, KeyCode::Esc);
     a.run(Action::UndoLayout);
     assert_eq!(a.layout, before);
-    // a built-in Design, named after the pick: undo goes back to the built-in one, not to the split left unsaved
+    // a built-in Design, kept as its "(edited)": undo goes back to the built-in one, not to the split left unsaved
     let dir = tempfile::tempdir().unwrap();
     let mut a = App::new(None);
     a.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
@@ -559,9 +561,8 @@ fn a_split_and_its_pick_are_one_undo_step() {
     a.run(Action::SplitRight);
     typed(&mut a, "scope");
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.modal(), Some(Modal::Naming));
-    key(&mut a, KeyCode::Enter);
-    assert!(a.layout_name.is_some(), "saved as a Design of the user's");
+    assert!(a.modal().is_none(), "no name prompt (Q33)");
+    assert_eq!(a.layout_name.as_deref(), Some("singularity-edited"));
     a.run(Action::UndoLayout);
     assert_eq!(a.layout, built_in, "the split went with the pick");
     assert!(a.layout_name.is_none() && !a.layout.has(Widget::Scope));
@@ -596,7 +597,7 @@ fn esc_leaves_the_new_pane_empty_and_it_says_so() {
     a.run(Action::SplitDown);
     let new = a.widget_picker().unwrap().target;
     key(&mut a, KeyCode::Esc);
-    assert!(a.modal().is_none());
+    assert_eq!(a.modal(), Some(Modal::Arrange), "Esc leaves it empty, in Arrange mode");
     assert_eq!(a.layout.panes().len(), n + 1, "the Pane stays");
     assert_eq!(a.layout.get(new).map(|p| p.widget), Some(None));
     let buf = buffer(&mut a);
@@ -698,7 +699,7 @@ fn the_picker_offers_every_widget_and_says_what_a_pane_too_small_for_one_needs()
 }
 
 #[test]
-fn on_a_built_in_design_the_naming_prompt_waits_for_the_picker() {
+fn a_split_on_a_built_in_design_never_asks_for_a_name_and_says_where_it_went() {
     for pick in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let mut a = App::new(None);
@@ -706,7 +707,8 @@ fn on_a_built_in_design_the_naming_prompt_waits_for_the_picker() {
         render(&mut a);
         a.focus_on(Widget::Lyrics);
         a.run(Action::SplitRight);
-        assert_eq!(a.modal(), Some(Modal::WidgetPicker), "the picker, not the naming prompt");
+        assert_eq!(a.modal(), Some(Modal::WidgetPicker), "the picker, not a naming prompt");
+        assert!(a.toast.as_ref().is_some_and(|(t, _)| t == "Kept as Singularity (edited)"), "{:?}", a.toast);
         if pick {
             typed(&mut a, "scope");
             key(&mut a, KeyCode::Enter);
@@ -714,38 +716,15 @@ fn on_a_built_in_design_the_naming_prompt_waits_for_the_picker() {
         } else {
             key(&mut a, KeyCode::Esc);
         }
-        assert_eq!(a.modal(), Some(Modal::Naming), "then the first edit's name (picked: {pick})");
-    }
-}
-
-#[test]
-fn the_waiting_naming_prompt_comes_however_the_picker_closes() {
-    let built_in = || {
-        let dir = tempfile::tempdir().unwrap();
-        let mut a = App::new(None);
-        a.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
         render(&mut a);
-        a.focus_on(Widget::Lyrics);
-        a.run(Action::SplitRight);
-        assert_eq!(a.modal(), Some(Modal::WidgetPicker));
-        (a, dir)
-    };
-    // its Pane went (the Design changed under it): the picker closes, the name is asked
-    let (mut a, _d) = built_in();
-    let target = a.widget_picker().unwrap().target;
-    let tree = a.layout.without(target).unwrap();
-    a.layout = tree.into();
-    render(&mut a);
-    assert_eq!(a.modal(), Some(Modal::Naming), "after the picker lost its Pane");
-    // another popup took its place: the name is asked once that one has gone
-    let (mut a, _d) = built_in();
-    a.run(Action::Help);
-    assert_eq!(a.modal(), Some(Modal::Help));
-    key(&mut a, KeyCode::Esc);
-    render(&mut a);
-    assert_eq!(a.modal(), Some(Modal::Naming), "after the popup that replaced the picker");
-    // and once named, it isn't asked again
-    key(&mut a, KeyCode::Enter);
-    render(&mut a);
-    assert!(a.modal().is_none(), "{:?}", a.modal());
+        assert!(a.naming().is_none(), "never a name prompt (picked: {pick})");
+        let saved = crate::layouts::load_dir(&dir.path().join("layouts")).0;
+        assert!(saved.len() == 1 && saved[0].edited && saved[0].arrangement() == a.layout, "picked: {pick}: {saved:?}");
+        // left empty: Arrange mode, whose Done asks only about what changed in it (nothing yet)
+        if !pick {
+            assert_eq!(a.modal(), Some(Modal::Arrange));
+            key(&mut a, KeyCode::Esc);
+            assert!(a.modal().is_none());
+        }
+    }
 }
