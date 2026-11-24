@@ -77,7 +77,8 @@ impl State {
             match self.size {
                 Some((k, px)) if k == key => px,
                 _ => {
-                    let px = song_px(lines, w.saturating_sub(2), h - credit, c);
+                    // (a narrow, tall Pane: its own, #54)
+                    let px = if narrow_tall(w, h) { narrow_px(lines, w.saturating_sub(2), c) } else { song_px(lines, w.saturating_sub(2), h - credit, c) };
                     self.size = Some((key, px));
                     px
                 }
@@ -368,16 +369,16 @@ const PX_FLOOR: f64 = 0.9;
 
 /// The line in big text of `px` in `w` × `h` cells, if it fits in at most `most` rows.
 fn plan_px_at(words: &[Word], w: u16, h: u16, cpx: (f64, f64), px: f32, most: u16) -> Option<Plan> {
-    plan_px_with(words, w, h, cpx, px, most, px_spare(px, cpx.1), false)
+    plan_px_with(words, w, h, cpx, px, most, px_spare(px, cpx.1))
 }
 
-/// `plan_px_at` keeping `spare` rows free; `stack`: a word (pieces sung as one kept together) to a row.
+/// `plan_px_at` keeping `spare` rows free.
 #[allow(clippy::too_many_arguments)]
-fn plan_px_with(words: &[Word], w: u16, h: u16, (cw, ch): (f64, f64), px: f32, most: u16, spare: u16, stack: bool) -> Option<Plan> {
+fn plan_px_with(words: &[Word], w: u16, h: u16, (cw, ch): (f64, f64), px: f32, most: u16, spare: u16) -> Option<Plan> {
     let max = (w as f64 * cw) as f32;
     let pitch = ((px * crate::bigtext::line()) as f64 / ch).ceil() as u16;
     let lane = px_lane(pitch);
-    let (laid, rows) = lay_out_px(words, px, if stack { 0.0 } else { max });
+    let (laid, rows) = lay_out_px(words, px, max);
     let n = rows.len() as u16;
     // a word wider than the Pane can't be drawn whole: smaller then
     if n > most || n * (lane + pitch) + spare > h || rows.iter().any(|&rw| rw > max) {
@@ -410,100 +411,47 @@ fn plan_px_with(words: &[Word], w: u16, h: u16, (cw, ch): (f64, f64), px: f32, m
     Some(Plan { font: Font::Px { px, pitch, dot }, lane, spots, rows: n, px: pxs, row_px })
 }
 
-/// #54 proposals (temporary, the owner picks one): how a narrow, tall Pane lays Karaoke out.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
-enum Narrow {
-    /// as every other Pane
-    Off,
-    /// A: the sung line in the middle, as many lines before and after it as fit, each wrapped whole
-    Context,
-    /// B: the sung line alone and as big as it goes, centred: a word to a row on the cells (the ball hopping down
-    /// them), big text as wide as the Pane on the pixel tier; only the line before above and the next one below
-    Stack,
-}
-const NARROW: Narrow = Narrow::Context;
-
-/// A Pane taller than wide on screen (a cell is about twice as tall as wide) and too narrow for a line in one row.
-fn narrow_tall(r: Rect) -> bool {
-    NARROW != Narrow::Off && r.width >= 16 && r.width < 40 && r.height >= 12 && r.height * 2 > r.width
+/// A Pane of `w` × `h` cells that is taller than wide on screen (a cell is about twice as tall as wide) and too
+/// narrow for a line in one row (#54): the song runs above and below the line on stage like a lyric sheet.
+fn narrow_tall(w: u16, h: u16) -> bool {
+    (16..40).contains(&w) && h >= 12 && h * 2 > w
 }
 
-/// Rows kept free around the stacked line (B): the line before and the next one.
-const STACK_SPARE: u16 = 6;
-
-/// A narrow, tall Pane's big-text size for the song (`w` × `h` cells of `cpx` pixels): its longest word spans the
-/// Pane at most; A keeps it a little over the cells' own size, B as big as lets most lines fill the height.
-fn narrow_px(lines: &[Line], w: u16, h: u16, cpx: (f64, f64)) -> Option<f32> {
-    let (cw, ch) = cpx;
+/// A narrow, tall Pane's big-text size for the song (`w` × `h` cells of `cpx` pixels): a little over the cells' own
+/// size, its longest word no wider than the Pane. None when that would hardly beat the cells, or the fonts lack a
+/// character.
+fn narrow_px(lines: &[Line], w: u16, (cw, ch): (f64, f64)) -> Option<f32> {
     if lines.is_empty() || !lines.iter().all(|l| l.words.iter().all(|x| crate::bigtext::covers(&x.text))) {
         return None;
     }
     let widest = lines.iter().flat_map(|l| l.words.iter()).map(|x| crate::bigtext::width(x.text.trim(), 1.0, true)).fold(0.0f32, f32::max).max(0.1);
-    let by_width = (w as f64 * cw * 0.94 / widest as f64) as f32;
-    let px = match NARROW {
-        Narrow::Stack => {
-            let sung: Vec<&Line> = lines.iter().filter(|l| !l.words.is_empty()).collect();
-            // a whole number of rows to a text row, filled (no slack under the letters): the tallest that most lines fit
-            let em = crate::bigtext::line() as f64;
-            let mut px = 0.0f32;
-            for pitch in (2..=h).rev() {
-                let p = (by_width as f64).min(pitch as f64 * ch / em * 0.96) as f32;
-                if ((p as f64 * em) / ch).ceil() as u16 != pitch {
-                    continue;
-                }
-                let fit = sung.iter().filter(|l| plan_px_with(&l.words, w, h, cpx, p, u16::MAX, STACK_SPARE, false).is_some()).count();
-                if fit * 4 >= sung.len() * 3 {
-                    px = p;
-                    break;
-                }
-            }
-            px
-        }
-        _ => by_width.min((ch * 1.35) as f32),
-    };
+    let px = ((w as f64 * cw * 0.94 / widest as f64) as f32).min((ch * NARROW_PX) as f32);
     (px as f64 >= PX_MIN * ch).then_some(px.floor())
 }
 
+/// Big text's size in a narrow, tall Pane, against a cell's height: the line on stage a little bigger than the cells,
+/// leaving most of the Pane to the lines around it.
+const NARROW_PX: f64 = 1.35;
+
 /// The line on stage in a narrow, tall Pane: big text at `px` when there is some (shrunk if the line needs), else
-/// the cells' (B: a word to a row while they fit).
-fn narrow_plan(words: &[Word], w: u16, h: u16, big: Option<((f64, f64), f32)>) -> Plan {
-    let stack = NARROW == Narrow::Stack;
-    let spare = if stack { STACK_SPARE } else { 4 };
+/// the cells' as in any Pane.
+fn narrow_plan(words: &[Word], w: u16, h: u16, big: Option<((f64, f64), f32)>, scale: u16) -> Plan {
     if let Some((cpx, px)) = big {
         let mut p = px;
         while p as f64 >= PX_FLOOR * cpx.1 {
-            if let Some(plan) = plan_px_with(words, w, h, cpx, p, u16::MAX, spare, stack).or_else(|| plan_px_with(words, w, h, cpx, p, u16::MAX, spare, false)) {
+            if let Some(plan) = plan_px_with(words, w, h, cpx, p, u16::MAX, 4) {
                 return plan;
             }
             p *= 0.9;
         }
     }
-    if stack && !words.is_empty() {
-        let (mut spots, rows) = lay_out(words, Font::Plain, 0);
-        // each row centred on its own
-        let mut widths = vec![0u16; rows as usize];
-        for s in &spots {
-            widths[s.row as usize] = widths[s.row as usize].max(s.x + s.w);
-        }
-        for s in &mut spots {
-            s.x += w.saturating_sub(widths[s.row as usize]) / 2;
-        }
-        if widths.iter().all(|&rw| rw <= w) {
-            for (lane, spare) in [(2, 10), (1, STACK_SPARE)] {
-                if rows * (lane + 1) + spare <= h {
-                    return Plan { font: Font::Plain, lane, spots, rows, px: vec![], row_px: vec![] };
-                }
-            }
-        }
-    }
-    plan(words, w, h, 0)
+    plan(words, w, h, scale)
 }
 
-/// The lines around the one on stage in a narrow, tall Pane, each wrapped whole and a row apart: up to `before` of
-/// them upwards from `top`, up to `after` downwards from `below` to `bottom`, fading the further they are.
-#[allow(clippy::too_many_arguments)]
-fn narrow_context(buf: &mut Buffer, r: Rect, lines: &[Line], i: usize, (top, below, bottom): (u16, u16, u16), (before, after): (usize, usize), th: &Theme, hits: &mut Vec<(Rect, Hit)>) {
+/// The lines around the one on stage in a narrow, tall Pane, each wrapped whole and a row apart, fading the further
+/// they are: upwards from `top` and downwards from `below` to `bottom`, running on past the Pane's edges like a sheet
+/// (the rows that fit of a line cut there).
+fn narrow_context(buf: &mut Buffer, r: Rect, lines: &[Line], i: usize, (top, below, bottom): (u16, u16, u16), th: &Theme, hits: &mut Vec<(Rect, Hit)>) {
     let w = r.width.saturating_sub(2) as usize;
     let rows_of = |k: usize| crate::lyrics::wrap_indented(&plain_text(&lines[k].words), w, 0);
     let fade = |d: usize| match d {
@@ -511,40 +459,36 @@ fn narrow_context(buf: &mut Buffer, r: Rect, lines: &[Line], i: usize, (top, bel
         1 => th.dim.lerp(th.border, 0.5),
         _ => th.border,
     };
-    // A runs on past the Pane's edges like a sheet (the rows that fit of a line cut there); B shows whole lines only
-    let cut = before == usize::MAX;
+    let (ry0, bottom) = (r.y as i32, bottom as i32);
     let mut y = top as i32;
-    for (d, k) in (0..i).rev().take(before).enumerate() {
+    for (d, k) in (0..i).rev().enumerate() {
         let rows = rows_of(k);
-        let n = rows.len() as i32;
-        let y0 = y - 1 - n;
-        if y0 < r.y as i32 && !(cut && y - 1 > r.y as i32) {
+        let y0 = y - 1 - rows.len() as i32;
+        if y - 1 <= ry0 {
             break;
         }
         for (j, row) in rows.iter().enumerate() {
-            let ry = y0 + j as i32;
-            if ry >= r.y as i32 {
-                centre(buf, r, ry as u16, row.trim(), th.s(fade(d + 1)));
+            if y0 + j as i32 >= ry0 {
+                centre(buf, r, (y0 + j as i32) as u16, row.trim(), th.s(fade(d + 1)));
             }
         }
-        let from = y0.max(r.y as i32) as u16;
+        let from = y0.max(ry0) as u16;
         hits.push((Rect::new(r.x, from, r.width, (y - 1) as u16 - from), Hit::Lyric(lines[k].start)));
         y = y0;
     }
     let mut y = below as i32 + 1;
-    for (d, k) in (i + 1..lines.len()).take(after).enumerate() {
-        let rows = rows_of(k);
-        let n = rows.len() as i32;
-        if y + n > bottom as i32 && !(cut && y < bottom as i32) {
+    for (d, k) in (i + 1..lines.len()).enumerate() {
+        if y >= bottom {
             break;
         }
+        let rows = rows_of(k);
         for (j, row) in rows.iter().enumerate() {
-            let ry = y + j as i32;
-            if ry < bottom as i32 {
-                centre(buf, r, ry as u16, row.trim(), th.s(fade(d)));
+            if y + (j as i32) < bottom {
+                centre(buf, r, (y + j as i32) as u16, row.trim(), th.s(fade(d)));
             }
         }
-        hits.push((Rect::new(r.x, y as u16, r.width, ((y + n).min(bottom as i32) - y) as u16), Hit::Lyric(lines[k].start)));
+        let n = rows.len() as i32;
+        hits.push((Rect::new(r.x, y as u16, r.width, ((y + n).min(bottom) - y) as u16), Hit::Lyric(lines[k].start)));
         y += n + 1;
     }
 }
@@ -615,9 +559,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     // the song's timed lines, and its sizes for this Pane (big text on the pixel tier, the cells' pixel font)
     let cpx = app.pixel_text_for(r);
     let Some(sung) = app.lyrics.sung(duration, r.width, r.height, cpx) else { return };
-    // a narrow, tall Pane (#54): its own big-text size
-    let px = if narrow_tall(r) { cpx.and_then(|c| narrow_px(sung.lines, r.width.saturating_sub(2), r.height - u16::from(r.height >= 7), c)) } else { sung.px };
-    let big = match (cpx.zip(px), app.kitty.as_mut()) {
+    let big = match (cpx.zip(sung.px), app.kitty.as_mut()) {
         (Some((cpx, px)), Some(kitty)) => Some(Big { cpx, px, kitty }),
         _ => None,
     };
@@ -744,9 +686,9 @@ fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th:
     let line = &lines[i];
     let credit = r.height >= 7;
     let w = r.width.saturating_sub(2);
-    let tall = narrow_tall(r);
+    let tall = narrow_tall(r.width, r.height);
     let p = if tall {
-        narrow_plan(&line.words, w, r.height - credit as u16, big.as_ref().map(|b| (b.cpx, b.px)))
+        narrow_plan(&line.words, w, r.height - credit as u16, big.as_ref().map(|b| (b.cpx, b.px)), scale)
     } else {
         big.as_ref().and_then(|b| plan_px(&line.words, w, r.height - credit as u16, b.cpx, b.px)).unwrap_or_else(|| plan(&line.words, w, r.height - credit as u16, scale))
     };
@@ -758,8 +700,7 @@ fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th:
     let block = p.height().min(r.height);
     // the line a little above the middle; the next lines under it, the last one above when there's room
     let avail = r.height - credit as u16;
-    // (B in a narrow, tall Pane: centred, the line before and the next one around it)
-    let top = r.y + if tall && NARROW == Narrow::Stack { avail.saturating_sub(block) / 2 } else { avail.saturating_sub(block) * 2 / 5 };
+    let top = r.y + avail.saturating_sub(block) * 2 / 5;
     let x0 = r.x + 1;
     let row_top = |row: u16| top + row * (p.lane + p.font.rows()) + p.lane;
     match (p.font, big.as_mut()) {
@@ -769,8 +710,7 @@ fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th:
     hits.push((Rect::new(r.x, top, r.width, block), Hit::Lyric(line.start)));
     let bottom = r.bottom() - credit as u16;
     if tall {
-        let around = if NARROW == Narrow::Stack { (1, 2) } else { (usize::MAX, usize::MAX) };
-        narrow_context(buf, r, lines, i, (top, top + block, bottom), around, th, hits);
+        narrow_context(buf, r, lines, i, (top, top + block, bottom), th, hits);
     } else {
         // the rows a line around it takes: big text's own, or one of the cells
         let side_rows = side.map_or(1, |(_, sp)| sp);
@@ -1374,6 +1314,59 @@ mod tests {
         let mut app = app_at(31_000, true);
         let (s, out) = pixel_frame(&mut app, 160, 30);
         assert!(s.contains("Ünïcödé") && !out.contains("a=t,"), "{s}");
+    }
+
+    /// An App paused at `pos` in a song of twelve lines, one every four seconds (the fake Catalogue's verse three
+    /// times over).
+    fn verses_at(pos: u64) -> App {
+        let mut app = App::new(None);
+        app.playback.item = Some(singularity_proto::Item { uri: "spotify:track:v".into(), name: "Song".into(), duration_ms: 120_000, ..Default::default() });
+        app.playback.status = singularity_proto::PlayStatus::Paused;
+        app.playback.position_ms = pos;
+        let verse = ["Turn the lights down low", "Sing it like the night is young", "Every echo finds its way back home", "Here comes the chorus, hold on to the note and let the whole room carry it"];
+        let lines = (0..12).map(|k| LyricLine { start_ms: 2_000 + k as u64 * 4_000, text: verse[k % 4].into(), ..Default::default() }).collect();
+        app.lyrics_event(Lyrics { uri: "spotify:track:v".into(), synced: true, lines, source: "fake".into(), ..Default::default() });
+        app
+    }
+
+    #[test]
+    fn only_narrow_tall_panes_run_the_song_around_the_line() {
+        // the contact sheet's narrow-tall Pane (24×30 with its frame) and the sizes scenario's 16×30
+        assert!(narrow_tall(22, 28) && narrow_tall(16, 28));
+        // tiny, wide-short, medium, big, full and the sizes scenario's others keep their look
+        for (w, h) in [(18, 4), (98, 6), (58, 18), (118, 38), (180, 47), (14, 28), (44, 14), (88, 32), (254, 62), (108, 2)] {
+            assert!(!narrow_tall(w, h), "{w}×{h}");
+        }
+    }
+
+    #[test]
+    fn a_narrow_tall_pane_is_full_of_the_song() {
+        // the seventh line ("Every echo finds its way back home") being sung
+        let mut app = verses_at(26_600);
+        let s = render(&mut app, 22, 28);
+        let rows: Vec<&str> = s.lines().collect();
+        // whole lines, wrapped, never cut with an ellipsis
+        assert!(!s.contains('…'), "{s}");
+        assert!(s.contains("Here comes the") && s.contains("whole room carry it"), "{s}");
+        // lines well before and after it, the Pane full from its top row to the credit: no run of empty rows longer
+        // than the ball's lane
+        let body = &rows[1..rows.len() - 2];
+        assert!(body[0].trim().len() > 2 && body[body.len() - 1].trim().len() > 2, "{s}");
+        let mut run = 0;
+        for r in body {
+            run = if r.trim().is_empty() { run + 1 } else { 0 };
+            assert!(run <= 2, "{s}");
+        }
+    }
+
+    #[test]
+    fn a_narrow_tall_pane_sings_in_big_text_with_the_song_around_it() {
+        let mut app = verses_at(26_600);
+        let (s, out) = pixel_frame(&mut app, 22, 28);
+        assert!(!s.contains("Every echo") && out.contains("a=t,"), "the line on stage is big text: {s}");
+        assert!(s.contains("Here comes the") && s.contains("Sing it like the") && !s.contains('…'), "{s}");
+        // its size worked out once for the song and this Pane
+        assert!(app.lyrics.karaoke().size.is_some_and(|(k, px)| k.0 == 22 && px.is_some()));
     }
 
     /// What big text costs while a line is sung (release: `cargo test --release -p singularity -- --ignored
