@@ -421,24 +421,27 @@ impl App {
     /// The chip by the pointer for `text`: one row, at most `CHIP_MAX` wide, on the pointer's row and a fixed step right
     /// of it, inside `area` (where the screen ends it stops, rather than jumping to the pointer's left: a small move
     /// there flipped it back and forth). Picked up with Enter: in the Pane aimed at, under its middle (where a target's
-    /// label goes); aimed from a Pane into the Tray, in the Tray's row after what waits there (where it would land).
+    /// label goes); aimed at the Tray, in the Tray's row (never on its frame): a Pane's Widget after what waits there
+    /// (where it would land), one picked up from the Tray on its own place there.
     pub fn chip_rect(&self, area: Rect, text: &str) -> Option<Rect> {
         let t = self.tile.as_ref().filter(|t| t.live)?;
         let w = (text.chars().count() as u16 + 2).min(CHIP_MAX).min(area.width);
-        if let (Some(Aim::Tray(_)), false) = (t.aim, t.from_tray) {
-            // inside the Tray's frame, after its last Widget shown (or at its start, empty)
+        if let Some(Aim::Tray(x)) = t.aim {
             let r = self.tray_rect();
             let (x0, x1) = (r.x + 2, r.right().saturating_sub(2));
             let w = w.min(x1.saturating_sub(x0));
             let first = self.arranging.as_ref().map_or(0, |a| a.tray_first);
-            let after = tray_layout(self, r, first).items.last().map_or(x0, |(_, c, close)| close.unwrap_or(*c).right() + 1);
-            return Some(Rect::new(after.min(x1.saturating_sub(w)).max(x0), r.y + 1, w, 1));
-        }
-        if let Some(Aim::Tray(x)) = t.aim {
-            // on the Tray's top edge, over the column it was aimed down at
-            let r = self.tray_rect();
-            let w = w.min(r.width);
-            return Some(Rect::new(x.saturating_sub(w / 2).clamp(r.x, r.right().saturating_sub(w)), r.y, w, 1));
+            let l = tray_layout(self, r, first);
+            let at = match (t.from_tray, t.pane.widget) {
+                // over its own chip in the strip (the column it was picked up at, if that has scrolled away)
+                (true, Some(me)) => {
+                    let i = self.layout.tray().iter().position(|w| *w == me);
+                    l.items.iter().find(|(j, ..)| Some(*j) == i).map_or(x.saturating_sub(w / 2), |(_, c, _)| c.x)
+                }
+                // after its last Widget shown (or at its start, empty)
+                _ => l.items.last().map_or(x0, |(_, c, close)| close.unwrap_or(*c).right() + 1),
+            };
+            return Some(Rect::new(at.min(x1.saturating_sub(w)).max(x0), r.y + 1, w, 1));
         }
         if let Some(Aim::Pane(aim)) = t.aim {
             let r = self.layout.compute(self.pane_area()).rect(aim)?;
@@ -1284,6 +1287,13 @@ impl App {
             };
             t.tray = matches!(to, Aim::Tray(_)) && !from_tray;
         }
+        // a Pane's Widget aimed at the Tray lands after its last Widget: the strip shows its end, where the chip is
+        if matches!(to, Aim::Tray(_)) && !from_tray {
+            let end = tray_layout(self, self.tray_rect(), usize::MAX).first;
+            if let Some(a) = self.arranging.as_mut() {
+                a.tray_first = end;
+            }
+        }
     }
 
     /// A Widget picked up with Enter is put back once anything else edits the layout (Ctrl+K Close pane, Replace
@@ -1539,18 +1549,18 @@ pub fn draw_legend(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         k if k.is_empty() => "Esc".to_string(),
         k => format!("Esc/{k}"),
     };
-    // each with how long it stays when the line is short: the mouse's gesture goes first, then undo / redo, then the
-    // keys (the arrows and Enter last)
+    // each with how long it stays when the line is short: `w` goes first, then the mouse's gesture, then undo / redo,
+    // then the keys (the arrows and Enter last)
     let mut parts: Vec<(u8, String)> = if held {
         vec![(9, "←↑↓→ aim".into()), (9, "Enter drop".into()), (9, format!("{esc} put back"))]
     } else if app.arranging.as_ref().is_some_and(|a| a.split_next) {
         vec![(9, "←↑↓→ split that way".into())]
     } else {
-        let mut parts = vec![(0, "drag a title onto a Pane or the Tray".to_string()), (8, "←↑↓→ Enter pick up".into()), (6, "t Tray".into()), (5, "⊞ s+arrow split".into()), (5, "× x close".into()), (4, "+ − width".into()), (4, "[ ] height".into()), (3, "w + Widget".into())];
+        let mut parts = vec![(1, "drag a title onto a Pane or the Tray".to_string()), (8, "←↑↓→ Enter pick up".into()), (6, "t Tray".into()), (5, "⊞ s+arrow split".into()), (5, "× x close".into()), (4, "+−[] size".into()), (0, "w + Widget".into())];
         for (a, what) in [(Action::UndoLayout, "undo"), (Action::RedoLayout, "redo")] {
             let k = key(a);
             if !k.is_empty() {
-                parts.push((1, format!("{k} {what}")));
+                parts.push((2, format!("{k} {what}")));
             }
         }
         parts.push((7, format!("{esc} done")));

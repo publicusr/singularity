@@ -2274,6 +2274,13 @@ def arrange_fixes(t, out):
     t.send(b"\r", 0.4)
     t.shot(f"{out}/05-set-aside.png")
     print("after Enter, the Tray row:", t.screen.display[ROWS - 3].strip()[:100])
+    # ↓ onto it in the Tray and Enter picks it up from there: its chip on its own place in the Tray's row
+    t.send(DOWN, 0.3)
+    t.send(b"\r", 0.4)
+    t.shot(f"{out}/05b-picked-up-from-tray.png")
+    at = t.find("⠿ stream")
+    print("picked up from the Tray: chip at", at, "· the Tray's frame:", t.screen.display[ROWS - 4].strip()[:40])
+    t.send(b"\x1b", 0.3)
     t.send(b"\x1a", 0.4)
     # 3. Home focused (a click on it): `=` grows like `+`, `-` shrinks; `]` taller, `[` shorter. Prints where the
     # titles of Home and the queue under it are

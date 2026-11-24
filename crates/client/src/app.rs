@@ -1273,6 +1273,8 @@ impl App {
                     self.close_pane(p);
                 }
             }
+            // (while arranging, the key that came in leaves as Esc does, Q70: also one bound with Ctrl or Alt)
+            Action::Arrange if self.arranging.is_some() => self.arrange_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
             Action::Arrange => self.enter_arrange(),
             Action::NewDesign => self.new_design(),
             Action::ResetLayout => self.reset_design(),

@@ -1026,7 +1026,7 @@ fn help_rows(m: &crate::keymap::Keymap) -> Vec<(String, String)> {
         (m.label(A::FocusNext), "focus the next pane".into()),
         ("Panes".into(), "drag a title to move it · × closes · right-click for more".into()),
         (m.label(A::ReplaceWidget), "replace the focused pane's widget (or click its name)".into()),
-        (m.label(A::Arrange), "arrange: Enter pick up · t Tray · s split · x close · + − size".into()),
+        (m.label(A::Arrange), "arrange: Enter pick up, t Tray, s split, x close, + − [ ] size".into()),
         (format!("{} {}", m.label(A::UndoLayout), m.label(A::RedoLayout)).trim().to_string(), "undo / redo a layout change".into()),
         (m.label(A::ToggleIdle), "idle takeover on / off (any key wakes the screen)".into()),
         (m.label(A::Quit), "quit the Client (music keeps playing)".into()),

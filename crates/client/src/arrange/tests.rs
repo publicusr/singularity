@@ -520,7 +520,7 @@ fn m_enters_arrange_mode_and_arrows_move_the_focus_between_panes() {
     // the legend shows the keys
     let shot = render(&mut a, W, H);
     let legend = shot.lines().last().unwrap();
-    for k in ["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "+ − width", "[ ] height", "w + Widget", "Esc/m done"] {
+    for k in ["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "+−[] size", "Esc/m done"] {
         assert!(legend.contains(k), "{k:?} in {legend:?}");
     }
 }
@@ -2393,4 +2393,101 @@ fn w_opens_the_trays_widget_picker_anywhere_in_arrange_mode() {
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Char('w'));
     assert!(a.widget_picker().is_none() && a.tile.is_some());
+}
+
+/// A Widget picked up from the Tray with Enter, aimed at the Tray (where it is): its chip is on its own place in the
+/// Tray's row, never on the Tray's frame (where it covered "Tray" or "+ Widget"); nothing else on screen changes
+/// but the Tray and the legend.
+#[test]
+fn a_widget_picked_up_from_the_tray_is_shown_in_its_place_there() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    for w in [Widget::Fft, Widget::Loudness] {
+        a.focus_on(w);
+        key(&mut a, KeyCode::Char('t'));
+    }
+    a.focus_on(Widget::Queue);
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Left);
+    assert_eq!(a.arranging.as_ref().unwrap().tray_focus, Some(crate::arrange::TrayStop::Widget(Widget::Fft)));
+    let before = render_buf(&mut a, W, H);
+    let tray = a.tray_rect();
+    let name = crate::ui::pane_name(a.design, Widget::Fft);
+    let own = spot(&before, &format!(" ⠿ {name} ")).unwrap();
+    key(&mut a, KeyCode::Enter);
+    let buf = render_buf(&mut a, W, H);
+    assert_eq!(spot(&buf, &format!("⠿ {name}")), Some((own.0 + 1, tray.y + 1)), "on its own place in the Tray's row");
+    assert_eq!(row(&buf, tray.y, tray.x, tray.right()), row(&before, tray.y, tray.x, tray.right()), "the Tray's frame as it was");
+    let inside = |x: u16, y: u16| x >= tray.x && x < tray.right() && y >= tray.y && y < tray.bottom();
+    for y in 0..H - 1 {
+        for x in 0..W {
+            if !inside(x, y) {
+                let (p, q) = (&before[(x, y)], &buf[(x, y)]);
+                assert!(p.symbol() == q.symbol() && p.fg == q.fg && p.bg == q.bg, "({x}, {y}) changed from {p:?} to {q:?}");
+            }
+        }
+    }
+    // ↑ aims into the Panes, ↓ back at the Tray: on its place again
+    key(&mut a, KeyCode::Up);
+    key(&mut a, KeyCode::Down);
+    let buf = render_buf(&mut a, W, H);
+    assert_eq!(spot(&buf, &format!("⠿ {name}")), Some((own.0 + 1, tray.y + 1)));
+}
+
+/// A Tray holding more than its strip shows: a Pane's Widget aimed at it scrolls the strip to its end, so the chip is
+/// shown where Enter puts it (after the last Widget, not after the last one that happened to be shown).
+#[test]
+fn a_widget_aimed_at_a_full_tray_shows_its_end() {
+    let mut a = App::new(None);
+    render(&mut a, 100, 40);
+    key(&mut a, KeyCode::Char('m'));
+    for w in [Widget::Fft, Widget::Loudness, Widget::Lyrics, Widget::Stream, Widget::Library] {
+        a.focus_on(w);
+        key(&mut a, KeyCode::Char('t'));
+    }
+    for w in ["starfield", "rain", "levels", "glow"] {
+        a.open_tray_picker();
+        typed(&mut a, w);
+        key(&mut a, KeyCode::Enter);
+    }
+    render(&mut a, 100, 40);
+    if let Some(r) = a.arranging.as_mut() {
+        r.tray_first = 0;
+    }
+    let buf = render_buf(&mut a, 100, 40);
+    let last = *a.layout.tray().last().unwrap();
+    let last_name = crate::ui::pane_name(a.design, last);
+    assert!(spot(&buf, &format!(" ⠿ {last_name} ")).is_none(), "the strip doesn't show its end yet");
+    a.focus_on(Widget::Queue);
+    key(&mut a, KeyCode::Enter);
+    while !a.tile.as_ref().is_some_and(|t| t.tray) {
+        key(&mut a, KeyCode::Down);
+    }
+    let buf = render_buf(&mut a, 100, 40);
+    let tray = a.tray_rect();
+    let shown = spot(&buf, &format!(" ⠿ {last_name} ")).expect("the last Widget shown");
+    let chip = spot(&buf, "⠿ queue").expect("the chip");
+    assert!(chip.1 == tray.y + 1 && chip.0 > shown.0, "after the last Widget: {chip:?} {shown:?}");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.layout.tray().last(), Some(&Widget::Queue));
+}
+
+/// `arrange` bound to a key with Ctrl (keys.toml): pressed while arranging it leaves, as Esc does (the legend says so).
+#[test]
+fn arrange_bound_with_ctrl_leaves_arrange_mode_too() {
+    use singularity_config::{Keys, OneOrMany};
+    let mut a = app();
+    a.keymap = crate::keymap::Keymap::from_keys(&Keys { bindings: [("arrange".to_string(), OneOrMany::One("ctrl+e".into()))].into(), ..Default::default() });
+    assert!(a.keymap.problems.is_empty(), "{:?}", a.keymap.problems);
+    ctrl(&mut a, 'e');
+    assert!(a.arranging.is_some());
+    let legend = render(&mut a, W, H).lines().last().unwrap().to_string();
+    assert!(legend.contains("Esc/^E done"), "{legend}");
+    // a Widget picked up: put back first
+    a.focus_on(Widget::Queue);
+    key(&mut a, KeyCode::Enter);
+    ctrl(&mut a, 'e');
+    assert!(a.tile.is_none() && a.arranging.is_some());
+    ctrl(&mut a, 'e');
+    assert!(a.arranging.is_none());
 }
