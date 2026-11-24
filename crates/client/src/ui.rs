@@ -684,15 +684,17 @@ pub fn widget(buf: &mut Buffer, rect: Rect, inner: Rect, w: Widget, todo: &str, 
         return;
     }
     if w == Home {
-        // Search is built into Home (D70): the bar on top, the feed under it
+        // Search is built into Home (D70): the bar on top, the feed under it; a short Home keeps the bar as a search line
+        // without the blank row under it (#55)
         let mut feed_area = inner;
-        if inner.height >= 6 && inner.width >= 12 {
+        if inner.height >= 2 && inner.width >= 12 {
             let (x, w) = (inner.x + 1, inner.width.saturating_sub(2));
             let on = app.is_focused(Home) && app.home_view.on_bar;
             let hint = if on { "type or Enter".to_string() } else { app.keymap.label(Action::Search) };
             crate::search::bar(buf, Rect::new(x, inner.y, w, 1), "", on, &hint, th);
             app.hit(Rect::new(x, inner.y, w, 1), Hit::SearchBar);
-            feed_area = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 2);
+            let below = if inner.height >= 6 { 2 } else { 1 };
+            feed_area = Rect::new(inner.x, inner.y + below, inner.width, inner.height - below);
             app.home_view.has_bar = true;
         } else {
             app.home_view.has_bar = false;
@@ -1515,6 +1517,63 @@ mod tests {
             app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
         assert_eq!(app.searching().map(|s| s.query()), Some("nova"));
+    }
+
+    /// #55: Home in the contact sheet's small Panes. The tiny one (20×6) had no search bar: it keeps a search line (the
+    /// bar without the blank row under it) that a click opens Search from. In the narrow and short Homes the shortcuts'
+    /// covers sat on top of each other: a blank row now follows each line. A medium (the owner's pick) or large Home is
+    /// as before: the bar, a blank row, a tight grid.
+    #[test]
+    fn small_homes_keep_a_search_line_and_space_their_shortcuts() {
+        use crate::layout::{Axis, Node, Size};
+        let (mut app, _rx) = home_app();
+        let home_rect = |app: &App| app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).rect_of(Widget::Home).unwrap();
+        let bar = |app: &App| app.hits.iter().find_map(|(r, h)| (*h == Hit::SearchBar).then_some(*r));
+        // the shortcut tiles of the first column, top to bottom
+        let column = |app: &App| {
+            let mut tiles: Vec<Rect> = app.hits.iter().filter(|(_, h)| matches!(h, Hit::Card(c) if c.shelf == 0)).map(|(r, _)| *r).collect();
+            let x = tiles.iter().map(|r| r.x).min().unwrap_or(0);
+            tiles.retain(|r| r.x == x);
+            tiles.sort_by_key(|r| r.y);
+            tiles
+        };
+        let s = render(&mut app, 200, 64);
+        let home = home_rect(&app);
+        assert_eq!(bar(&app).map(|b| b.y), Some(home.y + 1), "a large Home's bar");
+        let tiles = column(&app);
+        assert_eq!(tiles[0].y, home.y + 3, "a blank row under the bar\n{s}");
+        assert!(tiles.len() > 1 && tiles.windows(2).all(|p| p[0].bottom() == p[1].y), "a large Home's grid stays tight: {tiles:?}");
+        // medium 60×20: unchanged too
+        let top = Node::split(Axis::Horizontal, Size::Cells(60), Node::pane(Widget::Home), Node::pane(Widget::Library));
+        app.layout = Node::split(Axis::Vertical, Size::Cells(20), top, Node::pane(Widget::Queue)).into();
+        let s = render(&mut app, 200, 64);
+        let home = home_rect(&app);
+        assert_eq!(bar(&app).map(|b| b.y), Some(home.y + 1), "a medium Home's bar");
+        let tiles = column(&app);
+        assert_eq!(tiles[0].y, home.y + 3, "a blank row under the bar\n{s}");
+        assert!(tiles.len() > 1 && tiles.windows(2).all(|p| p[0].bottom() == p[1].y), "a medium Home's grid stays tight: {tiles:?}");
+        for (w, h) in [(20, 6), (24, 30), (100, 8)] {
+            let top = Node::split(Axis::Horizontal, Size::Cells(w), Node::pane(Widget::Home), Node::pane(Widget::Library));
+            app.layout = Node::split(Axis::Vertical, Size::Cells(h), top, Node::pane(Widget::Queue)).into();
+            let s = render(&mut app, 200, 64);
+            let home = home_rect(&app);
+            assert_eq!((home.width, home.height), (w, h));
+            let pane = s.lines().skip(home.y as usize).take(h as usize).map(|l| l.chars().skip(home.x as usize).take(w as usize).collect::<String>()).collect::<Vec<_>>().join("\n");
+            let b = bar(&app).unwrap_or_else(|| panic!("{w}×{h}: no search bar\n{pane}"));
+            assert_eq!(b.y, home.y + 1, "{w}×{h}");
+            assert!(pane.lines().nth(1).unwrap().contains("⌕ Search"), "{w}×{h}\n{pane}");
+            let tiles = column(&app);
+            assert!(!tiles.is_empty(), "{w}×{h}: a shortcut in view\n{pane}");
+            assert!(tiles[0].y > b.y, "{w}×{h}");
+            assert!(tiles.windows(2).all(|p| p[0].bottom() < p[1].y), "{w}×{h}: the covers touch: {tiles:?}\n{pane}");
+        }
+        // the tiny Home's line opens Search like the bar does
+        let top = Node::split(Axis::Horizontal, Size::Cells(20), Node::pane(Widget::Home), Node::pane(Widget::Library));
+        app.layout = Node::split(Axis::Vertical, Size::Cells(6), top, Node::pane(Widget::Queue)).into();
+        render(&mut app, 200, 64);
+        let b = bar(&app).unwrap();
+        click(&mut app, b.x + 3, b.y);
+        assert_eq!(app.current_page(), crate::app::Page::Search);
     }
 
     #[test]
