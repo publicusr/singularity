@@ -10,6 +10,7 @@ mod artist;
 mod bigtext;
 mod conn;
 mod ambient;
+mod balance;
 mod covers;
 mod design;
 mod gfx;
