@@ -95,8 +95,8 @@ struct Drop {
 }
 
 /// Where the Panes go in a window of this size (under the top bar, over the player and the hints).
-fn body((w, h): (u16, u16)) -> Rect {
-    Rect::new(0, 1, w, h.saturating_sub(5))
+fn body((w, h): (u16, u16), arranging: bool) -> Rect {
+    crate::ui::rows(Rect::new(0, 0, w, h), arranging)[1]
 }
 
 /// A Client being played a path: the App, the test clock, the frame pacer and what each frame showed.
@@ -149,10 +149,10 @@ impl Replay {
         self.drawn = Some(self.a.layout.clone());
     }
 
-    /// What is under (x, y) by the geometry alone: a Pane other than `own`, or the Tray (Arrange mode's strip where
-    /// the player was).
+    /// What is under (x, y) by the geometry alone: a Pane other than `own`, or the Tray (Arrange mode's strip under
+    /// the player bar).
     fn under(&self, x: u16, y: u16, own: PaneId) -> Option<Spot> {
-        let t = Rect::new(0, self.a.pane_area().bottom(), self.a.pane_area().width, 3);
+        let t = self.a.tray_rect();
         if self.a.arranging.is_some() && own != PaneId::UNSET && x < t.right() && y >= t.y && y < t.bottom() {
             return Some(Spot::Tray);
         }
@@ -165,7 +165,7 @@ impl Replay {
         if let Some((at, ev)) = self.moves.flush() {
             self.handle(at, ev);
         }
-        if self.draw || self.a.pane_area() != body(self.size) || self.drawn.as_ref() != Some(&self.a.layout) {
+        if self.draw || self.a.pane_area() != body(self.size, self.a.arranging.is_some()) || self.drawn.as_ref() != Some(&self.a.layout) {
             self.render();
         }
         let area = self.a.pane_area();
@@ -694,7 +694,7 @@ fn letting_go_over_the_top_bar_changes_nothing_and_over_the_tray_sets_it_aside()
             let hx = centre(r.rect(Widget::Home)).0;
             h.press(x, y).glide(qx, qy, 200.0).rest(200.0).glide(hx, y_out, 150.0).rest(20.0).release();
         }) {
-            // (Arrange mode began with the drag, so the player's rows are the Tray's)
+            // (Arrange mode began with the drag, so the Tray is under the player bar)
             match name {
                 "the Tray" => {
                     let w = r.start.widget_in(r.drops[0].held).unwrap();
@@ -898,7 +898,14 @@ fn a_drag_drawn_frame_by_frame_moves_nothing_but_the_chip_and_the_highlight() {
         r.play(&path, 400.0);
         r.check("drawn");
         let held: Vec<&Frame> = r.frames.iter().filter(|f| f.held).collect();
-        assert!(held.len() > 20 && held.iter().all(|f| f.rects == r.frames[0].rects), "every frame of the drag drew every Pane where it was");
+        // (the drag turned Arrange mode on: the Panes made room for the Tray once, at its start, Q39)
+        assert!(held.len() > 20 && held.iter().all(|f| f.rects == held[0].rects), "every frame of the drag drew every Pane where it was");
+        // and that is the floor plan in the Panes' area less the Tray's rows; before the press, in the whole area
+        assert_eq!((r.frames[0].body, held[0].body), (body(r.size, false), body(r.size, true)));
+        assert_eq!(held[0].body.height + crate::arrange::TRAY_H, r.frames[0].body.height);
+        let mut arranged: Vec<(PaneId, Rect)> = r.start.compute(held[0].body).panes.into_iter().map(|(p, r)| (p.id, r)).collect();
+        arranged.sort_by_key(|(p, _)| *p);
+        assert_eq!(held[0].rects, arranged, "the held frames show the arranged floor plan");
         assert!(r.changes() >= 2, "the highlight went from Pane to Pane");
         assert_eq!(r.a.layout, swapped_with(&r, Widget::Library));
     }
