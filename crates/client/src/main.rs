@@ -22,6 +22,7 @@ mod karaoke;
 mod lyrics;
 mod meters;
 mod mini;
+mod needs;
 mod pace;
 mod panemenu;
 mod cover;

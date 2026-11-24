@@ -1460,6 +1460,288 @@ def design_sizes(env, out):
             os.close(t.fd)
 
 
+# the contact sheet (#36, D87): every Widget, lyrics and Karaoke first; Pane sizes are the whole Pane, frame included
+SHEET_WIDGETS = ["lyrics", "karaoke", "home", "library", "queue", "nowplaying", "well", "hole", "stream", "top",
+                 "listening", "today", "topweek", "marquee", "glow", "fft", "loudness", "levels", "scope", "rain",
+                 "starfield"]
+SHEET_SIZES = {"tiny": (20, 6), "narrow-tall": (24, 30), "wide-short": (100, 8), "medium": (60, 20), "big": (120, 40),
+               "full": None}
+# the full screen of the sheet, and the full-terminal Design shots: (label, cols, rows, cell px w, cell px h)
+SHEET_TERMS = [("pc", 264, 68, 10, 20), ("laptop-full", 180, 54, 16, 34), ("laptop-half", 90, 50, 16, 34)]
+SHEET_FULL = (180, 54)
+
+
+def set_cell_px(w, h):
+    """The terminal's cell size in pixels (what the pty reports, so the pixel tier draws to it) and fonts to match."""
+    global CW, CH, FONT, BRAILLE
+    CW, CH = w, h
+    size = round(h * 0.8)
+    FONT = ImageFont.truetype(FONT.path, size)
+    BRAILLE = ImageFont.truetype(BRAILLE.path, size)
+
+
+def pane_rect(t, want, widget):
+    """The top-left Pane's rect in cells (x, y, w, h), read off its frame in the screen. The well's frame sags (no
+    corners to read): `want` (w, h) under the top bar, narrowed as its shape rule narrows it (4:3 in pixels)."""
+    rows = t.screen.display
+    y0 = next((y for y, line in enumerate(rows) if line[:1] in "╭┌╔┏"), None)
+    if widget == "well" or y0 is None:
+        w, h = want
+        shaped = round((h - 2) * CH / CW * 4 / 3) + 2
+        # (alone on the screen there's no neighbour to give the width to)
+        return (0, 1, shaped if w > shaped + shaped // 20 and w < COLS else w, h)
+    top = rows[y0]
+    x1 = next((x for x in range(1, len(top)) if top[x] in "╮┐╗┓"), None)
+    y1 = next((y for y in range(y0 + 1, len(rows)) if rows[y][:1] in "╰└╚┗"), None)
+    if x1 is None or y1 is None:
+        return (0, y0, *want)
+    return (0, y0, x1 + 1, y1 - y0 + 1)
+
+
+def bar_track(t):
+    """Which of the fake Catalogue's tracks the player bar (the last rows) shows, or None."""
+    for line in t.screen.display[-4:]:
+        m = re.search(r"Track (\d+)", line)
+        if m:
+            return int(m[1])
+    return None
+
+
+def bar_secs(t):
+    """Where the song is, as the player bar shows it (the time before the song's length, 3:20), or None."""
+    for line in t.screen.display[-4:]:
+        m = re.search(r"(\d+):(\d\d)\s.*3:20", line)
+        if m:
+            return int(m[1]) * 60 + int(m[2])
+    return None
+
+
+def sheet_font(size):
+    return ImageFont.truetype(FONT.path, size)
+
+
+def compose_sheet(path, title, cells):
+    """One image of captioned cells, packed in rows: `cells` is [(caption, PIL image)], in order."""
+    cap, gap, pad, maxw = 30, 28, 32, 3900
+    font = sheet_font(20)
+    # each cell as wide as its picture or its caption
+    span = lambda c, im: max(im.width, int(font.getlength(c)))
+    rows, row, x = [], [], 0
+    for c, im in cells:
+        if row and x + span(c, im) > maxw:
+            rows.append(row)
+            row, x = [], 0
+        row.append((c, im))
+        x += span(c, im) + gap
+    if row:
+        rows.append(row)
+    width = max(sum(span(c, im) + gap for c, im in r) - gap for r in rows) + 2 * pad
+    height = 80 + sum(cap + max(im.height for _, im in r) + gap for r in rows) + pad
+    sheet = Image.new("RGB", (width, height), "#202024")
+    d = ImageDraw.Draw(sheet)
+    d.text((pad, 22), title, font=sheet_font(34), fill="#f0f0f0")
+    y = 80
+    for r in rows:
+        x = pad
+        for c, im in r:
+            d.text((x, y + 2), c, font=font, fill="#c8c8d0")
+            sheet.paste(im, (x, y + cap))
+            d.rectangle([x - 1, y + cap - 1, x + im.width, y + cap + im.height], outline="#55555f")
+            x += span(c, im) + gap
+        y += cap + max(im.height for _, im in r) + gap
+    sheet.save(path)
+
+
+SHEET_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Size contact sheet</title>
+<style>
+:root { color-scheme: dark; --bg: #18181b; --fg: #e8e8ec; --dim: #9a9aa6; --good: #3fa56b; --bad: #d0473f; }
+body { background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; margin: 0 16px 64px; }
+h1 { font-size: 22px; margin: 20px 0 4px; } h2 { font-size: 18px; margin: 36px 0 8px; border-top: 1px solid #333; padding-top: 16px; }
+p { color: var(--dim); max-width: 70ch; }
+nav a { color: var(--dim); margin-right: 10px; }
+.cells { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+figure { margin: 0; } figcaption { font: 13px ui-monospace, monospace; color: var(--dim); margin-bottom: 4px; display: flex; gap: 6px; align-items: center; }
+figure img { display: block; max-width: min(100%, 92vw); outline: 1px solid #444; image-rendering: auto; }
+figure.good img { outline: 3px solid var(--good); } figure.bad img { outline: 3px solid var(--bad); }
+button { font: 12px system-ui; background: #2a2a30; color: var(--fg); border: 1px solid #444; border-radius: 4px; cursor: pointer; padding: 1px 7px; }
+figure.good button.g { background: var(--good); } figure.bad button.b { background: var(--bad); }
+textarea { width: 100%; max-width: 900px; height: 10em; background: #101013; color: var(--fg); border: 1px solid #444; font: 13px ui-monospace, monospace; }
+</style></head><body>
+<h1>Size contact sheet</h1>
+<p>Every Widget alone in a Pane at six sizes (the whole Pane, frame included), on the cell tier and the pixel tier,
+then each built-in Design at the PC's size and an emulated 13-inch laptop (Retina cells). Mark each cell good or bad;
+the marks are kept in this browser and listed at the bottom to copy. Click an image for full size.</p>
+<nav>NAV</nav>
+BODY
+<h2 id="marks">Marks</h2>
+<p>Bad cells (with a note if you add one by clicking "bad" again):</p>
+<textarea id="out" readonly></textarea>
+<script>
+const KEY = "contact-sheet-marks";
+let marks = {};
+try { marks = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) {}
+function save() { try { localStorage.setItem(KEY, JSON.stringify(marks)); } catch (e) {} show(); }
+function show() {
+  document.querySelectorAll("figure[data-id]").forEach(f => {
+    const m = marks[f.dataset.id];
+    f.classList.toggle("good", !!m && m.v === "good");
+    f.classList.toggle("bad", !!m && m.v === "bad");
+  });
+  const bad = Object.entries(marks).filter(([, m]) => m.v === "bad").map(([id, m]) => id + (m.note ? ": " + m.note : ""));
+  document.getElementById("out").value = bad.join("\\n");
+}
+document.querySelectorAll("figure[data-id]").forEach(f => {
+  f.querySelector("button.g").onclick = () => { marks[f.dataset.id] = { v: "good" }; save(); };
+  f.querySelector("button.b").onclick = () => {
+    const was = marks[f.dataset.id];
+    const note = was && was.v === "bad" ? prompt("What's wrong here?", was.note || "") : "";
+    marks[f.dataset.id] = { v: "bad", note: note || (was && was.note) || "" }; save();
+  };
+});
+show();
+</script></body></html>
+"""
+
+
+def sheet_html(sheet, add):
+    """index.html for the sheet: every Widget's cells in order, then the Designs. `add` is {file: caption} of this
+    run's shots, kept in the sheet's captions.json with the earlier runs' (a run of a few Widgets updates their cells)."""
+    path = f"{sheet}/captions.json"
+    captions = json.load(open(path)) if os.path.exists(path) else {}
+    captions.update(add)
+    json.dump(captions, open(path, "w"), indent=0, ensure_ascii=False)
+    def fig(src):
+        cid = captions[src]
+        return (f'<figure data-id="{cid}"><figcaption>{cid} <button class="g">good</button> <button class="b">bad</button>'
+                f'</figcaption><a href="{src}"><img src="{src}" loading="lazy" alt="{cid}"></a></figure>')
+    order = {f"{w}-{n}-{t}": i for i, (w, n, t) in enumerate((w, n, t) for w in SHEET_WIDGETS for n in SHEET_SIZES for t in ("cells", "pixels"))}
+    body, nav = [], []
+    for w in SHEET_WIDGETS:
+        cells = sorted((f for f in captions if f.startswith(f"cells/{w}-")), key=lambda f: order.get(f[6:-4], len(order)))
+        if cells:
+            nav.append(f'<a href="#{w}">{w}</a>')
+            body.append(f'<h2 id="{w}">{w}</h2><p><a href="{w}.png">the whole sheet</a></p><div class="cells">'
+                        + "".join(fig(f) for f in cells) + "</div>")
+    designs = [f for f in captions if f.startswith("designs/")]
+    if designs:
+        nav.append('<a href="#designs">Designs</a>')
+        body.append('<h2 id="designs">Designs, full terminal</h2><div class="cells">' + "".join(fig(f) for f in designs) + "</div>")
+    nav.append('<a href="#marks">marks</a>')
+    open(f"{sheet}/index.html", "w").write(SHEET_HTML.replace("NAV", " ".join(nav)).replace("BODY", "\n".join(body)))
+
+
+def contact_sheet(env, out):
+    """The size contact sheet (#36, D87): every Widget (SHEET_WIDGETS, lyrics and Karaoke first) alone in a Pane of
+    each size in SHEET_SIZES (the whole Pane: tiny 20×6 up to big 120×40, and the full 180×54 screen) on the cell and
+    the pixel tier, the fake Catalogue's second track (synced, word-timed lyrics) playing about 10 s in; one Client per
+    shot. Then every built-in Design full-terminal at SHEET_TERMS (the PC's 264×68, a 13-inch laptop's 180×54 full
+    screen and 90×50 half-screen window with Retina-sized 16×34 px cells) on both tiers. Raw shots go to `out`; the
+    sheet (one captioned image per Widget, each cell on its own, the Design shots and an index.html to mark them in)
+    goes to PTY_SHEET (default `<out>/sheet` when `out` is an ignored `out-*` folder, else
+    `tools/pty/out-contact-sheet/sheet`); set it outside the repo to keep the sheet. PTY_WIDGETS /
+    PTY_SIZES / PTY_TIERS (cells,pixels) / PTY_DESIGNS pick a subset; PTY_DESIGNS= skips the Designs."""
+    global COLS, ROWS
+    widgets = os.environ.get("PTY_WIDGETS", ",".join(SHEET_WIDGETS)).split(",")
+    sizes = os.environ.get("PTY_SIZES", ",".join(SHEET_SIZES)).split(",")
+    tiers = os.environ.get("PTY_TIERS", "cells,pixels").split(",")
+    designs = [d for d in os.environ.get("PTY_DESIGNS", ",".join(DESIGNS)).split(",") if d]
+    # by default under the output folder when it is an ignored `out-*` one, else under tools/pty/out-contact-sheet: the
+    # sheet's index.html and captions.json must never land untracked in the repo
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = out if os.path.basename(os.path.abspath(out)).startswith("out-") else f"{here}/out-contact-sheet"
+    sheet = os.environ.get("PTY_SHEET") or f"{base}/sheet"
+    os.makedirs(f"{sheet}/cells", exist_ok=True)
+    os.makedirs(f"{sheet}/designs", exist_ok=True)
+    cfg = f"{env['XDG_CONFIG_HOME']}/singularity"
+    os.makedirs(f"{cfg}/layouts", exist_ok=True)
+    started = [False]
+
+    def run(tier, setup, shoot):
+        """One Client on `tier`: set up its config, play track 2 from 0 (started once), seek, shoot, stop."""
+        setup()
+        t = Term(dict(env, SINGULARITY_PIXEL="1" if tier == "pixels" else "0"))
+        t.pump(1.5)
+        if not started[0]:
+            t.send(b" ", 0.8)  # play (track 1 of the fake Catalogue)
+            started[0] = True
+        # every shot at about the same moment: track 2 (n/b until the player bar says so; each starts it from 0), then
+        # 5 s seeks (Shift+→/←) until the bar is a few seconds short of 12 s, then wait for it
+        for _ in range(6):
+            n = bar_track(t)
+            if n == 2:
+                break
+            t.send(b"n" if n is None or n < 2 else b"b", 0.6)
+        for _ in range(8):
+            at = bar_secs(t)
+            if at is None or 0 <= 12 - at < 5:
+                break
+            t.send(b"\x1b[1;2C" if at < 12 else b"\x1b[1;2D", 0.6)
+        t.pump(max(1.0, 12 - (at or 12)))
+        shoot(t)
+        t.send(b"q", 0.3)
+        try:
+            os.kill(t.pid, 9)
+        except ProcessLookupError:
+            pass
+        os.waitpid(t.pid, 0)
+        os.close(t.fd)
+
+    set_cell_px(10, 20)
+    for widget in widgets:
+        cells, figs = [], []
+        for name in sizes:
+            for tier in tiers:
+                if SHEET_SIZES.get(name, 0) is None:
+                    COLS, ROWS = SHEET_FULL
+                    layout = f'name = "Sizes"\ndesign = "singularity"\ntree = {{ slot = "{widget}" }}\n'
+                    want = (SHEET_FULL[0], SHEET_FULL[1] - 5)  # under the top bar, over the player bar
+                else:
+                    # a size's name, or any `<w>x<h>`
+                    w, h = SHEET_SIZES[name] if name in SHEET_SIZES else (int(n) for n in name.split("x"))
+                    # room for Home beside it and a row of Panes under it, and never so small the mini-player takes over
+                    COLS, ROWS = max(90, w + 16), max(30, h + 12)
+                    layout = sizes_layout(widget, w - 2, h - 2)
+                    want = (w, h)
+                def setup():
+                    open(f"{cfg}/layouts/sizes.toml", "w").write(layout)
+                    open(f"{cfg}/config.toml", "w").write('schema = 6\n[ui]\ndesign = "singularity"\nlayout = "sizes"\n')
+                raw = f"{out}/{widget}-{name}-{tier}.png"
+                got = []
+                def shoot(t):
+                    t.shot(raw)
+                    got.append(pane_rect(t, want, widget))
+                run(tier, setup, shoot)
+                x, y, w, h = got[0]
+                crop = Image.open(raw).crop((x * CW, y * CH, (x + w) * CW, (y + h) * CH))
+                cid = f"{widget} · {name} {w}×{h} · {tier}"
+                fname = f"cells/{widget}-{name}-{tier}.png"
+                crop.save(f"{sheet}/{fname}")
+                cells.append((cid, crop))
+                figs.append((cid, fname))
+                print(cid, flush=True)
+        compose_sheet(f"{sheet}/{widget}.png", widget, cells)
+        sheet_html(sheet, {f: c for c, f in figs})
+    shots = []
+    for label, cols, rows, cw, ch in SHEET_TERMS:
+        set_cell_px(cw, ch)
+        COLS, ROWS = cols, rows
+        for design in designs:
+            for tier in tiers:
+                fname = f"designs/{design}-{label}-{cols}x{rows}-{tier}.png"
+                def setup():
+                    open(f"{cfg}/config.toml", "w").write(f'schema = 6\n[ui]\ndesign = "{design}"\n')
+                raw = f"{out}/{design}-{label}-{tier}.png"
+                run(tier, setup, lambda t: t.shot(raw))
+                shutil.copy(raw, f"{sheet}/{fname}")
+                shots.append((f"{design} · {label} {cols}×{rows} @{cw}×{ch}px · {tier}", fname))
+                print(shots[-1][0], flush=True)
+    set_cell_px(10, 20)
+    sheet_html(sheet, {f: c for c, f in shots})
+    print(f"sheet: {sheet}/index.html")
+
+
 def widgets_large(t, out):
     """The tiling Widgets (stream, top, listening, today, top this week) each in a big Pane of a saved layout, a
     track playing on a healthy fake stream; then top this week switched to tracks. Try PTY_COLS=240 PTY_ROWS=70 (Panes
@@ -2066,7 +2348,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast", "tiling-paths", "resize", "karaoke") else "0"
@@ -2085,10 +2367,10 @@ def main():
         seed_listening(env["SINGULARITY_DATA"])
     if scenario == "stalls":
         env["SINGULARITY_FAKE_STALLS"] = "1"
-    if scenario in ("stats", "stats-widgets", "widgets-large", "sizes", "wheel-all"):
+    if scenario in ("stats", "stats-widgets", "widgets-large", "sizes", "wheel-all", "contact-sheet"):
         env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
         seed_listening(env["SINGULARITY_DATA"])
-    if scenario in ("widgets-large", "sizes"):
+    if scenario in ("widgets-large", "sizes", "contact-sheet"):
         env["SINGULARITY_FAKE_STALLS"] = "fine"
         seed_today(env["SINGULARITY_DATA"])
         os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity/layouts", exist_ok=True)
@@ -2130,6 +2412,8 @@ def main():
             return sizes(env, out)
         if scenario == "design-sizes":
             return design_sizes(env, out)
+        if scenario == "contact-sheet":
+            return contact_sheet(env, out)
         t = Term(env)
         if scenario == "space-startup":
             return space_startup(t, out, env)

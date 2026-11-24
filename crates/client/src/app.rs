@@ -649,6 +649,9 @@ pub struct App {
     pub lyrics: crate::songlyrics::SongLyrics,
     /// where the hole was drawn this frame (for bending the neighbouring borders)
     pub hole_at: Option<Hole>,
+    /// the Panes drawn this frame too small for their Widget (its needs line, #36): they take no wheel, keys or clicks
+    /// for it
+    pub short_panes: Vec<PaneId>,
     /// what's liked, saved and followed (#22)
     pub(crate) saved: crate::saved::Saved,
     /// a saved playlist's Saved button was clicked once: a second click soon after removes it
@@ -780,6 +783,7 @@ impl App {
             queue_view: Default::default(),
             lyrics: Default::default(),
             hole_at: None,
+            short_panes: Vec::new(),
             saved: Default::default(),
             confirm_remove: None,
             playlists: Default::default(),
@@ -959,6 +963,7 @@ impl App {
         self.hits.clear();
         self.overlays.clear();
         self.hole_at = None;
+        self.short_panes.clear();
         self.covers.poll();
         if self.toast.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_millis(2500)) {
             self.toast = None;
@@ -1319,29 +1324,31 @@ impl App {
         if self.move_mode.is_some() {
             return self.move_key(k);
         }
-        if self.is_focused(Widget::Home) && self.search.is_open() && self.search_key(k) {
+        // a focused Pane showing its needs line has no keys of its own: they'd act on what it hides (#36)
+        let shown = !self.focus.is_some_and(|p| self.short_panes.contains(&p));
+        if shown && self.is_focused(Widget::Home) && self.search.is_open() && self.search_key(k) {
             return;
         }
-        if self.is_focused(Widget::Home) && !shift && self.stats_view.is_some() && self.stats_key(k) {
+        if shown && self.is_focused(Widget::Home) && !shift && self.stats_view.is_some() && self.stats_key(k) {
             return;
         }
-        if self.is_focused(Widget::Home) && self.settings_view.is_some() && (self.settings_typing() || !shift) && self.settings_key(k) {
+        if shown && self.is_focused(Widget::Home) && self.settings_view.is_some() && (self.settings_typing() || !shift) && self.settings_key(k) {
             return;
         }
-        if self.is_focused(Widget::Home) && !shift && self.open.view().is_some() && self.tracks_key(k) {
+        if shown && self.is_focused(Widget::Home) && !shift && self.open.view().is_some() && self.tracks_key(k) {
             return;
         }
-        if self.is_focused(Widget::Home) && !shift && self.open.view().is_none() && self.home_key(k) {
+        if shown && self.is_focused(Widget::Home) && !shift && self.open.view().is_none() && self.home_key(k) {
             return;
         }
         // Esc on an artist or search page goes back, never quits
         if (self.artist.is_some() || self.search.is_open() || self.stats_view.is_some() || self.settings_view.is_some()) && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
             return self.run(Action::Back);
         }
-        if self.is_focused(Widget::Library) && !shift && self.side_key(k) {
+        if shown && self.is_focused(Widget::Library) && !shift && self.side_key(k) {
             return;
         }
-        if self.is_focused(Widget::Queue) && !shift && self.queue_key(k) {
+        if shown && self.is_focused(Widget::Queue) && !shift && self.queue_key(k) {
             return;
         }
         // the keymap (keys.toml); arrows a focused Pane didn't use fall through to here and seek
