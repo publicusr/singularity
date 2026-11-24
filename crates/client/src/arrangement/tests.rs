@@ -309,3 +309,36 @@ fn random_edit_sequences_keep_every_arrangement_sound() {
     eprintln!("{sequences} sequences ({skipped} skipped: the Design itself doesn't fit), {committed} edits committed ({swaps} swaps), {refused} refused, {undone} undos and redos");
     assert!(sequences >= 1000 && committed >= 12_000 && swaps >= 3_000 && undone >= 3_000, "{sequences} {committed} {swaps} {undone}");
 }
+
+/// D87: a split divides only the Pane split; every other Pane keeps its rectangle exactly (a split that could only
+/// happen by squeezing a neighbour is refused). Every Pane × every side × every built-in Design × sizes.
+#[test]
+fn a_split_never_moves_any_other_pane() {
+    let sizes = [(80u16, 24u16), (100, 30), (120, 40), (160, 48), (200, 60), (300, 80)];
+    let (mut accepted, mut refused) = (0, 0);
+    for design in crate::design::DESIGNS {
+        let a = Arrangement::from((design.layout)());
+        for &(w, h) in &sizes {
+            let body = Rect::new(0, 1, w, h - 5);
+            if !a.fits(body) {
+                continue;
+            }
+            let before: Vec<(PaneId, Rect)> = a.compute(body).panes.into_iter().map(|(p, r)| (p.id, r)).collect();
+            for p in a.panes() {
+                for side in [Left, Right, Top, Bottom] {
+                    let Ok(b) = a.split(p.id, side, None, body) else {
+                        refused += 1;
+                        continue;
+                    };
+                    accepted += 1;
+                    let after = b.compute(body).panes;
+                    for (id, r) in before.iter().filter(|(id, _)| *id != p.id) {
+                        let now = after.iter().find(|(q, _)| q.id == *id).map(|(_, r)| *r);
+                        assert_eq!(now, Some(*r), "{} {w}x{h}: splitting {:?} {side:?} moved {id:?}", design.id, p.widget);
+                    }
+                }
+            }
+        }
+    }
+    assert!(accepted > 300 && refused > 0, "{accepted} accepted, {refused} refused");
+}

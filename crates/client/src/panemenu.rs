@@ -4,16 +4,17 @@
 //! swaps the two Panes' Widgets (the Panes stay where they are: only what they show changes). Each Widget is on screen
 //! at most once, Home's Pane has no Replace widget (Home is the only Required Widget: the library, the queue and lyrics
 //! may be replaced away, and the first two then open as popups from the palette), and only what the Design's rules
-//! allow today is offered: one black hole at a time, and nothing that wouldn't fit there.
+//! allow today is offered: one black hole at a time. Every other Widget is offered whatever the Pane's size (ADR 0005:
+//! every drop is allowed); one bigger than the Pane says so on its row, `needs W × H`, the line it would show there
+//! (#36).
 //!
-//! The picker names a Pane, not a Widget, so it can fill an empty one too (a split's new Pane, #39).
+//! The picker names a Pane, not a Widget, so it fills an empty one too: a split (← → ↑ ↓, #39) makes an empty Pane and
+//! opens the picker on it at once; Esc leaves it empty, and the Pane says so.
 //!
 //! A Replace or a swap changes only the contents, never a Pane's outline, the gravity well's included (#48: it
-//! letterboxes its picture in whatever Pane it gets). The picker still checks that the result fits, against ADR 0005's
-//! "every drop is allowed": a stop-gap that no longer filters anything out (#39 removes it).
+//! letterboxes its picture in whatever Pane it gets).
 
 use crate::app::{App, Hit, Modal, Popup};
-use crate::arrangement::Arrangement;
 use crate::layout::{PaneId, Widget, is_hole};
 use crate::theme::Theme;
 use crate::ui::{blank, centered, popup, text};
@@ -27,6 +28,8 @@ pub struct WidgetPicker {
     pub target: PaneId,
     pub query: String,
     pub sel: usize,
+    /// opened by a split on its new Pane: the pick is part of that edit (one undo step for both)
+    pub after_split: bool,
 }
 
 /// One row of the Widget picker: a Widget, and the Pane showing it now if it's on screen (picking it swaps).
@@ -54,7 +57,7 @@ impl App {
         if !self.can_replace(id) {
             return self.say("Home stays in its Pane · drag its title to move it");
         }
-        self.open_popup(Popup::WidgetPicker(WidgetPicker { target: id, query: String::new(), sel: 0 }));
+        self.open_popup(Popup::WidgetPicker(WidgetPicker { target: id, query: String::new(), sel: 0, after_split: false }));
     }
 
     /// Replace widget… on the focused Pane (the key and the palette).
@@ -79,8 +82,7 @@ impl App {
     }
 
     /// What Pane `target` could show instead of what it shows, unfiltered: the Widgets off screen it may take, then the
-    /// on-screen ones it may trade with. (Each is still checked with `room_for`, which no longer turns any down: a
-    /// contents edit never changes the floor plan, #48; #39 removes it.)
+    /// on-screen ones it may trade with, whatever the Pane's size.
     pub fn choices_for(&self, target: PaneId) -> Vec<Choice> {
         let Some(here) = self.layout.get(target) else { return vec![] };
         let mine = here.widget;
@@ -99,17 +101,31 @@ impl App {
                 }
             }
         }
-        let off = off.into_iter().filter(|w| self.layout.replace(target, *w).is_ok_and(|a| self.room_for(&a))).map(|widget| Choice { widget, from: None });
+        let off = off.into_iter().filter(|w| self.layout.replace(target, *w).is_ok()).map(|widget| Choice { widget, from: None });
         let on = self.layout.panes().into_iter().filter(|p| p.id != target).filter_map(|p| Some(Choice { widget: p.widget?, from: Some(p.id) }));
-        let on = on.filter(|c| c.from.is_some_and(|f| self.layout.swap(target, f).is_ok_and(|a| self.room_for(&a))));
         off.chain(on).collect()
     }
 
-    /// Whether `a` may replace the layout: it fits the window, or the layout doesn't either. Always true now (a contents
-    /// edit leaves the floor plan as it was, #48); left for #39, which removes it.
-    fn room_for(&self, a: &Arrangement) -> bool {
-        let area = self.pane_area();
-        a.fits(area) || !self.layout.fits(area)
+    /// Where Pane `id` is drawn (at the last frame's size).
+    fn pane_rect(&self, id: PaneId) -> Option<Rect> {
+        self.layout.compute(self.pane_area()).panes.into_iter().find(|(p, _)| p.id == id).map(|(_, r)| r)
+    }
+
+    /// Close the picker without a pick (Esc, a click outside). A split's Pane stays empty; on a built-in Design the
+    /// naming prompt of the first edit comes now.
+    pub fn widget_picker_cancel(&mut self) {
+        self.close_if_open(Modal::WidgetPicker);
+        self.name_if_waiting();
+    }
+
+    /// The naming prompt a split's picker held back (`name_after_picker`), once no popup is open: however the picker
+    /// went (a pick asks itself, through the edit it makes). Called when the picker closes and before each frame, so a
+    /// popup that took the picker's place only delays it.
+    pub fn name_if_waiting(&mut self) {
+        if self.name_after_picker && self.popup.is_none() {
+            self.name_after_picker = false;
+            self.edited();
+        }
     }
 
     /// The picker's Pane went (a Design reloaded, a resize, an undo): the picker closes instead of offering Widgets
@@ -118,6 +134,7 @@ impl App {
         let gone = self.widget_picker().is_some_and(|p| !self.layout.contains(p.target));
         if gone {
             self.close_if_open(Modal::WidgetPicker);
+            self.name_if_waiting();
         }
         gone
     }
@@ -137,12 +154,8 @@ impl App {
             Ok(t) => t,
             Err(e) => return self.refused(e),
         };
-        // checked again: the terminal can have changed size since the list was made
-        if !self.room_for(&tree) {
-            return self.say("No room for it there");
-        }
         self.focus = Some(p.target);
-        self.commit_layout(tree);
+        if p.after_split { self.amend_layout(tree) } else { self.commit_layout(tree) }
     }
 
     /// Keys in the Widget picker: typing filters, ↑↓ (and PgUp PgDn) move, Enter picks, Esc cancels.
@@ -153,7 +166,7 @@ impl App {
         let n = self.widget_choices().len();
         let Some(p) = self.widget_picker_mut() else { return };
         match k.code {
-            KeyCode::Esc => self.close_if_open(Modal::WidgetPicker),
+            KeyCode::Esc => self.widget_picker_cancel(),
             KeyCode::Up => p.sel = p.sel.saturating_sub(1),
             KeyCode::Down => p.sel = (p.sel + 1).min(n.saturating_sub(1)),
             KeyCode::PageUp => p.sel = p.sel.saturating_sub(ROWS),
@@ -202,6 +215,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     let (target, query, sel) = (p.target, p.query.clone(), p.sel);
     let rows = app.widget_choices();
     let here = app.layout.get(target);
+    let room = app.pane_rect(target);
     let title = match here.and_then(|h| h.widget) {
         Some(_) => format!("Replace {}", here.map(|h| app.name_of(h)).unwrap_or_default()),
         None => "Choose a widget".to_string(),
@@ -234,15 +248,26 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
         blank(buf, inner.x, y, inner.width, st);
         text(buf, inner.x + 2, y, 28, &crate::ui::pane_name(app.design, c.widget), st);
         text(buf, inner.x + 31, y, inner.width.saturating_sub(33), c.widget.name(), if i == sel { st } else { th.s(th.dim) });
+        // too big for this Pane: the line it would show there
+        if room.is_some_and(|r| crate::needs::too_small(c.widget, r)) {
+            let (w, h) = crate::needs::smallest(c.widget);
+            let needs = format!("needs {w} × {h}");
+            let nw = needs.chars().count() as u16;
+            text(buf, inner.right().saturating_sub(nw + 2), y, nw, &needs, if i == sel { st } else { th.s(th.dim) });
+        }
         app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::PickWidget(i));
     }
     if rows.is_empty() {
-        let why = if query.is_empty() { "nothing else fits here" } else { "nothing matches" };
+        let why = if query.is_empty() { "nothing else to show here" } else { "nothing matches" };
         text(buf, inner.x + 2, inner.y + 1, inner.width.saturating_sub(4), why, th.s(th.dim));
     }
     let keeps = crate::arrangement::required(here.and_then(|h| h.widget));
+    let empty = here.is_some_and(|h| h.widget.is_none());
     let hint = match rows.get(sel) {
         _ if keeps && query.is_empty() => "it stays on screen: pick one to swap · Esc cancel",
+        // an empty Pane (a split's): Esc keeps it, empty
+        Some(c) if empty && c.from.is_some() => "Enter moves it here · Esc leaves it empty",
+        _ if empty => "type to filter · Enter fills it · Esc leaves it empty",
         Some(c) if c.from.is_some() => "type to filter · Enter swaps it here · Esc cancel",
         _ => "type to filter · Enter puts it here · Esc cancel",
     };

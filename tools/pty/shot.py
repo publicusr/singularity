@@ -569,17 +569,20 @@ def popup_wheel(t, out):
         t.shot(f"{out}/{shot}-up.png")
         print(f"{title}: {first!r} → wheel down → {down!r} → up → {chosen(title)!r} | background unchanged:", look() == bg)
 
-    # "add a pane": right-click a Pane's title → Split right → the Widget list
+    # "add a pane": right-click a Pane's title → the Split row (→ lit) → an empty Pane and the Widget picker on it
     at = t.find("┌ ~/library") or t.find("~/library")
     mouse(t, 2, at[0] + 3, at[1]); mouse(t, 2, at[0] + 3, at[1], release=True, wait=0.4)
     t.shot(f"{out}/5-title-menu.png")
     t.send(b"\x1b[B", 0.2)  # past Replace widget…
-    t.send(b"\r", 0.6)  # Split right
+    t.send(b"\r", 0.6)  # Split →
     t.shot(f"{out}/6-widget-list.png")
     # three notches: inside, on the border, far off it; then two back, over the library and the bar
-    wheel_popup("New pane", "7-widget-list", lambda px, py: [(px + 4, py + 3), (px - 2, py + 2), (2, ROWS - 6)],
+    wheel_popup("Choose a widget", "7-widget-list", lambda px, py: [(px + 4, py + 3), (px - 2, py + 2), (2, ROWS - 6)],
                 lambda px, py: [(2, 12), (COLS // 2, ROWS - 3)])
     t.send(b"\x1b", 0.5)
+    # the first edit of the built-in Design asks for a name once the picker is gone: Esc keeps it unnamed
+    if t.find("Keep your changes"):
+        t.send(b"\x1b", 0.5)
     # the palette: a long list that scrolls with its selection
     t.send(b"\x0b", 0.6)
     wheel_popup("Command palette", "8-palette", lambda px, py: [(px + 4, py + 4)] * 4 + [(2, 12)] * 16 + [(COLS - 2, 2)] * 4,
@@ -2017,7 +2020,7 @@ def tiling(t, out, env):
     t.shot(f"{out}/11-before-close.png")
     mouse(t, 0, cx, ly); mouse(t, 0, cx, ly, release=True, wait=0.6)
     t.shot(f"{out}/12-closed.png")
-    # 6. split: right-click a title, Split down (the second row), pick a Widget
+    # 6. split: right-click a title, the Split row (the second; → lit), pick a Widget for the new empty Pane
     x0, y0 = title_at("~/library")
     mouse(t, 2, x0, y0); mouse(t, 2, x0, y0, release=True, wait=0.4)
     t.shot(f"{out}/13-title-menu.png")
@@ -2052,7 +2055,9 @@ def pane_menu(t, out):
     """D87, #37: the Pane menu and the Widget picker. A right-click on a title (Replace widget… first), the picker
     (Widgets not on screen, then the on-screen ones dimmed below a line), typing to filter, a replace; a right-click on
     a body; a click on the Widget's name, a pick from the on-screen part (a swap); Home's menu and the `w` key on Home.
-    Prints each menu's items and what each Pane shows. 160×48, cell tier, an empty output folder."""
+    #39: the Split row's arrows (↓ then Esc: an empty Pane; ← then a pick; ↑ from a body; → from the keyboard), a
+    `needs W × H` row in the picker, the palette's Split up until it's refused. Prints each menu's items and what each
+    Pane shows. 160×48, cell tier, an empty output folder."""
     t.pump(1.0)
     t.send(b" ", 0.5)
 
@@ -2132,6 +2137,68 @@ def pane_menu(t, out):
     t.send(b"w", 0.5)
     t.shot(f"{out}/13-queue-picker.png")
     t.send(b"\x1b", 0.3)
+
+    # 8. (#39) split: the Split row's arrows, each making an empty Pane with the Widget picker on it
+    def menu_on(title, dx=8):
+        x, y = title_at(title)
+        mouse(t, 2, x + dx, y); mouse(t, 2, x + dx, y, release=True, wait=0.4)
+
+    def click_arrow(arrow):
+        at = t.find("Split  \u2190")
+        x = t.screen.display[at[1]].index(arrow, at[0])
+        mouse(t, 0, x, at[1]); mouse(t, 0, x, at[1], release=True, wait=0.6)
+
+    def panes():
+        return sum(line.count("\u250c") for line in t.screen.display)
+
+    menu_on("stream")
+    t.shot(f"{out}/14-split-row.png")
+    print("stream's menu:", menu_items())
+    n = panes()
+    click_arrow("\u2193")  # ↓
+    t.shot(f"{out}/15-split-down-picker.png")
+    print("split ↓: the picker is up:", bool(t.find("Choose a widget")), "| hint:", bool(t.find("Esc leaves it empty")))
+    t.send(b"\x1b", 0.5)
+    t.shot(f"{out}/16-left-empty.png")
+    print("after Esc: Panes", n, "→", panes(), "| labelled empty:", any(" empty " in line for line in t.screen.display))
+    # ← on the queue: pick by typing
+    menu_on("queue", 12)
+    click_arrow("\u2190")  # ←
+    t.send(b"scope", 0.4)
+    t.shot(f"{out}/17-split-left-typed.png")
+    t.send(b"\r", 0.6)
+    t.shot(f"{out}/18-split-left-filled.png")
+    print("after ← and a pick:", titles(), "| osc shown:", bool(t.find("osc")))
+    # ↑ on the lyrics' body
+    lx, ly = title_at("tail -f lyrics.log")
+    mouse(t, 2, lx + 10, ly + 6); mouse(t, 2, lx + 10, ly + 6, release=True, wait=0.4)
+    click_arrow("\u2191")  # ↑
+    t.shot(f"{out}/19-split-up-picker.png")
+    t.send(b"\x1b", 0.5)
+    # → from the keyboard: the Split row, ← → light an arrow, Enter
+    menu_on("starfi")  # (its title may be cut short by now)
+    t.send(b"\x1b[B", 0.2)
+    t.send(b"\x1b[D", 0.3)  # → lit → ← lit
+    t.shot(f"{out}/20-split-row-key-lit.png")
+    t.send(b"\x1b[C", 0.3)  # → again
+    t.send(b"\r", 0.6)
+    t.shot(f"{out}/21-split-right-picker.png")
+    # a Widget too big for the new Pane says what it needs
+    t.send(b"kara", 0.4)
+    t.shot(f"{out}/22-picker-needs.png")
+    print("karaoke row says:", next((line.strip() for line in t.screen.display if "karaoke" in line and "needs" in line), None))
+    t.send(b"\x1b", 0.5)
+    # the palette: Split up on the focused Pane, until there's no room
+    said = None
+    for i in range(24):
+        t.send(b"\x0b", 0.4); t.send(b"split up", 0.3); t.send(b"\r", 0.6)
+        if t.find("Choose a widget"):
+            t.send(b"\x1b", 0.4)
+            continue
+        said = next((line.strip() for line in t.screen.display if "No room for a new Pane" in line), None)
+        break
+    t.shot(f"{out}/23-split-refused.png")
+    print("refused:", said)
     t.send(b"q", 0.5)
 
 

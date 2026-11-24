@@ -211,7 +211,7 @@ mod tests {
         }
     }
 
-    /// An empty Pane (nothing makes one yet) is saved as a Pane without a Widget and comes back empty, its identity
+    /// An empty Pane (a split makes one) is saved as a Pane without a Widget and comes back empty, its identity
     /// kept; a Widget this build hasn't got and two Panes claiming one identity load too.
     #[test]
     fn an_empty_pane_is_saved_and_loaded() {

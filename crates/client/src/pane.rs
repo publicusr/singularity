@@ -25,7 +25,7 @@ macro_rules! widgets {
             #[cfg_attr(not(test), allow(dead_code))]
             pub const ALL: &[Widget] = &[$(Widget::$v),*];
 
-            /// The name a saved Design uses for it (and its dim label in the Widget list).
+            /// The name a saved Design uses for it (and its dim label in the Widget picker).
             pub fn name(self) -> &'static str {
                 match self {
                     $(Widget::$v => $name,)*

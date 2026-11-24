@@ -237,29 +237,29 @@ fn the_x_closes_a_pane_and_only_homes_has_none() {
 }
 
 #[test]
-fn splitting_offers_only_widgets_not_on_screen_and_adds_the_one_picked() {
+fn splitting_makes_an_empty_pane_and_the_picker_fills_it() {
     let mut a = app();
-    a.focus_on(Widget::Fft);
+    a.focus_on(Widget::Stream);
+    let fft = pid(&a, Widget::Stream);
     a.run(Action::SplitRight);
-    let p = a.widget_pick().expect("the Widget list opens");
-    assert!(p.items.contains(&Widget::Scope) && !p.items.contains(&Widget::Fft) && !p.items.contains(&Widget::Lyrics) && !p.items.contains(&Widget::Home), "{:?}", p.items);
-    let at = p.items.iter().position(|w| *w == Widget::Scope).unwrap();
+    let new = a.widget_picker().map(|p| p.target).expect("the Widget picker opens");
+    assert_ne!(new, fft);
+    assert_eq!(a.layout.get(new).map(|p| p.widget), Some(None), "the new Pane is empty");
+    assert_eq!(a.focus, Some(new));
     let shot = render(&mut a, W, H);
-    assert!(shot.contains("New pane right of fft"), "{shot}");
-    for _ in 0..at {
+    assert!(shot.contains("Choose a widget"), "{shot}");
+    // Scope isn't on screen: it's offered with the rest; picking it fills the new Pane
+    let i = a.widget_choices().iter().position(|c| c.widget == Widget::Scope).expect("scope is offered");
+    for _ in 0..i {
         key(&mut a, KeyCode::Down);
     }
     key(&mut a, KeyCode::Enter);
-    assert!(a.widget_pick().is_none() && a.layout.has(Widget::Scope) && a.layout.has(Widget::Fft));
+    assert!(a.widget_picker().is_none());
+    assert_eq!(a.layout.widget_in(new), Some(Widget::Scope));
     render(&mut a, W, H);
-    let (f, s) = (pane(&a, Widget::Fft), pane(&a, Widget::Scope));
+    let (f, s) = (pane(&a, Widget::Stream), pane(&a, Widget::Scope));
     assert_eq!((f.y, f.height, f.right()), (s.y, s.height, s.x));
     assert_eq!(a.focused(), Some(Widget::Scope));
-    // the tree stays unique: splitting again never offers what's there
-    a.run(Action::SplitDown);
-    assert!(!a.widget_pick().unwrap().items.contains(&Widget::Scope));
-    key(&mut a, KeyCode::Esc);
-    assert!(a.widget_pick().is_none());
 }
 
 #[test]
@@ -267,24 +267,32 @@ fn a_split_with_no_room_says_so() {
     let mut a = App::new(None);
     render(&mut a, 50, 14);
     a.focus_on(Widget::Library);
+    let before = a.layout.clone();
     // 50 columns: Singularity's four columns of 12 take 48 of them, no room for a fifth
     a.run(Action::SplitRight);
-    assert!(a.widget_pick().is_none() && a.toast.as_ref().is_some_and(|(t, _)| t.contains("No room")), "{:?}", a.toast);
+    assert!(a.widget_picker().is_none(), "no picker");
+    assert_eq!(a.layout, before, "nothing changed");
+    assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("No room for a new Pane right of")), "{:?}", a.toast);
 }
 
 #[test]
 fn right_clicking_a_title_offers_replace_split_close_and_move() {
     let mut a = app();
-    let (x, y) = title_spot(&a, Widget::Fft);
+    let (x, y) = title_spot(&a, Widget::Stream);
     mouse(&mut a, MouseEventKind::Down(MouseButton::Right), x, y);
     let items: Vec<String> = a.menu().unwrap().items.iter().map(|(l, _)| l.clone()).collect();
-    assert_eq!(items, ["Replace widget…", "Split right", "Split down", "Close pane", "Move pane"]);
+    assert_eq!(items, ["Replace widget…", "Split  ←  →  ↑  ↓", "Close pane", "Move pane"]);
     let shot = render(&mut a, W, H);
-    assert!(shot.contains("Split down"));
+    assert!(shot.contains("Split  ←  →  ↑  ↓"));
+    let fft = pid(&a, Widget::Stream);
     key(&mut a, KeyCode::Down);
     key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Up);
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.widget_pick().unwrap().side, Side::Bottom);
+    let new = a.widget_picker().expect("the picker on the new Pane").target;
+    render(&mut a, W, H);
+    let r = |id: PaneId| drawn_panes(&a).into_iter().find(|(p, _)| *p == id).unwrap().1;
+    assert_eq!(r(fft).right(), r(new).x, "Enter on the row splits right");
     key(&mut a, KeyCode::Esc);
     let (x, y) = title_spot(&a, Widget::Home);
     mouse(&mut a, MouseEventKind::Down(MouseButton::Right), x, y);
@@ -585,10 +593,13 @@ fn random_gestures_leave_every_design_valid() {
                     }
                     4 => {
                         a.focus_on(s);
-                        a.run(if next() % 2 == 0 { Action::SplitRight } else { Action::SplitDown });
-                        if let Some(p) = a.widget_pick() {
-                            let i = (next() % p.items.len() as u64) as usize;
-                            a.widget_chosen(i);
+                        a.run([Action::SplitLeft, Action::SplitRight, Action::SplitUp, Action::SplitDown][(next() % 4) as usize]);
+                        let n = a.widget_choices().len() as u64;
+                        // a pick, or Esc: the new Pane stays empty
+                        if a.widget_picker().is_some() && n > 0 && next() % 3 != 0 {
+                            a.widget_picked((next() % n) as usize);
+                        } else {
+                            key(&mut a, KeyCode::Esc);
                         }
                     }
                     _ => {
@@ -602,7 +613,7 @@ fn random_gestures_leave_every_design_valid() {
                 let tree = a.layout.clone();
                 assert!(tree.fits(a.pane_area()), "{} {w}x{h}: {tree:?}", design.id);
                 assert!(crate::arrangement::REQUIRED.iter().all(|c| tree.has(*c)));
-                assert!(a.tile.is_none() && a.widget_pick().is_none());
+                assert!(a.tile.is_none() && a.widget_picker().is_none());
             }
         }
     }
@@ -708,11 +719,11 @@ fn every_kind_of_edit_is_one_undo_step() {
     // close
     a.close_pane(pid(&a, Widget::Fft));
     trees.push(a.layout.clone());
-    // split, with the Widget list
+    // split (an empty Pane) and the Widget picked for it: one step
     a.focus_on(Widget::Loudness);
     a.run(Action::SplitRight);
-    let i = a.widget_pick().unwrap().items.iter().position(|w| *w == Widget::Scope).unwrap();
-    a.widget_chosen(i);
+    let i = a.widget_choices().iter().position(|c| c.widget == Widget::Scope).unwrap();
+    a.widget_picked(i);
     trees.push(a.layout.clone());
     // Move mode: a swap, a split beside, a size step
     a.focus_on(Widget::Queue);

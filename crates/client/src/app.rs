@@ -84,7 +84,9 @@ pub enum Action {
     Setup,
     FocusNext,
     ReplaceWidget,
+    SplitLeft,
     SplitRight,
+    SplitUp,
     SplitDown,
     ClosePane,
     MovePane,
@@ -97,7 +99,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 62] = [
+    pub const ALL: [Action; 64] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -150,7 +152,9 @@ impl Action {
         Action::Setup,
         Action::FocusNext,
         Action::ReplaceWidget,
+        Action::SplitLeft,
         Action::SplitRight,
+        Action::SplitUp,
         Action::SplitDown,
         Action::ClosePane,
         Action::MovePane,
@@ -215,7 +219,9 @@ impl Action {
             Action::Setup => "Run setup",
             Action::FocusNext => "Focus next pane",
             Action::ReplaceWidget => "Replace widget…",
+            Action::SplitLeft => "Split left",
             Action::SplitRight => "Split right",
+            Action::SplitUp => "Split up",
             Action::SplitDown => "Split down",
             Action::ClosePane => "Close pane",
             Action::MovePane => "Move pane",
@@ -235,7 +241,9 @@ impl Action {
             Action::PickTheme => "palette colours colors",
             Action::SaveLayout => "layout keep",
             Action::ReplaceWidget => "swap change pane widget pick choose",
+            Action::SplitLeft => "tile add pane widget beside",
             Action::SplitRight => "tile add pane widget beside",
+            Action::SplitUp => "tile add pane widget above",
             Action::SplitDown => "tile add pane widget below",
             Action::ClosePane => "tile remove delete widget",
             Action::MovePane => "tile arrange swap drag layout keyboard",
@@ -324,7 +332,9 @@ impl Action {
             Action::Setup => "setup",
             Action::FocusNext => "focus_next",
             Action::ReplaceWidget => "replace_widget",
+            Action::SplitLeft => "split_left",
             Action::SplitRight => "split_right",
+            Action::SplitUp => "split_up",
             Action::SplitDown => "split_down",
             Action::ClosePane => "close_pane",
             Action::MovePane => "move_pane",
@@ -360,6 +370,8 @@ pub enum Hit {
     /// Home's search bar (D70): opens Search
     SearchBar,
     MenuItem(usize),
+    /// an arrow of a Pane menu's Split row: a new empty Pane on that side
+    MenuSplit(crate::tiling::Side),
     /// a sidebar row (0 = Home)
     Side(usize),
     /// a track-list row, by position in the view
@@ -401,8 +413,6 @@ pub enum Hit {
     Title(PaneId),
     /// a Pane's ×
     Close(PaneId),
-    /// a row of the Widget picker for a new Pane
-    WidgetItem(usize),
     /// a period tab on the Stats page
     StatsPeriod(singularity_proto::StatsPeriod),
     /// a ranked row on the Stats page, by its place in `stats::entries`
@@ -447,8 +457,9 @@ pub enum MenuAct {
     DeletePlaylist,
     /// the Pane menu (right-click on a title, or a body without a menu of its own)
     ReplaceWidget,
-    SplitRight,
-    SplitDown,
+    /// the Split row: ← → ↑ ↓, each clickable; the side is the lit arrow, the one the word Split (and Enter) splits
+    /// toward: the Pane's longer side at first (`App::default_split`), then wherever ← → move it
+    Split(crate::tiling::Side),
     MovePane,
     ClosePane,
 }
@@ -688,6 +699,9 @@ pub struct App {
     /// drawn in
     pub tile: Option<crate::arrange::TileDrag>,
     pub move_mode: Option<PaneId>,
+    /// a split's Widget picker is (or was) up on a built-in Design: the naming prompt of that first edit comes once
+    /// no popup is open (`App::name_if_waiting`)
+    pub name_after_picker: bool,
     pub body: Rect,
     /// the layout as it was when a divider was grabbed (a changed one counts as an edit on release)
     pub(crate) divider_from: Option<crate::arrangement::Arrangement>,
@@ -805,6 +819,7 @@ impl App {
             saved_layouts: vec![],
             tile: None,
             move_mode: None,
+            name_after_picker: false,
             body: Rect::default(),
             divider_from: None,
             grip_hover: None,
@@ -919,7 +934,7 @@ impl App {
 
     /// Typing goes to a text field, so letters aren't shortcuts.
     fn typing(&self) -> bool {
-        matches!(self.modal(), Some(Modal::Palette | Modal::Picker | Modal::Naming | Modal::Widgets | Modal::WidgetPicker | Modal::Details | Modal::Adding | Modal::Cover))
+        matches!(self.modal(), Some(Modal::Palette | Modal::Picker | Modal::Naming | Modal::WidgetPicker | Modal::Details | Modal::Adding | Modal::Cover))
             || (self.modal() == Some(Modal::Wizard) && crate::setup::step(self) == crate::setup::Step::Key)
             || self.settings_typing()
             || self.open.view().is_some_and(|v| v.filtering)
@@ -1215,7 +1230,9 @@ impl App {
                 self.focus = Some(panes[i].id);
             }
             Action::ReplaceWidget => self.replace_focused(),
+            Action::SplitLeft => self.split_focused(crate::tiling::Side::Left),
             Action::SplitRight => self.split_focused(crate::tiling::Side::Right),
+            Action::SplitUp => self.split_focused(crate::tiling::Side::Top),
             Action::SplitDown => self.split_focused(crate::tiling::Side::Bottom),
             Action::ClosePane => {
                 if let Some(p) = self.focused_pane() {
@@ -1266,7 +1283,6 @@ impl App {
             Some(Modal::Palette) => return self.palette_key(k),
             Some(Modal::Picker) => return self.picker_key(k),
             Some(Modal::Naming) => return self.naming_key(k),
-            Some(Modal::Widgets) => return self.widget_key(k),
             Some(Modal::WidgetPicker) => return self.widget_picker_key(k),
             Some(Modal::Library) => return self.library_popup_key(k),
             Some(Modal::Queue) => return self.queue_popup_key(k),
@@ -2248,7 +2264,7 @@ impl App {
             MenuAct::ChangeCover => self.ask_cover(&uri),
             MenuAct::RemoveCover => self.remove_cover(&uri),
             MenuAct::DeletePlaylist => self.delete_playlist(&uri),
-            MenuAct::ReplaceWidget | MenuAct::SplitRight | MenuAct::SplitDown | MenuAct::MovePane | MenuAct::ClosePane => {}
+            MenuAct::ReplaceWidget | MenuAct::Split(_) | MenuAct::MovePane | MenuAct::ClosePane => {}
         }
     }
 
@@ -2258,6 +2274,13 @@ impl App {
             KeyCode::Esc => self.close_if_open(Modal::Menu),
             KeyCode::Up => m.selected = m.selected.saturating_sub(1),
             KeyCode::Down => m.selected = (m.selected + 1).min(m.items.len().saturating_sub(1)),
+            // on the Split row, ← → light the side Enter splits
+            KeyCode::Left | KeyCode::Right => {
+                let right = k.code == KeyCode::Right;
+                if let Some((_, MenuAct::Split(side))) = m.items.get_mut(m.selected) {
+                    *side = crate::arrange::next_side(*side, right);
+                }
+            }
             KeyCode::Enter => {
                 let i = m.selected;
                 self.menu_run(i);
@@ -2814,7 +2837,7 @@ impl App {
                             self.last_click = Some((Instant::now(), usize::MAX - i));
                         }
                     }
-                    Some(Hit::MenuItem(_) | Hit::PickerItem(_) | Hit::AddPick(_)) => {}
+                    Some(Hit::MenuItem(_) | Hit::MenuSplit(_) | Hit::PickerItem(_) | Hit::AddPick(_)) => {}
                     Some(Hit::Swap(p, d)) => {
                         self.swap_widget(p, d);
                     }
@@ -2823,7 +2846,7 @@ impl App {
                     Some(Hit::Focus(p)) => self.focus = Some(p),
                     Some(Hit::Title(p) | Hit::TitleName(p)) => self.tile_down(p, m.column, m.row),
                     Some(Hit::Close(p)) => self.close_pane(p),
-                    Some(Hit::WidgetItem(_) | Hit::PickWidget(_)) => {}
+                    Some(Hit::PickWidget(_)) => {}
                     Some(Hit::Divider(i)) => {
                         self.divider_from = Some(self.layout.clone());
                         if let Some(d) = self.dividers.get(i) {
@@ -2939,8 +2962,6 @@ modals! {
     Palette,
     Picker,
     Naming,
-    /// the Widget list for a new Pane ("Split right" and the like)
-    Widgets,
     /// the Widget picker: what a Pane shows (Replace widget…)
     WidgetPicker,
     /// the library as a popup, where no Pane shows it (D87)
@@ -2967,7 +2988,6 @@ pub(crate) enum Popup {
     Palette(Palette),
     Picker(crate::looks::Picker),
     Naming(Naming),
-    Widgets(crate::arrange::WidgetPick),
     WidgetPicker(crate::panemenu::WidgetPicker),
     /// the library without a Pane (D87): its list, its selection (`App::sidebar`) and its keys
     Library,
@@ -2990,7 +3010,6 @@ impl Popup {
             Popup::Palette(_) => Modal::Palette,
             Popup::Picker(_) => Modal::Picker,
             Popup::Naming(_) => Modal::Naming,
-            Popup::Widgets(_) => Modal::Widgets,
             Popup::WidgetPicker(_) => Modal::WidgetPicker,
             Popup::Library => Modal::Library,
             Popup::Queue { .. } => Modal::Queue,
@@ -3042,7 +3061,6 @@ popup_data! {
     palette, palette_mut, take_palette: Palette(Palette);
     picker, picker_mut, take_picker: Picker(crate::looks::Picker);
     naming, naming_mut, take_naming: Naming(Naming);
-    widget_pick, widget_pick_mut, take_widget_pick: Widgets(crate::arrange::WidgetPick);
     widget_picker, widget_picker_mut, take_widget_picker: WidgetPicker(crate::panemenu::WidgetPicker);
     details, details_mut, take_details: Details(crate::playlists::Details);
     adding, adding_mut, take_adding: Adding(crate::playlists::Adding);
@@ -3121,11 +3139,6 @@ impl App {
                     if to != p.sel {
                         self.picker_select(to);
                     }
-                }
-            }
-            Modal::Widgets => {
-                if let Some(p) = self.widget_pick_mut() {
-                    p.sel = moved(p.sel, rows, p.items.len());
                 }
             }
             Modal::WidgetPicker => {
@@ -3215,6 +3228,7 @@ impl App {
                     },
                     // a click elsewhere only closes the menu
                     Modal::Menu => match hit {
+                        Some(Hit::MenuSplit(side)) => self.menu_split(side),
                         Some(Hit::MenuItem(i)) => self.menu_run(i),
                         _ => self.close_if_open(Modal::Menu),
                     },
@@ -3239,14 +3253,10 @@ impl App {
                         Some(Hit::Action(a @ (Action::UndoLayout | Action::RedoLayout))) => self.run(a),
                         _ => self.move_mode = None,
                     },
-                    Modal::Widgets => match hit {
-                        Some(Hit::WidgetItem(i)) => self.widget_chosen(i),
-                        _ => self.close_if_open(Modal::Widgets),
-                    },
                     // outside the popup closes it; inside, on the typed line or the line, nothing
                     Modal::WidgetPicker => match hit {
                         Some(Hit::PickWidget(i)) => self.widget_picked(i),
-                        _ if !self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom()) => self.close_if_open(Modal::WidgetPicker),
+                        _ if !self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom()) => self.widget_picker_cancel(),
                         _ => {}
                     },
                     // a row opens into Home's Pane; outside closes it; inside, on the hint, nothing
