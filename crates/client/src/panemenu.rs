@@ -110,7 +110,7 @@ impl App {
     pub fn tray_choices(&self) -> Vec<Choice> {
         let (shown, tray) = (self.layout.widgets(), self.layout.tray());
         let hole_free = !shown.iter().chain(tray).any(|w| is_hole(Some(*w)));
-        offered(hole_free).into_iter().filter(|w| self.layout.add_to_tray(*w).is_ok()).map(|widget| Choice { widget, from: None }).collect()
+        offered(hole_free).into_iter().filter(|w| !shown.contains(w) && !tray.contains(w)).map(|widget| Choice { widget, from: None }).collect()
     }
 
     /// Where Pane `id` is drawn (at the last frame's size).

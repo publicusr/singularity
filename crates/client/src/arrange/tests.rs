@@ -1735,3 +1735,64 @@ fn a_new_designs_name_is_never_one_taken_and_esc_on_it_keeps_building() {
     assert!(a.toast.as_ref().is_some_and(|t| t.0.contains("There is already a design called \"Mine\"")), "{:?}", a.toast);
     assert_eq!(a.layout, built);
 }
+
+/// Review of #42: while a New design… is built, Pick a design, Save design as… and Reset design are not in the palette
+/// and their keys do nothing (each would swap or save the Design under the build); Done names it. Afterwards they're back.
+#[test]
+fn a_new_design_being_built_hides_pick_save_and_reset_design() {
+    let (mut a, dir) = with_dirs();
+    let gone = [Action::PickDesign, Action::SaveLayout, Action::ResetLayout];
+    a.run(Action::NewDesign);
+    render(&mut a, W, H);
+    a.run(Action::Palette);
+    for word in ["design", "pick a design", "save design", "reset design"] {
+        a.palette_mut().unwrap().query = word.into();
+        assert!(a.palette_items().iter().all(|i| !gone.contains(i)), "{word}: {:?}", a.palette_items());
+    }
+    a.palette_mut().unwrap().query = "theme".into();
+    assert!(a.palette_items().contains(&Action::PickTheme), "the rest stays");
+    key(&mut a, KeyCode::Esc);
+    // their keys (or any other way to run them) do nothing
+    let blank = a.layout.clone();
+    for g in gone {
+        a.run(g);
+        assert!(a.modal() == Some(Modal::Arrange) && a.picker().is_none() && a.naming().is_none(), "{g:?}: {:?}", a.modal());
+        assert_eq!(a.layout, blank, "{g:?}");
+    }
+    assert!(a.building());
+    assert!(crate::layouts::load_dir(&dir.path().join("layouts")).0.is_empty());
+    // Esc leaves the build: they're back
+    key(&mut a, KeyCode::Esc);
+    assert!(!a.building());
+    a.run(Action::Palette);
+    a.palette_mut().unwrap().query = "design".into();
+    assert!(gone.iter().all(|g| a.palette_items().contains(g)), "{:?}", a.palette_items());
+}
+
+/// Review of #42: a New design's name can't take the file a built-in Design's unnamed "(edited)" copy uses (a later edit
+/// of that Design would write over it), and a name that makes no file name keeps the prompt, saying why.
+#[test]
+fn a_new_designs_name_never_takes_an_edited_copys_file_or_makes_no_file_name() {
+    let (mut a, dir) = with_dirs();
+    a.run(Action::NewDesign);
+    render(&mut a, W, H);
+    drag_to!(&mut a, tray_item(&a, 0), centre(drawn_panes(&a)[0].1));
+    key(&mut a, KeyCode::Esc);
+    for name in ["Singularity edited", "cockpit-edited", "...", "   ", ""] {
+        a.toast = None;
+        typed(&mut a, name);
+        key(&mut a, KeyCode::Enter);
+        assert!(a.naming().is_some_and(|n| n.text == name) && a.building(), "{name:?}: the prompt stays, the build too");
+        let said = a.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+        let want = if crate::layouts::file_id(name).is_empty() {
+            "Couldn't save the layout: a layout needs a name".to_string()
+        } else {
+            format!("There is already a design called \"{}\"", name.trim())
+        };
+        assert_eq!(said, want, "{name:?}");
+        for _ in 0..name.chars().count() {
+            key(&mut a, KeyCode::Backspace);
+        }
+    }
+    assert!(crate::layouts::load_dir(&dir.path().join("layouts")).0.is_empty(), "nothing written");
+}

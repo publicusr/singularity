@@ -628,18 +628,20 @@ impl App {
     }
 
     /// The name typed on Done's prompt for a New design…: saved as a Design of your own with the current Theme, and
-    /// Arrange mode ends. The build's undo steps go with it: the new Design starts its own history.
-    pub fn save_new_design(&mut self, name: &str) {
+    /// Arrange mode ends. The build's undo steps go with it: the new Design starts its own history. False if it
+    /// couldn't be saved (a name that makes no file name, a write error: the bar says why): it is still being built.
+    pub fn save_new_design(&mut self, name: &str) -> bool {
         self.save_layout(name);
-        // (not saved: still building, so nothing is lost; without a config folder there is nowhere to save it)
+        // (without a config folder there is nowhere to save it)
         if self.layout_name.is_none() && self.layouts_dir.is_some() {
-            return;
+            return false;
         }
         self.arranging = None;
         self.tile = None;
         self.history = Default::default();
         self.undo_offer = None;
         self.relayout();
+        true
     }
 
     /// The Tray's "+ Widget": the Widget picker, adding the pick to the Tray (#42).

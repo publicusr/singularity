@@ -276,14 +276,17 @@ impl App {
                         }
                     }
                     crate::app::NameFor::NewPlaylist => self.create_playlist(&n.text),
-                    // a New design… (#42): never over a Design of the user's; no name, back to arranging
-                    crate::app::NameFor::NewDesign if n.text.trim().is_empty() => {}
+                    // a New design… (#42): never over a Design of the user's, nor where a built-in Design's unnamed
+                    // "(edited)" copy goes (that would later be written over it); a name that can't be saved (one that
+                    // makes no file name) keeps the prompt, saying why
                     crate::app::NameFor::NewDesign => {
-                        if self.saved_layouts.iter().any(|s| s.id == crate::layouts::file_id(&n.text)) {
+                        let id = crate::layouts::file_id(&n.text);
+                        let taken = self.saved_layouts.iter().any(|s| s.id == id) || DESIGNS.iter().any(|d| crate::layouts::edited_id(d.id) == id);
+                        if taken {
                             self.say(format!("There is already a design called \"{}\"", n.text.trim()));
                             self.open_popup(crate::app::Popup::Naming(n));
-                        } else {
-                            self.save_new_design(&n.text);
+                        } else if !self.save_new_design(&n.text) {
+                            self.open_popup(crate::app::Popup::Naming(n));
                         }
                     }
                 }

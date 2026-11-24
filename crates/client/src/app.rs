@@ -101,6 +101,10 @@ pub enum Action {
 }
 
 impl Action {
+    /// Not offered (and their keys do nothing) while a New design… is built (#42): each would swap or save the Design
+    /// under the build. Done names it.
+    pub const NOT_WHILE_BUILDING: [Action; 3] = [Action::PickDesign, Action::SaveLayout, Action::ResetLayout];
+
     pub const ALL: [Action; 66] = [
         Action::TogglePlay,
         Action::Next,
@@ -1161,6 +1165,9 @@ impl App {
     // ── actions ───────────────────────────────────────────────────────
 
     pub fn run(&mut self, a: Action) {
+        if self.building() && Action::NOT_WHILE_BUILDING.contains(&a) {
+            return;
+        }
         match a {
             Action::TogglePlay => self.toggle_play(),
             Action::Next => self.send(Command::Next),
@@ -1287,7 +1294,8 @@ impl App {
 
     pub fn palette_items(&self) -> Vec<Action> {
         let q = self.palette().map(|p| p.query.to_lowercase()).unwrap_or_default();
-        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
+        let building = self.building();
+        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && !(building && Action::NOT_WHILE_BUILDING.contains(a)) && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
         // what you typed, as typed: at the start first, then anywhere, then loose matches
         let q = q.trim();
         items.sort_by_key(|a| {
