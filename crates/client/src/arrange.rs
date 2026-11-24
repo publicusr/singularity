@@ -72,6 +72,8 @@ pub struct TileDrag {
     pub from_tray: bool,
     /// picked up with Enter (#43): the Pane the arrows aim at (its own: nowhere); the pointer has no part in it
     pub aim: Option<PaneId>,
+    /// picked up with Enter: the layout it was picked up on (any other edit meanwhile ends the pick-up)
+    on: Option<Arrangement>,
 }
 
 /// Arrange mode, while it is on: the Arrangement when it began and whether an edit was made since, so Done can
@@ -120,6 +122,11 @@ pub fn light_grip(buf: &mut Buffer, grip: Rect, th: &Theme) {
 pub const SPLIT_ROW: &str = "Split  ←  →  ↑  ↓";
 pub const SPLIT_SIDES: [Side; 4] = [Side::Left, Side::Right, Side::Top, Side::Bottom];
 
+/// The Pane the focus falls back on when it names none of `layout`'s: Home's, or (Home waiting in the Tray) the first.
+pub fn fallback_pane(layout: &Arrangement) -> Option<PaneId> {
+    layout.pane_of(Widget::Home).or_else(|| layout.panes().first().map(|p| p.id))
+}
+
 /// The side after (`right`) or before `side` on the Split row, round at the ends.
 pub fn next_side(side: Side, right: bool) -> Side {
     let i = SPLIT_SIDES.iter().position(|s| *s == side).unwrap_or(0);
@@ -142,9 +149,9 @@ impl App {
         self.say(e.why(|w| crate::ui::pane_name(design, w)));
     }
 
-    /// The Pane to act on: the focused one, or Home's if the focus is on none of this layout's.
+    /// The Pane to act on: the focused one, or (the focus is on none of this layout's) `fallback_pane`.
     pub fn focused_pane(&self) -> Option<PaneId> {
-        self.focus.filter(|p| self.layout.contains(*p)).or_else(|| self.layout.pane_of(Widget::Home))
+        self.focus.filter(|p| self.layout.contains(*p)).or_else(|| fallback_pane(&self.layout))
     }
 
     /// What the focused Pane shows (None: nothing is focused, or its Pane is empty).
@@ -168,6 +175,9 @@ impl App {
         let was = self.focused();
         self.layout = tree.into();
         self.focus = was.and_then(|w| self.layout.pane_of(w));
+        if self.arranging.is_some() && self.focus.is_none() {
+            self.focus = fallback_pane(&self.layout);
+        }
     }
 
     /// The Pane whose Widget is being moved (held by the mouse, or picked up with Enter): drawn highlighted.
@@ -181,7 +191,7 @@ impl App {
     pub fn tile_down(&mut self, id: PaneId, x: u16, y: u16) {
         self.focus = Some(id);
         let pane = self.layout.get(id).unwrap_or(Pane { id, widget: None });
-        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: false, aim: None });
+        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: false, aim: None, on: None });
     }
 
     /// A press on Widget `w` in the Tray: a drag takes it onto a Pane.
@@ -190,7 +200,7 @@ impl App {
             return;
         }
         let pane = Pane { id: PaneId::UNSET, widget: Some(w) };
-        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: true, aim: None });
+        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: true, aim: None, on: None });
     }
 
     /// Where the Tray strip is in Arrange mode: the player's rows, under the Panes (so no Pane moves for it).
@@ -448,7 +458,8 @@ impl App {
     }
 
     fn step_history(&mut self, back: bool) {
-        // a held Widget is let go first; the keyboard and the bar never reach here mid-drag, but be sure
+        // a held Widget is let go first (one picked up with Enter: Ctrl+Z gets here; the mouse and the bar never do
+        // mid-drag, but be sure)
         self.tile = None;
         let area = self.pane_area();
         let now = self.snapshot();
@@ -479,7 +490,7 @@ impl App {
             self.close_if_open(crate::app::Modal::Naming);
         }
         self.set_layout(s.tree);
-        self.focus = s.focus.filter(|p| self.layout.contains(*p)).or_else(|| self.layout.pane_of(Widget::Home));
+        self.focus = s.focus.filter(|p| self.layout.contains(*p)).or_else(|| fallback_pane(&self.layout));
         self.want_widget_data();
         match s.name {
             Some(id) => {
@@ -515,6 +526,7 @@ impl App {
     pub fn edited(&mut self) {
         if let Some(a) = self.arranging.as_mut() {
             a.edited = true;
+            a.split_next = false;
         }
         let own = self.layout_name.clone().and_then(|id| self.saved_layouts.iter().find(|s| s.id == id).cloned());
         match own {
@@ -592,16 +604,30 @@ impl App {
     /// Pane that way, `x` closes it, `+` `-` move its line, Esc is Done. With a Widget picked up, arrows aim, Enter
     /// drops and Esc puts it back. The playback keys these don't take work as ever.
     pub fn arrange_key(&mut self, k: KeyEvent) {
-        // (Shift+arrows aren't arrange keys: they seek, as everywhere)
+        use ratatui::crossterm::event::KeyModifiers;
+        // a divider held by the mouse: the release ends it (and records it); no arrange key meanwhile
+        if self.drag.is_some() {
+            return;
+        }
+        self.pick_up_check();
+        // (a focus on no Pane of this layout: the keys act from a real one)
+        if !self.focus.is_some_and(|p| self.layout.contains(p)) {
+            self.focus = fallback_pane(&self.layout);
+        }
+        // only the bare keys (`+` may come with the Shift it needs); Shift+arrows seek, as everywhere
+        let bare = k.modifiers.is_empty() || k.code == KeyCode::Char('+') && k.modifiers == KeyModifiers::SHIFT;
         let arrow = match k.code {
-            _ if k.modifiers.contains(ratatui::crossterm::event::KeyModifiers::SHIFT) => None,
+            _ if !bare => None,
             KeyCode::Left => Some(Side::Left),
             KeyCode::Right => Some(Side::Right),
             KeyCode::Up => Some(Side::Top),
             KeyCode::Down => Some(Side::Bottom),
             _ => None,
         };
-        let arrange_key = arrow.is_some() || matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('t' | 's' | 'x' | '+' | '=' | '-'));
+        let arrange_key = bare && (arrow.is_some() || matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('t' | 's' | 'x' | '+' | '-')));
+        if !arrange_key {
+            return self.playback_key(k);
+        }
         if self.tile.is_some() {
             return match (k.code, arrow) {
                 (_, Some(side)) => self.aim_step(side),
@@ -627,13 +653,13 @@ impl App {
                 Ok(a) => self.commit_layout(a),
                 Err(e) => self.refused(e),
             },
-            (KeyCode::Char('s'), ..) => {
+            (KeyCode::Char('s'), _, Some(_)) => {
                 if let Some(a) = self.arranging.as_mut() {
                     a.split_next = true;
                 }
             }
             (KeyCode::Char('x'), _, Some(id)) => self.close_pane(id),
-            (KeyCode::Char('+' | '='), _, Some(id)) => self.resize_step(id, true),
+            (KeyCode::Char('+'), _, Some(id)) => self.resize_step(id, true),
             (KeyCode::Char('-'), _, Some(id)) => self.resize_step(id, false),
             _ if !arrange_key => self.playback_key(k),
             _ => {}
@@ -682,6 +708,10 @@ impl App {
     /// close buttons, the Tray and Done; a right click opens the Pane's menu; the wheel scrolls the Tray. Nothing else
     /// in the Panes takes a click (a click focuses the Pane).
     pub(crate) fn arrange_pointer(&mut self, m: MouseEvent, coarse: bool) {
+        // a press ends `s`'s wait for its arrow
+        if let (MouseEventKind::Down(_), Some(a)) = (m.kind, self.arranging.as_mut()) {
+            a.split_next = false;
+        }
         if self.tile.is_some() {
             return self.tile_pointer(m);
         }
@@ -814,7 +844,7 @@ impl App {
             Err(e) => return self.refused(e),
         };
         if self.focus == Some(id) {
-            self.focus = tree.pane_of(Widget::Home);
+            self.focus = fallback_pane(&tree);
         }
         let built_in = self.layout_name.is_none();
         self.commit_layout(tree);
@@ -916,7 +946,8 @@ impl App {
     /// otherwise. An empty Pane has nothing to pick up.
     fn pick_up(&mut self, id: PaneId) {
         let Some(pane) = self.layout.get(id).filter(|p| p.widget.is_some()) else { return };
-        self.tile = Some(TileDrag { pane, from: (0, 0), at: (0, 0), live: true, over: None, tray: false, from_tray: false, aim: Some(id) });
+        let on = Some(self.layout.clone());
+        self.tile = Some(TileDrag { pane, from: (0, 0), at: (0, 0), live: true, over: None, tray: false, from_tray: false, aim: Some(id), on });
     }
 
     /// An arrow with a Widget picked up: the aim goes to the next Pane that way, lit with what Enter would do (back on
@@ -924,10 +955,20 @@ impl App {
     fn aim_step(&mut self, dir: Side) {
         let Some((own, at)) = self.tile.as_ref().and_then(|t| Some((t.pane.id, t.aim?))) else { return };
         let panes = self.layout.compute(self.pane_area()).panes;
+        // No Pane that way: nothing to aim at. (Seam: aiming past the Panes, at the Tray, would go here; how the
+        // keyboard takes Widgets out of the Tray is the owner's open question on #43.)
         let Some(n) = neighbour(&panes, at, dir) else { return };
         if let Some(t) = self.tile.as_mut() {
             t.aim = Some(n);
             t.over = (n != own).then_some(n);
+        }
+    }
+
+    /// A Widget picked up with Enter is put back once anything else edits the layout (Ctrl+K Close pane, Replace
+    /// widget…, a Design change…): its Pane, or what that Pane holds, may be gone.
+    pub fn pick_up_check(&mut self) {
+        if self.tile.as_ref().is_some_and(|t| t.on.as_ref().is_some_and(|on| *on != self.layout)) {
+            self.tile = None;
         }
     }
 
@@ -1132,28 +1173,32 @@ pub fn draw_legend(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let key = |a| app.keymap.label(a);
     // the keys of the moment: a Widget picked up, `s` waiting for its arrow, or the lot
     let held = app.tile.as_ref().is_some_and(|t| t.aim.is_some());
-    let mut parts: Vec<String> = if held {
-        vec!["←↑↓→ aim".into(), "Enter drop".into(), "Esc put back".into()]
+    // each with how long it stays when the line is short: the mouse's gesture goes first, then undo / redo, then the
+    // keys (the arrows and Enter last)
+    let mut parts: Vec<(u8, String)> = if held {
+        vec![(9, "←↑↓→ aim".into()), (9, "Enter drop".into()), (9, "Esc put back".into())]
     } else if app.arranging.as_ref().is_some_and(|a| a.split_next) {
-        vec!["←↑↓→ split that way".into()]
+        vec![(9, "←↑↓→ split that way".into())]
     } else {
-        let mut parts = vec!["drag a title onto a Pane or the Tray".to_string(), "←↑↓→ Enter pick up".into(), "t Tray".into(), "⊞ s+arrow split".into(), "× x close".into(), "+ − size".into()];
+        let mut parts = vec![(0, "drag a title onto a Pane or the Tray".to_string()), (8, "←↑↓→ Enter pick up".into()), (6, "t Tray".into()), (5, "⊞ s+arrow split".into()), (5, "× x close".into()), (4, "+ − size".into())];
         for (a, what) in [(Action::UndoLayout, "undo"), (Action::RedoLayout, "redo")] {
             let k = key(a);
             if !k.is_empty() {
-                parts.push(format!("{k} {what}"));
+                parts.push((1, format!("{k} {what}")));
             }
         }
-        parts.push("Esc done".into());
+        parts.push((7, "Esc done".into()));
         parts
     };
     let x = r.x + tw + 2;
     let room = end.saturating_sub(x + 1) as usize;
-    // as many as fit, whole, from the end's (the keys) back to the gestures
-    let mut line = parts.join(" · ");
+    // as many as fit, whole, in their order; the first to go is the one that stays the shortest
+    let join = |parts: &[(u8, String)]| parts.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>().join(" · ");
+    let mut line = join(&parts);
     while line.chars().count() > room && parts.len() > 1 {
-        parts.remove(0);
-        line = parts.join(" · ");
+        let least = parts.iter().enumerate().min_by_key(|(_, (keep, _))| *keep).map(|(i, _)| i).unwrap_or(0);
+        parts.remove(least);
+        line = join(&parts);
     }
     if line.chars().count() <= room {
         text(buf, x, r.y, room as u16, &line, th.s(th.dim));

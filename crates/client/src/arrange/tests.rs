@@ -710,6 +710,130 @@ fn the_playback_keys_the_arrange_keys_leave_free_work_while_arranging() {
     assert!(a.arranging.is_some());
 }
 
+/// With Home set aside and the focused Pane closed, the focus never names a Pane that isn't there: the keys go on
+/// working from a real Pane (undo too).
+#[test]
+fn the_focus_always_lands_on_a_real_pane() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    a.focus_on(Widget::Home);
+    key(&mut a, KeyCode::Char('t'));
+    assert!(a.layout.tray().contains(&Widget::Home));
+    a.focus_on(Widget::Fft);
+    key(&mut a, KeyCode::Char('x'));
+    assert!(a.focus.is_some_and(|p| a.layout.contains(p)), "{:?}", a.focus);
+    for code in [KeyCode::Up, KeyCode::Down, KeyCode::Left] {
+        key(&mut a, code);
+        assert!(a.focus.is_some_and(|p| a.layout.contains(p)));
+    }
+    // a focus left on a Pane that's gone (another path): the next key acts from a real one
+    a.focus = Some(PaneId::UNSET);
+    key(&mut a, KeyCode::Enter);
+    assert!(a.tile.as_ref().is_some_and(|t| a.layout.contains(t.pane.id)), "picked up from a real Pane");
+    key(&mut a, KeyCode::Esc);
+    // undo back past the close: still a real Pane
+    ctrl(&mut a, 'z');
+    ctrl(&mut a, 'z');
+    assert!(a.focus.is_some_and(|p| a.layout.contains(p)));
+}
+
+/// The legend drops what doesn't fit from the mouse's gesture and undo / redo first: the keys stay longest.
+#[test]
+fn the_legend_keeps_the_keys_on_small_screens() {
+    for (w, h, want) in [(100u16, 30u16, &["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "+ − size", "Esc done"][..]), (90, 50, &["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "Esc done"][..])] {
+        let mut a = App::new(None);
+        render(&mut a, w, h);
+        key(&mut a, KeyCode::Char('m'));
+        let shot = render(&mut a, w, h);
+        let legend = shot.lines().last().unwrap();
+        for k in want {
+            assert!(legend.contains(k), "{w}x{h}: {k:?} in {legend:?}");
+        }
+        assert!(!legend.contains("drag a title"), "{w}x{h}: the gesture goes first");
+    }
+}
+
+/// Anything else that edits the layout while a Widget is picked up with Enter puts it back.
+#[test]
+fn a_pick_up_ends_when_something_else_edits_the_layout() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    a.focus_on(Widget::Fft);
+    key(&mut a, KeyCode::Enter);
+    // Ctrl+K → Close pane, on the focused (picked-up) Pane
+    a.run(Action::ClosePane);
+    render(&mut a, W, H);
+    assert!(a.tile.is_none() && a.drag_marks().is_none());
+    // Replace widget… from the palette: the picker opens, and the pick-up is gone with it
+    a.focus_on(Widget::Loudness);
+    key(&mut a, KeyCode::Enter);
+    a.run(Action::ReplaceWidget);
+    let i = a.widget_choices().iter().position(|c| c.widget == Widget::Scope).unwrap();
+    a.widget_picked(i);
+    render(&mut a, W, H);
+    assert!(a.tile.is_none());
+    // an edit with no frame in between: the next key finds the pick-up gone, and drops nothing
+    a.focus_on(Widget::Queue);
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Up);
+    let id = pid(&a, Widget::Stream);
+    a.close_pane(id);
+    let after = a.layout.clone();
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.layout, after, "the old pick-up didn't drop");
+    assert!(a.tile.as_ref().is_some_and(|t| t.on.as_ref() == Some(&a.layout)), "Enter picked up afresh");
+}
+
+/// While the mouse holds a divider the arrange keys wait: Enter picks nothing up, and the release records the move.
+#[test]
+fn the_keys_wait_while_the_mouse_holds_a_divider() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    render(&mut a, W, H);
+    let start = a.layout.clone();
+    let grip = a.dividers[0].grip;
+    press(&mut a, grip.x, grip.y + 5);
+    drag(&mut a, grip.x + 6, grip.y + 5);
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('x'));
+    assert!(a.tile.is_none() && a.drag.is_some(), "still the divider's");
+    drag(&mut a, grip.x + 8, grip.y + 5);
+    release(&mut a, grip.x + 8, grip.y + 5);
+    assert!(a.drag.is_none() && a.layout != start);
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout, start, "the move was recorded");
+}
+
+/// Only the bare keys arrange: Ctrl+X doesn't close, Alt+T doesn't set aside, Ctrl+Enter picks nothing up, `=`
+/// doesn't grow; `s` waits for its arrow until a mouse press.
+#[test]
+fn only_the_bare_keys_arrange() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    a.focus_on(Widget::Fft);
+    render(&mut a, W, H);
+    let before = a.layout.clone();
+    a.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+    a.key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT));
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+    key(&mut a, KeyCode::Char('='));
+    assert_eq!(a.layout, before);
+    assert!(a.tile.is_none());
+    // `+` as the terminal may send it, with its Shift: grows
+    a.focus_on(Widget::Queue);
+    shift(&mut a, KeyCode::Char('+'));
+    assert_ne!(a.layout, before);
+    // s, then a click: the wait is over, and → moves the focus instead of splitting
+    let n = a.layout.panes().len();
+    key(&mut a, KeyCode::Char('s'));
+    let (x, y) = centre(pane(&a, Widget::Queue));
+    press(&mut a, x, y);
+    release(&mut a, x, y);
+    key(&mut a, KeyCode::Right);
+    assert_eq!(a.layout.panes().len(), n);
+    assert!(a.widget_picker().is_none());
+}
+
 /// A Widget picked up with Enter isn't the pointer's: a bare move leaves it be, a release doesn't drop it, a press
 /// puts it back (and does what it does).
 #[test]

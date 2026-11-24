@@ -269,7 +269,7 @@ audio, and looks spectacular.
 ### Layout (batch 7, D37) and macOS (batch 8, D38)
 85. As a user, I want to tile my Panes freely: drag a Pane by its title to swap it, split another with it or give it a
     screen edge (the layout reflows live; Esc cancels), close and split Panes (`×`, right-click a title, Ctrl+K), and do
-    the same from the keyboard (Move mode, `m`). No drop may leave a Pane under its minimum; Home, the library, the
+    the same from the keyboard (Move mode, `m`; since #43 Arrange mode's keys, below). No drop may leave a Pane under its minimum; Home, the library, the
     queue and lyrics can move but never close. **Built (D66, 2026-10-31):** reopened from the parked state (D59). An edit
     never overwrites a built-in Design: the first one asks for a name (Enter saves a Design of your own, Esc keeps one
     unnamed "<Design> (edited)"); a Design of your own saves itself as you edit; "Reset design" goes back to the
@@ -278,8 +278,8 @@ audio, and looks spectacular.
     while the others ease into place around a dashed "drop here" slot; on release it lands there (Esc: everything
     goes back). A drop that would only change sizes is no drop (it looked like one Pane "just extended 15%"); the
     screen's edges are the outermost columns and past the top or bottom of the Panes. Shift+arrows in Move mode
-    always move the Pane that way or say in the bar why not. Layout undo / redo: Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z),
-    `u` / `U` in Move mode, the bar's "undo" after an edit, and Ctrl+K → "Undo layout" / "Redo layout"; 50 steps per
+    always moved the Pane that way or said in the bar why not (Move mode is gone since #43). Layout undo / redo: Ctrl+Z,
+    Ctrl+Y (or Ctrl+Shift+Z), the bar's "undo" after an edit, and Ctrl+K → "Undo layout" / "Redo layout"; 50 steps per
     session, the Design files follow, and undoing the first edit of a built-in Design returns to it (its unnamed
     "(edited)" file goes again; a Design you named stays in the picker). **Smoother (owner round, 2026-11-01):**
     while anything moves the Client draws at `visuals.motion_fps` (30–240, default 120; frames on a steady grid,

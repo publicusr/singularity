@@ -1954,12 +1954,12 @@ def layouts(t, out, env):
 def tiling(t, out, env):
     """D87, a drag moves contents: drag a Pane's title onto another Pane (a shot while the pointer is still down:
     nothing has moved, the Pane under the pointer is lit with "swap with …" and the Widget's chip follows the pointer;
-    another after the release: the two Widgets swapped, every outline where it was), the naming prompt on the first
-    edit, a release on its own Pane and over the top bar (nothing happens), Esc cancelling a drag, a close with the x,
+    another after the release: the two Widgets swapped, every outline where it was), a release on its own Pane and over the top bar (nothing happens), Esc cancelling a drag, a close with the x,
     a split from the right-click menu with the Widget list, and Arrange mode's keys (Enter picks up, ↑ aims, Enter swaps,
     + - size). Run it at
     PTY_COLS=160 PTY_ROWS=48 (the default here)."""
-    t.pump(1.0)
+    # (the pixel tier's first frames and the fake Catalogue take a while: start once they're there)
+    t.pump(6.0)
     t.send(b" ", 0.5)
 
     def title_at(title):
@@ -1988,12 +1988,7 @@ def tiling(t, out, env):
     pull("stream", (qx + 25, qy + 6), "01-swap-drag.png", hold=True)
     print("mid-drag:", "label shown" if t.find("swap with queue") else "NO LABEL", "·", "chip shown" if t.find("\u283f stream") else "NO CHIP")
     mouse(t, 0, qx + 25, qy + 6, release=True, wait=0.5)
-    t.shot(f"{out}/02-swap-done-naming.png")
-    # the first edit of a built-in Design asks what to call it
-    t.send(b"\x7f" * 14, 0.2)
-    t.send(b"Mine", 0.3)
-    t.shot(f"{out}/03-naming-typed.png")
-    t.send(b"\r", 0.6)
+    t.shot(f"{out}/02-swap-done.png")
     print("after the swap: stream where the queue was" if t.find("\u250c stream") == (qx, qy) else f"stream at {t.find(chr(0x250c) + ' stream')}, the queue was at {(qx, qy)}")
     # 2. lyrics onto Home, a small Pane onto a big one: they swap, the floor plan stays
     hx, hy = t.find("\u250c home")
@@ -2031,14 +2026,19 @@ def tiling(t, out, env):
     t.send(b"\x1b[B", 0.2)
     t.send(b"\r", 0.6)
     t.shot(f"{out}/15-split-done.png")
-    # 7. Arrange mode's keys on the focused Pane: Enter picks its Widget up, ↑ aims, Enter swaps; + + grow its Pane;
-    # Esc is Done (its name prompt kept unnamed with Esc)
+    # 7. Arrange mode's keys: the queue (where stream was, bottom left) focused with a click on its body; Enter picks it
+    # up, ↑ aims at the Pane above it, Enter swaps; + + grow its Pane; Esc is Done (its name prompt kept unnamed)
     t.send(b"m", 0.4)
+    qx, qy = t.find("\u250c queue")
+    mouse(t, 0, qx + 6, qy + 3); mouse(t, 0, qx + 6, qy + 3, release=True, wait=0.4)
     t.send(b"\r", 0.3)
     t.send(b"\x1b[A", 0.4)
     t.shot(f"{out}/16-picked-up-aimed.png")
+    lab = t.find("swap with ")
+    print("aimed:", t.screen.display[lab[1]][lab[0]:lab[0] + 24].strip() if lab else "NO LABEL", "·", "chip shown" if t.find("\u283f queue") else "NO CHIP")
     t.send(b"\r", 0.4)
     t.shot(f"{out}/17-swapped-up.png")
+    print("swapped: the queue moved up from", (qx, qy), "to", t.find("\u250c queue"))
     t.send(b"+", 0.3); t.send(b"+", 0.3)
     t.shot(f"{out}/18-grown.png")
     t.send(b"\x1b", 0.5)

@@ -109,6 +109,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.modal().is_some_and(|m| m != Modal::Arrange) {
         app.tile_cancel();
     }
+    // a Widget picked up with Enter, and the layout edited by something else since: it is put back
+    app.pick_up_check();
     if app.body != body {
         app.body = body;
         // a new window size moves every Pane: the one under a held Widget is found again
