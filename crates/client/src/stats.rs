@@ -306,7 +306,8 @@ const WEEKDAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun
 
 /// The "today" Widget: minutes today as a headline, plays and the streak, and the last days as a column chart.
 /// Small Panes get lines of text and a 7-day sparkline; tall ones a big figure, a comparison with the week's average
-/// and a chart of 7, 14 or 28 days (by width) with the minutes over the columns when they fit.
+/// and a chart of 7, 14 or 28 days (by width) with the minutes over the columns when they fit. The words sit in the
+/// middle of the width (#58).
 pub fn today(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     if r.height == 0 || w < 6 {

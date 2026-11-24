@@ -708,7 +708,7 @@ fn mem(rss: u64) -> String {
 
 /// `top` for the music's processes. A row each: the name, a CPU bar, CPU %, memory and the pid as width allows. Tall
 /// Panes put the processes' CPU together on top, a graph of the last minutes under it, and give each process a
-/// sparkline of its own when there are rows for it.
+/// sparkline of its own when there are rows for it; a big Pane gets a taller graph, the block in its middle (#58).
 pub fn top(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let s = &mut app.widgets.top;
     s.sample();
