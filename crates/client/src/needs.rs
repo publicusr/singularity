@@ -26,8 +26,8 @@ pub fn smallest(widget: Widget) -> (u16, u16) {
         Well | Hole => HOLE,
         // a line has to wrap to be read: in one row only its middle shows
         Karaoke => (20, 6),
-        // the search bar and a Card beside its cover
-        Home => (24, 6),
+        // a Card's name beside its cover (Classic gives Home 20 columns in a half-screen laptop window)
+        Home => (16, 6),
         // the artists' names beside their minutes
         TopWeek => (20, 4),
         // the bitrate under the badges
@@ -152,6 +152,24 @@ mod tests {
             // big enough: the Widget itself
             let (rows, _) = screen(&mut app, widget, sw, sh);
             assert!(!pane(&rows).1.iter().any(|r| r.contains("needs")), "{widget} at its smallest size draws itself");
+        }
+    }
+
+    /// Keep established looks: no built-in Design gives a Widget less than its smallest size at the terminal sizes it is
+    /// used at (the contact sheet's: a common 80×24 up to the PC's full screen, and a 13-inch laptop's).
+    #[test]
+    fn the_built_in_designs_need_no_line_at_common_sizes() {
+        for d in 0..crate::design::DESIGNS.len() {
+            for (w, h) in [(80u16, 24u16), (90, 50), (120, 36), (160, 48), (180, 54), (220, 60), (264, 68)] {
+                let mut app = App::new(None);
+                app.set_design(d);
+                let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+                t.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+                let buf = t.backend().buffer().clone();
+                let s: String = (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect();
+                // (the stream Widget has a "needs 205 kB/s" of its own)
+                assert!(!s.split("needs ").skip(1).any(|r| r.split_once(' ').is_some_and(|(n, rest)| n.parse::<u16>().is_ok() && rest.starts_with('×'))), "{} at {w}×{h}:\n{s}", crate::design::DESIGNS[d].id);
+            }
         }
     }
 

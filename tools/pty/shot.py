@@ -1605,20 +1605,29 @@ show();
 """
 
 
-def sheet_html(sheet, widgets, designs):
-    """index.html for the sheet: every Widget's cells in order, then the Designs; `widgets` is [(widget, [(id, file)])]
-    and `designs` [(id, file)]."""
-    def fig(cid, src):
+def sheet_html(sheet, add):
+    """index.html for the sheet: every Widget's cells in order, then the Designs. `add` is {file: caption} of this
+    run's shots, kept in the sheet's captions.json with the earlier runs' (a run of a few Widgets updates their cells)."""
+    path = f"{sheet}/captions.json"
+    captions = json.load(open(path)) if os.path.exists(path) else {}
+    captions.update(add)
+    json.dump(captions, open(path, "w"), indent=0, ensure_ascii=False)
+    def fig(src):
+        cid = captions[src]
         return (f'<figure data-id="{cid}"><figcaption>{cid} <button class="g">good</button> <button class="b">bad</button>'
                 f'</figcaption><a href="{src}"><img src="{src}" loading="lazy" alt="{cid}"></a></figure>')
+    order = {f"{w}-{n}-{t}": i for i, (w, n, t) in enumerate((w, n, t) for w in SHEET_WIDGETS for n in SHEET_SIZES for t in ("cells", "pixels"))}
     body, nav = [], []
-    for w, cells in widgets:
-        nav.append(f'<a href="#{w}">{w}</a>')
-        body.append(f'<h2 id="{w}">{w}</h2><p><a href="{w}.png">the whole sheet</a></p><div class="cells">'
-                    + "".join(fig(c, f) for c, f in cells) + "</div>")
+    for w in SHEET_WIDGETS:
+        cells = sorted((f for f in captions if f.startswith(f"cells/{w}-")), key=lambda f: order.get(f[6:-4], len(order)))
+        if cells:
+            nav.append(f'<a href="#{w}">{w}</a>')
+            body.append(f'<h2 id="{w}">{w}</h2><p><a href="{w}.png">the whole sheet</a></p><div class="cells">'
+                        + "".join(fig(f) for f in cells) + "</div>")
+    designs = [f for f in captions if f.startswith("designs/")]
     if designs:
         nav.append('<a href="#designs">Designs</a>')
-        body.append('<h2 id="designs">Designs, full terminal</h2><div class="cells">' + "".join(fig(c, f) for c, f in designs) + "</div>")
+        body.append('<h2 id="designs">Designs, full terminal</h2><div class="cells">' + "".join(fig(f) for f in designs) + "</div>")
     nav.append('<a href="#marks">marks</a>')
     open(f"{sheet}/index.html", "w").write(SHEET_HTML.replace("NAV", " ".join(nav)).replace("BODY", "\n".join(body)))
 
@@ -1675,7 +1684,6 @@ def contact_sheet(env, out):
         os.close(t.fd)
 
     set_cell_px(10, 20)
-    sheets = []
     for widget in widgets:
         cells, figs = [], []
         for name in sizes:
@@ -1709,8 +1717,7 @@ def contact_sheet(env, out):
                 figs.append((cid, fname))
                 print(cid, flush=True)
         compose_sheet(f"{sheet}/{widget}.png", widget, cells)
-        sheets.append((widget, figs))
-        sheet_html(sheet, sheets, [])
+        sheet_html(sheet, {f: c for c, f in figs})
     shots = []
     for label, cols, rows, cw, ch in SHEET_TERMS:
         set_cell_px(cw, ch)
@@ -1726,7 +1733,7 @@ def contact_sheet(env, out):
                 shots.append((f"{design} · {label} {cols}×{rows} @{cw}×{ch}px · {tier}", fname))
                 print(shots[-1][0], flush=True)
     set_cell_px(10, 20)
-    sheet_html(sheet, sheets, shots)
+    sheet_html(sheet, {f: c for c, f in shots})
     print(f"sheet: {sheet}/index.html")
 
 
