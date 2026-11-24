@@ -112,7 +112,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.tile_resized();
     }
     let marks = app.drag_marks();
-    let target = marks.as_ref().and_then(|(t, _)| t.clone()).and_then(|(id, label)| Some((app.layout.compute_shaped(body, app.cell_aspect()).rect(id)?, label)));
+    let target = marks.as_ref().and_then(|(t, _)| t.clone()).and_then(|(id, label)| Some((app.layout.compute(body).rect(id)?, label)));
     let chip = marks.as_ref().and_then(|(_, c)| Some((app.chip_rect(area, c)?, c.clone())));
     // popups are known up front, so pixel images under them can step down to cells this frame; what's over the
     // Panes, the top first (D83)
@@ -425,7 +425,7 @@ fn close_button(buf: &mut Buffer, rect: Rect, th: &Theme, focused: bool, id: Pan
 }
 
 fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
-    let computed = app.layout.compute_shaped(body, app.cell_aspect());
+    let computed = app.layout.compute(body);
     // the ◂ ▸ swaps sit on a border a divider's grip may cover: registered after the grips, so they win
     let mut swaps: Vec<(Rect, Hit)> = vec![];
     let n = computed.panes.len();
@@ -545,9 +545,8 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     app.hit(*rect, Hit::Focus(p.id));
     // a Pane whose Widget can give way to others says so: ◂ ▸ in its title swap them (so does v)
     let swappable = can_swap && rect.width >= 12;
-    // smaller than its Widget can be drawn in: just its frame
-    let min_h = if crate::layout::is_hole(w) { crate::layout::WELL_MIN_H } else { crate::layout::MIN_H };
-    if rect.width < crate::layout::MIN_W || rect.height < min_h {
+    // smaller than any Pane: just its frame
+    if rect.width < crate::layout::MIN_W || rect.height < crate::layout::MIN_H {
         f.render_widget(block, *rect);
         return;
     }
@@ -1053,7 +1052,7 @@ mod tests {
                 app.playback.queue = queue();
                 // the Panes this design leaves: are any of them down to one row of body (borders included)?
                 let body = Rect::new(0, 1, w, h.saturating_sub(5));
-                one_row |= app.layout.compute_shaped(body, 2.0).panes.iter().any(|(_, r)| r.height <= 3);
+                one_row |= app.layout.compute(body).panes.iter().any(|(_, r)| r.height <= 3);
                 let _ = render(&mut app, w, h);
             }
         }
@@ -1113,7 +1112,7 @@ mod tests {
     fn clicking_a_pane_focuses_it() {
         let mut app = App::new(None);
         render(&mut app, 160, 48);
-        let well = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).rect_of(Widget::Well).unwrap();
+        let well = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).rect_of(Widget::Well).unwrap();
         click(&mut app, well.x + 5, well.y + 3);
         assert_eq!(app.focused(), Some(Widget::Well));
     }
@@ -1416,7 +1415,7 @@ mod tests {
 
     /// Wheel Home down until the Shelf's first Card is on screen.
     fn scroll_to(app: &mut App, shelf: usize) -> Rect {
-        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).rect_of(Widget::Home).unwrap();
+        let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).rect_of(Widget::Home).unwrap();
         for _ in 0..400 {
             render(app, 200, 64);
             if let Some(r) = try_card_rect(app, shelf, 0).filter(|r| r.height > 2) {
@@ -1478,7 +1477,7 @@ mod tests {
         let (mut app, _rx) = home_app();
         let s = render(&mut app, 200, 64);
         assert!(s.contains("⌕ Search"), "the bar reads Search:\n{s}");
-        let lib = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).rect_of(Widget::Library).unwrap();
+        let lib = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).rect_of(Widget::Library).unwrap();
         let lib_text = |l: &str| l.chars().skip(lib.x as usize).take(lib.width as usize).collect::<String>();
         assert!(!s.lines().skip(lib.y as usize).take(4).any(|l| lib_text(l).contains("Search")), "no Search row in the library");
         let bar = app.hits.iter().find_map(|(r, h)| (*h == Hit::SearchBar).then_some(*r)).expect("a clickable bar");
@@ -1507,7 +1506,7 @@ mod tests {
         assert!(s.contains('▀'), "covers drawn as half-blocks in the cell tier");
         assert!(s.contains('›'), "long Shelves can scroll sideways");
         // never a Card cut in half at the bottom
-        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).rect_of(Widget::Home).unwrap();
+        let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).rect_of(Widget::Home).unwrap();
         assert!(app.hits.iter().all(|(r, h)| !matches!(h, Hit::Card(_)) || r.bottom() < home.bottom()));
     }
 
@@ -1557,7 +1556,7 @@ mod tests {
         render(&mut app, 200, 64);
         let back = app.hits.iter().find_map(|(r, h)| (*h == Hit::History(-1)).then_some(*r)).expect("← shown with history");
         // at the right end of the title, where every Pane keeps its arrows (D44)
-        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).rect_of(Widget::Home).unwrap();
+        let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).rect_of(Widget::Home).unwrap();
         assert!(back.x > home.x + home.width / 2, "{back:?} in {home:?}");
         assert!(render(&mut app, 200, 64).contains("← →"));
         assert!(app.open.view().is_some());
@@ -1706,7 +1705,7 @@ mod tests {
         };
         frame(&mut app);
         let body = app.pane_area();
-        let c = app.layout.compute_shaped(body, app.cell_aspect());
+        let c = app.layout.compute(body);
         let (q, home) = (c.rect_of(Widget::Queue).unwrap(), c.rect_of(Widget::Home).unwrap());
         let mouse = |app: &mut App, kind, x, y| app.mouse(MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE });
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), q.x + 3, q.y);
@@ -1716,7 +1715,7 @@ mod tests {
             let chip_r = app.chip_rect(Rect::new(0, 0, w, h), &chip);
             let mut v: Vec<Rect> = chip_r.into_iter().collect();
             if let Some((id, label)) = target {
-                let r = app.layout.compute_shaped(body, app.cell_aspect()).rect(id).unwrap();
+                let r = app.layout.compute(body).rect(id).unwrap();
                 v.extend([Rect::new(r.x, r.y, r.width, 1), Rect::new(r.x, r.bottom() - 1, r.width, 1), Rect::new(r.x, r.y, 1, r.height), Rect::new(r.right() - 1, r.y, 1, r.height)]);
                 v.extend(crate::arrange::label_rect(r, &label, chip_r));
             }
@@ -1760,7 +1759,7 @@ mod tests {
         app.home_view.offset = shelf_y + 3;
         render(&mut app, 200, 64);
         let r = card_rect(&app, 1, 0);
-        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 64 - 5), 2.0).rect_of(Widget::Home).unwrap();
+        let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).rect_of(Widget::Home).unwrap();
         // the feed starts under the search bar and its blank line (D70)
         assert_eq!(r.y, home.y + 3, "the Card is clipped at the feed's top, not dropped");
         // pixel tier: the same cover placed with a crop of its lower part
@@ -1907,7 +1906,7 @@ mod tests {
             app.meters.push(singularity_proto::SpectrumFrame { bands, level: 180, vu: [220, 200], beat: i % 15 == 0, out_level: 180, out_vu: [220, 200], out_bands: [200; 3] });
         }
         let s = render(&mut app, 160, 48);
-        let slots = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0);
+        let slots = app.layout.compute(Rect::new(0, 1, 160, 48 - 5));
         let pane = |w: Widget| slots.rect_of(w).unwrap();
         let region = |r: Rect| s.lines().skip(r.y as usize + 1).take(r.height as usize - 2).map(|l| l.chars().skip(r.x as usize + 1).take(r.width as usize - 2).collect::<String>()).collect::<Vec<_>>().join("\n");
         assert!(region(pane(Widget::Fft)).contains('█'), "{}", region(pane(Widget::Fft)));
@@ -1929,7 +1928,7 @@ mod tests {
         assert!(s.contains("gravity well") && s.contains("◂ Inferno ▸"));
         app.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert!(render(&mut app, 160, 48).contains("◂ Gargantua ▸"));
-        let well = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).rect_of(Widget::Well).unwrap();
+        let well = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).rect_of(Widget::Well).unwrap();
         click(&mut app, well.x + well.width / 2, well.y + well.height / 2);
         assert!(render(&mut app, 160, 48).contains("◂ M87* ▸") && app.is_focused(Widget::Well));
         // pixel tier: one animated frame per draw, covering the well's inside
@@ -1941,6 +1940,30 @@ mod tests {
         let out = String::from_utf8(out).unwrap();
         // (the CPU renderer caps the resolution; the terminal scales it into the cells)
         assert!(out.contains("a=T,f=32,o=z,i=2,") && out.contains(&format!("p=1,c={},r={},C=1,z=-1", well.width - 4, well.height - 2)), "{}", &out[..out.len().min(200)]);
+    }
+
+    #[test]
+    fn a_wide_well_letterboxes_its_picture_and_keeps_its_pane() {
+        // the well across the whole width, 20 rows tall: its Pane stays where the floor plan puts it, the frame round
+        // all of it, and the picture is 4:3 (48 cells over 18 rows), centred
+        use crate::layout::{Axis, Node, Size};
+        let mut app = App::new(None);
+        app.layout = Node::split(Axis::Vertical, Size::Cells(20), Node::pane(Widget::Well), Node::pane(Widget::Home)).into();
+        app.kitty = Some(crate::gfx::Kitty::new(false));
+        app.cell_px = Some((10.0, 20.0));
+        let s = render(&mut app, 160, 48);
+        let well = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).rect_of(Widget::Well).unwrap();
+        assert_eq!(well.width, 160, "the Pane is not reshaped");
+        assert!(s.lines().nth(well.y as usize).unwrap().contains("gravity well"));
+        let mut out = vec![];
+        app.kitty.as_mut().unwrap().flush(&mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("p=1,c=48,r=18,C=1,z=-1"), "{}", &out[..out.len().min(300)]);
+        let hole = app.hole_at.expect("the hole is drawn");
+        assert_eq!((hole.cx, hole.well), (80.0, well), "centred in the Pane");
+        // a click beside the picture is still on the well
+        click(&mut app, 3, well.y + 10);
+        assert!(app.is_focused(Widget::Well));
     }
 
     #[test]
@@ -1981,7 +2004,7 @@ mod tests {
         assert_eq!(v.sel, 2 + 3 * vis);
         assert!(v.sel >= v.top && v.sel < v.top + v.visible, "the highlight stays in view");
         // the library sidebar
-        let lib = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).rect_of(Widget::Library).unwrap();
+        let lib = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).rect_of(Widget::Library).unwrap();
         for _ in 0..50 {
             mouse(&mut app, MouseEventKind::ScrollDown, lib.x as f64 + 3.5, lib.y + 3, false);
         }
@@ -2003,7 +2026,7 @@ mod tests {
         assert!(s.contains("listening · 26 weeks") && s.contains("1.8 h this year · top: Nova Drift · streak 2 days"), "{s}");
         // this week is the last column, Monday on top, two days a cell (Cockpit's Pane is short): Wednesday over
         // Thursday (today, the brightest) in the second row; a week ago too; Friday on hasn't come
-        let r = app.layout.compute_shaped(Rect::new(0, 1, 160, 48 - 5), 2.0).rect_of(Widget::Listening).unwrap();
+        let r = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).rect_of(Widget::Listening).unwrap();
         let (x0, y0) = (r.x + 2, r.y + 1);
         let last = ((r.width - 2) / 2).min(26) - 1;
         let buf = {
@@ -2035,6 +2058,23 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         app.tick();
         assert!(!render(&mut app, 160, 48).contains("the well is empty"));
+    }
+
+    #[test]
+    fn a_short_wide_well_and_hole_still_say_they_are_empty() {
+        // 7 rows across the whole width: the picture would be letterboxed to 13 cells, too narrow for the message;
+        // the message takes the whole inside (#48)
+        use crate::layout::{Axis, Node, Size};
+        for w in [Widget::Well, Widget::Hole] {
+            let mut app = App::new(None);
+            app.layout = Node::split(Axis::Vertical, Size::Cells(7), Node::pane(w), Node::pane(Widget::Home)).into();
+            render(&mut app, 160, 48);
+            app.run(crate::app::Action::IdlePreview);
+            app.tick();
+            app.idle_for(10.0);
+            let s = render(&mut app, 160, 48);
+            assert!(s.contains("· the well is empty ·"), "{w}:\n{s}");
+        }
     }
 
     #[test]
@@ -2539,7 +2579,7 @@ mod tests {
                     app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
                 }
                 let s = render(&mut app, w, h);
-                let home = app.layout.compute_shaped(Rect::new(0, 1, w, h - 5), 2.0).rect_of(Widget::Home).unwrap();
+                let home = app.layout.compute(Rect::new(0, 1, w, h - 5)).rect_of(Widget::Home).unwrap();
                 assert!(s.contains("stats"), "{w}x{h}: titled");
                 assert!(s.contains("This week") || (s.contains("Week") && s.contains("All")), "{w}x{h}: every tab: {s}");
                 assert!(s.contains("plays"), "{w}x{h}: the summary is in view");
@@ -2607,7 +2647,7 @@ mod tests {
         let s = render(&mut app, 140, 40);
         // it wraps rather than being cut
         assert!(s.contains("nothing logged yet in this period") && s.contains("half a short track)"), "{s}");
-        let home = app.layout.compute_shaped(Rect::new(0, 1, 140, 40 - 5), 2.0).rect_of(Widget::Home).unwrap();
+        let home = app.layout.compute(Rect::new(0, 1, 140, 40 - 5)).rect_of(Widget::Home).unwrap();
         let pane: String = s.lines().map(|l| l.chars().skip(home.x as usize).take(home.width as usize).collect::<String>()).collect::<Vec<_>>().join("\n");
         assert!(!pane.contains('…'), "nothing cut: {pane}");
     }
@@ -2856,12 +2896,12 @@ mod tests {
             app.set_design(d);
             for (w, h) in [(80u16, 24u16), (140, 40)] {
                 let swappable = |p: &Pane| p.widget.is_some_and(|w| !crate::layouts::options(w).is_empty() && w != Widget::Well);
-                let slots: Vec<(Pane, Rect)> = app.layout.compute_shaped(Rect::new(0, 1, w, h - 5), 2.0).panes.into_iter().filter(|(p, _)| swappable(p)).collect();
+                let slots: Vec<(Pane, Rect)> = app.layout.compute(Rect::new(0, 1, w, h - 5)).panes.into_iter().filter(|(p, _)| swappable(p)).collect();
                 for (k, (_, rect)) in slots.iter().enumerate() {
                     // walk this Slot through its whole cycle; the arrows are there every step
                     for _ in 0..14 {
                         render(&mut app, w, h);
-                        let now = app.layout.compute_shaped(Rect::new(0, 1, w, h - 5), 2.0).panes.into_iter().filter(|(p, _)| swappable(p)).nth(k).unwrap().0;
+                        let now = app.layout.compute(Rect::new(0, 1, w, h - 5)).panes.into_iter().filter(|(p, _)| swappable(p)).nth(k).unwrap().0;
                         if rect.width >= 12 {
                             assert!(app.hits.iter().any(|(r, h)| *h == Hit::Swap(now.id, 1) && r.y == rect.y), "{} {w}x{h}: no ▸ on {now:?}", crate::design::DESIGNS[d].id);
                         }
@@ -2888,7 +2928,7 @@ mod tests {
         wheel(&mut app, link.x + 1, link.y);
         assert_eq!(app.artist.as_ref().unwrap().top_sel, 1);
         // below the songs, over the Shelves (Cards or not): the page scrolls by lines
-        let home = app.layout.compute_shaped(Rect::new(0, 1, 200, 48 - 5), 2.0).rect_of(Widget::Home).unwrap();
+        let home = app.layout.compute(Rect::new(0, 1, 200, 48 - 5)).rect_of(Widget::Home).unwrap();
         wheel(&mut app, home.right() - 3, home.bottom() - 3);
         render(&mut app, 200, 48);
         assert!(app.artist.as_ref().unwrap().shelves.offset > 0, "the Shelves scrolled");
@@ -3390,7 +3430,7 @@ mod tests {
             // a Design without their Panes (D87)
             Modal::Library | Modal::Queue => {
                 let w = if m == Modal::Library { Widget::Library } else { Widget::Queue };
-                app.layout = app.layout.close(app.layout.pane_of(w).unwrap(), app.pane_area(), app.cell_aspect()).unwrap();
+                app.layout = app.layout.close(app.layout.pane_of(w).unwrap(), app.pane_area()).unwrap();
                 app.run(if m == Modal::Library { Action::ShowLibrary } else { Action::ShowQueue });
             }
             Modal::Widgets => {
@@ -3823,7 +3863,7 @@ mod tests {
         assert_eq!(app.focused(), None);
         assert!(!app.is_focused(Widget::Home));
         let s = render(&mut app, 120, 40);
-        let r = app.layout.compute_shaped(app.body, 2.0).rect(gap.id).unwrap();
+        let r = app.layout.compute(app.body).rect(gap.id).unwrap();
         let rows: Vec<String> = s.lines().skip(r.y as usize).take(r.height as usize).map(|l| l.chars().skip(r.x as usize).take(r.width as usize).collect()).collect();
         assert!(rows[0].starts_with('┌') || rows[0].starts_with('╭'), "a frame: {:?}", rows[0]);
         assert!(!rows[0].chars().any(char::is_alphanumeric) && rows[0].contains("┌──"), "no title: {:?}", rows[0]);

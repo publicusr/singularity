@@ -1642,9 +1642,10 @@ def contact_sheet(env, out):
     sheet (one captioned image per Widget, each cell on its own, the Design shots and an index.html to mark them in)
     goes to PTY_SHEET (default `<out>/sheet` when `out` is an ignored `out-*` folder, else
     `tools/pty/out-contact-sheet/sheet`); set it outside the repo to keep the sheet. PTY_WIDGETS /
-    PTY_SIZES / PTY_TIERS (cells,pixels) / PTY_DESIGNS pick a subset; PTY_DESIGNS= skips the Designs."""
+    PTY_SIZES / PTY_TIERS (cells,pixels) / PTY_DESIGNS pick a subset; PTY_WIDGETS= skips the Widgets, PTY_DESIGNS= the
+    Designs."""
     global COLS, ROWS
-    widgets = os.environ.get("PTY_WIDGETS", ",".join(SHEET_WIDGETS)).split(",")
+    widgets = [w for w in os.environ.get("PTY_WIDGETS", ",".join(SHEET_WIDGETS)).split(",") if w]
     sizes = os.environ.get("PTY_SIZES", ",".join(SHEET_SIZES)).split(",")
     tiers = os.environ.get("PTY_TIERS", "cells,pixels").split(",")
     designs = [d for d in os.environ.get("PTY_DESIGNS", ",".join(DESIGNS)).split(",") if d]

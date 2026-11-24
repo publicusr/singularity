@@ -135,8 +135,8 @@ fn dragging_a_title_onto_another_pane_swaps_their_widgets_and_nothing_moves_mean
 #[test]
 fn a_drop_on_an_empty_pane_fills_it_and_leaves_its_own_empty() {
     let mut a = app();
-    let (area, aspect) = (a.pane_area(), a.cell_aspect());
-    a.layout = a.layout.split(pid(&a, Widget::Queue), Side::Right, None, area, aspect).unwrap();
+    let area = a.pane_area();
+    a.layout = a.layout.split(pid(&a, Widget::Queue), Side::Right, None, area).unwrap();
     render(&mut a, W, H);
     let empty = a.layout.panes().into_iter().find(|p| p.widget.is_none()).unwrap().id;
     let fft = pid(&a, Widget::Fft);
@@ -205,7 +205,7 @@ fn every_drop_is_allowed_even_into_a_pane_smaller_than_the_widget_likes() {
     release(&mut a, centre(f).0, centre(f).1);
     assert_eq!((a.layout.widget_in(fft), a.layout.widget_in(well)), (Some(Widget::Well), Some(Widget::Fft)));
     assert_eq!(crate::arrangement::outline(a.layout.plan()), crate::arrangement::outline(before.plan()));
-    assert!(a.layout.fits(a.pane_area(), a.cell_aspect()));
+    assert!(a.layout.fits(a.pane_area()));
     render(&mut a, W, H);
 }
 
@@ -435,19 +435,20 @@ fn letting_go_of_a_divider_is_an_edit() {
 }
 
 #[test]
-fn a_divider_will_not_squash_the_well() {
+fn a_divider_squashes_the_well_like_any_pane_and_it_says_what_it_needs() {
     let mut a = app();
-    // the divider below the well, dragged as far up as it goes, then as far down
-    for target in [0u16, 100] {
-        let well = pane(&a, Widget::Well);
-        let d = a.dividers.iter().find(|d| d.grip.y + 1 == well.bottom() && d.axis == crate::layout::Axis::Vertical).cloned().unwrap();
-        press(&mut a, d.grip.x + 3, d.grip.y);
-        drag(&mut a, d.grip.x + 3, target);
-        release(&mut a, d.grip.x + 3, target);
-        render(&mut a, W, H);
-        assert!(a.layout.valid(a.pane_area(), a.cell_aspect()));
-        assert!(pane(&a, Widget::Well).height >= crate::layout::WELL_MIN_H);
-    }
+    // the divider below the well, dragged as far up as it goes: the well is a Pane like any other (D87, #48), down to
+    // the Pane minimum, and below its smallest size it says `needs W × H`
+    let well = pane(&a, Widget::Well);
+    let d = a.dividers.iter().find(|d| d.grip.y + 1 == well.bottom() && d.axis == crate::layout::Axis::Vertical).cloned().unwrap();
+    press(&mut a, d.grip.x + 3, d.grip.y);
+    drag(&mut a, d.grip.x + 3, 0);
+    release(&mut a, d.grip.x + 3, 0);
+    let shot = render(&mut a, W, H);
+    assert!(a.layout.valid(a.pane_area()));
+    assert_eq!(pane(&a, Widget::Well).height, crate::layout::MIN_H);
+    let (nw, nh) = crate::needs::smallest(Widget::Well);
+    assert!(shot.contains(&format!("needs {nw} × {nh}")), "{shot}");
 }
 
 #[test]
@@ -599,7 +600,7 @@ fn random_gestures_leave_every_design_valid() {
                 let body = a.pane_area();
                 assert!(drawn_panes(&a).iter().all(|(_, r)| r.width >= 1 && r.height >= 1 && r.x >= body.x && r.y >= body.y && r.right() <= body.right() && r.bottom() <= body.bottom()), "{} {w}x{h}", design.id);
                 let tree = a.layout.clone();
-                assert!(tree.fits(a.pane_area(), a.cell_aspect()), "{} {w}x{h}: {tree:?}", design.id);
+                assert!(tree.fits(a.pane_area()), "{} {w}x{h}: {tree:?}", design.id);
                 assert!(crate::arrangement::REQUIRED.iter().all(|c| tree.has(*c)));
                 assert!(a.tile.is_none() && a.widget_pick().is_none());
             }
@@ -847,15 +848,15 @@ fn an_undo_that_would_not_fit_the_window_is_refused() {
     // Home split twice: three columns where Singularity has one; one closed, the window shrinks, and the undo back
     // to three wouldn't fit
     let mut a = app();
-    let (area, aspect) = (a.pane_area(), a.cell_aspect());
+    let area = a.pane_area();
     let home = pid(&a, Widget::Home);
-    a.layout = a.layout.split(home, Side::Right, Some(Widget::Scope), area, aspect).unwrap().split(home, Side::Right, Some(Widget::Rain), area, aspect).unwrap();
+    a.layout = a.layout.split(home, Side::Right, Some(Widget::Scope), area).unwrap().split(home, Side::Right, Some(Widget::Rain), area).unwrap();
     let three = a.layout.clone();
     a.close_pane(pid(&a, Widget::Rain));
     let two = a.layout.clone();
     let (w, h) = (50..160u16).map(|w| (w, 30u16)).find(|&(w, h)| {
         let body = Rect::new(0, 1, w, h - 5);
-        !three.fits(body, 2.0) && two.fits(body, 2.0)
+        !three.fits(body) && two.fits(body)
     }).expect("such a size");
     render(&mut a, w, h);
     ctrl(&mut a, 'z');
@@ -1035,15 +1036,15 @@ fn a_new_design_is_drawn_at_once_and_the_focus_stays_on_its_widget() {
     a.set_layout(Node::classic());
     assert_eq!(a.focused(), Some(Widget::Queue));
     render(&mut a, W, H);
-    let want = Node::classic().compute_shaped(a.pane_area(), a.cell_aspect()).rect_of(Widget::Home).unwrap();
+    let want = Node::classic().compute(a.pane_area()).rect_of(Widget::Home).unwrap();
     assert_eq!(pane(&a, Widget::Home), want, "the first frame is the new layout");
 }
 
 #[test]
 fn an_empty_pane_has_nothing_to_move() {
     let mut a = app();
-    let (area, aspect) = (a.pane_area(), a.cell_aspect());
-    a.layout = a.layout.split(pid(&a, Widget::Queue), Side::Right, None, area, aspect).unwrap();
+    let area = a.pane_area();
+    a.layout = a.layout.split(pid(&a, Widget::Queue), Side::Right, None, area).unwrap();
     render(&mut a, W, H);
     let empty = a.layout.panes().into_iter().find(|p| p.widget.is_none()).unwrap().id;
     a.focus = Some(empty);

@@ -135,7 +135,7 @@ impl Replay {
 
     /// The Pane under (x, y) by the geometry alone, other than `own`.
     fn under(&self, x: u16, y: u16, own: PaneId) -> Option<PaneId> {
-        let c = self.a.layout.compute_shaped(self.a.pane_area(), self.a.cell_aspect());
+        let c = self.a.layout.compute(self.a.pane_area());
         c.panes.iter().find(|(_, r)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom()).map(|(p, _)| p.id).filter(|p| *p != own)
     }
 
@@ -147,13 +147,13 @@ impl Replay {
         if self.draw || self.a.pane_area() != body(self.size) || self.drawn.as_ref() != Some(&self.a.layout) {
             self.render();
         }
-        let (area, aspect) = (self.a.pane_area(), self.a.cell_aspect());
-        let fits = self.a.layout.fits(area, aspect);
+        let area = self.a.pane_area();
+        let fits = self.a.layout.fits(area);
         // drawn this frame: the Panes' own hit boxes say where; else where the layout puts them
         let mut rects: Vec<(PaneId, Rect)> = if self.draw {
             self.a.hits.iter().filter_map(|(r, h)| if let Hit::Focus(p) = h { Some((*p, *r)) } else { None }).collect()
         } else {
-            self.a.layout.compute_shaped(area, aspect).panes.into_iter().map(|(p, r)| (p.id, r)).collect()
+            self.a.layout.compute(area).panes.into_iter().map(|(p, r)| (p.id, r)).collect()
         };
         rects.sort_by_key(|(p, _)| *p);
         let t = self.a.tile.as_ref().filter(|t| t.live);
@@ -248,7 +248,7 @@ impl Replay {
 
     /// The Pane's rectangle in the layout as it stands.
     fn rect(&self, w: Widget) -> Rect {
-        self.a.layout.compute_shaped(self.a.pane_area(), self.a.cell_aspect()).rect_of(w).unwrap_or_else(|| panic!("no {w}"))
+        self.a.layout.compute(self.a.pane_area()).rect_of(w).unwrap_or_else(|| panic!("no {w}"))
     }
 
     /// A spot on the Pane's title bar to grab it by.
@@ -259,8 +259,8 @@ impl Replay {
 
     /// Every check that holds on every path. `what` names the path in a failure.
     fn check(&self, what: &str) {
-        let (area, aspect) = (self.a.pane_area(), self.a.cell_aspect());
-        assert!(self.a.layout.fits(area, aspect), "{what}: the floor plan isn't valid: {:?}", self.a.layout);
+        let area = self.a.pane_area();
+        assert!(self.a.layout.fits(area), "{what}: the floor plan isn't valid: {:?}", self.a.layout);
         // nothing is left held once the button is up (every path ends with it up)
         assert!(self.a.tile.is_none(), "{what}: a Widget is still held");
         assert!(self.a.drag.is_none() && self.a.divider_from.is_none(), "{what}: a divider is still held");
@@ -653,8 +653,8 @@ fn a_resize_mid_drag_drops_on_a_pane_of_the_new_window() {
             h.press(tx, ty).glide(x as f64, y as f64, 200.0).rest(250.0).then(1.0, Ev::Drag(x, y)).then(5.0, Ev::Resize(100, 30)).then(gap, Ev::Release(x, y));
         }) {
             let me = pid(&r.start, held_in(&r.start));
-            let (area, aspect) = (r.a.pane_area(), r.a.cell_aspect());
-            let here = r.start.compute_shaped(area, aspect).panes.into_iter().find(|(_, q)| x >= q.x && x < q.right() && y >= q.y && y < q.bottom()).map(|(p, _)| p.id).filter(|p| *p != me);
+            let area = r.a.pane_area();
+            let here = r.start.compute(area).panes.into_iter().find(|(_, q)| x >= q.x && x < q.right() && y >= q.y && y < q.bottom()).map(|(p, _)| p.id).filter(|p| *p != me);
             let new = here.map(|p| r.start.swap(me, p).unwrap());
             assert!(r.a.layout == r.start || Some(&r.a.layout) == new.as_ref(), "{what}: dropped on a Pane of the old window");
         }
@@ -722,13 +722,13 @@ fn a_divider_flung_past_its_limit_stops_at_the_limit() {
             h.press(x, y).glide(to.0, to.1, 40.0).release();
         }) {
             // one cell further that way and something would no longer fit (or it can't go further at all)
-            let (area, aspect) = (r.a.pane_area(), r.a.cell_aspect());
+            let area = r.a.pane_area();
             let i = r.divider.unwrap();
-            let d = r.a.layout.compute_shaped(area, aspect).dividers[i].clone();
+            let d = r.a.layout.compute(area).dividers[i].clone();
             let at = r.a.layout.boundary(&d).unwrap();
             let mut further = r.a.layout.plan().clone();
             further.drag(&d, if low { at.saturating_sub(1) } else { at + 1 });
-            assert!(further == r.a.layout || !Arrangement::from(further).comfortable(area, aspect), "{what}: stopped short at {at}");
+            assert!(further == r.a.layout || !Arrangement::from(further).fits(area), "{what}: stopped short at {at}");
         }
     }
 }

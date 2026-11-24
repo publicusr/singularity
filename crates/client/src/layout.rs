@@ -69,16 +69,14 @@ const ID_ROOM: u32 = 1 << 30;
 /// Smallest Pane we will ever produce, per axis (borders + one line of content).
 pub const MIN_W: u16 = 12;
 pub const MIN_H: u16 = 3;
-/// The gravity well and the black hole need more height than other Panes to stay a picture (D66).
-pub const WELL_MIN_H: u16 = 5;
 
 /// Panes that hold the hole: the gravity well (its own frame) and Event Horizon's plain black hole.
 pub fn is_hole(w: Option<Widget>) -> bool {
     matches!(w, Some(Widget::Well | Widget::Hole))
 }
 
-/// The gravity well's widest shape, width over height in pixels (4:3, owner round 2; was 16:10); a little wider is let
-/// be. Dragging the divider can still make it narrower.
+/// The black hole's picture's widest shape, width over height in pixels (4:3, owner round 2; was 16:10): in a wider
+/// Pane it is letterboxed (`visual::well::picture`), a little wider let be; in a narrower one it fills the Pane.
 pub const WELL_ASPECT: f64 = 4.0 / 3.0;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -196,7 +194,8 @@ impl Node {
         let mid = Node::split(Vertical, Ratio(0.52), Node::pane(Widget::Home), Node::pane(Widget::Queue));
         let instruments = Node::split(Horizontal, Ratio(0.5), Node::pane(Widget::Loudness), Node::pane(Widget::Fft));
         let right = Node::split(Vertical, Ratio(0.44), Node::pane(Widget::Well), Node::split(Vertical, Ratio(0.57), Node::pane(Widget::Lyrics), instruments));
-        Node::split(Horizontal, Cells(30), left, Node::split(Horizontal, Ratio(0.58), mid, right))
+        // the middle's 0.65: between the widths the well's old 4:3 nudge left it at the usual sizes (#48)
+        Node::split(Horizontal, Cells(30), left, Node::split(Horizontal, Ratio(0.65), mid, right))
     }
 
     /// Event Horizon: library | home + up next | the black hole (no well: it owns its quadrant) + lyrics.
@@ -292,33 +291,12 @@ impl Node {
         self.get(id).and_then(|p| p.widget)
     }
 
+    /// Where every Pane and line is drawn over `area`. Only the floor plan decides it, never what the Panes hold (D87:
+    /// moving a Widget, the gravity well's included, never moves a Pane; #48).
     pub fn compute(&self, area: Rect) -> Computed {
         let mut out = Computed::default();
-        self.compute_into(area, &mut Vec::new(), None, &mut out);
+        self.compute_into(area, &mut Vec::new(), &mut out);
         out
-    }
-
-    /// `compute`, but a gravity well wider than `WELL_ASPECT` (cells are `cell_aspect` times taller than wide) gives
-    /// its extra width to its neighbour across the nearest side-by-side split (in Singularity, the middle column).
-    pub fn compute_shaped(&self, area: Rect, cell_aspect: f64) -> Computed {
-        let out = self.compute(area);
-        let Some((id, well)) = out.panes.iter().find(|(p, _)| p.holds(Widget::Well)).map(|(p, r)| (p.id, *r)) else { return out };
-        // the inner picture, inside the frame
-        let want = ((well.height.saturating_sub(2)) as f64 * cell_aspect * WELL_ASPECT).round() as u16 + 2;
-        // never below its own smallest size (squatter cells than 2:1 would leave a short well a needs line, #36)
-        let want = want.max(crate::needs::smallest(Widget::Well).0);
-        if well.width <= want + want / 20 {
-            return out;
-        }
-        let Some(path) = self.path_of(id) else { return out };
-        let split = (0..path.len()).rev().find(|&k| matches!(self.at_path(&path[..k]), Some(Node::Split { axis: Axis::Horizontal, .. })));
-        let Some(k) = split else { return out };
-        let extra = (well.width - want) as i32;
-        // the well on the right: its split's first side grows; on the left: shrinks
-        let delta = if path[k] == 1 { extra } else { -extra };
-        let mut shaped = Computed::default();
-        self.compute_into(area, &mut Vec::new(), Some((&path[..k], delta)), &mut shaped);
-        shaped
     }
 
     /// Where Pane `id` is: child indices from the root (0 = a, 1 = b).
@@ -342,8 +320,7 @@ impl Node {
         }
     }
 
-    /// `nudge`: the split at this path moves its boundary by that many cells (minimums still hold).
-    fn compute_into(&self, area: Rect, path: &mut Vec<u8>, nudge: Option<(&[u8], i32)>, out: &mut Computed) {
+    fn compute_into(&self, area: Rect, path: &mut Vec<u8>, out: &mut Computed) {
         match self {
             Node::Pane(p) => out.panes.push((*p, area)),
             Node::Split { axis, first, a, b } => {
@@ -355,10 +332,6 @@ impl Node {
                 let want = first.cells(total);
                 // keep both sides at least as big as their own Panes need when there is room; otherwise share the
                 // room in proportion to those needs
-                let want = match nudge {
-                    Some((at, by)) if at == path.as_slice() => (want as i32 + by).clamp(0, total as i32) as u16,
-                    _ => want,
-                };
                 let n = if total >= min_a + min_b { want.clamp(min_a, total - min_b) } else { (total as u32 * min_a as u32 / (min_a + min_b).max(1) as u32) as u16 };
                 let (ra, rb, grip) = match axis {
                     Axis::Horizontal => (
@@ -374,10 +347,10 @@ impl Node {
                 };
                 out.dividers.push(Divider { path: path.clone(), axis: *axis, area, grip });
                 path.push(0);
-                a.compute_into(ra, path, nudge, out);
+                a.compute_into(ra, path, out);
                 path.pop();
                 path.push(1);
-                b.compute_into(rb, path, nudge, out);
+                b.compute_into(rb, path, out);
                 path.pop();
             }
         }
@@ -478,26 +451,18 @@ mod tests {
     }
 
     #[test]
-    fn a_wide_well_keeps_its_shape_and_the_middle_gets_the_width() {
+    fn what_a_pane_holds_never_moves_a_pane() {
+        // the gravity well in any Pane: every Pane is where the floor plan alone puts it (#48)
         let n = Node::singularity();
-        for (w, h, aspect) in [(256u16, 68u16, 2.0), (256, 68, 2.2), (400, 60, 2.0), (140, 40, 2.0)] {
-            let area = Rect::new(0, 0, w, h);
-            let (plain, shaped) = (n.compute(area), n.compute_shaped(area, aspect));
-            let get = |c: &Computed, w: Widget| c.rect_of(w).unwrap();
-            let well = get(&shaped, Widget::Well);
-            let shape = (well.width - 2) as f64 / ((well.height - 2) as f64 * aspect);
-            assert!(shape <= WELL_ASPECT * 1.05 + 0.05, "{w}x{h}: {well:?} is {shape:.2}");
-            let freed = get(&plain, Widget::Well).width - well.width;
-            assert_eq!(get(&shaped, Widget::Home).width, get(&plain, Widget::Home).width + freed, "{w}x{h}: the middle takes it");
-            assert_eq!(get(&shaped, Widget::Library).width, get(&plain, Widget::Library).width);
-            let cells: u32 = shaped.panes.iter().map(|(_, r)| r.width as u32 * r.height as u32).sum();
-            assert_eq!(cells, w as u32 * h as u32);
+        let plain: Vec<Rect> = crate::arrangement::outline(&n).compute(Rect::new(0, 0, 264, 63)).panes.into_iter().map(|(_, r)| r).collect();
+        let well = n.pane_of(Widget::Well).unwrap();
+        for p in n.panes() {
+            let mut m = n.clone();
+            m.put(well, p.widget);
+            m.put(p.id, Some(Widget::Well));
+            let got: Vec<Rect> = m.compute(Rect::new(0, 0, 264, 63)).panes.into_iter().map(|(_, r)| r).collect();
+            assert_eq!(got, plain, "the well in {:?}'s Pane", p.widget);
         }
-        // already well-shaped: nothing moves
-        let area = Rect::new(0, 0, 120, 40);
-        assert_eq!(n.compute_shaped(area, 2.0), n.compute(area));
-        // no well, no change
-        assert_eq!(Node::classic().compute_shaped(Rect::new(0, 0, 300, 60), 2.0), Node::classic().compute(Rect::new(0, 0, 300, 60)));
     }
 
     #[test]

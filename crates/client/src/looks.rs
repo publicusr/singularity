@@ -578,7 +578,7 @@ mod tests {
         let (mut app, dir) = with_dirs();
         let area = Rect::new(0, 1, 160, 43);
         let d = app.layout.compute(area).dividers[0].clone();
-        app.layout = app.layout.move_line(&d, 41, area, 2.0);
+        app.layout = app.layout.move_line(&d, 41, area);
         app.swap_widget(app.layout.pane_of(Widget::Fft).unwrap(), 1);
         let mine = app.layout.clone();
         app.run(crate::app::Action::SaveLayout);

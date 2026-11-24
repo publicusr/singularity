@@ -230,7 +230,7 @@ fn typing_filters_and_picking_one_off_screen_replaces_the_panes_widget() {
     assert_eq!(a.layout.widget_in(fft), Some(Widget::Starfield), "the same Pane shows it");
     assert!(!a.layout.has(Widget::Fft), "the replaced Widget left the screen");
     assert_eq!(a.focus, Some(fft));
-    assert!(a.layout.valid(a.pane_area(), a.cell_aspect()));
+    assert!(a.layout.valid(a.pane_area()));
     // it's a layout edit: undo puts fft back
     a.close_if_open(Modal::Naming);
     a.run(Action::UndoLayout);
@@ -241,7 +241,7 @@ fn typing_filters_and_picking_one_off_screen_replaces_the_panes_widget() {
 fn picking_one_on_screen_swaps_the_two_panes_widgets() {
     let mut a = app();
     let (fft, stream) = (pid(&a, Widget::Fft), pid(&a, Widget::Stream));
-    let before = a.layout.compute_shaped(a.pane_area(), a.cell_aspect()).panes.iter().map(|(p, r)| (p.id, *r)).collect::<Vec<_>>();
+    let before = a.layout.compute(a.pane_area()).panes.iter().map(|(p, r)| (p.id, *r)).collect::<Vec<_>>();
     a.open_widget_picker(fft);
     render(&mut a);
     let i = a.widget_choices().iter().position(|c| c.widget == Widget::Stream).expect("stream is listed");
@@ -250,7 +250,7 @@ fn picking_one_on_screen_swaps_the_two_panes_widgets() {
     let r = a.hit_rect(&Hit::PickWidget(i)).expect("its row is drawn");
     click(&mut a, r.x + 3, r.y);
     assert_eq!((a.layout.widget_in(fft), a.layout.widget_in(stream)), (Some(Widget::Stream), Some(Widget::Fft)));
-    let after = a.layout.compute_shaped(a.pane_area(), a.cell_aspect()).panes.iter().map(|(p, r)| (p.id, *r)).collect::<Vec<_>>();
+    let after = a.layout.compute(a.pane_area()).panes.iter().map(|(p, r)| (p.id, *r)).collect::<Vec<_>>();
     assert_eq!(before, after, "only what the Panes show changed");
 }
 
@@ -339,12 +339,11 @@ fn the_picker_closes_when_its_pane_goes() {
     assert!(a.modal().is_none());
 }
 
-/// D87: a Replace or a swap changes only what the Panes show, never where they are. The gravity well still reshapes
-/// the columns when it moves (`compute_shaped`); #36 fixes that and un-ignores this.
+/// D87: a Replace or a swap changes only what the Panes show, never where they are, the gravity well's included (it
+/// letterboxes its picture in whatever Pane it gets, #48).
 #[test]
-#[ignore = "until #36: moving the well reshapes columns"]
 fn a_replace_or_swap_never_changes_any_panes_rect() {
-    let rects = |a: &App| a.layout.compute_shaped(a.pane_area(), a.cell_aspect()).panes.iter().map(|(p, r)| (p.id, *r)).collect::<Vec<_>>();
+    let rects = |a: &App| a.layout.compute(a.pane_area()).panes.iter().map(|(p, r)| (p.id, *r)).collect::<Vec<_>>();
     for (target, pick) in [(Widget::Stream, Widget::Well), (Widget::Well, Widget::Starfield), (Widget::Fft, Widget::Karaoke), (Widget::Fft, Widget::Queue)] {
         let mut a = app();
         let before = rects(&a);
