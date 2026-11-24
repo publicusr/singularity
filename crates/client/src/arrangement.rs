@@ -13,8 +13,18 @@
 //! Reading goes through `Deref` to the floor plan (`Node`): where a Pane is, what it holds; writing never does.
 
 use crate::layout::{Divider, MIN_H, MIN_W, Node, PaneId, Widget};
-use crate::tiling::{CORE, Side};
+use crate::tiling::Side;
 use ratatui::layout::Rect;
+
+/// The Required Widgets: moved, never closed or replaced away (D87: only Home, the main Pane where every page opens).
+/// The built-in Designs also have the library, the queue and lyrics (D43), but an edit forks one into a Design of your
+/// own, which may let them go: without a Pane, the library and the queue open as popups from the palette.
+pub const REQUIRED: [Widget; 1] = [Widget::Home];
+
+/// Whether `w` is a Required Widget.
+pub fn required(w: Option<Widget>) -> bool {
+    w.is_some_and(|w| REQUIRED.contains(&w))
+}
 
 /// The floor plan and its contents. (The next step, #41, adds the Tray: the Widgets set aside.)
 #[derive(Clone, Debug, PartialEq)]
@@ -36,7 +46,7 @@ pub enum Refused {
     NotEmpty(Widget),
     /// a Widget already on screen (each is there at most once)
     OnScreen(Widget),
-    /// a Widget every Design keeps (it can be moved, never removed)
+    /// a Required Widget (it can be moved, never removed)
     Required(Widget),
     /// the only Pane left
     LastPane,
@@ -145,12 +155,12 @@ impl Arrangement {
         }
     }
 
-    /// Pane `pane` shows Widget `w` (not on screen) instead of what it showed, which leaves the screen. Home is never
-    /// replaced; an empty Pane is filled.
+    /// Pane `pane` shows Widget `w` (not on screen) instead of what it showed, which leaves the screen. A Required
+    /// Widget (Home) is never replaced; an empty Pane is filled.
     pub fn replace(&self, pane: PaneId, w: Widget) -> Result<Arrangement, Refused> {
         match self.plan.get(pane).map(|p| p.widget) {
             None => Err(Refused::NoPane),
-            Some(Some(Widget::Home)) => Err(Refused::Required(Widget::Home)),
+            Some(Some(r)) if required(Some(r)) => Err(Refused::Required(r)),
             Some(_) => self.put_new(pane, w),
         }
     }
@@ -213,12 +223,12 @@ impl Arrangement {
         self.checked(plan, area, aspect)
     }
 
-    /// Without Pane `pane` (its neighbour takes the room); refused for a Widget every Design keeps.
+    /// Without Pane `pane` (its neighbour takes the room); refused for a Required Widget (Home).
     pub fn close(&self, pane: PaneId, area: Rect, aspect: f64) -> Result<Arrangement, Refused> {
         match self.plan.get(pane) {
             None => return Err(Refused::NoPane),
             Some(p) => {
-                if let Some(w) = p.widget.filter(|w| CORE.contains(w)) {
+                if let Some(w) = p.widget.filter(|w| required(Some(*w))) {
                     return Err(Refused::Required(w));
                 }
             }

@@ -55,8 +55,17 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let tall = r.width >= 32 && r.height >= 24;
     let pitch: u16 = if tall { 2 } else { 1 };
     side.visible = (r.height / pitch).max(1) as usize;
+    // the highlight is on a row there is (a refresh can shorten the library), and the window follows it (the size it
+    // was moved with may be another Pane's, or the popup's before its first frame)
+    side.sel = side.sel.min(n.saturating_sub(1));
+    if side.sel < side.top {
+        side.top = side.sel;
+    } else if side.sel >= side.top + side.visible {
+        side.top = side.sel + 1 - side.visible;
+    }
     side.top = side.top.min(n.saturating_sub(side.visible));
-    let focused = app.is_focused(crate::layout::Widget::Library);
+    // (its popup, where no Pane shows it, has the keys as a focused Pane has them)
+    let focused = app.is_focused(crate::layout::Widget::Library) || app.is_open(crate::app::Modal::Library);
     let open = app.open.view().map(|v| v.uri.clone());
     let page = app.current_page();
     let mut hits = vec![];

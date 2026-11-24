@@ -2,9 +2,9 @@
 //! Pane's menu on a right-click, a click on the Widget's name in its title, a key or the palette). Type to filter,
 //! scroll like any list. Widgets not on screen come first; those on screen are dimmed below a line, and picking one
 //! swaps the two Panes' Widgets (the Panes stay where they are: only what they show changes). Each Widget is on screen
-//! at most once, Home's Pane has no Replace widget, and only what the Design's rules allow today is offered: the
-//! library, the queue and lyrics stay on screen (D43; their Panes can only trade places), one black hole at a time, and
-//! nothing that wouldn't fit there.
+//! at most once, Home's Pane has no Replace widget (Home is the only Required Widget: the library, the queue and lyrics
+//! may be replaced away, and the first two then open as popups from the palette), and only what the Design's rules
+//! allow today is offered: one black hole at a time, and nothing that wouldn't fit there.
 //!
 //! The picker names a Pane, not a Widget, so it can fill an empty one too (a split's new Pane, #39).
 //!
@@ -18,7 +18,6 @@ use crate::app::{App, Hit, Modal, Popup};
 use crate::arrangement::Arrangement;
 use crate::layout::{PaneId, Widget, is_hole};
 use crate::theme::Theme;
-use crate::tiling::CORE;
 use crate::ui::{blank, centered, popup, text};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -88,8 +87,9 @@ impl App {
         let Some(here) = self.layout.get(target) else { return vec![] };
         let mine = here.widget;
         let shown = self.layout.widgets();
-        // the library, the queue and lyrics stay on screen (D43): their Pane can trade places, not let them go
-        let keeps = mine.is_some_and(|w| CORE.contains(&w));
+        // a Required Widget stays on screen (D87: Home, whose Pane has no picker anyway): its Pane could only trade
+        // places, not let it go
+        let keeps = crate::arrangement::required(mine);
         // one black hole at a time: the Pane holding it may take the other
         let hole_free = !shown.iter().any(|w| is_hole(Some(*w)) && Some(*w) != mine);
         let mut off: Vec<Widget> = vec![];
@@ -242,7 +242,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
         let why = if query.is_empty() { "nothing else fits here" } else { "nothing matches" };
         text(buf, inner.x + 2, inner.y + 1, inner.width.saturating_sub(4), why, th.s(th.dim));
     }
-    let keeps = here.and_then(|h| h.widget).is_some_and(|w| CORE.contains(&w));
+    let keeps = crate::arrangement::required(here.and_then(|h| h.widget));
     let hint = match rows.get(sel) {
         _ if keeps && query.is_empty() => "it stays on screen: pick one to swap · Esc cancel",
         Some(c) if c.from.is_some() => "type to filter · Enter swaps it here · Esc cancel",

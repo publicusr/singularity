@@ -61,6 +61,8 @@ pub enum Action {
     RestartEngine,
     RefreshHome,
     GoHome,
+    ShowLibrary,
+    ShowQueue,
     Back,
     Forward,
     Search,
@@ -95,7 +97,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 60] = [
+    pub const ALL: [Action; 62] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -125,6 +127,8 @@ impl Action {
         Action::RestartEngine,
         Action::RefreshHome,
         Action::GoHome,
+        Action::ShowLibrary,
+        Action::ShowQueue,
         Action::Back,
         Action::Forward,
         Action::Search,
@@ -188,6 +192,8 @@ impl Action {
             Action::RestartEngine => "Restart the player",
             Action::RefreshHome => "Refresh Home",
             Action::GoHome => "Go to Home",
+            Action::ShowLibrary => "Your Library",
+            Action::ShowQueue => "Queue",
             Action::Back => "Back",
             Action::Forward => "Forward",
             Action::Search => "Search",
@@ -250,6 +256,8 @@ impl Action {
             Action::NextLook => "pane disk black hole",
             Action::Devices => "speaker phone connect",
             Action::Jam => "invite session",
+            Action::ShowLibrary => "playlists liked songs albums artists sidebar",
+            Action::ShowQueue => "up next songs reorder",
             Action::Health => "engine login audio stream quality",
             Action::Stats => "wrapped top artists tracks albums",
             Action::Settings => "config toml",
@@ -293,6 +301,8 @@ impl Action {
             Action::RestartEngine => "restart_player",
             Action::RefreshHome => "refresh_home",
             Action::GoHome => "home",
+            Action::ShowLibrary => "library",
+            Action::ShowQueue => "queue",
             Action::Back => "back",
             Action::Forward => "forward",
             Action::Search => "search",
@@ -1139,6 +1149,8 @@ impl App {
             Action::Logout => self.send(Command::Logout),
             Action::RefreshHome => self.send(Command::GetHome),
             Action::GoHome => self.navigate(Page::Home),
+            Action::ShowLibrary => self.show_library(),
+            Action::ShowQueue => self.show_queue(),
             Action::Back => self.go_back(),
             Action::Search => self.navigate(Page::Search),
             Action::Stats => self.navigate(Page::Stats),
@@ -1256,6 +1268,8 @@ impl App {
             Some(Modal::Naming) => return self.naming_key(k),
             Some(Modal::Widgets) => return self.widget_key(k),
             Some(Modal::WidgetPicker) => return self.widget_picker_key(k),
+            Some(Modal::Library) => return self.library_popup_key(k),
+            Some(Modal::Queue) => return self.queue_popup_key(k),
             Some(Modal::Details) => return self.details_key(k),
             Some(Modal::Adding) => return self.adding_key(k),
             Some(Modal::Cover) => return self.cover_key(k),
@@ -1536,7 +1550,7 @@ impl App {
     }
 
     /// Open sidebar row `row` (0 = Home, then the library).
-    fn open_side(&mut self, row: usize) {
+    pub(crate) fn open_side(&mut self, row: usize) {
         self.sidebar.sel = row;
         if row == 0 {
             return self.run(Action::GoHome);
@@ -1908,7 +1922,7 @@ impl App {
         self.send(cmd);
     }
 
-    fn queue_key(&mut self, k: KeyEvent) -> bool {
+    pub(crate) fn queue_key(&mut self, k: KeyEvent) -> bool {
         let n = self.playback.queue.len();
         if n == 0 {
             return false;
@@ -1993,7 +2007,7 @@ impl App {
         self.open.set_filter(filter);
     }
 
-    fn side_key(&mut self, k: KeyEvent) -> bool {
+    pub(crate) fn side_key(&mut self, k: KeyEvent) -> bool {
         let n = crate::sidebar::len(self);
         match k.code {
             KeyCode::Up => self.sidebar.move_sel(-1, n),
@@ -2081,7 +2095,7 @@ impl App {
     /// Right-click on a queue entry.
     /// A dragged song let go: shown in its new place at once, then moved on Spotify (if Spotify refuses, the Daemon
     /// sends the real queue back).
-    fn drop_queued(&mut self, d: crate::queue::QueueDrag) {
+    pub(crate) fn drop_queued(&mut self, d: crate::queue::QueueDrag) {
         // the queue can have changed during the drag, so find the song again by its uid/URI and never subtract a
         // stale index from another (a track change, or a phone editing the queue, shifts both)
         let Some(from) = d.index_in(&self.playback.queue) else { return };
@@ -2592,6 +2606,11 @@ impl App {
         if let Some(modal) = self.modal() {
             return self.modal_pointer(modal, m, coarse);
         }
+        // a song held in the queue popup, which has closed (another popup took its place, a key closed it): the drag
+        // aimed at a list that's gone, so it ends without moving anything
+        if self.queue_drag.is_some() && !self.layout.has(Widget::Queue) {
+            self.queue_drag = None;
+        }
         // a Pane held by its title: the pointer is the Pane's until it lets go
         if self.tile.is_some() {
             return self.tile_pointer(m);
@@ -2924,6 +2943,10 @@ modals! {
     Widgets,
     /// the Widget picker: what a Pane shows (Replace widget…)
     WidgetPicker,
+    /// the library as a popup, where no Pane shows it (D87)
+    Library,
+    /// the queue as a popup, where no Pane shows it (D87)
+    Queue,
     Details,
     Adding,
     Cover,
@@ -2946,6 +2969,11 @@ pub(crate) enum Popup {
     Naming(Naming),
     Widgets(crate::arrange::WidgetPick),
     WidgetPicker(crate::panemenu::WidgetPicker),
+    /// the library without a Pane (D87): its list, its selection (`App::sidebar`) and its keys
+    Library,
+    /// the queue without a Pane (D87): its list, its selection (`App::queue_view`) and its keys; `h` is the height it
+    /// was last drawn at, which it keeps while a song is held (a queue changing mid-drag doesn't move the box)
+    Queue { h: u16 },
     Details(crate::playlists::Details),
     Adding(crate::playlists::Adding),
     Cover(crate::cover::CoverForm),
@@ -2964,6 +2992,8 @@ impl Popup {
             Popup::Naming(_) => Modal::Naming,
             Popup::Widgets(_) => Modal::Widgets,
             Popup::WidgetPicker(_) => Modal::WidgetPicker,
+            Popup::Library => Modal::Library,
+            Popup::Queue { .. } => Modal::Queue,
             Popup::Details(_) => Modal::Details,
             Popup::Adding(_) => Modal::Adding,
             Popup::Cover(_) => Modal::Cover,
@@ -3104,6 +3134,15 @@ impl App {
                     p.sel = moved(p.sel, rows, n);
                 }
             }
+            // as over their Panes: the highlight moves (and the list's window follows it)
+            Modal::Library => {
+                let n = crate::sidebar::len(self);
+                self.sidebar.move_sel(rows as i64, n);
+            }
+            Modal::Queue => {
+                let n = self.playback.queue.len();
+                self.queue_view.move_sel(rows as i64, n);
+            }
             Modal::Adding => self.adding_move(rows),
             // the row after the devices is the Jam's
             Modal::Devices => {
@@ -3137,10 +3176,27 @@ impl App {
     /// A mouse event while `modal` is open. The wheel scrolls the popup wherever the pointer is (so a burst, a
     /// pointer past the popup's edge or a stale rectangle can't hand it to the Pane behind), clicks work inside it
     /// (outside, they close the popups that can be closed by a click), and drags, right clicks and sideways wheels
-    /// do nothing.
+    /// do nothing, but in the library and queue popups, which are their Panes' lists: a right click on a row opens its
+    /// menu, and the queue's songs are dragged into a new order.
     fn modal_pointer(&mut self, modal: Modal, m: MouseEvent, coarse: bool) {
         let up = m.kind == MouseEventKind::ScrollUp;
+        let inside = self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom());
         match m.kind {
+            MouseEventKind::Down(MouseButton::Right) => match (modal, self.hit_at(m.column, m.row)) {
+                (Modal::Library, Some(Hit::Side(row))) => self.open_side_menu(row, Some((m.column, m.row))),
+                (Modal::Queue, Some(Hit::QueueRow(i))) => self.open_queue_menu(i, Some((m.column, m.row))),
+                _ => {}
+            },
+            MouseEventKind::Drag(MouseButton::Left) if modal == Modal::Queue => {
+                if let Some(d) = self.queue_drag.clone() {
+                    self.queue_drag = Some(crate::queue::target(self, d, m.row));
+                }
+            }
+            MouseEventKind::Up(_) if modal == Modal::Queue && self.queue_drag.is_some() => {
+                if let Some(d) = self.queue_drag.take() {
+                    self.drop_queued(d);
+                }
+            }
             // one row a notch (a burst is one notch by now), ten with a modifier
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => self.modal_scroll(modal, if up { -1 } else { 1 } * if coarse { 10 } else { 1 }),
             MouseEventKind::Down(MouseButton::Left) => {
@@ -3191,6 +3247,21 @@ impl App {
                     Modal::WidgetPicker => match hit {
                         Some(Hit::PickWidget(i)) => self.widget_picked(i),
                         _ if !self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom()) => self.close_if_open(Modal::WidgetPicker),
+                        _ => {}
+                    },
+                    // a row opens into Home's Pane; outside closes it; inside, on the hint, nothing
+                    Modal::Library => match hit {
+                        Some(Hit::Side(row)) => self.library_popup_open(row),
+                        _ if !inside => self.close_if_open(Modal::Library),
+                        _ => {}
+                    },
+                    // a song is highlighted and can be dragged (as in its Pane)
+                    Modal::Queue => match hit {
+                        Some(Hit::QueueRow(i)) => {
+                            self.queue_view.sel = i;
+                            self.queue_drag = crate::queue::QueueDrag::start(self, i);
+                        }
+                        _ if !inside => self.close_queue_popup(),
                         _ => {}
                     },
                     // forms and the wizard are typed into; a click on or around them does nothing

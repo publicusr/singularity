@@ -163,8 +163,9 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   Pane keeps Home). Ctrl+K also has Split right / Split down / Close pane / Move pane / Reset design. `m` moves the
   focused Pane's Widget from the keyboard: arrows swap it with the neighbour's, `+` `-` size its Pane, `x` closes it,
   `u` undoes, Enter or Esc ends. Ctrl+Z undoes a layout change and
-  Ctrl+Y (or Ctrl+Shift+Z) redoes it; the bar offers "undo" for a few seconds after each one. Home, the library, the queue and lyrics can move but
-  never close, and no border drag, split or close can leave a Pane too small. The first edit of a built-in Design asks
+  Ctrl+Y (or Ctrl+Shift+Z) redoes it; the bar offers "undo" for a few seconds after each one. Home can move but never close (the built-in
+  Designs also have the library, the queue and lyrics; your own may let them go: Ctrl+K → Your Library / Queue then
+  opens them as a popup, and focuses their Pane where they have one), and no border drag, split or close can leave a Pane too small. The first edit of a built-in Design asks
   what to call your Design (Esc keeps one unnamed "Singularity (edited)"); after that it saves itself.
 - **Idle**: after 3 minutes without input the black hole drifts over the screen; any key wakes it (and does nothing
   else). Shift+I or `[idle]` in config.toml switches it off or changes the delay.

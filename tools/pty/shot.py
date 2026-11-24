@@ -14,7 +14,7 @@ BIN = os.environ.get("PTY_BIN") or f"{ROOT}/target/debug"
 WRAP = os.environ.get("PTY_WRAP", "").split()
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
 # the tiling scenario wants room for the whole Singularity layout
-if sys.argv[1:2] in (["tiling"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"]):
+if sys.argv[1:2] in (["tiling"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"], ["paneless"]):
     COLS, ROWS = int(os.environ.get("PTY_COLS", 160)), int(os.environ.get("PTY_ROWS", 48))
 # the wheel everywhere: short Panes, so everything holds more than fits
 if sys.argv[1:2] == ["wheel-all"]:
@@ -2125,12 +2125,72 @@ def pane_menu(t, out):
     mouse(t, 0, hx + 8, hy + 3); mouse(t, 0, hx + 8, hy + 3, release=True, wait=0.3)
     t.send(b"w", 0.4)
     t.shot(f"{out}/12-home-w.png")
-    # 7. `w` on the queue: only trades places
+    # 7. `w` on the queue: Widgets off screen first, as on any Pane but Home's (D87, #38)
     qx, qy = title_at("queue")
     mouse(t, 0, qx + 12, qy); mouse(t, 0, qx + 12, qy, release=True, wait=0.3)
     t.send(b"w", 0.5)
     t.shot(f"{out}/13-queue-picker.png")
     t.send(b"\x1b", 0.3)
+    t.send(b"q", 0.5)
+
+
+def paneless(t, out):
+    """D87, #38: the library and the queue without a Pane. Three songs queued from Liked Songs; "Your Library" and
+    "Queue" from the palette focus their Panes; both Panes closed with their ×; then the same entries open them as
+    popups: the library's (a playlist opened from it into Home's Pane) and the queue's (a song dragged to the top).
+    Prints the queue's order before and after. 160×48, cell tier, an empty output folder."""
+    t.pump(1.0)
+    x, y = t.find("♥  Liked Songs")
+    mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
+    for row in (3, 5, 7):
+        rx, ry = t.find(f"Fake Track 00{row}")
+        mouse(t, 2, rx + 2, ry, wait=0.3)  # right-click
+        t.send(b"\x1b[B", 0.1)  # down: "Play next"
+        t.send(b"\r", 0.8)
+
+    def palette(what):
+        t.send(b"\x0b", 0.3)  # Ctrl+K
+        t.send(what.encode(), 0.3)
+        t.send(b"\r", 0.6)
+
+    def close(title):
+        # the × at the right end of the Pane's title (the first after its name: its corner may be a neighbour's)
+        x, y = t.find("┌ " + title)
+        cx = t.screen.display[y].index("×", x)
+        mouse(t, 0, cx, y); mouse(t, 0, cx, y, release=True, wait=0.6)
+
+    def order():
+        rows = sorted((at[1], n) for n in ("fake2", "fake4", "fake6") if (at := t.find(f"Described {n} ·")))
+        return [n for _, n in rows]
+
+    palette("your library")
+    t.shot(f"{out}/00-library-pane-focused.png")
+    close("~/library")
+    # the first edit of a built-in Design asks for a name: Esc keeps it unnamed
+    t.send(b"\x1b", 0.5)
+    close("queue")
+    t.shot(f"{out}/01-without-library-and-queue.png")
+    # the library as a popup
+    palette("your library")
+    t.shot(f"{out}/02-library-popup.png")
+    t.send(b"\x1b[B", 0.3)
+    t.shot(f"{out}/03-library-popup-down.png")
+    t.send(b"\r", 0.8)
+    t.shot(f"{out}/04-opened-in-home.png")
+    # the queue as a popup: drag the last queued song (fake2) onto the first (fake6)
+    palette("queue")
+    t.shot(f"{out}/05-queue-popup.png")
+    print("queue in the popup:", order())
+    (sx, sy), (dx, dy) = t.find("Described fake2 ·"), t.find("Described fake6 ·")
+    mouse(t, 0, sx + 2, sy)
+    mouse(t, 32, sx + 2, sy - 1, wait=0.15)
+    mouse(t, 32, dx + 2, dy, wait=0.3)
+    t.shot(f"{out}/06-dragging.png")
+    mouse(t, 0, dx + 2, dy, release=True, wait=1.0)
+    t.shot(f"{out}/07-dropped.png")
+    print("after the drag:", order())
+    t.send(b"\x1b", 0.4)
+    t.shot(f"{out}/08-closed.png")
     t.send(b"q", 0.5)
 
 
@@ -2255,7 +2315,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-fast", "tiling-paths", "resize", "karaoke") else "0"
@@ -2409,6 +2469,8 @@ def main():
             return layouts(t, out, env)
         if scenario == "tiling":
             return tiling(t, out, env)
+        if scenario == "paneless":
+            return paneless(t, out)
         if scenario == "pane-menu":
             return pane_menu(t, out)
         if scenario == "tiling-fast":
