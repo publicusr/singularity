@@ -19,6 +19,11 @@
 //! the Tray in its place. On its own Pane, off the Panes, on Esc, or when the release was never heard, the drag ends
 //! and nothing changes. Every drop is allowed: no drop changes the floor plan.
 //!
+//! "New design…" (#42) starts Arrange mode from one empty Pane filling the screen, with Home waiting in the Tray, whose
+//! "+ Widget" opens the Widget picker to put any Widget there. Nothing is written while it is built: Done asks for a
+//! name and saves it as a Design of the user's own with the current Theme; Esc before anything is placed goes back to
+//! the Design that was on screen, untouched.
+//!
 //! The keyboard (#43, replacing Move mode) keeps the same pick up → aim → drop shape: arrows move the focus between
 //! Panes; Enter picks up the focused Widget (the same lit Pane and chip as the mouse's), arrows aim, Enter drops
 //! (swap, or fill an empty Pane) and Esc puts it back. `t` sends the focused Widget to the Tray, `s` then an arrow
@@ -42,7 +47,7 @@ pub mod history;
 use crate::app::{Action, App, Hit, Menu, MenuAct, Modal, NameFor, Naming, Target};
 use crate::design::DESIGNS;
 use crate::arrangement::{Arrangement, Refused};
-use crate::layout::{Divider, Pane, PaneId, Widget, is_hole};
+use crate::layout::{Divider, Node, Pane, PaneId, Widget, is_hole};
 use crate::theme::Theme;
 use crate::tiling::{Side, neighbour};
 use crate::ui::{blank, text};
@@ -99,8 +104,26 @@ pub struct Arranging {
     edited: bool,
     pub tray_first: usize,
     pub split_next: bool,
-    /// ↓ from a bottom Pane: the focus is on this Widget in the Tray (no Pane is focused meanwhile)
-    pub tray_focus: Option<Widget>,
+    /// ↓ from a bottom Pane: the focus is on this stop in the Tray (no Pane is focused meanwhile)
+    pub tray_focus: Option<TrayStop>,
+    /// a New design… being built (#42)
+    fresh: Option<Box<Fresh>>,
+}
+
+/// Where the keyboard's focus can be in the Tray: on one of its Widgets, or on its "+ Widget", the stop after the
+/// last one (there even when the Tray is empty, #42).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrayStop {
+    Widget(Widget),
+    Add,
+}
+
+/// A New design… being built (#42): what was on screen before it (Esc before anything is placed puts it back,
+/// untouched) and the undo history from before it (the build's own steps don't reach into it). Nothing is written
+/// until Done names it.
+struct Fresh {
+    before: Snapshot,
+    history: history::History<Snapshot>,
 }
 
 /// What undo goes back to: the layout, the Design it was (None: the built-in one) and what its file said about it,
@@ -567,6 +590,10 @@ impl App {
         if let Some(a) = self.arranging.as_mut() {
             a.edited = true;
             a.split_next = false;
+            // a New design… is written when Done names it
+            if a.fresh.is_some() {
+                return;
+            }
         }
         let own = self.layout_name.clone().and_then(|id| self.saved_layouts.iter().find(|s| s.id == id).cloned());
         match own {
@@ -602,9 +629,78 @@ impl App {
     /// Arrange mode on (the palette's and the Pane menu's "Arrange", a title drag, Esc in a split's picker).
     pub fn enter_arrange(&mut self) {
         if self.arranging.is_none() {
-            self.arranging = Some(Arranging { since: self.layout.clone(), edited: false, tray_first: 0, split_next: false, tray_focus: None });
+            self.arranging = Some(Arranging { since: self.layout.clone(), edited: false, tray_first: 0, split_next: false, tray_focus: None, fresh: None });
             self.relayout();
         }
+    }
+
+    /// "New design…" (#42): Arrange mode from one empty Pane filling the screen, with Home waiting in the Tray. The
+    /// Design on screen stays as it is (in its file too) until Done names the new one; Esc before anything is placed
+    /// goes back to it.
+    pub fn new_design(&mut self) {
+        if self.building() {
+            return;
+        }
+        let before = self.snapshot();
+        let history = std::mem::take(&mut self.history);
+        // (from Arrange mode: what was arranged is kept as it is, and the build starts from the blank one)
+        self.arranging = None;
+        self.tile = None;
+        self.undo_offer = None;
+        self.layout = Arrangement::new(Node::empty(), vec![]);
+        self.layout_name = None;
+        self.focus = self.layout.panes().first().map(|p| p.id);
+        self.want_widget_data();
+        self.enter_arrange();
+        if let Some(a) = self.arranging.as_mut() {
+            a.fresh = Some(Box::new(Fresh { before, history }));
+        }
+    }
+
+    /// Whether a New design… is being built.
+    pub fn building(&self) -> bool {
+        self.arranging.as_ref().is_some_and(|a| a.fresh.is_some())
+    }
+
+    /// The saved Design that was on screen when a New design… began (config.toml keeps naming it meanwhile).
+    pub fn building_from(&self) -> Option<String> {
+        self.arranging.as_ref()?.fresh.as_ref()?.before.name.clone()
+    }
+
+    /// Esc on a New design… before anything is placed: the Design that was on screen, as it was, and its undo history.
+    fn cancel_new_design(&mut self) {
+        let Some(f) = self.arranging.take().and_then(|a| a.fresh) else { return };
+        let Fresh { before, history } = *f;
+        self.tile = None;
+        self.undo_offer = None;
+        self.layout = before.tree;
+        self.layout_name = before.name;
+        self.focus = before.focus.filter(|p| self.layout.contains(*p)).or_else(|| self.layout.pane_of(Widget::Home));
+        self.history = history;
+        self.want_widget_data();
+        self.relayout();
+    }
+
+    /// The name typed on Done's prompt for a New design…: saved as a Design of your own with the current Theme, and
+    /// Arrange mode ends. The build's undo steps go with it: the new Design starts its own history. False if it
+    /// couldn't be saved (a name that makes no file name, a write error: the bar says why): it is still being built.
+    pub fn save_new_design(&mut self, name: &str) -> bool {
+        self.save_layout(name);
+        // (without a config folder there is nowhere to save it)
+        if self.layout_name.is_none() && self.layouts_dir.is_some() {
+            return false;
+        }
+        self.arranging = None;
+        self.tile = None;
+        self.history = Default::default();
+        self.undo_offer = None;
+        self.relayout();
+        true
+    }
+
+    /// The Tray's "+ Widget": the Widget picker, adding the pick to the Tray (#42).
+    pub fn open_tray_picker(&mut self) {
+        self.open_popup(crate::app::Popup::WidgetPicker(crate::panemenu::WidgetPicker { target: PaneId::UNSET, query: String::new(), sel: 0, after_split: false, tray: true }));
     }
 
     /// Before each frame: Home always has a Pane outside Arrange mode. A Design whose Home waits in the Tray (one left
@@ -625,10 +721,26 @@ impl App {
         Some(format!("{name} still needs a Pane"))
     }
 
+    /// Esc with nothing picked up: Done, but on a New design… with nothing placed yet, back to the Design that was on
+    /// screen, untouched (#42).
+    fn arrange_esc(&mut self) {
+        if self.arranging.as_ref().is_some_and(|a| a.fresh.is_some() && a.since == self.layout) {
+            return self.cancel_new_design();
+        }
+        self.arrange_done()
+    }
+
     /// Done (or Esc): Arrange mode ends, once Home has a Pane. If anything changed in it and the changes went to a
     /// built-in Design's "<Design> (edited)", the name prompt comes now (Esc keeps it unnamed).
     pub fn arrange_done(&mut self) {
         if self.done_blocked().is_some() {
+            return;
+        }
+        // a New design…: Done asks for its name, and Arrange mode stays on until it has one (#42)
+        if self.building() {
+            if self.naming().is_none() {
+                self.open_popup(crate::app::Popup::Naming(Naming::new_design()));
+            }
             return;
         }
         let Some(a) = self.arranging.take() else { return };
@@ -654,8 +766,12 @@ impl App {
         self.pick_up_check();
         // (a focus on a Widget that left the Tray, or on no Pane of this layout: the keys act from a real Pane)
         let tray = self.layout.tray().to_vec();
+        let add = self.tray_add_x().is_some();
         if let Some(a) = self.arranging.as_mut()
-            && a.tray_focus.is_some_and(|w| !tray.contains(&w))
+            && a.tray_focus.is_some_and(|s| match s {
+                TrayStop::Widget(w) => !tray.contains(&w),
+                TrayStop::Add => !add,
+            })
         {
             a.tray_focus = None;
         }
@@ -693,13 +809,17 @@ impl App {
             }
             return;
         }
-        // the focus on a Widget in the Tray: ← → move along it, ↑ goes back up into the Panes, Enter picks it up
-        if let Some(w) = on_tray {
+        // the focus in the Tray: ← → move along it, ↑ goes back up into the Panes, Enter picks a Widget up (or, on
+        // "+ Widget", opens the Widget picker for the Tray)
+        if let Some(stop) = on_tray {
             return match (k.code, arrow) {
-                (_, Some(side @ (Side::Left | Side::Right))) => self.tray_focus_step(w, side == Side::Right),
-                (_, Some(Side::Top)) => self.tray_focus_up(w),
-                (KeyCode::Enter, _) => self.pick_up_from_tray(w),
-                (KeyCode::Esc, _) => self.arrange_done(),
+                (_, Some(side @ (Side::Left | Side::Right))) => self.tray_focus_step(stop, side == Side::Right),
+                (_, Some(Side::Top)) => self.tray_focus_up(stop),
+                (KeyCode::Enter, _) => match stop {
+                    TrayStop::Widget(w) => self.pick_up_from_tray(w),
+                    TrayStop::Add => self.open_tray_picker(),
+                },
+                (KeyCode::Esc, _) => self.arrange_esc(),
                 // (the keys for a Pane have none here)
                 _ => {}
             };
@@ -707,7 +827,7 @@ impl App {
         let focused = self.focused_pane();
         match (k.code, arrow, focused) {
             (_, Some(side), _) => self.focus_step(side),
-            (KeyCode::Esc, ..) => self.arrange_done(),
+            (KeyCode::Esc, ..) => self.arrange_esc(),
             (KeyCode::Enter, _, Some(id)) => self.pick_up(id),
             (KeyCode::Char('t'), _, Some(id)) => match self.layout.to_tray(id) {
                 Ok(a) => self.commit_layout(a),
@@ -789,6 +909,7 @@ impl App {
                 Some(Hit::TrayItem(w)) => self.tray_down(w, x, y),
                 Some(Hit::TrayRemove(w)) => self.tray_remove(w),
                 Some(Hit::ClearTray) => self.clear_tray(),
+                Some(Hit::TrayAdd) => self.open_tray_picker(),
                 Some(Hit::TrayScroll(d)) => self.tray_scroll(d),
                 Some(Hit::ArrangeDone) => self.arrange_done(),
                 Some(Hit::Action(a @ (Action::UndoLayout | Action::RedoLayout))) => self.run(a),
@@ -995,8 +1116,8 @@ impl App {
     // ── the keyboard (#43) ────────────────────────────────────────────
 
     /// An arrow: the focus goes to the Pane next to the focused one that way (none there: it stays).
-    /// ↓ from a Pane with none below it: the focus goes onto the Tray's Widget nearest under it (an empty Tray has
-    /// none to go to).
+    /// ↓ from a Pane with none below it: the focus goes onto the Tray's Widget nearest under it (an empty Tray: its
+    /// "+ Widget").
     fn focus_step(&mut self, dir: Side) {
         let Some(id) = self.focused_pane() else { return };
         let panes = self.layout.compute(self.pane_area()).panes;
@@ -1004,10 +1125,11 @@ impl App {
             Some(n) => self.focus = Some(n),
             None if dir == Side::Bottom => {
                 let mid = panes.iter().find(|(p, _)| p.id == id).map_or(0, |(_, r)| r.x + r.width / 2);
-                if let Some(w) = self.tray_nearest(mid) {
+                let stop = self.tray_nearest(mid).map(TrayStop::Widget).or(self.tray_add_x().map(|_| TrayStop::Add));
+                if let Some(stop) = stop {
                     self.focus = None;
                     if let Some(a) = self.arranging.as_mut() {
-                        a.tray_focus = Some(w);
+                        a.tray_focus = Some(stop);
                     }
                 }
             }
@@ -1037,20 +1159,36 @@ impl App {
         l.items.iter().find(|(j, ..)| *j == i).map_or(self.tray_rect().x, |(_, r, _)| r.x + r.width / 2)
     }
 
-    /// ← or → with the focus in the Tray: the Widget before or after (none there: it stays), shown.
-    fn tray_focus_step(&mut self, w: Widget, right: bool) {
+    /// The middle column of the Tray's "+ Widget" (None: the strip has no room for it).
+    fn tray_add_x(&self) -> Option<u16> {
+        let first = self.arranging.as_ref().map_or(0, |a| a.tray_first);
+        tray_layout(self, self.tray_rect(), first).add.map(|r| r.x + r.width / 2)
+    }
+
+    /// ← or → with the focus in the Tray: the stop before or after (none there: it stays), shown. "+ Widget" is the
+    /// stop after the last Widget.
+    fn tray_focus_step(&mut self, stop: TrayStop, right: bool) {
         let tray = self.layout.tray().to_vec();
-        let Some(i) = tray.iter().position(|x| *x == w) else { return };
-        let Some(&n) = (if right { tray.get(i + 1) } else { i.checked_sub(1).and_then(|j| tray.get(j)) }) else { return };
+        let mut stops: Vec<TrayStop> = tray.into_iter().map(TrayStop::Widget).collect();
+        if self.tray_add_x().is_some() {
+            stops.push(TrayStop::Add);
+        }
+        let Some(i) = stops.iter().position(|s| *s == stop) else { return };
+        let Some(&n) = (if right { stops.get(i + 1) } else { i.checked_sub(1).and_then(|j| stops.get(j)) }) else { return };
         if let Some(a) = self.arranging.as_mut() {
             a.tray_focus = Some(n);
         }
-        self.tray_chip_x(n);
+        if let TrayStop::Widget(w) = n {
+            self.tray_chip_x(w);
+        }
     }
 
-    /// ↑ from the Tray: the focus goes back to the Pane above Widget `w`'s chip.
-    fn tray_focus_up(&mut self, w: Widget) {
-        let x = self.tray_chip_x(w);
+    /// ↑ from the Tray: the focus goes back to the Pane above the stop (a Widget's chip, or "+ Widget").
+    fn tray_focus_up(&mut self, stop: TrayStop) {
+        let x = match stop {
+            TrayStop::Widget(w) => self.tray_chip_x(w),
+            TrayStop::Add => self.tray_add_x().unwrap_or(self.tray_rect().x),
+        };
         let up = self.pane_above_tray(x);
         if let Some(a) = self.arranging.as_mut() {
             a.tray_focus = None;
@@ -1204,14 +1342,19 @@ pub fn draw_chip(buf: &mut Buffer, r: Rect, label: &str, th: &Theme) {
 }
 
 /// Where the parts of the Tray strip go: each Widget shown (its place in the Tray, its chip, its × unless it is
-/// Home), the ‹ › while they don't all fit, Clear Tray, and the first Widget shown.
+/// Home), the ‹ › while they don't all fit, "+ Widget", Clear Tray, and the first Widget shown.
 pub struct TrayLayout {
     pub items: Vec<(usize, Rect, Option<Rect>)>,
     pub prev: Option<Rect>,
     pub next: Option<Rect>,
+    pub add: Option<Rect>,
     pub clear: Option<Rect>,
     pub first: usize,
 }
+
+/// The Tray's title on its frame, and its "+ Widget" button beside it (#42).
+const TRAY_TITLE: &str = " Tray ";
+const TRAY_ADD: &str = " + Widget ";
 
 /// A Widget's chip in the Tray: its grip and name.
 fn tray_chip(name: &str) -> String {
@@ -1257,7 +1400,10 @@ pub fn tray_layout(app: &App, r: Rect, first: usize) -> TrayLayout {
     let next = (over && shown_to < tray.len()).then(|| Rect::new(x1.saturating_sub(1), y, 1, 1));
     let clear_label = " Clear Tray ";
     let clear = tray.iter().any(|w| !crate::arrangement::required(Some(*w))).then(|| Rect::new(r.right().saturating_sub(clear_label.chars().count() as u16 + 2), r.y, clear_label.chars().count() as u16, 1));
-    TrayLayout { items, prev, next, clear, first }
+    // "+ Widget" on the frame after the title (where it fits before Clear Tray)
+    let add = Rect::new(r.x + 1 + TRAY_TITLE.chars().count() as u16 + 1, r.y, TRAY_ADD.chars().count() as u16, 1);
+    let add = (add.right() < clear.map_or(r.right().saturating_sub(1), |c| c.x)).then_some(add);
+    TrayLayout { items, prev, next, add, clear, first }
 }
 
 /// The Tray strip (Arrange mode, under the player bar): what waits there, each with its ×, Clear Tray, and while a
@@ -1269,7 +1415,7 @@ pub fn draw_tray(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
     let lit = app.tile.as_ref().is_some_and(|t| t.live && t.tray);
     let border = if lit { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.border) };
-    Block::default().borders(Borders::ALL).border_set(th.borders).border_style(border).title(ratatui::text::Span::styled(" Tray ", th.s(th.accent))).style(th.base()).render(r, buf);
+    Block::default().borders(Borders::ALL).border_set(th.borders).border_style(border).title(ratatui::text::Span::styled(TRAY_TITLE, th.s(th.accent))).style(th.base()).render(r, buf);
     let first = app.arranging.as_ref().map_or(0, |a| a.tray_first);
     let l = tray_layout(app, r, first);
     if let Some(a) = app.arranging.as_mut() {
@@ -1281,10 +1427,11 @@ pub fn draw_tray(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         text(buf, r.x + 2, r.y + 1, r.width.saturating_sub(4), s, th.s(th.dim));
     }
     let focus = app.arranging.as_ref().and_then(|a| a.tray_focus);
+    let focus_on = |w: Widget| focus == Some(TrayStop::Widget(w));
     for (i, chip, close) in &l.items {
         let name = crate::ui::pane_name(app.design, tray[*i]);
         // (the one the keyboard's focus is on: in the focus colour)
-        let st = if focus == Some(tray[*i]) { th.chip(th.accent) } else { th.chip(th.accent2) };
+        let st = if focus_on(tray[*i]) { th.chip(th.accent) } else { th.chip(th.accent2) };
         text(buf, chip.x, chip.y, chip.width, &tray_chip(&name), st);
         app.hit(*chip, Hit::TrayItem(tray[*i]));
         if let Some(c) = close {
@@ -1297,6 +1444,12 @@ pub fn draw_tray(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             text(buf, a.x, a.y, 1, glyph, th.s(th.accent));
             app.hit(a, Hit::TrayScroll(d));
         }
+    }
+    if let Some(a) = l.add {
+        // (the keyboard's focus on it: in the focus colour, like a Widget's chip)
+        let st = if focus == Some(TrayStop::Add) { th.chip(th.accent) } else { th.s(th.dim) };
+        text(buf, a.x, a.y, a.width, TRAY_ADD, st);
+        app.hit(a, Hit::TrayAdd);
     }
     if let Some(c) = l.clear {
         text(buf, c.x, c.y, c.width, " Clear Tray ", th.s(th.dim));

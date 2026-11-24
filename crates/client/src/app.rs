@@ -90,6 +90,7 @@ pub enum Action {
     SplitDown,
     ClosePane,
     Arrange,
+    NewDesign,
     ResetLayout,
     UndoLayout,
     RedoLayout,
@@ -99,7 +100,11 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 64] = [
+    /// Not offered (and their keys do nothing) while a New design… is built (#42): each would swap or save the Design
+    /// under the build. Done names it.
+    pub const NOT_WHILE_BUILDING: [Action; 3] = [Action::PickDesign, Action::SaveLayout, Action::ResetLayout];
+
+    pub const ALL: [Action; 65] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -158,6 +163,7 @@ impl Action {
         Action::SplitDown,
         Action::ClosePane,
         Action::Arrange,
+        Action::NewDesign,
         Action::ResetLayout,
         Action::UndoLayout,
         Action::RedoLayout,
@@ -225,6 +231,7 @@ impl Action {
             Action::SplitDown => "Split down",
             Action::ClosePane => "Close pane",
             Action::Arrange => "Arrange",
+            Action::NewDesign => "New design…",
             Action::ResetLayout => "Reset design",
             Action::UndoLayout => "Undo layout",
             Action::RedoLayout => "Redo layout",
@@ -338,6 +345,7 @@ impl Action {
             Action::SplitDown => "split_down",
             Action::ClosePane => "close_pane",
             Action::Arrange => "arrange",
+            Action::NewDesign => "new_design",
             Action::ResetLayout => "reset_layout",
             Action::UndoLayout => "undo_layout",
             Action::RedoLayout => "redo_layout",
@@ -381,6 +389,8 @@ pub enum Hit {
     TrayRemove(Widget),
     /// Clear Tray
     ClearTray,
+    /// the Tray's "+ Widget": the Widget picker, adding to the Tray (#42)
+    TrayAdd,
     /// the Tray's ‹ ›, when it holds more than fits
     TrayScroll(i32),
     /// Done: Arrange mode ends
@@ -509,6 +519,8 @@ pub enum NameFor {
     NewPlaylist,
     /// Done in Arrange mode asks what to call the changes kept as "<Design> (edited)" (Q33; was D66's first edit)
     Fork,
+    /// Done on a New design… asks what to call it (#42)
+    NewDesign,
 }
 
 impl Naming {
@@ -518,6 +530,9 @@ impl Naming {
     /// Prefilled with a free suggestion.
     pub fn fork(text: String) -> Naming {
         Naming { text, purpose: NameFor::Fork }
+    }
+    pub fn new_design() -> Naming {
+        Naming { text: String::new(), purpose: NameFor::NewDesign }
     }
     pub fn playlist() -> Naming {
         Naming { text: String::new(), purpose: NameFor::NewPlaylist }
@@ -1143,6 +1158,9 @@ impl App {
     // ── actions ───────────────────────────────────────────────────────
 
     pub fn run(&mut self, a: Action) {
+        if self.building() && Action::NOT_WHILE_BUILDING.contains(&a) {
+            return;
+        }
         match a {
             Action::TogglePlay => self.toggle_play(),
             Action::Next => self.send(Command::Next),
@@ -1256,6 +1274,7 @@ impl App {
                 }
             }
             Action::Arrange => self.enter_arrange(),
+            Action::NewDesign => self.new_design(),
             Action::ResetLayout => self.reset_design(),
             Action::UndoLayout => self.undo_layout(),
             Action::RedoLayout => self.redo_layout(),
@@ -1267,7 +1286,8 @@ impl App {
 
     pub fn palette_items(&self) -> Vec<Action> {
         let q = self.palette().map(|p| p.query.to_lowercase()).unwrap_or_default();
-        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
+        let building = self.building();
+        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && !(building && Action::NOT_WHILE_BUILDING.contains(a)) && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
         // what you typed, as typed: at the start first, then anywhere, then loose matches
         let q = q.trim();
         items.sort_by_key(|a| {
@@ -2873,7 +2893,7 @@ impl App {
                     Some(Hit::PickWidget(_)) => {}
                     Some(Hit::Divider(i)) => self.grab_divider(i, m.column, m.row),
                     // (only drawn in Arrange mode, which takes its own clicks)
-                    Some(Hit::SplitPane(_) | Hit::TrayItem(_) | Hit::TrayRemove(_) | Hit::ClearTray | Hit::TrayScroll(_) | Hit::ArrangeDone) => {}
+                    Some(Hit::SplitPane(_) | Hit::TrayItem(_) | Hit::TrayRemove(_) | Hit::ClearTray | Hit::TrayAdd | Hit::TrayScroll(_) | Hit::ArrangeDone) => {}
                     Some(Hit::Action(a)) => self.run(a),
                     Some(Hit::PaletteItem(i)) => {
                         if let Some(a) = self.palette_items().get(i).copied() {

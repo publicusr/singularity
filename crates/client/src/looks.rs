@@ -112,7 +112,8 @@ impl App {
     pub fn save_ui(&mut self) {
         let own = DESIGNS[self.design].themes[0] == self.theme.id;
         let (design, theme) = (DESIGNS[self.design].id.to_string(), if own { String::new() } else { self.theme.id.clone() });
-        let layout = self.layout_name.clone().unwrap_or_default();
+        // (while a New design… is built, the Design it began from: it is still the one you have)
+        let layout = self.layout_name.clone().or_else(|| self.building_from()).unwrap_or_default();
         self.config.ui.design = design.clone();
         self.config.ui.theme = theme.clone();
         self.config.ui.layout = layout.clone();
@@ -240,7 +241,7 @@ impl App {
     /// Typing a name: for "Save design as…" (#19) or a new playlist (#51).
     pub fn naming_key(&mut self, k: KeyEvent) {
         let Some(purpose) = self.naming().map(|n| n.purpose) else { return };
-        let max = if matches!(purpose, crate::app::NameFor::Layout | crate::app::NameFor::Fork) { 40 } else { 100 };
+        let max = if matches!(purpose, crate::app::NameFor::Layout | crate::app::NameFor::Fork | crate::app::NameFor::NewDesign) { 40 } else { 100 };
         // the changes Done's prompt names can still be undone (or, undone, redone) from it
         if purpose == crate::app::NameFor::Fork && k.modifiers.contains(KeyModifiers::CONTROL) {
             match self.keymap.action(k) {
@@ -275,6 +276,19 @@ impl App {
                         }
                     }
                     crate::app::NameFor::NewPlaylist => self.create_playlist(&n.text),
+                    // a New design… (#42): never over a Design of the user's, nor where a built-in Design's unnamed
+                    // "(edited)" copy goes (that would later be written over it); a name that can't be saved (one that
+                    // makes no file name) keeps the prompt, saying why
+                    crate::app::NameFor::NewDesign => {
+                        let id = crate::layouts::file_id(&n.text);
+                        let taken = self.saved_layouts.iter().any(|s| s.id == id) || DESIGNS.iter().any(|d| crate::layouts::edited_id(d.id) == id);
+                        if taken {
+                            self.say(format!("There is already a design called \"{}\"", n.text.trim()));
+                            self.open_popup(crate::app::Popup::Naming(n));
+                        } else if !self.save_new_design(&n.text) {
+                            self.open_popup(crate::app::Popup::Naming(n));
+                        }
+                    }
                 }
             }
             KeyCode::Backspace => {

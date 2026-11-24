@@ -309,6 +309,14 @@ audio, and looks spectacular.
     The Tray by keyboard (owner, Q50): ↓ from a bottom Pane onto the Tray, ← → along it, Enter picks a Widget up,
     ↑ aims into the Panes, Enter drops; a Pane's Widget aimed down at the Tray is set aside there. While arranging the
     arrows, `s` and `+`/`-` are Arrange mode's (Q48); `move_pane` stays a name for `arrange` (Q51).
+    **New design… (D87, #42):** Ctrl+K → New design… starts Arrange mode from one empty Pane filling the screen, with
+    Home in the Tray; "+ Widget" on the Tray opens the Widget picker and puts the pick in the Tray (by keyboard: the
+    Tray's last focus stop, after its Widgets, there even when the Tray is empty; Enter opens the picker). Done (once Home has a
+    Pane) asks for a name and saves a Design of your own with the current Theme; nothing is written before that. Esc
+    before anything is placed goes back to the Design on screen, untouched. A New design is saved only on Done (owner
+    Q61, 2026-11-24): quitting mid-build loses it, so spec #34's story 73 (empty Panes and the Tray saved, to come back
+    halfway) holds for a Design that has a name, not for an unnamed build. While it is built, Pick a design, Save
+    design as… and Reset design are left out of the palette.
 86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready. Started 2026-10-19 (D48),
     tickets #63–#70, parity rule D49; the light librespot Engine on both OSes (D52, #70).
 

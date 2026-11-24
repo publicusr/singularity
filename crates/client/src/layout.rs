@@ -141,7 +141,6 @@ impl Node {
         Node::Pane(Pane { id: PaneId(1), widget: Some(w) })
     }
     /// A Pane holding nothing.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn empty() -> Node {
         Node::Pane(Pane { id: PaneId(1), widget: None })
     }

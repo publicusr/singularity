@@ -249,6 +249,20 @@ impl Arrangement {
         Ok(Arrangement { plan, tray })
     }
 
+    /// Widget `w` (one not on screen) into the Tray, at its end: the Tray's "+ Widget" (#42). One waiting there
+    /// already stays where it is (each Widget is in one place, once).
+    pub fn add_to_tray(&self, w: Widget) -> Result<Arrangement, Refused> {
+        if self.plan.has(w) {
+            return Err(Refused::OnScreen(w));
+        }
+        if self.tray.contains(&w) {
+            return Ok(self.clone());
+        }
+        let mut tray = self.tray.clone();
+        tray.push(w);
+        Ok(Arrangement { plan: self.plan.clone(), tray })
+    }
+
     /// Without `w` in the Tray (its `×`): it is gone, until the Widget picker brings it back. Home is never removed.
     pub fn remove_from_tray(&self, w: Widget) -> Result<Arrangement, Refused> {
         if !self.tray.contains(&w) {

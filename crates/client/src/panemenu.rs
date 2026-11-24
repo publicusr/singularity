@@ -11,6 +11,9 @@
 //! The picker names a Pane, not a Widget, so it fills an empty one too: a split (← → ↑ ↓, #39) makes an empty Pane and
 //! opens the picker on it at once; Esc leaves it empty, and the Pane says so.
 //!
+//! The Tray's "+ Widget" opens it for the Tray (#42): it offers the Widgets neither on screen nor waiting there, and
+//! the pick joins the Tray, to be dragged onto a Pane from there.
+//!
 //! A Replace or a swap changes only the contents, never a Pane's outline, the gravity well's included (#48: it
 //! letterboxes its picture in whatever Pane it gets).
 
@@ -23,13 +26,16 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
-/// The Widget picker over Pane `target`: what was typed, and the highlighted row.
+/// The Widget picker over Pane `target` (or for the Tray): what was typed, and the highlighted row.
 pub struct WidgetPicker {
+    /// the Pane it chooses for (`PaneId::UNSET` for the Tray)
     pub target: PaneId,
     pub query: String,
     pub sel: usize,
     /// opened by a split on its new Pane: the pick is part of that edit (one undo step for both)
     pub after_split: bool,
+    /// opened by the Tray's "+ Widget": the pick joins the Tray (#42)
+    pub tray: bool,
 }
 
 /// One row of the Widget picker: a Widget, and the Pane showing it now if it's on screen (picking it swaps).
@@ -57,7 +63,7 @@ impl App {
         if !self.can_replace(id) {
             return self.say("Home stays in its Pane · drag its title to move it");
         }
-        self.open_popup(Popup::WidgetPicker(WidgetPicker { target: id, query: String::new(), sel: 0, after_split: false }));
+        self.open_popup(Popup::WidgetPicker(WidgetPicker { target: id, query: String::new(), sel: 0, after_split: false, tray: false }));
     }
 
     /// Replace widget… on the focused Pane (the key and the palette).
@@ -72,7 +78,8 @@ impl App {
         let Some(p) = self.widget_picker() else { return vec![] };
         let q = p.query.trim().to_lowercase();
         let named = |c: &Choice| format!("{} {}", crate::ui::pane_name(self.design, c.widget), c.widget.name()).to_lowercase();
-        let mut rows: Vec<Choice> = self.choices_for(p.target).into_iter().filter(|c| crate::app::fuzzy(&named(c), &q)).collect();
+        let all = if p.tray { self.tray_choices() } else { self.choices_for(p.target) };
+        let mut rows: Vec<Choice> = all.into_iter().filter(|c| crate::app::fuzzy(&named(c), &q)).collect();
         // within each part: what you typed at the start first, then anywhere, then loose matches
         rows.sort_by_key(|c| {
             let l = named(c);
@@ -92,18 +99,18 @@ impl App {
         let keeps = crate::arrangement::required(mine);
         // one black hole at a time: the Pane holding it may take the other
         let hole_free = !shown.iter().any(|w| is_hole(Some(*w)) && Some(*w) != mine);
-        let mut off: Vec<Widget> = vec![];
-        if !keeps {
-            let extra = [Widget::Library, Widget::Queue, Widget::Lyrics].into_iter().chain(if hole_free { vec![Widget::Well, Widget::Hole] } else { vec![] });
-            for w in crate::layouts::all_widgets().chain(extra) {
-                if !shown.contains(&w) && Some(w) != mine && !off.contains(&w) {
-                    off.push(w);
-                }
-            }
-        }
-        let off = off.into_iter().filter(|w| self.layout.replace(target, *w).is_ok()).map(|widget| Choice { widget, from: None });
+        let off = offered(hole_free).into_iter().filter(|w| !keeps && !shown.contains(w) && Some(*w) != mine);
+        let off = off.filter(|w| self.layout.replace(target, *w).is_ok()).map(|widget| Choice { widget, from: None });
         let on = self.layout.panes().into_iter().filter(|p| p.id != target).filter_map(|p| Some(Choice { widget: p.widget?, from: Some(p.id) }));
         off.chain(on).collect()
+    }
+
+    /// What the Tray's "+ Widget" offers: the Widgets neither on screen nor in the Tray (a black hole only while none
+    /// is on screen or waiting: one at a time).
+    pub fn tray_choices(&self) -> Vec<Choice> {
+        let (shown, tray) = (self.layout.widgets(), self.layout.tray());
+        let hole_free = !shown.iter().chain(tray).any(|w| is_hole(Some(*w)));
+        offered(hole_free).into_iter().filter(|w| !shown.contains(w) && !tray.contains(w)).map(|widget| Choice { widget, from: None }).collect()
     }
 
     /// Where Pane `id` is drawn (at the last frame's size).
@@ -124,7 +131,7 @@ impl App {
     /// The picker's Pane went (a Design reloaded, a resize, an undo): the picker closes instead of offering Widgets
     /// for nothing. True if it did.
     pub fn picker_lost_its_pane(&mut self) -> bool {
-        let gone = self.widget_picker().is_some_and(|p| !self.layout.contains(p.target));
+        let gone = self.widget_picker().is_some_and(|p| !p.tray && !self.layout.contains(p.target));
         if gone {
             self.close_if_open(Modal::WidgetPicker);
         }
@@ -138,6 +145,12 @@ impl App {
         }
         let Some(c) = self.widget_choices().get(i).copied() else { return };
         let Some(p) = self.take_widget_picker() else { return };
+        if p.tray {
+            return match self.layout.add_to_tray(c.widget) {
+                Ok(a) => self.commit_layout(a),
+                Err(e) => self.refused(e),
+            };
+        }
         let tree = match c.from {
             Some(other) => self.layout.swap(p.target, other),
             None => self.layout.replace(p.target, c.widget),
@@ -180,6 +193,18 @@ impl App {
     }
 }
 
+/// Every Widget a picker can offer, once each, in its order (the black holes only if `hole_free`).
+fn offered(hole_free: bool) -> Vec<Widget> {
+    let extra = [Widget::Library, Widget::Queue, Widget::Lyrics].into_iter().chain(if hole_free { vec![Widget::Well, Widget::Hole] } else { vec![] });
+    let mut out: Vec<Widget> = vec![];
+    for w in crate::layouts::all_widgets().chain(extra) {
+        if !out.contains(&w) {
+            out.push(w);
+        }
+    }
+    out
+}
+
 /// The rows the list draws: each choice, and the line before the first on-screen one (where there are both).
 fn lines(rows: &[Choice]) -> Vec<Option<usize>> {
     let mut out = vec![];
@@ -204,7 +229,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
         return;
     }
     let Some(p) = app.widget_picker() else { return };
-    let (target, query, sel) = (p.target, p.query.clone(), p.sel);
+    let (target, query, sel, tray) = (p.target, p.query.clone(), p.sel, p.tray);
     let rows = app.widget_choices();
     let here = app.layout.get(target);
     let room = app.pane_rect(target);
@@ -256,6 +281,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     let keeps = crate::arrangement::required(here.and_then(|h| h.widget));
     let empty = here.is_some_and(|h| h.widget.is_none());
     let hint = match rows.get(sel) {
+        _ if tray => "type to filter · Enter puts it in the Tray · Esc cancel",
         _ if keeps && query.is_empty() => "it stays on screen: pick one to swap · Esc cancel",
         // an empty Pane (a split's): Esc keeps it, empty
         Some(c) if empty && c.from.is_some() => "Enter moves it here · Esc leaves it empty",

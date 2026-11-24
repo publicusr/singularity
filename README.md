@@ -160,7 +160,8 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   until Done), each Pane gets ` ⊞ ` (split) and `×` (close), and the bottom line
   shows the keys and **Done** (or Esc). Drop a Widget on the Tray to set it aside (its Pane stays, empty); drag it from
   the Tray onto a Pane to put it there (that Pane's Widget waits in the Tray instead). Closing a Pane sends its Widget
-  to the Tray too. `×` on a Widget in the Tray, or Clear Tray, removes them (Home stays). Done waits until Home has a
+  to the Tray too. `×` on a Widget in the Tray, or Clear Tray, removes them (Home stays); **+ Widget** on the Tray
+  opens the Widget picker and puts the pick in the Tray. Done waits until Home has a
   Pane. Each Design keeps its Tray, across restarts; the Tray only shows in Arrange mode. `×` in a
   title closes a Pane. Right-click a Pane's title (or its body, where that has no menu of its own) for its menu:
   Replace widget… opens the Widget picker (type to filter; Widgets not on screen first, those on screen dimmed below a
@@ -174,14 +175,18 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   arrows aim and Enter drops it there (Esc puts it back); `t` sends the focused Widget to the Tray, `s` then an arrow
   splits its Pane that way, `x` closes it, `+` `-` move its border, and Esc is Done. ↓ from a bottom Pane goes onto
   the Tray: ← → move along it, Enter picks a Widget up, ↑ aims back into the Panes and Enter puts it there (a Widget
-  picked up from a Pane and aimed down at the Tray waits there). In keys.toml, `move_pane` is another name for
+  picked up from a Pane and aimed down at the Tray waits there); after its last Widget (or alone, when it's empty)
+  comes **+ Widget**, where Enter opens the picker. In keys.toml, `move_pane` is another name for
   `arrange`. Ctrl+Z undoes a layout change and
   Ctrl+Y (or Ctrl+Shift+Z) redoes it; the bar offers "undo" for a few seconds after each one. Home can move but never close (the built-in
   Designs also have the library, the queue and lyrics; your own may let them go: Ctrl+K → Your Library / Queue then
   opens them as a popup, and focuses their Pane where they have one), and no border drag, split or close can leave a Pane too small. An edit never interrupts you and never
   changes a built-in Design: it is kept at once as "Singularity (edited)" (outside Arrange mode the bar says so), and
   Done asks what to call it if you changed something while arranging (Esc keeps it unnamed). Ctrl+K → Save design as…
-  names one any time, Reset design goes back to the built-in one, and a Design of your own saves itself.
+  names one any time, Reset design goes back to the built-in one, and a Design of your own saves itself. Ctrl+K →
+  **New design…** starts from a blank slate: Arrange mode with one empty Pane filling the screen and Home in the Tray;
+  split it, fill it from the Tray, and Done asks for a name and saves it with the current Theme (Esc before anything is
+  placed goes back to the Design you had, untouched).
 - **Idle**: after 3 minutes without input the black hole drifts over the screen; any key wakes it (and does nothing
   else). Shift+I or `[idle]` in config.toml switches it off or changes the delay.
 - **Listening log** (private, local): every track you hear for 30 s is logged in `~/.local/share/singularity/`, and

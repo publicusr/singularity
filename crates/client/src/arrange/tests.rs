@@ -857,10 +857,12 @@ fn only_the_bare_keys_arrange() {
 fn the_keyboard_takes_widgets_out_of_the_tray() {
     let mut a = app();
     key(&mut a, KeyCode::Char('m'));
-    // an empty Tray: ↓ from a bottom Pane stays put
+    // an empty Tray: ↓ from a bottom Pane goes to its "+ Widget" (#42), ↑ back
     a.focus_on(Widget::Queue);
     key(&mut a, KeyCode::Down);
-    assert!(a.is_focused(Widget::Queue) && a.arranging.as_ref().unwrap().tray_focus.is_none());
+    assert!(a.focus.is_none() && a.arranging.as_ref().unwrap().tray_focus == Some(crate::arrange::TrayStop::Add));
+    key(&mut a, KeyCode::Up);
+    assert!(a.focused().is_some() && a.arranging.as_ref().unwrap().tray_focus.is_none());
     for w in [Widget::Fft, Widget::Loudness] {
         a.focus_on(w);
         key(&mut a, KeyCode::Char('t'));
@@ -869,7 +871,10 @@ fn the_keyboard_takes_widgets_out_of_the_tray() {
     // ↓ from the queue: onto the Tray (its nearest Widget), lit; no Pane focused meanwhile
     a.focus_on(Widget::Queue);
     key(&mut a, KeyCode::Down);
-    let on = |a: &App| a.arranging.as_ref().unwrap().tray_focus;
+    let on = |a: &App| match a.arranging.as_ref().unwrap().tray_focus {
+        Some(crate::arrange::TrayStop::Widget(w)) => Some(w),
+        _ => None,
+    };
     assert!(on(&a).is_some() && a.focus.is_none());
     key(&mut a, KeyCode::Left);
     assert_eq!(on(&a), Some(Widget::Fft));
@@ -1962,4 +1967,266 @@ fn a_drag_that_turns_arrange_mode_on_drops_on_the_pane_where_it_now_is() {
         assert_eq!(a.layout, swapped(before, held, Widget::Queue), "{}: released at {spot:?} on the queue's new {new:?}", design.id);
     }
     assert!(tried >= 3, "Designs with a queue: {tried}");
+}
+
+// ── New design… (#42) ─────────────────────────────────────────────────
+
+/// The Tray's "+ Widget", as last drawn.
+fn tray_add(a: &App) -> (u16, u16) {
+    let r = a.hit_rect(&Hit::TrayAdd).expect("+ Widget on the Tray");
+    (r.x + 2, r.y)
+}
+fn typed(a: &mut App, s: &str) {
+    for c in s.chars() {
+        key(a, KeyCode::Char(c));
+    }
+}
+/// Every file in the config folder (the layouts and config.toml), with what it says.
+fn files(dir: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
+    let mut out = vec![];
+    for d in [dir.to_path_buf(), dir.join("layouts")] {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            if e.path().is_file() {
+                out.push((e.path(), std::fs::read_to_string(e.path()).unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A whole build: the palette's New design…, a Widget added with the Tray's "+ Widget", the floor plan split, Home and
+/// the pick dragged from the Tray into the Panes, Done, a name: a Design of your own with the current Theme.
+#[test]
+fn a_new_design_is_built_from_one_empty_pane_and_done_saves_it_under_a_name() {
+    let (mut a, dir) = with_dirs();
+    // a Theme other than the Design's own, so the saved one is the current one
+    a.run(Action::NextVariant);
+    let theme = a.theme.id.clone();
+    assert_ne!(theme, DESIGNS[a.design].themes[0]);
+    // the palette's "New design…"
+    a.run(Action::Palette);
+    typed(&mut a, "new design");
+    assert_eq!(a.palette_items().first(), Some(&Action::NewDesign));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.modal(), Some(Modal::Arrange));
+    // one empty Pane filling the Panes' area, Home waiting in the Tray, Done waiting for it
+    let shot = render(&mut a, W, H);
+    let panes = drawn_panes(&a);
+    assert_eq!(panes.len(), 1);
+    assert_eq!(panes[0].1, a.pane_area(), "it fills the screen");
+    assert_eq!(a.layout.widget_in(panes[0].0), None);
+    assert_eq!(a.layout.tray(), [Widget::Home]);
+    assert!(shot.contains("empty") && shot.contains(" + Widget ") && shot.contains("Home still needs a Pane"), "{shot}");
+    // "+ Widget": the picker offers what is neither on screen nor in the Tray, and the pick joins the Tray
+    click!(&mut a, tray_add(&a));
+    let rows = a.widget_choices();
+    assert!(a.widget_picker().is_some_and(|p| p.tray));
+    assert!(rows.iter().all(|c| c.from.is_none() && c.widget != Widget::Home) && rows.iter().any(|c| c.widget == Widget::Queue), "{rows:?}");
+    let shot = render(&mut a, W, H);
+    assert!(shot.contains("Choose a widget") && shot.contains("Enter puts it in the Tray"), "{shot}");
+    typed(&mut a, "queue");
+    key(&mut a, KeyCode::Enter);
+    assert!(a.widget_picker().is_none() && a.arranging.is_some());
+    assert_eq!(a.layout.tray(), [Widget::Home, Widget::Queue]);
+    // the floor plan first: the Pane's ⊞ splits it, and Esc in the picker leaves the new Pane empty
+    render(&mut a, W, H);
+    let first = panes[0].0;
+    let split = a.hit_rect(&Hit::SplitPane(first)).expect("the Pane's ⊞");
+    click!(&mut a, (split.x, split.y));
+    assert!(a.widget_picker().is_some_and(|p| p.after_split));
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.layout.panes().len(), 2);
+    assert!(a.layout.panes().iter().all(|p| p.widget.is_none()));
+    // then the contents: Home and the queue from the Tray into the two Panes
+    render(&mut a, W, H);
+    let rects = drawn_panes(&a);
+    drag_to!(&mut a, tray_item(&a, 0), centre(rects[0].1));
+    drag_to!(&mut a, tray_item(&a, 0), centre(rects[1].1));
+    assert_eq!((a.layout.widget_in(rects[0].0), a.layout.widget_in(rects[1].0)), (Some(Widget::Home), Some(Widget::Queue)));
+    assert!(a.layout.tray().is_empty());
+    // nothing is written while it's built
+    assert!(crate::layouts::load_dir(&dir.path().join("layouts")).0.is_empty());
+    // Done asks for the name (still arranging under it); the name saves it
+    let done = a.hit_rect(&Hit::ArrangeDone).unwrap();
+    click!(&mut a, (done.x + 1, done.y));
+    assert_eq!(a.naming().map(|n| (n.text.as_str(), n.purpose)), Some(("", crate::app::NameFor::NewDesign)));
+    assert!(render(&mut a, W, H).contains("Save design as"));
+    typed(&mut a, "Built");
+    key(&mut a, KeyCode::Enter);
+    assert!(a.naming().is_none() && a.arranging.is_none());
+    assert_eq!(a.layout_name.as_deref(), Some("built"));
+    let text = std::fs::read_to_string(dir.path().join("layouts/built.toml")).unwrap();
+    assert!(text.contains("name = \"Built\"") && text.contains(&format!("theme = \"{theme}\"")) && !text.contains("edited"), "{text}");
+    assert!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap().contains("layout = \"built\""));
+    let saved = crate::layouts::load_dir(&dir.path().join("layouts")).0;
+    assert!(saved.len() == 1 && saved[0].arrangement() == a.layout);
+    // a restart brings it back, Theme and all
+    let mut again = App::new(None);
+    again.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
+    assert_eq!((again.layout.clone(), again.theme.id.clone()), (a.layout.clone(), theme));
+}
+
+/// Esc on New design… before anything is placed leaves the Design on screen untouched (its files, its undo); after an
+/// edit Esc is Done, which waits for Home, and undoing back to the blank start lets Esc leave again.
+#[test]
+fn esc_on_a_new_design_before_anything_is_placed_leaves_the_design_untouched() {
+    let (mut a, dir) = with_dirs();
+    a.close_pane(pid(&a, Widget::Fft));
+    // (the bar's passing notes aside)
+    a.toast = None;
+    a.undo_offer = None;
+    let plain = render(&mut a, W, H);
+    let (layout, name, on_disk) = (a.layout.clone(), a.layout_name.clone(), files(dir.path()));
+    assert!(name.is_some() && on_disk.iter().any(|(p, _)| p.ends_with("layouts/singularity-edited.toml")), "{on_disk:?}");
+    a.run(Action::NewDesign);
+    render(&mut a, W, H);
+    assert_eq!(a.layout.tray(), [Widget::Home]);
+    key(&mut a, KeyCode::Esc);
+    assert!(a.arranging.is_none() && a.modal().is_none());
+    assert_eq!((a.layout.clone(), a.layout_name.clone(), files(dir.path())), (layout.clone(), name.clone(), on_disk.clone()));
+    assert_eq!(render(&mut a, W, H), plain, "the app as before");
+    // a Widget added: Esc is Done, which waits for Home; nothing is written meanwhile
+    a.run(Action::NewDesign);
+    render(&mut a, W, H);
+    click!(&mut a, tray_add(&a));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.layout.tray().len(), 2);
+    key(&mut a, KeyCode::Esc);
+    assert!(a.arranging.is_some() && a.naming().is_none());
+    assert_eq!(files(dir.path()), on_disk);
+    // undone back to the blank start: Esc leaves, and the close from before the build is still undoable
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout.tray(), [Widget::Home]);
+    key(&mut a, KeyCode::Esc);
+    assert!(a.arranging.is_none());
+    assert_eq!((a.layout.clone(), a.layout_name.clone(), files(dir.path())), (layout, name, on_disk));
+    ctrl(&mut a, 'z');
+    assert!(a.layout.has(Widget::Fft));
+}
+
+/// A name already taken is refused and the prompt stays; Esc on it goes back to arranging, the build intact.
+#[test]
+fn a_new_designs_name_is_never_one_taken_and_esc_on_it_keeps_building() {
+    let (mut a, dir) = with_dirs();
+    crate::layouts::write(&dir.path().join("layouts"), "mine", "Mine", "singularity", "", &a.layout, false).unwrap();
+    a.reload_layouts();
+    a.run(Action::NewDesign);
+    render(&mut a, W, H);
+    drag_to!(&mut a, tray_item(&a, 0), centre(drawn_panes(&a)[0].1));
+    let built = a.layout.clone();
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.naming().map(|n| n.purpose), Some(crate::app::NameFor::NewDesign));
+    key(&mut a, KeyCode::Esc);
+    assert!(a.naming().is_none() && a.arranging.is_some());
+    assert_eq!(a.layout, built);
+    key(&mut a, KeyCode::Esc);
+    typed(&mut a, "Mine");
+    key(&mut a, KeyCode::Enter);
+    assert!(a.naming().is_some() && a.arranging.is_some(), "refused: the prompt stays");
+    assert!(a.toast.as_ref().is_some_and(|t| t.0.contains("There is already a design called \"Mine\"")), "{:?}", a.toast);
+    assert_eq!(a.layout, built);
+}
+
+/// Review of #42: while a New design… is built, Pick a design, Save design as… and Reset design are not in the palette
+/// and their keys do nothing (each would swap or save the Design under the build); Done names it. Afterwards they're back.
+#[test]
+fn a_new_design_being_built_hides_pick_save_and_reset_design() {
+    let (mut a, dir) = with_dirs();
+    let gone = [Action::PickDesign, Action::SaveLayout, Action::ResetLayout];
+    a.run(Action::NewDesign);
+    render(&mut a, W, H);
+    a.run(Action::Palette);
+    for word in ["design", "pick a design", "save design", "reset design"] {
+        a.palette_mut().unwrap().query = word.into();
+        assert!(a.palette_items().iter().all(|i| !gone.contains(i)), "{word}: {:?}", a.palette_items());
+    }
+    a.palette_mut().unwrap().query = "theme".into();
+    assert!(a.palette_items().contains(&Action::PickTheme), "the rest stays");
+    key(&mut a, KeyCode::Esc);
+    // their keys (or any other way to run them) do nothing
+    let blank = a.layout.clone();
+    for g in gone {
+        a.run(g);
+        assert!(a.modal() == Some(Modal::Arrange) && a.picker().is_none() && a.naming().is_none(), "{g:?}: {:?}", a.modal());
+        assert_eq!(a.layout, blank, "{g:?}");
+    }
+    assert!(a.building());
+    assert!(crate::layouts::load_dir(&dir.path().join("layouts")).0.is_empty());
+    // Esc leaves the build: they're back
+    key(&mut a, KeyCode::Esc);
+    assert!(!a.building());
+    a.run(Action::Palette);
+    a.palette_mut().unwrap().query = "design".into();
+    assert!(gone.iter().all(|g| a.palette_items().contains(g)), "{:?}", a.palette_items());
+}
+
+/// Review of #42: a New design's name can't take the file a built-in Design's unnamed "(edited)" copy uses (a later edit
+/// of that Design would write over it), and a name that makes no file name keeps the prompt, saying why.
+#[test]
+fn a_new_designs_name_never_takes_an_edited_copys_file_or_makes_no_file_name() {
+    let (mut a, dir) = with_dirs();
+    a.run(Action::NewDesign);
+    render(&mut a, W, H);
+    drag_to!(&mut a, tray_item(&a, 0), centre(drawn_panes(&a)[0].1));
+    key(&mut a, KeyCode::Esc);
+    for name in ["Singularity edited", "cockpit-edited", "...", "   ", ""] {
+        a.toast = None;
+        typed(&mut a, name);
+        key(&mut a, KeyCode::Enter);
+        assert!(a.naming().is_some_and(|n| n.text == name) && a.building(), "{name:?}: the prompt stays, the build too");
+        let said = a.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+        let want = if crate::layouts::file_id(name).is_empty() {
+            "Couldn't save the layout: a layout needs a name".to_string()
+        } else {
+            format!("There is already a design called \"{}\"", name.trim())
+        };
+        assert_eq!(said, want, "{name:?}");
+        for _ in 0..name.chars().count() {
+            key(&mut a, KeyCode::Backspace);
+        }
+    }
+    assert!(crate::layouts::load_dir(&dir.path().join("layouts")).0.is_empty(), "nothing written");
+}
+
+/// Review of #42 (full keyboard): "+ Widget" is the Tray's last focus stop: → past the last Widget, or ↓ from a bottom
+/// Pane when the Tray is empty (in a New design once Home is placed); Enter opens the picker for the Tray, lit in the
+/// focus colour meanwhile; ← goes back to the last Widget, ↑ to the Panes.
+#[test]
+fn the_keyboard_reaches_plus_widget_on_the_tray_even_when_it_is_empty() {
+    use crate::arrange::TrayStop;
+    let mut a = app();
+    a.run(Action::NewDesign);
+    render(&mut a, W, H);
+    let stop = |a: &App| a.arranging.as_ref().unwrap().tray_focus;
+    // Home waits: ↓ lands on it, → goes on to "+ Widget"
+    key(&mut a, KeyCode::Down);
+    assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Home)));
+    key(&mut a, KeyCode::Right);
+    assert_eq!(stop(&a), Some(TrayStop::Add));
+    key(&mut a, KeyCode::Right);
+    assert_eq!(stop(&a), Some(TrayStop::Add), "nothing after it");
+    let buf = render_buf(&mut a, W, H);
+    let lit = drawn(&buf, " + Widget ");
+    assert_eq!(lit[1].1.bg, a.theme.chip(a.theme.accent).bg, "in the focus colour");
+    key(&mut a, KeyCode::Left);
+    assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Home)));
+    // Home into the Pane: Enter, ↑, Enter; the Tray is empty now
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Up);
+    key(&mut a, KeyCode::Enter);
+    assert!(a.layout.tray().is_empty() && a.is_focused(Widget::Home));
+    render(&mut a, W, H);
+    // ↓ from the bottom Pane: "+ Widget" (the only stop); Enter opens the picker for the Tray; a pick joins it
+    key(&mut a, KeyCode::Down);
+    assert_eq!(stop(&a), Some(TrayStop::Add));
+    key(&mut a, KeyCode::Enter);
+    assert!(a.widget_picker().is_some_and(|p| p.tray));
+    typed(&mut a, "queue");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.layout.tray(), [Widget::Queue]);
+    assert_eq!(stop(&a), Some(TrayStop::Add), "the focus stays on it");
+    // ↑: back to the Pane above
+    key(&mut a, KeyCode::Up);
+    assert!(stop(&a).is_none() && a.is_focused(Widget::Home));
 }
