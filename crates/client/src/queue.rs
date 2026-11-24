@@ -178,14 +178,17 @@ pub fn preview(q: &[QueueEntry], d: Option<QueueDrag>) -> Vec<QueueEntry> {
 }
 
 /// Where the highlight goes when the queue `old` becomes `new` (a skip, a move, a phone's edit): it stays on its song,
-/// found by uid (or, where the player gives none, by URI, nearest its old place), not on its slot. A song that left (it
+/// not on its slot. The song is found by its uid; where that uid isn't in `new` (the player gives none, or gave it a
+/// new one: a "Next from" song lifted into the queue), by its URI, the place nearest its old one. A song that left (it
 /// plays now, or was removed) hands the highlight to its nearest neighbour still listed, the next one first.
 pub fn follow(old: &[QueueEntry], sel: usize, new: &[QueueEntry]) -> usize {
     let find = |e: &QueueEntry, near: usize| -> Option<usize> {
-        if !e.uid.is_empty() {
-            return new.iter().position(|n| n.uid == e.uid);
+        if !e.uid.is_empty()
+            && let Some(i) = new.iter().position(|n| n.uid == e.uid)
+        {
+            return Some(i);
         }
-        new.iter().enumerate().filter(|(_, n)| n.uid.is_empty() && n.item.uri == e.item.uri).map(|(i, _)| i).min_by_key(|&i| i.abs_diff(near))
+        new.iter().enumerate().filter(|(_, n)| n.item.uri == e.item.uri).map(|(i, _)| i).min_by_key(|&i| i.abs_diff(near))
     };
     let last = new.len().saturating_sub(1);
     if sel >= old.len() {
@@ -193,7 +196,7 @@ pub fn follow(old: &[QueueEntry], sel: usize, new: &[QueueEntry]) -> usize {
     }
     // the song itself, then its neighbours outwards, the next one first
     let around = (1..old.len()).flat_map(|d| [sel.checked_add(d), sel.checked_sub(d)]).flatten().filter(|&i| i < old.len());
-    std::iter::once(sel).chain(around).find_map(|i| find(&old[i], sel)).unwrap_or(sel.min(last))
+    std::iter::once(sel).chain(around).find_map(|i| find(&old[i], i)).unwrap_or(sel.min(last))
 }
 
 /// One line of the Widget: a section heading, or entry `i`.
@@ -399,6 +402,33 @@ mod tests {
         assert_eq!(names(&preview(&q, Some(drag(2, 2, true)))), "aq bq xq y", "last of the queued");
         let l = lines_of(&preview(&q, Some(drag(2, 2, true))), Some("Orbits"));
         assert_eq!(l[4], Line::Heading("Next from Orbits".into()), "the moved song shows under Next in queue");
+    }
+
+    #[test]
+    fn the_highlight_follows_its_song_by_uid_then_by_uri() {
+        let e = |n: &str, uid: &str| QueueEntry { uid: uid.into(), ..entry(n, "queue") };
+        // a skip: every song up a slot, the highlight with its song
+        assert_eq!(follow(&[e("a", "1"), e("b", "2"), e("c", "3")], 1, &[e("b", "2"), e("c", "3")]), 0);
+        // a "Next from" song lifted into the queue: the Daemon sent it with no uid, Spotify gave it one
+        assert_eq!(follow(&[e("a", "1"), e("x", "")], 1, &[e("x", "9"), e("a", "1")]), 0);
+        // …or a new uid for the same song
+        assert_eq!(follow(&[e("a", "1"), e("x", "c1")], 1, &[e("a", "1"), e("b", "2"), e("x", "q7")]), 2);
+        // a uid still there wins over a same-URI duplicate nearer the old place
+        assert_eq!(follow(&[e("a", "1"), e("a", "2")], 1, &[e("a", "2"), e("a", "1")]), 0);
+        // no uids: the same URI, the copy nearest its old place
+        assert_eq!(follow(&[e("a", ""), e("b", ""), e("a", ""), e("c", "")], 2, &[e("b", ""), e("a", ""), e("c", ""), e("a", "")]), 1);
+        assert_eq!(follow(&[e("a", ""), e("b", ""), e("c", ""), e("a", "")], 3, &[e("a", ""), e("b", ""), e("c", ""), e("d", ""), e("a", "")]), 4);
+        // the song left: the next one still listed, else the one before
+        assert_eq!(follow(&[e("a", "1"), e("b", "2"), e("c", "3")], 0, &[e("b", "2"), e("c", "3")]), 0);
+        assert_eq!(follow(&[e("a", "1"), e("b", "2"), e("c", "3")], 2, &[e("a", "1"), e("b", "2")]), 1);
+        // a neighbour is looked for near its own old place (c's slot 2), not the highlight's (1): two copies of c
+        assert_eq!(follow(&[e("x", ""), e("b", ""), e("c", "")], 1, &[e("c", ""), e("p", ""), e("q", ""), e("c", "")]), 3);
+        // an empty queue, before and after; a highlight past the end
+        assert_eq!(follow(&[], 0, &[e("a", "1")]), 0);
+        assert_eq!(follow(&[e("a", "1")], 0, &[]), 0);
+        assert_eq!(follow(&[e("a", "1")], 5, &[e("b", "2"), e("c", "3")]), 1);
+        // nothing of the old queue left: the same slot, inside the new one
+        assert_eq!(follow(&[e("a", "1"), e("b", "2"), e("c", "3")], 2, &[e("x", "7"), e("y", "8")]), 1);
     }
 
     #[test]

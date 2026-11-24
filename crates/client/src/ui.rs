@@ -2660,6 +2660,27 @@ mod tests {
         assert!(lit(&mut app)[0].contains("Song q"), "{:?}", lit(&mut app));
     }
 
+    /// An unfocused queue shows no highlight, so it doesn't follow one: songs queued with Home focused leave the queue
+    /// Pane at its top, "Next in queue" in view.
+    #[test]
+    fn an_unfocused_queue_stays_at_its_top_as_songs_are_queued() {
+        use singularity_proto::{Event, Item, PlaybackState, QueueEntry};
+        let (mut app, _rx) = playing_app(200_000);
+        let e = |n: usize, source: &str| QueueEntry { item: Item { uri: format!("spotify:track:s{n}"), name: format!("Song {n}"), ..Default::default() }, source: source.into(), uid: format!("u{n}") };
+        let mut q: Vec<QueueEntry> = (100..110).map(|n| e(n, "context")).collect();
+        app.hear(Event::Playback(PlaybackState { queue: q.clone(), ..app.playback.clone() }));
+        app.focus_on(Widget::Home);
+        render(&mut app, 160, 48);
+        for n in 0..8 {
+            // Play next: in front of the others
+            q.insert(0, e(n, "queue"));
+            app.hear(Event::Playback(PlaybackState { queue: q.clone(), ..app.playback.clone() }));
+            let s = render(&mut app, 160, 48);
+            assert!(s.contains("Next in queue"), "after {} queued:\n{s}", n + 1);
+            assert_eq!((app.queue_view.sel, app.queue_view.top), (0, 0), "after {} queued", n + 1);
+        }
+    }
+
     #[test]
     fn every_row_has_a_heart_asked_about_in_batches() {
         use singularity_proto::{Command, SavedFlag, TrackPage, TrackRow};
