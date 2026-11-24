@@ -3,13 +3,17 @@
 //! four sides and opens the Widget picker on it, #39), and what an edit does to the Design on screen. The edits
 //! themselves are `Arrangement`'s; layout undo is `history`.
 //!
-//! Arrange mode is a layer (`App::layers`): the Tray strip takes the player's rows and the legend and Done the hints'
-//! row, so no Pane moves when it starts or ends; each Pane's title gets a split and a close button. A title drag
-//! starts it (so a quick swap is one gesture: the mode stays on after the drop), as do the palette's and the Pane
-//! menu's "Arrange", and Esc in a split's Widget picker. Done (or Esc) ends it, once Home has a Pane again.
+//! Arrange mode is a layer (`App::layers`): the player bar stays (its buttons, seek bar and keys work, so the music
+//! goes on through a rearrange), the Tray strip goes under it and the legend and Done take the hints' row. The Panes'
+//! area is the Tray's height shorter meanwhile, every Pane scaled by the floor plan's own rule (its proportions, and
+//! the saved floor plan, never change for it), and Done gives the room back (Q39). Each Pane's title gets a split and
+//! a close button. A title drag starts it (so a quick swap is one gesture: the mode stays on after the drop), as do
+//! the palette's and the Pane menu's "Arrange", and Esc in a split's Widget picker. Done (or Esc) ends it, once Home
+//! has a Pane again.
 //!
-//! A drag only moves contents: while a Widget is held nothing on screen moves but a highlight on the Pane (or the
-//! Tray) under the pointer (at once, no dwell, saying what a release would do) and a chip with the Widget's name by
+//! A drag only moves contents. When a drag starts Arrange mode the Panes make room for the Tray once, as it starts
+//! (Q39); after that, while a Widget is held, nothing on screen moves but a highlight on the Pane (or the Tray) under
+//! the pointer (at once, no dwell, saying what a release would do) and a chip with the Widget's name by
 //! the pointer. The release drops there: on a Pane the two Widgets swap (or an empty Pane is filled); on the Tray the
 //! Widget waits there and its Pane is left empty; from the Tray onto a Pane it takes that Pane, whose Widget goes into
 //! the Tray in its place. On its own Pane, off the Panes, on Esc, or when the release was never heard, the drag ends
@@ -66,6 +70,9 @@ pub struct TileDrag {
     /// picked up from the Tray
     pub from_tray: bool,
 }
+
+/// The Tray strip's height: the rows the Panes give up while arranging (Q39).
+pub const TRAY_H: u16 = 3;
 
 /// Arrange mode, while it is on: the Arrangement when it began and whether an edit was made since, so Done can
 /// tell whether anything changed, and the first Widget the Tray strip shows (when it holds more than fits).
@@ -184,10 +191,29 @@ impl App {
         self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: true });
     }
 
-    /// Where the Tray strip is in Arrange mode: the player's rows, under the Panes (so no Pane moves for it).
+    /// Where the Tray strip is in Arrange mode: under the player bar, which is under the Panes (Q39).
     pub fn tray_rect(&self) -> Rect {
-        let b = self.pane_area();
-        Rect::new(b.x, b.bottom(), b.width, 3)
+        self.rows(true)[3]
+    }
+
+    /// Where the player bar is: under the Panes.
+    pub fn player_rect(&self) -> Rect {
+        self.rows(self.arranging.is_some())[2]
+    }
+
+    /// The screen's rows (`ui::rows`) in this window, arranging or not; before the first frame, around a roomy guess.
+    fn rows(&self, arranging: bool) -> [Rect; 5] {
+        let w = if self.window.width > 0 { self.window } else { Rect::new(0, 0, 200, 60) };
+        crate::ui::rows(w, arranging)
+    }
+
+    /// The Panes' area again, for the window's size and whether Arrange mode is on (it takes the Tray's rows), at once:
+    /// a release in the same batch of input finds the Pane under it where the next frame draws it.
+    fn relayout(&mut self) {
+        if self.window.width > 0 {
+            self.body = crate::ui::rows(self.window, self.arranging.is_some())[1];
+        }
+        self.tile_resized();
     }
 
     /// What a release at (x, y) would drop on, for a Widget held from Pane `own` (or the Tray): the Pane under it
@@ -256,10 +282,9 @@ impl App {
     /// The terminal took a new size (`w` × `h`): the Panes' area is known at once, so a release in the same batch of
     /// input finds the Pane under it in the new window, not the old (#40 review).
     pub fn window_resized(&mut self, w: u16, h: u16) {
-        // the top bar above, the player (3 rows) and the hints below: as `ui::draw` lays them out
-        self.body = Rect::new(0, 1, w, h.saturating_sub(5));
-        self.mini = crate::mini::wanted(Rect::new(0, 0, w, h));
-        self.tile_resized();
+        self.window = Rect::new(0, 0, w, h);
+        self.mini = crate::mini::wanted(self.window);
+        self.relayout();
     }
 
     /// The window changed size while a Widget is held: the Panes moved under the pointer, so the one under it is found
@@ -531,6 +556,7 @@ impl App {
         if self.arranging.is_none() {
             self.move_mode = None;
             self.arranging = Some(Arranging { since: self.layout.clone(), edited: false, tray_first: 0 });
+            self.relayout();
         }
     }
 
@@ -560,6 +586,7 @@ impl App {
         }
         let Some(a) = self.arranging.take() else { return };
         self.tile = None;
+        self.relayout();
         let changed = a.edited && a.since != self.layout;
         if changed && self.on_edited_copy() && self.naming().is_none() {
             let name = self.suggest_name();
@@ -568,7 +595,7 @@ impl App {
     }
 
     /// Keys in Arrange mode (the shortcuts with Ctrl or Alt work as everywhere): Esc is Done, and the playback keys
-    /// work as ever (the player bar is the Tray's meanwhile); no Pane takes keys.
+    /// work as ever (the player bar stays); no Pane takes keys.
     pub fn arrange_key(&mut self, k: KeyEvent) {
         if k.code == KeyCode::Esc {
             return self.arrange_done();
@@ -1018,7 +1045,7 @@ pub fn tray_layout(app: &App, r: Rect, first: usize) -> TrayLayout {
     TrayLayout { items, prev, next, clear, first }
 }
 
-/// The Tray strip (Arrange mode, where the player was): what waits there, each with its ×, Clear Tray, and while a
+/// The Tray strip (Arrange mode, under the player bar): what waits there, each with its ×, Clear Tray, and while a
 /// Pane's Widget is held over it, lit with what a release does.
 pub fn draw_tray(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     use ratatui::widgets::{Block, Borders, Widget as _};

@@ -209,22 +209,6 @@ pub fn listening(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     };
     let half = r.height < 8;
     let rows = if half { 4.min(r.height - 1) } else { 7 };
-    for c in 0..weeks {
-        let x = r.x + 1 + c as u16 * 2;
-        for row in 0..rows as i64 {
-            let y = r.y + row as u16;
-            if half {
-                let (top, bottom) = (day(c, row * 2), day(c, row * 2 + 1));
-                if let Some(cell) = buf.cell_mut((x, y))
-                    && (top.is_some() || bottom.is_some())
-                {
-                    cell.set_char('▀').set_fg(top.unwrap_or(th.bg).color()).set_bg(bottom.unwrap_or(th.bg).color());
-                }
-            } else if let Some(col) = day(c, row) {
-                text(buf, x, y, 1, "■", th.s(col));
-            }
-        }
-    }
     let parts: Vec<String> = match sum {
         None => vec!["the listening log comes from singularityd".to_string()],
         Some(s) if s.plays == 0 => vec!["nothing logged yet".into(), "a track counts after 30 s".into()],
@@ -245,13 +229,34 @@ pub fn listening(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
             _ => lines.push(p),
         }
     }
-    let ty = r.y + rows + (r.height > 8) as u16;
-    let room = r.bottom().saturating_sub(ty) as usize;
+    let gap = (r.height > 8) as u16;
+    let room = r.height.saturating_sub(rows + gap) as usize;
     if lines.len() > room {
         lines = vec![lines.join(" · ")];
     }
+    // the grid and the totals under it, one block balanced in the Pane (#58)
+    let block_w = (weeks as u16 * 2).saturating_sub(1).max(lines.iter().map(|l| unicode_width::UnicodeWidthStr::width(l.as_str()) as u16).max().unwrap_or(0).min(tw as u16));
+    let x0 = crate::balance::centre(r.x + 1, tw as u16, block_w);
+    let y0 = crate::balance::centre(r.y, r.height, rows + gap + lines.len().min(room) as u16);
+    for c in 0..weeks {
+        let x = x0 + c as u16 * 2;
+        for row in 0..rows as i64 {
+            let y = y0 + row as u16;
+            if half {
+                let (top, bottom) = (day(c, row * 2), day(c, row * 2 + 1));
+                if let Some(cell) = buf.cell_mut((x, y))
+                    && (top.is_some() || bottom.is_some())
+                {
+                    cell.set_char('▀').set_fg(top.unwrap_or(th.bg).color()).set_bg(bottom.unwrap_or(th.bg).color());
+                }
+            } else if let Some(col) = day(c, row) {
+                text(buf, x, y, 1, "■", th.s(col));
+            }
+        }
+    }
+    let ty = y0 + rows + gap;
     for (i, l) in lines.iter().enumerate().take(room) {
-        text(buf, r.x + 1, ty + i as u16, tw as u16, l, th.s(th.dim));
+        text(buf, x0, ty + i as u16, (r.right() - 1).saturating_sub(x0), l, th.s(th.dim));
     }
 }
 
@@ -703,7 +708,7 @@ fn mem(rss: u64) -> String {
 
 /// `top` for the music's processes. A row each: the name, a CPU bar, CPU %, memory and the pid as width allows. Tall
 /// Panes put the processes' CPU together on top, a graph of the last minutes under it, and give each process a
-/// sparkline of its own when there are rows for it.
+/// sparkline of its own when there are rows for it; a big Pane gets a taller graph, the block in its middle (#58).
 pub fn top(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let s = &mut app.widgets.top;
     s.sample();
@@ -717,8 +722,23 @@ pub fn top(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         text(buf, x, y, w, "no music processes running", th.s(th.dim));
         return;
     }
+    // the columns: name, bar, CPU %, memory, pid, as many as fit
+    let pid_w: u16 = if w >= 52 { 8 } else { 0 };
+    let name_w = (w / 4).clamp(8, 18).min(w);
+    let fixed = name_w + 1 + 6 + 1 + 6 + pid_w;
+    let bar_w = w.saturating_sub(fixed + 1);
+    let bar_w = if bar_w >= 6 { bar_w } else { 0 };
     // the summary and graph when there's room for them and every process
     let summary = w >= 14 && r.height >= n + 9;
+    let usual = (r.height.saturating_sub(n + 4) / 2).clamp(2, 10);
+    // rows beyond what the graph usually takes, with the process table: the graph steps up and the whole block (the
+    // summary, the graph, the table with its sparklines) sits in the middle of the Pane (#58)
+    let roomy = summary && w >= 24 && bar_w > 0 && r.height.saturating_sub(n + 4) / 2 > 10;
+    let block = |gh: u16| 1 + gh + 2 + 1 + 2 * n;
+    let gh = if roomy { crate::balance::step(&[10, 16, 24], |s| block(s) + 4 <= r.height) } else { usual };
+    if roomy {
+        y = crate::balance::centre(r.y, r.height, block(gh));
+    }
     if summary {
         let total: f32 = s.rows.iter().map(|r| r.1).sum();
         let rss: u64 = s.rows.iter().map(|r| r.2).sum();
@@ -735,7 +755,6 @@ pub fn top(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         }
         y += 1;
         // the graph: the last minutes of the processes' CPU, scaled to their peak (at least 5 %)
-        let gh = ((r.height - n - 4) / 2).clamp(2, 10);
         let peak = s.total.iter().copied().fold(5.0f32, f32::max);
         let gw = w.saturating_sub(6);
         crate::tile::area(buf, Rect::new(x, y, gw, gh), s.total.iter().copied(), peak, th, |v| th.ramp_at(0.3 + 0.7 * (v / peak)));
@@ -750,12 +769,6 @@ pub fn top(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         }
         y += gh + 2;
     }
-    // the columns: name, bar, CPU %, memory, pid, as many as fit
-    let pid_w: u16 = if w >= 52 { 8 } else { 0 };
-    let name_w = (w / 4).clamp(8, 18).min(w);
-    let fixed = name_w + 1 + 6 + 1 + 6 + pid_w;
-    let bar_w = w.saturating_sub(fixed + 1);
-    let bar_w = if bar_w >= 6 { bar_w } else { 0 };
     let cpu_x = x + name_w + 1 + if bar_w > 0 { bar_w + 1 } else { 0 };
     if y < r.bottom() && w >= 24 {
         let st = th.s(th.border).add_modifier(Modifier::BOLD);
@@ -851,6 +864,63 @@ mod tests {
             // the block sits in the middle: the space over it and under it differ by a row at most
             let (over, under) = (first - r.y, r.bottom() - 1 - last);
             assert!(over.abs_diff(under) <= 2, "{w}x{h}: centred, {over} over and {under} under");
+        }
+    }
+
+    #[test]
+    fn the_small_listening_pane_sits_balanced() {
+        // #58: a narrow, tall Pane left everything under the grid empty; a wide, short one kept it all at the left
+        let mut app = App::new(None);
+        let minutes: Vec<u32> = (0..singularity_proto::LISTENING_DAYS as u32).map(|i| i * 7 % 50).collect();
+        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Mira Vale".into()), streak_days: 10, plays: 534, plays_today: 3 });
+        let th = app.theme.clone();
+        let margins = |w: u16, h: u16| {
+            let r = Rect::new(2, 1, w, h);
+            let mut buf = Buffer::empty(Rect::new(0, 0, w + 4, h + 2));
+            listening(&mut buf, r, &app, &th);
+            crate::balance::margins(&buf, r)
+        };
+        let (over, under, ..) = margins(22, 28);
+        assert!(over >= 6 && over.abs_diff(under) <= 1, "narrow-tall: {over} rows over, {under} under");
+        let (over, _, left, right) = margins(98, 6);
+        assert!(over == 0 && left >= 10 && left.abs_diff(right) <= 3, "wide-short: {left} columns left, {right} right");
+        let (over, _, left, _) = margins(18, 4);
+        assert_eq!((over, left), (0, 1), "tiny: as before");
+    }
+
+    fn top_app() -> App {
+        let mut app = App::new(None);
+        let t = &mut app.widgets.top;
+        // sampled just now, so drawing keeps these
+        t.at = Some(Instant::now());
+        t.rows = vec![(1593, 4.8, 35 << 20, "singularity".into()), (76, 0.0, 15 << 20, "singularityd".into())];
+        t.total = (0..120).map(|i| (i % 9) as f32).collect();
+        t.hist.insert(1593, (0..120).map(|i| (i % 9) as f32).collect());
+        t.hist.insert(76, (0..120).map(|_| 0.0).collect());
+        app
+    }
+
+    #[test]
+    fn top_fills_a_big_pane_with_its_graph_and_sits_in_the_middle() {
+        // #58: big and full Panes left a lot of dead space at the bottom
+        let mut app = top_app();
+        let th = app.theme.clone();
+        let mut draw = |w: u16, h: u16| {
+            let r = Rect::new(2, 1, w, h);
+            let mut buf = Buffer::empty(Rect::new(0, 0, w + 4, h + 2));
+            top(&mut buf, r, &mut app, &th);
+            let graph = (r.top()..r.bottom()).filter(|&y| (r.left()..r.right()).any(|x| "▁▂▃▄▅▆▇█".contains(buf[(x, y)].symbol()) && buf[(x, y)].symbol() != " ")).count() as u16;
+            (crate::balance::margins(&buf, r), graph)
+        };
+        for (w, h) in [(118, 38), (178, 47)] {
+            let ((over, under, ..), rows) = draw(w, h);
+            assert!(over >= 2 && over.abs_diff(under) <= 1, "{w}x{h}: {over} rows over, {under} under");
+            assert!(rows > 14, "{w}x{h}: the graph steps up from 10 rows: {rows}");
+        }
+        // medium and narrow Panes: as before, from the top
+        for (w, h) in [(58, 18), (22, 28), (98, 6)] {
+            let ((over, ..), _) = draw(w, h);
+            assert_eq!(over, 0, "{w}x{h}");
         }
     }
 

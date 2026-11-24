@@ -58,6 +58,20 @@ fn drawn_panes(app: &App) -> Vec<(PaneId, Rect)> {
     v.sort_by_key(|(p, _)| *p);
     v
 }
+/// Every Pane's rectangle where Arrange mode puts it: the floor plan laid out in the window less the Tray's rows.
+fn arranged_floor(app: &App) -> Vec<(PaneId, Rect)> {
+    floor_in(app, true)
+}
+/// Every Pane's rectangle where it belongs now (arranging or not).
+fn laid_out(app: &App) -> Vec<(PaneId, Rect)> {
+    floor_in(app, app.arranging.is_some())
+}
+fn floor_in(app: &App, arranging: bool) -> Vec<(PaneId, Rect)> {
+    let body = crate::ui::rows(app.window, arranging)[1];
+    let mut v: Vec<(PaneId, Rect)> = app.layout.compute(body).panes.into_iter().map(|(p, r)| (p.id, r)).collect();
+    v.sort_by_key(|(p, _)| *p);
+    v
+}
 /// The cells of row `y` from `x0` to `x1`.
 fn row(buf: &Buffer, y: u16, x0: u16, x1: u16) -> String {
     (x0..x1).map(|x| buf[(x, y)].symbol().to_string()).collect()
@@ -104,10 +118,13 @@ fn a_title_press_without_movement_is_a_click() {
 fn dragging_a_title_onto_another_pane_swaps_their_widgets_and_nothing_moves_meanwhile() {
     let mut a = app();
     let (stream, queue) = (pid(&a, Widget::Stream), pid(&a, Widget::Queue));
-    let floor = drawn_panes(&a);
     let before = a.layout.clone();
     let (x, y) = title_spot(&a, Widget::Stream);
     press(&mut a, x, y);
+    // the drag turns Arrange mode on: the Panes make room for the Tray once, as it starts (Q39)
+    drag(&mut a, x + 4, y + 3);
+    render(&mut a, W, H);
+    let floor = drawn_panes(&a);
     let q = pane(&a, Widget::Queue);
     let (cx, cy) = centre(q);
     // on the way and over the queue: every Pane is drawn where it was, the queue is highlighted at once
@@ -180,7 +197,7 @@ fn esc_or_a_drop_on_its_own_pane_or_off_the_panes_leaves_the_layout_alone() {
     assert!(!shot.contains("swap with") && shot.contains("⠿ stream"), "{shot}");
     release(&mut a, x + 5, y + 4);
     assert_eq!(a.layout, before);
-    // over the top bar or the legend: no Pane, no drop (the player's rows are the Tray's while arranging)
+    // over the top bar or the legend: no Pane, no drop
     for out in [0, H - 1] {
         press(&mut a, x, y);
         drag(&mut a, centre(q).0, centre(q).1);
@@ -583,12 +600,24 @@ fn random_gestures_leave_every_design_valid() {
                     0..=2 => {
                         render(&mut a, w, h);
                         let (x, y) = title_spot(&a, s);
+                        let unpressed = drawn_panes(&a);
                         press(&mut a, x, y);
-                        let floor = drawn_panes(&a);
+                        render(&mut a, w, h);
+                        assert_eq!(drawn_panes(&a), unpressed, "{} {w}x{h}: a press moved a Pane", design.id);
+                        // (once the drag is on, Arrange mode is: the Panes made room for the Tray then, Q39; until
+                        // then nothing moves)
+                        let mut floor = None;
                         for _ in 0..3 {
                             drag(&mut a, (next() % w as u64) as u16, (next() % (h - 1) as u64) as u16);
                             render(&mut a, w, h);
-                            assert_eq!(drawn_panes(&a), floor, "{} {w}x{h}: a Pane moved mid-drag", design.id);
+                            let now = drawn_panes(&a);
+                            assert_eq!(now, laid_out(&a), "{} {w}x{h}: the Panes aren't the floor plan in their area", design.id);
+                            if a.tile.as_ref().is_some_and(|t| t.live) {
+                                assert!(a.arranging.is_some());
+                                assert_eq!(floor.get_or_insert_with(|| now.clone()), &now, "{} {w}x{h}: a Pane moved mid-drag", design.id);
+                            } else {
+                                assert_eq!(now, unpressed, "{} {w}x{h}: a press without a drag moved a Pane", design.id);
+                            }
                         }
                         if next() % 4 == 0 {
                             key(&mut a, KeyCode::Esc);
@@ -905,7 +934,14 @@ fn an_undo_that_would_not_fit_the_window_is_refused() {
 /// release drops on the one under the pointer then.
 #[test]
 fn a_fast_sweep_highlights_each_pane_at_once_and_drops_on_the_last() {
-    let mut a = app();
+    // (arranging already, so the Panes are where they stay for the whole drag)
+    let arranging = || {
+        let mut a = app();
+        a.run(Action::Arrange);
+        render(&mut a, W, H);
+        a
+    };
+    let mut a = arranging();
     let before = a.layout.clone();
     let floor = drawn_panes(&a);
     let (x, y) = title_spot(&a, Widget::Stream);
@@ -925,7 +961,7 @@ fn a_fast_sweep_highlights_each_pane_at_once_and_drops_on_the_last() {
     release(&mut a, q.0, q.1);
     assert_eq!(a.layout, swapped(before.clone(), Widget::Stream, Widget::Queue));
     // a release on another cell than the last move (a finger slipping as it lifts): the Pane under the release
-    let mut b = app();
+    let mut b = arranging();
     let (x, y) = title_spot(&b, Widget::Stream);
     press(&mut b, x, y);
     drag(&mut b, q.0, q.1);
@@ -969,6 +1005,8 @@ fn a_short_wide_pane_is_swapped_with_wherever_the_pointer_is_on_it() {
     let s = Node::pane;
     let row = Node::split(Horizontal, Ratio(0.5), s(Widget::Fft), s(Widget::Loudness));
     a.layout = Node::split(Horizontal, Cells(30), s(Widget::Library), Node::split(Vertical, Ratio(0.7), Node::split(Vertical, Ratio(0.6), s(Widget::Home), s(Widget::Queue)), Node::split(Horizontal, Ratio(0.8), row, s(Widget::Lyrics)))).into();
+    // (arranging already, so the Panes are where they stay for every drag)
+    a.run(Action::Arrange);
     render(&mut a, W, H);
     let before = a.layout.clone();
     let l = pane(&a, Widget::Loudness);
@@ -1099,7 +1137,10 @@ fn a_popup_opening_mid_drag_lets_the_widget_go() {
     let shot = render(&mut a, W, H);
     assert!(!shot.contains("⠿ stream") && !shot.contains("swap with"), "{shot}");
     key(&mut a, KeyCode::Esc);
-    // the login code is a layer, not a popup: the next frame lets go
+    // the login code is a layer, not a popup: the next frame lets go (Arrange mode is on now: the Panes are shorter)
+    render(&mut a, W, H);
+    let (x, y) = title_spot(&a, Widget::Stream);
+    let q = centre(pane(&a, Widget::Queue));
     press(&mut a, x, y);
     drag(&mut a, q.0, q.1);
     assert!(a.tile.as_ref().is_some_and(|t| t.live));
@@ -1111,7 +1152,7 @@ fn a_popup_opening_mid_drag_lets_the_widget_go() {
 
 // ── Arrange mode and the Tray (#41) ───────────────────────────────────
 
-/// The middle of the Tray strip (Arrange mode: the player's three rows).
+/// The middle of the Tray strip (Arrange mode: the three rows under the player bar).
 fn tray_spot(a: &App) -> (u16, u16) {
     let t = a.tray_rect();
     (t.x + t.width / 2, t.y + 1)
@@ -1152,13 +1193,14 @@ fn a_title_drag_turns_arrange_mode_on_and_a_drop_on_the_tray_sets_the_widget_asi
     let mut a = app();
     let before = a.layout.clone();
     let stream = pid(&a, Widget::Stream);
-    let floor = drawn_panes(&a);
     let (x, y) = title_spot(&a, Widget::Stream);
     press(&mut a, x, y);
     drag(&mut a, x + 4, y + 2);
     assert!(a.arranging.is_some(), "the drag turned it on");
     let shot = render(&mut a, W, H);
-    assert_eq!(drawn_panes(&a), floor, "no Pane moved for it");
+    // the Panes made room for the Tray, by the floor plan's own rule, and stay put from then on
+    let floor = arranged_floor(&a);
+    assert_eq!(drawn_panes(&a), floor, "the Panes are the floor plan in the shorter area");
     assert!(shot.contains(" Tray ") && shot.contains("ARRANGE") && shot.contains(" Done "), "{shot}");
     let (tx, ty) = tray_spot(&a);
     drag(&mut a, tx, ty);
@@ -1406,4 +1448,131 @@ fn arrange_mode_keeps_the_panes_keys() {
     key(&mut a, KeyCode::Char('w'));
     assert!(a.widget_picker().is_none());
     assert!(a.arranging.is_some());
+}
+
+// ── the player bar stays, the Tray goes under it (#69, Q39) ────────────
+
+/// A connected App with a paused song in the player bar, and the Daemon's end of the line.
+fn playing() -> (App, tokio::sync::mpsc::Receiver<singularity_proto::Command>) {
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    let mut a = App::new(Some(tx));
+    a.link = crate::app::Link::Connected { version: "test".into() };
+    a.playback.item = Some(singularity_proto::Item { name: "Song".into(), duration_ms: 240_000, ..Default::default() });
+    a.playback.status = singularity_proto::PlayStatus::Paused;
+    render(&mut a, W, H);
+    (a, rx)
+}
+fn sent(rx: &mut tokio::sync::mpsc::Receiver<singularity_proto::Command>) -> Vec<singularity_proto::Command> {
+    std::iter::from_fn(|| rx.try_recv().ok()).collect()
+}
+
+#[test]
+fn in_arrange_mode_the_player_bar_stays_and_its_buttons_seek_bar_and_keys_work() {
+    use singularity_proto::Command;
+    let (mut a, mut rx) = playing();
+    let was = a.player_rect();
+    let plain = render_buf(&mut a, W, H);
+    a.run(Action::Arrange);
+    let shot = render_buf(&mut a, W, H);
+    // the player bar as it was, the Tray's rows higher; the Tray right under it, the legend and Done under that
+    let bar = a.player_rect();
+    assert_eq!((bar.y + crate::arrange::TRAY_H, bar.height), (was.y, was.height));
+    for i in 0..bar.height {
+        assert_eq!(row(&shot, bar.y + i, 0, W), row(&plain, was.y + i, 0, W), "the player bar looks as before");
+    }
+    let tray = a.tray_rect();
+    assert_eq!((tray.y, tray.bottom()), (bar.bottom(), H - 1));
+    assert!(row(&shot, tray.y, 0, W).contains(" Tray "), "{}", row(&shot, tray.y, 0, W));
+    assert!(row(&shot, H - 1, 0, W).contains("ARRANGE"));
+    // its buttons
+    let play = a.hit_rect(&Hit::Action(Action::TogglePlay)).expect("▶ in the player bar");
+    assert!(play.y >= bar.y && play.bottom() <= bar.bottom());
+    click_at(&mut a, (play.x + 1, play.y));
+    let next = a.hit_rect(&Hit::Action(Action::Next)).unwrap();
+    click_at(&mut a, (next.x + 1, next.y));
+    assert_eq!(sent(&mut rx), vec![Command::Play { uri: None }, Command::Next]);
+    // its seek bar: a press, a drag along it, one seek on the release
+    render(&mut a, W, H);
+    let seek = a.hits.iter().find_map(|(_, h)| match h {
+        Hit::Bar(crate::scrub::Bar::Seek, r) => Some(*r),
+        _ => None,
+    }).expect("a seek bar");
+    assert!(seek.y >= bar.y && seek.y < bar.bottom());
+    press(&mut a, seek.x + 10, seek.y);
+    drag(&mut a, seek.x + 20, seek.y);
+    assert!(a.scrub.is_some() && sent(&mut rx).is_empty(), "scrubbing");
+    release(&mut a, seek.x + 20, seek.y);
+    assert!(matches!(sent(&mut rx)[..], [Command::Seek { .. }]));
+    // its keys
+    key(&mut a, KeyCode::Char(' '));
+    assert_eq!(sent(&mut rx), vec![Command::Pause]);
+    assert_eq!(a.modal(), Some(Modal::Arrange), "still arranging");
+    assert!(a.tile.is_none() && !a.history.can_undo());
+}
+
+#[test]
+fn the_panes_make_room_for_the_tray_by_one_rule_and_done_gives_it_back() {
+    let (mut a, dir) = with_dirs();
+    // an edit outside Arrange mode: kept as "Singularity (edited)", a file
+    a.close_pane(pid(&a, Widget::Fft));
+    render(&mut a, W, H);
+    let file = dir.path().join("layouts/singularity-edited.toml");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    let (plain, body, before) = (drawn_panes(&a), a.pane_area(), a.layout.clone());
+    for _ in 0..2 {
+        a.run(Action::Arrange);
+        render(&mut a, W, H);
+        // the Panes' area is the Tray's height shorter; every Pane is the floor plan laid out in it (its own
+        // proportions), in its own columns
+        let short = a.pane_area();
+        assert_eq!((short.y, short.width, short.height + crate::arrange::TRAY_H), (body.y, body.width, body.height));
+        let now = drawn_panes(&a);
+        assert_eq!(now, arranged_floor(&a));
+        assert!(now.iter().zip(&plain).all(|((p, r), (q, s))| p == q && (r.x, r.width) == (s.x, s.width) && r.height <= s.height));
+        assert_eq!(a.layout, before, "the floor plan itself never changes for it");
+        // Done: the room back, every Pane where it was, nothing written and nothing to undo
+        key(&mut a, KeyCode::Esc);
+        render(&mut a, W, H);
+        assert!(a.arranging.is_none() && a.naming().is_none());
+        assert_eq!((a.pane_area(), drawn_panes(&a)), (body, plain.clone()));
+        assert_eq!(a.layout, before);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), saved, "the saved floor plan is the same");
+    }
+    assert!(a.history.can_undo());
+    a.run(Action::UndoLayout);
+    assert!(a.layout.has(Widget::Fft), "the one undo step is the close");
+}
+
+/// A drag that turns Arrange mode on makes the Panes shorter at once, before any frame is drawn: a release in the
+/// same batch of input, on the queue where it is now (a cell that was another Pane's, where there is one), swaps with
+/// the queue. Every Design that has a queue.
+#[test]
+fn a_drag_that_turns_arrange_mode_on_drops_on_the_pane_where_it_now_is() {
+    let mut tried = 0;
+    for (d, design) in DESIGNS.iter().enumerate() {
+        let mut a = App::new(None);
+        a.set_design(d);
+        render(&mut a, W, H);
+        if !a.layout.has(Widget::Queue) || a.arranging.is_some() {
+            continue;
+        }
+        tried += 1;
+        let before = a.layout.clone();
+        let held = before.widgets().into_iter().find(|w| *w != Widget::Queue).unwrap();
+        let old = pane(&a, Widget::Queue);
+        let (x, y) = title_spot(&a, held);
+        press(&mut a, x, y);
+        drag(&mut a, x + 4, y + 2);
+        assert!(a.arranging.is_some(), "{}: the drag turned Arrange mode on", design.id);
+        assert_eq!(a.pane_area(), crate::ui::rows(a.window, true)[1], "{}: the Panes' area is shorter at once", design.id);
+        let new = a.layout.compute(a.pane_area()).rect_of(Widget::Queue).unwrap();
+        assert!(new.height < old.height || new.y < old.y, "{}: the queue moved up or shrank", design.id);
+        // a cell of the queue now that wasn't before, if any; else its middle
+        let inside = |r: Rect, (cx, cy): (u16, u16)| cx >= r.x && cx < r.right() && cy >= r.y && cy < r.bottom();
+        let spot = (new.y..new.bottom()).map(|cy| (new.x + new.width / 2, cy)).find(|c| !inside(old, *c)).unwrap_or(centre(new));
+        drag(&mut a, spot.0, spot.1);
+        release(&mut a, spot.0, spot.1);
+        assert_eq!(a.layout, swapped(before, held, Widget::Queue), "{}: released at {spot:?} on the queue's new {new:?}", design.id);
+    }
+    assert!(tried >= 3, "Designs with a queue: {tried}");
 }

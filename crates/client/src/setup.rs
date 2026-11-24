@@ -279,9 +279,52 @@ pub fn describe(s: &StreamInfo) -> String {
 pub fn draw_stream(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     match &app.stream {
         Some(s) if r.width >= 36 && r.height >= 14 => draw_stream_large(buf, r, app, s, th),
-        Some(s) if r.width >= 22 && r.height >= 9 => draw_stream_medium(buf, r, app, s, th),
-        _ => draw_stream_compact(buf, r, app, th),
+        Some(s) if r.width >= 22 && r.height >= 9 => {
+            // a tall Pane: the graph steps up, and the block (the device right under it) sits in the middle (#58)
+            let gh = crate::balance::step(&[5, 10, 14], |g| medium_height(app, s, r.width, g) + 4 <= r.height);
+            if gh > 5 {
+                let h = medium_height(app, s, r.width, gh);
+                draw_stream_medium(buf, Rect::new(r.x, crate::balance::centre(r.y, r.height, h), r.width, h), app, s, gh, th);
+            } else {
+                draw_stream_medium(buf, r, app, s, 5, th);
+            }
+        }
+        _ => {
+            // in columns (a wide, short Pane): the columns in the middle, the badge with them (#58). Drawn aside
+            // first, which measures them, then moved over by the room to spare
+            if r.height < 12 {
+                let mut aside = Buffer::empty(r);
+                if let Some(cw) = draw_stream_compact(&mut aside, r, app, th) {
+                    let dx = crate::balance::centre(0, r.width.saturating_sub(2), cw);
+                    let blank = ratatui::buffer::Cell::default();
+                    for y in r.top()..r.bottom() {
+                        for x in r.left()..r.right().saturating_sub(dx) {
+                            if let (Some(c), Some(to)) = (aside.cell((x, y)).filter(|c| **c != blank), buf.cell_mut((x + dx, y))) {
+                                *to = c.clone();
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+            draw_stream_compact(buf, r, app, th);
+        }
     }
+}
+
+/// The rows the middle-size stream Pane takes with a graph `gh` rows tall and the device right under it (a Pane
+/// tall enough for the figure).
+fn medium_height(app: &App, s: &StreamInfo, width: u16, gh: u16) -> u16 {
+    let w = width.saturating_sub(2);
+    let kbps = s.average_bitrate.unwrap_or(s.bitrate) / 1000;
+    let head = 2 + if crate::tile::figure_width(&format!("{kbps}kbps")) <= w { 3 } else { 1 } + 2;
+    let download = app.delivery.as_ref().map_or(0, |d| {
+        let stalls = u16::from(d.stalls_last_minute(singularity_proto::now_ms()) > 0);
+        1 + stalls + if app.delivery_hist.len() > 1 { gh } else { 0 }
+    });
+    // the fix, when there is one, between the graph and the device
+    let fix = if s.lossless() { 0 } else { wrapped(&mut Buffer::empty(Rect::new(0, 0, 1, 1)), 0, 0, w, u16::MAX, fix_text(app), ratatui::style::Style::default()) };
+    head + download + 1 + fix + 1
 }
 
 /// The quality badge: its text and colour.
@@ -460,7 +503,7 @@ fn draw_stream_large(buf: &mut Buffer, r: Rect, app: &App, s: &StreamInfo, th: &
 
 /// The stream Pane at the size most Designs give it (a side Pane): the badge and format, the bitrate as a figure when
 /// it fits, a gauge up to CD quality, the download with a graph of it, and the device at the bottom.
-fn draw_stream_medium(buf: &mut Buffer, r: Rect, app: &App, s: &StreamInfo, th: &Theme) {
+fn draw_stream_medium(buf: &mut Buffer, r: Rect, app: &App, s: &StreamInfo, graph_max: u16, th: &Theme) {
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     let bottom = r.bottom();
     let mut y = r.y;
@@ -508,7 +551,7 @@ fn draw_stream_medium(buf: &mut Buffer, r: Rect, app: &App, s: &StreamInfo, th: 
             text(buf, x + 9, y, w.saturating_sub(9), &format!("{stalls} in the last 60s"), th.s(th.error));
             y += 1;
         }
-        let gh = bottom.saturating_sub(footer + 1 + y).min(5);
+        let gh = bottom.saturating_sub(footer + 1 + y).min(graph_max);
         if gh >= 1 && app.delivery_hist.len() > 1 {
             let peak = app.delivery_hist.iter().copied().max().unwrap_or(1).max(need * 2).max(1) as f32;
             crate::tile::area(buf, Rect::new(x, y, w, gh), app.delivery_hist.iter().map(|k| *k as f32), peak, th, |v| if (v as u32) < need { th.error } else { th.ramp_at(0.3 + 0.7 * v / peak) });
@@ -536,6 +579,8 @@ struct Flow {
     top: u16,
     col_w: u16,
     r: Rect,
+    /// where the widest row drawn so far ends
+    end: u16,
 }
 
 impl Flow {
@@ -554,12 +599,15 @@ impl Flow {
         // in columns (a short Pane with room for more than one), each keeps to its own width
         let columns = self.r.height < 12 && self.r.x + 1 + 2 * self.col_w <= right;
         let w = if columns { (self.col_w - 1).min(right.saturating_sub(self.x)) } else { right.saturating_sub(self.x) };
+        let width = |s: &str| unicode_width::UnicodeWidthStr::width(s) as u16;
         if stacked {
             text(buf, self.x, self.y, w, k, th.s(th.dim));
             text(buf, self.x, self.y + 1, w, v, st);
+            self.end = self.end.max(self.x + width(k).max(width(v)).min(w));
         } else {
             text(buf, self.x, self.y, w.min(9), k, th.s(th.dim));
             text(buf, self.x + 9, self.y, w.saturating_sub(9), v, st);
+            self.end = self.end.max(self.x + (9 + width(v)).min(w));
         }
         self.y += need;
     }
@@ -573,10 +621,12 @@ impl Flow {
 }
 
 /// The stream stats Pane in a small Pane: a badge and a row per fact (in columns when it's wide and short).
-fn draw_stream_compact(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
+/// Returns how wide its columns are, from the first one's start to the end of the widest row in the last, when it
+/// took more than one.
+fn draw_stream_compact(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) -> Option<u16> {
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     let mut y = r.y;
-    let mut flow = Flow { x, y: r.y + 2, top: (r.y + 2).min(r.bottom().saturating_sub(1)), col_w: 32, r };
+    let mut flow = Flow { x, y: r.y + 2, top: (r.y + 2).min(r.bottom().saturating_sub(1)), col_w: COMPACT_COL, r, end: x };
     let row = |buf: &mut Buffer, flow: &mut Flow, k: &str, v: &str, st| flow.row(buf, k, v, st, th);
     match &app.stream {
         Some(s) => {
@@ -625,7 +675,11 @@ fn draw_stream_compact(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
         // the fix, wrapped to the Pane
         wrapped(buf, x, y, w, r.bottom(), fix_text(app), th.s(th.fg));
     }
+    (flow.x > x).then(|| flow.end - x)
 }
+
+/// The width of a column of the compact stream Pane (a gap included).
+const COMPACT_COL: u16 = 32;
 
 /// One line of the health check: ✓ fine, ! needs attention, ✗ broken.
 fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
@@ -840,6 +894,35 @@ mod tests {
         // nothing missing: no row at all
         app.hear(singularity_proto::Event::Health(singularity_proto::Health { soloist_key: "keyring".into(), spotify_login: "keyring".into(), ..Default::default() }));
         assert!(health_rows(&app).iter().all(|r| r.1 != "Tools"));
+    }
+
+    #[test]
+    fn the_stream_pane_sits_balanced_where_it_had_dead_space() {
+        // #58: a narrow, tall Pane had its block at the top and the device alone at the bottom; a wide, short one had
+        // its columns at the left
+        let mut app = App::new(None);
+        app.stream = Some(StreamInfo { codec: "flac".into(), bitrate: 1_400_000, average_bitrate: Some(1_643_000), sample_rate: 44_100, sample_format: "32-bit-float-pcm".into() });
+        app.delivery = Some(singularity_proto::Delivery { bandwidth_kbps: Some(690), measured_ms: singularity_proto::now_ms(), stalls_ms: vec![] });
+        app.delivery_hist = (0..30).map(|i| 300 + i * 20).collect();
+        app.engine = Some(EngineStatus::Ready { device_name: "Fake".into(), active: true, version: "fake".into(), expires_in_days: None });
+        let th = app.theme.clone();
+        let margins = |w: u16, h: u16| {
+            let r = Rect::new(2, 1, w, h);
+            let mut buf = Buffer::empty(Rect::new(0, 0, w + 4, h + 2));
+            draw_stream(&mut buf, r, &app, &th);
+            crate::balance::margins(&buf, r)
+        };
+        // narrow and tall: the graph steps up and the block sits in the middle
+        let (over, under, ..) = margins(22, 28);
+        assert!(over >= 1 && over.abs_diff(under) <= 1, "narrow-tall: {over} rows over, {under} under");
+        // wide and short, in columns: the columns (and the badge with them) in the middle
+        let (_, _, left, right) = margins(98, 6);
+        assert!(left >= 10 && left.abs_diff(right) <= 2, "wide-short: {left} columns left of it, {right} right");
+        // a short side Pane of the middle size, and a tiny one: as before, from the top left
+        let (over, under, left, _) = margins(30, 14);
+        assert_eq!((over, under, left), (0, 0, 1), "a side Pane: from the top, the device at the bottom");
+        let (over, _, left, _) = margins(18, 4);
+        assert_eq!((over, left), (0, 1), "tiny");
     }
 
     pub fn vorbis() -> StreamInfo {

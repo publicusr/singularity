@@ -74,12 +74,20 @@ fn fill(buf: &mut Buffer, r: Rect, th: &Theme) {
     }
 }
 
+/// The screen's rows: the top bar, the Panes, the player bar, the Tray (Arrange mode: the Panes' area is that much
+/// shorter, every Pane scaled by the floor plan's own rule, Q39; otherwise no rows) and the hints.
+pub fn rows(area: Rect, arranging: bool) -> [Rect; 5] {
+    let tray = if arranging { crate::arrange::TRAY_H } else { 0 };
+    Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(3), Constraint::Length(tray), Constraint::Length(1)]).areas(area)
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     app.picker_lost_its_pane();
     app.arrange_if_homeless();
     app.meters.expire();
     app.begin_frame();
     let area = f.area();
+    app.window = area;
     let th = app.theme.clone();
     // covers and the hole follow the Theme's tint (a Theme switch, a theme file saved, `ui.tint_art` edited)
     let tint = th.art_tint(app.config.ui.tint_art);
@@ -102,7 +110,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         return;
     }
-    let [top, body, player, hints] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(3), Constraint::Length(1)]).areas(area);
+    let [top, body, player, tray, hints] = rows(area, app.arranging.is_some());
     // a held Widget: the Pane under the pointer is highlighted with a label, a chip follows the pointer. Neither
     // changes how anything under it is drawn (no step down a tier: that flickered): images are placed around them
     // something drawn on top now (the login code, the wizard): a held Widget is let go, its chip would cover it
@@ -136,10 +144,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         scanlines(f.buffer_mut(), body);
     }
     crate::visual::idle::draw(f.buffer_mut(), body, app, &th);
-    // Arrange mode: the Tray where the player was, the legend and Done where the hints were (D87: no Pane moves)
-    match app.arranging.is_some() {
-        true => crate::arrange::draw_tray(f.buffer_mut(), player, app, &th),
-        false => player_bar(f, player, app, &th),
+    // the player bar stays in Arrange mode, the Tray goes under it and the legend and Done where the hints were (Q39)
+    player_bar(f, player, app, &th);
+    if app.arranging.is_some() {
+        crate::arrange::draw_tray(f.buffer_mut(), tray, app, &th);
     }
     match app.move_mode {
         // Move mode's notices ("no room…") go in its bar, where the eye is
@@ -1820,7 +1828,8 @@ mod tests {
             let chip_r = app.chip_rect(Rect::new(0, 0, w, h), &chip);
             let mut v: Vec<Rect> = chip_r.into_iter().collect();
             if let Some((id, label)) = target {
-                let r = app.layout.compute(body).rect(id).unwrap();
+                // (where the Panes are now: the drag turned Arrange mode on, which makes room for the Tray, Q39)
+                let r = app.layout.compute(app.pane_area()).rect(id).unwrap();
                 v.extend([Rect::new(r.x, r.y, r.width, 1), Rect::new(r.x, r.bottom() - 1, r.width, 1), Rect::new(r.x, r.y, 1, r.height), Rect::new(r.right() - 1, r.y, 1, r.height)]);
                 v.extend(crate::arrange::label_rect(r, &label, chip_r));
             }
@@ -2132,13 +2141,16 @@ mod tests {
         // this week is the last column, Monday on top, two days a cell (Cockpit's Pane is short): Wednesday over
         // Thursday (today, the brightest) in the second row; a week ago too; Friday on hasn't come
         let r = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).rect_of(Widget::Listening).unwrap();
-        let (x0, y0) = (r.x + 2, r.y + 1);
         let last = ((r.width - 2) / 2).min(26) - 1;
         let buf = {
             let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
             t.draw(|f| draw(f, &mut app)).unwrap();
             t.backend().buffer().clone()
         };
+        // (the grid and its totals sit in the middle of the Pane, #58: its first cell, inside the frame)
+        let inner = Rect::new(r.x + 1, r.y + 1, r.width - 2, r.height - 2);
+        let (y0, x0) = (inner.top()..inner.bottom()).find_map(|y| (inner.left()..inner.right()).find(|&x| buf[(x, y)].symbol() == "▀").map(|x| (y, x))).unwrap();
+        assert!(x0 > inner.x + 1, "the grid moved off the left edge");
         let cell = |c: u16, row: u16| &buf[(x0 + c * 2, y0 + row)];
         let th = &app.theme;
         let quiet = th.bg.lerp(th.dim, 0.3).color();
