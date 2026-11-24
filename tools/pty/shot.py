@@ -3,7 +3,7 @@
 usage: venv/bin/python shot.py <scenario> <outdir>
 Starts its own singularityd (--fake-engine --no-catalogue) on a short test socket and kills only that.
 """
-import json, base64, fcntl, os, pty, re, select, shutil, struct, subprocess, sys, termios, time, zlib
+import json, base64, fcntl, os, pty, re, select, shutil, socket, struct, subprocess, sys, termios, threading, time, zlib
 import pyte
 from PIL import Image, ImageDraw, ImageFont
 
@@ -1636,6 +1636,26 @@ def sheet_html(sheet, add):
     open(f"{sheet}/index.html", "w").write(SHEET_HTML.replace("NAV", " ".join(nav)).replace("BODY", "\n".join(body)))
 
 
+SHEET_QUEUE = 60  # more than the full screen's queue shows
+
+
+def fill_queue(env, n):
+    """Queue `n` made-up songs over the Daemon's socket, as a Client would (the fake Catalogue names
+    `spotify:track:song<i>` with a title, artist, album, length and cover each, #59)."""
+    s = socket.socket(socket.AF_UNIX)
+    s.connect(env["SINGULARITY_SOCKET"])
+    # (drain what the Daemon sends: it writes its whole snapshot before reading anything)
+    threading.Thread(target=lambda: [None for _ in iter(lambda: s.recv(65536), b"")], daemon=True).start()
+    msgs = [{"t": "hello", "protocol": 1, "client": "contact-sheet"}]
+    msgs += [{"t": "command", "cmd": "add_to_queue", "uri": f"spotify:track:song{i}"} for i in range(n)]
+    for m in msgs:
+        b = json.dumps(m).encode()
+        s.sendall(struct.pack(">I", len(b)) + b)
+    time.sleep(1.0)
+    s.shutdown(socket.SHUT_RDWR)
+    s.close()
+
+
 def contact_sheet(env, out):
     """The size contact sheet (#36, D87): every Widget (SHEET_WIDGETS, lyrics and Karaoke first) alone in a Pane of
     each size in SHEET_SIZES (the whole Pane: tiny 20×6 up to big 120×40, and the full 180×54 screen) on the cell and
@@ -1661,6 +1681,8 @@ def contact_sheet(env, out):
     os.makedirs(f"{sheet}/designs", exist_ok=True)
     cfg = f"{env['XDG_CONFIG_HOME']}/singularity"
     os.makedirs(f"{cfg}/layouts", exist_ok=True)
+    # a full queue, so the queue Widget is judged as it looks in use (#59)
+    fill_queue(env, SHEET_QUEUE)
     started = [False]
 
     def run(tier, setup, shoot):

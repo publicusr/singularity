@@ -2192,7 +2192,8 @@ impl App {
         items.push(("Add to playlist…".into(), MenuAct::AddToPlaylist));
         items.extend(self.save_entry(&q.item.uri));
         items.push(("Copy link".into(), MenuAct::CopyLink));
-        let at = at.or_else(|| self.hit_rect(&Hit::QueueRow(i)).map(|r| (r.x + 4, r.y + 1))).unwrap_or((0, 0));
+        // (under the song: a big queue's songs are two rows tall)
+        let at = at.or_else(|| self.hit_rect(&Hit::QueueRow(i)).map(|r| (r.x + 4, r.bottom()))).unwrap_or((0, 0));
         let target = Target::Queued { uri: q.item.uri.clone(), uid: q.uid.clone(), name: q.item.name.clone(), queued };
         self.open_popup(Popup::Menu(Menu { at, target, items, selected: 0 }));
     }

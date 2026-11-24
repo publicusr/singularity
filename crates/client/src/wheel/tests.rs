@@ -318,6 +318,68 @@ fn the_wheel_scrolls_every_widget_and_page_that_holds_more_than_fits() {
     assert!(bad.is_empty(), "{}", bad.join("\n\n"));
 }
 
+/// A big queue (#59: each song on two rows beside its cover): the pointer finds the song under either of its rows
+/// (hover, click, right-click), and the wheel moves its highlight one song a notch, the list following, all the way.
+#[test]
+fn a_big_queues_two_row_songs_take_the_pointer_and_the_wheel_song_by_song() {
+    use crate::app::{Popup, Target};
+    use ratatui::crossterm::event::MouseButton;
+    let (w, h) = (200, 48);
+    let draw = |app: &mut App| {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| crate::ui::draw(f, app)).unwrap();
+        t.backend().buffer().clone()
+    };
+    let mut app = app();
+    app.layout = layout(Widget::Queue).into();
+    app.playback.queue = (0..40).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:q{i}"), name: format!("Queued {i}"), artists: vec!["Nova Drift".into()], duration_ms: 150_000, ..Default::default() }, source: "queue".into(), uid: format!("u{i}") }).collect();
+    app.focus_on(Widget::Home);
+    draw(&mut app);
+    let r = pane(&app, Widget::Queue);
+    assert!(crate::queue::is_big(Rect::new(r.x + 1, r.y + 1, r.width - 2, r.height - 2)), "{r:?}");
+    let row = |app: &App, i: usize| app.hit_rect(&Hit::QueueRow(i)).unwrap_or_else(|| panic!("song {i} isn't drawn"));
+    // hover: both rows of each song shown are that song
+    for i in 0..5 {
+        let rr = row(&app, i);
+        assert_eq!(rr.height, 2);
+        for y in [rr.y, rr.y + 1] {
+            assert_eq!(app.hit_at(rr.x + rr.width / 2, y), Some(Hit::QueueRow(i)), "song {i}, row {y}");
+        }
+    }
+    // a click on a song's second row highlights that song; a right-click there opens its menu
+    let rr = row(&app, 3);
+    let press = |app: &mut App, b: MouseButton, x: u16, y: u16| {
+        app.pointer(MouseEvent { kind: MouseEventKind::Down(b), column: x, row: y, modifiers: KeyModifiers::NONE }, x as f64 + 0.5, false);
+        app.pointer(MouseEvent { kind: MouseEventKind::Up(b), column: x, row: y, modifiers: KeyModifiers::NONE }, x as f64 + 0.5, false);
+    };
+    press(&mut app, MouseButton::Left, rr.x + 20, rr.y + 1);
+    assert_eq!((app.queue_view.sel, app.focused()), (3, Some(Widget::Queue)));
+    draw(&mut app);
+    let rr = row(&app, 2);
+    press(&mut app, MouseButton::Right, rr.x + 20, rr.y + 1);
+    match app.popup.as_ref() {
+        Some(Popup::Menu(m)) => assert!(matches!(&m.target, Target::Queued { name, .. } if name == "Queued 2"), "{:?}", m.target),
+        _ => panic!("no menu"),
+    }
+    app.popup = None;
+    // the wheel: one song a notch, the highlighted song always drawn, the list moving once it has to
+    app.queue_view.sel = 0;
+    let mut last = draw(&mut app);
+    let (x, y) = (r.x + r.width / 3, r.y + r.height / 2);
+    for n in 1..40 {
+        wheel(&mut app, MouseEventKind::ScrollDown, x, y, 1);
+        let now = draw(&mut app);
+        assert_eq!(app.queue_view.sel, n);
+        assert!(app.hits.iter().any(|(_, h)| *h == Hit::QueueRow(n)), "notch {n}: the highlighted song isn't drawn");
+        assert!(cells(&now, r) != cells(&last, r), "notch {n} moved nothing");
+        last = now;
+    }
+    assert_eq!(app.queue_view.top + app.queue_view.visible, 41, "at the end, the last song at the bottom");
+    wheel(&mut app, MouseEventKind::ScrollUp, x, y, 1);
+    assert!(cells(&draw(&mut app), r) != cells(&last, r), "a notch up moved nothing");
+    assert_eq!(app.queue_view.sel, 38);
+}
+
 /// Every Widget's name in a saved Design reads back as that Widget.
 #[test]
 fn every_widget_name_reads_back() {
