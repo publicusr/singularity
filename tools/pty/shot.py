@@ -14,7 +14,7 @@ BIN = os.environ.get("PTY_BIN") or f"{ROOT}/target/debug"
 WRAP = os.environ.get("PTY_WRAP", "").split()
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
 # the tiling scenario wants room for the whole Singularity layout
-if sys.argv[1:2] in (["tiling"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"], ["paneless"], ["arrange"]):
+if sys.argv[1:2] in (["tiling"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"], ["paneless"], ["arrange"], ["arrange-keys"], ["new-design"]):
     COLS, ROWS = int(os.environ.get("PTY_COLS", 160)), int(os.environ.get("PTY_ROWS", 48))
 # the wheel everywhere: short Panes, so everything holds more than fits
 if sys.argv[1:2] == ["wheel-all"]:
@@ -1976,11 +1976,12 @@ def layouts(t, out, env):
 def tiling(t, out, env):
     """D87, a drag moves contents: drag a Pane's title onto another Pane (a shot while the pointer is still down:
     nothing has moved, the Pane under the pointer is lit with "swap with …" and the Widget's chip follows the pointer;
-    another after the release: the two Widgets swapped, every outline where it was), the naming prompt on the first
-    edit, a release on its own Pane and over the top bar (nothing happens), Esc cancelling a drag, a close with the x,
-    a split from the right-click menu with the Widget list, and Move mode (arrows swap, + - size). Run it at
+    another after the release: the two Widgets swapped, every outline where it was), a release on its own Pane and over the top bar (nothing happens), Esc cancelling a drag, a close with the x,
+    a split from the right-click menu with the Widget list, and Arrange mode's keys (Enter picks up, ↑ aims, Enter swaps,
+    + - size). Run it at
     PTY_COLS=160 PTY_ROWS=48 (the default here)."""
-    t.pump(1.0)
+    # (the pixel tier's first frames and the fake Catalogue take a while: start once they're there)
+    t.pump(6.0)
     t.send(b" ", 0.5)
 
     def title_at(title):
@@ -2009,12 +2010,7 @@ def tiling(t, out, env):
     pull("stream", (qx + 25, qy + 6), "01-swap-drag.png", hold=True)
     print("mid-drag:", "label shown" if t.find("swap with queue") else "NO LABEL", "·", "chip shown" if t.find("\u283f stream") else "NO CHIP")
     mouse(t, 0, qx + 25, qy + 6, release=True, wait=0.5)
-    t.shot(f"{out}/02-swap-done-naming.png")
-    # the first edit of a built-in Design asks what to call it
-    t.send(b"\x7f" * 14, 0.2)
-    t.send(b"Mine", 0.3)
-    t.shot(f"{out}/03-naming-typed.png")
-    t.send(b"\r", 0.6)
+    t.shot(f"{out}/02-swap-done.png")
     print("after the swap: stream where the queue was" if t.find("\u250c stream") == (qx, qy) else f"stream at {t.find(chr(0x250c) + ' stream')}, the queue was at {(qx, qy)}")
     # 2. lyrics onto Home, a small Pane onto a big one: they swap, the floor plan stays
     hx, hy = t.find("\u250c home")
@@ -2052,14 +2048,23 @@ def tiling(t, out, env):
     t.send(b"\x1b[B", 0.2)
     t.send(b"\r", 0.6)
     t.shot(f"{out}/15-split-done.png")
-    # 7. Move mode on the focused Pane: arrows swap its Widget with the neighbour's, + - size its Pane
+    # 7. Arrange mode's keys: the queue (where stream was, bottom left) focused with a click on its body; Enter picks it
+    # up, ↑ aims at the Pane above it, Enter swaps; + + grow its Pane; Esc is Done (its name prompt kept unnamed)
     t.send(b"m", 0.4)
-    t.shot(f"{out}/16-move-mode.png")
+    qx, qy = t.find("\u250c queue")
+    mouse(t, 0, qx + 6, qy + 3); mouse(t, 0, qx + 6, qy + 3, release=True, wait=0.4)
+    t.send(b"\r", 0.3)
     t.send(b"\x1b[A", 0.4)
-    t.shot(f"{out}/17-move-swapped-up.png")
-    t.send(b"+", 0.3); t.send(b"+", 0.3)
-    t.shot(f"{out}/18-move-grown.png")
+    t.shot(f"{out}/16-picked-up-aimed.png")
+    lab = t.find("swap with ")
+    print("aimed:", t.screen.display[lab[1]][lab[0]:lab[0] + 24].strip() if lab else "NO LABEL", "·", "chip shown" if t.find("\u283f queue") else "NO CHIP")
     t.send(b"\r", 0.4)
+    t.shot(f"{out}/17-swapped-up.png")
+    print("swapped: the queue moved up from", (qx, qy), "to", t.find("\u250c queue"))
+    t.send(b"+", 0.3); t.send(b"+", 0.3)
+    t.shot(f"{out}/18-grown.png")
+    t.send(b"\x1b", 0.5)
+    t.send(b"\x1b", 0.5)
     # 8. the design list has your design, and the file is on disk
     t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
     t.shot(f"{out}/19-picker.png")
@@ -2141,6 +2146,163 @@ def arrange(t, out):
     t.send(b"\x1b", 0.8)
     t.shot(f"{out}/10-after.png")
     print("after Done: no Tray:", not t.find(" Tray ") and "ARRANGE" not in legend(), "· bottom:", legend()[:60])
+    t.send(b"q", 0.5)
+
+
+def arrange_keys(t, out):
+    """D87, #43: Arrange mode from the keyboard alone. `m` and the legend; arrows move the focus; Enter picks the
+    queue up (its Pane lit, the chip), ↑ aims at Home ("swap with …"), Enter swaps; Esc puts a pick-up back; `t` sets
+    the focused Widget aside in the Tray; Home picked up and aimed at that empty Pane ("put here"); ↓ onto the Tray,
+    Enter, ↑ and Enter take its Widget out into a Pane (undone with Ctrl+Z); `s` (the legend
+    waits for the arrow) then → splits (the picker; Esc leaves the new Pane empty); `x` closes it; `-` `+` move a line;
+    Esc is Done (the name prompt; Esc keeps it unnamed) and the app looks as before. Prints what each step left.
+    160×48, cell tier, an empty output folder."""
+    t.pump(1.0)
+    t.send(b" ", 0.5)
+    UP, DOWN, LEFT, RIGHT = b"\x1b[A", b"\x1b[B", b"\x1b[D", b"\x1b[C"
+
+    def legend():
+        return t.screen.display[ROWS - 1].strip()
+
+    def at(title):
+        return t.find("┌ " + title)
+
+    def step(name, keys, wait=0.4):
+        for k in keys:
+            t.send(k, wait)
+        t.shot(f"{out}/{name}.png")
+
+    t.shot(f"{out}/00-start.png")
+    before = list(t.screen.display)
+    step("01-arrange-mode", [b"m"])
+    print("legend:", legend())
+    # 1. the focus: from Home down to the queue
+    step("02-focus-down", [DOWN])
+    # 2. the queue picked up, aimed at Home above it, swapped
+    q, h = at("queue"), at("home")
+    step("03-picked-up", [b"\r"])
+    print("picked up: chip", bool(t.find("⠿ queue")), "· legend:", legend())
+    step("04-aimed-up", [UP])
+    print("aimed: label", bool(t.find("swap with home")))
+    step("05-dropped", [b"\r"])
+    print("swapped:", at("queue") == h and at("home") == q)
+    # 3. picked up again and put back with Esc: still arranging
+    step("06-esc-put-back", [b"\r", DOWN, b"\x1b"])
+    print("Esc put it back:", at("queue") == h, "· still arranging:", "ARRANGE" in legend())
+    # 4. the focus down to Home (where the queue was), → to its neighbour, which `t` sets aside in the Tray
+    step("07-focus-home", [DOWN])
+    step("08-t-to-tray", [RIGHT, b"t"])
+    print("after t, the Tray row:", t.screen.display[ROWS - 3].strip()[:100])
+    # 5. Home picked up, aimed at the empty Pane, "put here", then Esc
+    step("09-home-aimed-at-empty", [LEFT, b"\r", RIGHT])
+    print("put here:", bool(t.find("put here")))
+    step("10-esc", [b"\x1b"])
+    # 5b. the Tray by keyboard: ↓ from Home (a bottom Pane) onto the Tray's Widget, Enter picks it up, ↑ aims at the
+    # Pane above it, Enter puts it there (that Pane's Widget into the Tray); Ctrl+Z takes it back (the focus on Home)
+    step("10a-tray-focus", [DOWN])
+    step("10b-from-tray-aimed", [b"\r", UP])
+    lab = t.find("swap with ") or t.find("put here")
+    print("from the Tray, aimed:", t.screen.display[lab[1]][lab[0]:lab[0] + 24].strip() if lab else "NO LABEL")
+    step("10c-from-tray-dropped", [b"\r"])
+    print("after the drop, the Tray row:", t.screen.display[ROWS - 3].strip()[:100])
+    step("10d-undone", [b"\x1a"])
+    # 6. s waits for the arrow (the legend says so); → splits: the picker; Esc leaves the new Pane empty
+    step("11-s-waits", [b"s"])
+    print("after s, legend:", legend())
+    step("12-split-picker", [RIGHT], wait=0.6)
+    step("13-split-empty", [b"\x1b"], wait=0.6)
+    # 7. x closes the focused (new, empty) Pane; - + move Home's line
+    step("14-x-closed", [b"x"])
+    step("15-shrunk", [b"-", b"-"])
+    step("16-grown", [b"+", b"+"])
+    # 8. Esc is Done: the name prompt (something changed); Esc keeps it unnamed, and the app looks as before
+    step("17-done-asks", [b"\x1b"], wait=0.6)
+    print("Done asks for a name:", bool(t.find("Keep your changes as a design")))
+    step("18-after", [b"\x1b"], wait=0.8)
+    print("after Done: no Tray:", not t.find(" Tray ") and "ARRANGE" not in legend(), "· bottom:", legend()[:60])
+    t.send(b"q", 0.5)
+
+
+def new_design(t, out, env):
+    """D87, #42: a whole New design… build. Ctrl+K → New design…, Esc at once (the Design as before), then again: one
+    empty Pane filling the screen and Home in the Tray; the Tray's "+ Widget" (the picker, the queue picked into the
+    Tray); the Pane's ⊞ split, the picker left with Esc; Home and the queue dragged from the Tray into the two Panes;
+    Done's name prompt, a name; the saved file. Prints what each step left. 160×48, cell tier, an empty output folder."""
+    t.pump(1.0)
+    t.send(b" ", 0.5)
+    tray_y = ROWS - 3
+    layouts = f"{env['XDG_CONFIG_HOME']}/singularity/layouts"
+
+    def on_row(s, y, after=0):
+        x = t.screen.display[y].find(s, after)
+        return (x, y) if x >= 0 else None
+
+    def legend():
+        return t.screen.display[ROWS - 1].strip()
+
+    def click(x, y, wait=0.6):
+        mouse(t, 0, x, y); mouse(t, 0, x, y, release=True, wait=wait)
+
+    def drag(frm, to):
+        (x, y), (tx, ty) = frm, to
+        mouse(t, 0, x, y)
+        mouse(t, 32, x + 3, max(1, y - 2), wait=0.15)
+        mouse(t, 32, tx, ty, wait=0.4)
+        mouse(t, 0, tx, ty, release=True, wait=0.6)
+
+    def palette(word):
+        t.send(b"\x0b", 0.3); t.send(word.encode(), 0.3); t.send(b"\r", 0.8)
+
+    def empties():
+        return [(line.find("empty"), y) for y, line in enumerate(t.screen.display) if 0 < y < tray_y - 3 and "empty" in line]
+
+    t.shot(f"{out}/00-start.png")
+    before = list(t.screen.display)
+    # 1. New design…, Esc before anything is placed: the Design as it was
+    palette("new design")
+    t.shot(f"{out}/01-blank.png")
+    print("blank: empty Panes:", len(empties()), "· Home in the Tray:", bool(on_row("⠿ home", tray_y)), "· legend:", legend())
+    t.send(b"\x1b", 0.8)
+    t.shot(f"{out}/01b-esc.png")
+    titles = lambda d: [x for x in ("┌ ~/library", "┌ home", "┌ queue", "┌ stream", "gravity well", "┌ loudness") if any(x in l for l in d)]
+    print("Esc at once: the same Panes as before:", titles(t.screen.display) == titles(before), titles(before), "· no Tray:", "ARRANGE" not in legend(), "· layouts written:", os.listdir(layouts) if os.path.isdir(layouts) else [])
+    # 2. again; "+ Widget" on the Tray: the picker; the queue goes into the Tray
+    palette("new design")
+    ax, _ = on_row("+ Widget", tray_y - 1)
+    click(ax + 2, tray_y - 1)
+    t.shot(f"{out}/02-tray-picker.png")
+    t.send(b"queue", 0.4)
+    t.send(b"\r", 0.6)
+    t.shot(f"{out}/03-queue-in-the-tray.png")
+    print("in the Tray:", [w for w in ("⠿ home", "⠿ queue") if on_row(w, tray_y)])
+    # 3. the floor plan first: the Pane's ⊞ splits it; Esc leaves the new Pane empty
+    x, y = on_row("⊞", 1)
+    click(x, y)
+    t.send(b"\x1b", 0.6)
+    t.shot(f"{out}/04-split.png")
+    print("after the split: empty Panes:", len(empties()))
+    # 4. then the contents: Home into the first empty Pane, the queue into the other
+    lx, ly = empties()[0]
+    hx, _ = on_row("⠿ home", tray_y)
+    drag((hx + 3, tray_y), (lx + 2, ly))
+    t.shot(f"{out}/05-home-placed.png")
+    lx, ly = empties()[0]
+    qx, _ = on_row("⠿ queue", tray_y)
+    drag((qx + 3, tray_y), (lx + 2, ly))
+    t.shot(f"{out}/06-filled.png")
+    print("filled: empty Panes:", len(empties()), "· legend:", legend())
+    # 5. Done: the name prompt; a name saves it
+    dx, _ = on_row(" Done ", ROWS - 1)
+    click(dx + 2, ROWS - 1)
+    t.shot(f"{out}/07-name.png")
+    print("Done asks for a name:", bool(t.find("Save design as")))
+    t.send(b"Built", 0.4)
+    t.send(b"\r", 0.8)
+    t.shot(f"{out}/08-saved.png")
+    path = f"{layouts}/built.toml"
+    print("after: no Tray:", "ARRANGE" not in legend(), "· saved:", os.path.exists(path))
+    if os.path.exists(path):
+        print(open(path).read())
     t.send(b"q", 0.5)
 
 
@@ -2636,8 +2798,12 @@ def main():
             return paneless(t, out)
         if scenario == "arrange":
             return arrange(t, out)
+        if scenario == "arrange-keys":
+            return arrange_keys(t, out)
         if scenario == "pane-menu":
             return pane_menu(t, out)
+        if scenario == "new-design":
+            return new_design(t, out, env)
         if scenario == "tiling-fast":
             return tiling_fast(t, out, env)
         if scenario == "tiling-paths":

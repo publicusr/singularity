@@ -117,6 +117,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.modal().is_some_and(|m| m != Modal::Arrange) {
         app.tile_cancel();
     }
+    // a Widget picked up with Enter, and the layout edited by something else since: it is put back
+    app.pick_up_check();
     if app.body != body {
         app.body = body;
         // a new window size moves every Pane: the one under a held Widget is found again
@@ -129,7 +131,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // Panes, the top first (D83)
     let layers = app.layers();
     let mut overlays: Vec<Rect> = layers.iter().filter_map(|&m| layer_rect(area, app, m)).collect();
-    overlays.extend(app.toast.as_ref().filter(|_| app.move_mode.is_none()).map(|(msg, _)| toast_rect(area, msg)));
+    overlays.extend(app.toast.as_ref().map(|(msg, _)| toast_rect(area, msg)));
     app.overlays = overlays;
     let holes: Vec<Rect> = target.as_ref().and_then(|(r, l)| crate::arrange::label_rect(*r, l, chip.as_ref().map(|c| c.0))).into_iter().chain(chip.as_ref().map(|(r, _)| *r)).collect();
     if let Some(k) = app.kitty.as_mut() {
@@ -149,15 +151,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.arranging.is_some() {
         crate::arrange::draw_tray(f.buffer_mut(), tray, app, &th);
     }
-    match app.move_mode {
-        // Move mode's notices ("no room…") go in its bar, where the eye is
-        Some(id) => {
-            let said = app.toast.as_ref().map(|(m, _)| m.as_str());
-            let name = app.layout.widget_in(id).map(|w| pane_name(app.design, w)).unwrap_or_default();
-            crate::arrange::draw_move_hint(f.buffer_mut(), hints, &name, said, &th);
-        }
-        None if app.arranging.is_some() => crate::arrange::draw_legend(f.buffer_mut(), hints, app, &th),
-        None => hint_bar(f.buffer_mut(), hints, &th, &app.keymap),
+    match app.arranging.is_some() {
+        true => crate::arrange::draw_legend(f.buffer_mut(), hints, app, &th),
+        false => hint_bar(f.buffer_mut(), hints, &th, &app.keymap),
     }
     if app.arranging.is_none() {
         crate::arrange::draw_undo_chip(f.buffer_mut(), hints, app, &th);
@@ -169,7 +165,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some((r, c)) = &chip {
         crate::arrange::draw_chip(f.buffer_mut(), *r, c, &th);
     }
-    if let Some((msg, _)) = app.toast.clone().filter(|_| app.move_mode.is_none()) {
+    if let Some((msg, _)) = app.toast.clone() {
         let r = toast_rect(area, &msg);
         text(f.buffer_mut(), r.x, r.y, r.width, &format!("  {msg}  "), th.chip(th.accent));
     }
@@ -227,7 +223,7 @@ fn transparent(buf: &mut Buffer, r: Rect, th: &Theme) {
     }
 }
 
-/// Where what's over the Panes covers the screen (Move mode covers nothing: the Pane is the thing).
+/// Where what's over the Panes covers the screen (Arrange mode covers nothing: the Panes are the thing).
 fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
     Some(match m {
         Modal::Login => centered(area, 64, 9),
@@ -240,7 +236,7 @@ fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
         Modal::Naming => naming_rect(area),
         Modal::WidgetPicker => {
             // (its Pane gone: drawing it closes it)
-            app.widget_picker().filter(|p| app.layout.contains(p.target))?;
+            app.widget_picker().filter(|p| p.tray || app.layout.contains(p.target))?;
             crate::panemenu::rect(area, app)
         }
         Modal::Library => crate::paneless::library_rect(area, app),
@@ -249,11 +245,11 @@ fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
         Modal::Adding => crate::playlists::adding_rect(area, app.adding_rows().len()),
         Modal::Cover => crate::cover::rect(area),
         Modal::Menu => menu_rect(area, app.menu()?),
-        Modal::Move | Modal::Arrange => return None,
+        Modal::Arrange => return None,
     })
 }
 
-/// Draw what's over the Panes (Move mode is drawn in the hint bar).
+/// Draw what's over the Panes (Arrange mode's Tray and legend are drawn in the player's and the hints' rows).
 fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
     match m {
         Modal::Login => {
@@ -282,7 +278,7 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
                 edited += &format!(" · {undo} undo");
             }
             let (title, hint) = match n.purpose {
-                crate::app::NameFor::Layout => ("Save design as", "Enter save · Esc cancel · find it in Ctrl+K → Pick a design"),
+                crate::app::NameFor::Layout | crate::app::NameFor::NewDesign => ("Save design as", "Enter save · Esc cancel · find it in Ctrl+K → Pick a design"),
                 crate::app::NameFor::Fork => ("Keep your changes as a design", edited.as_str()),
                 crate::app::NameFor::NewPlaylist => ("New playlist", "Enter create · Esc cancel"),
             };
@@ -299,7 +295,7 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
         Modal::Cover => crate::cover::draw(f.buffer_mut(), area, app, th),
         Modal::Health => crate::setup::draw_health(f.buffer_mut(), crate::setup::health_rect(area), app, th),
         Modal::Wizard => crate::setup::draw_wizard(f.buffer_mut(), crate::setup::rect(area), app, th),
-        Modal::Move | Modal::Arrange => {}
+        Modal::Arrange => {}
     }
 }
 
@@ -490,7 +486,7 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
     app.dividers = computed.dividers;
 }
 
-/// One Pane over `rect` (the one whose Widget is being moved, by the mouse or in Move mode, drawn lit). Smaller than
+/// One Pane over `rect` (the one whose Widget is being moved, by the mouse or the keyboard, drawn lit). Smaller than
 /// its Widget can be drawn in, it is just its frame.
 fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p: Pane, rect: Rect, swaps: &mut Vec<(Rect, Hit)>) {
     let w = p.widget;
@@ -1029,8 +1025,8 @@ fn help_rows(m: &crate::keymap::Keymap) -> Vec<(String, String)> {
         (m.label(A::FocusNext), "focus the next pane".into()),
         ("Panes".into(), "drag a title to move it · × closes · right-click for more".into()),
         (m.label(A::ReplaceWidget), "replace the focused pane's widget (or click its name)".into()),
-        (m.label(A::MovePane), "move pane: arrows swap · ⇧arrows split · + − size · x close".into()),
-        (format!("{} {}", m.label(A::UndoLayout), m.label(A::RedoLayout)).trim().to_string(), "undo / redo a layout change (u in Move mode)".into()),
+        (m.label(A::Arrange), "arrange: Enter pick up · t Tray · s split · x close · + − size".into()),
+        (format!("{} {}", m.label(A::UndoLayout), m.label(A::RedoLayout)).trim().to_string(), "undo / redo a layout change".into()),
         (m.label(A::ToggleIdle), "idle takeover on / off (any key wakes the screen)".into()),
         (m.label(A::Quit), "quit the Client (music keeps playing)".into()),
         ("keys.toml".into(), format!("{} keys · all of them in {} → Settings", m.preset, m.label(A::Palette))),
@@ -3581,7 +3577,6 @@ mod tests {
             }
             Modal::Menu => app.open_queue_menu(0, Some((20, 3))),
             Modal::Help => app.run(Action::Help),
-            Modal::Move => app.start_move(),
             // with more in the Tray than fits, so it scrolls
             Modal::Arrange => {
                 let off: Vec<Widget> = Widget::ALL.iter().copied().filter(|w| !app.layout.has(*w)).collect();
@@ -3608,7 +3603,7 @@ mod tests {
             Modal::Health => app.text_scroll(m).map(|s| s.offset()),
             Modal::Menu => app.menu().map(|m| m.selected),
             Modal::Help => app.text_scroll(m).map(|s| s.offset()),
-            Modal::Naming | Modal::Cover | Modal::Move | Modal::Login => None,
+            Modal::Naming | Modal::Cover | Modal::Login => None,
             Modal::Arrange => app.arranging.as_ref().map(|a| a.tray_first),
         }
     }
@@ -3634,7 +3629,7 @@ mod tests {
                 render(&mut app, w, h);
                 let before = behind(&app);
                 let start = modal_at(&app, m);
-                // the popup's box (Move mode has none: the Pane is the thing)
+                // the popup's box (Arrange mode has none: the Panes are the thing)
                 let r = app.overlays.first().copied().unwrap_or(Rect::new(w / 4, h / 4, w / 2, h / 2));
                 let points = [(r.x + r.width / 2, r.y + r.height / 2), (r.x, r.y + r.height / 2), (r.right().saturating_sub(1), r.y), (0, 0), (w - 1, h - 1)];
                 let (mut wheel, mut t) = (crate::term::WheelBursts::default(), Instant::now());
@@ -3702,7 +3697,7 @@ mod tests {
     fn a_popup_opened_over_the_wizard_is_on_top_for_the_eye_the_mouse_and_the_keys() {
         use crate::app::Modal;
         let (w, h) = (160u16, 48u16);
-        let popups: Vec<Modal> = Modal::ALL.iter().copied().filter(|m| !matches!(m, Modal::Wizard | Modal::Login | Modal::Move | Modal::Arrange)).collect();
+        let popups: Vec<Modal> = Modal::ALL.iter().copied().filter(|m| !matches!(m, Modal::Wizard | Modal::Login | Modal::Arrange)).collect();
         assert!(popups.len() >= 11);
         let over_wizard = |m: Modal| {
             let (mut app, rx) = popup_app();
