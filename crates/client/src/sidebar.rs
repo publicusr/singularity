@@ -6,6 +6,7 @@ use crate::ui::{text, blank};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
+use singularity_proto::LibraryItem;
 
 #[derive(Default, Clone, Copy)]
 pub struct Sidebar {
@@ -27,37 +28,55 @@ impl Sidebar {
 }
 
 /// How the library uses its Pane (#56), from the Pane's width and height alone: one list in small and medium Panes (an
-/// entry a row; from 32 × 24 its name over its subtitle beside a two-row cover), and in Panes wide enough for two
-/// columns of [`COL_W`] and at least 24 rows, two or three columns of bigger covers with a short author tag ([`tag`]).
+/// entry a row; from 32 × 24 its name over its subtitle beside a two-row cover), and in Panes with room for two
+/// columns of [`COL_W`] (and the gap between them) and at least 24 rows, two or three columns of bigger covers with a
+/// short author tag ([`tag`]) and a blank row between entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shape {
     /// columns of entries
     pub cols: u16,
-    /// rows an entry takes; its cover is as tall and twice as wide (about square)
-    pub pitch: u16,
+    /// how many rows tall a cover is (and twice as many cells wide: about square); an entry is as tall
+    pub cover: u16,
 }
 
 /// The narrowest column: a cover, the name and the author tag beside it.
 pub const COL_W: u16 = 38;
 /// The gap between columns.
 const GAP: u16 = 2;
+/// In columns, the cover grows until a column holds only this many entries...
+const MIN_ROWS: u16 = 7;
+/// ...or the name beside it would have less room than this...
+const TEXT_W: u16 = 24;
+/// ...and between these.
+const COVER: (u16, u16) = (3, 6);
 
 impl Shape {
     pub fn of(w: u16, h: u16) -> Shape {
         if w < 32 || h < 24 {
-            return Shape { cols: 1, pitch: 1 };
+            return Shape { cols: 1, cover: 1 };
         }
-        match (w / COL_W).min(3) {
-            0 | 1 => Shape { cols: 1, pitch: 2 },
-            // covers three rows tall, four in a Pane as tall as a full screen
-            cols => Shape { cols, pitch: if h >= 44 { 4 } else { 3 } },
+        let cols = ((w + GAP) / (COL_W + GAP)).min(3);
+        if cols < 2 {
+            return Shape { cols: 1, cover: 2 };
         }
+        // as big as the room allows: the height (MIN_ROWS entries and the blank rows between them) and the column's
+        // width (a margin, the cover, a gap of three and the name)
+        let col_w = (w - GAP * (cols - 1)) / cols;
+        let by_h = ((h + 1) / MIN_ROWS).saturating_sub(1);
+        let by_w = col_w.saturating_sub(1 + 3 + TEXT_W) / 2;
+        Shape { cols, cover: by_h.min(by_w).clamp(COVER.0, COVER.1) }
     }
 
-    /// Rows a column for `n` entries in `h` rows: as many as fit; in columns, when they all fit, as few as share them
-    /// evenly (rather than one full column and empty ones).
+    /// Rows from one entry's top to the next: in columns, a blank row between entries (covers never touch).
+    pub fn pitch(self) -> u16 {
+        if self.cols > 1 { self.cover + 1 } else { self.cover }
+    }
+
+    /// Rows a column for `n` entries in `h` rows: as many as fit (the last needs no blank row under it); in columns,
+    /// when they all fit, as few as share them evenly (rather than one full column and empty ones).
     pub fn rows(self, h: u16, n: usize) -> usize {
-        let fit = (h / self.pitch).max(1) as usize;
+        let gap = self.pitch() - self.cover;
+        let fit = ((h + gap) / self.pitch()).max(1) as usize;
         let cols = self.cols as usize;
         if cols > 1 && n <= fit * cols { n.div_ceil(cols).max(1) } else { fit }
     }
@@ -89,21 +108,53 @@ pub fn first(sel: usize, top: usize, rows: usize, cols: usize, len: usize) -> us
 }
 
 /// The short author tag under a name in columns (#56): who made it, the first of them only ("Mira Vale & more" for
-/// a mix of many), without the kind the subtitle starts with ("Playlist · Nova Drift"); Liked Songs keeps its count.
-pub fn tag(kind: &str, subtitle: &str) -> String {
-    if matches!(kind, "liked" | "artist" | "folder") {
-        return subtitle.to_string();
+/// a mix of many), without the kind the subtitle starts with ("Playlist · Nova Drift"). A book keeps Spotify's access
+/// line first (D58); Liked Songs keeps its count. The names are the Daemon's (`authors`, each whole: "Tyler, The
+/// Creator" is one); without them only what Spotify already ends with "and more", or a list of three or more, is
+/// shortened.
+pub fn tag(it: &LibraryItem) -> String {
+    let sub = it.subtitle.as_str();
+    if matches!(it.kind.as_str(), "liked" | "artist" | "folder") {
+        return sub.to_string();
     }
     // "Playlist · owner", "Podcast · publisher", a book's "<access> · <authors>": the makers come last
-    let who = subtitle.rsplit(" · ").next().unwrap_or_default();
-    let more = |s: &str| s.strip_suffix(" and more").or_else(|| s.strip_suffix(" & more")).map(str::to_string);
-    match who.split_once(", ") {
-        Some((one, _)) => format!("{one} & more"),
-        None => match more(who) {
-            Some(one) => format!("{one} & more"),
-            None => who.to_string(),
+    let (before, makers) = match sub.rsplit_once(" · ") {
+        Some((b, m)) => (Some(b), m),
+        None => (None, sub),
+    };
+    let short = match it.authors.as_slice() {
+        [one] => one.clone(),
+        [one, ..] => format!("{one} & more"),
+        [] => match makers.strip_suffix(" and more").or_else(|| makers.strip_suffix(" & more")) {
+            Some(head) => format!("{} & more", head.split(", ").next().unwrap_or(head)),
+            None if makers.split(", ").count() >= 3 => format!("{} & more", makers.split(", ").next().unwrap_or(makers)),
+            None => makers.to_string(),
         },
+    };
+    match before {
+        Some(b) if !matches!(b, "Playlist" | "Podcast" | "Audiobook") => format!("{b} · {short}"),
+        _ => short,
     }
+}
+
+/// `s` in `w` display columns: whole when it fits, else cut with an ellipsis.
+pub fn clip(s: &str, w: u16) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let w = w as usize;
+    if s.width() <= w {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    for c in s.chars() {
+        if out.width() + c.to_string().width() + 1 > w {
+            break;
+        }
+        out.push(c);
+    }
+    if w > 0 {
+        out.push('…');
+    }
+    out
 }
 
 fn glyph(kind: &str) -> &'static str {
@@ -131,7 +182,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let mut side = app.sidebar;
     // one list, or columns of bigger covers in a wide, big Pane (#56)
     let shape = Shape::of(r.width, r.height);
-    let pitch = shape.pitch;
+    let (cover, pitch) = (shape.cover, shape.pitch());
     side.cols = shape.cols as usize;
     side.rows = shape.rows(r.height, n);
     side.visible = side.cols * side.rows;
@@ -147,35 +198,36 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     for row in side.top..n.min(side.top + side.visible) {
         let (c, k) = ((row - side.top) / side.rows, (row - side.top) % side.rows);
         let col = shape.column(r, c as u16);
-        let e = Rect::new(col.x, col.y + k as u16 * pitch, col.width, pitch);
+        // an entry is as tall as its cover; in columns, a blank row follows it
+        let e = Rect::new(col.x, col.y + k as u16 * pitch, col.width, cover);
         let y = e.y;
         let (g, name, sub, depth, current, art) = match row {
             0 => ("⌂", "Home".to_string(), String::new(), 0u16, page == crate::app::Page::Home, None),
             i => {
                 let it = &app.library.as_ref().expect("row exists").items[i - FIXED];
                 let art = it.image_url.clone().filter(|_| it.kind != "folder");
-                let sub = if shape.cols > 1 { tag(&it.kind, &it.subtitle) } else { it.subtitle.clone() };
+                let sub = if shape.cols > 1 { tag(it) } else { it.subtitle.clone() };
                 (glyph(&it.kind), it.name.clone(), sub, it.depth as u16, open.as_deref() == Some(it.uri.as_str()), art)
             }
         };
         let selected = focused && row == side.sel;
         let bg = if selected { th.selection.color() } else { th.bg.color() };
-        for k in 0..pitch {
+        for k in 0..cover {
             blank(buf, e.x, y + k, e.width, th.base().bg(bg));
         }
         let x = e.x + 1 + depth * 2;
         let st = if current { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.fg) };
         hits.push((e, Hit::Side(row)));
-        if pitch >= 2 {
+        if cover >= 2 {
             // the name over its subtitle (in columns, the author tag) beside a cover as tall as the entry
-            let (cw, gap) = (pitch * 2, if pitch == 2 { 2 } else { 3 });
+            let (cw, gap) = (cover * 2, if cover == 2 { 2 } else { 3 });
             let has_art = art.as_ref().is_some_and(|u| app.covers.get(u).is_some());
             match art.filter(|_| has_art) {
-                Some(url) => crate::home::cover(buf, Rect::new(x, y, cw.min(e.right().saturating_sub(x)), pitch), &url, g, app, th),
-                // the glyph where the cover goes (in the middle of a bigger one)
+                Some(url) => crate::home::cover(buf, Rect::new(x, y, cw.min(e.right().saturating_sub(x)), cover), &url, g, app, th),
+                // the glyph where the cover goes (across the middle of a bigger one), level with the name
                 None => {
-                    let (gx, gy) = if pitch == 2 { (x + 1, y) } else { (x + pitch - 1, y + (pitch - 1) / 2) };
-                    text(buf, gx, gy, 2.min(e.right().saturating_sub(gx)), g, th.s(if current { th.accent } else { th.dim }).bg(bg));
+                    let gx = if cover == 2 { x + 1 } else { x + cover - 1 };
+                    text(buf, gx, y, 2.min(e.right().saturating_sub(gx)), g, th.s(if current { th.accent } else { th.dim }).bg(bg));
                 }
             }
             let tx = x + cw + gap;
@@ -185,6 +237,8 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                 text(buf, tx, y, w, &name, st.bg(bg));
             } else {
                 text(buf, tx, y, w, &name, st.add_modifier(Modifier::BOLD).bg(bg));
+                // (in columns, a tag too long for its column ends in an ellipsis)
+                let sub = if shape.cols > 1 { clip(&sub, w) } else { sub };
                 text(buf, tx, y + 1, w, &sub, th.s(th.dim).bg(bg));
             }
             continue;

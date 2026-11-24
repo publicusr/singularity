@@ -98,7 +98,7 @@ fn cases(w: Widget) -> Vec<Case> {
         Widget::Library => vec![Case {
             what: "a long library",
             set: |app| {
-                let item = |n: usize| LibraryItem { uri: format!("spotify:playlist:p{n}"), name: format!("Playlist {n}"), subtitle: "Playlist".into(), kind: "playlist".into(), image_url: None, depth: 0, own: false };
+                let item = |n: usize| LibraryItem { uri: format!("spotify:playlist:p{n}"), name: format!("Playlist {n}"), subtitle: "Playlist".into(), kind: "playlist".into(), image_url: None, depth: 0, own: false, authors: vec![] };
                 app.hear(singularity_proto::Event::Library(singularity_proto::Library { items: (0..60).map(item).collect() }));
             },
             moves: 20,

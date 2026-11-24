@@ -1799,7 +1799,7 @@ mod tests {
     fn library_app() -> (App, tokio::sync::mpsc::Receiver<singularity_proto::Command>) {
         use singularity_proto::{Library, LibraryItem};
         let (mut app, rx) = playing_app(200_000);
-        let item = |uri: &str, name: &str, kind: &str, depth| LibraryItem { uri: uri.into(), name: name.into(), subtitle: String::new(), kind: kind.into(), image_url: None, depth, own: false };
+        let item = |uri: &str, name: &str, kind: &str, depth| LibraryItem { uri: uri.into(), name: name.into(), subtitle: String::new(), kind: kind.into(), image_url: None, depth, own: false, authors: vec![] };
         app.hear(singularity_proto::Event::Library(Library {
             items: vec![
                 item("spotify:collection", "Liked Songs", "liked", 0),
@@ -2005,7 +2005,7 @@ mod tests {
             .collect();
         app.track_page(singularity_proto::TrackPage { uri: "spotify:playlist:p".into(), offset: 0, total: 80, tracks: rows, header: None });
         app.hear(singularity_proto::Event::Library(singularity_proto::Library {
-            items: (0..60).map(|i| singularity_proto::LibraryItem { uri: format!("spotify:playlist:{i}"), name: format!("List {i}"), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: false }).collect(),
+            items: (0..60).map(|i| singularity_proto::LibraryItem { uri: format!("spotify:playlist:{i}"), name: format!("List {i}"), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: false, authors: vec![] }).collect(),
         }));
         render(&mut app, 160, 48);
         // over an artist link, where the wheel used to do nothing
@@ -2838,7 +2838,7 @@ mod tests {
         for i in 0..40u8 {
             app.meters.push(SpectrumFrame { bands: (0..64u8).map(|b| b.wrapping_mul(3).wrapping_add(i)).collect(), level: 180, vu: [200, 150], beat: i % 8 == 0, out_level: 170u8.wrapping_add(i), out_vu: [200, 150], out_bands: [180, 120, 90] });
         }
-        let item = |n: usize| LibraryItem { uri: format!("spotify:playlist:p{n}"), name: format!("Playlist {n}"), subtitle: "Playlist · 42 songs".into(), kind: "playlist".into(), image_url: None, depth: 0, own: n.is_multiple_of(2) };
+        let item = |n: usize| LibraryItem { uri: format!("spotify:playlist:p{n}"), name: format!("Playlist {n}"), subtitle: "Playlist · 42 songs".into(), kind: "playlist".into(), image_url: None, depth: 0, own: n.is_multiple_of(2), authors: vec![] };
         app.hear(singularity_proto::Event::Library(singularity_proto::Library { items: (0..30).map(item).collect() }));
         app
     }
@@ -3459,7 +3459,7 @@ mod tests {
                 app.open_popup(crate::app::Popup::Details(crate::playlists::Details { uri: "spotify:playlist:p".into(), name: "Night Drive".into(), description, on_description: true, known: true, scroll: Default::default() }));
             }
             Modal::Adding => {
-                let own = (0..30).map(|i| LibraryItem { uri: format!("spotify:playlist:o{i}"), name: format!("Mine {i}"), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: true });
+                let own = (0..30).map(|i| LibraryItem { uri: format!("spotify:playlist:o{i}"), name: format!("Mine {i}"), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: true, authors: vec![] });
                 app.library.as_mut().unwrap().items.extend(own);
                 app.ask_add(vec!["spotify:track:x".into()], "Song");
             }

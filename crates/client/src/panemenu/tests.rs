@@ -44,7 +44,7 @@ fn typed(app: &mut App, s: &str) {
 fn app() -> App {
     use singularity_proto::{Item, Library, LibraryItem, QueueEntry};
     let mut a = App::new(None);
-    a.hear(singularity_proto::Event::Library(Library { items: vec![LibraryItem { uri: "spotify:playlist:p".into(), name: "Night Drive".into(), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: false }] }));
+    a.hear(singularity_proto::Event::Library(Library { items: vec![LibraryItem { uri: "spotify:playlist:p".into(), name: "Night Drive".into(), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: false, authors: vec![] }] }));
     a.playback.queue = (0..3).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:q{i}"), name: format!("Song {i}"), duration_ms: 150_000, ..Default::default() }, source: "queue".into(), uid: format!("u{i}") }).collect();
     render(&mut a);
     a

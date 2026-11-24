@@ -11,8 +11,9 @@ use singularity_proto::{Library, LibraryItem};
 
 #[test]
 fn the_size_rule_keeps_small_and_medium_panes_one_list_and_gives_wide_big_ones_columns() {
-    let one_line = Shape { cols: 1, pitch: 1 };
-    let two_lines = Shape { cols: 1, pitch: 2 };
+    let one_line = Shape { cols: 1, cover: 1 };
+    let two_lines = Shape { cols: 1, cover: 2 };
+    let cols = |cols, cover| Shape { cols, cover };
     // (the contact sheet's Panes, inside their frames)
     for (what, w, h, want) in [
         ("tiny", 18, 4, one_line),
@@ -24,28 +25,36 @@ fn the_size_rule_keeps_small_and_medium_panes_one_list_and_gives_wide_big_ones_c
         ("wide but not tall", 160, 23, one_line),
         ("narrow but tall", 31, 60, one_line),
         ("the two-line list", 40, 30, two_lines),
-        ("almost room for two columns", 75, 40, two_lines),
-        ("two columns", 76, 24, Shape { cols: 2, pitch: 3 }),
-        ("big", 118, 38, Shape { cols: 3, pitch: 3 }),
-        ("full screen", 178, 47, Shape { cols: 3, pitch: 4 }),
-        ("never more than three", 260, 66, Shape { cols: 3, pitch: 4 }),
+        // two columns of 38 and the gap between them
+        ("almost room for two columns", 77, 40, two_lines),
+        ("two columns", 78, 24, cols(2, 3)),
+        ("big", 118, 38, cols(3, 4)),
+        ("full screen", 178, 47, cols(3, 5)),
+        // the cover grows with the room: the height caps it (seven entries a column) and so does the width (the name
+        // beside it), never past six rows
+        ("wide and short", 178, 24, cols(3, 3)),
+        ("two narrow columns, tall", 78, 60, cols(2, 5)),
+        ("three wide columns, tall", 240, 60, cols(3, 6)),
+        ("never more than three columns", 260, 66, cols(3, 6)),
     ] {
         assert_eq!(Shape::of(w, h), want, "{what} ({w}×{h})");
     }
+    // a blank row between entries in columns (covers never touch); one list keeps its look
+    assert_eq!((one_line.pitch(), two_lines.pitch(), cols(3, 4).pitch()), (1, 2, 5));
 }
 
 #[test]
 fn columns_share_the_entries_evenly_when_they_all_fit_and_fill_up_when_they_dont() {
     let s = Shape::of(118, 38);
-    // 12 entries of three rows fit a column
-    assert_eq!((s.rows(38, 21), s.rows(38, 36), s.rows(38, 37), s.rows(38, 500), s.rows(38, 1)), (7, 12, 12, 12, 1));
+    // seven entries of four rows and a gap fit a column (the last needs no gap)
+    assert_eq!((s.rows(38, 21), s.rows(38, 22), s.rows(38, 10), s.rows(38, 500), s.rows(38, 1)), (7, 7, 4, 7, 1));
     // one list: as many as fit
     assert_eq!((Shape::of(58, 18).rows(18, 3), Shape::of(40, 30).rows(30, 3)), (18, 15));
     // columns side by side with a gap, inside the Pane
     let r = Rect::new(10, 5, 118, 38);
     let cols: Vec<Rect> = (0..3).map(|c| s.column(r, c)).collect();
     assert!(cols.windows(2).all(|p| p[1].x > p[0].right()), "{cols:?}");
-    assert!(cols.iter().all(|c| c.y == r.y && c.height == r.height && c.right() <= r.right() && c.width >= 36), "{cols:?}");
+    assert!(cols.iter().all(|c| c.y == r.y && c.height == r.height && c.right() <= r.right() && c.width >= COL_W), "{cols:?}");
 }
 
 #[test]
@@ -60,24 +69,52 @@ fn the_window_follows_the_highlight_an_entry_at_a_time_in_one_list_and_a_column_
     assert_eq!((first(99, 0, 12, 3, 100), first(99, 0, 12, 3, 30)), (72, 0));
 }
 
-#[test]
-fn the_author_tag_names_the_first_author_and_never_all_of_them() {
-    for (kind, sub, want) in [
-        ("playlist", "Mira Vale, Lumen Fields and more", "Mira Vale & more"),
-        ("playlist", "Nova Drift, Mira Vale & more", "Nova Drift & more"),
-        ("album", "Nova Drift, Mira Vale", "Nova Drift & more"),
-        ("album", "Nova Drift", "Nova Drift"),
-        ("playlist", "Playlist · Nova Drift", "Nova Drift"),
-        ("playlist", "Playlist", "Playlist"),
-        ("show", "Podcast · Pub", "Pub"),
-        ("show", "Listen free until Oct 31 · Ada Quill, Rowan Tide", "Ada Quill & more"),
-        ("liked", "250 songs", "250 songs"),
-        ("artist", "Artist", "Artist"),
-        ("folder", "", ""),
-        ("playlist", "Your personal DJ", "Your personal DJ"),
-    ] {
-        assert_eq!(tag(kind, sub), want, "{kind} {sub:?}");
+fn lib(kind: &str, subtitle: &str, authors: &[&str]) -> LibraryItem {
+    LibraryItem {
+        uri: "spotify:album:a".into(),
+        name: "A".into(),
+        subtitle: subtitle.into(),
+        kind: kind.into(),
+        image_url: None,
+        depth: 0,
+        own: false,
+        authors: authors.iter().map(|a| a.to_string()).collect(),
     }
+}
+
+#[test]
+fn the_author_tag_names_the_first_author_whole_and_never_all_of_them() {
+    for (kind, sub, authors, want) in [
+        // the Daemon's names, whole: a comma inside one isn't a list
+        ("album", "Tyler, The Creator", &["Tyler, The Creator"][..], "Tyler, The Creator"),
+        ("album", "Tyler, The Creator, Kali Uchis", &["Tyler, The Creator", "Kali Uchis"], "Tyler, The Creator & more"),
+        ("album", "Nova Drift", &["Nova Drift"], "Nova Drift"),
+        ("playlist", "Playlist · Nova Drift", &["Nova Drift"], "Nova Drift"),
+        ("show", "Podcast · Pub", &["Pub"], "Pub"),
+        ("show", "Audiobook · Ada Quill", &["Ada Quill"], "Ada Quill"),
+        // a book keeps Spotify's access line first (D58)
+        ("show", "Listen free until Oct 31 · Ada Quill, Rowan Tide", &["Ada Quill", "Rowan Tide"], "Listen free until Oct 31 · Ada Quill & more"),
+        // without names (a Home Card's subtitle, an older Daemon): only what Spotify already ends with "and more", or a
+        // list of three or more, is shortened; anything else stays whole
+        ("playlist", "Mira Vale, Lumen Fields and more", &[], "Mira Vale & more"),
+        ("playlist", "Nova Drift, Mira Vale & more", &[], "Nova Drift & more"),
+        ("album", "Nova Drift, Mira Vale, Lumen Fields", &[], "Nova Drift & more"),
+        ("album", "Earth, Wind & Fire", &[], "Earth, Wind & Fire"),
+        ("album", "Tyler, The Creator", &[], "Tyler, The Creator"),
+        ("playlist", "Playlist", &[], "Playlist"),
+        ("playlist", "Your personal DJ", &[], "Your personal DJ"),
+        ("liked", "250 songs", &[], "250 songs"),
+        ("artist", "Artist", &[], "Artist"),
+        ("folder", "", &[], ""),
+    ] {
+        assert_eq!(tag(&lib(kind, sub, authors)), want, "{kind} {sub:?} {authors:?}");
+    }
+}
+
+#[test]
+fn a_tag_too_long_for_its_column_ends_in_an_ellipsis() {
+    assert_eq!(clip("Listen free until Oct 31 · Ada Quill", 12), "Listen free…");
+    assert_eq!((clip("Nova Drift", 10), clip("Nova Drift", 30), clip("Nova", 0)), ("Nova Drift".into(), "Nova Drift".into(), String::new()));
 }
 
 fn app(items: usize) -> App {
@@ -93,6 +130,7 @@ fn app(items: usize) -> App {
         image_url: None,
         depth: 0,
         own: false,
+        authors: vec![],
     };
     app.hear(singularity_proto::Event::Library(Library { items: (0..items).map(item).collect() }));
     // the library takes most of a big screen, beside Home
@@ -124,15 +162,22 @@ fn a_big_library_pane_shows_columns_that_keys_the_wheel_and_clicks_cross() {
     let side = app.sidebar;
     assert_eq!(side.cols, 3, "a big library Pane has three columns\n{s}");
     let rows = side.rows;
-    assert!(rows >= 8 && side.visible == 3 * rows, "{rows} rows a column, {} shown", side.visible);
+    assert!(rows >= 6 && side.visible == 3 * rows, "{rows} rows a column, {} shown", side.visible);
     // Home tops the first column; the next column starts level with it, to its right
     let (home, second) = (entry(&app, 0).unwrap(), entry(&app, rows).unwrap());
     assert_eq!(second.y, home.y);
     assert!(second.x >= home.right(), "{home:?} {second:?}");
     assert_eq!(entry(&app, 2 * rows).unwrap().y, home.y);
-    // three rows an entry, the bigger cover's height
-    assert_eq!(entry(&app, 1).unwrap().y, home.y + 3);
-    assert_eq!(home.height, 3);
+    // an entry as tall as its bigger cover, and a blank row before the next (covers never touch)
+    let cover = home.height;
+    assert!(cover >= 4, "{cover}");
+    assert_eq!(entry(&app, 1).unwrap().y, home.y + cover + 1);
+    // a glyph standing in for a cover is level with the name, not the tag under it
+    let line = |y: u16| s.lines().nth(y as usize).unwrap().to_string();
+    assert!(line(home.y).contains('⌂') && line(home.y).contains("Home"), "{}", line(home.y));
+    let mix = entry(&app, 1).unwrap().y;
+    assert!(line(mix).contains('≡') && line(mix).contains("Mix 0"), "{}", line(mix));
+    assert!((mix + 1..mix + cover).all(|y| !line(y).contains('≡') && !line(y).contains('⌂')), "the glyph is on the name row only");
     // the short author tag, not the whole list of them
     assert!(s.contains("Mira Vale & more") && !s.contains("Lumen Fields"), "{s}");
 
@@ -165,7 +210,13 @@ fn a_big_library_pane_shows_columns_that_keys_the_wheel_and_clicks_cross() {
     render(&mut app);
     assert_eq!(app.sidebar.sel, rows - 1 + 80);
     assert!(entry(&app, app.sidebar.sel).is_some(), "the highlight is in view");
-    assert!(entry(&app, 99).is_some(), "the end shows");
+    // on to the end, which shows
+    for _ in 0..50 {
+        app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: at.x + 1, row: at.y, modifiers: KeyModifiers::NONE }, at.x as f64 + 1.5, false);
+    }
+    render(&mut app);
+    assert_eq!(app.sidebar.sel, 100);
+    assert!(entry(&app, 100).is_some(), "the end shows");
 
     // a click on an entry in the third column opens that one
     let row = app.sidebar.top + 2 * rows + 1;

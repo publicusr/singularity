@@ -421,6 +421,10 @@ pub struct LibraryItem {
     /// a playlist you own (you can edit or delete it)
     #[serde(default)]
     pub own: bool,
+    /// who made it, each name whole (#56): an album's artists, a playlist's owner, a show's publisher, a book's
+    /// authors. Empty where there's no one (Liked Songs, an artist, a folder) or the Daemon doesn't know.
+    #[serde(default)]
+    pub authors: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
