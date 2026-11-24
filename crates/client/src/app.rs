@@ -539,7 +539,8 @@ const KEPT: usize = 64;
 pub struct App {
     /// shared with each frame, which holds it while it draws (a clone per frame was the whole Theme: audit Q1)
     pub theme: std::rc::Rc<Theme>,
-    pub layout: Node,
+    /// the floor plan and which Widget is in which Pane: changed only through its edits
+    pub layout: crate::arrangement::Arrangement,
     pub link: Link,
     pub engine: Option<EngineStatus>,
     /// which Engine the Daemon runs (Soloist, the Spotify app): the setup wizard and health view follow it
@@ -679,18 +680,13 @@ pub struct App {
     pub move_mode: Option<PaneId>,
     pub body: Rect,
     /// the layout as it was when a divider was grabbed (a changed one counts as an edit on release)
-    pub(crate) divider_from: Option<Node>,
+    pub(crate) divider_from: Option<crate::arrangement::Arrangement>,
     /// the divider whose grip is under the pointer (lit, and a resize pointer where the terminal has one)
     pub(crate) grip_hover: Option<usize>,
     /// the pointer shape last sent to the terminal (OSC 22)
     pub pointer_shape_sent: &'static str,
-    /// Panes easing to new places and the one held up (owner, 2026-11-01); this frame's rects, reused
-    pub motion: crate::arrange::motion::Motion,
-    pub(crate) drawn: Vec<Rect>,
     /// when the input event being handled arrived (stamped by the input thread; None: now)
     pub input_at: Option<Instant>,
-    /// drawing the held Pane: its images stay in cells
-    pub(crate) floating: bool,
     /// layout undo / redo, and when the last edit offered its "undo"
     pub(crate) history: crate::arrange::history::History<crate::arrange::Snapshot>,
     pub(crate) undo_offer: Option<(Instant, Action)>,
@@ -714,7 +710,7 @@ impl App {
     pub fn new(commands: Option<mpsc::Sender<Command>>) -> App {
         App {
             theme: std::rc::Rc::new(Theme::singularity()),
-            layout: Node::singularity(),
+            layout: Node::singularity().into(),
             link: Link::Connecting,
             engine: None,
             engine_kind: Default::default(),
@@ -803,10 +799,7 @@ impl App {
             divider_from: None,
             grip_hover: None,
             pointer_shape_sent: "",
-            motion: crate::arrange::motion::Motion::new(!cfg!(test)),
-            drawn: vec![],
             input_at: None,
-            floating: false,
             history: Default::default(),
             undo_offer: None,
             covers_was: HashMap::new(),
@@ -989,9 +982,6 @@ impl App {
     /// The pixel tier's cell size, if `r` can be drawn with it this frame.
     pub fn pixel_tier_for(&self, r: Rect) -> Option<(f64, f64)> {
         let px = self.cell_px?;
-        if self.floating {
-            return None;
-        }
         // under cell backgrounds (kitty), a popup simply covers an image; elsewhere the image steps down to cells
         let k = self.kitty.as_ref()?;
         (k.below_backgrounds || !self.overlays.iter().any(|o| o.intersects(r))).then_some(px)
@@ -1001,9 +991,7 @@ impl App {
     /// cells' backgrounds even in kitty, so a popup over `r` (whose cells couldn't hide it) means terminal text.
     pub fn pixel_text_for(&self, r: Rect) -> Option<(f64, f64)> {
         let px = self.cell_px?;
-        if self.floating || self.kitty.is_none() {
-            return None;
-        }
+        self.kitty.as_ref()?;
         (!self.overlays.iter().any(|o| o.intersects(r))).then_some(px)
     }
 
@@ -2398,7 +2386,7 @@ impl App {
     }
 
     /// Frames a second: 30, or `visuals.unfocused_fps` while the terminal isn't focused (D60, D62); while anything
-    /// moves (a held Pane, Panes springing into place, a divider being dragged) `visuals.motion_fps`, focused or not.
+    /// moves (a held Widget's chip, a divider being dragged) `visuals.motion_fps`, focused or not.
     /// The karaoke ball, moving on the pixel tier and focused: up to 60 (it glides along the line as it is sung; more
     /// buys nothing a singer sees, and every frame is a whole redraw).
     pub fn frame_rate(&self, focused: bool) -> u64 {
@@ -2418,7 +2406,7 @@ impl App {
 
     /// Whether something on screen is moving with the pointer or on its way somewhere.
     pub fn moving_now(&self) -> bool {
-        self.motion.busy() || self.tile.as_ref().is_some_and(|t| t.live) || self.divider_from.is_some()
+        self.tile.as_ref().is_some_and(|t| t.live) || self.divider_from.is_some()
     }
 
     /// Called every frame: sends nudges once they've settled.
@@ -3035,6 +3023,8 @@ popup_data! {
 impl App {
     /// Open `p`, replacing the popup open (popups don't nest).
     pub(crate) fn open_popup(&mut self, p: Popup) {
+        // a Widget held meanwhile is let go: its chip would be drawn over the popup (#40 review)
+        self.tile_cancel();
         self.popup = Some(p);
     }
 

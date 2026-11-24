@@ -955,14 +955,14 @@ mod tests {
             nowplaying(&mut buf, Rect::new(0, 0, w, h), app, &th);
             (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
         };
-        app.layout = crate::layout::Node::split(crate::layout::Axis::Horizontal, crate::layout::Size::Ratio(0.5), crate::layout::Node::pane(crate::layout::Widget::NowPlaying), crate::layout::Node::pane(crate::layout::Widget::Lyrics));
+        app.layout = crate::layout::Node::split(crate::layout::Axis::Horizontal, crate::layout::Size::Ratio(0.5), crate::layout::Node::pane(crate::layout::Widget::NowPlaying), crate::layout::Node::pane(crate::layout::Widget::Lyrics)).into();
         for (w, h) in [(40, 40), (140, 8), (110, 20)] {
             let s = screen(&mut app, w, h);
             assert!(s.contains("Next One"), "no queue Pane: the queue shows ({w}×{h}): {s}");
             assert!(!s.contains('▁') && !s.contains('█'), "no spectrum ({w}×{h}): {s}");
         }
         // a queue Pane opens: the list goes, at once
-        app.layout = crate::layout::Node::split(crate::layout::Axis::Horizontal, crate::layout::Size::Ratio(0.5), crate::layout::Node::pane(crate::layout::Widget::NowPlaying), crate::layout::Node::pane(crate::layout::Widget::Queue));
+        app.layout = crate::layout::Node::split(crate::layout::Axis::Horizontal, crate::layout::Size::Ratio(0.5), crate::layout::Node::pane(crate::layout::Widget::NowPlaying), crate::layout::Node::pane(crate::layout::Widget::Queue)).into();
         assert!(!screen(&mut app, 40, 40).contains("Next"));
     }
 

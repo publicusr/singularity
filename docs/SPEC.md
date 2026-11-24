@@ -287,6 +287,11 @@ audio, and looks spectacular.
     zone becomes the preview only after the pointer rests on it (~120 ms, sooner when it creeps), so a fast sweep
     leaves the layout be, and a release drops where the pointer is; a split is offered only where both halves stay
     comfortable (≥ 24 columns or ≥ 8 rows each): small Panes are swap targets, and ⇧arrows say so in the bar.
+    **Rethought (D87, ADR 0005, #40):** a drag only moves contents: dropped on another Pane the two Widgets swap (an
+    empty Pane is filled); while it is held nothing moves but a highlight on the Pane under the pointer (at once,
+    "swap with …" / "put here") and a chip with the Widget's name by the pointer. The edge and screen-edge zones, the
+    live reflow, the dwell, the floating Pane and its springs, and Move mode's ⇧arrows are gone; every drop is
+    allowed. All edits go through Arrangement (the floor plan and which Widget is in which Pane).
 86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready. Started 2026-10-19 (D48),
     tickets #63–#70, parity rule D49; the light librespot Engine on both OSes (D52, #70).
 

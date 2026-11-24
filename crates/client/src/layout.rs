@@ -247,12 +247,12 @@ impl Node {
         Node::split(Horizontal, Cells(30), left, Node::split(Vertical, Ratio(0.66), Node::pane(Widget::Karaoke), bottom))
     }
 
-    /// The least room this subtree needs along `axis`: a Pane's minimum, summed along a split's own axis.
+    /// The least room this subtree needs along `axis`: the Pane minimum, summed along a split's own axis. Whatever the
+    /// Panes hold (D87: moving a Widget never changes the floor plan; what a Widget asks for on top is `valid`'s).
     pub(crate) fn min_len(&self, axis: Axis) -> u16 {
         match self {
-            Node::Pane(p) => match axis {
+            Node::Pane(_) => match axis {
                 Axis::Horizontal => MIN_W,
-                Axis::Vertical if is_hole(p.widget) => WELL_MIN_H,
                 Axis::Vertical => MIN_H,
             },
             Node::Split { axis: own, a, b, .. } if *own == axis => a.min_len(axis) + b.min_len(axis),
@@ -290,18 +290,6 @@ impl Node {
     /// What Pane `id` holds (None: it's empty, or not in this tree).
     pub fn widget_in(&self, id: PaneId) -> Option<Widget> {
         self.get(id).and_then(|p| p.widget)
-    }
-
-    /// Put Widget `to` in the Pane that shows `from` (the Pane stays).
-    pub fn swap(&mut self, from: Widget, to: Widget) -> bool {
-        match self {
-            Node::Pane(p) if p.holds(from) => {
-                p.widget = Some(to);
-                true
-            }
-            Node::Pane(_) => false,
-            Node::Split { a, b, .. } => a.swap(from, to) || b.swap(from, to),
-        }
     }
 
     pub fn compute(&self, area: Rect) -> Computed {

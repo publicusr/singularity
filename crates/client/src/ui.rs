@@ -87,6 +87,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // too small for any layout: just a player (#47)
     if crate::mini::wanted(area) {
         app.overlays.clear();
+        app.tile_cancel();
+        if let Some(k) = app.kitty.as_mut() {
+            k.holes.clear();
+        }
         crate::mini::draw(f.buffer_mut(), area, app, &th);
         if let Some((msg, _)) = app.toast.clone()
             && area.height > 2
@@ -96,21 +100,35 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
     let [top, body, player, hints] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(3), Constraint::Length(1)]).areas(area);
-    // the Pane held by the mouse (or landing after a release) floats over the rest: images under it step aside
-    // a new frame: a zone the pointer rests on becomes the preview; the springs and the lift take this frame's time
-    let now = std::time::Instant::now();
-    app.tile_settle(now);
-    app.motion.frame(now);
-    let float = app.float_rect(body);
+    // a held Widget: the Pane under the pointer is highlighted with a label, a chip follows the pointer. Neither
+    // changes how anything under it is drawn (no step down a tier: that flickered): images are placed around them
+    // something drawn on top now (the login code, the wizard): a held Widget is let go, its chip would cover it
+    if app.modal().is_some() {
+        app.tile_cancel();
+    }
+    if app.body != body {
+        app.body = body;
+        // a new window size moves every Pane: the one under a held Widget is found again
+        app.tile_resized();
+    }
+    let marks = app.drag_marks();
+    let target = marks.as_ref().and_then(|(t, _)| t.clone()).and_then(|(id, label)| Some((app.layout.compute_shaped(body, app.cell_aspect()).rect(id)?, label)));
+    let chip = marks.as_ref().and_then(|(_, c)| Some((app.chip_rect(area, c)?, c.clone())));
     // popups are known up front, so pixel images under them can step down to cells this frame; what's over the
     // Panes, the top first (D83)
     let layers = app.layers();
     let mut overlays: Vec<Rect> = layers.iter().filter_map(|&m| layer_rect(area, app, m)).collect();
-    overlays.extend(float.map(|r| crate::arrange::with_shadow(r, area)));
     overlays.extend(app.toast.as_ref().filter(|_| app.move_mode.is_none()).map(|(msg, _)| toast_rect(area, msg)));
     app.overlays = overlays;
+    let holes: Vec<Rect> = target.as_ref().and_then(|(r, l)| crate::arrange::label_rect(*r, l, chip.as_ref().map(|c| c.0))).into_iter().chain(chip.as_ref().map(|(r, _)| *r)).collect();
+    if let Some(k) = app.kitty.as_mut() {
+        k.holes = holes;
+    }
     top_bar(f, top, app, &th);
-    panes(f, body, app, &th, float);
+    panes(f, body, app, &th);
+    if let Some((r, label)) = &target {
+        crate::arrange::draw_target(f.buffer_mut(), *r, label, chip.as_ref().map(|c| c.0), &th);
+    }
     if th.scanlines {
         scanlines(f.buffer_mut(), body);
     }
@@ -129,6 +147,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // the bottom first, so the one on top is drawn last
     for &m in layers.iter().rev() {
         draw_layer(f, area, app, &th, m);
+    }
+    if let Some((r, c)) = &chip {
+        crate::arrange::draw_chip(f.buffer_mut(), *r, c, &th);
     }
     if let Some((msg, _)) = app.toast.clone().filter(|_| app.move_mode.is_none()) {
         let r = toast_rect(area, &msg);
@@ -399,39 +420,13 @@ fn close_button(buf: &mut Buffer, rect: Rect, th: &Theme, focused: bool, id: Pan
     hits.push((Rect::new(x, rect.y, 3, 1), Hit::Close(id)));
 }
 
-fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme, float: Option<Rect>) {
-    if app.body != body {
-        app.body = body;
-        // a new window size moves every zone: a held Pane's is found again
-        app.tile_resized();
-    }
-    // while a Pane is held over a drop zone, the whole layout is drawn as dropping there would make it
-    let tree = app.shown_layout().into_owned();
-    let moving = app.moving();
-    let computed = tree.compute_shaped(body, app.cell_aspect());
-    // where each Pane is drawn this frame: on its way to where the layout puts it (a divider being dragged follows the
-    // pointer at once)
-    let mut drawn = std::mem::take(&mut app.drawn);
-    let snap = app.divider_from.is_some();
-    let targets: Vec<(PaneId, Rect)> = computed.panes.iter().map(|(p, r)| (p.id, *r)).collect();
-    app.motion.step(&targets, body, snap, &mut drawn);
-    // the Pane held by the mouse leaves an empty slot where it would land; one landing is drawn over the rest
-    let lifted = app.tile.as_ref().filter(|t| t.live).map(|t| t.pane.id);
-    let raised = lifted.or_else(|| app.motion.landing.filter(|_| float.is_some()));
-    let landing_ok = app.tile.as_ref().is_some_and(|t| t.zone.is_some());
+fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
+    let computed = app.layout.compute_shaped(body, app.cell_aspect());
     // the ◂ ▸ swaps sit on a border a divider's grip may cover: registered after the grips, so they win
     let mut swaps: Vec<(Rect, Hit)> = vec![];
     let n = computed.panes.len();
-    for (i, ((p, target), rect)) in computed.panes.iter().zip(drawn.iter().copied()).enumerate() {
-        if raised == Some(p.id) {
-            app.hit(*target, Hit::Focus(p.id));
-            swaps.push((Rect::new(target.x + 1, target.y, target.width.saturating_sub(2), 1), Hit::Title(p.id)));
-            if lifted.is_some() {
-                crate::arrange::draw_slot(f.buffer_mut(), rect, landing_ok, float, th);
-            }
-            continue;
-        }
-        pane(f, app, th, (i, n), *p, rect, *target, moving, false, &mut swaps);
+    for (i, (p, rect)) in computed.panes.iter().enumerate() {
+        pane(f, app, th, (i, n), *p, *rect, &mut swaps);
     }
     // space bends around the hole: neighbouring border lines curve toward it
     if let Some(hole) = app.hole_at {
@@ -449,34 +444,13 @@ fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme, float: Option<Rec
         app.hit(r, h);
     }
     app.dividers = computed.dividers;
-    // the held (or landing) Pane floats over everything, its own Widget drawn live in cells (pixels under a Pane that
-    // moves every frame would smear), with no hit boxes: the pointer is the drag's
-    if let (Some(r), Some(id)) = (float, raised) {
-        let i = computed.panes.iter().position(|(p, _)| p.id == id).unwrap_or(0);
-        let held = app.tile.as_ref().map(|t| t.pane).filter(|p| p.id == id);
-        let p = computed.panes.iter().map(|(p, _)| *p).find(|p| p.id == id).or(held).unwrap_or(Pane { id, widget: None });
-        let keep = app.hits.len();
-        app.floating = true;
-        let area = f.area();
-        crate::arrange::draw_shadow(f.buffer_mut(), r, area, th);
-        pane(f, app, th, (i, n), p, r, r, None, true, &mut swaps);
-        app.floating = false;
-        app.hits.truncate(keep);
-    }
-    app.drawn = drawn;
 }
 
-/// One Pane over `rect` (where it is drawn this frame; `target` is where the layout puts it, which is what a click
-/// finds). `raised`: the Pane held by the mouse, drawn in the accent without its buttons. Smaller than a Pane can be
-/// (on its way somewhere), it is just its frame.
-#[allow(clippy::too_many_arguments)]
-fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p: Pane, rect: Rect, target: Rect, moving: Option<PaneId>, raised: bool, swaps: &mut Vec<(Rect, Hit)>) {
+/// One Pane over `rect` (the one whose Widget is being moved, by the mouse or in Move mode, drawn lit). Smaller than
+/// its Widget can be drawn in, it is just its frame.
+fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p: Pane, rect: Rect, swaps: &mut Vec<(Rect, Hit)>) {
     let w = p.widget;
     let rect = &rect;
-    // whatever was drawn here (a Pane it passes over on its way, or the one it floats over) goes
-    if raised || rect != &target {
-        fill(f.buffer_mut(), *rect, th);
-    }
     // its title bar: drag it to move the Pane (registered with the ◂ ▸ after the dividers' grips, so it wins over
     // them on the row below a horizontal divider; the buttons are registered after it and win in turn)
     swaps.push((Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(2), 1), Hit::Title(p.id)));
@@ -497,18 +471,17 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     };
     let number = if th.numbered { superscript(i + 1) } else { String::new() };
     let focused = app.focus == Some(p.id);
-    let held = moving == Some(p.id);
-    let title_st = if focused || held || raised { th.title() } else { th.s(th.accent) };
+    let held = app.moving() == Some(p.id);
+    let title_st = if focused || held { th.title() } else { th.s(th.accent) };
     // a Pane that can close has a × at the right end of its title (the four every Design keeps don't)
-    let closable = !raised && !w.is_some_and(|w| crate::tiling::CORE.contains(&w)) && total > 1 && rect.width >= 14;
+    let closable = !w.is_some_and(|w| crate::tiling::CORE.contains(&w)) && total > 1 && rect.width >= 14;
     let tail: u16 = if closable { 3 } else { 0 };
-    // held up: the grip says it moves
-    let mut spans = vec![Span::styled(if raised { " ⠿ ".to_string() } else { format!(" {number}") }, title_st)];
+    let mut spans = vec![Span::styled(format!(" {number}"), title_st)];
     // the main Pane: ← → through the pages seen, while there are any, at the right end of its title like every
     // Pane's arrows (D44); dim when there's nowhere to go that way
-    let history = !raised && w == Some(Widget::Home) && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20;
+    let history = w == Some(Widget::Home) && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20;
     // a Pane whose Widget can give way to others always keeps its ◂ ▸ (7 cells at the right): a long title gives way
-    let can_swap = !raised && (w.is_some_and(|w| !crate::layouts::options(w).is_empty() && w != Widget::Well) || history);
+    let can_swap = w.is_some_and(|w| !crate::layouts::options(w).is_empty() && w != Widget::Well) || history;
     // the ◂ ▸ keep their place whether or not the Widget shown can close: cycling onto the queue (no ×) moved them
     // three cells, and the next click on ▸ landed on ◂, so the Pane went back and forth between two Widgets
     let tail: u16 = if can_swap && rect.width >= 14 { 3 } else { tail };
@@ -529,7 +502,7 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     };
     spans.push(Span::styled(format!("{title} "), title_st));
     // an empty Pane has no title at all (not even the spaces round one)
-    if w.is_none() && !raised {
+    if w.is_none() {
         spans.clear();
     }
     // smaller than its Widget is usable in: a plain frame round one dim line, `needs W × H` (#36); the Pane then takes
@@ -544,7 +517,7 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     if w == Some(Widget::TopWeek) && !short {
         let tw = spans.iter().map(|s| s.content.chars().count()).sum::<usize>() as u16;
         swaps.push((Rect::new(rect.x + 1, rect.y, tw.min(rect.width.saturating_sub(2)), 1), Hit::TopWeekToggle));
-    } else if !raised && w.is_some() && app.can_replace(p.id) {
+    } else if w.is_some() && app.can_replace(p.id) {
         // the Widget's name: a click opens the Widget picker (top this week's title is its switch, and Home's is the
         // page's)
         if let [lead, name, ..] = spans.as_slice() {
@@ -556,9 +529,7 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(th.borders)
-        .border_style(if raised {
-            th.s(th.accent).add_modifier(Modifier::BOLD)
-        } else if held {
+        .border_style(if held {
             th.s(th.accent2).add_modifier(Modifier::BOLD)
         } else {
             th.s(if focused { th.border_focus } else { th.pane_border(i) })
@@ -566,18 +537,18 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
         .title(ratatui::text::Line::from(spans))
         .style(th.base());
     let inner = block.inner(*rect);
-    // the Pane's own hit first, so the things inside it win (where it is going: mid-way, a click lands there)
-    app.hit(target, Hit::Focus(p.id));
+    // the Pane's own hit first, so the things inside it win
+    app.hit(*rect, Hit::Focus(p.id));
     // a Pane whose Widget can give way to others says so: ◂ ▸ in its title swap them (so does v)
     let swappable = can_swap && rect.width >= 12;
-    // on its way somewhere and smaller than a Pane can be: just its frame
+    // smaller than its Widget can be drawn in: just its frame
     let min_h = if crate::layout::is_hole(w) { crate::layout::WELL_MIN_H } else { crate::layout::MIN_H };
     if rect.width < crate::layout::MIN_W || rect.height < min_h {
         f.render_widget(block, *rect);
         return;
     }
-    // the well draws its own (sagging) frame; held up, it is a plain Pane round the hole
-    if w == Some(Widget::Well) && !raised && !short {
+    // the well draws its own (sagging) frame, unless it is too small for its Widget
+    if w == Some(Widget::Well) && !short {
         crate::visual::well::draw(f.buffer_mut(), *rect, app, th);
         if closable {
             close_button(f.buffer_mut(), *rect, th, focused, p.id, swaps);
@@ -1093,7 +1064,7 @@ mod tests {
         }
         for (w, h) in [(60, 14), (80, 20), (120, 40)] {
             let (mut app, _rx) = playing_app(200_000);
-            app.layout = stack.clone();
+            app.layout = stack.clone().into();
             app.playback.queue = queue();
             assert!(app.layout.compute(Rect::new(0, 1, w, h - 5)).panes.iter().any(|(_, r)| r.height <= 1), "{w}x{h}: the stack squeezes a Pane below two rows");
             let _ = render(&mut app, w, h);
@@ -1711,6 +1682,68 @@ mod tests {
         // …and not one kitty takes for its default: pure black (its usual background) would let the covers through
         let bg = t.backend().buffer()[(pal.x + 2, pal.y + 1)].bg;
         assert!(bg != ratatui::style::Color::Reset && bg != app.theme.bg.color(), "{bg:?}");
+    }
+
+    /// #40 review: during a drag nothing but the target's frame, its label and the chip may change. Over covers on the
+    /// pixel tier (Ghostty: images over cell backgrounds) the chip and the label used to count as popups, so the covers
+    /// under them stepped down to half-blocks the moment they passed: flicker. Now every frame of a drag draws the same
+    /// cells everywhere else, and the images are cut around the chip and the label instead.
+    #[test]
+    fn a_drag_over_covers_changes_nothing_but_the_highlight_and_the_chip() {
+        let (mut app, _rx) = home_app();
+        app.kitty = Some(crate::gfx::Kitty::new(false));
+        app.cell_px = Some((10.0, 20.0));
+        let (w, h) = (200u16, 64u16);
+        let frame = |app: &mut App| {
+            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+            t.draw(|f| draw(f, app)).unwrap();
+            app.kitty.as_mut().unwrap().flush(&mut vec![]).unwrap();
+            t.backend().buffer().clone()
+        };
+        frame(&mut app);
+        let body = app.pane_area();
+        let c = app.layout.compute_shaped(body, app.cell_aspect());
+        let (q, home) = (c.rect_of(Widget::Queue).unwrap(), c.rect_of(Widget::Home).unwrap());
+        let mouse = |app: &mut App, kind, x, y| app.mouse(MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE });
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), q.x + 3, q.y);
+        // the cells a frame may change: the target's frame, its label and the chip
+        let marks = |app: &App| -> Vec<Rect> {
+            let Some((target, chip)) = app.drag_marks() else { return vec![] };
+            let chip_r = app.chip_rect(Rect::new(0, 0, w, h), &chip);
+            let mut v: Vec<Rect> = chip_r.into_iter().collect();
+            if let Some((id, label)) = target {
+                let r = app.layout.compute_shaped(body, app.cell_aspect()).rect(id).unwrap();
+                v.extend([Rect::new(r.x, r.y, r.width, 1), Rect::new(r.x, r.bottom() - 1, r.width, 1), Rect::new(r.x, r.y, 1, r.height), Rect::new(r.right() - 1, r.y, 1, r.height)]);
+                v.extend(crate::arrange::label_rect(r, &label, chip_r));
+            }
+            v
+        };
+        let mut frames: Vec<(Buffer, Vec<Rect>)> = vec![];
+        // across Home's covers, a cell at a time, and on into the library
+        let path = (0..40u16).map(|i| (home.x + 4 + i * 3, home.y + 6 + i / 3)).chain([(5, 20)]);
+        for (x, y) in path {
+            mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, y);
+            let buf = frame(&mut app);
+            if let Some((_, chip)) = app.drag_marks() {
+                let r = app.chip_rect(Rect::new(0, 0, w, h), &chip).unwrap();
+                assert!(app.kitty.as_ref().unwrap().holes.contains(&r), "images are cut around the chip");
+            }
+            frames.push((buf, marks(&app)));
+        }
+        let free = |x: u16, y: u16, ms: &[Rect]| !ms.iter().any(|r| x >= r.x && x < r.right() && y >= r.y && y < r.bottom());
+        for (n, pair) in frames.windows(2).enumerate() {
+            let ((a, ma), (b, mb)) = (&pair[0], &pair[1]);
+            for y in 0..h {
+                for x in 0..w {
+                    if free(x, y, ma) && free(x, y, mb) {
+                        let (p, q) = (&a[(x, y)], &b[(x, y)]);
+                        assert!(p.symbol() == q.symbol() && p.fg == q.fg && p.bg == q.bg, "frame {n}→{}: ({x}, {y}) changed from {p:?} to {q:?}", n + 1);
+                    }
+                }
+            }
+            assert!(!(0..h).any(|y| (0..w).any(|x| b[(x, y)].symbol() == "▀")), "no cover stepped down to half-blocks");
+        }
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 5, 20);
     }
 
     #[test]
@@ -2930,10 +2963,10 @@ mod tests {
         app.tick();
         assert!(sent(&mut rx).is_empty());
         // a karaoke Pane coming on screen asks again, for word timing too (D67); once
-        assert!(app.layout.swap(Widget::Lyrics, Widget::Karaoke));
+        app.layout = app.layout.replace(app.layout.pane_of(Widget::Lyrics).unwrap(), Widget::Karaoke).unwrap();
         app.tick();
         assert_eq!(sent(&mut rx), vec![Command::GetLyrics { uri: "spotify:track:s".into(), words: true }]);
-        assert!(app.layout.swap(Widget::Karaoke, Widget::Lyrics));
+        app.layout = app.layout.replace(app.layout.pane_of(Widget::Karaoke).unwrap(), Widget::Lyrics).unwrap();
         app.tick();
         assert!(sent(&mut rx).is_empty(), "word timing already asked for: lyrics alone needn't ask again");
         let lines = (0..20).map(|i| LyricLine { start_ms: i * 5_000, text: format!("line {i}"), ..Default::default() }).collect();
@@ -3768,7 +3801,7 @@ mod tests {
     fn an_empty_pane_is_drawn_as_a_bare_frame() {
         let mut app = App::new(None);
         use crate::layout::{Axis, Node, Size};
-        app.layout = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::pane(Widget::Home), Node::empty());
+        app.layout = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::pane(Widget::Home), Node::empty()).into();
         let gap = app.layout.panes()[1];
         assert_eq!(gap.widget, None);
         app.focus = Some(gap.id);

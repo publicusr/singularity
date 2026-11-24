@@ -15,7 +15,8 @@
 //! #36 gives each Widget its `needs W × H` line (#39 removes the filter).
 
 use crate::app::{App, Hit, Modal, Popup};
-use crate::layout::{Node, PaneId, Widget, is_hole};
+use crate::arrangement::Arrangement;
+use crate::layout::{PaneId, Widget, is_hole};
 use crate::theme::Theme;
 use crate::tiling::CORE;
 use crate::ui::{blank, centered, popup, text};
@@ -40,21 +41,6 @@ pub struct Choice {
 
 /// At most this many rows show at once; the list scrolls with its highlight.
 const ROWS: usize = 16;
-
-/// `n` with Pane `id` holding `w` (the Pane, and every other, stays where it is).
-fn holding(n: &Node, id: PaneId, w: Option<Widget>) -> Node {
-    match n {
-        Node::Pane(p) if p.id == id => Node::Pane(crate::layout::Pane { id, widget: w }),
-        Node::Pane(p) => Node::Pane(*p),
-        Node::Split { axis, first, a, b } => Node::Split { axis: *axis, first: *first, a: Box::new(holding(a, id, w)), b: Box::new(holding(b, id, w)) },
-    }
-}
-
-/// `n` with Panes `x` and `y` trading Widgets (the Panes stay put).
-fn exchanged(n: &Node, x: PaneId, y: PaneId) -> Node {
-    let (wx, wy) = (n.widget_in(x), n.widget_in(y));
-    holding(&holding(n, x, wy), y, wx)
-}
 
 impl App {
     /// Whether Pane `id` offers Replace widget… (Home's doesn't: the main Pane keeps Home).
@@ -115,16 +101,17 @@ impl App {
                 }
             }
         }
-        let off = off.into_iter().filter(|w| self.room_for(&holding(&self.layout, target, Some(*w)))).map(|widget| Choice { widget, from: None });
+        let off = off.into_iter().filter(|w| self.layout.replace(target, *w).is_ok_and(|a| self.room_for(&a))).map(|widget| Choice { widget, from: None });
         let on = self.layout.panes().into_iter().filter(|p| p.id != target).filter_map(|p| Some(Choice { widget: p.widget?, from: Some(p.id) }));
-        let on = on.filter(|c| c.from.is_some_and(|f| self.room_for(&exchanged(&self.layout, target, f))));
+        let on = on.filter(|c| c.from.is_some_and(|f| self.layout.swap(target, f).is_ok_and(|a| self.room_for(&a))));
         off.chain(on).collect()
     }
 
     /// (until #36) Whether `tree` may replace the layout: it fits the window, or the layout doesn't either (a window too small for
     /// the Design, which then shows the mini-player: a change can't make that worse).
-    fn room_for(&self, tree: &Node) -> bool {
-        self.fits(tree) || !self.fits(&self.layout)
+    fn room_for(&self, a: &Arrangement) -> bool {
+        let (area, aspect) = (self.pane_area(), self.cell_aspect());
+        a.comfortable(area, aspect) || !self.layout.comfortable(area, aspect)
     }
 
     /// The picker's Pane went (a Design reloaded, a resize, an undo): the picker closes instead of offering Widgets
@@ -145,8 +132,12 @@ impl App {
         let Some(c) = self.widget_choices().get(i).copied() else { return };
         let Some(p) = self.take_widget_picker() else { return };
         let tree = match c.from {
-            Some(other) => exchanged(&self.layout, p.target, other),
-            None => holding(&self.layout, p.target, Some(c.widget)),
+            Some(other) => self.layout.swap(p.target, other),
+            None => self.layout.replace(p.target, c.widget),
+        };
+        let tree = match tree {
+            Ok(t) => t,
+            Err(e) => return self.refused(e),
         };
         // checked again: the terminal can have changed size since the list was made
         if !self.room_for(&tree) {

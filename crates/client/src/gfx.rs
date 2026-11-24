@@ -55,6 +55,33 @@ pub fn blit_halfblocks_from(img: &RgbImage, buf: &mut Buffer, rect: Rect, skip: 
 /// The part of an image to show, in its pixels: x, y, width, height (a cover partly scrolled out of its Pane).
 pub type Crop = [u32; 4];
 
+/// `r` without the cells of `hole`: up to four rectangles (above, below, left and right of it).
+fn minus(r: Rect, hole: Rect) -> Vec<Rect> {
+    let i = r.intersection(hole);
+    if i.is_empty() {
+        return vec![r];
+    }
+    let parts = [
+        Rect::new(r.x, r.y, r.width, i.y - r.y),
+        Rect::new(r.x, i.bottom(), r.width, r.bottom() - i.bottom()),
+        Rect::new(r.x, i.y, i.x - r.x, i.height),
+        Rect::new(i.right(), i.y, r.right() - i.right(), i.height),
+    ];
+    parts.into_iter().filter(|p| !p.is_empty()).collect()
+}
+
+/// The crop that shows piece `p` of an image placed over `whole` (showing `crop` of its `dims` pixels).
+fn piece_crop(whole: Rect, crop: Option<Crop>, (iw, ih): (u32, u32), p: Rect) -> Crop {
+    let [sx, sy, sw, sh] = crop.unwrap_or([0, 0, iw, ih]);
+    let along = |start: u32, len: u32, cells: u16, from: u16, to: u16| {
+        let at = |c: u16| start + (c as u64 * len as u64 / cells.max(1) as u64) as u32;
+        (at(from), at(to).saturating_sub(at(from)).max(1))
+    };
+    let (x, w) = along(sx, sw, whole.width, p.x - whole.x, p.right() - whole.x);
+    let (y, h) = along(sy, sh, whole.height, p.y - whole.y, p.bottom() - whole.y);
+    [x, y, w, h]
+}
+
 /// What a pixel-tier image is: the source and the exact pixel size it was rendered at.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ImageKey {
@@ -107,6 +134,13 @@ pub struct Kitty {
     over_backgrounds: std::collections::HashSet<u32>,
     /// Visuals drawn one layer under still images, so a still placed over them (glow's cover) is always on top
     under_stills: std::collections::HashSet<u32>,
+    /// cells this frame's images leave free, so small things drawn there show whole (a dragged Widget's chip and its
+    /// target's label: D87): an image over them is placed as the pieces around them instead of stepping down a tier
+    pub holes: Vec<Rect>,
+    /// every image's pixel size, for the crops of its pieces
+    dims: HashMap<u32, (u32, u32)>,
+    /// per animated Visual: the pieces it was last placed as
+    animated_pieces: HashMap<u32, Vec<Rect>>,
 }
 
 /// kitty's layer under cell backgrounds: an image there shows only through cells with the default background, so
@@ -139,6 +173,9 @@ impl Kitty {
             below_backgrounds: false,
             over_backgrounds: Default::default(),
             under_stills: Default::default(),
+            holes: vec![],
+            dims: HashMap::new(),
+            animated_pieces: HashMap::new(),
         }
     }
 
@@ -193,7 +230,12 @@ impl Kitty {
             None => {
                 let id = self.next_id;
                 self.next_id = self.next_id.wrapping_add(1).max(FIRST_ID);
-                self.uploads.push((id, render()));
+                let up = render();
+                self.dims.insert(id, match &up {
+                    Upload::Rgb(img) => img.dimensions(),
+                    Upload::Rgba(w, h, _) => (*w, *h),
+                });
+                self.uploads.push((id, up));
                 self.stored.insert(key, Stored { id, last_used: frame, text });
                 if text {
                     self.text.insert(id);
@@ -235,8 +277,15 @@ impl Kitty {
         for (id, rect, px) in std::mem::take(&mut self.frames) {
             let old = self.animated.remove(&id);
             let Some((w, h, rgba)) = px else {
-                if let Some(o) = old {
-                    shown.insert(id, o);
+                if let Some((real, r)) = old {
+                    // the same picture: placed again only if the holes over it moved
+                    let pieces = self.pieces(real, r);
+                    if self.animated_pieces.get(&id) != Some(&pieces) {
+                        write!(out, "\x1b_Ga=d,d=i,i={real},q=2\x1b\\")?;
+                        self.put_pieces(out, real, r, &pieces)?;
+                        self.animated_pieces.insert(id, pieces);
+                    }
+                    shown.insert(id, (real, r));
                 }
                 continue;
             };
@@ -246,18 +295,34 @@ impl Kitty {
                 Some((r, _)) if r == id * 2 => id * 2 + 1,
                 _ => id * 2,
             };
-            self.transmit(out, real, (w, h), &rgba, 32, Some(rect))?;
+            self.dims.insert(real, (w, h));
+            let pieces = self.pieces(real, rect);
+            if pieces == [rect] {
+                self.transmit(out, real, (w, h), &rgba, 32, Some(rect))?;
+            } else {
+                self.transmit(out, real, (w, h), &rgba, 32, None)?;
+                self.put_pieces(out, real, rect, &pieces)?;
+            }
             if let Some((r, _)) = old {
                 write!(out, "\x1b_Ga=d,d=I,i={r},q=2\x1b\\")?;
+                self.dims.remove(&r);
             }
+            self.animated_pieces.insert(id, pieces);
             shown.insert(id, (real, rect));
         }
         for (r, _) in self.animated.values() {
             write!(out, "\x1b_Ga=d,d=I,i={r},q=2\x1b\\")?;
         }
+        self.animated_pieces.retain(|id, _| shown.contains_key(id));
         self.animated = shown;
         let mut now: HashMap<(u32, u32), (Rect, Option<Crop>)> = HashMap::new();
-        for (id, pid, r, crop) in std::mem::take(&mut self.queue) {
+        let queue: Vec<(u32, u32, Rect, Option<Crop>)> = std::mem::take(&mut self.queue).into_iter().flat_map(|(id, pid, r, crop)| {
+            let pieces = self.pieces(id, r);
+            let whole = pieces == [r];
+            let dims = self.dims.get(&id).copied();
+            pieces.into_iter().enumerate().map(move |(k, p)| if whole { (id, pid, r, crop) } else { (id, pid | ((k as u32 + 1) << 16), p, dims.map(|d| piece_crop(r, crop, d, p))) }).collect::<Vec<_>>()
+        }).collect();
+        for (id, pid, r, crop) in queue {
             if self.placed.get(&(id, pid)) != Some(&(r, crop)) {
                 let src = crop.map(|[x, y, w, h]| format!("x={x},y={y},w={w},h={h},")).unwrap_or_default();
                 // C=1: don't move the cursor; z: under text (and, in kitty, under cell backgrounds)
@@ -274,6 +339,29 @@ impl Kitty {
         Ok(())
     }
 
+    /// Image `id` over `rect` as the pieces this frame's holes leave of it (just `rect` where none is over it, or the
+    /// image sits under cell backgrounds, which hide it under anything drawn there anyway).
+    fn pieces(&self, id: u32, rect: Rect) -> Vec<Rect> {
+        if self.z(id) <= BELOW_BACKGROUNDS || !self.dims.contains_key(&id) {
+            return vec![rect];
+        }
+        let mut out = vec![rect];
+        for h in &self.holes {
+            out = out.into_iter().flat_map(|r| minus(r, *h)).collect();
+        }
+        out
+    }
+
+    /// Place image `id` over `rect` as `pieces` (each a crop of it).
+    fn put_pieces(&self, out: &mut impl Write, id: u32, rect: Rect, pieces: &[Rect]) -> std::io::Result<()> {
+        let Some(d) = self.dims.get(&id).copied() else { return Ok(()) };
+        for (k, p) in pieces.iter().enumerate() {
+            let [x, y, w, h] = piece_crop(rect, None, d, *p);
+            write!(out, "\x1b[{};{}H\x1b_Ga=p,i={id},p={},x={x},y={y},w={w},h={h},c={},r={},C=1,z={},q=2\x1b\\", p.y + 1, p.x + 1, k + 1, p.width, p.height, self.z(id))?;
+        }
+        Ok(())
+    }
+
     /// Forget everything (after a resize, which clears the screen, and on exit).
     pub fn reset(&mut self, out: &mut impl Write) -> std::io::Result<()> {
         self.stored.clear();
@@ -283,6 +371,8 @@ impl Kitty {
         self.uploads.clear();
         self.frames.clear();
         self.animated.clear();
+        self.animated_pieces.clear();
+        self.dims.clear();
         write!(out, "\x1b_Ga=d,d=A,q=2\x1b\\")?;
         for (_, name) in self.shm_pending.drain(..) {
             unsafe { libc::shm_unlink(name.as_ptr()) };
@@ -315,6 +405,7 @@ impl Kitty {
     fn free(&mut self, out: &mut impl Write, k: &ImageKey) -> std::io::Result<()> {
         if let Some(s) = self.stored.remove(k) {
             self.text.remove(&s.id);
+            self.dims.remove(&s.id);
             write!(out, "\x1b_Ga=d,d=I,i={},q=2\x1b\\", s.id)?;
         }
         Ok(())
@@ -465,6 +556,65 @@ mod tests {
         assert!(k.keep(1, r) && flush(&mut k).is_empty());
         assert!(!k.keep(1, Rect::new(0, 0, 3, 2)), "moved: needs a new frame");
         assert_eq!(flush(&mut k), "\x1b_Ga=d,d=I,i=3,q=2\x1b\\", "a Visual that's gone is freed");
+    }
+
+    /// The placements in `out`: (column, row, columns, rows, crop x, y, w, h), 0-based cells.
+    fn placed(out: &str) -> Vec<(u16, u16, u16, u16, [u32; 4])> {
+        out.split("\x1b[")
+            .filter_map(|s| {
+                let (pos, rest) = s.split_once('H')?;
+                let rest = rest.strip_prefix("\x1b_Ga=")?;
+                let (y, x) = pos.split_once(';')?;
+                let n = |k: &str| rest.split(',').find_map(|kv| kv.strip_prefix(k)?.parse::<u32>().ok());
+                Some((x.parse::<u16>().ok()? - 1, y.parse::<u16>().ok()? - 1, n("c=")? as u16, n("r=")? as u16, [n("x=")?, n("y=")?, n("w=")?, n("h=")?]))
+            })
+            .collect()
+    }
+
+    /// D87: a dragged Widget's chip over an image. The image isn't stepped down a tier: it is placed as the pieces
+    /// around the hole, each showing its own part of the picture, and whole again once the hole is gone.
+    #[test]
+    fn an_image_under_a_hole_is_placed_around_it() {
+        let mut k = Kitty::new(false);
+        let r = Rect::new(10, 5, 20, 10);
+        k.place_cropped(key("a"), r, None, || RgbImage::new(20, 20));
+        assert!(flush(&mut k).contains("p=1,c=20,r=10"));
+        let hole = Rect::new(14, 8, 6, 1);
+        k.holes = vec![hole];
+        k.place_cropped(key("a"), r, None, || unreachable!());
+        let out = flush(&mut k);
+        let pieces = placed(&out);
+        assert!(out.contains("a=d,d=i,i=1000,p=1,"), "the whole one goes: {out:?}");
+        // the pieces cover the image's rect exactly, except the hole
+        let cells: u32 = pieces.iter().map(|p| p.2 as u32 * p.3 as u32).sum();
+        assert_eq!(cells, 20 * 10 - 6, "{pieces:?}");
+        for (x, y, w, h, [cx, cy, cw, ch]) in &pieces {
+            let p = Rect::new(*x, *y, *w, *h);
+            assert!(p.intersection(hole).is_empty() && r.union(p) == r, "{p:?}");
+            // 20 px over 20 columns, 20 px over 10 rows: a pixel a column, two a row
+            assert_eq!([*cx, *cy, *cw, *ch], [(x - 10) as u32, (y - 5) as u32 * 2, *w as u32, *h as u32 * 2]);
+        }
+        // the hole moves on: placed again around the new one; gone: whole again
+        k.holes = vec![];
+        k.place_cropped(key("a"), r, None, || unreachable!());
+        let out = flush(&mut k);
+        assert!(out.contains("p=1,c=20,r=10") && placed(&out).is_empty() && out.matches("a=d,d=i").count() == 4, "{out:?}");
+        // under cell backgrounds (kitty) the cells hide it anyway: never cut
+        let mut k = Kitty::new(false);
+        k.below_backgrounds = true;
+        k.holes = vec![hole];
+        k.place_cropped(key("a"), r, None, || RgbImage::new(20, 20));
+        assert!(flush(&mut k).contains("p=1,c=20,r=10"));
+        // an animated Visual too
+        let mut k = Kitty::new(false);
+        k.holes = vec![hole];
+        k.frame(1, r, 20, 20, vec![0; 1600].into());
+        let s = flush(&mut k);
+        assert!(s.contains("a=t,f=32") && placed(&s).len() == 4, "{s:?}");
+        k.holes = vec![];
+        assert!(k.keep(1, r));
+        let s = flush(&mut k);
+        assert!(s.contains("a=d,d=i,i=2,") && placed(&s).len() == 1, "{s:?}");
     }
 
     #[test]

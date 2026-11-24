@@ -259,7 +259,7 @@ fn check(slot: Widget, case: &Case) -> Vec<String> {
     // the top of the body, the middle, the bottom (the main Pane's pages have songs on top and Shelves below)
     for at in 0..3 {
         let mut app = app();
-        app.layout = layout(slot);
+        app.layout = layout(slot).into();
         (case.set)(&mut app);
         app.focus_on(other);
         render(&mut app);
