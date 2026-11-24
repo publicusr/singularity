@@ -180,7 +180,8 @@ pub fn preview(q: &[QueueEntry], d: Option<QueueDrag>) -> Vec<QueueEntry> {
 /// Where the highlight goes when the queue `old` becomes `new` (a skip, a move, a phone's edit): it stays on its song,
 /// not on its slot. The song is found by its uid; where that uid isn't in `new` (the player gives none, or gave it a
 /// new one: a "Next from" song lifted into the queue), by its URI, the place nearest its old one. A song that left (it
-/// plays now, or was removed) hands the highlight to its nearest neighbour still listed, the next one first.
+/// plays now, or was removed) hands the highlight to its nearest neighbour still listed, the next one first. It runs
+/// whether or not the highlight shows; `draw` scrolls to it only while it does.
 pub fn follow(old: &[QueueEntry], sel: usize, new: &[QueueEntry]) -> usize {
     let find = |e: &QueueEntry, near: usize| -> Option<usize> {
         if !e.uid.is_empty()
@@ -188,7 +189,12 @@ pub fn follow(old: &[QueueEntry], sel: usize, new: &[QueueEntry]) -> usize {
         {
             return Some(i);
         }
-        new.iter().enumerate().filter(|(_, n)| n.item.uri == e.item.uri).map(|(i, _)| i).min_by_key(|&i| i.abs_diff(near))
+        // (not an entry whose uid is another song's of the old queue: a second copy of the song is that copy)
+        new.iter()
+            .enumerate()
+            .filter(|(_, n)| n.item.uri == e.item.uri && (n.uid.is_empty() || !old.iter().any(|o| o.uid == n.uid)))
+            .map(|(i, _)| i)
+            .min_by_key(|&i| i.abs_diff(near))
     };
     let last = new.len().saturating_sub(1);
     if sel >= old.len() {
@@ -302,8 +308,11 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let mut view = app.queue_view;
     view.list_y = y;
     view.sel = view.sel.min(app.playback.queue.len().saturating_sub(1));
-    // keep the selection in view
-    if let Some(at) = all.iter().position(|l| *l == Line::Entry(view.sel)) {
+    // (its popup, where no Pane shows it, has the keys as a focused Pane has them)
+    let focused = app.is_focused(crate::layout::Widget::Queue) || app.is_open(crate::app::Modal::Queue);
+    // keep the selection in view while it shows: an unfocused queue keeps its place while its highlight follows its
+    // song, and scrolls to it when it gets the focus
+    if focused && let Some(at) = all.iter().position(|l| *l == Line::Entry(view.sel)) {
         if at < view.top {
             view.top = at.saturating_sub(1);
         } else {
@@ -316,8 +325,6 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let last_top = (0..all.len()).find(|&t| fitting(&all, t, rows, big) == all.len() - t).unwrap_or(all.len());
     view.top = view.top.min(last_top);
     view.visible = if big { fitting(&all, view.top, rows, big).max(1) } else { rows };
-    // (its popup, where no Pane shows it, has the keys as a focused Pane has them)
-    let focused = app.is_focused(crate::layout::Widget::Queue) || app.is_open(crate::app::Modal::Queue);
     let mut hits = vec![];
     // (a Pane a row or two tall has no rows for the list, but keeps its place in it)
     for line in all.iter().skip(view.top).take(fitting(&all, view.top, body, big)) {
@@ -423,6 +430,8 @@ mod tests {
         assert_eq!(follow(&[e("a", "1"), e("b", "2"), e("c", "3")], 2, &[e("a", "1"), e("b", "2")]), 1);
         // a neighbour is looked for near its own old place (c's slot 2), not the highlight's (1): two copies of c
         assert_eq!(follow(&[e("x", ""), e("b", ""), e("c", "")], 1, &[e("c", ""), e("p", ""), e("q", ""), e("c", "")]), 3);
+        // a copy whose uid is another song's of the old queue isn't the song: a(u1) plays, b takes the highlight
+        assert_eq!(follow(&[e("a", "u1"), e("b", "u2"), e("c", "u4"), e("a", "u3")], 0, &[e("b", "u2"), e("c", "u4"), e("a", "u3")]), 0);
         // an empty queue, before and after; a highlight past the end
         assert_eq!(follow(&[], 0, &[e("a", "1")]), 0);
         assert_eq!(follow(&[e("a", "1")], 0, &[]), 0);

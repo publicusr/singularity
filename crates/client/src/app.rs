@@ -2616,11 +2616,9 @@ impl App {
                 p.volume = v;
             }
         }
-        // the queue's highlight stays on its song, not its slot (a skip shifts every slot by one); only while it shows:
-        // an unfocused queue keeps its place (following would scroll it to a highlight no one sees)
-        if self.is_focused(Widget::Queue) || self.is_open(Modal::Queue) {
-            self.queue_view.sel = crate::queue::follow(&self.playback.queue, self.queue_view.sel, &p.queue);
-        }
+        // the queue's highlight stays on its song, not its slot (a skip shifts every slot by one), shown or not (an
+        // unfocused queue doesn't scroll to it: `queue::draw`)
+        self.queue_view.sel = crate::queue::follow(&self.playback.queue, self.queue_view.sel, &p.queue);
         self.playback = p;
     }
 

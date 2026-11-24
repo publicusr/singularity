@@ -2667,18 +2667,48 @@ mod tests {
         use singularity_proto::{Event, Item, PlaybackState, QueueEntry};
         let (mut app, _rx) = playing_app(200_000);
         let e = |n: usize, source: &str| QueueEntry { item: Item { uri: format!("spotify:track:s{n}"), name: format!("Song {n}"), ..Default::default() }, source: source.into(), uid: format!("u{n}") };
-        let mut q: Vec<QueueEntry> = (100..110).map(|n| e(n, "context")).collect();
+        let mut q: Vec<QueueEntry> = (100..140).map(|n| e(n, "context")).collect();
         app.hear(Event::Playback(PlaybackState { queue: q.clone(), ..app.playback.clone() }));
         app.focus_on(Widget::Home);
         render(&mut app, 160, 48);
-        for n in 0..8 {
+        // (more than the queue Pane shows, so the highlight goes out of view)
+        for n in 0..30 {
             // Play next: in front of the others
             q.insert(0, e(n, "queue"));
             app.hear(Event::Playback(PlaybackState { queue: q.clone(), ..app.playback.clone() }));
             let s = render(&mut app, 160, 48);
             assert!(s.contains("Next in queue"), "after {} queued:\n{s}", n + 1);
-            assert_eq!((app.queue_view.sel, app.queue_view.top), (0, 0), "after {} queued", n + 1);
+            // (the highlight, not drawn, stays on its song below)
+            assert_eq!((app.queue_view.sel, app.queue_view.top), (n + 1, 0), "after {} queued", n + 1);
         }
+        // the focus back on the queue: the list comes to its highlight, the song it was on
+        app.focus_on(Widget::Queue);
+        let s = render(&mut app, 160, 48);
+        assert_eq!(app.playback.queue[app.queue_view.sel].item.name, "Song 100");
+        assert!(app.queue_view.top > 0 && app.hits.iter().any(|(_, h)| *h == Hit::QueueRow(app.queue_view.sel)), "{s}");
+    }
+
+    /// The highlight follows its song while the queue isn't focused too: a skip with Home focused, then the focus back
+    /// on the queue (by Tab, or its popup), and the highlight is on the song it was on.
+    #[test]
+    fn a_skip_while_the_queue_is_unfocused_leaves_the_highlight_on_its_song() {
+        use singularity_proto::{Event, Item, PlaybackState, QueueEntry};
+        let (mut app, _rx) = playing_app(200_000);
+        let e = |n: &str| QueueEntry { item: Item { uri: format!("spotify:track:{n}"), name: format!("Song {n}"), ..Default::default() }, source: "queue".into(), uid: format!("u{n}") };
+        app.hear(Event::Playback(PlaybackState { queue: vec![e("a"), e("b"), e("c"), e("d")], ..app.playback.clone() }));
+        app.focus_on(Widget::Queue);
+        render(&mut app, 160, 48);
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.playback.queue[app.queue_view.sel].item.name, "Song c");
+        app.focus_on(Widget::Home);
+        render(&mut app, 160, 48);
+        // a skip: a plays, every song up a slot
+        app.hear(Event::Playback(PlaybackState { queue: vec![e("b"), e("c"), e("d")], ..app.playback.clone() }));
+        render(&mut app, 160, 48);
+        app.focus_on(Widget::Queue);
+        render(&mut app, 160, 48);
+        assert_eq!(app.playback.queue[app.queue_view.sel].item.name, "Song c");
     }
 
     #[test]
