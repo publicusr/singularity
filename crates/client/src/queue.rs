@@ -24,11 +24,30 @@ pub struct QueueView {
     pub list_y: u16,
     /// whether it was last drawn big (#59): a song two rows tall, its cover beside it
     pub big: bool,
+    /// whether the user put the highlight where it is (a key, the wheel, a click, a menu, a drop): only then does it
+    /// follow its song when the queue changes; one never placed stays on the first slot. An empty queue unplaces it.
+    pub placed: bool,
 }
 
 impl QueueView {
     pub fn move_sel(&mut self, delta: i64, len: usize) {
-        self.sel = (self.sel as i64 + delta).clamp(0, len.saturating_sub(1) as i64) as usize;
+        self.place((self.sel as i64 + delta).clamp(0, len.saturating_sub(1) as i64) as usize);
+    }
+
+    /// The user put the highlight on entry `i`.
+    pub fn place(&mut self, i: usize) {
+        self.sel = i;
+        self.placed = true;
+    }
+
+    /// The queue `old` became `new`: a placed highlight follows its song ([`follow`]); one never placed stays where
+    /// it is. An empty queue leaves nothing placed.
+    pub fn queue_changed(&mut self, old: &[QueueEntry], new: &[QueueEntry]) {
+        if new.is_empty() {
+            (self.sel, self.placed) = (0, false);
+        } else if self.placed {
+            self.sel = follow(old, self.sel, new);
+        }
     }
 }
 
@@ -177,6 +196,34 @@ pub fn preview(q: &[QueueEntry], d: Option<QueueDrag>) -> Vec<QueueEntry> {
     v
 }
 
+/// Where the highlight goes when the queue `old` becomes `new` (a skip, a move, a phone's edit): it stays on its song,
+/// not on its slot. The song is found by its uid; where that uid isn't in `new` (the player gives none, or gave it a
+/// new one: a "Next from" song lifted into the queue), by its URI, the place nearest its old one. A song that left (it
+/// plays now, or was removed) hands the highlight to its nearest neighbour still listed, the next one first. It runs
+/// whether or not the highlight shows; `draw` scrolls to it only while it does.
+pub fn follow(old: &[QueueEntry], sel: usize, new: &[QueueEntry]) -> usize {
+    let find = |e: &QueueEntry, near: usize| -> Option<usize> {
+        if !e.uid.is_empty()
+            && let Some(i) = new.iter().position(|n| n.uid == e.uid)
+        {
+            return Some(i);
+        }
+        // (not an entry whose uid is another song's of the old queue: a second copy of the song is that copy)
+        new.iter()
+            .enumerate()
+            .filter(|(_, n)| n.item.uri == e.item.uri && (n.uid.is_empty() || !old.iter().any(|o| o.uid == n.uid)))
+            .map(|(i, _)| i)
+            .min_by_key(|&i| i.abs_diff(near))
+    };
+    let last = new.len().saturating_sub(1);
+    if sel >= old.len() {
+        return sel.min(last);
+    }
+    // the song itself, then its neighbours outwards, the next one first
+    let around = (1..old.len()).flat_map(|d| [sel.checked_add(d), sel.checked_sub(d)]).flatten().filter(|&i| i < old.len());
+    std::iter::once(sel).chain(around).find_map(|i| find(&old[i], i)).unwrap_or(sel.min(last))
+}
+
 /// One line of the Widget: a section heading, or entry `i`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Line {
@@ -280,8 +327,11 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let mut view = app.queue_view;
     view.list_y = y;
     view.sel = view.sel.min(app.playback.queue.len().saturating_sub(1));
-    // keep the selection in view
-    if let Some(at) = all.iter().position(|l| *l == Line::Entry(view.sel)) {
+    // (its popup, where no Pane shows it, has the keys as a focused Pane has them)
+    let focused = app.is_focused(crate::layout::Widget::Queue) || app.is_open(crate::app::Modal::Queue);
+    // keep the selection in view while it shows: an unfocused queue keeps its place while its highlight follows its
+    // song, and scrolls to it when it gets the focus
+    if focused && let Some(at) = all.iter().position(|l| *l == Line::Entry(view.sel)) {
         if at < view.top {
             view.top = at.saturating_sub(1);
         } else {
@@ -294,8 +344,6 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let last_top = (0..all.len()).find(|&t| fitting(&all, t, rows, big) == all.len() - t).unwrap_or(all.len());
     view.top = view.top.min(last_top);
     view.visible = if big { fitting(&all, view.top, rows, big).max(1) } else { rows };
-    // (its popup, where no Pane shows it, has the keys as a focused Pane has them)
-    let focused = app.is_focused(crate::layout::Widget::Queue) || app.is_open(crate::app::Modal::Queue);
     let mut hits = vec![];
     // (a Pane a row or two tall has no rows for the list, but keeps its place in it)
     for line in all.iter().skip(view.top).take(fitting(&all, view.top, body, big)) {
@@ -380,6 +428,35 @@ mod tests {
         assert_eq!(names(&preview(&q, Some(drag(2, 2, true)))), "aq bq xq y", "last of the queued");
         let l = lines_of(&preview(&q, Some(drag(2, 2, true))), Some("Orbits"));
         assert_eq!(l[4], Line::Heading("Next from Orbits".into()), "the moved song shows under Next in queue");
+    }
+
+    #[test]
+    fn the_highlight_follows_its_song_by_uid_then_by_uri() {
+        let e = |n: &str, uid: &str| QueueEntry { uid: uid.into(), ..entry(n, "queue") };
+        // a skip: every song up a slot, the highlight with its song
+        assert_eq!(follow(&[e("a", "1"), e("b", "2"), e("c", "3")], 1, &[e("b", "2"), e("c", "3")]), 0);
+        // a "Next from" song lifted into the queue: the Daemon sent it with no uid, Spotify gave it one
+        assert_eq!(follow(&[e("a", "1"), e("x", "")], 1, &[e("x", "9"), e("a", "1")]), 0);
+        // …or a new uid for the same song
+        assert_eq!(follow(&[e("a", "1"), e("x", "c1")], 1, &[e("a", "1"), e("b", "2"), e("x", "q7")]), 2);
+        // a uid still there wins over a same-URI duplicate nearer the old place
+        assert_eq!(follow(&[e("a", "1"), e("a", "2")], 1, &[e("a", "2"), e("a", "1")]), 0);
+        // no uids: the same URI, the copy nearest its old place
+        assert_eq!(follow(&[e("a", ""), e("b", ""), e("a", ""), e("c", "")], 2, &[e("b", ""), e("a", ""), e("c", ""), e("a", "")]), 1);
+        assert_eq!(follow(&[e("a", ""), e("b", ""), e("c", ""), e("a", "")], 3, &[e("a", ""), e("b", ""), e("c", ""), e("d", ""), e("a", "")]), 4);
+        // the song left: the next one still listed, else the one before
+        assert_eq!(follow(&[e("a", "1"), e("b", "2"), e("c", "3")], 0, &[e("b", "2"), e("c", "3")]), 0);
+        assert_eq!(follow(&[e("a", "1"), e("b", "2"), e("c", "3")], 2, &[e("a", "1"), e("b", "2")]), 1);
+        // a neighbour is looked for near its own old place (c's slot 2), not the highlight's (1): two copies of c
+        assert_eq!(follow(&[e("x", ""), e("b", ""), e("c", "")], 1, &[e("c", ""), e("p", ""), e("q", ""), e("c", "")]), 3);
+        // a copy whose uid is another song's of the old queue isn't the song: a(u1) plays, b takes the highlight
+        assert_eq!(follow(&[e("a", "u1"), e("b", "u2"), e("c", "u4"), e("a", "u3")], 0, &[e("b", "u2"), e("c", "u4"), e("a", "u3")]), 0);
+        // an empty queue, before and after; a highlight past the end
+        assert_eq!(follow(&[], 0, &[e("a", "1")]), 0);
+        assert_eq!(follow(&[e("a", "1")], 0, &[]), 0);
+        assert_eq!(follow(&[e("a", "1")], 5, &[e("b", "2"), e("c", "3")]), 1);
+        // nothing of the old queue left: the same slot, inside the new one
+        assert_eq!(follow(&[e("a", "1"), e("b", "2"), e("c", "3")], 2, &[e("x", "7"), e("y", "8")]), 1);
     }
 
     #[test]

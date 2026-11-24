@@ -2614,6 +2614,146 @@ mod tests {
         assert_eq!(order, "abcyx", "shown at once, before x");
     }
 
+    /// The owner's report (2026-11-24): songs swapped in the queue, then a skip, and the highlight stayed on the slot
+    /// while the songs moved under it. It stays on its song; a song that left hands it to its nearest neighbour.
+    #[test]
+    fn the_queue_highlight_follows_its_song_through_a_move_and_a_skip() {
+        use singularity_proto::{Event, Item, PlaybackState, QueueEntry};
+        let (mut app, _rx) = playing_app(200_000);
+        let e = |n: &str, source: &str| QueueEntry { item: Item { uri: format!("spotify:track:{n}"), name: format!("Song {n}"), ..Default::default() }, source: source.into(), uid: format!("u{n}") };
+        let state = |app: &App, playing: &str, q: Vec<QueueEntry>| PlaybackState { item: Some(Item { uri: format!("spotify:track:{playing}"), name: format!("Song {playing}"), duration_ms: 200_000, ..Default::default() }), queue: q, ..app.playback.clone() };
+        let p = state(&app, "n", vec![e("a", "queue"), e("b", "queue"), e("c", "queue"), e("x", "context")]);
+        app.hear(Event::Playback(p));
+        render(&mut app, 160, 48);
+        let row = |app: &App, i: usize| app.hits.iter().find_map(|(r, h)| (*h == Hit::QueueRow(i)).then_some(*r)).unwrap();
+        // the highlighted song, as drawn
+        let lit = |app: &mut App| {
+            let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
+            t.draw(|f| draw(f, app)).unwrap();
+            let buf = t.backend().buffer().clone();
+            let sel = app.theme.selection.color();
+            let rows: Vec<Rect> = app.hits.iter().filter_map(|(r, h)| matches!(h, Hit::QueueRow(_)).then_some(*r)).collect();
+            rows.into_iter().filter(|r| buf[(r.x + 1, r.y)].bg == sel).map(|r| (r.x..r.right()).map(|x| buf[(x, r.y)].symbol().to_string()).collect::<String>().trim().to_string()).collect::<Vec<_>>()
+        };
+        // swap the first two: a dragged onto b
+        let mouse = |app: &mut App, kind, r: Rect| app.mouse(MouseEvent { kind, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
+        let (a, b) = (row(&app, 0), row(&app, 1));
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), a);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), b);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), b);
+        assert!(lit(&mut app).iter().any(|s| s.contains("Song a")) && lit(&mut app).len() == 1, "{:?}", lit(&mut app));
+        // Spotify agrees: the same order comes back, the highlight stays on a
+        let p = state(&app, "n", vec![e("b", "queue"), e("a", "queue"), e("c", "queue"), e("x", "context")]);
+        app.hear(Event::Playback(p));
+        assert!(lit(&mut app)[0].contains("Song a"), "{:?}", lit(&mut app));
+        // a skip: b plays now, every song moves up a slot, and the highlight moves with a
+        let p = state(&app, "b", vec![e("a", "queue"), e("c", "queue"), e("x", "context")]);
+        app.hear(Event::Playback(p));
+        assert_eq!(app.queue_view.sel, 0);
+        assert!(lit(&mut app)[0].contains("Song a"), "{:?}", lit(&mut app));
+        // the highlighted song itself plays next: the song after it takes the highlight
+        let p = state(&app, "a", vec![e("c", "queue"), e("x", "context")]);
+        app.hear(Event::Playback(p));
+        assert!(lit(&mut app)[0].contains("Song c"), "{:?}", lit(&mut app));
+        // the last one, removed: the one before it
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(lit(&mut app)[0].contains("Song x"));
+        let p = state(&app, "a", vec![e("c", "queue")]);
+        app.hear(Event::Playback(p));
+        assert!(lit(&mut app)[0].contains("Song c"), "{:?}", lit(&mut app));
+        // a player that gives no uids: the same, by URI
+        let bare = |n: &str| QueueEntry { uid: String::new(), ..e(n, "context") };
+        app.hear(Event::Playback(state(&app, "a", vec![bare("p"), bare("q"), bare("r")])));
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.hear(Event::Playback(state(&app, "p", vec![bare("q"), bare("r")])));
+        assert!(lit(&mut app)[0].contains("Song q"), "{:?}", lit(&mut app));
+    }
+
+    /// Songs queued with Home focused leave an unfocused queue Pane at its top, "Next in queue" in view. A highlight the
+    /// user never placed stays on the first slot (the newest song, as before); one placed follows its song out of view,
+    /// and the list comes to it when the queue gets the focus.
+    #[test]
+    fn an_unfocused_queue_stays_at_its_top_as_songs_are_queued() {
+        use singularity_proto::{Event, Item, PlaybackState, QueueEntry};
+        let e = |n: usize, source: &str| QueueEntry { item: Item { uri: format!("spotify:track:s{n}"), name: format!("Song {n}"), ..Default::default() }, source: source.into(), uid: format!("u{n}") };
+        for placed in [false, true] {
+            let (mut app, _rx) = playing_app(200_000);
+            let mut q: Vec<QueueEntry> = (100..140).map(|n| e(n, "context")).collect();
+            app.hear(Event::Playback(PlaybackState { queue: q.clone(), ..app.playback.clone() }));
+            if placed {
+                // the user puts it on the second song and back, by keys
+                app.focus_on(Widget::Queue);
+                render(&mut app, 160, 48);
+                app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+                app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+            }
+            app.focus_on(Widget::Home);
+            render(&mut app, 160, 48);
+            // (more than the queue Pane shows, so a placed highlight goes out of view)
+            for n in 0..30 {
+                // Play next: in front of the others
+                q.insert(0, e(n, "queue"));
+                app.hear(Event::Playback(PlaybackState { queue: q.clone(), ..app.playback.clone() }));
+                let s = render(&mut app, 160, 48);
+                assert!(s.contains("Next in queue"), "placed {placed}, after {} queued:\n{s}", n + 1);
+                // (a placed highlight, not drawn, stays on its song below; one never placed on the first slot)
+                let sel = if placed { n + 1 } else { 0 };
+                assert_eq!((app.queue_view.sel, app.queue_view.top), (sel, 0), "placed {placed}, after {} queued", n + 1);
+            }
+            // the focus back on the queue: the list comes to its highlight
+            app.focus_on(Widget::Queue);
+            let s = render(&mut app, 160, 48);
+            assert!(app.hits.iter().any(|(_, h)| *h == Hit::QueueRow(app.queue_view.sel)), "{s}");
+            if placed {
+                assert_eq!(app.playback.queue[app.queue_view.sel].item.name, "Song 100");
+                assert!(app.queue_view.top > 0);
+            } else {
+                assert_eq!((app.queue_view.sel, app.queue_view.top), (0, 0), "the newest song, at the top");
+            }
+        }
+    }
+
+    /// The queue emptied: the highlight is unplaced again, and new songs find it on the first slot.
+    #[test]
+    fn an_emptied_queue_unplaces_its_highlight() {
+        use singularity_proto::{Event, Item, PlaybackState, QueueEntry};
+        let (mut app, _rx) = playing_app(200_000);
+        let e = |n: &str| QueueEntry { item: Item { uri: format!("spotify:track:{n}"), name: format!("Song {n}"), ..Default::default() }, source: "queue".into(), uid: format!("u{n}") };
+        app.hear(Event::Playback(PlaybackState { queue: vec![e("a"), e("b")], ..app.playback.clone() }));
+        app.focus_on(Widget::Queue);
+        render(&mut app, 160, 48);
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(app.queue_view.placed);
+        app.hear(Event::Playback(PlaybackState { queue: vec![], ..app.playback.clone() }));
+        assert!(!app.queue_view.placed);
+        app.hear(Event::Playback(PlaybackState { queue: vec![e("c")], ..app.playback.clone() }));
+        app.hear(Event::Playback(PlaybackState { queue: vec![e("d"), e("c")], ..app.playback.clone() }));
+        assert_eq!(app.queue_view.sel, 0, "unplaced: the first slot, not c");
+    }
+
+    /// The highlight follows its song while the queue isn't focused too: a skip with Home focused, then the focus back
+    /// on the queue (by Tab, or its popup), and the highlight is on the song it was on.
+    #[test]
+    fn a_skip_while_the_queue_is_unfocused_leaves_the_highlight_on_its_song() {
+        use singularity_proto::{Event, Item, PlaybackState, QueueEntry};
+        let (mut app, _rx) = playing_app(200_000);
+        let e = |n: &str| QueueEntry { item: Item { uri: format!("spotify:track:{n}"), name: format!("Song {n}"), ..Default::default() }, source: "queue".into(), uid: format!("u{n}") };
+        app.hear(Event::Playback(PlaybackState { queue: vec![e("a"), e("b"), e("c"), e("d")], ..app.playback.clone() }));
+        app.focus_on(Widget::Queue);
+        render(&mut app, 160, 48);
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.playback.queue[app.queue_view.sel].item.name, "Song c");
+        app.focus_on(Widget::Home);
+        render(&mut app, 160, 48);
+        // a skip: a plays, every song up a slot
+        app.hear(Event::Playback(PlaybackState { queue: vec![e("b"), e("c"), e("d")], ..app.playback.clone() }));
+        render(&mut app, 160, 48);
+        app.focus_on(Widget::Queue);
+        render(&mut app, 160, 48);
+        assert_eq!(app.playback.queue[app.queue_view.sel].item.name, "Song c");
+    }
+
     #[test]
     fn every_row_has_a_heart_asked_about_in_batches() {
         use singularity_proto::{Command, SavedFlag, TrackPage, TrackRow};
