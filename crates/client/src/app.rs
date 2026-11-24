@@ -2172,13 +2172,13 @@ impl App {
         };
         let into_queue = d.into_queue;
         self.playback.queue = crate::queue::preview(&self.playback.queue, Some(crate::queue::QueueDrag { to: at, ..d }));
-        self.queue_view.sel = at.min(self.playback.queue.len().saturating_sub(1));
+        self.queue_view.place(at.min(self.playback.queue.len().saturating_sub(1)));
         self.send(Command::MoveInQueue { uri, uid, to, into_queue });
     }
 
     pub fn open_queue_menu(&mut self, i: usize, at: Option<(u16, u16)>) {
         let Some(q) = self.playback.queue.get(i).cloned() else { return };
-        self.queue_view.sel = i;
+        self.queue_view.place(i);
         let queued = q.source == "queue";
         let mut items = vec![];
         if queued {
@@ -2617,8 +2617,8 @@ impl App {
             }
         }
         // the queue's highlight stays on its song, not its slot (a skip shifts every slot by one), shown or not (an
-        // unfocused queue doesn't scroll to it: `queue::draw`)
-        self.queue_view.sel = crate::queue::follow(&self.playback.queue, self.queue_view.sel, &p.queue);
+        // unfocused queue doesn't scroll to it: `queue::draw`), once the user has placed it
+        self.queue_view.queue_changed(&self.playback.queue, &p.queue);
         self.playback = p;
     }
 
@@ -2829,7 +2829,7 @@ impl App {
                     }
                     Some(Hit::QueueRow(i)) => {
                         self.focus_on(Widget::Queue);
-                        self.queue_view.sel = i;
+                        self.queue_view.place(i);
                         // a queued or context song can be dragged (a context song also up into your queue)
                         self.queue_drag = crate::queue::QueueDrag::start(self, i);
                     }
@@ -3311,7 +3311,7 @@ impl App {
                     // a song is highlighted and can be dragged (as in its Pane)
                     Modal::Queue => match hit {
                         Some(Hit::QueueRow(i)) => {
-                            self.queue_view.sel = i;
+                            self.queue_view.place(i);
                             self.queue_drag = crate::queue::QueueDrag::start(self, i);
                         }
                         _ if !inside => self.close_queue_popup(),

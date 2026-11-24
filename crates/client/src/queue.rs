@@ -24,11 +24,30 @@ pub struct QueueView {
     pub list_y: u16,
     /// whether it was last drawn big (#59): a song two rows tall, its cover beside it
     pub big: bool,
+    /// whether the user put the highlight where it is (a key, the wheel, a click, a menu, a drop): only then does it
+    /// follow its song when the queue changes; one never placed stays on the first slot. An empty queue unplaces it.
+    pub placed: bool,
 }
 
 impl QueueView {
     pub fn move_sel(&mut self, delta: i64, len: usize) {
-        self.sel = (self.sel as i64 + delta).clamp(0, len.saturating_sub(1) as i64) as usize;
+        self.place((self.sel as i64 + delta).clamp(0, len.saturating_sub(1) as i64) as usize);
+    }
+
+    /// The user put the highlight on entry `i`.
+    pub fn place(&mut self, i: usize) {
+        self.sel = i;
+        self.placed = true;
+    }
+
+    /// The queue `old` became `new`: a placed highlight follows its song ([`follow`]); one never placed stays where
+    /// it is. An empty queue leaves nothing placed.
+    pub fn queue_changed(&mut self, old: &[QueueEntry], new: &[QueueEntry]) {
+        if new.is_empty() {
+            (self.sel, self.placed) = (0, false);
+        } else if self.placed {
+            self.sel = follow(old, self.sel, new);
+        }
     }
 }
 
