@@ -177,6 +177,25 @@ pub fn preview(q: &[QueueEntry], d: Option<QueueDrag>) -> Vec<QueueEntry> {
     v
 }
 
+/// Where the highlight goes when the queue `old` becomes `new` (a skip, a move, a phone's edit): it stays on its song,
+/// found by uid (or, where the player gives none, by URI, nearest its old place), not on its slot. A song that left (it
+/// plays now, or was removed) hands the highlight to its nearest neighbour still listed, the next one first.
+pub fn follow(old: &[QueueEntry], sel: usize, new: &[QueueEntry]) -> usize {
+    let find = |e: &QueueEntry, near: usize| -> Option<usize> {
+        if !e.uid.is_empty() {
+            return new.iter().position(|n| n.uid == e.uid);
+        }
+        new.iter().enumerate().filter(|(_, n)| n.uid.is_empty() && n.item.uri == e.item.uri).map(|(i, _)| i).min_by_key(|&i| i.abs_diff(near))
+    };
+    let last = new.len().saturating_sub(1);
+    if sel >= old.len() {
+        return sel.min(last);
+    }
+    // the song itself, then its neighbours outwards, the next one first
+    let around = (1..old.len()).flat_map(|d| [sel.checked_add(d), sel.checked_sub(d)]).flatten().filter(|&i| i < old.len());
+    std::iter::once(sel).chain(around).find_map(|i| find(&old[i], sel)).unwrap_or(sel.min(last))
+}
+
 /// One line of the Widget: a section heading, or entry `i`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Line {

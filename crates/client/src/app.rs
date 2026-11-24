@@ -2616,6 +2616,8 @@ impl App {
                 p.volume = v;
             }
         }
+        // the queue's highlight stays on its song, not its slot (a skip shifts every slot by one)
+        self.queue_view.sel = crate::queue::follow(&self.playback.queue, self.queue_view.sel, &p.queue);
         self.playback = p;
     }
 

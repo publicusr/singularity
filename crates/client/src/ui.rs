@@ -2605,6 +2605,61 @@ mod tests {
         assert_eq!(order, "abcyx", "shown at once, before x");
     }
 
+    /// The owner's report (2026-11-24): songs swapped in the queue, then a skip, and the highlight stayed on the slot
+    /// while the songs moved under it. It stays on its song; a song that left hands it to its nearest neighbour.
+    #[test]
+    fn the_queue_highlight_follows_its_song_through_a_move_and_a_skip() {
+        use singularity_proto::{Event, Item, PlaybackState, QueueEntry};
+        let (mut app, _rx) = playing_app(200_000);
+        let e = |n: &str, source: &str| QueueEntry { item: Item { uri: format!("spotify:track:{n}"), name: format!("Song {n}"), ..Default::default() }, source: source.into(), uid: format!("u{n}") };
+        let state = |app: &App, playing: &str, q: Vec<QueueEntry>| PlaybackState { item: Some(Item { uri: format!("spotify:track:{playing}"), name: format!("Song {playing}"), duration_ms: 200_000, ..Default::default() }), queue: q, ..app.playback.clone() };
+        let p = state(&app, "n", vec![e("a", "queue"), e("b", "queue"), e("c", "queue"), e("x", "context")]);
+        app.hear(Event::Playback(p));
+        render(&mut app, 160, 48);
+        let row = |app: &App, i: usize| app.hits.iter().find_map(|(r, h)| (*h == Hit::QueueRow(i)).then_some(*r)).unwrap();
+        // the highlighted song, as drawn
+        let lit = |app: &mut App| {
+            let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
+            t.draw(|f| draw(f, app)).unwrap();
+            let buf = t.backend().buffer().clone();
+            let sel = app.theme.selection.color();
+            let rows: Vec<Rect> = app.hits.iter().filter_map(|(r, h)| matches!(h, Hit::QueueRow(_)).then_some(*r)).collect();
+            rows.into_iter().filter(|r| buf[(r.x + 1, r.y)].bg == sel).map(|r| (r.x..r.right()).map(|x| buf[(x, r.y)].symbol().to_string()).collect::<String>().trim().to_string()).collect::<Vec<_>>()
+        };
+        // swap the first two: a dragged onto b
+        let mouse = |app: &mut App, kind, r: Rect| app.mouse(MouseEvent { kind, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
+        let (a, b) = (row(&app, 0), row(&app, 1));
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), a);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), b);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), b);
+        assert!(lit(&mut app).iter().any(|s| s.contains("Song a")) && lit(&mut app).len() == 1, "{:?}", lit(&mut app));
+        // Spotify agrees: the same order comes back, the highlight stays on a
+        let p = state(&app, "n", vec![e("b", "queue"), e("a", "queue"), e("c", "queue"), e("x", "context")]);
+        app.hear(Event::Playback(p));
+        assert!(lit(&mut app)[0].contains("Song a"), "{:?}", lit(&mut app));
+        // a skip: b plays now, every song moves up a slot, and the highlight moves with a
+        let p = state(&app, "b", vec![e("a", "queue"), e("c", "queue"), e("x", "context")]);
+        app.hear(Event::Playback(p));
+        assert_eq!(app.queue_view.sel, 0);
+        assert!(lit(&mut app)[0].contains("Song a"), "{:?}", lit(&mut app));
+        // the highlighted song itself plays next: the song after it takes the highlight
+        let p = state(&app, "a", vec![e("c", "queue"), e("x", "context")]);
+        app.hear(Event::Playback(p));
+        assert!(lit(&mut app)[0].contains("Song c"), "{:?}", lit(&mut app));
+        // the last one, removed: the one before it
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(lit(&mut app)[0].contains("Song x"));
+        let p = state(&app, "a", vec![e("c", "queue")]);
+        app.hear(Event::Playback(p));
+        assert!(lit(&mut app)[0].contains("Song c"), "{:?}", lit(&mut app));
+        // a player that gives no uids: the same, by URI
+        let bare = |n: &str| QueueEntry { uid: String::new(), ..e(n, "context") };
+        app.hear(Event::Playback(state(&app, "a", vec![bare("p"), bare("q"), bare("r")])));
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.hear(Event::Playback(state(&app, "p", vec![bare("q"), bare("r")])));
+        assert!(lit(&mut app)[0].contains("Song q"), "{:?}", lit(&mut app));
+    }
+
     #[test]
     fn every_row_has_a_heart_asked_about_in_batches() {
         use singularity_proto::{Command, SavedFlag, TrackPage, TrackRow};
