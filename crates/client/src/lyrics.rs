@@ -10,8 +10,10 @@
 //! (`ease`). The layout pieces (`wrap`, `fit`, `first_row`, `ease`, `tone`) are plain functions, so another lyrics
 //! view can lay out the same way.
 //!
-//! A big Pane on the pixel tier draws the same view in big text (`bigtext`, `big_fit`): sized so the song's longer
-//! lines reach across the Pane and at least `BIG_LINES` lines fit its height, each row an image placed on cells.
+//! A big Pane (#53, the owner's contact sheet marks) keeps the cells' look and centres the lines as a block
+//! (`centring`); on the pixel tier it also draws them a step larger (`step`: growing with the Pane from the cells' size
+//! to `MAX_STEP`, so no size jumps to another font): the same view, in the terminal's own font (`bigtext`), each row an
+//! image placed on cells.
 
 use crate::app::{App, Hit};
 use crate::theme::Theme;
@@ -40,8 +42,10 @@ fn stamp(ms: u64) -> String {
 pub struct Wrapped {
     /// the text width (or the big text's size) the rows are wrapped for
     key: Option<u64>,
-    /// the width of the song's longer lines in ems (`typical`; None when the fonts can't draw it), once worked out
-    typical: Option<Option<f32>>,
+    /// whether the fonts draw every line (else big text keeps to the cells), once worked out
+    covers: Option<bool>,
+    /// the widest row, its indent included, in the units the rows were wrapped in (columns, or big text's pixels)
+    widest: f32,
     /// (line, text)
     rows: Vec<(usize, String)>,
     /// where each line's first row is
@@ -61,9 +65,14 @@ pub struct Wrapped {
 }
 
 impl Wrapped {
-    /// The width of the song's longer lines (`typical`), worked out once for the lyrics in hand.
-    fn typical(&mut self, lines: &[LyricLine]) -> Option<f32> {
-        *self.typical.get_or_insert_with(|| typical(lines))
+    /// Whether the fonts draw every line, worked out once for the lyrics in hand.
+    fn covers(&mut self, lines: &[LyricLine]) -> bool {
+        *self.covers.get_or_insert_with(|| lines.iter().all(|l| crate::bigtext::covers(&l.text)))
+    }
+
+    /// The widest row as `measure` measures it, a continuation row's `indent` included.
+    fn widest(&self, measure: impl Fn(&str) -> f32, indent: f32) -> f32 {
+        self.rows.iter().enumerate().map(|(k, (i, t))| measure(t) + if self.starts[*i] == k { 0.0 } else { indent }).fold(0.0, f32::max)
     }
 
     /// Every line's rows for a layout (`key`: the text width, or the big text's size) as `wrap` breaks a line: wrapped
@@ -174,24 +183,56 @@ pub fn ease(shown: f32, target: f32, dt: f32) -> f32 {
     shown + d * (1.0 - (-dt / 0.045).exp())
 }
 
-/// The smallest Pane (inside its frame, credit row not counted) that gets big text: smaller ones are the cells' own.
+/// The smallest Pane (inside its frame, credit row not counted) whose lines grow and move to the middle: smaller ones
+/// stay as they are, flush left at the cells' size.
 const BIG_W: u16 = 96;
 const BIG_H: u16 = 24;
-/// Lines a big Pane shows at least (a line's rows a third down: three sung above, the rest to come).
-const BIG_LINES: u16 = 8;
-/// Big text at least this many times a cell's height (its pixels to the em), else it isn't worth leaving the cells.
-const BIG_MIN: f64 = 1.6;
-/// The timestamps' size beside big text, against the lines'.
-const STAMP_SCALE: f32 = 0.55;
+/// How much bigger than the cells a big Pane's lyrics get at most (#53, the owner: "the same font, only a little
+/// bigger"; the full screen "a slightly larger font", not the far bigger one before).
+pub const MAX_STEP: f32 = 1.5;
+/// Below this step the lines stay the cells' own: an image a few per cent bigger isn't worth it.
+const PIXEL_STEP: f32 = 1.1;
+/// The columns and rows past `BIG_W`×`BIG_H` over which the lines ease from flush left to the Pane's middle, so a Pane
+/// a cell bigger never jumps.
+const CENTRE_W: f32 = 20.0;
+const CENTRE_H: f32 = 8.0;
 
-/// How big text fills a big Pane: the lines' size, the rows' height in cells, the columns in pixels.
+/// How much bigger than the cells' text the lyrics are drawn in a Pane laid out as `f` (`w` columns): 1 up to a big
+/// Pane, then growing with it (its width or height against the big Pane's, whichever is less) to `MAX_STEP`. A step,
+/// never a jump: a Pane a column wider draws them at most a 96th bigger, a row taller a 24th.
+pub fn step(f: &Fit, w: u16) -> f32 {
+    if w < BIG_W || f.body < BIG_H {
+        return 1.0;
+    }
+    (w as f32 / BIG_W as f32).min(f.body as f32 / BIG_H as f32).min(MAX_STEP)
+}
+
+/// How far a Pane laid out as `f` (`w` columns) moves its lines toward its middle: 0, flush left like a log, up to a
+/// big Pane; 1, a block centred in it (#53: "centre it so a large Pane looks balanced"), eased in over
+/// `CENTRE_W`×`CENTRE_H` cells.
+pub fn centring(f: &Fit, w: u16) -> f32 {
+    if w < BIG_W || f.body < BIG_H {
+        return 0.0;
+    }
+    ((w - BIG_W) as f32 / CENTRE_W).min((f.body - BIG_H) as f32 / CENTRE_H).min(1.0)
+}
+
+/// `f` with its lines moved `t` of the way to the middle: the block of the timestamps and the song's `widest` row
+/// (columns) centred in the Pane's margins at 1. The text keeps its rows; only where they start moves.
+pub fn centred(f: Fit, widest: f32, t: f32) -> Fit {
+    let spare = (f.text_w as f32 - widest).max(0.0);
+    let shift = (spare / 2.0 * t).floor() as u16;
+    Fit { stamp_x: f.stamp_x.map(|x| x + shift), text_x: f.text_x + shift, text_w: f.text_w - 2 * shift, ..f }
+}
+
+/// How a big Pane on the pixel tier draws its lines a step larger: their size, a row's height, the columns in pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BigFit {
-    /// the lines' and the timestamps' pixels to the em
+    /// the lines' and the timestamps' pixels to the em: the font's ascent and descent fill a row, as a terminal's
+    /// fill a cell
     pub px: f32,
-    pub stamp_px: f32,
-    /// cells a row takes, top to bottom
-    pub pitch: u16,
+    /// pixels a row takes, top to bottom: `step` cells
+    pub row: f32,
     /// pixels from the column's left: where the text starts (after the timestamps)
     pub text_x: f32,
     /// pixels for the text, and the indent of a wrapped line's continuation rows
@@ -202,39 +243,29 @@ pub struct BigFit {
 impl BigFit {
     /// What the rows depend on, for the wrap cache (kept apart from the cells' widths by its top bit).
     fn key(&self) -> u64 {
-        1 << 63 | (self.px.to_bits() as u64) << 16 | (self.text_w as u64) << 48 | self.pitch as u64
+        1 << 63 | (self.px.to_bits() as u64) << 16 | (self.text_w as u64) << 48 | self.row as u64
+    }
+
+    /// The rows wholly in a body of `cells` cells `ch` pixels tall, wherever the view's top falls in its first cell.
+    fn rows(&self, cells: u16, ch: f64) -> usize {
+        ((cells as f64 * ch - ch) / self.row as f64).floor().max(1.0) as usize
     }
 }
 
-/// The width of a song's longer lines at 1 px to the em (bold, as the current line is drawn): the line nine in ten
-/// are no wider than, or the longest when it is only a little wider. None when the fonts lack one of its characters.
-pub fn typical(lines: &[LyricLine]) -> Option<f32> {
-    if !lines.iter().all(|l| crate::bigtext::covers(&l.text)) {
+/// The lines a step larger for a Pane laid out as `f` (`w` columns), cells of `cw`×`ch` pixels: `step` times the
+/// cells' text, the timestamps as big as the lines, wrapped at the Pane's width. None while the step is too small to
+/// leave the cells.
+pub fn big_fit(f: &Fit, w: u16, (cw, ch): (f64, f64)) -> Option<BigFit> {
+    let s = step(f, w);
+    if s < PIXEL_STEP || cw <= 0.0 || ch <= 0.0 {
         return None;
     }
-    Some(crate::bigtext::typical(lines.iter().map(|l| if l.text.trim().is_empty() { "♪" } else { l.text.as_str() }), 1.5))
-}
-
-/// Big text for a Pane laid out as `f` (`w` columns), cells of `cw`×`ch` pixels, a song whose longer lines are
-/// `typical` ems wide: as big as lets those lines span the column and `BIG_LINES` lines fit. None for a Pane too small
-/// to gain from it.
-pub fn big_fit(f: &Fit, w: u16, (cw, ch): (f64, f64), typical: f32) -> Option<BigFit> {
-    if w < BIG_W || f.body < BIG_H || cw <= 0.0 || ch <= 0.0 {
-        return None;
-    }
+    let row = (s as f64 * ch).round() as f32;
+    let px = row / crate::bigtext::line();
     let left = f.stamp_x.unwrap_or(f.text_x);
-    let avail = (f.text_x + f.text_w - left) as f64 * cw;
-    let stamp_em = if f.stamp_x.is_some() { crate::bigtext::width("[00:00]  ", STAMP_SCALE, false) as f64 } else { 0.0 };
-    let by_width = avail * 0.97 / (typical.max(1.0) as f64 + stamp_em);
-    let by_height = (f.body / BIG_LINES) as f64 * ch / crate::bigtext::line() as f64;
-    let px = by_width.min(by_height);
-    if px < BIG_MIN * ch {
-        return None;
-    }
-    let px = px.floor() as f32;
-    let pitch = ((px * crate::bigtext::line()) as f64 / ch).ceil() as u16;
-    let text_x = (stamp_em * px as f64) as f32;
-    Some(BigFit { px, stamp_px: px * STAMP_SCALE, pitch, text_x, text_w: avail as f32 - text_x, indent: crate::bigtext::width("  ", px, false) })
+    let avail = (f.text_x + f.text_w - left) as f32 * cw as f32;
+    let text_x = if f.stamp_x.is_some() { crate::bigtext::width("[00:00] ", px, false) } else { 0.0 };
+    Some(BigFit { px, row, text_x, text_w: avail - text_x, indent: crate::bigtext::width("  ", px, false) })
 }
 
 /// A line's colour by where it is from the current one, and whether it is bold: `tone`'s colours.
@@ -293,12 +324,12 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let duration = item.duration_ms;
     let f = fit(r.width, r.height, lyr.synced);
     let pos = app.lyrics_position(singularity_proto::now_ms());
-    // a big Pane on the pixel tier: big text, rows `pitch` cells tall
+    // a big Pane on the pixel tier: the lines a step larger, rows `b.row` pixels tall
     let cpx = app.pixel_text_for(r);
     let Some((lyr, cache)) = app.lyrics.lyrics_view() else { return };
-    let big = cpx.and_then(|cpx| cache.typical(&lyr.lines).map(|t| (cpx, t))).and_then(|(cpx, t)| big_fit(&f, r.width, cpx, t).map(|b| (b, cpx)));
+    let big = cpx.filter(|_| cache.covers(&lyr.lines)).and_then(|cpx| big_fit(&f, r.width, cpx).map(|b| (b, cpx)));
     let (body, anchor) = match big {
-        Some((b, _)) => ((f.body / b.pitch) as usize, (f.body / b.pitch) as usize / 3),
+        Some((b, (_, ch))) => (b.rows(f.body, ch), b.rows(f.body, ch) / 3),
         None => (f.body as usize, f.anchor as usize),
     };
     // every line's rows, and where each line's rows are
@@ -306,6 +337,14 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         Some((b, _)) => cache.wrap(&lyr.lines, b.key(), |s| crate::bigtext::wrap(s, b.text_w, b.indent, |s| crate::bigtext::width(s, b.px, true))),
         None => cache.wrap(&lyr.lines, f.text_w as u64, |s| wrap(s, f.text_w as usize)),
     };
+    if fresh {
+        cache.widest = match big {
+            Some((b, _)) => cache.widest(|s| crate::bigtext::width(s, b.px, true), b.indent),
+            None => cache.widest(|s| s.width() as f32, INDENT as f32),
+        };
+    }
+    // a big Pane holds the lines in its middle
+    let f = if big.is_none() { centred(f, cache.widest, centring(&f, r.width)) } else { f };
     let now = if lyr.synced { current(&lyr.lines, pos) } else { None };
     let total = cache.rows.len();
     // big text glides by cells: where the view's top is between rows (-1: on a row)
@@ -357,7 +396,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     cache.at = Some(Instant::now());
     if let Some((b, cpx)) = big {
         let top = if glide >= 0.0 { glide } else { first as f32 };
-        let hits = draw_big(buf, r, app, th, &f, &b, cpx, top, now, body);
+        let hits = draw_big(r, app, th, &f, &b, cpx, top, now, body);
         return finish(buf, r, app, th, &f, hits);
     }
     let reach = body / 3;
@@ -411,30 +450,39 @@ fn finish(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, f: &Fit, hits: V
     }
 }
 
-/// The big-text view: each row in view an image `b.pitch` cells tall, the view's top `top` rows down the song (a
-/// fraction while it glides: it moves by cells). Returns the lines' click targets.
+/// The view a step larger: each row in view an image `b.row` pixels tall, the view's top `top` rows down the song (a
+/// fraction while it glides: it moves by whole cells, so a row keeps where it falls in its cells and its image). A row
+/// that doesn't start on a cell's edge is drawn that far down its image; the current line's band is in its images.
+/// Returns the lines' click targets, each cell the row mostly over it.
 #[allow(clippy::too_many_arguments)]
-fn draw_big(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, f: &Fit, b: &BigFit, (cw, ch): (f64, f64), top: f32, now: Option<usize>, body: usize) -> Vec<(Rect, Hit)> {
-    use crate::bigtext::{Span, key, render, width};
+fn draw_big(r: Rect, app: &mut App, th: &Theme, f: &Fit, b: &BigFit, (cw, ch): (f64, f64), top: f32, now: Option<usize>, body: usize) -> Vec<(Rect, Hit)> {
+    use crate::bigtext::{Span, key_on, render_on, width};
     let Some((lyr, cache)) = app.lyrics.lyrics_view() else { return vec![] };
-    let pitch = b.pitch as i32;
-    let off = (top * pitch as f32).round() as i32;
-    let first = (off / pitch).max(0) as usize;
-    let cells = f.body as i32;
-    let left = r.x + f.stamp_x.unwrap_or(f.text_x);
-    let room = r.right().saturating_sub(left);
-    let img_h = (pitch as f64 * ch).round() as u32;
-    // the text in the middle of its rows
-    let baseline = ((img_h as f32 - b.px * crate::bigtext::line()) / 2.0 + b.px * crate::bigtext::ascent()).round();
+    let (cells, row) = (f.body as i64, b.row as f64);
+    let body_px = cells as f64 * ch;
+    let off = (top as f64 * row / ch).floor() * ch;
+    // a settled view shows only whole rows; one gliding, the rows cut off at its edges too
+    let settled = top.fract() == 0.0;
+    let first = (off / row).floor() as usize;
+    // the block (the timestamps and the song's widest row) moved toward the middle, in whole cells
+    let column = (b.text_x + b.text_w) as f64;
+    let block = (b.text_x + cache.widest + b.px * 0.15) as f64;
+    let shift = ((column - block).max(0.0) / 2.0 * centring(f, r.width) as f64 / cw).floor() as u16;
+    let left = r.x + f.stamp_x.unwrap_or(f.text_x) + shift;
+    let band = (left.saturating_sub(1).max(r.x), (left + (block / cw).ceil() as u16 + 1).min(r.right()));
+    let band_rgb = th.bg.lerp(th.accent, 0.12);
     let reach = body / 3;
     let mut hits = vec![];
     let mut places = vec![];
     for (k, (i, words)) in cache.rows.iter().enumerate().skip(first) {
         let i = *i;
-        let y = k as i32 * pitch - off;
-        // a row cut off at the bottom only while the view glides
-        if y >= cells || (y + pitch > cells && off % pitch == 0) {
+        // the row's top, pixels below the body's
+        let y = k as f64 * row - off;
+        if y >= body_px || (settled && y + row > body_px) {
             break;
+        }
+        if y + row <= 0.0 || (settled && y < 0.0) {
+            continue;
         }
         // (as the cells do: the tail of a line that starts above the view isn't shown)
         if lyr.synced && cache.starts[i] < first && now != Some(i) {
@@ -445,42 +493,48 @@ fn draw_big(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, f: &Fit, b: &B
             None if lyr.synced => tone_rgb(th, i as i64 + 1, reach),
             None => (th.fg, false),
         };
-        let (y0, y1) = (y.max(0), (y + pitch).min(cells));
-        let (ry, rh) = (r.y + y0 as u16, (y1 - y0) as u16);
-        if f.band && now == Some(i) {
-            let from = r.x + f.stamp_x.unwrap_or(f.text_x).saturating_sub(1);
-            let to = (r.x + f.text_x + f.text_w + 1).min(r.right());
-            for yy in ry..ry + rh {
-                crate::ui::blank(buf, from, yy, to - from, th.base().bg(th.bg.lerp(th.accent, 0.12).color()));
-            }
+        // the image: from the cell the row starts in, as many cells as it reaches, the row `sub` pixels down it
+        let cy = (y / ch).floor() as i64;
+        let sub = y - cy as f64 * ch;
+        let n = ((sub + row) / ch).ceil() as i64;
+        let img_h = (n as f64 * ch).round() as u32;
+        let (c0, c1) = (cy.max(0), (cy + n).min(cells));
+        if c1 <= c0 {
+            continue;
         }
+        // the text in the middle of its row
+        let baseline = (sub as f32 + (b.row - b.px * crate::bigtext::line()) / 2.0 + b.px * crate::bigtext::ascent()).round();
+        let current = f.band && now == Some(i);
+        let x0 = if current { band.0 } else { left };
+        let pad = (left - x0) as f32 * cw as f32;
         let first_row = cache.starts[i] == k;
         let st = stamp(lyr.lines[i].start_ms);
         let mut spans = vec![];
         if f.stamp_x.is_some() && first_row {
             let c = if now == Some(i) { th.accent } else { th.border };
-            spans.push(Span { x: 0.0, text: &st, rgb: c, px: b.stamp_px, bold: false });
+            spans.push(Span { x: pad, text: &st, rgb: c, px: b.px, bold: false });
         }
-        let x = b.text_x + if first_row { 0.0 } else { b.indent };
+        let x = pad + b.text_x + if first_row { 0.0 } else { b.indent };
         spans.push(Span { x, text: words, rgb, px: b.px, bold });
-        // as wide as the text (and a little for the last letter's overhang), in whole cells
-        let w_cells = (((x + width(words, b.px, bold) + b.px * 0.15) as f64 / cw).ceil() as u16).clamp(1, room.max(1));
+        // as wide as the text (and a little for the last letter's overhang), in whole cells; the band's row the band's
+        let room = r.right().saturating_sub(x0).max(1);
+        let w_cells = if current { band.1 - band.0 } else { (((x + width(words, b.px, bold) + b.px * 0.15) as f64 / cw).ceil() as u16).clamp(1, room) };
         let img_w = (w_cells as f64 * cw).round() as u32;
-        let crop = (rh as i32) < pitch || y < 0;
-        let crop = crop.then(|| {
-            let t = ((y0 - y) as f64 * ch).round() as u32;
-            [0, t, img_w, ((rh as f64 * ch).round() as u32).min(img_h - t)]
-        });
-        let k = key(&spans, img_w, img_h, baseline);
+        let fill = current.then(|| (band_rgb, sub.round() as u32, (sub + row).round() as u32));
+        let t = ((c0 - cy) as f64 * ch).round() as u32;
+        let crop = (c0 > cy || c1 < cy + n).then(|| [0, t, img_w, (((c1 - c0) as f64 * ch).round() as u32).min(img_h - t)]);
+        let k = key_on(&spans, img_w, img_h, baseline, fill);
         // rendered only when the terminal doesn't hold it yet
-        let px = (!app.kitty.as_ref().is_some_and(|kt| kt.holds(&k))).then(|| render(&spans, img_w, img_h, baseline));
-        places.push((k, Rect::new(left, ry, w_cells, rh), crop, img_w, px));
-        if lyr.synced {
-            hits.push((Rect::new(r.x, ry, r.width, rh), Hit::Lyric(lyr.lines[i].start_ms)));
+        let px = (!app.kitty.as_ref().is_some_and(|kt| kt.holds(&k))).then(|| render_on(&spans, img_w, img_h, baseline, fill));
+        places.push((k, Rect::new(x0, r.y + c0 as u16, w_cells, (c1 - c0) as u16), crop, img_w, img_h, px));
+        // the cells mostly under this row click to it
+        let (h0, h1) = ((y / ch).round().max(0.0) as u16, ((y + row) / ch).round().min(cells as f64) as u16);
+        if lyr.synced && h1 > h0 {
+            hits.push((Rect::new(r.x, r.y + h0, r.width, h1 - h0), Hit::Lyric(lyr.lines[i].start_ms)));
         }
     }
     if let Some(kt) = app.kitty.as_mut() {
-        for (k, rect, crop, img_w, px) in places {
+        for (k, rect, crop, img_w, img_h, px) in places {
             kt.place_rgba(k, rect, crop, || (img_w, img_h, px.unwrap_or_default()));
         }
     }
@@ -633,52 +687,82 @@ pub(crate) mod tests {
             .collect()
     }
 
+    /// #53: no jump to another font at any size. The lines grow a step with the Pane, from the cells' size, never
+    /// more than a 96th a column (a 24th a row), and move to its middle as gently.
     #[test]
-    fn big_text_suits_every_big_pane() {
-        for typical in [6.0f32, 14.0, 30.0, 60.0] {
-            for w in 0..=300u16 {
-                for h in 0..=100u16 {
-                    let f = fit(w, h, true);
-                    let Some(b) = big_fit(&f, w, (10.0, 20.0), typical) else {
-                        continue;
-                    };
-                    let ctx = format!("{w}x{h} typical {typical}: {b:?}");
-                    assert!(w >= BIG_W && f.body >= BIG_H, "{ctx}");
-                    assert!(b.px as f64 >= BIG_MIN * 20.0 - 1.0 && b.pitch >= 3, "worth leaving the cells: {ctx}");
-                    assert!(f.body / b.pitch >= BIG_LINES, "at least {BIG_LINES} lines fit: {ctx}");
-                    assert!(b.px * crate::bigtext::line() <= b.pitch as f32 * 20.0, "a row holds its text: {ctx}");
+    fn lyrics_grow_a_step_with_the_pane_and_never_jump() {
+        for w in 0..=300u16 {
+            for h in 0..=100u16 {
+                let f = fit(w, h, true);
+                let (s, t) = (step(&f, w), centring(&f, w));
+                let ctx = format!("{w}x{h}: {s} {t}");
+                assert!((1.0..=MAX_STEP).contains(&s) && (0.0..=1.0).contains(&t), "{ctx}");
+                if w < BIG_W || f.body < BIG_H {
+                    assert!(s == 1.0 && t == 0.0, "small and medium Panes as before: {ctx}");
+                }
+                for (w2, h2) in [(w + 1, h), (w, h + 1)] {
+                    let f2 = fit(w2, h2, true);
+                    let (s2, t2) = (step(&f2, w2), centring(&f2, w2));
+                    let most = if w2 > w { 1.0 / BIG_W as f32 } else { 1.0 / BIG_H as f32 };
+                    assert!(s2 >= s && s2 - s <= most + 1e-4, "a cell bigger, a little bigger: {ctx} → {s2}");
+                    assert!(t2 >= t && t2 - t <= 1.0 / CENTRE_H.min(CENTRE_W) + 1e-4, "{ctx} → {t2}");
+                }
+                if let Some(b) = big_fit(&f, w, (10.0, 20.0)) {
+                    let ctx = format!("{ctx}: {b:?}");
+                    assert!(s >= PIXEL_STEP, "{ctx}");
+                    // the row `s` cells tall, the font's height filling it, the timestamps as big as the lines
+                    assert!((b.row - s * 20.0).abs() <= 0.5 && (b.px * crate::bigtext::line() - b.row).abs() < 0.01, "{ctx}");
+                    assert!((b.text_x - crate::bigtext::width("[00:00] ", b.px, false)).abs() < 0.01, "{ctx}");
                     assert!(b.text_x + b.text_w <= (w - 2) as f32 * 10.0 + 0.01, "{ctx}");
-                    assert!(b.text_w >= typical * b.px * 0.96, "the longer lines fit across: {ctx}");
+                    assert!(b.rows(f.body, 20.0) as f32 * b.row <= (f.body - 1) as f32 * 20.0, "{ctx}");
                 }
             }
         }
-        // the owner's big window: about 240×65 cells
-        let f = fit(240, 65, true);
-        let b = big_fit(&f, 240, (10.0, 20.0), crate::bigtext::width("Light bends where the music falls", 1.0, true)).unwrap();
-        assert!(b.px >= 80.0 && b.pitch >= 6, "{b:?}");
-        // the Terminal design's lyrics Pane stays the cells' own
-        assert!(big_fit(&fit(72, 27, true), 72, (10.0, 20.0), 10.0).is_none());
+        // the contact sheet's big Pane a step larger, the full screen and the owner's big window the most
+        let at = |w: u16, h: u16| step(&fit(w - 2, h - 2, true), w - 2);
+        assert!((1.2..1.25).contains(&at(120, 40)), "{}", at(120, 40));
+        assert_eq!((at(180, 49), at(242, 67)), (MAX_STEP, MAX_STEP));
+        // medium Panes, the Terminal design's lyrics: the cells' own
+        assert!(big_fit(&fit(58, 18, true), 58, (10.0, 20.0)).is_none() && big_fit(&fit(72, 27, true), 72, (10.0, 20.0)).is_none());
     }
 
+    /// The owner's marks on the contact sheet (#53): a big Pane jumped to a far bigger font, out of place in the app.
+    /// Now it is the cells' own look (the same font, timestamps as big as the lines, the current line bold on its band)
+    /// a step larger, growing with the Pane to 1.5×, as a block in the Pane's middle.
     #[test]
-    fn a_big_pane_on_the_pixel_tier_fills_with_big_text() {
-        let mut app = pixel_app(40, 41_000);
-        let (rows, out) = frame(&mut app, 240, 65);
-        // the lyrics are images now, not cells (the credit is still text)
-        assert!(!rows.iter().any(|r| r.contains("photon") || r.contains("[00:")), "{rows:#?}");
-        assert!(rows.iter().any(|r| r.contains("lyrics: fake")));
-        assert!(out.contains("f=32") && out.matches("a=t,").count() >= 8, "{out:.300}");
-        let placed = placements(&out);
-        assert!(placed.len() >= 8, "{placed:?}");
-        for &(x, y, c, r) in &placed {
-            assert!(x >= 1 && x + c <= 241 && y >= 1 && y + r <= 66, "inside the Pane: {placed:?}");
+    fn a_big_pane_on_the_pixel_tier_draws_the_cells_text_a_step_larger_and_centred() {
+        let mut app = pixel_app(60, 101_000);
+        // the contact sheet's big 120×40 and full 180×49 Panes, and the owner's big window, inside their frames
+        for (w, h, step) in [(118u16, 38u16, 118.0f32 / 96.0), (178, 47, 1.5), (240, 65, 1.5)] {
+            let (rows, out) = frame(&mut app, w, h);
+            // the lyrics are images now, not cells (the credit is still text)
+            assert!(!rows.iter().any(|r| r.contains("photon") || r.contains("[00:")), "{w}x{h}: {rows:#?}");
+            assert!(rows.iter().any(|r| r.contains("lyrics: fake")));
+            let placed = placements(&out);
+            assert!(placed.len() >= 8, "{w}x{h}: {placed:?}");
+            for &(x, y, c, r) in &placed {
+                assert!(x >= 1 && x + c <= w + 1 && y >= 1 && y + r <= h + 1, "{w}x{h}: inside the Pane: {placed:?}");
+                // a row is a step taller than a cell, not several cells
+                assert!(r <= 3, "{w}x{h}: {placed:?}");
+            }
+            // rows `step` cells apart: the lines' click targets, a row each, share out the cells they cover
+            let mut ys: Vec<(u16, u16)> = app.hits.iter().filter(|(_, h)| matches!(h, Hit::Lyric(_))).map(|(r, _)| (r.y, r.bottom())).collect();
+            ys.sort();
+            let span = (ys.last().unwrap().1 - ys[0].0) as f32;
+            assert!((span / ys.len() as f32 - step).abs() < 0.1, "{w}x{h}: {} rows over {span} cells: {ys:?}", ys.len());
+            assert!(ys.windows(2).all(|p| p[0].1 == p[1].0), "{w}x{h}: one row after another: {ys:?}");
+            // centred: the current line's band spans the block a cell either side, as much Pane left of it as right
+            let band = *placed.iter().min_by_key(|p| p.0).unwrap();
+            let (left, right) = (band.0 - 1, w + 1 - (band.0 + band.2));
+            assert!(left.abs_diff(right) <= 1 && left >= 3, "{w}x{h}: {left} left, {right} right: {placed:?}");
+            assert!(placed.iter().all(|p| *p == band || (p.0 == band.0 + 1 && p.0 + p.2 < band.0 + band.2)), "{w}x{h}: {placed:?}");
+            // the current line (line 25, at 100 s) a third of the way down
+            let cur = app.hits.iter().find(|(_, h)| *h == Hit::Lyric(100_000)).map(|(r, _)| *r).unwrap();
+            let third = 1 + (h - 1) / 3;
+            assert!(cur.y.abs_diff(third) <= 2 && cur.y.abs_diff(band.1) <= 1, "{w}x{h}: {cur:?} {band:?}");
         }
-        // reaching across: the widest row spans most of the Pane
-        assert!(placed.iter().map(|p| p.2).max().unwrap() >= 150, "{placed:?}");
-        // the current line (line 10, at 40 s) a third of the way down
-        let cur = app.hits.iter().find(|(_, h)| *h == Hit::Lyric(40_000)).map(|(r, _)| *r).unwrap();
-        assert!(cur.height >= 6 && (16..=26).contains(&cur.y), "{cur:?}");
         // steady: the next frame sends nothing new and renders no glyph
+        let _ = frame(&mut app, 240, 65);
         let before = crate::bigtext::rasterized();
         let (_, out) = frame(&mut app, 240, 65);
         assert!(!out.contains("a=t,"), "nothing re-sent: {out:.300}");
@@ -686,12 +770,12 @@ pub(crate) mod tests {
         // a popup over the Pane: the cells take over and the images go
         app.overlays = vec![Rect::new(50, 20, 40, 10)];
         let (rows, out) = frame(&mut app, 240, 65);
-        assert!(rows.iter().any(|r| r.contains("[00:40] Light bends")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.contains("[01:40] Light bends")), "{rows:#?}");
         assert!(out.contains("a=d,d=i") && placements(&out).is_empty(), "{out:.300}");
         app.overlays.clear();
         // a small Pane: the cells, as before
         let (rows, out) = frame(&mut app, 72, 27);
-        assert!(rows.iter().any(|r| r.contains("[00:40] Light bends")) && placements(&out).is_empty());
+        assert!(rows.iter().any(|r| r.contains("[01:40] Light bends")) && placements(&out).is_empty());
     }
 
     #[test]
