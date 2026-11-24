@@ -5,6 +5,7 @@ mod openlist;
 mod pane;
 mod receive;
 mod arrange;
+mod arrangement;
 mod artist;
 mod bigtext;
 mod conn;

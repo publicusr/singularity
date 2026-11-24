@@ -149,7 +149,7 @@ mod tests {
             let d = tree.compute(area).dividers[i].clone();
             tree.drag(&d, pos);
         }
-        tree.swap(Widget::Fft, Widget::Scope);
+        tree.put(tree.pane_of(Widget::Fft).unwrap(), Some(Widget::Scope));
         let s = save(dir.path(), "Night Shift!", "cockpit", "cockpit-amber", &tree).unwrap();
         assert_eq!(s.id, "night-shift");
         let text = std::fs::read_to_string(dir.path().join("night-shift.toml")).unwrap();
@@ -280,7 +280,7 @@ mod tests {
         let t = &all[0].tree;
         let ids: Vec<PaneId> = t.panes().iter().map(|p| p.id).collect();
         assert!(ids[0] != ids[1] && !ids.contains(&PaneId::UNSET), "{ids:?}");
-        let m = t.beside(ids[1], Widget::Fft, crate::tiling::Side::Right).unwrap();
+        let m = t.split_beside(ids[1], Some(Widget::Fft), crate::tiling::Side::Right).unwrap();
         let mut all_ids: Vec<PaneId> = m.panes().iter().map(|p| p.id).collect();
         all_ids.sort();
         all_ids.dedup();

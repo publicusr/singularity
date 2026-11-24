@@ -1,107 +1,67 @@
-//! Free tiling in the running Client (D66): dragging a Pane by its title with a live preview, Move mode on the
-//! keyboard, close and split, the Widget list for a new Pane, and what an edit does to the Design on screen (a
+//! Arranging in the running Client (D87, ADR 0005): a title drag that moves a Widget onto another Pane, Move mode on
+//! the keyboard, close and split, the Widget list for a new Pane, and what an edit does to the Design on screen (a
 //! built-in Design is never overwritten: the first edit asks for a name; a Design of the user's own saves itself).
-//! The tree edits themselves are pure functions in `tiling`; how Panes move on screen is `motion`, layout undo is
-//! `history`.
+//! The edits themselves are `Arrangement`'s; layout undo is `history`.
+//!
+//! A drag only moves contents: while a Widget is held nothing on screen moves but a highlight on the Pane under the
+//! pointer (at once, no dwell, saying what a release would do) and a chip with the Widget's name by the pointer. The
+//! release drops on the Pane under the pointer: the two Widgets swap (or an empty Pane is filled). On its own Pane,
+//! off the Panes, on Esc, or when the release was never heard, the drag ends and nothing changes. Every drop is
+//! allowed: a swap never changes the floor plan.
 //!
 //! Undo and the Design files (owner, 2026-11-01): every committed edit (a drop, close, split, Move mode step, size
-//! step, divider release, Reset design) can be undone, back to 50 edits, for the session. Undo restores the tree and
-//! which Design it was, and the files follow: a Design of the user's gets the restored tree written to its file (and
-//! one that a Reset dropped comes back). Undoing the first edit of a built-in Design returns to the built-in one: the
-//! unnamed "<Design> (edited)" that edit made is removed again (no orphan), while a Design the user named stays in the
-//! picker as saved (it was a deliberate save, like after Reset design). With the naming prompt still up, undo just
-//! closes it: nothing was written yet. A state that no longer fits the window is refused with a notice.
+//! step, divider release, Reset design) can be undone, back to 50 edits, for the session. Undo restores the
+//! Arrangement and which Design it was, and the files follow: a Design of the user's gets the restored tree written
+//! to its file (and one that a Reset dropped comes back). Undoing the first edit of a built-in Design returns to the
+//! built-in one: the unnamed "<Design> (edited)" that edit made is removed again (no orphan), while a Design the user
+//! named stays in the picker as saved (it was a deliberate save, like after Reset design). With the naming prompt
+//! still up, undo just closes it: nothing was written yet. A state whose floor plan no longer fits the window is
+//! refused with a notice.
 
 pub mod history;
-pub mod motion;
 
 use crate::app::{Action, App, Hit, Menu, MenuAct, NameFor, Naming, Target};
 use crate::design::DESIGNS;
-use crate::layout::{Divider, MIN_H, MIN_W, Node, Pane, PaneId, WELL_MIN_H, Widget, is_hole};
-use crate::theme::{Rgb, Theme};
-use crate::tiling::{CORE, Side, Zone, edge_ratio, neighbour, zone_near};
+use crate::arrangement::{Arrangement, Refused};
+use crate::layout::{Divider, Pane, PaneId, Widget, is_hole};
+use crate::theme::Theme;
+use crate::tiling::{CORE, Side, neighbour};
 use crate::ui::{blank, centered, popup, text};
 use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui::style::Color;
+use ratatui::style::Modifier;
 use std::time::{Duration, Instant};
 
-/// A held Pane floats at its own size, but never more than this share of the layout either way.
-pub const LIFT_MAX: f32 = 0.45;
 /// How long the bar offers "undo" after an edit.
 pub const OFFER: Duration = Duration::from_secs(4);
 
-/// A zone under the pointer becomes the preview once the pointer has stayed in it this long (owner, 2026-11-01: a
-/// fast drag across several Panes rearranged the layout at every one, "like teleporting"; iOS waits for a pause)…
-pub const DWELL: Duration = Duration::from_millis(120);
-/// …or this long, if the pointer is creeping (slower than `SLOW` cells a second over the last `WINDOW`).
-pub const QUICK_DWELL: Duration = Duration::from_millis(40);
-pub const SLOW: f32 = 15.0;
-pub const WINDOW: Duration = Duration::from_millis(100);
-/// Pointer positions kept for its speed.
-const TRAIL: usize = 8;
+/// The chip by the pointer is at most this wide, and this far right of it.
+pub const CHIP_MAX: u16 = 20;
+const CHIP_GAP: u16 = 2;
 
-/// A Pane held by its title: where the press was, where the pointer is, and (once it has moved far enough to be a
-/// drag rather than a click) the drop zone under the pointer, the zone shown and the layout dropping there would make.
+/// A Widget held by its Pane's title: where the press was, where the pointer is, and (once it has moved far enough to
+/// be a drag rather than a click) the Pane under the pointer, if it is another one: the one a release drops on.
 pub struct TileDrag {
-    /// the Pane held (as it was when picked up: its identity stays, wherever it goes)
+    /// the Pane picked up (its Widget is what moves)
     pub pane: Pane,
     from: (u16, u16),
     pub at: (u16, u16),
     pub live: bool,
-    /// the zone under the pointer (with hysteresis at its borders) and since when
-    pub cand: Option<Zone>,
-    since: Instant,
-    /// the zone last shown (or found not to fit): a new candidate replaces it after a dwell
-    aim: Option<Zone>,
-    /// the zone shown, if dropping there fits, and the layout it makes
-    pub zone: Option<Zone>,
-    pub preview: Option<Node>,
-    /// the Pane's rectangle when it was picked up
-    pub orig: Rect,
-    /// the pointer's last positions (when, x, y), oldest first
-    trail: Vec<(Instant, u16, u16)>,
-}
-
-impl TileDrag {
-    /// How fast the pointer went over the last `WINDOW` before `now`, in cells a second (a row counts as two columns,
-    /// as it looks). Still for a whole window: 0.
-    pub fn speed(&self, now: Instant) -> f32 {
-        let start = now.checked_sub(WINDOW).unwrap_or(now);
-        let path: f32 = self.trail.windows(2).filter(|w| w[1].0 > start).map(|w| ((w[1].1 as f32 - w[0].1 as f32).powi(2) + (2.0 * (w[1].2 as f32 - w[0].2 as f32)).powi(2)).sqrt()).sum();
-        path / WINDOW.as_secs_f32()
-    }
+    /// the Pane under the pointer, other than its own: highlighted, and where a release drops
+    pub over: Option<PaneId>,
 }
 
 /// What undo goes back to: the layout, the Design it was (None: the built-in one) and what its file said about it,
 /// whether the naming prompt of a first edit was up, and the focus.
 #[derive(Clone, Debug)]
 pub struct Snapshot {
-    tree: Node,
+    tree: Arrangement,
     name: Option<String>,
     /// (name, design, edited) from the Design's file
     file: Option<(String, String, bool)>,
     forking: bool,
     focus: Option<PaneId>,
-}
-
-/// Where a held Pane floats: its own size, at most `LIFT_MAX` of the layout either way (never under its minimum),
-/// with the spot it was grabbed by under the pointer, and inside the layout with room for its shadow. `lift` (0 → 1)
-/// is how far it has grown or shrunk from its size in the layout to that; it follows the pointer from the start.
-pub fn float_target(t: &TileDrag, body: Rect, lift: f32) -> Rect {
-    let min_h = if is_hole(t.pane.widget) { WELL_MIN_H } else { MIN_H };
-    let cap = |len: u16, total: u16, min: u16| len.min((total as f32 * LIFT_MAX) as u16).max(min).min(total.saturating_sub(1).max(1));
-    let mix = |a: u16, b: u16| (a as f32 + (b as f32 - a as f32) * lift.clamp(0.0, 1.0)).round() as u16;
-    let fit = |len: u16, total: u16| len.min(total.saturating_sub(1).max(1));
-    let w = fit(mix(t.orig.width, cap(t.orig.width, body.width, MIN_W)), body.width);
-    let h = fit(mix(t.orig.height, cap(t.orig.height, body.height, min_h)), body.height);
-    // the grab point, scaled to the smaller Pane
-    let gx = (t.from.0.saturating_sub(t.orig.x) as u32 * w as u32 / t.orig.width.max(1) as u32) as u16;
-    let gy = t.from.1.saturating_sub(t.orig.y).min(h.saturating_sub(1));
-    let x = t.at.0.saturating_sub(gx).min(body.right().saturating_sub(w + 1)).max(body.x);
-    let y = t.at.1.saturating_sub(gy).min(body.bottom().saturating_sub(h + 1)).max(body.y);
-    Rect::new(x, y, w, h)
 }
 
 /// The OSC 22 bytes that give the pointer `shape`; "" puts the ordinary arrow back. Ghostty (1.3) ignores an empty
@@ -124,11 +84,6 @@ pub fn light_grip(buf: &mut Buffer, grip: Rect, th: &Theme) {
     }
 }
 
-/// A floating Pane with its shadow (a cell to the right and below), inside `area`.
-pub fn with_shadow(r: Rect, area: Rect) -> Rect {
-    Rect::new(r.x, r.y, r.width + 1, r.height + 1).intersection(area)
-}
-
 /// The Widget list for a new Pane: what to split, which side, and the Widgets that fit.
 pub struct WidgetPick {
     pub target: PaneId,
@@ -147,9 +102,15 @@ impl App {
         if self.body.width > 0 { self.body } else { Rect::new(0, 1, 200, 55) }
     }
 
-    /// Whether `tree` could be shown at the size we draw at.
-    pub(crate) fn fits(&self, tree: &Node) -> bool {
-        tree.valid(self.pane_area(), self.cell_aspect())
+    /// The size the Panes are drawn at, as the Arrangement's edits want it.
+    fn room(&self) -> (Rect, f64) {
+        (self.pane_area(), self.cell_aspect())
+    }
+
+    /// Why an edit was refused, in the bar's words.
+    pub(crate) fn refused(&mut self, e: Refused) {
+        let design = self.design;
+        self.say(e.why(|w| crate::ui::pane_name(design, w)));
     }
 
     /// The Pane to act on: the focused one, or Home's if the focus is on none of this layout's.
@@ -172,24 +133,15 @@ impl App {
         self.focus = self.layout.pane_of(w);
     }
 
-    /// Show `tree` in place of the whole layout: the Panes of another tree are other Panes, so the focus stays on the
-    /// Widget it was on and each Widget springs from where it was.
-    pub fn set_layout(&mut self, tree: Node) {
+    /// Show `tree` in place of the whole layout (a Design, an undo): the Panes of another tree are other Panes, so the
+    /// focus stays on the Widget it was on.
+    pub fn set_layout(&mut self, tree: impl Into<Arrangement>) {
         let was = self.focused();
-        self.motion.rekey(&self.layout, &tree);
-        self.layout = tree;
+        self.layout = tree.into();
         self.focus = was.and_then(|w| self.layout.pane_of(w));
     }
 
-    /// The layout to draw: the one a drop would make while a Pane is held over a zone, else the real one.
-    pub fn shown_layout(&self) -> std::borrow::Cow<'_, Node> {
-        match self.tile.as_ref().and_then(|t| t.preview.as_ref()) {
-            Some(p) => std::borrow::Cow::Borrowed(p),
-            None => std::borrow::Cow::Borrowed(&self.layout),
-        }
-    }
-
-    /// The Pane being moved this frame (held by the mouse, or in Move mode): drawn highlighted.
+    /// The Pane whose Widget is being moved (held by the mouse, or in Move mode): drawn highlighted.
     pub fn moving(&self) -> Option<PaneId> {
         self.tile.as_ref().filter(|t| t.live).map(|t| t.pane.id).or(self.move_mode)
     }
@@ -199,53 +151,22 @@ impl App {
     /// A press on a Pane's title bar: a click unless the pointer moves a few cells before the release.
     pub fn tile_down(&mut self, id: PaneId, x: u16, y: u16) {
         self.focus = Some(id);
-        let orig = self.layout.compute_shaped(self.pane_area(), self.cell_aspect()).rect(id).unwrap_or_default();
         let pane = self.layout.get(id).unwrap_or(Pane { id, widget: None });
-        let at = self.input_time();
-        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, cand: None, since: at, aim: None, zone: None, preview: None, orig, trail: vec![(at, x, y)] });
+        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None });
     }
 
-    /// When the input being handled arrived (the input thread stamps it), else now.
-    fn input_time(&self) -> Instant {
-        self.input_at.unwrap_or_else(Instant::now)
+    /// The Pane under (x, y), in the layout as it is drawn.
+    pub fn pane_under(&self, x: u16, y: u16) -> Option<PaneId> {
+        let (area, aspect) = self.room();
+        self.layout.compute_shaped(area, aspect).panes.into_iter().find(|(_, r)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom()).map(|(p, _)| p.id)
     }
 
-    /// The held Pane's rectangle this frame: lifted from its place (it grows or shrinks to its floating size on the
-    /// way) with the pointer on the spot it was grabbed by; after a release, flying into its slot. None when nothing
-    /// floats.
-    pub fn float_rect(&self, body: Rect) -> Option<Rect> {
-        match self.tile.as_ref().filter(|t| t.live) {
-            Some(t) => Some(motion::clamp(float_target(t, body, self.motion.lifted_by()), body)),
-            None => self.motion.float_at(),
-        }
-    }
-
-    /// The layout what a dropped zone would make, if it can be dropped there: it changes the arrangement, fits the
-    /// window and, for a split, leaves both halves comfortable.
-    fn drop_tree(&self, id: PaneId, zone: &Zone) -> Option<Node> {
-        let (body, aspect) = (self.pane_area(), self.cell_aspect());
-        self.layout.moved(id, zone).filter(|c| *c != self.layout && self.fits(c) && crate::tiling::comfortable(c, id, zone, body, aspect))
-    }
-
-    /// The held Pane let go (dropped or put back): it flies from where it floats into its place in the layout.
-    fn land(&mut self, t: &TileDrag) {
-        let body = self.pane_area();
-        let from = motion::clamp(float_target(t, body, self.motion.lifted_by()), body);
-        let to = self.layout.compute_shaped(body, self.cell_aspect()).rect(t.pane.id);
-        match to {
-            Some(to) => self.motion.land(t.pane.id, from, to),
-            None => self.motion.land(t.pane.id, from, from),
-        }
-    }
-
-    /// Esc while a Pane is held: it goes back where it was.
+    /// Esc while a Widget is held: nothing changes.
     pub fn tile_cancel(&mut self) {
-        if let Some(t) = self.tile.take().filter(|t| t.live) {
-            self.land(&t);
-        }
+        self.tile = None;
     }
 
-    /// Mouse events while a Pane is held: only the left button's (another button pressed meanwhile doesn't drop it).
+    /// Mouse events while a Widget is held: only the left button's (another button pressed meanwhile doesn't drop it).
     pub fn tile_pointer(&mut self, m: MouseEvent) {
         match m.kind {
             MouseEventKind::Drag(MouseButton::Left) => self.tile_move(m.column, m.row),
@@ -254,9 +175,9 @@ impl App {
         }
     }
 
-    /// A bare move or a fresh press while a Pane or a divider is held: its release went somewhere else (another
+    /// A bare move or a fresh press while a Widget or a divider is held: its release went somewhere else (another
     /// window, after the focus moved) and was never heard (#21: the Pane stayed held and swallowed every click). A held
-    /// Pane goes back; a divider is let go where it is.
+    /// Widget stays where it was; a divider is let go where it is.
     pub fn release_unheard(&mut self, kind: MouseEventKind) {
         if !matches!(kind, MouseEventKind::Moved | MouseEventKind::Down(MouseButton::Left)) {
             return;
@@ -268,104 +189,86 @@ impl App {
         }
     }
 
-    /// The zone under (x, y) for the held Pane: from the layout as it stands, not the preview (what's under the
-    /// pointer can't change because of what the preview did), and sticky at its borders.
-    fn zone_under(&self, t: &TileDrag, x: u16, y: u16) -> Option<Zone> {
-        let (body, aspect) = (self.pane_area(), self.cell_aspect());
-        let panes = self.layout.compute_shaped(body, aspect).panes;
-        zone_near(&panes, body, t.pane.id, x, y, t.cand.as_ref())
-    }
-
+    /// The pointer at (x, y) with the button down: past a few cells it is a drag (an empty Pane has nothing to carry),
+    /// and the Pane under it is the one highlighted, at once.
     fn tile_move(&mut self, x: u16, y: u16) {
-        let now = self.input_time();
-        let Some(t) = self.tile.as_mut() else { return };
-        if !t.live && x.abs_diff(t.from.0) < 3 && y.abs_diff(t.from.1) < 2 {
-            return;
-        }
-        if !t.live {
-            // a fresh lift: whatever was still landing is down
-            t.live = true;
-            self.motion.lifted();
-        }
         let Some(t) = self.tile.as_ref() else { return };
-        let cand = self.zone_under(t, x, y);
-        let Some(t) = self.tile.as_mut() else { return };
-        t.at = (x, y);
-        if t.trail.len() == TRAIL {
-            t.trail.remove(0);
-        }
-        t.trail.push((now, x, y));
-        if cand != t.cand {
-            t.cand = cand;
-            t.since = now;
-        }
-        self.tile_settle(now);
-    }
-
-    /// Show the zone under the pointer once it has been there for a dwell (or a shorter one while the pointer
-    /// creeps): a fast drag across Panes leaves the preview as it was, only the held Pane follows the pointer. Called
-    /// on every pointer move and every frame (a pointer that stopped sends nothing).
-    pub fn tile_settle(&mut self, now: Instant) {
-        let Some(t) = self.tile.as_ref().filter(|t| t.live && t.cand != t.aim) else { return };
-        let held = now.saturating_duration_since(t.since);
-        if held < DWELL && (held < QUICK_DWELL || t.speed(now) >= SLOW) {
+        if !t.live && (x.abs_diff(t.from.0) < 3 && y.abs_diff(t.from.1) < 2 || t.pane.widget.is_none()) {
             return;
         }
-        let cand = t.cand.clone();
-        let preview = cand.as_ref().and_then(|z| self.drop_tree(t.pane.id, z));
+        let own = t.pane.id;
+        let over = self.pane_under(x, y).filter(|p| *p != own);
         if let Some(t) = self.tile.as_mut() {
-            // a zone that can't take the drop isn't offered: nothing highlighted, the original layout shown
-            t.zone = cand.clone().filter(|_| preview.is_some());
-            t.aim = cand;
-            t.preview = preview;
+            t.live = true;
+            t.at = (x, y);
+            t.over = over;
         }
     }
 
-    /// The window changed size while a Pane is held: the zones moved under the pointer (#21: the preview went on
-    /// showing a zone of the old size, and a release dropped there). The zone under the pointer is found again, as if
-    /// it had been there since its last move. If a preview was up, the new zone's shows at once (the pointer didn't
-    /// move; blanking it until a dwell would blink); if none was, it shows after its dwell as usual.
+    /// The window changed size while a Widget is held: the Panes moved under the pointer, so the one under it is found
+    /// again (#21: a release dropped on a Pane of the old window).
     pub fn tile_resized(&mut self) {
-        let Some(t) = self.tile.as_ref().filter(|t| t.live) else { return };
-        let (id, (x, y), was) = (t.pane.id, t.at, t.zone.is_some());
-        let since = t.trail.last().map_or(t.since, |p| p.0);
-        // (not sticky: the border it would stick to is the old window's)
-        let cand = zone_near(&self.layout.compute_shaped(self.pane_area(), self.cell_aspect()).panes, self.pane_area(), id, x, y, None);
-        let preview = cand.as_ref().filter(|_| was).and_then(|z| self.drop_tree(id, z));
+        let Some((own, (x, y))) = self.tile.as_ref().filter(|t| t.live).map(|t| (t.pane.id, t.at)) else { return };
+        let over = self.pane_under(x, y).filter(|p| *p != own);
         if let Some(t) = self.tile.as_mut() {
-            t.zone = cand.clone().filter(|_| preview.is_some());
-            t.aim = cand.clone().filter(|_| was);
-            t.preview = preview;
-            t.cand = cand;
-            t.since = since;
+            t.over = over;
         }
     }
 
-    /// Let go at (x, y): what the preview shows is the drop (#21: a flick let go before its zone was shown landed
-    /// somewhere never shown); nothing shown, it goes back.
+    /// Let go at (x, y): on another Pane the two Widgets swap (an empty one is filled); anywhere else nothing changes.
     fn tile_up(&mut self, x: u16, y: u16) {
-        let Some(t) = self.tile.take() else { return };
+        let Some(t) = self.tile.as_ref() else { return };
         if !t.live {
+            let (id, from, w) = (t.pane.id, t.from, t.pane.widget);
+            self.tile = None;
             // a click on the Widget's name: the Widget picker (D87)
-            if self.hit_at(t.from.0, t.from.1) == Some(Hit::TitleName(t.pane.id)) {
-                return self.open_widget_picker(t.pane.id);
+            if self.hit_at(from.0, from.1) == Some(Hit::TitleName(id)) {
+                return self.open_widget_picker(id);
             }
             // a click elsewhere on the title: the focus moved at the press; the hole's Pane also changes its look
-            if is_hole(t.pane.widget) {
+            if is_hole(w) {
                 self.run(Action::NextLook);
             }
             return;
         }
-        // checked again: the terminal can have changed size since it was shown
-        if let Some(tree) = t.preview.clone().filter(|p| self.fits(p)) {
-            self.focus = Some(t.pane.id);
-            self.commit_layout(tree);
-        } else if t.preview.is_none() && self.zone_under(&t, x, y).and_then(|z| self.layout.moved_any(t.pane.id, &z)).is_some_and(|c| c.same_arrangement(&self.layout)) {
-            // a drop that would only change sizes is no move (owner, 2026-11-01); say how sizes are changed instead
-            // (owner, 2026-11-02: "it snaps right back and doesn't let me")
-            self.say("That would only change sizes · drag the border between two Panes to resize them");
+        // the release's own cell is the last word (a finger slips as it lifts; moves can come combined)
+        self.tile_move(x, y);
+        let Some(t) = self.tile.take() else { return };
+        let Some(to) = t.over else { return };
+        match self.layout.swap(t.pane.id, to) {
+            Ok(a) => {
+                self.focus = Some(to);
+                self.commit_layout(a);
+            }
+            Err(e) => self.refused(e),
         }
-        self.land(&t);
+    }
+
+    /// While a Widget is held over another Pane: that Pane, what its label says ("swap with queue", "put here"), and
+    /// the chip's text ("⠿ stream"). Over its own Pane or none: the chip alone.
+    pub fn drag_marks(&self) -> Option<(Option<(PaneId, String)>, String)> {
+        let t = self.tile.as_ref().filter(|t| t.live)?;
+        let w = t.pane.widget?;
+        let design = self.design;
+        let target = t.over.map(|o| {
+            let label = match self.layout.widget_in(o) {
+                Some(x) => format!("swap with {}", crate::ui::pane_name(design, x)),
+                None => "put here".to_string(),
+            };
+            (o, label)
+        });
+        Some((target, format!("⠿ {}", crate::ui::pane_name(design, w))))
+    }
+
+    /// The chip by the pointer for `text`: one row, at most `CHIP_MAX` wide, right of the pointer (left of it where
+    /// the screen ends), inside `area`.
+    pub fn chip_rect(&self, area: Rect, text: &str) -> Option<Rect> {
+        let t = self.tile.as_ref().filter(|t| t.live)?;
+        let w = (text.chars().count() as u16 + 2).min(CHIP_MAX).min(area.width);
+        let (x, y) = t.at;
+        let right = x.saturating_add(CHIP_GAP);
+        let x = if right + w <= area.right() { right } else { x.saturating_sub(CHIP_GAP + w).max(area.x) };
+        Some(Rect::new(x, y.clamp(area.y, area.bottom().saturating_sub(1)), w, 1))
     }
 
     /// The divider to light up: the one being dragged, else the one under the pointer.
@@ -396,25 +299,8 @@ impl App {
     /// A divider dragged to `pos`, or as far toward it as it goes without leaving a Pane too small (or the well out of
     /// shape): a fast drag past that stops at the limit, not short of it (#21).
     pub fn drag_divider(&mut self, d: &Divider, pos: u16) {
-        let dragged_to = |p: u16| {
-            let mut t = self.layout.clone();
-            t.drag(d, p);
-            t
-        };
-        let t = dragged_to(pos);
-        if self.fits(&t) || !self.fits(&self.layout) {
-            self.layout = t;
-            return;
-        }
-        // from where the boundary is now (it fits), the furthest cell toward `pos` that still fits (found by halving;
-        // whatever it lands on fits)
-        let Some(mut ok) = self.layout.boundary(d).filter(|&b| self.fits(&dragged_to(b))) else { return };
-        let mut bad = pos;
-        while ok.abs_diff(bad) > 1 {
-            let mid = ((ok as u32 + bad as u32) / 2) as u16;
-            if self.fits(&dragged_to(mid)) { ok = mid } else { bad = mid }
-        }
-        self.layout = dragged_to(ok);
+        let (area, aspect) = self.room();
+        self.layout = self.layout.move_line(d, pos, area, aspect);
     }
 
     /// A divider let go: a layout that changed is an edit.
@@ -430,7 +316,7 @@ impl App {
     // ── edits and what they do to the Design ──────────────────────────
 
     /// Show `tree` as the layout and treat it as an edit (one undo step).
-    pub(crate) fn commit_layout(&mut self, tree: Node) {
+    pub(crate) fn commit_layout(&mut self, tree: Arrangement) {
         let was = self.snapshot();
         self.layout = tree;
         self.remember(was);
@@ -461,11 +347,11 @@ impl App {
     }
 
     fn step_history(&mut self, back: bool) {
-        // a held Pane is put back first; the keyboard and the bar never reach here mid-drag, but be sure
+        // a held Widget is let go first; the keyboard and the bar never reach here mid-drag, but be sure
         self.tile = None;
-        let (area, aspect) = (self.pane_area(), self.cell_aspect());
+        let (area, aspect) = self.room();
         let now = self.snapshot();
-        let fits = |s: &Snapshot| s.tree.valid(area, aspect);
+        let fits = |s: &Snapshot| s.tree.fits(area, aspect);
         let got = if back { self.history.undo(now, fits) } else { self.history.redo(now, fits) };
         let (any, what) = if back { (self.history.can_undo(), "undo") } else { (self.history.can_redo(), "redo") };
         match got {
@@ -605,11 +491,12 @@ impl App {
     pub fn close_pane(&mut self, id: PaneId) {
         let Some(pane) = self.layout.get(id) else { return };
         let name = self.name_of(pane);
-        if pane.widget.is_some_and(|w| CORE.contains(&w)) {
-            return self.say(format!("{name} can be moved, but never closed"));
-        }
-        let Some(tree) = self.layout.closed(id).filter(|t| self.fits(t)) else {
-            return self.say(format!("Closing {name} would squash the others"));
+        let (area, aspect) = self.room();
+        let tree = match self.layout.close(id, area, aspect) {
+            Ok(t) => t,
+            Err(Refused::Required(_)) => return self.say(format!("{name} can be moved, but never closed")),
+            Err(Refused::NoRoom | Refused::LastPane) => return self.say(format!("Closing {name} would squash the others")),
+            Err(e) => return self.refused(e),
         };
         if self.focus == Some(id) {
             self.focus = tree.pane_of(Widget::Home);
@@ -637,7 +524,8 @@ impl App {
         let holeless = !self.layout.has(Widget::Well) && !self.layout.has(Widget::Hole);
         let mut items: Vec<Widget> = crate::layouts::all_widgets().chain(if holeless { vec![Widget::Well, Widget::Hole] } else { vec![] }).collect();
         items.dedup();
-        items.retain(|w| !self.layout.has(*w) && self.layout.beside(target, *w, side).is_some_and(|t| self.fits(&t)));
+        let (area, aspect) = self.room();
+        items.retain(|w| self.layout.split(target, side, Some(*w), area, aspect).is_ok());
         if items.is_empty() {
             let name = self.layout.get(target).map(|p| self.name_of(p)).unwrap_or_default();
             return self.say(format!("No room to split {name} here"));
@@ -665,12 +553,13 @@ impl App {
     pub fn widget_chosen(&mut self, i: usize) {
         let Some(p) = self.take_widget_pick() else { return };
         let Some(w) = p.items.get(i).copied() else { return };
-        match self.layout.beside(p.target, w, p.side).filter(|t| self.fits(t)) {
-            Some(tree) => {
+        let (area, aspect) = self.room();
+        match self.layout.split(p.target, p.side, Some(w), area, aspect) {
+            Ok(tree) => {
                 self.focus = tree.pane_of(w);
                 self.commit_layout(tree);
             }
-            None => self.say("No room for it there"),
+            Err(_) => self.say("No room for it there"),
         }
     }
 
@@ -684,7 +573,10 @@ impl App {
         if !self.layout.widget_in(id).is_some_and(|w| CORE.contains(&w)) {
             items.push(("Close pane".into(), MenuAct::ClosePane));
         }
-        items.push(("Move pane".into(), MenuAct::MovePane));
+        // an empty Pane has nothing to move
+        if self.layout.widget_in(id).is_some() {
+            items.push(("Move pane".into(), MenuAct::MovePane));
+        }
         self.focus = Some(id);
         self.open_popup(crate::app::Popup::Menu(Menu { at: at.unwrap_or((0, 0)), target: Target::Pane(id), items, selected: 0 }));
     }
@@ -708,24 +600,27 @@ impl App {
         if self.layout.panes().len() < 2 {
             return self.say("Nothing to move it around");
         }
+        if self.layout.widget_in(id).is_none() {
+            return self.say("An empty Pane has nothing to move");
+        }
         self.move_mode = Some(id);
     }
 
-    /// Keys in Move mode: arrows swap with the neighbour that way, Shift+arrows put the Pane on that side of it as a
-    /// split (at the screen's edge if there is no neighbour), `+` `-` size it, `x` closes it, `u` undoes (`U`
-    /// redoes), Enter or Esc ends. What can't be done is said in the bar, and nothing changes.
+    /// Keys in Move mode: arrows swap the Widget with the neighbour's that way (it moves, the Panes stay; Move mode
+    /// follows it), `+` `-` size its Pane, `x` closes it, `u` undoes (`U` redoes), Enter or Esc ends. What can't be done
+    /// is said in the bar, and nothing changes. (D66's Shift+arrows, which split it in beside a neighbour or made it a
+    /// whole column at the screen's edge, went with the drop zones: the floor plan changes only by its own edits now.)
     pub fn move_key(&mut self, k: KeyEvent) {
         let Some(id) = self.move_mode.filter(|p| self.layout.contains(*p)) else {
             self.move_mode = None;
             return;
         };
-        let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         match k.code {
             KeyCode::Esc | KeyCode::Enter => self.move_mode = None,
-            KeyCode::Left => self.move_step(id, Side::Left, shift),
-            KeyCode::Right => self.move_step(id, Side::Right, shift),
-            KeyCode::Up => self.move_step(id, Side::Top, shift),
-            KeyCode::Down => self.move_step(id, Side::Bottom, shift),
+            KeyCode::Left => self.move_step(id, Side::Left),
+            KeyCode::Right => self.move_step(id, Side::Right),
+            KeyCode::Up => self.move_step(id, Side::Top),
+            KeyCode::Down => self.move_step(id, Side::Bottom),
             KeyCode::Char('+' | '=') => self.resize_step(id, true),
             KeyCode::Char('-' | '_') => self.resize_step(id, false),
             KeyCode::Char('x' | 'X') => self.close_pane(id),
@@ -735,46 +630,29 @@ impl App {
         }
     }
 
-    /// One step that way: a swap with the neighbour, or (Shift) on its far side as a split, or with nothing that
-    /// way, a whole column / row at the screen's edge. Refused, with the reason, if it wouldn't fit or would only
-    /// change sizes (a Pane already spanning that edge).
-    fn move_step(&mut self, id: PaneId, dir: Side, shift: bool) {
-        let (body, aspect) = (self.pane_area(), self.cell_aspect());
-        let panes = self.layout.compute_shaped(body, aspect).panes;
-        let Some((pane, me)) = panes.iter().find(|(p, _)| p.id == id).copied() else { return };
-        let name = self.name_of(pane);
-        let named = |n: PaneId| self.layout.get(n).map(|p| self.name_of(p)).unwrap_or_default();
-        let zone = match (neighbour(&panes, id, dir), shift) {
-            (Some(n), false) => Zone::Swap(n),
-            (Some(n), true) => Zone::Beside(n, dir),
-            (None, true) => Zone::Edge(dir, edge_ratio(dir, pane, me, body)),
-            (None, false) => return self.say(format!("Nothing {} {name} · ⇧{} makes it a whole {}", dir.word_beside(), dir.arrow(), dir.line())),
+    /// One step that way: the Widget swaps with the neighbour's, and Move mode (and the focus) go with it.
+    fn move_step(&mut self, id: PaneId, dir: Side) {
+        let (area, aspect) = self.room();
+        let panes = self.layout.compute_shaped(area, aspect).panes;
+        let Some(pane) = self.layout.get(id) else { return };
+        let Some(n) = neighbour(&panes, id, dir) else {
+            return self.say(format!("Nothing {} {}", dir.word_beside(), self.name_of(pane)));
         };
-        let Some(tree) = self.layout.moved_any(id, &zone) else { return self.say("It can't go there") };
-        if tree.same_arrangement(&self.layout) {
-            return self.say(format!("{name} already spans the {} edge", dir.edge()));
+        match self.layout.swap(id, n) {
+            Ok(tree) => {
+                self.focus = Some(n);
+                self.move_mode = Some(n);
+                self.commit_layout(tree);
+            }
+            Err(e) => self.refused(e),
         }
-        if !self.fits(&tree) {
-            return self.say(match &zone {
-                Zone::Beside(n, _) => format!("No room for {name} {} {} · {} swaps", dir.word_beside(), named(*n), dir.arrow()),
-                Zone::Edge(..) => format!("No room for {name} as a whole {}", dir.line()),
-                Zone::Swap(n) => format!("{name} won't fit where {} is", named(*n)),
-            });
-        }
-        if let Zone::Beside(n, _) = &zone
-            && !crate::tiling::comfortable(&tree, id, &zone, body, aspect)
-        {
-            let thin = if dir.axis() == crate::layout::Axis::Vertical { "short" } else { "narrow" };
-            return self.say(format!("{} is too {thin} to split with {name} · {} swaps", named(*n), dir.arrow()));
-        }
-        self.focus = Some(id);
-        self.commit_layout(tree);
     }
 
     fn resize_step(&mut self, id: PaneId, grow: bool) {
-        match self.layout.resized(id, grow, self.pane_area()).filter(|t| self.fits(t)) {
-            Some(tree) => self.commit_layout(tree),
-            None => self.say(if grow { "Can't grow it more" } else { "Can't shrink it more" }),
+        let (area, aspect) = self.room();
+        match self.layout.step_line(id, grow, area, aspect) {
+            Ok(tree) => self.commit_layout(tree),
+            Err(_) => self.say(if grow { "Can't grow it more" } else { "Can't shrink it more" }),
         }
     }
 }
@@ -806,76 +684,51 @@ pub fn draw_widgets(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     text(buf, inner.x + 1, inner.bottom().saturating_sub(1), inner.width.saturating_sub(2), "↑↓ choose · Enter add · Esc cancel", th.s(th.dim));
 }
 
-/// The empty slot a held Pane leaves where it would land: a dashed outline, tinted, saying so where the floating Pane
-/// (`float`) doesn't hide it. `ok`: a drop there changes the layout; otherwise this is where it goes back to.
-pub fn draw_slot(buf: &mut Buffer, r: Rect, ok: bool, float: Option<Rect>, th: &Theme) {
-    let col = if ok { th.accent } else { th.dim };
-    let tint = mix(th.bg, col, if ok { 0.12 } else { 0.05 });
-    for y in r.top()..r.bottom() {
-        blank(buf, r.x, y, r.width, th.base().bg(tint));
-    }
-    if r.width < 2 || r.height < 2 {
-        return;
-    }
-    let st = th.s(col).bg(tint);
-    let mut put = |x: u16, y: u16, c: char| {
-        if let Some(cell) = buf.cell_mut((x, y)) {
-            cell.set_char(c).set_style(st);
+/// The Pane a release would drop on: its frame lit in the accent, and a label in its middle saying what happens
+/// (clear of the chip, `chip`).
+pub fn draw_target(buf: &mut Buffer, r: Rect, label: &str, chip: Option<Rect>, th: &Theme) {
+    let lit = th.s(th.accent).add_modifier(Modifier::BOLD);
+    let (right, bottom) = (r.right().saturating_sub(1), r.bottom().saturating_sub(1));
+    let edge = (r.x..r.right()).flat_map(|x| [(x, r.y), (x, bottom)]).chain((r.y..r.bottom()).flat_map(|y| [(r.x, y), (right, y)]));
+    for (x, y) in edge {
+        if let Some(c) = buf.cell_mut((x, y))
+            && c.symbol().chars().next().is_some_and(|ch| ('\u{2500}'..='\u{257f}').contains(&ch))
+        {
+            c.set_style(lit);
         }
-    };
-    for x in r.x + 1..r.right() - 1 {
-        put(x, r.y, '╌');
-        put(x, r.bottom() - 1, '╌');
     }
-    for y in r.y + 1..r.bottom() - 1 {
-        put(r.x, y, '╎');
-        put(r.right() - 1, y, '╎');
-    }
-    put(r.x, r.y, '╭');
-    put(r.right() - 1, r.y, '╮');
-    put(r.x, r.bottom() - 1, '╰');
-    put(r.right() - 1, r.bottom() - 1, '╯');
-    let label = if ok { "drop here" } else { "back here" };
-    let w = label.chars().count() as u16;
-    if r.height >= 3 && r.width >= w + 4 {
-        // the middle, else the spot nearest it the floating Pane leaves free (its middle, then its left and right)
-        let xs = [r.x + (r.width - w) / 2, r.x + 2, r.right() - w - 2];
-        let spots = (r.y + 1..r.bottom() - 1).flat_map(|y| xs.iter().enumerate().map(move |(k, &x)| ((y.abs_diff(r.y + r.height / 2), k), x, y)));
-        let free = |x: u16, y: u16| float.is_none_or(|f| Rect::new(x, y, w, 1).intersection(with_shadow(f, f.union(r))).is_empty());
-        if let Some((_, x, y)) = spots.filter(|&(_, x, y)| free(x, y)).min() {
-            text(buf, x, y, w, label, th.s(col).bg(tint));
-        }
+    if let Some(l) = label_rect(r, label, chip) {
+        text(buf, l.x, l.y, l.width, &fit(label, l.width), th.chip(th.accent));
     }
 }
 
-/// A floating Pane's shadow: the cell column to its right and the row below it, darkened.
-pub fn draw_shadow(buf: &mut Buffer, r: Rect, area: Rect, th: &Theme) {
-    let dark = |c: Color, base: Rgb| {
-        let Rgb(r, g, b) = match c {
-            Color::Rgb(r, g, b) => Rgb(r, g, b),
-            _ => base,
-        };
-        // on a black background a darker black is no shadow: lift it a little instead, toward the theme's border
-        if (r as u16 + g as u16 + b as u16) < 40 { mix(Rgb(r, g, b), th.border, 0.35) } else { Color::Rgb(r / 3, g / 3, b / 3) }
-    };
-    let cells = (r.y + 1..=r.bottom()).map(|y| (r.right(), y)).chain((r.x + 1..r.right()).map(|x| (x, r.bottom())));
-    for (x, y) in cells {
-        if x >= area.right() || y >= area.bottom() {
-            continue;
-        }
-        if let Some(c) = buf.cell_mut((x, y)) {
-            let (fg, bg) = (c.fg, c.bg);
-            c.set_bg(dark(bg, th.bg));
-            if let Color::Rgb(r, g, b) = fg {
-                c.set_fg(Color::Rgb(r / 3, g / 3, b / 3));
-            }
-        }
+/// Where a target's label goes: centred in it, cut to fit inside its frame, on the middle row or the nearest one the
+/// chip (`chip`) leaves free.
+pub fn label_rect(r: Rect, label: &str, chip: Option<Rect>) -> Option<Rect> {
+    let w = (label.chars().count() as u16 + 2).min(r.width.saturating_sub(2));
+    if r.height < 3 || w < 3 {
+        return None;
     }
+    let mid = r.y + r.height / 2;
+    let at = |y: u16| Rect::new(r.x + (r.width - w) / 2, y, w, 1);
+    let free = |l: &Rect| chip.is_none_or(|c| !c.intersects(*l));
+    let rows = (r.y + 1..r.bottom() - 1).map(|y| (y.abs_diff(mid), y));
+    rows.map(|(_, y)| at(y)).filter(free).min_by_key(|l| l.y.abs_diff(mid)).or(Some(at(mid)))
 }
 
-fn mix(a: Rgb, b: Rgb, t: f32) -> Color {
-    let m = |p: u8, q: u8| (p as f32 + (q as f32 - p as f32) * t.clamp(0.0, 1.0)).round() as u8;
-    Color::Rgb(m(a.0, b.0), m(a.1, b.1), m(a.2, b.2))
+/// ` text ` in `w` columns: cut with an ellipsis if it is longer.
+fn fit(s: &str, w: u16) -> String {
+    let padded = format!(" {s} ");
+    if padded.chars().count() <= w as usize {
+        return padded;
+    }
+    format!(" {}…", s.chars().take((w as usize).saturating_sub(2)).collect::<String>())
+}
+
+/// The chip by the pointer: the held Widget's name with its grip.
+pub fn draw_chip(buf: &mut Buffer, r: Rect, label: &str, th: &Theme) {
+    blank(buf, r.x, r.y, r.width, th.chip(th.accent2));
+    text(buf, r.x, r.y, r.width, &fit(label, r.width), th.chip(th.accent2));
 }
 
 /// The bar's one line in Move mode: its keys, or what the last key couldn't do.
@@ -886,7 +739,7 @@ pub fn draw_move_hint(buf: &mut Buffer, r: Rect, name: &str, said: Option<&str>,
     text(buf, r.x + 1, r.y, w, &tag, th.chip(th.accent));
     let (line, st) = match said {
         Some(m) => (m, th.s(th.accent2)),
-        None => ("←↑↓→ swap · ⇧←↑↓→ split beside · + − size · x close · u undo · Enter done", th.s(th.dim)),
+        None => ("←↑↓→ swap · + − size · x close · u undo · Enter done", th.s(th.dim)),
     };
     text(buf, r.x + w + 2, r.y, r.width.saturating_sub(w + 3), line, st);
 }
@@ -908,26 +761,6 @@ pub fn draw_undo_chip(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 }
 
 impl Side {
-    fn arrow(self) -> &'static str {
-        match self {
-            Side::Left => "←",
-            Side::Right => "→",
-            Side::Top => "↑",
-            Side::Bottom => "↓",
-        }
-    }
-    /// "column" or "row": what a Pane at this screen edge becomes.
-    fn line(self) -> &'static str {
-        if self.axis() == crate::layout::Axis::Horizontal { "column" } else { "row" }
-    }
-    fn edge(self) -> &'static str {
-        match self {
-            Side::Left => "left",
-            Side::Right => "right",
-            Side::Top => "top",
-            Side::Bottom => "bottom",
-        }
-    }
     /// "right of", "below"… for a title.
     fn word_beside(self) -> &'static str {
         match self {

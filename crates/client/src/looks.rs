@@ -24,7 +24,7 @@ pub struct Picker {
     pub items: Vec<(String, String, String)>,
     pub sel: usize,
     /// what to go back to on Esc: design, theme id, layout and the saved layout's name
-    before: (usize, String, crate::layout::Node, Option<String>),
+    before: (usize, String, crate::arrangement::Arrangement, Option<String>),
 }
 
 /// The user's themes folder and what it held last time we looked.
@@ -294,7 +294,10 @@ impl App {
     pub fn swap_widget(&mut self, id: PaneId, dir: i32) -> bool {
         let Some(from) = self.layout.widget_in(id) else { return false };
         let Some(to) = crate::layouts::next(from, &self.layout.widgets(), dir) else { return false };
-        self.layout.swap(from, to);
+        match self.layout.replace(id, to) {
+            Ok(a) => self.layout = a,
+            Err(_) => return false,
+        }
         self.want_widget_data();
         true
     }
@@ -564,8 +567,8 @@ mod tests {
         let before = arrows(&mut app, pane);
         assert_eq!(before.len(), 2);
         // put the queue there (no × on it) and the queue's own Pane gets this one's Widget
-        app.layout.swap(Widget::Queue, Widget::Marquee);
-        app.layout.swap(slot, Widget::Queue);
+        app.layout = app.layout.replace(app.layout.pane_of(Widget::Queue).unwrap(), Widget::Marquee).unwrap();
+        app.layout = app.layout.replace(pane, Widget::Queue).unwrap();
         assert_eq!(app.layout.pane_of(Widget::Queue), Some(pane));
         assert_eq!(arrows(&mut app, pane), before, "the ◂ ▸ moved");
     }
@@ -575,7 +578,7 @@ mod tests {
         let (mut app, dir) = with_dirs();
         let area = Rect::new(0, 1, 160, 43);
         let d = app.layout.compute(area).dividers[0].clone();
-        app.layout.drag(&d, 41);
+        app.layout = app.layout.move_line(&d, 41, area, 2.0);
         app.swap_widget(app.layout.pane_of(Widget::Fft).unwrap(), 1);
         let mine = app.layout.clone();
         app.run(crate::app::Action::SaveLayout);

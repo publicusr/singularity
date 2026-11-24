@@ -14,7 +14,7 @@ BIN = os.environ.get("PTY_BIN") or f"{ROOT}/target/debug"
 WRAP = os.environ.get("PTY_WRAP", "").split()
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
 # the tiling scenario wants room for the whole Singularity layout
-if sys.argv[1:2] in (["tiling"], ["tiling-lift"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"]):
+if sys.argv[1:2] in (["tiling"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"]):
     COLS, ROWS = int(os.environ.get("PTY_COLS", 160)), int(os.environ.get("PTY_ROWS", 48))
 # the wheel everywhere: short Panes, so everything holds more than fits
 if sys.argv[1:2] == ["wheel-all"]:
@@ -1665,10 +1665,12 @@ def layouts(t, out, env):
 
 
 def tiling(t, out, env):
-    """D66, free tiling: drag a Pane by its title to a swap zone, an edge zone and the screen's edge (a shot while the
-    pointer is still down: the whole layout reflowed, the moved Pane highlighted, its title following; another after
-    the release), the naming prompt on the first edit, Esc cancelling a drag, a close with the x, a split from the
-    right-click menu with the Widget list, and Move mode. Run it at PTY_COLS=160 PTY_ROWS=48 (the default here)."""
+    """D87, a drag moves contents: drag a Pane's title onto another Pane (a shot while the pointer is still down:
+    nothing has moved, the Pane under the pointer is lit with "swap with …" and the Widget's chip follows the pointer;
+    another after the release: the two Widgets swapped, every outline where it was), the naming prompt on the first
+    edit, a release on its own Pane and over the top bar (nothing happens), Esc cancelling a drag, a close with the x,
+    a split from the right-click menu with the Widget list, and Move mode (arrows swap, + - size). Run it at
+    PTY_COLS=160 PTY_ROWS=48 (the default here)."""
     t.pump(1.0)
     t.send(b" ", 0.5)
 
@@ -1680,10 +1682,6 @@ def tiling(t, out, env):
             return at[0] + 3, at[1]
         x, y = t.find(title)
         return x + 2, y
-
-    def pane_at(title, dx, dy):
-        x, y = title_at(title)
-        return x - 3 + dx, y + dy
 
     def pull(title, to, shot=None, steps=6, hold=False):
         x0, y0 = title_at(title)
@@ -1697,68 +1695,71 @@ def tiling(t, out, env):
             mouse(t, 0, to[0], to[1], release=True, wait=0.5)
 
     t.shot(f"{out}/00-start.png")
-    # 1. a centre: stream swaps with the queue
+    # 1. onto the queue: the queue lit, "swap with queue", the chip by the pointer; released, the two swap
     qx, qy = t.find("\u250c queue")
     pull("stream", (qx + 25, qy + 6), "01-swap-drag.png")
+    print("mid-drag:", "label shown" if t.find("swap with queue") else "NO LABEL", "·", "chip shown" if t.find("\u283f stream") else "NO CHIP")
     t.shot(f"{out}/02-swap-done-naming.png")
     # the first edit of a built-in Design asks what to call it
     t.send(b"\x7f" * 14, 0.2)
     t.send(b"Mine", 0.3)
     t.shot(f"{out}/03-naming-typed.png")
     t.send(b"\r", 0.6)
-    # 2. an edge band: lyrics goes left of home (a split)
+    print("after the swap: stream where the queue was" if t.find("\u250c stream") == (qx, qy) else f"stream at {t.find(chr(0x250c) + ' stream')}, the queue was at {(qx, qy)}")
+    # 2. lyrics onto Home, a small Pane onto a big one: they swap, the floor plan stays
     hx, hy = t.find("\u250c home")
-    pull("tail -f lyrics.log", (hx + 2, hy + 10), "04-edge-drag.png")
-    t.shot(f"{out}/05-edge-done.png")
-    # 3. the screen's left edge: fft becomes a full-height column
-    pull("fft", (0, 22), "06-screen-edge-drag.png")
-    t.shot(f"{out}/07-screen-edge-done.png")
-    # 4. Esc puts a held Pane back
+    pull("tail -f lyrics.log", (hx + 30, hy + 10), "04-onto-home-drag.png")
+    t.shot(f"{out}/05-onto-home-done.png")
+    # 3. fft let go on its own Pane, then over the top bar: nothing happens either time
+    fx, fy = title_at("fft")
+    pull("fft", (fx + 4, fy + 4), "06-own-pane-drag.png")
+    pull("fft", (60, 0), "07-top-bar-drag.png")
+    t.shot(f"{out}/08-nothing-moved.png")
+    # 4. Esc cancels a drag
     x0, y0 = title_at("home")
     mouse(t, 0, x0, y0)
     for i in range(1, 5):
         mouse(t, 32, x0 + 8 * i, y0 + 3 * i, wait=0.12)
     t.pump(0.3)
-    t.shot(f"{out}/08-esc-held.png")
+    t.shot(f"{out}/09-esc-held.png")
     t.send(b"\x1b", 0.4)
     mouse(t, 0, x0 + 32, y0 + 12, release=True, wait=0.4)
-    t.shot(f"{out}/09-esc-after.png")
+    t.shot(f"{out}/10-esc-after.png")
     # 5. close the loudness Pane with its x
     lx, ly = t.find("loudness")
     row = t.screen.display[ly]
     cx = row.index("\u00d7", lx)
-    t.shot(f"{out}/10-before-close.png")
+    t.shot(f"{out}/11-before-close.png")
     mouse(t, 0, cx, ly); mouse(t, 0, cx, ly, release=True, wait=0.6)
-    t.shot(f"{out}/11-closed.png")
+    t.shot(f"{out}/12-closed.png")
     # 6. split: right-click a title, Split down (the second row), pick a Widget
     x0, y0 = title_at("~/library")
     mouse(t, 2, x0, y0); mouse(t, 2, x0, y0, release=True, wait=0.4)
-    t.shot(f"{out}/12-title-menu.png")
-    t.send(b"\x1b[B\x1b[B", 0.2)  # past Replace widget… and Split right
+    t.shot(f"{out}/13-title-menu.png")
+    t.send(b"\x1b[B", 0.2)
     t.send(b"\r", 0.5)
-    t.shot(f"{out}/13-widget-list.png")
+    t.shot(f"{out}/14-widget-list.png")
     t.send(b"\x1b[B", 0.2)
     t.send(b"\r", 0.6)
-    t.shot(f"{out}/14-split-done.png")
-    # 7. Move mode on the focused Pane: arrows swap, Shift+arrows split beside, + - size
+    t.shot(f"{out}/15-split-done.png")
+    # 7. Move mode on the focused Pane: arrows swap its Widget with the neighbour's, + - size its Pane
     t.send(b"m", 0.4)
-    t.shot(f"{out}/15-move-mode.png")
-    t.send(b"\x1b[1;2D", 0.4)
-    t.shot(f"{out}/16-move-shift-left.png")
+    t.shot(f"{out}/16-move-mode.png")
     t.send(b"\x1b[A", 0.4)
+    t.shot(f"{out}/17-move-swapped-up.png")
     t.send(b"+", 0.3); t.send(b"+", 0.3)
-    t.shot(f"{out}/17-move-grown.png")
+    t.shot(f"{out}/18-move-grown.png")
     t.send(b"\r", 0.4)
     # 8. the design list has your design, and the file is on disk
     t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
-    t.shot(f"{out}/18-picker.png")
+    t.shot(f"{out}/19-picker.png")
     t.send(b"\x1b", 0.3)
     import glob
     files = sorted(glob.glob(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/*.toml"))
     print("layout files:", [os.path.basename(f) for f in files])
     # 9. Reset design
     t.send(b"\x0b", 0.3); t.send(b"reset design", 0.3); t.send(b"\r", 0.6)
-    t.shot(f"{out}/19-reset.png")
+    t.shot(f"{out}/20-reset.png")
     t.send(b"q", 0.5)
 
 
@@ -1849,117 +1850,19 @@ def pane_menu(t, out):
     t.send(b"q", 0.5)
 
 
-def tiling_lift(t, out, env):
-    """The owner's 2026-11-01 round on free tiling: a drop that would only resize a neighbour is no drop; a held Pane
-    is lifted (it shrinks to its floating size) and floats live with a shadow while the others ease into place around
-    a dashed slot (shots at several moments of each animation); the screen's edges; the landing; undo from the naming
-    prompt, redo; Move mode's Shift+arrow refusals in the bar, a whole column and `u`; a top-edge row and Ctrl+Z
-    mid-animation. Pixel tier, 160x48; start from an empty output folder."""
-    t.pump(1.0)
-    t.send(b" ", 0.5)
-
-    def title_at(title):
-        at = t.find("┌ " + title)
-        if at:
-            return at[0] + 3, at[1]
-        x, y = t.find(title)
-        return x + 2, y
-
-    def glide(x0, y0, x1, y1, steps=5):
-        for i in range(1, steps + 1):
-            mouse(t, 32, x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps, wait=0.0)
-
-    def moments(name, times=(0.03, 0.06, 0.4)):
-        for i, dt in enumerate(times):
-            t.pump(dt)
-            t.shot(f"{out}/{name}-{'abc'[i]}.png")
-
-    t.shot(f"{out}/00-start.png")
-    # 1. the owner's bug: the stream held a little way up over its border, into the library's bottom band. That used
-    # to re-split the two 50/50 (the library shrank, nothing else happened); now it's no drop: the slot says "back"
-    sx, sy = title_at("stream")
-    lx, ly = title_at("~/library")
-    mouse(t, 0, sx, sy, wait=0.05)
-    glide(sx, sy, sx + 4, sy - 3)
-    t.pump(0.5)
-    t.shot(f"{out}/01-near-own-neighbour.png")
-    mouse(t, 0, sx + 4, sy - 3, release=True, wait=0.5)
-    t.shot(f"{out}/02-near-own-neighbour-released.png")
-    # 2. lift Home: it comes up from its place, shrinking to its floating size
-    hx, hy = title_at("home")
-    mouse(t, 0, hx, hy, wait=0.05)
-    mouse(t, 32, hx + 4, hy + 2, wait=0.0)
-    moments("03-lift")
-    # 3. over the library's middle: the others make room (a swap), an empty slot where it would land
-    glide(hx + 4, hy + 2, 12, 14)
-    moments("04-over-library")
-    # 4. the queue's left band: a split beside it
-    qx, qy = 31, 33
-    glide(12, 14, qx, qy)
-    t.pump(0.4)
-    t.shot(f"{out}/05-queue-left-band.png")
-    # 5. the screen's right edge (the outermost column): a whole column
-    glide(qx, qy, 159, 26)
-    t.pump(0.4)
-    t.shot(f"{out}/06-right-edge.png")
-    # 6. below the Panes (the player): a whole row at the bottom
-    glide(159, 26, 80, 45)
-    t.pump(0.4)
-    t.shot(f"{out}/07-bottom-edge.png")
-    # 7. let go in the queue's left band: it lands in its slot
-    glide(80, 45, qx, qy)
-    t.pump(0.4)
-    mouse(t, 0, qx, qy, release=True, wait=0.0)
-    moments("08-landing")
-    # 8. the first edit asks for a name; Ctrl+Z from there goes back to the built-in Design, Ctrl+Y redoes (and asks)
-    t.shot(f"{out}/09-naming.png")
-    t.send(b"\x1a", 0.0)
-    moments("10-undone-from-prompt", (0.05, 0.4))
-    t.send(b"\x19", 0.5)
-    t.shot(f"{out}/11-redone-asks-again.png")
-    t.send(b"\x1b", 0.5)
-    t.shot(f"{out}/12-kept-edited-undo-chip.png")
-    # 9. Move mode on lyrics: Shift+Up has no room above the well (said in the bar); Shift+Right makes a whole column;
-    # again, it already is one; u undoes
-    x, y = title_at("lyrics")
-    mouse(t, 0, x, y); mouse(t, 0, x, y, release=True, wait=0.3)
-    t.send(b"m", 0.3)
-    t.send(b"\x1b[1;2A", 0.3)
-    t.shot(f"{out}/13-move-no-room.png")
-    t.send(b"\x1b[1;2C", 0.0)
-    moments("14-move-column", (0.05, 0.4))
-    t.send(b"\x1b[1;2C", 0.3)
-    t.shot(f"{out}/15-move-already-spans.png")
-    t.send(b"u", 0.0)
-    moments("16-move-undo", (0.05, 0.4))
-    t.send(b"\r", 0.3)
-    # 10. fft pushed up past the Panes (the top bar): a whole row at the top; dropped; Ctrl+Z mid-way back
-    fx, fy = title_at("fft")
-    mouse(t, 0, fx, fy, wait=0.05)
-    glide(fx, fy, 70, 0)
-    t.pump(0.4)
-    t.shot(f"{out}/17-top-edge.png")
-    mouse(t, 0, 70, 0, release=True, wait=0.5)
-    t.shot(f"{out}/18-top-edge-done.png")
-    t.send(b"\x1a", 0.0)
-    moments("19-ctrl-z", (0.04, 0.08, 0.4))
-    t.send(b"\x19", 0.5)
-    t.shot(f"{out}/20-ctrl-y.png")
-    t.send(b"q", 0.5)
-
-
 def tiling_fast(t, out, env):
-    """The owner's 2026-11-01 round on fast drags: at `visuals.motion_fps = 240`, a fast sweep across ~5 Panes leaves
-    the layout as it was (only the held Pane follows); a pause shows the preview; a drop on a short wide Pane swaps,
-    no "sandwich". The Client logs every frame to `frames.log` (start µs, rate, tick/draw/diff/flush µs): the frame
-    intervals during the drag are printed. Pixel tier, 160x48; start from an empty output folder."""
+    """Fast drags at `visuals.motion_fps = 240`: a fast sweep across ~5 Panes moves nothing but the highlight (on the
+    Pane under the pointer at once) and the chip; Esc ends it; a drop on a short wide Pane swaps. The Client logs every
+    frame to `frames.log` (start µs, rate, tick/draw/diff/flush µs): the frame intervals during the drag are printed.
+    Pixel tier, 160x48; start from an empty output folder."""
     t.pump(1.0)
     t.send(b" ", 0.5)
     t.shot(f"{out}/00-start.png")
     hx, hy = t.find("┌ home")
     hx += 3
     mouse(t, 0, hx, hy, wait=0.05)
-    # a sweep at ~4 ms a report over the library, the queue, lyrics, the well and back: nothing rearranges
+    # a sweep at ~4 ms a report over the library, the queue, lyrics, the well and back: nothing rearranges, the
+    # highlight is on whatever Pane the pointer is over
     path = [(hx, hy), (12, 14), (31, 33), (140, 30), (120, 10), (60, 38)]
     shots = 0
     for (x0, y0), (x1, y1) in zip(path, path[1:]):
@@ -1967,10 +1870,10 @@ def tiling_fast(t, out, env):
             mouse(t, 32, x0 + (x1 - x0) * i // 20, y0 + (y1 - y0) * i // 20, wait=0.004)
         t.shot(f"{out}/01-sweep-{shots}.png")
         shots += 1
-    # it rests: the zone under it becomes the preview
+    # it rests: the same, nothing waits for a pause
     t.pump(0.5)
     t.shot(f"{out}/02-paused.png")
-    # a jiggle over two Panes, then back: the preview doesn't flicker; Esc puts it back
+    # Esc ends the drag: nothing changed
     t.send(b"\x1b", 0.5)
     mouse(t, 0, 60, 38, release=True, wait=0.5)
     t.shot(f"{out}/03-put-back.png")
@@ -1997,10 +1900,11 @@ def tiling_fast(t, out, env):
 
 
 def tiling_paths(t, out, env):
-    """#21: pointer paths in the real Client. A fling across Panes let go at once puts the Pane back (nothing was
-    shown); a pause on the queue then a flick to the library let go at once drops on the queue (what was shown); a
-    release the Client never heard (the pointer comes back with no button down) puts the Pane back and the next click
-    works. Prints where the held Pane ends each time. Pixel tier, 160x48; start from an empty output folder."""
+    """#21's pointer paths in the real Client, under D87 (a drag moves contents): a fling across Panes let go at once
+    drops on the Pane under the release (Home and the library swap); a pause on the queue then a flick to the library
+    let go at once drops on the library too, the Pane the pointer is over when it comes up; a release the Client never
+    heard (the pointer comes back with no button down) changes nothing and the next click works. Prints where Home and
+    the stream end each time. Pixel tier, 160x48; start from an empty output folder."""
     t.pump(1.0)
     t.send(b" ", 0.5)
     t.shot(f"{out}/00-start.png")
@@ -2012,37 +1916,38 @@ def tiling_paths(t, out, env):
         for i in range(1, n + 1):
             mouse(t, 32, x0 + (x1 - x0) * i // n, y0 + (y1 - y0) * i // n, wait=wait)
 
-    # 1. a fling over the queue, the library and lyrics, let go at once
+    # 1. a fling over the queue to the library, let go at once: Home goes into the library's Pane, the library into Home's
     mouse(t, 0, hx + 3, hy, wait=0.05)
     glide(hx + 3, hy, qx + 10, qy + 5, 10, 0.004)
     glide(qx + 10, qy + 5, lx + 5, ly + 5, 10, 0.004)
+    t.shot(f"{out}/01-fling-over-library.png")
     mouse(t, 0, lx + 5, ly + 5, release=True, wait=0.6)
-    t.shot(f"{out}/01-fling-put-back.png")
-    print("fling: home", "back where it was" if t.find("┌ home") == (hx, hy) else f"moved to {t.find('┌ home')}")
-    # 2. rest over the queue (its zone is shown: the dashed slot), then a flick to the library let go at once: it
-    # lands in that slot
-    mouse(t, 0, hx + 3, hy, wait=0.05)
-    glide(hx + 3, hy, qx + 10, qy + 5, 15, 0.01)
-    t.pump(0.4)
-    t.shot(f"{out}/02-shown-over-queue.png")
-    slot = t.find("╭╌")
-    glide(qx + 10, qy + 5, lx + 5, ly + 5, 6, 0.004)
-    mouse(t, 0, lx + 5, ly + 5, release=True, wait=0.6)
-    t.shot(f"{out}/03-dropped-where-shown.png")
-    print("flick after a pause: home", "in the slot that was shown" if t.find("┌ home") == slot else f"at {t.find('┌ home')}, the slot was {slot}")
+    t.shot(f"{out}/02-fling-dropped.png")
+    print("fling: home", "in the library's Pane" if t.find("┌ home") == (lx, ly) else f"at {t.find('┌ home')}, the library's Pane is at {(lx, ly)}")
     t.send(b"\x1b", 0.4)  # the naming prompt: keep it unnamed
+    # 2. rest over the queue (lit, "swap with queue"), then a flick back to Home's old Pane let go at once: it drops
+    # where the pointer comes up, not where it rested
+    hx2, hy2 = t.find("┌ home")
+    mouse(t, 0, hx2 + 3, hy2, wait=0.05)
+    glide(hx2 + 3, hy2, qx + 10, qy + 5, 15, 0.01)
+    t.pump(0.4)
+    t.shot(f"{out}/03-resting-over-queue.png")
+    glide(qx + 10, qy + 5, hx + 10, hy + 5, 6, 0.004)
+    mouse(t, 0, hx + 10, hy + 5, release=True, wait=0.6)
+    t.shot(f"{out}/04-flicked-dropped.png")
+    print("flick after a pause: home", "back in its own Pane" if t.find("┌ home") == (hx, hy) else f"at {t.find('┌ home')}")
     # 3. picked up, then the pointer moves with no button down: its release went elsewhere
     sx, sy = t.find("┌ stream")
     mouse(t, 0, sx + 3, sy, wait=0.05)
     glide(sx + 3, sy, 60, 20, 10, 0.01)
     t.pump(0.3)
     mouse(t, 35, 61, 21, wait=0.6)
-    t.shot(f"{out}/04-unheard-release.png")
-    print("unheard release: stream", "back where it was" if t.find("┌ stream") == (sx, sy) else f"at {t.find('┌ stream')}")
-    lx, ly = t.find("┌ ~/library")
+    t.shot(f"{out}/05-unheard-release.png")
+    print("unheard release: stream", "where it was" if t.find("┌ stream") == (sx, sy) else f"at {t.find('┌ stream')}")
+    lx, ly = t.find("┌ ~/library") or t.find("┌ home")
     mouse(t, 0, lx + 3, ly, wait=0.05)
     mouse(t, 0, lx + 3, ly, release=True, wait=0.5)
-    t.shot(f"{out}/05-click-after.png")
+    t.shot(f"{out}/06-click-after.png")
     t.send(b"q", 0.5)
 
 
@@ -2066,10 +1971,10 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast", "tiling-paths", "resize", "karaoke") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-fast", "tiling-paths", "resize", "karaoke") else "0"
         if scenario == "design-sizes":
             env["SINGULARITY_PIXEL"] = os.environ.get("PTY_PIXEL", "1")
         if scenario == "sizes":
@@ -2220,8 +2125,6 @@ def main():
             return tiling(t, out, env)
         if scenario == "pane-menu":
             return pane_menu(t, out)
-        if scenario == "tiling-lift":
-            return tiling_lift(t, out, env)
         if scenario == "tiling-fast":
             return tiling_fast(t, out, env)
         if scenario == "tiling-paths":

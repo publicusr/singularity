@@ -148,22 +148,23 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 - **Layouts**: drag the border between two Panes to resize them (it lights up under the pointer, and kitty or
   Ghostty show a resize pointer); `v` (or a Pane's ◂ ▸) swaps its Widget; Ctrl+K → "Save design as…" keeps it, and it
   comes back, colours included, in Ctrl+K → Pick a design.
-- **Tiling**: drag a Pane by its title bar: onto another Pane's middle to swap, onto its edge to split it, onto the
-  screen's edge (the outermost column, or past the top or bottom of the Panes) for a full-height column or
-  full-width row. The Pane floats under the pointer and the others make room around where it would land once
-  you pause over a spot (a quick sweep across Panes leaves them be; letting go drops where the pointer is); Esc
-  cancels. A Pane too small to share with another is a swap target only. While anything moves the Client draws at
-  `visuals.motion_fps` (Settings; 30–240, default 120: set it to your monitor's refresh rate). Your terminal caps it
-  too: Ghostty follows the monitor; in kitty lower `repaint_delay` (and keep `sync_to_monitor`); otherwise see your
-  terminal's repaint settings. `×` in a
+- **Tiling**: drag a Pane by its title bar onto another Pane and the two Widgets swap places (onto an empty Pane, it
+  fills it). While you drag nothing moves: the Pane under the pointer lights up at once and says what letting go does
+  ("swap with queue"), and a small chip with the Widget's name follows the pointer. Letting go on its own Pane, off
+  the Panes or Esc cancels. Every drop is allowed, whatever the sizes; Panes keep their outlines, and only dragging a
+  border, a split or a close changes those. While the chip moves the Client draws at `visuals.motion_fps` (Settings;
+  30–240, default 120: set it to your monitor's refresh rate). Your terminal caps it too: Ghostty follows the
+  monitor; in kitty lower `repaint_delay` (and keep `sync_to_monitor`); otherwise see your terminal's repaint
+  settings. `×` in a
   title closes a Pane. Right-click a Pane's title (or its body, where that has no menu of its own) for its menu:
   Replace widget… opens the Widget picker (type to filter; Widgets not on screen first, those on screen dimmed below a
   line, and picking one swaps the two Panes' Widgets), then Split right / Split down / Close pane / Move pane. A click
   on the Widget's name in a title, `w` on the focused Pane, or Ctrl+K → Replace widget… open the picker too (Home's
-  Pane keeps Home). Ctrl+K also has Split right / Split down / Close pane / Move pane / Reset design. `m` moves the focused Pane from the keyboard: arrows swap with the neighbour, ⇧arrows split
-  beside it, `+` `-` size it, `x` closes it, `u` undoes, Enter or Esc ends. Ctrl+Z undoes a layout change and
+  Pane keeps Home). Ctrl+K also has Split right / Split down / Close pane / Move pane / Reset design. `m` moves the
+  focused Pane's Widget from the keyboard: arrows swap it with the neighbour's, `+` `-` size its Pane, `x` closes it,
+  `u` undoes, Enter or Esc ends. Ctrl+Z undoes a layout change and
   Ctrl+Y (or Ctrl+Shift+Z) redoes it; the bar offers "undo" for a few seconds after each one. Home, the library, the queue and lyrics can move but
-  never close, and nothing can be dropped where a Pane would get too small. The first edit of a built-in Design asks
+  never close, and no border drag, split or close can leave a Pane too small. The first edit of a built-in Design asks
   what to call your Design (Esc keeps one unnamed "Singularity (edited)"); after that it saves itself.
 - **Idle**: after 3 minutes without input the black hole drifts over the screen; any key wakes it (and does nothing
   else). Shift+I or `[idle]` in config.toml switches it off or changes the delay.

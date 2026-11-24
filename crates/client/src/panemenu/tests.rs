@@ -315,14 +315,14 @@ fn the_picker_closes_when_its_pane_goes() {
     // the Design comes back as it was built, without that Pane identity
     let tree = a.layout.clone();
     let gone = tree.without(pid(&a, Widget::Fft)).unwrap();
-    a.layout = gone;
+    a.layout = gone.into();
     let shot = render(&mut a);
     assert!(a.modal().is_none(), "closed, not an empty picker");
     assert!(!shot.contains("Choose a widget"));
     // and a key meanwhile does nothing
     a.layout = tree;
     a.open_widget_picker(pid(&a, Widget::Fft));
-    a.layout = a.layout.without(pid(&a, Widget::Fft)).unwrap();
+    a.layout = a.layout.without(pid(&a, Widget::Fft)).unwrap().into();
     key(&mut a, KeyCode::Enter);
     assert!(a.modal().is_none());
 }
@@ -338,9 +338,10 @@ fn a_replace_or_swap_never_changes_any_panes_rect() {
         let before = rects(&a);
         let target = pid(&a, target);
         let tree = match a.layout.pane_of(pick) {
-            Some(from) => exchanged(&a.layout, target, from),
-            None => holding(&a.layout, target, Some(pick)),
-        };
+            Some(from) => a.layout.swap(target, from),
+            None => a.layout.replace(target, pick),
+        }
+        .unwrap();
         a.layout = tree;
         assert_eq!(rects(&a), before, "{pick} into {target:?}");
     }
