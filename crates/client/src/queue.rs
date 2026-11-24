@@ -144,13 +144,16 @@ fn height(l: &Line, big: bool) -> u16 {
     if big && matches!(l, Line::Entry(_)) { 2 } else { 1 }
 }
 
-/// How many lines from `top` fit whole in `rows` rows.
+/// How many lines from `top` fit whole in `rows` rows. In a big queue, not a heading whose first song doesn't fit
+/// under it.
 fn fitting(all: &[Line], top: usize, rows: usize, big: bool) -> usize {
     let mut used = 0;
-    all.iter().skip(top).take_while(|l| {
+    let n = all.iter().skip(top).take_while(|l| {
         used += height(l, big) as usize;
         used <= rows
-    }).count()
+    }).count();
+    let alone = n > 0 && top + n < all.len() && matches!(all[top + n - 1], Line::Heading(_));
+    if big && alone { n - 1 } else { n }
 }
 
 /// A queue this big shows each song on two rows with its cover beside it, and a cover for what's playing (#59): the
@@ -227,10 +230,12 @@ const NOW_COVER: (u16, u16) = (12, 6);
 
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
+    let big = is_big(r);
+    // (first: a drag aims by it, whatever is drawn)
+    app.queue_view.big = big;
     if r.height == 0 || w < 8 {
         return;
     }
-    let big = is_big(r);
     // now playing
     let mut y = r.y;
     match app.playback.item.clone() {
@@ -274,7 +279,6 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let rows = body.max(1);
     let mut view = app.queue_view;
     view.list_y = y;
-    view.big = big;
     view.sel = view.sel.min(app.playback.queue.len().saturating_sub(1));
     // keep the selection in view
     if let Some(at) = all.iter().position(|l| *l == Line::Entry(view.sel)) {
@@ -294,11 +298,8 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let focused = app.is_focused(crate::layout::Widget::Queue) || app.is_open(crate::app::Modal::Queue);
     let mut hits = vec![];
     // (a Pane a row or two tall has no rows for the list, but keeps its place in it)
-    for line in all.iter().skip(view.top) {
+    for line in all.iter().skip(view.top).take(fitting(&all, view.top, body, big)) {
         let h = height(line, big);
-        if y + h > r.bottom() {
-            break;
-        }
         match line {
             Line::Heading(h) => text(buf, x, y, w, &clip(h, w as usize), th.s(th.dim).add_modifier(Modifier::BOLD)),
             Line::Entry(i) => {
@@ -656,6 +657,35 @@ mod tests {
         let (_, hits, _) = drawn(r, &mut app, draw);
         let last = hits.iter().find_map(|(rr, h)| (*h == Hit::QueueRow(59)).then_some(*rr)).unwrap();
         assert!(r.bottom() - last.bottom() < 2, "{last:?}");
+    }
+
+    #[test]
+    fn a_big_queue_shows_no_heading_without_its_first_song() {
+        // nine queued songs fill 19 of the 21 rows under what's playing; "Next from" would sit alone on the 20th
+        let r = Rect::new(0, 0, BIG.0, BIG.1);
+        let mut app = full_app(27);
+        let (buf, _, (top, visible, list_y)) = drawn(r, &mut app, draw);
+        assert_eq!((top, list_y), (0, NOW_COVER.1 + 1));
+        let screen: Vec<String> = (0..r.height).map(|y| row_text(&buf, 0, r.width, y)).collect();
+        assert!(!screen.iter().any(|l| l.contains("Next from")), "{screen:#?}");
+        assert_eq!(visible, 10, "the queued songs and their heading");
+        // a row more and its first song comes with it
+        let (buf, _, _) = drawn(Rect { height: r.height + 2, ..r }, &mut app, draw);
+        assert!((0..r.height + 2).any(|y| row_text(&buf, 0, r.width, y).contains("Next from")));
+    }
+
+    #[test]
+    fn a_big_queue_songs_menu_from_the_keyboard_opens_under_the_song() {
+        let r = Rect::new(0, 0, BIG.0, BIG.1);
+        let mut app = full_app(27);
+        let (_, hits, _) = drawn(r, &mut app, draw);
+        app.hits = hits;
+        let rr = app.hit_rect(&Hit::QueueRow(2)).unwrap();
+        app.open_queue_menu(2, None);
+        match app.popup.as_ref() {
+            Some(crate::app::Popup::Menu(m)) => assert_eq!(m.at, (rr.x + 4, rr.bottom())),
+            _ => panic!("no menu"),
+        }
     }
 
     #[test]

@@ -410,9 +410,6 @@ fn fake_query(op: &str, vars: &Value, home: &HomeFeed) -> anyhow::Result<Value> 
     }
 }
 
-/// Invented tracks in pages of 100: 250 for Liked Songs, 40 elsewhere.
-/// The fake library before any change: the fake tracks are all in Liked Songs; other things are saved when their URI
-/// ends in 1.
 /// A made-up song for `spotify:track:song<n>` (a full queue for the contact sheet, #59): a title, an artist, an album,
 /// a length and a cover that differ from song to song, as a real queue's do.
 fn fake_song(uri: &str) -> Option<singularity_proto::Item> {
@@ -436,10 +433,13 @@ fn fake_song(uri: &str) -> Option<singularity_proto::Item> {
     })
 }
 
+/// The fake library before any change: the fake tracks are all in Liked Songs; other things are saved when their URI
+/// ends in 1.
 fn fake_saved(uri: &str) -> bool {
     uri.strip_prefix("spotify:track:fake").is_some_and(|n| n.parse::<u32>().is_ok_and(|n| n < 250)) || uri.ends_with('1')
 }
 
+/// Invented tracks in pages of 100: 250 for Liked Songs, 40 elsewhere.
 fn fake_tracks(uri: &str) -> Vec<CatEvent> {
     if uri == FAKE_BOOK {
         return fake_book();
