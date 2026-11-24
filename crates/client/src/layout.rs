@@ -194,8 +194,8 @@ impl Node {
         let mid = Node::split(Vertical, Ratio(0.52), Node::pane(Widget::Home), Node::pane(Widget::Queue));
         let instruments = Node::split(Horizontal, Ratio(0.5), Node::pane(Widget::Loudness), Node::pane(Widget::Fft));
         let right = Node::split(Vertical, Ratio(0.44), Node::pane(Widget::Well), Node::split(Vertical, Ratio(0.57), Node::pane(Widget::Lyrics), instruments));
-        // the middle's 0.64: between the widths the well's old 4:3 nudge left it at the usual sizes (#48)
-        Node::split(Horizontal, Cells(30), left, Node::split(Horizontal, Ratio(0.64), mid, right))
+        // the middle's 0.65: between the widths the well's old 4:3 nudge left it at the usual sizes (#48)
+        Node::split(Horizontal, Cells(30), left, Node::split(Horizontal, Ratio(0.65), mid, right))
     }
 
     /// Event Horizon: library | home + up next | the black hole (no well: it owns its quadrant) + lyrics.
