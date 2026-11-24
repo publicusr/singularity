@@ -189,7 +189,8 @@ impl Arrangement {
         self.checked(plan, area)
     }
 
-    /// A new Pane on `side` of Pane `pane`, taking half its room, holding `w` (one not on screen) or nothing.
+    /// A new Pane on `side` of Pane `pane`, taking half its room and nothing else (every other Pane stays exactly where it
+    /// is), holding `w` (one not on screen) or nothing.
     pub fn split(&self, pane: PaneId, side: Side, w: Option<Widget>, area: Rect) -> Result<Arrangement, Refused> {
         if !self.plan.contains(pane) {
             return Err(Refused::NoPane);
@@ -198,7 +199,12 @@ impl Arrangement {
             return Err(Refused::OnScreen(w));
         }
         let plan = self.plan.split_beside(pane, w, side).ok_or(Refused::NoPane)?;
-        self.checked(plan, area)
+        let a = self.checked(plan, area)?;
+        // only the Pane split is divided: a split that could only happen by squeezing (or growing) another Pane is
+        // refused, as one without room (D87: the floor plan holds still)
+        let after = a.plan.compute(area).panes;
+        let moved = self.plan.compute(area).panes.iter().filter(|(p, _)| p.id != pane).any(|(p, r)| !after.iter().any(|(q, s)| q.id == p.id && s == r));
+        if moved { Err(Refused::NoRoom) } else { Ok(a) }
     }
 
     /// Without Pane `pane` (its neighbour takes the room); refused for a Required Widget (Home).

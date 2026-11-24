@@ -75,6 +75,8 @@ fn fill(buf: &mut Buffer, r: Rect, th: &Theme) {
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    app.picker_lost_its_pane();
+    app.name_if_waiting();
     app.meters.expire();
     app.begin_frame();
     let area = f.area();
@@ -220,7 +222,6 @@ fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
         Modal::Devices => devices_rect(area, app),
         Modal::Picker => crate::looks::picker_rect(area, app.picker()?),
         Modal::Naming => naming_rect(area),
-        Modal::Widgets => crate::arrange::widgets_rect(area, app.widget_pick()?),
         Modal::WidgetPicker => {
             // (its Pane gone: drawing it closes it)
             app.widget_picker().filter(|p| app.layout.contains(p.target))?;
@@ -253,7 +254,6 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
         }
         Modal::Devices => devices(f.buffer_mut(), area, app, th),
         Modal::Picker => crate::looks::draw_picker(f.buffer_mut(), area, app, th),
-        Modal::Widgets => crate::arrange::draw_widgets(f.buffer_mut(), area, app, th),
         Modal::WidgetPicker => crate::panemenu::draw(f.buffer_mut(), area, app, th),
         Modal::Library => crate::paneless::draw_library(f.buffer_mut(), area, app, th),
         Modal::Queue => crate::paneless::draw_queue(f.buffer_mut(), area, app, th),
@@ -375,11 +375,27 @@ fn menu(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
     f.render_widget(block, r);
     // a menu taller than the screen scrolls with its selection
     let first = crate::scroll::window(selected, inner.height as usize, items.len());
-    for (i, (label, _)) in items.iter().enumerate().skip(first).take(inner.height as usize) {
+    for (i, (label, act)) in items.iter().enumerate().skip(first).take(inner.height as usize) {
         let y = inner.y + (i - first) as u16;
         let st = if i == selected { th.s(th.accent).bg(th.selection.color()) } else { th.s(th.fg) };
         text(f.buffer_mut(), inner.x, y, inner.width, &format!(" {label:<w$}", w = inner.width.saturating_sub(1) as usize), st);
         app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::MenuItem(i));
+        // the Split row: each arrow is a button (three cells round it); the one the word Split and Enter split toward
+        // is lit
+        if let crate::app::MenuAct::Split(lit) = act {
+            for (k, (cx, _)) in label.chars().enumerate().filter(|(_, c)| "←→↑↓".contains(*c)).enumerate() {
+                let side = crate::arrange::SPLIT_SIDES[k];
+                let x = inner.x + 1 + cx as u16;
+                if x >= inner.right() {
+                    break;
+                }
+                if side == *lit {
+                    let arrow = label.chars().nth(cx).unwrap_or(' ').to_string();
+                    text(f.buffer_mut(), x, y, 1, &arrow, th.chip(th.accent));
+                }
+                app.hit(Rect::new(x.saturating_sub(1), y, 3.min(inner.right() - x + 1), 1), Hit::MenuSplit(side));
+            }
+        }
     }
 }
 
@@ -583,7 +599,12 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     match w {
         Some(w) if short => crate::needs::draw(f.buffer_mut(), inner, w, th),
         Some(w) => widget(f.buffer_mut(), *rect, inner, w, todo, app, th),
-        None => {}
+        // an empty Pane says so, quietly (a split's new Pane until something is picked for it)
+        None => {
+            if inner.height > 0 && inner.width >= 5 {
+                text(f.buffer_mut(), inner.x + (inner.width - 5) / 2, inner.y + (inner.height - 1) / 2, 5, "empty", th.s(th.dim));
+            }
+        }
     }
 }
 
@@ -3433,10 +3454,6 @@ mod tests {
                 app.layout = app.layout.close(app.layout.pane_of(w).unwrap(), app.pane_area()).unwrap();
                 app.run(if m == Modal::Library { Action::ShowLibrary } else { Action::ShowQueue });
             }
-            Modal::Widgets => {
-                let items = crate::layouts::all_widgets().take(8).collect();
-                app.open_popup(crate::app::Popup::Widgets(crate::arrange::WidgetPick { target: app.layout.pane_of(Widget::Home).unwrap(), side: crate::tiling::Side::Right, items, sel: 0 }));
-            }
             Modal::Details => {
                 let description = (0..40).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
                 app.open_popup(crate::app::Popup::Details(crate::playlists::Details { uri: "spotify:playlist:p".into(), name: "Night Drive".into(), description, on_description: true, known: true, scroll: Default::default() }));
@@ -3474,7 +3491,6 @@ mod tests {
         match m {
             Modal::Palette => app.palette().map(|p| p.selected),
             Modal::Picker => app.picker().map(|p| p.sel),
-            Modal::Widgets => app.widget_pick().map(|p| p.sel),
             Modal::WidgetPicker => app.widget_picker().map(|p| p.sel),
             Modal::Library => Some(app.sidebar.sel),
             Modal::Queue => Some(app.queue_view.sel),
@@ -3612,18 +3628,18 @@ mod tests {
             let (mut app, _rx) = over_wizard(m);
             render(&mut app, w, h);
             click(&mut app, 0, 0);
-            let closes = matches!(m, Modal::Palette | Modal::Picker | Modal::Widgets | Modal::WidgetPicker | Modal::Library | Modal::Queue | Modal::Adding | Modal::Devices | Modal::Menu | Modal::Help);
+            let closes = matches!(m, Modal::Palette | Modal::Picker | Modal::WidgetPicker | Modal::Library | Modal::Queue | Modal::Adding | Modal::Devices | Modal::Menu | Modal::Help);
             assert_eq!(app.modal(), Some(if closes { Modal::Wizard } else { m }), "{m:?}: the click");
             // the click on its first row, inside its box: the row is chosen (the popup has done its job and gone)
             let (mut app, _rx) = over_wizard(m);
             render(&mut app, w, h);
-            let row = app.hits.iter().find(|(_, hit)| matches!(hit, Hit::PaletteItem(0) | Hit::PickerItem(0) | Hit::WidgetItem(0) | Hit::PickWidget(0) | Hit::AddPick(0) | Hit::DeviceRow(0) | Hit::MenuItem(0)) || (m == Modal::Library && *hit == Hit::Side(0))).map(|(r, _)| *r);
+            let row = app.hits.iter().find(|(_, hit)| matches!(hit, Hit::PaletteItem(0) | Hit::PickerItem(0) | Hit::PickWidget(0) | Hit::AddPick(0) | Hit::DeviceRow(0) | Hit::MenuItem(0)) || (m == Modal::Library && *hit == Hit::Side(0))).map(|(r, _)| *r);
             if let Some(r) = row {
                 click(&mut app, r.x + 1, r.y);
                 assert_ne!(app.modal(), Some(m), "{m:?}: the click on its row went to the wizard");
                 assert!(app.layers().contains(&Modal::Wizard), "{m:?}: the wizard stays");
             } else {
-                assert!(!matches!(m, Modal::Palette | Modal::Picker | Modal::Widgets | Modal::WidgetPicker | Modal::Library | Modal::Adding | Modal::Devices | Modal::Menu), "{m:?}: a list popup has rows to click");
+                assert!(!matches!(m, Modal::Palette | Modal::Picker | Modal::WidgetPicker | Modal::Library | Modal::Adding | Modal::Devices | Modal::Menu), "{m:?}: a list popup has rows to click");
             }
         }
     }
@@ -3850,10 +3866,10 @@ mod tests {
         assert!(render(&mut app, 160, 48).contains("♡ Save"));
     }
 
-    /// An empty Pane (nothing makes one yet, D87) is drawn as a bare frame: no title, nothing inside, and the focus on
-    /// it is on no Widget.
+    /// An empty Pane (a split's, D87) is drawn as a frame without a title round one quiet line, "empty", and the focus
+    /// on it is on no Widget.
     #[test]
-    fn an_empty_pane_is_drawn_as_a_bare_frame() {
+    fn an_empty_pane_is_drawn_as_a_frame_saying_empty() {
         let mut app = App::new(None);
         use crate::layout::{Axis, Node, Size};
         app.layout = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::pane(Widget::Home), Node::empty()).into();
@@ -3867,7 +3883,9 @@ mod tests {
         let rows: Vec<String> = s.lines().skip(r.y as usize).take(r.height as usize).map(|l| l.chars().skip(r.x as usize).take(r.width as usize).collect()).collect();
         assert!(rows[0].starts_with('┌') || rows[0].starts_with('╭'), "a frame: {:?}", rows[0]);
         assert!(!rows[0].chars().any(char::is_alphanumeric) && rows[0].contains("┌──"), "no title: {:?}", rows[0]);
-        assert!(rows[1..rows.len() - 1].iter().all(|l| l.chars().skip(1).take(r.width as usize - 2).all(|c| c == ' ')), "nothing inside:\n{}", rows.join("\n"));
+        let inside: Vec<String> = rows[1..rows.len() - 1].iter().map(|l| l.chars().skip(1).take(r.width as usize - 2).collect::<String>().trim().to_string()).collect();
+        assert_eq!(inside.iter().filter(|l| !l.is_empty()).collect::<Vec<_>>(), ["empty"], "only \"empty\" inside:\n{}", rows.join("\n"));
+        assert_eq!(inside.iter().position(|l| !l.is_empty()), Some((inside.len() - 1) / 2), "in the middle");
         assert!(app.hits.iter().any(|(_, h)| *h == Hit::Focus(gap.id)), "a click focuses it");
         // v on it: nothing to swap, and it isn't the hole's, so the Disk look stays
         let (look, layout) = (app.hole.look, app.layout.clone());

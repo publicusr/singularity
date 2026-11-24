@@ -1,5 +1,6 @@
 //! Arranging in the running Client (D87, ADR 0005): a title drag that moves a Widget onto another Pane, Move mode on
-//! the keyboard, close and split, the Widget list for a new Pane, and what an edit does to the Design on screen (a
+//! the keyboard, close and split (a split makes an empty Pane on any of the four sides and opens the Widget picker on
+//! it, #39), and what an edit does to the Design on screen (a
 //! built-in Design is never overwritten: the first edit asks for a name; a Design of the user's own saves itself).
 //! The edits themselves are `Arrangement`'s; layout undo is `history`.
 //!
@@ -26,7 +27,7 @@ use crate::arrangement::{Arrangement, Refused};
 use crate::layout::{Divider, Pane, PaneId, Widget, is_hole};
 use crate::theme::Theme;
 use crate::tiling::{Side, neighbour};
-use crate::ui::{blank, centered, popup, text};
+use crate::ui::{blank, text};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -84,12 +85,14 @@ pub fn light_grip(buf: &mut Buffer, grip: Rect, th: &Theme) {
     }
 }
 
-/// The Widget list for a new Pane: what to split, which side, and the Widgets that fit.
-pub struct WidgetPick {
-    pub target: PaneId,
-    pub side: Side,
-    pub items: Vec<Widget>,
-    pub sel: usize,
+/// The Pane menu's Split row: each arrow splits that way (`SPLIT_SIDES`, in this order).
+pub const SPLIT_ROW: &str = "Split  ←  →  ↑  ↓";
+pub const SPLIT_SIDES: [Side; 4] = [Side::Left, Side::Right, Side::Top, Side::Bottom];
+
+/// The side after (`right`) or before `side` on the Split row, round at the ends.
+pub fn next_side(side: Side, right: bool) -> Side {
+    let i = SPLIT_SIDES.iter().position(|s| *s == side).unwrap_or(0);
+    SPLIT_SIDES[(i + if right { 1 } else { 3 }) % 4]
 }
 
 impl App {
@@ -131,6 +134,8 @@ impl App {
     /// Show `tree` in place of the whole layout (a Design, an undo): the Panes of another tree are other Panes, so the
     /// focus stays on the Widget it was on.
     pub fn set_layout(&mut self, tree: impl Into<Arrangement>) {
+        // another layout (a Design, an undo): a naming prompt held back for the old one isn't wanted any more
+        self.name_after_picker = false;
         let was = self.focused();
         self.layout = tree.into();
         self.focus = was.and_then(|w| self.layout.pane_of(w));
@@ -319,6 +324,14 @@ impl App {
     // ── edits and what they do to the Design ──────────────────────────
 
     /// Show `tree` as the layout and treat it as an edit (one undo step).
+    /// `tree` replaces the layout as the rest of the last edit (a split's pick): one undo takes both back.
+    pub(crate) fn amend_layout(&mut self, tree: Arrangement) {
+        self.layout = tree;
+        self.undo_offer = Some((Instant::now(), Action::UndoLayout));
+        self.want_widget_data();
+        self.edited();
+    }
+
     pub(crate) fn commit_layout(&mut self, tree: Arrangement) {
         let was = self.snapshot();
         self.layout = tree;
@@ -421,6 +434,8 @@ impl App {
     /// The layout was edited. A Design of the user's own (or the unnamed edit of a built-in one) follows in its file;
     /// the first edit of a built-in Design asks what to call the Design it makes.
     pub fn edited(&mut self) {
+        // (the naming prompt a split's picker held back is this one)
+        self.name_after_picker = false;
         let own = self.layout_name.clone().and_then(|id| self.saved_layouts.iter().find(|s| s.id == id).cloned());
         match own {
             Some(s) => self.write_layout(&s.id, &s.name, &s.design, s.edited),
@@ -522,47 +537,46 @@ impl App {
         }
     }
 
-    /// Open the Widget list for a new Pane beside `target`: Widgets not on screen, and only those that fit there.
+    /// A new empty Pane on `side` of Pane `target`, taking half its room, and the Widget picker on it at once (Esc
+    /// leaves it empty). Refused with the reason where it would leave a Pane under the minimum.
     pub fn split_pane(&mut self, target: PaneId, side: Side) {
-        let holeless = !self.layout.has(Widget::Well) && !self.layout.has(Widget::Hole);
-        let mut items: Vec<Widget> = crate::layouts::all_widgets().chain(if holeless { vec![Widget::Well, Widget::Hole] } else { vec![] }).collect();
-        items.dedup();
+        let Some(pane) = self.layout.get(target) else { return };
         let area = self.pane_area();
-        items.retain(|w| self.layout.split(target, side, Some(*w), area).is_ok());
-        if items.is_empty() {
-            let name = self.layout.get(target).map(|p| self.name_of(p)).unwrap_or_default();
-            return self.say(format!("No room to split {name} here"));
+        let tree = match self.layout.split(target, side, None, area) {
+            Ok(t) => t,
+            Err(Refused::NoRoom) => return self.say(format!("No room for a new Pane {} {}", side.word_beside(), self.name_of(pane))),
+            Err(e) => return self.refused(e),
+        };
+        let Some(new) = tree.panes().into_iter().map(|p| p.id).find(|id| !self.layout.contains(*id)) else { return };
+        self.commit_layout(tree);
+        // the first edit of a built-in Design asks for a name: after the picker, so the two don't fight over the top
+        let naming = self.naming().is_some_and(|n| n.purpose == NameFor::Fork);
+        if naming {
+            self.close_if_open(crate::app::Modal::Naming);
         }
-        self.open_popup(crate::app::Popup::Widgets(WidgetPick { target, side, items, sel: 0 }));
+        self.focus = Some(new);
+        self.open_widget_picker(new);
+        if let Some(p) = self.widget_picker_mut() {
+            p.after_split = true;
+        }
+        self.name_after_picker = naming;
     }
 
-    pub fn widget_key(&mut self, k: KeyEvent) {
-        let Some(p) = self.widget_pick_mut() else { return };
-        let n = p.items.len();
-        match k.code {
-            KeyCode::Up => p.sel = p.sel.saturating_sub(1),
-            KeyCode::Down => p.sel = (p.sel + 1).min(n.saturating_sub(1)),
-            KeyCode::Home => p.sel = 0,
-            KeyCode::End => p.sel = n.saturating_sub(1),
-            KeyCode::Enter => {
-                let i = p.sel;
-                self.widget_chosen(i);
-            }
-            KeyCode::Esc | KeyCode::Char('q') => self.close_if_open(crate::app::Modal::Widgets),
-            _ => {}
-        }
+    /// The side a split of Pane `id` takes unless told otherwise: along its longer side in real proportions (wider than
+    /// tall: to the right, else below), or the other way if only that one has room.
+    pub fn default_split(&self, id: PaneId) -> Side {
+        let (area, aspect) = (self.pane_area(), self.cell_aspect());
+        let rect = self.layout.compute(area).panes.into_iter().find(|(p, _)| p.id == id).map(|(_, r)| r);
+        let wide = rect.is_none_or(|r| r.width as f64 >= r.height as f64 * aspect);
+        let (long, other) = if wide { (Side::Right, Side::Bottom) } else { (Side::Bottom, Side::Right) };
+        let fits = |side| self.layout.split(id, side, None, area).is_ok();
+        if !fits(long) && fits(other) { other } else { long }
     }
 
-    pub fn widget_chosen(&mut self, i: usize) {
-        let Some(p) = self.take_widget_pick() else { return };
-        let Some(w) = p.items.get(i).copied() else { return };
-        let area = self.pane_area();
-        match self.layout.split(p.target, p.side, Some(w), area) {
-            Ok(tree) => {
-                self.focus = tree.pane_of(w);
-                self.commit_layout(tree);
-            }
-            Err(_) => self.say("No room for it there"),
+    /// An arrow of the Pane menu's Split row.
+    pub fn menu_split(&mut self, side: Side) {
+        if let Some(Menu { target: Target::Pane(id), .. }) = self.take_menu() {
+            self.split_pane(id, side);
         }
     }
 
@@ -572,7 +586,7 @@ impl App {
         if self.can_replace(id) {
             items.push(("Replace widget…".to_string(), MenuAct::ReplaceWidget));
         }
-        items.extend([("Split right".to_string(), MenuAct::SplitRight), ("Split down".into(), MenuAct::SplitDown)]);
+        items.push((SPLIT_ROW.to_string(), MenuAct::Split(self.default_split(id))));
         if !crate::arrangement::required(self.layout.widget_in(id)) {
             items.push(("Close pane".into(), MenuAct::ClosePane));
         }
@@ -588,8 +602,7 @@ impl App {
         self.focus = Some(id);
         match act {
             MenuAct::ReplaceWidget => self.open_widget_picker(id),
-            MenuAct::SplitRight => self.split_pane(id, Side::Right),
-            MenuAct::SplitDown => self.split_pane(id, Side::Bottom),
+            MenuAct::Split(side) => self.split_pane(id, side),
             MenuAct::MovePane => self.start_move(),
             MenuAct::ClosePane => self.close_pane(id),
             _ => {}
@@ -661,31 +674,6 @@ impl App {
 }
 
 // ── drawing ───────────────────────────────────────────────────────────
-
-pub fn widgets_rect(area: Rect, p: &WidgetPick) -> Rect {
-    centered(area, 44, (p.items.len() as u16 + 4).min(area.height))
-}
-
-/// The list of Widgets a new Pane can show.
-pub fn draw_widgets(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
-    let Some(p) = app.widget_pick() else { return };
-    let r = widgets_rect(area, p);
-    let target = app.layout.get(p.target).map(|t| app.name_of(t)).unwrap_or_default();
-    let inner = popup(buf, r, th, &format!("New pane {} {target}", p.side.word_beside()));
-    let (items, sel) = (p.items.clone(), p.sel);
-    let rows = inner.height.saturating_sub(1).max(1) as usize;
-    let first = crate::scroll::window(sel, rows, items.len());
-    for (i, w) in items.iter().enumerate().skip(first).take(rows) {
-        let y = inner.y + (i - first) as u16;
-        let bg = if i == sel { th.selection.color() } else { th.bg.color() };
-        blank(buf, inner.x, y, inner.width, th.base().bg(bg));
-        text(buf, inner.x + 1, y, 2, if i == sel { "›" } else { " " }, th.s(th.accent).bg(bg));
-        text(buf, inner.x + 3, y, 24, &crate::ui::pane_name(app.design, *w), (if i == sel { th.title() } else { th.s(th.fg) }).bg(bg));
-        text(buf, inner.x + 28, y, inner.width.saturating_sub(29), w.name(), th.s(th.dim).bg(bg));
-        app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::WidgetItem(i));
-    }
-    text(buf, inner.x + 1, inner.bottom().saturating_sub(1), inner.width.saturating_sub(2), "↑↓ choose · Enter add · Esc cancel", th.s(th.dim));
-}
 
 /// The Pane a release would drop on: its frame lit in the accent, and a label in its middle saying what happens
 /// (clear of the chip, `chip`).
@@ -765,7 +753,7 @@ pub fn draw_undo_chip(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 
 impl Side {
     /// "right of", "below"… for a title.
-    fn word_beside(self) -> &'static str {
+    pub fn word_beside(self) -> &'static str {
         match self {
             Side::Left => "left of",
             Side::Right => "right of",

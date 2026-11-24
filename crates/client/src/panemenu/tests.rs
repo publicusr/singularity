@@ -81,7 +81,7 @@ fn right_clicking_a_title_opens_the_pane_menu_with_replace_widget_first() {
     let mut a = app();
     let (x, y) = title_spot(&a, Widget::Fft);
     right_click(&mut a, x, y);
-    assert_eq!(menu_items(&a), ["Replace widget…", "Split right", "Split down", "Close pane", "Move pane"]);
+    assert_eq!(menu_items(&a), ["Replace widget…", "Split  ←  →  ↑  ↓", "Close pane", "Move pane"]);
     assert!(matches!(a.menu().unwrap().target, Target::Pane(p) if p == pid(&a, Widget::Fft)));
     assert!(render(&mut a).contains("Replace widget…"));
     // the name in the title opens the same menu on a right-click
@@ -99,7 +99,7 @@ fn homes_pane_has_no_replace_widget() {
     let mut a = app();
     let (x, y) = title_spot(&a, Widget::Home);
     right_click(&mut a, x, y);
-    assert_eq!(menu_items(&a), ["Split right", "Split down", "Move pane"], "nor Close");
+    assert_eq!(menu_items(&a), ["Split  ←  →  ↑  ↓", "Move pane"], "nor Close");
     key(&mut a, KeyCode::Esc);
     // its title has no name to click, and the key and the palette say why
     assert!(a.hit_rect(&Hit::TitleName(pid(&a, Widget::Home))).is_none());
@@ -262,7 +262,7 @@ fn the_library_queue_and_lyrics_can_be_replaced_away() {
         let id = pid(&a, w);
         let (x, y) = title_spot(&a, w);
         right_click(&mut a, x, y);
-        assert_eq!(menu_items(&a), ["Replace widget…", "Split right", "Split down", "Close pane", "Move pane"], "{w}");
+        assert_eq!(menu_items(&a), ["Replace widget…", "Split  ←  →  ↑  ↓", "Close pane", "Move pane"], "{w}");
         key(&mut a, KeyCode::Enter);
         let list = rows(&a);
         assert!(list.first().is_some_and(|(_, on)| !on), "{w}: Widgets off screen come first: {list:?}");
@@ -356,4 +356,396 @@ fn a_replace_or_swap_never_changes_any_panes_rect() {
         a.layout = tree;
         assert_eq!(rects(&a), before, "{pick} into {target:?}");
     }
+}
+
+// ── Split in four directions (#39) ────────────────────────────────────
+
+use crate::tiling::Side;
+const SIDES: [Side; 4] = [Side::Left, Side::Right, Side::Top, Side::Bottom];
+
+/// Pane `id`'s rectangle in the last frame.
+fn rect_of(a: &App, id: PaneId) -> Rect {
+    a.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if *p == id).then_some(*r)).unwrap_or_else(|| panic!("{id:?} isn't drawn"))
+}
+/// Whether `new` is on `side` of `old`, sharing that whole edge (the room `old` gave it).
+fn beside(new: Rect, old: Rect, side: Side) -> bool {
+    match side {
+        Side::Left => new.right() == old.x && (new.y, new.height) == (old.y, old.height),
+        Side::Right => old.right() == new.x && (new.y, new.height) == (old.y, old.height),
+        Side::Top => new.bottom() == old.y && (new.x, new.width) == (old.x, old.width),
+        Side::Bottom => old.bottom() == new.y && (new.x, new.width) == (old.x, old.width),
+    }
+}
+/// The arrow of the open menu's Split row that splits toward `side`.
+fn arrow(a: &App, side: Side) -> (u16, u16) {
+    let r = a.hit_rect(&Hit::MenuSplit(side)).unwrap_or_else(|| panic!("no {side:?} arrow"));
+    (r.x + 1, r.y)
+}
+/// Right-click the lyrics' body: their Pane's menu.
+fn lyrics_menu(a: &mut App) {
+    let r = pane(a, Widget::Lyrics);
+    right_click(a, r.x + r.width / 2, r.y + r.height / 2);
+    render(a);
+}
+/// The text of row `y` from `x0` to `x1`.
+fn row_text(buf: &Buffer, x0: u16, x1: u16, y: u16) -> String {
+    (x0..x1).map(|x| buf[(x, y)].symbol().to_string()).collect()
+}
+
+#[test]
+fn the_pane_menu_has_one_split_row_whose_arrows_split_each_way_into_an_empty_pane_with_the_picker_on_it() {
+    for side in SIDES {
+        let mut a = app();
+        let lyrics = pid(&a, Widget::Lyrics);
+        let before = rect_of(&a, lyrics);
+        lyrics_menu(&mut a);
+        assert_eq!(menu_items(&a), ["Replace widget…", "Split  ←  →  ↑  ↓", "Close pane", "Move pane"], "one Split row");
+        assert!(render(&mut a).contains("Split  ←  →  ↑  ↓"));
+        let (x, y) = arrow(&a, side);
+        click(&mut a, x, y);
+        assert!(a.menu().is_none(), "{side:?}: the menu went");
+        let new = a.widget_picker().map(|p| p.target).unwrap_or_else(|| panic!("{side:?}: the picker opens on the new Pane ({:?})", a.toast));
+        assert_ne!(new, lyrics);
+        assert_eq!(a.layout.get(new).map(|p| p.widget), Some(None), "{side:?}: it starts empty");
+        assert_eq!(a.focus, Some(new));
+        let shot = render(&mut a);
+        assert!(shot.contains("Choose a widget") && shot.contains("Esc leaves it empty"), "{side:?}\n{shot}");
+        let (n, l) = (rect_of(&a, new), rect_of(&a, lyrics));
+        assert!(beside(n, l, side), "{side:?}: {n:?} beside {l:?}");
+        assert_eq!(n.union(l), before, "{side:?}: the two share the room lyrics had");
+        // picking fills it
+        typed(&mut a, "scope");
+        key(&mut a, KeyCode::Enter);
+        assert_eq!(a.layout.widget_in(new), Some(Widget::Scope), "{side:?}");
+        assert!(a.modal().is_none());
+    }
+}
+
+#[test]
+fn the_keyboard_lights_an_arrow_on_the_split_row_and_enter_splits_that_way() {
+    // → is lit at first; ← steps back through ← ↓ ↑ (round at the ends)
+    for (lefts, side) in [(1, Side::Left), (0, Side::Right), (3, Side::Top), (2, Side::Bottom)] {
+        let mut a = app();
+        let lyrics = pid(&a, Widget::Lyrics);
+        lyrics_menu(&mut a);
+        key(&mut a, KeyCode::Down);
+        for _ in 0..lefts {
+            key(&mut a, KeyCode::Left);
+        }
+        assert!(a.menu().is_some(), "← → stay in the menu");
+        let buf = buffer(&mut a);
+        for s in SIDES {
+            let (x, y) = arrow(&a, s);
+            assert_eq!(buf[(x, y)].bg == a.theme.accent.color(), s == side, "{side:?}: only its arrow is lit ({s:?})");
+        }
+        key(&mut a, KeyCode::Enter);
+        let new = a.widget_picker().expect("the picker").target;
+        render(&mut a);
+        assert!(beside(rect_of(&a, new), rect_of(&a, lyrics), side), "{side:?}");
+    }
+    // → steps forward, and round
+    let mut a = app();
+    lyrics_menu(&mut a);
+    key(&mut a, KeyCode::Down);
+    for _ in 0..4 {
+        key(&mut a, KeyCode::Right);
+    }
+    assert!(matches!(a.menu().unwrap().items[1].1, crate::app::MenuAct::Split(Side::Right)));
+}
+
+/// The side the open menu's Split row has lit.
+fn lit(a: &App) -> Side {
+    match a.menu().expect("a menu").items.iter().find_map(|(_, act)| match act {
+        crate::app::MenuAct::Split(s) => Some(*s),
+        _ => None,
+    }) {
+        Some(s) => s,
+        None => panic!("no Split row"),
+    }
+}
+
+#[test]
+fn the_word_split_splits_along_the_panes_longer_side_and_that_arrow_is_lit_from_the_start() {
+    // the lyrics: wider than tall (in real proportions): → is lit, even before the row is selected
+    let mut a = app();
+    let lyrics = pid(&a, Widget::Lyrics);
+    lyrics_menu(&mut a);
+    assert_eq!(lit(&a), Side::Right);
+    let buf = buffer(&mut a);
+    for s in SIDES {
+        let (x, y) = arrow(&a, s);
+        assert_eq!(buf[(x, y)].bg == a.theme.accent.color(), s == Side::Right, "→ lit before the row is selected ({s:?})");
+    }
+    let row = a.hit_rect(&Hit::MenuItem(1)).unwrap();
+    click(&mut a, row.x + 2, row.y);
+    let new = a.widget_picker().expect("the word splits").target;
+    render(&mut a);
+    assert!(beside(rect_of(&a, new), rect_of(&a, lyrics), Side::Right));
+    key(&mut a, KeyCode::Esc);
+    // the library: a tall column: ↓
+    let mut a = app();
+    let library = pid(&a, Widget::Library);
+    let (x, y) = title_spot(&a, Widget::Library);
+    right_click(&mut a, x, y);
+    render(&mut a);
+    assert_eq!(lit(&a), Side::Bottom);
+    let row = a.hit_rect(&Hit::MenuItem(a.menu().unwrap().items.iter().position(|(_, x)| matches!(x, crate::app::MenuAct::Split(_))).unwrap())).unwrap();
+    click(&mut a, row.x + 2, row.y);
+    let new = a.widget_picker().expect("the word splits").target;
+    render(&mut a);
+    assert!(beside(rect_of(&a, new), rect_of(&a, library), Side::Bottom));
+    // ← → move the lit arrow, and the word follows it
+    let mut a = app();
+    lyrics_menu(&mut a);
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Right);
+    assert_eq!(lit(&a), Side::Top);
+    let row = a.hit_rect(&Hit::MenuItem(1)).unwrap();
+    click(&mut a, row.x + 2, row.y);
+    let new = a.widget_picker().unwrap().target;
+    render(&mut a);
+    assert!(beside(rect_of(&a, new), rect_of(&a, lyrics), Side::Top));
+}
+
+#[test]
+fn a_default_split_the_long_way_with_no_room_goes_the_other_way() {
+    use crate::layout::{Axis, Node, Size};
+    // the scope 20 × 6: wider than tall, but two halves of 10 columns are under the minimum; two of 3 rows fit
+    let mut a = App::new(None);
+    let top = Node::split(Axis::Horizontal, Size::Cells(20), Node::pane(Widget::Scope), Node::pane(Widget::Home));
+    a.layout = Node::split(Axis::Vertical, Size::Cells(6), top, Node::pane(Widget::Queue)).into();
+    render(&mut a);
+    let scope = pid(&a, Widget::Scope);
+    assert_eq!((rect_of(&a, scope).width, rect_of(&a, scope).height), (20, 6));
+    let (x, y) = (rect_of(&a, scope).x + 4, rect_of(&a, scope).y + 3);
+    right_click(&mut a, x, y);
+    render(&mut a);
+    assert_eq!(lit(&a), Side::Bottom, "↓ lit: → has no room");
+    let row = a.hit_rect(&Hit::MenuItem(1)).unwrap();
+    click(&mut a, row.x + 2, row.y);
+    let new = a.widget_picker().expect("split below").target;
+    render(&mut a);
+    assert!(beside(rect_of(&a, new), rect_of(&a, scope), Side::Bottom));
+}
+
+#[test]
+fn a_split_and_its_pick_are_one_undo_step() {
+    // without files: one Ctrl+Z takes the new Pane and its Widget away together
+    let mut a = app();
+    let before = a.layout.clone();
+    a.focus_on(Widget::Lyrics);
+    a.run(Action::SplitRight);
+    typed(&mut a, "scope");
+    key(&mut a, KeyCode::Enter);
+    assert!(a.layout.has(Widget::Scope));
+    a.run(Action::UndoLayout);
+    assert_eq!(a.layout, before, "one undo: back to before the split");
+    a.run(Action::RedoLayout);
+    assert!(a.layout.has(Widget::Scope) && a.layout.panes().len() == before.panes().len() + 1, "one redo: both again");
+    // left empty with Esc: one step too
+    let mut a = app();
+    a.focus_on(Widget::Lyrics);
+    a.run(Action::SplitDown);
+    key(&mut a, KeyCode::Esc);
+    a.run(Action::UndoLayout);
+    assert_eq!(a.layout, before);
+    // a built-in Design, named after the pick: undo goes back to the built-in one, not to the split left unsaved
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = App::new(None);
+    a.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
+    render(&mut a);
+    let built_in = a.layout.clone();
+    a.focus_on(Widget::Lyrics);
+    a.run(Action::SplitRight);
+    typed(&mut a, "scope");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.modal(), Some(Modal::Naming));
+    key(&mut a, KeyCode::Enter);
+    assert!(a.layout_name.is_some(), "saved as a Design of the user's");
+    a.run(Action::UndoLayout);
+    assert_eq!(a.layout, built_in, "the split went with the pick");
+    assert!(a.layout_name.is_none() && !a.layout.has(Widget::Scope));
+}
+
+#[test]
+fn the_palette_has_split_left_right_up_and_down_and_finds_them_by_the_old_words() {
+    for (words, action, side) in [("split left", Action::SplitLeft, Side::Left), ("split right", Action::SplitRight, Side::Right), ("split up", Action::SplitUp, Side::Top), ("split down", Action::SplitDown, Side::Bottom)] {
+        let mut a = app();
+        a.focus_on(Widget::Lyrics);
+        let lyrics = pid(&a, Widget::Lyrics);
+        a.run(Action::Palette);
+        typed(&mut a, words);
+        assert_eq!(a.palette_items().first(), Some(&action), "{words}");
+        key(&mut a, KeyCode::Enter);
+        let new = a.widget_picker().expect("the picker").target;
+        render(&mut a);
+        assert!(beside(rect_of(&a, new), rect_of(&a, lyrics), side), "{side:?}");
+    }
+    // what people typed before still finds a split
+    let mut a = app();
+    a.run(Action::Palette);
+    typed(&mut a, "add pane below");
+    assert_eq!(a.palette_items().first(), Some(&Action::SplitDown));
+}
+
+#[test]
+fn esc_leaves_the_new_pane_empty_and_it_says_so() {
+    let mut a = app();
+    a.focus_on(Widget::Lyrics);
+    let n = a.layout.panes().len();
+    a.run(Action::SplitDown);
+    let new = a.widget_picker().unwrap().target;
+    key(&mut a, KeyCode::Esc);
+    assert!(a.modal().is_none());
+    assert_eq!(a.layout.panes().len(), n + 1, "the Pane stays");
+    assert_eq!(a.layout.get(new).map(|p| p.widget), Some(None));
+    let buf = buffer(&mut a);
+    let r = rect_of(&a, new);
+    let y = r.y + 1 + (r.height - 3) / 2;
+    let mid = row_text(&buf, r.x, r.right(), y);
+    let at = mid.find("empty").unwrap_or_else(|| panic!("{mid:?}"));
+    assert_eq!(buf[(r.x + mid[..at].chars().count() as u16, y)].fg, a.theme.dim.color(), "quietly");
+    // a click outside the picker leaves it empty too
+    a.run(Action::SplitRight);
+    let other = a.widget_picker().unwrap().target;
+    click(&mut a, 0, H - 1);
+    assert!(a.modal().is_none() && a.layout.get(other).is_some_and(|p| p.widget.is_none()));
+    // the picker fills an empty Pane later: Replace widget… on it
+    a.open_widget_picker(new);
+    typed(&mut a, "rain");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.layout.widget_in(new), Some(Widget::Rain));
+}
+
+#[test]
+fn a_split_that_would_squash_a_pane_is_refused_with_the_reason() {
+    use crate::layout::{Axis, Node, Size, MIN_H, MIN_W};
+    // the smallest screen with Panes (the mini-player's limit): four columns of 12 fill its 50 columns
+    let draw = |a: &mut App| {
+        let mut t = Terminal::new(TestBackend::new(crate::mini::MIN_W, crate::mini::MIN_H)).unwrap();
+        t.draw(|f| crate::ui::draw(f, a)).unwrap();
+    };
+    let columns = |first: Node| {
+        let rest = Node::split(Axis::Horizontal, Size::Cells(MIN_W), Node::pane(Widget::Queue), Node::pane(Widget::Lyrics));
+        let rest = Node::split(Axis::Horizontal, Size::Cells(MIN_W), Node::pane(Widget::Home), rest);
+        Node::split(Axis::Horizontal, Size::Cells(MIN_W), first, rest)
+    };
+    for side in SIDES {
+        let mut a = App::new(None);
+        a.layout = columns(Node::pane(Widget::Scope)).into();
+        draw(&mut a);
+        // no room for a fifth column of 12; the scope's column a stack as tall as the screen holds, no room for one
+        // more Pane of 3 rows
+        let rows = (a.pane_area().height / MIN_H) as usize;
+        assert!(a.pane_area().width < 5 * MIN_W && rows >= 2, "{:?}", a.pane_area());
+        let stack = [Widget::Scope, Widget::Fft, Widget::Rain, Widget::Levels, Widget::Starfield, Widget::Glow, Widget::Marquee][..rows]
+            .iter()
+            .rev()
+            .fold(None, |below: Option<Node>, w| Some(match below {
+                None => Node::pane(*w),
+                Some(b) => Node::split(Axis::Vertical, Size::Cells(MIN_H), Node::pane(*w), b),
+            }))
+            .unwrap();
+        a.layout = columns(stack).into();
+        draw(&mut a);
+        assert!(a.layout.fits(a.pane_area()), "the stack fits");
+        let before = a.layout.clone();
+        a.focus_on(Widget::Scope);
+        a.run(match side {
+            Side::Left => Action::SplitLeft,
+            Side::Right => Action::SplitRight,
+            Side::Top => Action::SplitUp,
+            Side::Bottom => Action::SplitDown,
+        });
+        assert_eq!(a.layout, before, "{side:?}: nothing changed");
+        assert!(a.widget_picker().is_none(), "{side:?}: no picker");
+        let said = a.toast.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
+        assert!(said.starts_with("No room for a new Pane"), "{side:?}: {said:?}");
+    }
+}
+
+#[test]
+fn the_picker_offers_every_widget_and_says_what_a_pane_too_small_for_one_needs() {
+    let mut a = app();
+    // a short, narrow Pane: one under the stream, then one beside that
+    a.focus_on(Widget::Stream);
+    a.run(Action::SplitDown);
+    key(&mut a, KeyCode::Esc);
+    a.run(Action::SplitRight);
+    let small = a.widget_picker().unwrap().target;
+    render(&mut a);
+    let r = rect_of(&a, small);
+    let (kw, kh) = crate::needs::smallest(Widget::Karaoke);
+    assert!(r.width < kw || r.height < kh, "the Pane is too small for Karaoke: {r:?}");
+    // Karaoke is offered all the same, with the line it would show there
+    let i = a.widget_choices().iter().position(|c| c.widget == Widget::Karaoke).expect("karaoke is offered");
+    for _ in 0..i {
+        key(&mut a, KeyCode::Down);
+    }
+    let buf = buffer(&mut a);
+    let row = a.hit_rect(&Hit::PickWidget(i)).expect("its row is drawn");
+    let line = row_text(&buf, row.x, row.right(), row.y);
+    assert!(line.contains(&format!("needs {kw} × {kh}")), "{line:?}");
+    // one that fits says nothing
+    let j = a.widget_choices().iter().position(|c| c.widget == Widget::Scope).unwrap();
+    if let Some(row) = a.hit_rect(&Hit::PickWidget(j)) {
+        assert!(!row_text(&buf, row.x, row.right(), row.y).contains("needs"));
+    }
+    // picked anyway: the Pane shows its needs line
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.layout.widget_in(small), Some(Widget::Karaoke));
+    assert!(render(&mut a).contains(&format!("needs {kw} × {kh}")));
+}
+
+#[test]
+fn on_a_built_in_design_the_naming_prompt_waits_for_the_picker() {
+    for pick in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = App::new(None);
+        a.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
+        render(&mut a);
+        a.focus_on(Widget::Lyrics);
+        a.run(Action::SplitRight);
+        assert_eq!(a.modal(), Some(Modal::WidgetPicker), "the picker, not the naming prompt");
+        if pick {
+            typed(&mut a, "scope");
+            key(&mut a, KeyCode::Enter);
+            assert!(a.layout.has(Widget::Scope));
+        } else {
+            key(&mut a, KeyCode::Esc);
+        }
+        assert_eq!(a.modal(), Some(Modal::Naming), "then the first edit's name (picked: {pick})");
+    }
+}
+
+#[test]
+fn the_waiting_naming_prompt_comes_however_the_picker_closes() {
+    let built_in = || {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = App::new(None);
+        a.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
+        render(&mut a);
+        a.focus_on(Widget::Lyrics);
+        a.run(Action::SplitRight);
+        assert_eq!(a.modal(), Some(Modal::WidgetPicker));
+        (a, dir)
+    };
+    // its Pane went (the Design changed under it): the picker closes, the name is asked
+    let (mut a, _d) = built_in();
+    let target = a.widget_picker().unwrap().target;
+    let tree = a.layout.without(target).unwrap();
+    a.layout = tree.into();
+    render(&mut a);
+    assert_eq!(a.modal(), Some(Modal::Naming), "after the picker lost its Pane");
+    // another popup took its place: the name is asked once that one has gone
+    let (mut a, _d) = built_in();
+    a.run(Action::Help);
+    assert_eq!(a.modal(), Some(Modal::Help));
+    key(&mut a, KeyCode::Esc);
+    render(&mut a);
+    assert_eq!(a.modal(), Some(Modal::Naming), "after the popup that replaced the picker");
+    // and once named, it isn't asked again
+    key(&mut a, KeyCode::Enter);
+    render(&mut a);
+    assert!(a.modal().is_none(), "{:?}", a.modal());
 }

@@ -158,9 +158,12 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   settings. `×` in a
   title closes a Pane. Right-click a Pane's title (or its body, where that has no menu of its own) for its menu:
   Replace widget… opens the Widget picker (type to filter; Widgets not on screen first, those on screen dimmed below a
-  line, and picking one swaps the two Panes' Widgets), then Split right / Split down / Close pane / Move pane. A click
-  on the Widget's name in a title, `w` on the focused Pane, or Ctrl+K → Replace widget… open the picker too (Home's
-  Pane keeps Home). Ctrl+K also has Split right / Split down / Close pane / Move pane / Reset design. `m` moves the
+  line, and picking one swaps the two Panes' Widgets; one too big for the Pane says what it needs), then
+  `Split  ←  →  ↑  ↓` (click an arrow; the word Split goes the lit way, the Pane's longer side at first, and ← → move
+  it), Close pane, Move pane. A split makes a new empty Pane on that side and opens the picker on it: pick what it
+  shows, or Esc to leave it empty (it says so); a split and its pick are one undo step. A click on the Widget's
+  name in a title, `w` on the focused Pane, or Ctrl+K → Replace widget… open the picker too (Home's Pane keeps Home).
+  Ctrl+K also has Split left / right / up / down, Close pane, Move pane and Reset design. `m` moves the
   focused Pane's Widget from the keyboard: arrows swap it with the neighbour's, `+` `-` size its Pane, `x` closes it,
   `u` undoes, Enter or Esc ends. Ctrl+Z undoes a layout change and
   Ctrl+Y (or Ctrl+Shift+Z) redoes it; the bar offers "undo" for a few seconds after each one. Home can move but never close (the built-in
