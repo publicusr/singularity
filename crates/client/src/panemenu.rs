@@ -80,8 +80,8 @@ impl App {
     }
 
     /// What Pane `target` could show instead of what it shows, unfiltered: the Widgets off screen it may take, then the
-    /// on-screen ones it may trade with, each only where the result fits (a stop-gap until #36, against ADR 0005's
-    /// "every drop is allowed"; #39 removes it).
+    /// on-screen ones it may trade with. (Each is still checked with `room_for`, which no longer turns any down: a
+    /// contents edit never changes the floor plan, #48; #39 removes it.)
     pub fn choices_for(&self, target: PaneId) -> Vec<Choice> {
         let Some(here) = self.layout.get(target) else { return vec![] };
         let mine = here.widget;
@@ -105,8 +105,8 @@ impl App {
         off.chain(on).collect()
     }
 
-    /// (until #36) Whether `tree` may replace the layout: it fits the window, or the layout doesn't either (a window too small for
-    /// the Design, which then shows the mini-player: a change can't make that worse).
+    /// Whether `a` may replace the layout: it fits the window, or the layout doesn't either. Always true now (a contents
+    /// edit leaves the floor plan as it was, #48); left for #39, which removes it.
     fn room_for(&self, a: &Arrangement) -> bool {
         let area = self.pane_area();
         a.fits(area) || !self.layout.fits(area)

@@ -28,15 +28,16 @@ pub fn draw(buf: &mut Buffer, outer: Rect, app: &mut App, th: &Theme) {
     for y in outer.top()..outer.bottom() {
         text(buf, outer.x, y, outer.width, &" ".repeat(outer.width as usize), th.base());
     }
-    let inner = picture(Rect::new(outer.x + 2, outer.y + 1, outer.width.saturating_sub(4), outer.height.saturating_sub(2)), app.cell_aspect());
+    let inside = Rect::new(outer.x + 2, outer.y + 1, outer.width.saturating_sub(4), outer.height.saturating_sub(2));
     app.hit(outer, Hit::Well);
-    // its hole is out (idle takeover): the well is empty, and nothing bends
+    // its hole is out (idle takeover): the well is empty (said across the whole inside), and nothing bends
     if app.idle_secs().is_some() {
-        crate::visual::idle::empty_well(buf, inner, th);
+        crate::visual::idle::empty_well(buf, inside, th);
         warped_frame(buf, outer, 0.0, [th.border, th.dim]);
         text(buf, outer.x + 2, outer.y, 14, " gravity well ", th.s(th.accent));
         return;
     }
+    let inner = picture(inside, app.cell_aspect());
     remember_origin(inner, app);
     if render(buf, inner, app) {
         app.hole_at = Some(Hole { well: outer, cx: inner.x as f32 + inner.width as f32 / 2.0, cy: inner.y as f32 + inner.height as f32 / 2.0 });
@@ -49,11 +50,11 @@ pub fn draw(buf: &mut Buffer, outer: Rect, app: &mut App, th: &Theme) {
 
 /// The black hole on its own (Event Horizon's): a plain Pane, no well, nothing bends. `inner` is inside the frame.
 pub fn draw_plain(buf: &mut Buffer, outer: Rect, inner: Rect, app: &mut App, th: &Theme) {
-    let inner = picture(inner, app.cell_aspect());
     app.hit(outer, Hit::Well);
     if app.idle_secs().is_some() {
         return crate::visual::idle::empty_well(buf, inner, th);
     }
+    let inner = picture(inner, app.cell_aspect());
     remember_origin(inner, app);
     render(buf, inner, app);
     look_label(buf, outer, app, th);

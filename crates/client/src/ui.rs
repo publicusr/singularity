@@ -2057,6 +2057,23 @@ mod tests {
     }
 
     #[test]
+    fn a_short_wide_well_and_hole_still_say_they_are_empty() {
+        // 7 rows across the whole width: the picture would be letterboxed to 13 cells, too narrow for the message;
+        // the message takes the whole inside (#48)
+        use crate::layout::{Axis, Node, Size};
+        for w in [Widget::Well, Widget::Hole] {
+            let mut app = App::new(None);
+            app.layout = Node::split(Axis::Vertical, Size::Cells(7), Node::pane(w), Node::pane(Widget::Home)).into();
+            render(&mut app, 160, 48);
+            app.run(crate::app::Action::IdlePreview);
+            app.tick();
+            app.idle_for(10.0);
+            let s = render(&mut app, 160, 48);
+            assert!(s.contains("· the well is empty ·"), "{w}:\n{s}");
+        }
+    }
+
+    #[test]
     fn bending_never_moves_text() {
         // every letter on screen sits where it would without the hole
         let mut app = App::new(None);
