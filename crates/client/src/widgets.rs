@@ -68,7 +68,12 @@ pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     if r.height >= 8 && w >= 8 {
         let q = if queue && r.height >= 14 { (app.playback.queue.len() as u16 + 2).min(9).min(r.height / 3) } else { 0 };
         let ch = (w / 2).min(r.height.saturating_sub(4 + q)).max(2);
-        let cw = (ch * 2).min(w);
+        let mut cw = (ch * 2).min(w);
+        // centred to the cell: where the columns left over are odd the cover takes one more (a sliver more of its
+        // picture), else one side's gap is a column wider than the other's (owner, after #57)
+        if (w - cw) % 2 == 1 {
+            cw += 1;
+        }
         // narrow and tall (#57): rows to spare under the words, so the title in the pixel font and the whole centred
         // (unless what's next is listed under the words: the old look's title, artists, "from", a blank row, then
         // "Next in queue" and a song)
@@ -1262,6 +1267,24 @@ mod tests {
         for (w, h) in [(98, 3), (40, 3), (36, 6)] {
             let b = draw(&mut app, w, h);
             assert!(row(&b, 0).trim_start().starts_with("Track 2") && !(0..w).any(|x| cover(&b, x, 0)), "{w}×{h}: {b:?}");
+        }
+    }
+
+    /// Owner, after #57: a tall Now playing's cover sits in the very middle, as many columns free on its left as on its
+    /// right, at odd widths too (narrow-tall in the pixel font, and the plain tall look of wider Panes).
+    #[test]
+    fn a_tall_now_playings_cover_is_centred_to_the_cell() {
+        let th = Theme::singularity();
+        let mut app = App::new(None);
+        app.playback.item = Some(singularity_proto::Item { name: "Track 2".into(), artists: vec!["Fake Artist".into()], ..Default::default() });
+        for w in 12..=60u16 {
+            for h in [20u16, 30, 44] {
+                let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+                nowplaying(&mut buf, Rect::new(0, 0, w, h), &mut app, &th);
+                let cols: Vec<u16> = (0..w).filter(|&x| (0..h).any(|y| buf[(x, y)].bg == th.selection.color())).collect();
+                let (l, r) = (cols[0], w - 1 - cols[cols.len() - 1]);
+                assert_eq!(l, r, "{w}×{h}: {l} columns free on the left, {r} on the right");
+            }
         }
     }
 

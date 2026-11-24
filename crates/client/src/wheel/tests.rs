@@ -387,3 +387,55 @@ fn every_widget_name_reads_back() {
         assert_eq!(Widget::of(w.name()), Some(w));
     }
 }
+
+/// Search in the smallest Homes (owner, after #55; review of #79): the songs and the Shelves take turns under the chips.
+/// Notch by notch the wheel goes down the songs, on into the Shelves (several of them) to their end, and all the way
+/// back up to the first song; every notch moves something, and only one highlight is ever live.
+#[test]
+fn a_short_homes_search_wheels_through_the_songs_and_every_shelf_and_back() {
+    let (sw, sh) = crate::needs::smallest(Widget::Home);
+    for (w, h) in [(sw, sh), (40, sh), (40, sh + 1)] {
+        let mut app = app();
+        app.layout = Node::split(Axis::Vertical, Size::Cells(h), Node::split(Axis::Horizontal, Size::Cells(w), Node::pane(Widget::Home), Node::pane(Widget::Library)), Node::pane(Widget::Queue)).into();
+        search(&mut app, 0);
+        // songs whose names still tell them apart in a 12-column row
+        let s = app.searching_mut().unwrap();
+        let cards = |kind: &str| (0..30).map(|i| card(i, kind)).collect::<Vec<_>>();
+        let tracks = (0..30).map(|i| TrackRow { name: format!("S{i}"), ..row(i, "track") }).collect();
+        s.receive(SearchResults { query: "orbit".into(), top: cards("album"), tracks, artists: cards("artist"), albums: cards("album"), playlists: cards("playlist"), ..Default::default() });
+        render(&mut app);
+        let r = pane(&app, Widget::Home);
+        let inner = Rect::new(r.x + 1, r.y + 1, r.width - 2, r.height - 2);
+        // over the first result row
+        let (x, y) = (inner.x + 3, inner.y + 2);
+        let what = format!("{w}x{h} Home");
+        let one = |app: &App| app.searching().is_some_and(|s| !(s.track_sel.is_some() && s.shelves.sel.is_some()));
+        let songs = app.searching().unwrap().songs();
+        let mut last = render(&mut app);
+        let (mut down, mut shelves_seen) = (0, false);
+        loop {
+            wheel(&mut app, MouseEventKind::ScrollDown, x, y, 1);
+            let now = render(&mut app);
+            assert!(one(&app), "{what}: two highlights after notch {}", down + 1);
+            if cells(&now, inner) == cells(&last, inner) {
+                break;
+            }
+            shelves_seen |= app.searching().unwrap().track_sel.is_none();
+            down += 1;
+            last = now;
+            assert!(down < 200, "{what}: the wheel never stops");
+        }
+        // every song, then the Shelves (more than a notch of them: several Shelves of Cards under All)
+        assert!(shelves_seen && down > songs + 2, "{what}: {down} notches down\n{}", text(&last, inner));
+        let mut up = 0;
+        while app.searching().unwrap().track_sel != Some(0) {
+            wheel(&mut app, MouseEventKind::ScrollUp, x, y, 1);
+            let now = render(&mut app);
+            assert!(one(&app), "{what}: two highlights after notch {} up", up + 1);
+            assert!(cells(&now, inner) != cells(&last, inner), "{what}: notch {} up moved nothing\n{}", up + 1, text(&now, inner));
+            last = now;
+            up += 1;
+            assert!(up < 200, "{what}: the wheel never gets back to the first song");
+        }
+    }
+}

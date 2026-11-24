@@ -91,6 +91,7 @@ pub enum Action {
     ClosePane,
     Arrange,
     NewDesign,
+    DiscardNewDesign,
     ResetLayout,
     UndoLayout,
     RedoLayout,
@@ -104,7 +105,7 @@ impl Action {
     /// under the build. Done names it.
     pub const NOT_WHILE_BUILDING: [Action; 3] = [Action::PickDesign, Action::SaveLayout, Action::ResetLayout];
 
-    pub const ALL: [Action; 65] = [
+    pub const ALL: [Action; 66] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -164,6 +165,7 @@ impl Action {
         Action::ClosePane,
         Action::Arrange,
         Action::NewDesign,
+        Action::DiscardNewDesign,
         Action::ResetLayout,
         Action::UndoLayout,
         Action::RedoLayout,
@@ -232,6 +234,7 @@ impl Action {
             Action::ClosePane => "Close pane",
             Action::Arrange => "Arrange",
             Action::NewDesign => "New design…",
+            Action::DiscardNewDesign => "Discard new design",
             Action::ResetLayout => "Reset design",
             Action::UndoLayout => "Undo layout",
             Action::RedoLayout => "Redo layout",
@@ -346,6 +349,7 @@ impl Action {
             Action::ClosePane => "close_pane",
             Action::Arrange => "arrange",
             Action::NewDesign => "new_design",
+            Action::DiscardNewDesign => "discard_new_design",
             Action::ResetLayout => "reset_layout",
             Action::UndoLayout => "undo_layout",
             Action::RedoLayout => "redo_layout",
@@ -1275,6 +1279,7 @@ impl App {
             }
             Action::Arrange => self.enter_arrange(),
             Action::NewDesign => self.new_design(),
+            Action::DiscardNewDesign => self.discard_new_design(),
             Action::ResetLayout => self.reset_design(),
             Action::UndoLayout => self.undo_layout(),
             Action::RedoLayout => self.redo_layout(),
@@ -1287,7 +1292,8 @@ impl App {
     pub fn palette_items(&self) -> Vec<Action> {
         let q = self.palette().map(|p| p.query.to_lowercase()).unwrap_or_default();
         let building = self.building();
-        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && !(building && Action::NOT_WHILE_BUILDING.contains(a)) && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
+        // (Discard new design only while one is built, Q78)
+        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && !(building && Action::NOT_WHILE_BUILDING.contains(a)) && (building || *a != Action::DiscardNewDesign) && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
         // what you typed, as typed: at the start first, then anywhere, then loose matches
         let q = q.trim();
         items.sort_by_key(|a| {
@@ -1820,12 +1826,20 @@ impl App {
                 s.shelves.move_sel(0, 0);
             }
             KeyCode::Up if s.track_sel.is_some_and(|i| i > 0) => s.track_sel = s.track_sel.map(|i| i - 1),
+            // a short Pane shows the songs or the Shelves: ↑ from the Shelves' top row brings the songs back
+            KeyCode::Up if s.short && songs > 0 && s.shelves.on_top_row() => {
+                s.shelves.sel = None;
+                s.track_sel = Some(songs - 1);
+            }
             KeyCode::Enter if s.track_sel.is_some() => {
                 let i = s.track_sel.unwrap_or(0);
                 self.play_search_track(i);
             }
             // nothing highlighted and no answer for these words yet: they go out now, without waiting for a pause
             KeyCode::Enter if s.shelves.sel.is_none() && !s.answered() => s.submit(),
+            // a short Pane shows the songs or the Shelves, never both: while a song is highlighted (↑ on the first one
+            // too) the Shelves' moves wait
+            KeyCode::Up | KeyCode::Left | KeyCode::Right | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End if s.short && s.track_sel.is_some() => {}
             _ => {
                 // the Shelves take arrows and Enter like Home's
                 return self.home_key(k);

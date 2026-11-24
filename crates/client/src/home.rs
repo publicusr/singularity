@@ -287,6 +287,11 @@ impl HomeView {
         self.reveal();
     }
 
+    /// Whether the selection is on the top row.
+    pub fn on_top_row(&self) -> bool {
+        self.sel_pos().is_some_and(|(r, _)| r == 0)
+    }
+
     fn row_first(&self, row: usize) -> usize {
         match self.rows.get(row) {
             Some(r) if r.kind == RowKind::Shelf => self.first(r.cards[0].shelf),

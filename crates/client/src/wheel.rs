@@ -99,7 +99,16 @@ impl App {
                     return;
                 }
                 let n = s.songs();
-                if n > 0 && (on_song || s.feed.shelves.is_empty()) {
+                // a short Pane shows the songs or the Shelves: the wheel goes on from the last song into the Shelves,
+                // and back up from their top
+                let shelves = !s.feed.shelves.is_empty();
+                if s.short && shelves && step > 0 && on_song && s.track_sel.is_some_and(|i| i + 1 >= n) {
+                    s.track_sel = None;
+                    s.shelves.move_sel(0, 0);
+                } else if s.short && n > 0 && step < 0 && s.shelves.sel.is_some() && s.shelves.offset == 0 {
+                    s.shelves.sel = None;
+                    s.track_sel = Some(n - 1);
+                } else if n > 0 && (on_song || s.feed.shelves.is_empty()) {
                     s.track_sel = Some(s.track_sel.map_or(0, |i| moved(i, step, n)));
                     s.shelves.sel = None;
                 } else {
