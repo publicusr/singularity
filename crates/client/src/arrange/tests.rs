@@ -1118,7 +1118,7 @@ fn tray_spot(a: &App) -> (u16, u16) {
 }
 /// The middle of the chip of the Widget at place `i` in the Tray, as last drawn.
 fn tray_item(a: &App, i: usize) -> (u16, u16) {
-    let r = a.hit_rect(&Hit::TrayItem(i)).unwrap_or_else(|| panic!("no Tray item {i}"));
+    let r = a.hit_rect(&Hit::TrayItem(a.layout.tray()[i])).unwrap_or_else(|| panic!("no Tray item {i}"));
     (r.x + r.width / 2, r.y)
 }
 /// (as macros, so the spots can be worked out from the App the gesture then goes to)
@@ -1227,7 +1227,7 @@ fn closing_sends_the_widget_to_the_tray_and_clear_tray_never_removes_home() {
     click!(&mut a, (done.x + 1, done.y));
     assert!(a.arranging.is_some(), "neither Esc nor Done ends it");
     // Home has no × in the Tray; Clear Tray removes the rest
-    assert!(a.hit_rect(&Hit::TrayRemove(1)).is_none() && a.hit_rect(&Hit::TrayRemove(0)).is_some());
+    assert!(a.hit_rect(&Hit::TrayRemove(Widget::Home)).is_none() && a.hit_rect(&Hit::TrayRemove(Widget::Fft)).is_some());
     let c = a.hit_rect(&Hit::ClearTray).unwrap();
     click!(&mut a, (c.x + 1, c.y));
     assert_eq!(a.layout.tray(), [Widget::Home]);
@@ -1250,7 +1250,9 @@ fn the_x_on_one_widget_in_the_tray_removes_it_and_undo_redo_cover_tray_edits() {
     drag_to!(&mut a, title_spot(&a, Widget::Stream), tray_spot(&a));
     drag_to!(&mut a, title_spot(&a, Widget::Fft), tray_spot(&a));
     let two = a.layout.clone();
-    let x = a.hit_rect(&Hit::TrayRemove(0)).unwrap();
+    let x = a.hit_rect(&Hit::TrayRemove(Widget::Stream)).unwrap();
+    click!(&mut a, (x.x, x.y));
+    // a second click in the same burst (no frame between) lands on the same spot: nothing more goes
     click!(&mut a, (x.x, x.y));
     assert_eq!(a.layout.tray(), [Widget::Fft], "only that one went");
     assert!(!a.layout.has(Widget::Stream));
@@ -1304,19 +1306,19 @@ fn a_tray_holding_more_than_fits_scrolls() {
     a.layout = Arrangement::new(a.layout.plan().clone(), off);
     a.run(Action::Arrange);
     let shot = render(&mut a, w, h);
-    let shown = (0..n).filter(|i| a.hit_rect(&Hit::TrayItem(*i)).is_some()).count();
+    let shown = (0..n).filter(|i| a.hit_rect(&Hit::TrayItem(a.layout.tray()[*i])).is_some()).count();
     assert!(shown < n && a.hit_rect(&Hit::TrayScroll(1)).is_some() && a.hit_rect(&Hit::TrayScroll(-1)).is_none(), "{shot}");
     // the wheel, anywhere, and the ›
     mouse(&mut a, MouseEventKind::ScrollDown, 50, 20);
     render(&mut a, w, h);
-    assert!(a.hit_rect(&Hit::TrayItem(0)).is_none() && a.hit_rect(&Hit::TrayScroll(-1)).is_some());
+    assert!(a.hit_rect(&Hit::TrayItem(a.layout.tray()[0])).is_none() && a.hit_rect(&Hit::TrayScroll(-1)).is_some());
     for _ in 0..n {
         if let Some(r) = a.hit_rect(&Hit::TrayScroll(1)) {
             press(&mut a, r.x, r.y);
             render(&mut a, w, h);
         }
     }
-    assert!(a.hit_rect(&Hit::TrayItem(n - 1)).is_some() && a.hit_rect(&Hit::TrayScroll(1)).is_none(), "it reaches the end");
+    assert!(a.hit_rect(&Hit::TrayItem(a.layout.tray()[n - 1])).is_some() && a.hit_rect(&Hit::TrayScroll(1)).is_none(), "it reaches the end");
 }
 
 #[test]
@@ -1337,4 +1339,71 @@ fn the_tray_is_saved_with_the_design_and_survives_a_restart() {
     again.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
     render(&mut again, W, H);
     assert_eq!(again.modal(), Some(Modal::Arrange));
+}
+
+// ── review of #41 ─────────────────────────────────────────────────────
+
+/// Shrunk to the mini player while arranging (Home in the Tray, even): the player has the keys and the pointer;
+/// at full size again, Arrange mode is back where it was.
+#[test]
+fn the_mini_player_is_never_behind_arrange_mode() {
+    let mut a = app();
+    drag_to!(&mut a, title_spot(&a, Widget::Home), tray_spot(&a));
+    assert_eq!(a.modal(), Some(Modal::Arrange));
+    render(&mut a, 40, 10);
+    assert!(a.mini && a.modal().is_none(), "the mini player is on top");
+    render(&mut a, W, H);
+    assert_eq!(a.modal(), Some(Modal::Arrange));
+    assert_eq!(a.layout.tray(), [Widget::Home]);
+}
+
+/// Previewing a saved Design whose Home waits in the Tray doesn't start Arrange mode (Esc puts the old one back);
+/// previewing others while arranging isn't an edit, so Done asks for no name.
+#[test]
+fn previewing_designs_neither_starts_arrange_mode_nor_counts_as_an_edit() {
+    let (mut a, dir) = with_dirs();
+    let homeless = a.layout.to_tray(pid(&a, Widget::Home)).unwrap();
+    crate::layouts::write(&dir.path().join("layouts"), "parked", "Parked", "singularity", "", &homeless, false).unwrap();
+    crate::layouts::write(&dir.path().join("layouts"), "other", "Other", "singularity", "", &swapped(Node::singularity(), Widget::Fft, Widget::Loudness), true).unwrap();
+    a.reload_layouts();
+    let pick = |a: &mut App, name: &str| {
+        a.run(Action::PickDesign);
+        let i = a.picker().unwrap().items.iter().position(|it| it.1 == name).unwrap();
+        a.picker_select(i);
+        render(a, W, H);
+    };
+    pick(&mut a, "Parked");
+    assert!(a.arranging.is_none(), "not while it's only previewed");
+    key(&mut a, KeyCode::Esc);
+    render(&mut a, W, H);
+    assert!(a.arranging.is_none() && a.modal().is_none() && a.layout.has(Widget::Home));
+    // arranging on the unnamed edit: previews and a kept pick aren't edits
+    a.run(Action::Arrange);
+    pick(&mut a, "Other");
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Esc);
+    assert!(a.naming().is_none() && a.arranging.is_none(), "{:?}", a.modal());
+}
+
+/// ◂ ▸ skip a Widget waiting in the Tray: they aren't a recorded edit, so they mustn't take it out.
+#[test]
+fn the_arrows_in_a_title_skip_what_waits_in_the_tray() {
+    let mut a = app();
+    a.close_pane(pid(&a, Widget::Fft));
+    assert_eq!(a.layout.tray(), [Widget::Fft]);
+    let loud = pid(&a, Widget::Loudness);
+    assert!(a.swap_widget(loud, -1));
+    assert_ne!(a.layout.widget_in(loud), Some(Widget::Fft));
+    assert_eq!(a.layout.tray(), [Widget::Fft]);
+}
+
+/// While arranging, no Pane takes keys: `w` opens no picker.
+#[test]
+fn arrange_mode_keeps_the_panes_keys() {
+    let mut a = app();
+    a.run(Action::Arrange);
+    a.focus_on(Widget::Stream);
+    key(&mut a, KeyCode::Char('w'));
+    assert!(a.widget_picker().is_none());
+    assert!(a.arranging.is_some());
 }

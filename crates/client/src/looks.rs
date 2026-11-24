@@ -295,7 +295,10 @@ impl App {
     /// that Pane's Widget can't swap.
     pub fn swap_widget(&mut self, id: PaneId, dir: i32) -> bool {
         let Some(from) = self.layout.widget_in(id) else { return false };
-        let Some(to) = crate::layouts::next(from, &self.layout.widgets(), dir) else { return false };
+        // (not one waiting in the Tray: ◂ ▸ aren't an edit, and would take it out unrecorded)
+        let mut taken = self.layout.widgets();
+        taken.extend(self.layout.tray());
+        let Some(to) = crate::layouts::next(from, &taken, dir) else { return false };
         match self.layout.replace(id, to) {
             Ok(a) => self.layout = a,
             Err(_) => return false,

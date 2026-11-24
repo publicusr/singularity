@@ -288,10 +288,16 @@ fn random_edit_sequences_keep_every_arrangement_sound() {
                                 0 => {
                                     let p = pick(&mut rng);
                                     let got = now.out_of_tray(w, p);
-                                    let n = got.as_ref().unwrap_or_else(|e| panic!("{ctx}: out of the Tray refused: {e:?}"));
-                                    assert_eq!(n.widget_in(p), Some(w), "{ctx}");
-                                    // nothing lost: what the Pane showed waits where `w` was
-                                    assert_eq!(n.tray().len(), now.tray().len() - usize::from(now.widget_in(p).is_none()), "{ctx}");
+                                    match &got {
+                                        Ok(n) => {
+                                            assert_eq!(n.widget_in(p), Some(w), "{ctx}");
+                                            // nothing lost: what the Pane showed waits where `w` was
+                                            assert_eq!(n.tray().len(), now.tray().len() - usize::from(now.widget_in(p).is_none()), "{ctx}");
+                                        }
+                                        // one black hole on screen at a time
+                                        Err(Refused::OneHole(o)) => assert!(crate::layout::is_hole(Some(w)) && now.has(*o) && now.widget_in(p) != Some(*o), "{ctx}"),
+                                        Err(e) => panic!("{ctx}: out of the Tray refused: {e:?}"),
+                                    }
                                     got
                                 }
                                 1 => {
@@ -387,4 +393,23 @@ fn a_split_never_moves_any_other_pane() {
         }
     }
     assert!(accepted > 300 && refused > 0, "{accepted} accepted, {refused} refused");
+}
+
+/// Review of #41: the Tray keeps the one-black-hole rule (the two share the hole's state): the black hole waiting in
+/// the Tray can't come out next to the gravity well, only in its place.
+#[test]
+fn a_black_hole_from_the_tray_never_joins_another_on_screen() {
+    let a = Arrangement::new(Node::singularity(), vec![W::Hole]);
+    let well = id(&a, W::Well);
+    assert_eq!(a.out_of_tray(W::Hole, id(&a, W::Fft)), Err(Refused::OneHole(W::Well)));
+    let b = a.out_of_tray(W::Hole, well).unwrap();
+    assert_eq!((b.widget_in(well), b.tray()), (Some(W::Hole), &[W::Well][..]));
+}
+
+/// Review of #41: a file that has Home neither in a Pane nor in the Tray loads with Home waiting in the Tray.
+#[test]
+fn a_required_widget_missing_from_a_file_waits_in_the_tray() {
+    let plan = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::pane(W::Queue), Node::pane(W::Fft));
+    assert_eq!(Arrangement::new(plan.clone(), vec![W::Lyrics]).tray(), [W::Lyrics, W::Home]);
+    assert_eq!(Arrangement::new(plan, vec![W::Home, W::Home]).tray(), [W::Home], "once");
 }

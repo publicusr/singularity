@@ -87,7 +87,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.art_tint = tint;
     fill(f.buffer_mut(), area, &th);
     // too small for any layout: just a player (#47)
-    if crate::mini::wanted(area) {
+    app.mini = crate::mini::wanted(area);
+    if app.mini {
         app.overlays.clear();
         app.tile_cancel();
         if let Some(k) = app.kitty.as_mut() {

@@ -379,10 +379,10 @@ pub enum Hit {
     MenuSplit(crate::tiling::Side),
     /// Arrange mode (D87): a Pane's split button (the way the Pane menu's Split row splits it first)
     SplitPane(PaneId),
-    /// a Widget waiting in the Tray, by its place there: drag it onto a Pane
-    TrayItem(usize),
+    /// a Widget waiting in the Tray: drag it onto a Pane (by the Widget, so a burst of clicks can't reach the next)
+    TrayItem(Widget),
     /// the × of a Widget in the Tray: it is removed
-    TrayRemove(usize),
+    TrayRemove(Widget),
     /// Clear Tray
     ClearTray,
     /// the Tray's ‹ ›, when it holds more than fits
@@ -718,6 +718,9 @@ pub struct App {
     pub move_mode: Option<PaneId>,
     /// Arrange mode (D87), while it is on
     pub arranging: Option<crate::arrange::Arranging>,
+    /// the window is too small for the Panes: the mini player shows, and Arrange mode waits behind it (its keys and
+    /// clicks are the player's)
+    pub mini: bool,
     pub body: Rect,
     /// the layout as it was when a divider was grabbed (a changed one counts as an edit on release)
     pub(crate) divider_from: Option<crate::arrangement::Arrangement>,
@@ -836,6 +839,7 @@ impl App {
             tile: None,
             move_mode: None,
             arranging: None,
+            mini: false,
             body: Rect::default(),
             divider_from: None,
             grip_hover: None,
@@ -1344,7 +1348,8 @@ impl App {
             return;
         }
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
-        if self.open.view().is_some_and(|v| v.filtering) {
+        // (not under Arrange mode, which keeps the keys: a filter left open on the page must not take them)
+        if self.open.view().is_some_and(|v| v.filtering) && self.modal() != Some(Modal::Arrange) {
             return self.filter_key(k);
         }
         // Ctrl+Shift+Z redoes, where the terminal tells it from Ctrl+Z (the keymap reads both as Ctrl+Z)
@@ -1360,7 +1365,7 @@ impl App {
         if self.move_mode.is_some() {
             return self.move_key(k);
         }
-        if self.arranging.is_some() {
+        if self.arranging.is_some() && !self.mini {
             return self.arrange_key(k);
         }
         // a focused Pane showing its needs line has no keys of its own: they'd act on what it hides (#36)
@@ -3127,7 +3132,7 @@ impl App {
         // the wizard shows the code itself
         let login = !wizard && matches!(self.catalogue, Some(CatalogueStatus::LoginPending { .. })) && !self.login_hidden;
         let mut layers: Vec<Modal> = self.popup.as_ref().map(Popup::modal).into_iter().collect();
-        let on = [(wizard, Modal::Wizard), (login, Modal::Login), (self.move_mode.is_some(), Modal::Move), (self.arranging.is_some(), Modal::Arrange)];
+        let on = [(wizard, Modal::Wizard), (login, Modal::Login), (self.move_mode.is_some(), Modal::Move), (self.arranging.is_some() && !self.mini, Modal::Arrange)];
         layers.extend(on.into_iter().filter_map(|(on, m)| on.then_some(m)));
         layers
     }

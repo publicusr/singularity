@@ -12,7 +12,7 @@
 //! Edits are values: each returns the new Arrangement and leaves this one as it was, so undo can keep the old one.
 //! Reading goes through `Deref` to the floor plan (`Node`): where a Pane is, what it holds; writing never does.
 
-use crate::layout::{Divider, Node, PaneId, Widget};
+use crate::layout::{Divider, Node, PaneId, Widget, is_hole};
 use crate::tiling::Side;
 use ratatui::layout::Rect;
 
@@ -58,6 +58,8 @@ pub enum Refused {
     Empty,
     /// a Widget that isn't in the Tray
     NotInTray(Widget),
+    /// a second black hole on screen (this one is there already)
+    OneHole(Widget),
 }
 
 impl Refused {
@@ -74,6 +76,7 @@ impl Refused {
             Refused::NoRoom => "No room for that".into(),
             Refused::Empty => "That Pane is empty".into(),
             Refused::NotInTray(w) => format!("{} isn't in the Tray", name(w)),
+            Refused::OneHole(w) => format!("One black hole at a time: {} is on screen", name(w)),
         }
     }
 }
@@ -126,6 +129,12 @@ impl Arrangement {
         for w in tray {
             if !plan.has(w) && !kept.contains(&w) {
                 kept.push(w);
+            }
+        }
+        // a Required Widget the file left out altogether waits in the Tray (Done waits for it, and Home is never lost)
+        for r in REQUIRED {
+            if !plan.has(r) && !kept.contains(&r) {
+                kept.push(r);
             }
         }
         Arrangement { plan, tray: kept }
@@ -224,6 +233,10 @@ impl Arrangement {
     pub fn out_of_tray(&self, w: Widget, pane: PaneId) -> Result<Arrangement, Refused> {
         let here = self.plan.get(pane).ok_or(Refused::NoPane)?.widget;
         let at = self.tray.iter().position(|t| *t == w).ok_or(Refused::NotInTray(w))?;
+        // one black hole at a time (they share the hole's state): only onto the Pane holding the other
+        if let Some(other) = self.plan.widgets().into_iter().find(|o| is_hole(Some(*o)) && is_hole(Some(w)) && here != Some(*o)) {
+            return Err(Refused::OneHole(other));
+        }
         let mut plan = self.plan.clone();
         plan.put(pane, Some(w));
         let mut tray = self.tray.clone();

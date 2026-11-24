@@ -67,10 +67,12 @@ pub struct TileDrag {
     pub from_tray: bool,
 }
 
-/// Arrange mode, while it is on: what was on screen when it began (the Arrangement and which Design), so Done can
+/// Arrange mode, while it is on: the Arrangement when it began and whether an edit was made since, so Done can
 /// tell whether anything changed, and the first Widget the Tray strip shows (when it holds more than fits).
 pub struct Arranging {
-    since: (Arrangement, Option<String>),
+    since: Arrangement,
+    /// an edit was made in it (previewing other Designs in the picker isn't one)
+    edited: bool,
     pub tray_first: usize,
 }
 
@@ -173,9 +175,11 @@ impl App {
         self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: false });
     }
 
-    /// A press on the Widget at place `i` in the Tray: a drag takes it onto a Pane.
-    fn tray_down(&mut self, i: usize, x: u16, y: u16) {
-        let Some(w) = self.layout.tray().get(i).copied() else { return };
+    /// A press on Widget `w` in the Tray: a drag takes it onto a Pane.
+    fn tray_down(&mut self, w: Widget, x: u16, y: u16) {
+        if !self.layout.tray().contains(&w) {
+            return;
+        }
         let pane = Pane { id: PaneId::UNSET, widget: Some(w) };
         self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: true });
     }
@@ -254,6 +258,7 @@ impl App {
     pub fn window_resized(&mut self, w: u16, h: u16) {
         // the top bar above, the player (3 rows) and the hints below: as `ui::draw` lays them out
         self.body = Rect::new(0, 1, w, h.saturating_sub(5));
+        self.mini = crate::mini::wanted(Rect::new(0, 0, w, h));
         self.tile_resized();
     }
 
@@ -487,6 +492,9 @@ impl App {
     /// an edit of a built-in Design is kept at once as its "<Design> (edited)", never asking (Q33): outside Arrange
     /// mode the bar says so, and in Arrange mode Done asks for a name.
     pub fn edited(&mut self) {
+        if let Some(a) = self.arranging.as_mut() {
+            a.edited = true;
+        }
         let own = self.layout_name.clone().and_then(|id| self.saved_layouts.iter().find(|s| s.id == id).cloned());
         match own {
             Some(s) => self.write_layout(&s.id, &s.name, &s.design, s.edited),
@@ -522,14 +530,15 @@ impl App {
     pub fn enter_arrange(&mut self) {
         if self.arranging.is_none() {
             self.move_mode = None;
-            self.arranging = Some(Arranging { since: (self.layout.clone(), self.layout_name.clone()), tray_first: 0 });
+            self.arranging = Some(Arranging { since: self.layout.clone(), edited: false, tray_first: 0 });
         }
     }
 
     /// Before each frame: Home always has a Pane outside Arrange mode. A Design whose Home waits in the Tray (one left
     /// that way when the app quit) comes up in Arrange mode, where Done waits for it.
     pub fn arrange_if_homeless(&mut self) {
-        if self.arranging.is_none() && self.layout.unplaced().is_some() {
+        // (not while the Design picker previews one: a preview isn't a Design you have)
+        if self.arranging.is_none() && self.picker().is_none() && self.layout.unplaced().is_some() {
             self.enter_arrange();
         }
     }
@@ -551,17 +560,22 @@ impl App {
         }
         let Some(a) = self.arranging.take() else { return };
         self.tile = None;
-        let changed = a.since.0 != self.layout || a.since.1 != self.layout_name;
+        let changed = a.edited && a.since != self.layout;
         if changed && self.on_edited_copy() && self.naming().is_none() {
             let name = self.suggest_name();
             self.open_popup(crate::app::Popup::Naming(Naming::fork(name)));
         }
     }
 
-    /// Keys in Arrange mode (the shortcuts with Ctrl or Alt work as everywhere): Esc is Done.
+    /// Keys in Arrange mode (the shortcuts with Ctrl or Alt work as everywhere): Esc is Done, and the playback keys
+    /// work as ever (the player bar is the Tray's meanwhile); no Pane takes keys.
     pub fn arrange_key(&mut self, k: KeyEvent) {
         if k.code == KeyCode::Esc {
-            self.arrange_done();
+            return self.arrange_done();
+        }
+        use Action::*;
+        if let Some(a) = self.keymap.action(k).filter(|a| matches!(a, TogglePlay | Next | Previous | SeekForward | SeekBack | SeekForwardFine | SeekBackFine | VolumeUp | VolumeDown | Shuffle | Repeat | Like)) {
+            self.run(a);
         }
     }
 
@@ -576,9 +590,11 @@ impl App {
         }
     }
 
-    /// The `×` of the Widget at place `i` in the Tray: it is removed (Home never).
-    fn tray_remove(&mut self, i: usize) {
-        let Some(w) = self.layout.tray().get(i).copied() else { return };
+    /// The `×` of Widget `w` in the Tray: it is removed (Home never; one already gone: nothing).
+    fn tray_remove(&mut self, w: Widget) {
+        if !self.layout.tray().contains(&w) {
+            return;
+        }
         match self.layout.remove_from_tray(w) {
             Ok(a) => self.commit_layout(a),
             Err(e) => self.refused(e),
@@ -610,8 +626,8 @@ impl App {
                     self.split_pane(p, side);
                 }
                 Some(Hit::Divider(i)) => self.grab_divider(i, x, y),
-                Some(Hit::TrayItem(i)) => self.tray_down(i, x, y),
-                Some(Hit::TrayRemove(i)) => self.tray_remove(i),
+                Some(Hit::TrayItem(w)) => self.tray_down(w, x, y),
+                Some(Hit::TrayRemove(w)) => self.tray_remove(w),
                 Some(Hit::ClearTray) => self.clear_tray(),
                 Some(Hit::TrayScroll(d)) => self.tray_scroll(d),
                 Some(Hit::ArrangeDone) => self.arrange_done(),
@@ -1025,10 +1041,10 @@ pub fn draw_tray(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     for (i, chip, close) in &l.items {
         let name = crate::ui::pane_name(app.design, tray[*i]);
         text(buf, chip.x, chip.y, chip.width, &tray_chip(&name), th.chip(th.accent2));
-        app.hit(*chip, Hit::TrayItem(*i));
+        app.hit(*chip, Hit::TrayItem(tray[*i]));
         if let Some(c) = close {
             text(buf, c.x, c.y, c.width, "× ", th.s(th.dim));
-            app.hit(Rect::new(c.x, c.y, 1, 1), Hit::TrayRemove(*i));
+            app.hit(Rect::new(c.x, c.y, 1, 1), Hit::TrayRemove(tray[*i]));
         }
     }
     for (a, glyph, d) in [(l.prev, "‹", -1), (l.next, "›", 1)] {
