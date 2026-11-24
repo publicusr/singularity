@@ -147,6 +147,7 @@ const STANDARD: &[(Action, &[&str])] = &[
     (Action::Devices, &["d"]),
     (Action::FocusNext, &["Tab"]),
     (Action::MovePane, &["m"]),
+    (Action::ReplaceWidget, &["w"]),
     // (Ctrl+Shift+Z redoes too, where the terminal reports it apart from Ctrl+Z: see App::key)
     (Action::UndoLayout, &["Ctrl+Z"]),
     (Action::RedoLayout, &["Ctrl+Y"]),

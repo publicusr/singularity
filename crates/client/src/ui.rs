@@ -200,6 +200,11 @@ fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
         Modal::Picker => crate::looks::picker_rect(area, app.picker()?),
         Modal::Naming => naming_rect(area),
         Modal::Widgets => crate::arrange::widgets_rect(area, app.widget_pick()?),
+        Modal::WidgetPicker => {
+            // (its Pane gone: drawing it closes it)
+            app.widget_picker().filter(|p| app.layout.contains(p.target))?;
+            crate::panemenu::rect(area, app)
+        }
         Modal::Details => crate::playlists::details_rect(area),
         Modal::Adding => crate::playlists::adding_rect(area, app.adding_rows().len()),
         Modal::Cover => crate::cover::rect(area),
@@ -226,6 +231,7 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
         Modal::Devices => devices(f.buffer_mut(), area, app, th),
         Modal::Picker => crate::looks::draw_picker(f.buffer_mut(), area, app, th),
         Modal::Widgets => crate::arrange::draw_widgets(f.buffer_mut(), area, app, th),
+        Modal::WidgetPicker => crate::panemenu::draw(f.buffer_mut(), area, app, th),
         Modal::Naming => {
             let Some(n) = app.naming().cloned() else { return };
             let mut edited = format!("Enter save · Esc keep it as “{} (edited)”", crate::design::DESIGNS[app.design].name);
@@ -529,6 +535,14 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     if w == Some(Widget::TopWeek) {
         let tw = spans.iter().map(|s| s.content.chars().count()).sum::<usize>() as u16;
         swaps.push((Rect::new(rect.x + 1, rect.y, tw.min(rect.width.saturating_sub(2)), 1), Hit::TopWeekToggle));
+    } else if !raised && w.is_some() && app.can_replace(p.id) {
+        // the Widget's name: a click opens the Widget picker (top this week's title is its switch, and Home's is the
+        // page's)
+        if let [lead, name, ..] = spans.as_slice() {
+            let x = rect.x + 1 + lead.content.chars().count() as u16;
+            let nw = (name.content.chars().count() as u16).saturating_sub(1).min(rect.right().saturating_sub(x + 1));
+            swaps.push((Rect::new(x, rect.y, nw, 1), Hit::TitleName(p.id)));
+        }
     }
     let block = Block::default()
         .borders(Borders::ALL)
@@ -972,7 +986,8 @@ fn help_rows(m: &crate::keymap::Keymap) -> Vec<(String, String)> {
         (m.nav_label().into(), "move through Home, play · right-click or Menu key: more".into()),
         (m.pair(A::Back, A::Forward), "back / forward (Esc and Backspace go back too)".into()),
         (m.label(A::FocusNext), "focus the next pane".into()),
-        ("Panes".into(), "drag a title to move it · × closes · right-click: split".into()),
+        ("Panes".into(), "drag a title to move it · × closes · right-click for more".into()),
+        (m.label(A::ReplaceWidget), "replace the focused pane's widget (or click its name)".into()),
         (m.label(A::MovePane), "move pane: arrows swap · ⇧arrows split · + − size · x close".into()),
         (format!("{} {}", m.label(A::UndoLayout), m.label(A::RedoLayout)).trim().to_string(), "undo / redo a layout change (u in Move mode)".into()),
         (m.label(A::ToggleIdle), "idle takeover on / off (any key wakes the screen)".into()),
@@ -3320,6 +3335,7 @@ mod tests {
             Modal::Palette => app.run(Action::Palette),
             Modal::Picker => app.open_picker(crate::looks::PickerKind::Theme),
             Modal::Naming => app.open_popup(crate::app::Popup::Naming(crate::app::Naming::playlist())),
+            Modal::WidgetPicker => app.open_widget_picker(app.layout.pane_of(Widget::Stream).unwrap()),
             Modal::Widgets => {
                 let items = crate::layouts::all_widgets().take(8).collect();
                 app.open_popup(crate::app::Popup::Widgets(crate::arrange::WidgetPick { target: app.layout.pane_of(Widget::Home).unwrap(), side: crate::tiling::Side::Right, items, sel: 0 }));
@@ -3362,6 +3378,7 @@ mod tests {
             Modal::Palette => app.palette().map(|p| p.selected),
             Modal::Picker => app.picker().map(|p| p.sel),
             Modal::Widgets => app.widget_pick().map(|p| p.sel),
+            Modal::WidgetPicker => app.widget_picker().map(|p| p.sel),
             Modal::Details => app.details().map(|d| d.scroll.offset()),
             Modal::Adding => app.adding().map(|a| a.sel),
             Modal::Wizard => Some(app.wizard_scroll.offset()),
@@ -3496,18 +3513,18 @@ mod tests {
             let (mut app, _rx) = over_wizard(m);
             render(&mut app, w, h);
             click(&mut app, 0, 0);
-            let closes = matches!(m, Modal::Palette | Modal::Picker | Modal::Widgets | Modal::Adding | Modal::Devices | Modal::Menu | Modal::Help);
+            let closes = matches!(m, Modal::Palette | Modal::Picker | Modal::Widgets | Modal::WidgetPicker | Modal::Adding | Modal::Devices | Modal::Menu | Modal::Help);
             assert_eq!(app.modal(), Some(if closes { Modal::Wizard } else { m }), "{m:?}: the click");
             // the click on its first row, inside its box: the row is chosen (the popup has done its job and gone)
             let (mut app, _rx) = over_wizard(m);
             render(&mut app, w, h);
-            let row = app.hits.iter().find(|(_, hit)| matches!(hit, Hit::PaletteItem(0) | Hit::PickerItem(0) | Hit::WidgetItem(0) | Hit::AddPick(0) | Hit::DeviceRow(0) | Hit::MenuItem(0))).map(|(r, _)| *r);
+            let row = app.hits.iter().find(|(_, hit)| matches!(hit, Hit::PaletteItem(0) | Hit::PickerItem(0) | Hit::WidgetItem(0) | Hit::PickWidget(0) | Hit::AddPick(0) | Hit::DeviceRow(0) | Hit::MenuItem(0))).map(|(r, _)| *r);
             if let Some(r) = row {
                 click(&mut app, r.x + 1, r.y);
                 assert_ne!(app.modal(), Some(m), "{m:?}: the click on its row went to the wizard");
                 assert!(app.layers().contains(&Modal::Wizard), "{m:?}: the wizard stays");
             } else {
-                assert!(!matches!(m, Modal::Palette | Modal::Picker | Modal::Widgets | Modal::Adding | Modal::Devices | Modal::Menu), "{m:?}: a list popup has rows to click");
+                assert!(!matches!(m, Modal::Palette | Modal::Picker | Modal::Widgets | Modal::WidgetPicker | Modal::Adding | Modal::Devices | Modal::Menu), "{m:?}: a list popup has rows to click");
             }
         }
     }

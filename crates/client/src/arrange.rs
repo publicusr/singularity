@@ -148,7 +148,7 @@ impl App {
     }
 
     /// Whether `tree` could be shown at the size we draw at.
-    fn fits(&self, tree: &Node) -> bool {
+    pub(crate) fn fits(&self, tree: &Node) -> bool {
         tree.valid(self.pane_area(), self.cell_aspect())
     }
 
@@ -346,7 +346,11 @@ impl App {
     fn tile_up(&mut self, x: u16, y: u16) {
         let Some(t) = self.tile.take() else { return };
         if !t.live {
-            // a click on the title: the focus moved at the press; the hole's Pane also changes its look
+            // a click on the Widget's name: the Widget picker (D87)
+            if self.hit_at(t.from.0, t.from.1) == Some(Hit::TitleName(t.pane.id)) {
+                return self.open_widget_picker(t.pane.id);
+            }
+            // a click elsewhere on the title: the focus moved at the press; the hole's Pane also changes its look
             if is_hole(t.pane.widget) {
                 self.run(Action::NextLook);
             }
@@ -426,7 +430,7 @@ impl App {
     // ── edits and what they do to the Design ──────────────────────────
 
     /// Show `tree` as the layout and treat it as an edit (one undo step).
-    fn commit_layout(&mut self, tree: Node) {
+    pub(crate) fn commit_layout(&mut self, tree: Node) {
         let was = self.snapshot();
         self.layout = tree;
         self.remember(was);
@@ -670,11 +674,17 @@ impl App {
         }
     }
 
+    /// The Pane's menu (D87): Replace widget… first (not on Home's), then the floor plan's edits.
     pub fn open_pane_menu(&mut self, id: PaneId, at: Option<(u16, u16)>) {
-        let mut items = vec![("Split right".to_string(), MenuAct::SplitRight), ("Split down".into(), MenuAct::SplitDown), ("Move pane".into(), MenuAct::MovePane)];
+        let mut items = vec![];
+        if self.can_replace(id) {
+            items.push(("Replace widget…".to_string(), MenuAct::ReplaceWidget));
+        }
+        items.extend([("Split right".to_string(), MenuAct::SplitRight), ("Split down".into(), MenuAct::SplitDown)]);
         if !self.layout.widget_in(id).is_some_and(|w| CORE.contains(&w)) {
             items.push(("Close pane".into(), MenuAct::ClosePane));
         }
+        items.push(("Move pane".into(), MenuAct::MovePane));
         self.focus = Some(id);
         self.open_popup(crate::app::Popup::Menu(Menu { at: at.unwrap_or((0, 0)), target: Target::Pane(id), items, selected: 0 }));
     }
@@ -682,6 +692,7 @@ impl App {
     pub fn pane_menu_run(&mut self, id: PaneId, act: MenuAct) {
         self.focus = Some(id);
         match act {
+            MenuAct::ReplaceWidget => self.open_widget_picker(id),
             MenuAct::SplitRight => self.split_pane(id, Side::Right),
             MenuAct::SplitDown => self.split_pane(id, Side::Bottom),
             MenuAct::MovePane => self.start_move(),

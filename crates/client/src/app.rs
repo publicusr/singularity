@@ -81,6 +81,7 @@ pub enum Action {
     DeleteListening,
     Setup,
     FocusNext,
+    ReplaceWidget,
     SplitRight,
     SplitDown,
     ClosePane,
@@ -94,7 +95,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 59] = [
+    pub const ALL: [Action; 60] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -144,6 +145,7 @@ impl Action {
         Action::DeleteListening,
         Action::Setup,
         Action::FocusNext,
+        Action::ReplaceWidget,
         Action::SplitRight,
         Action::SplitDown,
         Action::ClosePane,
@@ -206,6 +208,7 @@ impl Action {
             Action::DeleteListening => "Delete listening data…",
             Action::Setup => "Run setup",
             Action::FocusNext => "Focus next pane",
+            Action::ReplaceWidget => "Replace widget…",
             Action::SplitRight => "Split right",
             Action::SplitDown => "Split down",
             Action::ClosePane => "Close pane",
@@ -225,6 +228,7 @@ impl Action {
             Action::PickDesign => "layout colours colors look",
             Action::PickTheme => "palette colours colors",
             Action::SaveLayout => "layout keep",
+            Action::ReplaceWidget => "swap change pane widget pick choose",
             Action::SplitRight => "tile add pane widget beside",
             Action::SplitDown => "tile add pane widget below",
             Action::ClosePane => "tile remove delete widget",
@@ -309,6 +313,7 @@ impl Action {
             Action::DeleteListening => "delete_listening",
             Action::Setup => "setup",
             Action::FocusNext => "focus_next",
+            Action::ReplaceWidget => "replace_widget",
             Action::SplitRight => "split_right",
             Action::SplitDown => "split_down",
             Action::ClosePane => "close_pane",
@@ -331,6 +336,10 @@ impl Action {
 pub enum Hit {
     /// a Pane, where the layout puts it (a click focuses it)
     Focus(PaneId),
+    /// the Widget's name in a Pane's title: a click opens the Widget picker (a drag moves the Pane, as from the title)
+    TitleName(PaneId),
+    /// a row of the Widget picker
+    PickWidget(usize),
     Divider(usize),
     Action(Action),
     PaletteItem(usize),
@@ -426,7 +435,8 @@ pub enum MenuAct {
     ChangeCover,
     RemoveCover,
     DeletePlaylist,
-    /// the Pane menu (right-click on a title)
+    /// the Pane menu (right-click on a title, or a body without a menu of its own)
+    ReplaceWidget,
     SplitRight,
     SplitDown,
     MovePane,
@@ -902,7 +912,7 @@ impl App {
 
     /// Typing goes to a text field, so letters aren't shortcuts.
     fn typing(&self) -> bool {
-        matches!(self.modal(), Some(Modal::Palette | Modal::Picker | Modal::Naming | Modal::Widgets | Modal::Details | Modal::Adding | Modal::Cover))
+        matches!(self.modal(), Some(Modal::Palette | Modal::Picker | Modal::Naming | Modal::Widgets | Modal::WidgetPicker | Modal::Details | Modal::Adding | Modal::Cover))
             || (self.modal() == Some(Modal::Wizard) && crate::setup::step(self) == crate::setup::Step::Key)
             || self.settings_typing()
             || self.open.view().is_some_and(|v| v.filtering)
@@ -1199,6 +1209,7 @@ impl App {
                 let i = panes.iter().position(|p| Some(p.id) == self.focus).map(|i| (i + 1) % panes.len()).unwrap_or(0);
                 self.focus = Some(panes[i].id);
             }
+            Action::ReplaceWidget => self.replace_focused(),
             Action::SplitRight => self.split_focused(crate::tiling::Side::Right),
             Action::SplitDown => self.split_focused(crate::tiling::Side::Bottom),
             Action::ClosePane => {
@@ -1251,6 +1262,7 @@ impl App {
             Some(Modal::Picker) => return self.picker_key(k),
             Some(Modal::Naming) => return self.naming_key(k),
             Some(Modal::Widgets) => return self.widget_key(k),
+            Some(Modal::WidgetPicker) => return self.widget_picker_key(k),
             Some(Modal::Details) => return self.details_key(k),
             Some(Modal::Adding) => return self.adding_key(k),
             Some(Modal::Cover) => return self.cover_key(k),
@@ -2227,7 +2239,7 @@ impl App {
             MenuAct::ChangeCover => self.ask_cover(&uri),
             MenuAct::RemoveCover => self.remove_cover(&uri),
             MenuAct::DeletePlaylist => self.delete_playlist(&uri),
-            MenuAct::SplitRight | MenuAct::SplitDown | MenuAct::MovePane | MenuAct::ClosePane => {}
+            MenuAct::ReplaceWidget | MenuAct::SplitRight | MenuAct::SplitDown | MenuAct::MovePane | MenuAct::ClosePane => {}
         }
     }
 
@@ -2301,6 +2313,9 @@ impl App {
         } else if let Some(p) = self.palette_mut() {
             p.query.push_str(s);
             p.selected = 0;
+        } else if let Some(p) = self.widget_picker_mut() {
+            p.query.extend(s.chars().filter(|c| !c.is_control()).take(40usize.saturating_sub(p.query.chars().count())));
+            p.sel = 0;
         } else if self.popup.is_none() && let Some(v) = self.open.view().filter(|v| v.filtering) {
             let f = format!("{}{s}", v.filter);
             self.open.set_filter(f);
@@ -2639,9 +2654,16 @@ impl App {
                             self.open_track_menu(t.uri, t.name, at);
                         }
                     }
-                    // a Pane's title bar: split, move, close
-                    Some(Hit::Title(s) | Hit::Swap(s, _)) => self.open_pane_menu(s, at),
-                    _ => {}
+                    // a Pane's title bar: replace, split, close, move
+                    Some(Hit::Title(s) | Hit::TitleName(s) | Hit::Swap(s, _)) => self.open_pane_menu(s, at),
+                    // a border between Panes is no Pane's
+                    Some(Hit::Divider(_)) => {}
+                    // a Pane's body without a menu of its own: the Pane's (D87)
+                    _ => {
+                        if let Some(p) = self.pane_at(m.column, m.row) {
+                            self.open_pane_menu(p, at);
+                        }
+                    }
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -2785,9 +2807,9 @@ impl App {
                     Some(Hit::History(d)) if d < 0 => self.go_back(),
                     Some(Hit::History(_)) => self.go_forward(),
                     Some(Hit::Focus(p)) => self.focus = Some(p),
-                    Some(Hit::Title(p)) => self.tile_down(p, m.column, m.row),
+                    Some(Hit::Title(p) | Hit::TitleName(p)) => self.tile_down(p, m.column, m.row),
                     Some(Hit::Close(p)) => self.close_pane(p),
-                    Some(Hit::WidgetItem(_)) => {}
+                    Some(Hit::WidgetItem(_) | Hit::PickWidget(_)) => {}
                     Some(Hit::Divider(i)) => {
                         self.divider_from = Some(self.layout.clone());
                         if let Some(d) = self.dividers.get(i) {
@@ -2905,6 +2927,8 @@ modals! {
     Naming,
     /// the Widget list for a new Pane ("Split right" and the like)
     Widgets,
+    /// the Widget picker: what a Pane shows (Replace widget…)
+    WidgetPicker,
     Details,
     Adding,
     Cover,
@@ -2926,6 +2950,7 @@ pub(crate) enum Popup {
     Picker(crate::looks::Picker),
     Naming(Naming),
     Widgets(crate::arrange::WidgetPick),
+    WidgetPicker(crate::panemenu::WidgetPicker),
     Details(crate::playlists::Details),
     Adding(crate::playlists::Adding),
     Cover(crate::cover::CoverForm),
@@ -2943,6 +2968,7 @@ impl Popup {
             Popup::Picker(_) => Modal::Picker,
             Popup::Naming(_) => Modal::Naming,
             Popup::Widgets(_) => Modal::Widgets,
+            Popup::WidgetPicker(_) => Modal::WidgetPicker,
             Popup::Details(_) => Modal::Details,
             Popup::Adding(_) => Modal::Adding,
             Popup::Cover(_) => Modal::Cover,
@@ -2992,6 +3018,7 @@ popup_data! {
     picker, picker_mut, take_picker: Picker(crate::looks::Picker);
     naming, naming_mut, take_naming: Naming(Naming);
     widget_pick, widget_pick_mut, take_widget_pick: Widgets(crate::arrange::WidgetPick);
+    widget_picker, widget_picker_mut, take_widget_picker: WidgetPicker(crate::panemenu::WidgetPicker);
     details, details_mut, take_details: Details(crate::playlists::Details);
     adding, adding_mut, take_adding: Adding(crate::playlists::Adding);
     cover_form, cover_form_mut, take_cover_form: Cover(crate::cover::CoverForm);
@@ -3072,6 +3099,12 @@ impl App {
             Modal::Widgets => {
                 if let Some(p) = self.widget_pick_mut() {
                     p.sel = moved(p.sel, rows, p.items.len());
+                }
+            }
+            Modal::WidgetPicker => {
+                let n = self.widget_choices().len();
+                if let Some(p) = self.widget_picker_mut() {
+                    p.sel = moved(p.sel, rows, n);
                 }
             }
             Modal::Adding => self.adding_move(rows),
@@ -3157,6 +3190,12 @@ impl App {
                         Some(Hit::WidgetItem(i)) => self.widget_chosen(i),
                         _ => self.close_if_open(Modal::Widgets),
                     },
+                    // outside the popup closes it; inside, on the typed line or the line, nothing
+                    Modal::WidgetPicker => match hit {
+                        Some(Hit::PickWidget(i)) => self.widget_picked(i),
+                        _ if !self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom()) => self.close_if_open(Modal::WidgetPicker),
+                        _ => {}
+                    },
                     // forms and the wizard are typed into; a click on or around them does nothing
                     Modal::Naming | Modal::Details | Modal::Cover | Modal::Wizard | Modal::Health | Modal::Login => {}
                 }
@@ -3219,7 +3258,7 @@ fn capitalise(s: &str) -> String {
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
-fn fuzzy(hay: &str, q: &str) -> bool {
+pub(crate) fn fuzzy(hay: &str, q: &str) -> bool {
     let mut it = hay.chars();
     q.chars().filter(|c| !c.is_whitespace()).all(|c| it.any(|h| h == c))
 }
