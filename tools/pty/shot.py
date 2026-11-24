@@ -2128,7 +2128,8 @@ def arrange(t, out):
 def arrange_keys(t, out):
     """D87, #43: Arrange mode from the keyboard alone. `m` and the legend; arrows move the focus; Enter picks the
     queue up (its Pane lit, the chip), ↑ aims at Home ("swap with …"), Enter swaps; Esc puts a pick-up back; `t` sets
-    the focused Widget aside in the Tray; Home picked up and aimed at that empty Pane ("put here"); `s` (the legend
+    the focused Widget aside in the Tray; Home picked up and aimed at that empty Pane ("put here"); ↓ onto the Tray,
+    Enter, ↑ and Enter take its Widget out into a Pane (undone with Ctrl+Z); `s` (the legend
     waits for the arrow) then → splits (the picker; Esc leaves the new Pane empty); `x` closes it; `-` `+` move a line;
     Esc is Done (the name prompt; Esc keeps it unnamed) and the app looks as before. Prints what each step left.
     160×48, cell tier, an empty output folder."""
@@ -2172,6 +2173,15 @@ def arrange_keys(t, out):
     step("09-home-aimed-at-empty", [LEFT, b"\r", RIGHT])
     print("put here:", bool(t.find("put here")))
     step("10-esc", [b"\x1b"])
+    # 5b. the Tray by keyboard: ↓ from Home (a bottom Pane) onto the Tray's Widget, Enter picks it up, ↑ aims at the
+    # Pane above it, Enter puts it there (that Pane's Widget into the Tray); Ctrl+Z takes it back (the focus on Home)
+    step("10a-tray-focus", [DOWN])
+    step("10b-from-tray-aimed", [b"\r", UP])
+    lab = t.find("swap with ") or t.find("put here")
+    print("from the Tray, aimed:", t.screen.display[lab[1]][lab[0]:lab[0] + 24].strip() if lab else "NO LABEL")
+    step("10c-from-tray-dropped", [b"\r"])
+    print("after the drop, the Tray row:", t.screen.display[ROWS - 3].strip()[:100])
+    step("10d-undone", [b"\x1a"])
     # 6. s waits for the arrow (the legend says so); → splits: the picker; Esc leaves the new Pane empty
     step("11-s-waits", [b"s"])
     print("after s, legend:", legend())

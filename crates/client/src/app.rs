@@ -347,8 +347,9 @@ impl Action {
         }
     }
 
+    /// (`move_pane`, Move mode's, is another name for `arrange` since Move mode folded into it: #43)
     pub fn from_id(id: &str) -> Option<Action> {
-        Action::ALL.into_iter().find(|a| a.id() == id)
+        Action::ALL.into_iter().find(|a| a.id() == id).or_else(|| (id == "move_pane").then_some(Action::Arrange))
     }
 }
 

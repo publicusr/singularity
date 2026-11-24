@@ -70,21 +70,30 @@ pub struct TileDrag {
     pub tray: bool,
     /// picked up from the Tray
     pub from_tray: bool,
-    /// picked up with Enter (#43): the Pane the arrows aim at (its own: nowhere); the pointer has no part in it
-    pub aim: Option<PaneId>,
+    /// picked up with Enter (#43): what the arrows aim at (its own Pane: nowhere); the pointer has no part in it
+    pub aim: Option<Aim>,
     /// picked up with Enter: the layout it was picked up on (any other edit meanwhile ends the pick-up)
     on: Option<Arrangement>,
 }
 
+/// What a Widget picked up with Enter is aimed at: a Pane, or the Tray (↑ leaves it into the Pane above column `x`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Aim {
+    Pane(PaneId),
+    Tray(u16),
+}
+
 /// Arrange mode, while it is on: the Arrangement when it began and whether an edit was made since, so Done can
-/// tell whether anything changed, the first Widget the Tray strip shows (when it holds more than fits), and whether
-/// `s` waits for the arrow that says which way to split.
+/// tell whether anything changed, the first Widget the Tray strip shows (when it holds more than fits), whether
+/// `s` waits for the arrow that says which way to split, and the Widget in the Tray the keyboard's focus is on.
 pub struct Arranging {
     since: Arrangement,
     /// an edit was made in it (previewing other Designs in the picker isn't one)
     edited: bool,
     pub tray_first: usize,
     pub split_next: bool,
+    /// ↓ from a bottom Pane: the focus is on this Widget in the Tray (no Pane is focused meanwhile)
+    pub tray_focus: Option<Widget>,
 }
 
 /// What undo goes back to: the layout, the Design it was (None: the built-in one) and what its file said about it,
@@ -363,7 +372,13 @@ impl App {
     pub fn chip_rect(&self, area: Rect, text: &str) -> Option<Rect> {
         let t = self.tile.as_ref().filter(|t| t.live)?;
         let w = (text.chars().count() as u16 + 2).min(CHIP_MAX).min(area.width);
-        if let Some(aim) = t.aim {
+        if let Some(Aim::Tray(x)) = t.aim {
+            // on the Tray's top edge, over the column it was aimed down at
+            let r = self.tray_rect();
+            let w = w.min(r.width);
+            return Some(Rect::new(x.saturating_sub(w / 2).clamp(r.x, r.right().saturating_sub(w)), r.y, w, 1));
+        }
+        if let Some(Aim::Pane(aim)) = t.aim {
             let r = self.layout.compute(self.pane_area()).rect(aim)?;
             let w = w.min(r.width);
             let y = if r.height >= 4 { r.y + r.height / 2 + 1 } else { r.y + r.height / 2 };
@@ -562,7 +577,7 @@ impl App {
     /// Arrange mode on (the palette's and the Pane menu's "Arrange", a title drag, Esc in a split's picker).
     pub fn enter_arrange(&mut self) {
         if self.arranging.is_none() {
-            self.arranging = Some(Arranging { since: self.layout.clone(), edited: false, tray_first: 0, split_next: false });
+            self.arranging = Some(Arranging { since: self.layout.clone(), edited: false, tray_first: 0, split_next: false, tray_focus: None });
         }
     }
 
@@ -610,8 +625,15 @@ impl App {
             return;
         }
         self.pick_up_check();
-        // (a focus on no Pane of this layout: the keys act from a real one)
-        if !self.focus.is_some_and(|p| self.layout.contains(p)) {
+        // (a focus on a Widget that left the Tray, or on no Pane of this layout: the keys act from a real Pane)
+        let tray = self.layout.tray().to_vec();
+        if let Some(a) = self.arranging.as_mut()
+            && a.tray_focus.is_some_and(|w| !tray.contains(&w))
+        {
+            a.tray_focus = None;
+        }
+        let on_tray = self.arranging.as_ref().and_then(|a| a.tray_focus);
+        if on_tray.is_none() && !self.focus.is_some_and(|p| self.layout.contains(p)) {
             self.focus = fallback_pane(&self.layout);
         }
         // only the bare keys (`+` may come with the Shift it needs); Shift+arrows seek, as everywhere
@@ -643,6 +665,17 @@ impl App {
                 self.split_focused(side);
             }
             return;
+        }
+        // the focus on a Widget in the Tray: ← → move along it, ↑ goes back up into the Panes, Enter picks it up
+        if let Some(w) = on_tray {
+            return match (k.code, arrow) {
+                (_, Some(side @ (Side::Left | Side::Right))) => self.tray_focus_step(w, side == Side::Right),
+                (_, Some(Side::Top)) => self.tray_focus_up(w),
+                (KeyCode::Enter, _) => self.pick_up_from_tray(w),
+                (KeyCode::Esc, _) => self.arrange_done(),
+                // (the keys for a Pane have none here)
+                _ => {}
+            };
         }
         let focused = self.focused_pane();
         match (k.code, arrow, focused) {
@@ -708,9 +741,10 @@ impl App {
     /// close buttons, the Tray and Done; a right click opens the Pane's menu; the wheel scrolls the Tray. Nothing else
     /// in the Panes takes a click (a click focuses the Pane).
     pub(crate) fn arrange_pointer(&mut self, m: MouseEvent, coarse: bool) {
-        // a press ends `s`'s wait for its arrow
+        // a press ends `s`'s wait for its arrow, and the keyboard's focus in the Tray
         if let (MouseEventKind::Down(_), Some(a)) = (m.kind, self.arranging.as_mut()) {
             a.split_next = false;
+            a.tray_focus = None;
         }
         if self.tile.is_some() {
             return self.tile_pointer(m);
@@ -934,12 +968,84 @@ impl App {
     // ── the keyboard (#43) ────────────────────────────────────────────
 
     /// An arrow: the focus goes to the Pane next to the focused one that way (none there: it stays).
+    /// ↓ from a Pane with none below it: the focus goes onto the Tray's Widget nearest under it (an empty Tray has
+    /// none to go to).
     fn focus_step(&mut self, dir: Side) {
         let Some(id) = self.focused_pane() else { return };
         let panes = self.layout.compute(self.pane_area()).panes;
-        if let Some(n) = neighbour(&panes, id, dir) {
-            self.focus = Some(n);
+        match neighbour(&panes, id, dir) {
+            Some(n) => self.focus = Some(n),
+            None if dir == Side::Bottom => {
+                let mid = panes.iter().find(|(p, _)| p.id == id).map_or(0, |(_, r)| r.x + r.width / 2);
+                if let Some(w) = self.tray_nearest(mid) {
+                    self.focus = None;
+                    if let Some(a) = self.arranging.as_mut() {
+                        a.tray_focus = Some(w);
+                    }
+                }
+            }
+            None => {}
         }
+    }
+
+    /// The Widget in the Tray whose chip (as the strip shows it now) is nearest column `x`.
+    fn tray_nearest(&self, x: u16) -> Option<Widget> {
+        let first = self.arranging.as_ref().map_or(0, |a| a.tray_first);
+        let tray = self.layout.tray();
+        let l = tray_layout(self, self.tray_rect(), first);
+        l.items.iter().min_by_key(|(_, r, _)| (r.x + r.width / 2).abs_diff(x)).map(|(i, ..)| tray[*i]).or_else(|| tray.first().copied())
+    }
+
+    /// The middle column of Widget `w`'s chip in the Tray strip, scrolling the strip to it first if it isn't shown.
+    fn tray_chip_x(&mut self, w: Widget) -> u16 {
+        let Some(i) = self.layout.tray().iter().position(|x| *x == w) else { return self.tray_rect().x };
+        let first = self.arranging.as_ref().map_or(0, |a| a.tray_first);
+        let mut l = tray_layout(self, self.tray_rect(), first);
+        if !l.items.iter().any(|(j, ..)| *j == i) {
+            l = tray_layout(self, self.tray_rect(), if i < first { i } else { i.saturating_sub(l.items.len().saturating_sub(1)) });
+            if let Some(a) = self.arranging.as_mut() {
+                a.tray_first = l.first;
+            }
+        }
+        l.items.iter().find(|(j, ..)| *j == i).map_or(self.tray_rect().x, |(_, r, _)| r.x + r.width / 2)
+    }
+
+    /// ← or → with the focus in the Tray: the Widget before or after (none there: it stays), shown.
+    fn tray_focus_step(&mut self, w: Widget, right: bool) {
+        let tray = self.layout.tray().to_vec();
+        let Some(i) = tray.iter().position(|x| *x == w) else { return };
+        let Some(&n) = (if right { tray.get(i + 1) } else { i.checked_sub(1).and_then(|j| tray.get(j)) }) else { return };
+        if let Some(a) = self.arranging.as_mut() {
+            a.tray_focus = Some(n);
+        }
+        self.tray_chip_x(n);
+    }
+
+    /// ↑ from the Tray: the focus goes back to the Pane above Widget `w`'s chip.
+    fn tray_focus_up(&mut self, w: Widget) {
+        let x = self.tray_chip_x(w);
+        let up = self.pane_above_tray(x);
+        if let Some(a) = self.arranging.as_mut() {
+            a.tray_focus = None;
+        }
+        self.focus = up.or_else(|| fallback_pane(&self.layout));
+    }
+
+    /// The bottom Pane over column `x` (the nearest one where none is).
+    fn pane_above_tray(&self, x: u16) -> Option<PaneId> {
+        let area = self.pane_area();
+        let panes = self.layout.compute(area).panes;
+        let bottom = panes.iter().filter(|(_, r)| r.bottom() == area.bottom());
+        bottom.min_by_key(|(_, r)| if x >= r.x && x < r.right() { 0 } else { x.abs_diff(r.x + r.width / 2) as u32 + 1 }).map(|(p, _)| p.id)
+    }
+
+    /// Enter on Widget `w` in the Tray: it is picked up (the chip), aimed at the Tray (where it is) until ↑ aims into
+    /// the Panes.
+    fn pick_up_from_tray(&mut self, w: Widget) {
+        let x = self.tray_chip_x(w);
+        let pane = Pane { id: PaneId::UNSET, widget: Some(w) };
+        let on = Some(self.layout.clone());
+        self.tile = Some(TileDrag { pane, from: (0, 0), at: (0, 0), live: true, over: None, tray: false, from_tray: true, aim: Some(Aim::Tray(x)), on });
     }
 
     /// Enter on Pane `id`: its Widget is picked up (lit, with the chip), aimed at its own Pane until an arrow says
@@ -947,20 +1053,35 @@ impl App {
     fn pick_up(&mut self, id: PaneId) {
         let Some(pane) = self.layout.get(id).filter(|p| p.widget.is_some()) else { return };
         let on = Some(self.layout.clone());
-        self.tile = Some(TileDrag { pane, from: (0, 0), at: (0, 0), live: true, over: None, tray: false, from_tray: false, aim: Some(id), on });
+        self.tile = Some(TileDrag { pane, from: (0, 0), at: (0, 0), live: true, over: None, tray: false, from_tray: false, aim: Some(Aim::Pane(id)), on });
     }
 
     /// An arrow with a Widget picked up: the aim goes to the next Pane that way, lit with what Enter would do (back on
-    /// its own Pane: nothing lit).
+    /// its own Pane: nothing lit). ↓ from a bottom Pane aims at the Tray (lit for a Pane's Widget, as for the mouse);
+    /// ↑ from the Tray aims at the Pane above.
     fn aim_step(&mut self, dir: Side) {
-        let Some((own, at)) = self.tile.as_ref().and_then(|t| Some((t.pane.id, t.aim?))) else { return };
-        let panes = self.layout.compute(self.pane_area()).panes;
-        // No Pane that way: nothing to aim at. (Seam: aiming past the Panes, at the Tray, would go here; how the
-        // keyboard takes Widgets out of the Tray is the owner's open question on #43.)
-        let Some(n) = neighbour(&panes, at, dir) else { return };
+        let Some((own, from_tray, at)) = self.tile.as_ref().and_then(|t| Some((t.pane.id, t.from_tray, t.aim?))) else { return };
+        let area = self.pane_area();
+        let panes = self.layout.compute(area).panes;
+        let to = match at {
+            Aim::Pane(p) => match neighbour(&panes, p, dir) {
+                Some(n) => Aim::Pane(n),
+                None if dir == Side::Bottom => Aim::Tray(panes.iter().find(|(q, _)| q.id == p).map_or(area.x, |(_, r)| r.x + r.width / 2)),
+                None => return,
+            },
+            Aim::Tray(x) if dir == Side::Top => match self.pane_above_tray(x) {
+                Some(n) => Aim::Pane(n),
+                None => return,
+            },
+            Aim::Tray(_) => return,
+        };
         if let Some(t) = self.tile.as_mut() {
-            t.aim = Some(n);
-            t.over = (n != own).then_some(n);
+            t.aim = Some(to);
+            t.over = match to {
+                Aim::Pane(n) => (n != own).then_some(n),
+                Aim::Tray(_) => None,
+            };
+            t.tray = matches!(to, Aim::Tray(_)) && !from_tray;
         }
     }
 
@@ -973,13 +1094,24 @@ impl App {
     }
 
     /// Enter with a Widget picked up: it swaps with the Widget of the Pane aimed at (an empty one is filled), and the
-    /// focus goes with it. Aimed at its own Pane: it is put back.
+    /// focus goes with it; from the Tray, it takes the Pane (its Widget goes into the Tray in its place). A Pane's
+    /// Widget aimed at the Tray waits there, its Pane left empty. Aimed where it came from: it is put back.
     fn key_drop(&mut self) {
         let Some(t) = self.tile.take() else { return };
-        let Some(to) = t.over else { return };
-        match self.layout.swap(t.pane.id, to) {
-            Ok(a) => {
-                self.focus = Some(to);
+        let edit = match (t.from_tray, t.pane.widget, t.aim, t.over) {
+            (true, Some(w), _, Some(to)) => self.layout.out_of_tray(w, to).map(|a| (a, Some(to))),
+            (false, _, Some(Aim::Tray(_)), _) => self.layout.to_tray(t.pane.id).map(|a| (a, None)),
+            (false, _, _, Some(to)) => self.layout.swap(t.pane.id, to).map(|a| (a, Some(to))),
+            _ => return,
+        };
+        match edit {
+            Ok((a, to)) => {
+                if to.is_some() {
+                    self.focus = to;
+                    if let Some(a) = self.arranging.as_mut() {
+                        a.tray_focus = None;
+                    }
+                }
                 self.commit_layout(a);
             }
             Err(e) => self.refused(e),
@@ -1121,9 +1253,12 @@ pub fn draw_tray(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let s = "drop a Widget here to set it aside";
         text(buf, r.x + 2, r.y + 1, r.width.saturating_sub(4), s, th.s(th.dim));
     }
+    let focus = app.arranging.as_ref().and_then(|a| a.tray_focus);
     for (i, chip, close) in &l.items {
         let name = crate::ui::pane_name(app.design, tray[*i]);
-        text(buf, chip.x, chip.y, chip.width, &tray_chip(&name), th.chip(th.accent2));
+        // (the one the keyboard's focus is on: in the focus colour)
+        let st = if focus == Some(tray[*i]) { th.chip(th.accent) } else { th.chip(th.accent2) };
+        text(buf, chip.x, chip.y, chip.width, &tray_chip(&name), st);
         app.hit(*chip, Hit::TrayItem(tray[*i]));
         if let Some(c) = close {
             text(buf, c.x, c.y, c.width, "× ", th.s(th.dim));

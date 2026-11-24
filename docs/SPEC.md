@@ -304,6 +304,9 @@ audio, and looks spectacular.
     Arrange mode; arrows move the focus between Panes, Enter picks up the focused Widget (the same lit Pane and chip
     as the mouse), arrows aim, Enter drops (swap, or fill an empty Pane), Esc puts it back; `t` to the Tray, `s` then
     an arrow splits that way, `x` closes, `+`/`-` move the focused Pane's line, Esc with nothing picked up is Done.
+    The Tray by keyboard (owner, Q50): ↓ from a bottom Pane onto the Tray, ← → along it, Enter picks a Widget up,
+    ↑ aims into the Panes, Enter drops; a Pane's Widget aimed down at the Tray is set aside there. While arranging the
+    arrows, `s` and `+`/`-` are Arrange mode's (Q48); `move_pane` stays a name for `arrange` (Q51).
 86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready. Started 2026-10-19 (D48),
     tickets #63–#70, parity rule D49; the light librespot Engine on both OSes (D52, #70).
 

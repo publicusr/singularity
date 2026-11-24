@@ -171,7 +171,10 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   Ctrl+K also has Split left / right / up / down, Close pane, Arrange and Reset design. In Arrange mode the keyboard
   does the same: arrows move between Panes, Enter picks up the focused Widget (the same lit Pane and chip as a drag),
   arrows aim and Enter drops it there (Esc puts it back); `t` sends the focused Widget to the Tray, `s` then an arrow
-  splits its Pane that way, `x` closes it, `+` `-` move its border, and Esc is Done. Ctrl+Z undoes a layout change and
+  splits its Pane that way, `x` closes it, `+` `-` move its border, and Esc is Done. ↓ from a bottom Pane goes onto
+  the Tray: ← → move along it, Enter picks a Widget up, ↑ aims back into the Panes and Enter puts it there (a Widget
+  picked up from a Pane and aimed down at the Tray waits there). In keys.toml, `move_pane` is another name for
+  `arrange`. Ctrl+Z undoes a layout change and
   Ctrl+Y (or Ctrl+Shift+Z) redoes it; the bar offers "undo" for a few seconds after each one. Home can move but never close (the built-in
   Designs also have the library, the queue and lyrics; your own may let them go: Ctrl+K → Your Library / Queue then
   opens them as a popup, and focuses their Pane where they have one), and no border drag, split or close can leave a Pane too small. An edit never interrupts you and never

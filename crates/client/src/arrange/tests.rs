@@ -834,6 +834,97 @@ fn only_the_bare_keys_arrange() {
     assert!(a.widget_picker().is_none());
 }
 
+/// The Tray by keyboard (owner, Q50): ↓ from a bottom Pane onto the Tray, ← → along it, Enter picks a Widget up
+/// (the chip), ↑ aims into the Panes, Enter drops there; ↑ with nothing picked up goes back to the Panes.
+#[test]
+fn the_keyboard_takes_widgets_out_of_the_tray() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    // an empty Tray: ↓ from a bottom Pane stays put
+    a.focus_on(Widget::Queue);
+    key(&mut a, KeyCode::Down);
+    assert!(a.is_focused(Widget::Queue) && a.arranging.as_ref().unwrap().tray_focus.is_none());
+    for w in [Widget::Fft, Widget::Loudness] {
+        a.focus_on(w);
+        key(&mut a, KeyCode::Char('t'));
+    }
+    assert_eq!(a.layout.tray(), &[Widget::Fft, Widget::Loudness]);
+    // ↓ from the queue: onto the Tray (its nearest Widget), lit; no Pane focused meanwhile
+    a.focus_on(Widget::Queue);
+    key(&mut a, KeyCode::Down);
+    let on = |a: &App| a.arranging.as_ref().unwrap().tray_focus;
+    assert!(on(&a).is_some() && a.focus.is_none());
+    key(&mut a, KeyCode::Left);
+    assert_eq!(on(&a), Some(Widget::Fft));
+    key(&mut a, KeyCode::Left);
+    assert_eq!(on(&a), Some(Widget::Fft), "nothing before it");
+    key(&mut a, KeyCode::Right);
+    assert_eq!(on(&a), Some(Widget::Loudness));
+    let buf = render_buf(&mut a, W, H);
+    let name = crate::ui::pane_name(a.design, Widget::Loudness);
+    let lit = drawn(&buf, &format!(" ⠿ {name} "));
+    assert_eq!(lit[1].1.bg, a.theme.chip(a.theme.accent).bg, "the focused one in the focus colour");
+    let other = drawn(&buf, &format!(" ⠿ {} ", crate::ui::pane_name(a.design, Widget::Fft)));
+    assert_eq!(other[1].1.bg, a.theme.chip(a.theme.accent2).bg, "the others as before");
+    // the keys for a Pane do nothing here
+    let before = a.layout.clone();
+    for c in ['t', 'x', 's', '+', '-'] {
+        key(&mut a, KeyCode::Char(c));
+    }
+    assert_eq!(a.layout, before);
+    // Enter picks it up (the chip), Esc puts it back and the focus stays in the Tray
+    key(&mut a, KeyCode::Enter);
+    assert!(render(&mut a, W, H).contains(&format!("⠿ {name}")));
+    key(&mut a, KeyCode::Esc);
+    assert!(a.tile.is_none() && on(&a) == Some(Widget::Loudness) && a.arranging.is_some());
+    // picked up again, ↑ aims at the Pane above it, Enter puts it there: that Pane's Widget goes into the Tray
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Up);
+    let to = a.tile.as_ref().and_then(|t| t.over).expect("aimed at a Pane");
+    let was = a.layout.widget_in(to);
+    let label = match was {
+        Some(w) => format!("swap with {}", crate::ui::pane_name(a.design, w)),
+        None => "put here".into(),
+    };
+    assert!(render(&mut a, W, H).contains(&label), "{label}");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.layout.widget_in(to), Some(Widget::Loudness));
+    assert!(was.is_none_or(|w| a.layout.tray().contains(&w)) && !a.layout.tray().contains(&Widget::Loudness));
+    assert!(a.focus == Some(to) && on(&a).is_none() && a.tile.is_none());
+    // ↓ to the Tray and ↑ back: the focus is on a bottom Pane again
+    key(&mut a, KeyCode::Down);
+    assert!(on(&a).is_some());
+    key(&mut a, KeyCode::Up);
+    assert!(on(&a).is_none() && a.focus.is_some_and(|p| a.layout.contains(p)));
+}
+
+/// A Pane's Widget picked up and aimed down past the bottom Pane: the Tray lights up, and Enter sets it aside there.
+#[test]
+fn a_picked_up_widget_aimed_down_onto_the_tray_waits_there() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    a.focus_on(Widget::Queue);
+    let spot = pid(&a, Widget::Queue);
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Down);
+    assert!(a.tile.as_ref().is_some_and(|t| t.tray && t.over.is_none()));
+    assert!(render(&mut a, W, H).contains("set aside here"));
+    // ↑ aims back into the Panes, ↓ at the Tray again
+    key(&mut a, KeyCode::Up);
+    assert!(a.tile.as_ref().is_some_and(|t| !t.tray));
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Enter);
+    assert!(a.layout.tray().contains(&Widget::Queue) && a.layout.widget_in(spot).is_none());
+    assert!(a.tile.is_none() && a.focus == Some(spot));
+}
+
+/// `move_pane` in keys.toml still binds: it is another name for `arrange` (owner, Q51).
+#[test]
+fn move_pane_is_another_name_for_arrange() {
+    assert_eq!(Action::from_id("move_pane"), Some(Action::Arrange));
+    assert_eq!(Action::from_id("arrange"), Some(Action::Arrange));
+}
+
 /// A Widget picked up with Enter isn't the pointer's: a bare move leaves it be, a release doesn't drop it, a press
 /// puts it back (and does what it does).
 #[test]
