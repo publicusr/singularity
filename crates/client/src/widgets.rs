@@ -61,7 +61,8 @@ pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let cw = r.height * 2;
         crate::home::cover(buf, Rect::new(x, r.y, cw, r.height), &url, "♪", app, th);
         let ix = x + cw + 2;
-        return np_info(buf, Rect::new(ix, r.y, (x + w).saturating_sub(ix), r.height), r.height, &item, app, queue, th);
+        let iw = (x + w).saturating_sub(ix);
+        return np_info(buf, Rect::new(ix, r.y, iw, r.height), np_title(&item.name, iw, r.height), &item, app, queue, th);
     }
     // tall: a square cover on top, as big as leaves the words (and, taller, what's next) their rows
     if r.height >= 8 && w >= 8 {
@@ -69,12 +70,16 @@ pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let ch = (w / 2).min(r.height.saturating_sub(4 + q)).max(2);
         let cw = (ch * 2).min(w);
         // narrow and tall (#57): rows to spare under the words, so the title in the pixel font and the whole centred
-        if !queue && np_column(buf, Rect::new(x, r.y, w, r.height), ch, cw, &item, &url, app, th) {
+        // (unless what's next is listed under the words: the old look's title, artists, "from", a blank row, then
+        // "Next in queue" and a song)
+        let ctx = u16::from(app.playback.context_name.is_some());
+        let listed = queue && 4 + ctx < r.height - ch - 1;
+        if w <= NARROW_W && !listed && np_column(buf, Rect::new(x, r.y, w, r.height), ch, cw, &item, &url, app, th) {
             return;
         }
         crate::home::cover(buf, Rect::new(x + (w - cw) / 2, r.y, cw, ch), &url, "♪", app, th);
         let h = r.height - ch - 1;
-        return np_info(buf, Rect::new(x, r.y + ch + 1, w, h), h, &item, app, queue, th);
+        return np_info(buf, Rect::new(x, r.y + ch + 1, w, h), np_title(&item.name, w, h), &item, app, queue, th);
     }
     // tiny (4 to 7 rows, 12 to 30 columns inside the margins): a library entry's look (a two-row cover, the name over
     // the artists beside it), in the middle of the Pane
@@ -85,69 +90,51 @@ pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         text(buf, x + 6, y + 1, w - 6, &item.artists.join(", "), th.s(th.dim));
         return;
     }
-    np_info(buf, Rect::new(x, r.y, w, r.height), r.height, &item, app, queue, th);
+    np_info(buf, Rect::new(x, r.y, w, r.height), np_title(&item.name, w, r.height), &item, app, queue, th);
 }
 
+/// The widest a narrow, tall Pane is (inside its margins) for the title in the pixel font under its cover; wider ones
+/// (square and big tall Panes) keep their look.
+const NARROW_W: u16 = 34;
 /// How many rows short of the Pane's height the cover is when the cover and the words sit fully in the middle; from
 /// there to a cover as tall as the Pane they ease to the top left, where a cover as tall as the Pane draws them.
 const BIG_EASE: u16 = 8;
-/// The height from which the big look starts for a title on one line of the pixel font...
-const BIG_ONE_LINE: u16 = 24;
-/// ...and for one that needs two (two lines of the full screen's size, a blank row between, in a third of the Pane).
-const BIG_TWO_LINES: u16 = 3 * (2 * 5 + 1);
-/// The least room a big Pane's words get beside a smaller cover (the cover a bit smaller, the title a line if short).
+/// The room a big Pane's words keep beside the smaller cover.
 const BIG_WORDS: u16 = 56;
+/// The smallest a big Pane's cover gets: four fifths of its height (30 of the sheet's 38 rows), never under 23 rows
+/// (the strip under 24 rows keeps its cover as tall as the Pane).
+fn big_floor(h: u16) -> u16 {
+    (h * 4 / 5).max(23).min(h)
+}
 
-/// A big Pane (#57): a smaller cover, so the title gets room for the pixel font (the fewest columns it needs, at least
-/// [`BIG_WORDS`]), and the cover and the words together in the middle of the Pane. The cover is as tall as the Pane
-/// where the Pane turns wide (`2 × height + 24` columns), shrinks a row every two columns from there until the title
-/// has its room, then grows a row every two columns with the room the words keep, back to the Pane's height; so no
-/// width jumps to another look, and where it is as tall as the Pane this draws nothing and the Pane looks as before.
-/// The cover stays at least a row shorter than the height this look starts from for the title (24 rows, or 33 for one
-/// that needs two lines), so a row more of height never jumps either; where that floor holds the cover above the
-/// title's room, the title stays plain until the room comes. False (nothing drawn) where the cover is as tall as the
-/// Pane, and for a title the pixel font can't spell (letters it has none for, or so long the cover would come out
-/// under a third of the Pane's height): those keep the cover as tall as the Pane at every width.
-fn np_big(buf: &mut Buffer, r: Rect, item: &singularity_proto::Item, url: &str, app: &mut App, queue: bool, th: &Theme) -> bool {
-    let h = r.height;
-    // the smallest the cover gets: where the shrinking and the growing meet (from the Pane's height alone, so a title
-    // keeps or leaves this look at every width alike)
-    let low = |need: u16| (4 * h + 22).saturating_sub(need) / 4;
-    let need = (BIG_WORDS..=4 * h + 22).take_while(|&n| low(n) >= h / 3).find(|&n| np_title(&item.name, n, h).is_some());
-    let Some(need) = need.filter(|_| spelled(&item.name)) else { return false };
+/// How tall a big, wide Pane's cover is (#57), from the Pane's size alone (never the song's): as tall as the Pane
+/// where it turns wide (`2 × height + 24` columns), a row shorter every two columns from there down to
+/// [`big_floor`], then a row taller every two columns as the words keep [`BIG_WORDS`] columns, back to the Pane's
+/// height, where the old look takes over. So a column or a row more changes it by at most two rows.
+fn big_cover(w: u16, h: u16) -> u16 {
     let turn = 2 * h + 24;
-    let shrink = h.saturating_sub(r.width.saturating_sub(turn).div_ceil(2));
-    let grow = r.width.saturating_sub(2 + need) / 2;
-    // never shorter than a row under the height this title's look starts from: the cover may shrink a row more for
-    // every row of height past it, so a Pane a row taller never jumps to it either
-    let from = if np_title(&item.name, 4 * BIG_ONE_LINE + 22, BIG_ONE_LINE).is_some() { BIG_ONE_LINE } else { BIG_TWO_LINES };
-    let ch = shrink.max(grow).max(h.min(from - 1)).min(h);
-    if ch >= h {
+    let shrink = h.saturating_sub(w.saturating_sub(turn).div_ceil(2));
+    let grow = w.saturating_sub(2 + BIG_WORDS) / 2;
+    shrink.max(grow).max(big_floor(h)).min(h)
+}
+
+/// A big Pane (#57) where [`big_cover`] is shorter than the Pane: that cover, and beside it the title at the biggest
+/// scale of the pixel font that fits (up to two lines in a third of the Pane; plain bold text where none does or the
+/// font can't spell it), the artists, where it plays from and what's next; the two in the middle of the Pane's height,
+/// easing to the top where the cover grows back to the Pane's height. False (nothing drawn) where the cover is as tall
+/// as the Pane.
+fn np_big(buf: &mut Buffer, r: Rect, item: &singularity_proto::Item, url: &str, app: &mut App, queue: bool, th: &Theme) -> bool {
+    let ch = big_cover(r.width, r.height);
+    if ch >= r.height {
         return false;
     }
     let cw = ch * 2;
-    let iw = r.width - cw - 2;
-    // the words drawn aside first, to know the room they take
-    let area = Rect::new(0, 0, iw, r.height);
-    let mut words = Buffer::empty(area);
-    np_info(&mut words, area, r.height, item, app, queue, th);
-    let blank = ratatui::buffer::Cell::default();
-    let (mut ww, mut wh) = (0, 0);
-    for y in 0..r.height {
-        for x in 0..iw {
-            if words[(x, y)] != blank {
-                (ww, wh) = (ww.max(x + 1), wh.max(y + 1));
-            }
-        }
-    }
-    // in the middle, easing to the top left over the last BIG_EASE rows of the cover's growth (the words counted as wide as
-    // the room kept for them, so a title turning big beside a still-shrinking cover moves nothing)
-    let ease = |free: u16| (u32::from(free) * u32::from((r.height - ch).min(BIG_EASE)) / u32::from(2 * BIG_EASE)) as u16;
-    let x = r.x + ease(r.width - (cw + 2 + ww.max(need.min(iw))).min(r.width));
-    let y = r.y + ease(r.height - ch.max(wh));
-    crate::home::cover(buf, Rect::new(x, y, cw, ch), url, "♪", app, th);
-    // drawn in place (on the Pane's own background); all its rows fit, the block being no taller than the Pane
-    np_info(buf, Rect::new(x + cw + 2, y, iw, r.bottom() - y), r.height, item, app, queue, th);
+    let iw = r.width.saturating_sub(cw + 2);
+    let free = r.height - ch;
+    let y = r.y + (u32::from(free) * u32::from(free.min(BIG_EASE)) / u32::from(2 * BIG_EASE)) as u16;
+    crate::home::cover(buf, Rect::new(r.x, y, cw, ch), url, "♪", app, th);
+    let title = (1..=4u16).rev().find_map(|s| crate::ambient::pixel_fit(&item.name, iw, r.height / 3, s, 2).map(|l| (s, l))).filter(|_| spelled(&item.name));
+    np_info(buf, Rect::new(r.x + cw + 2, y, iw, r.bottom() - y), title, item, app, queue, th);
     true
 }
 
@@ -246,15 +233,16 @@ fn np_queue(app: &App) -> bool {
 }
 
 /// Now playing's words in `r`: the title (in the pixel font when there's room for it big), artists, where it plays
-/// from, then what's next (if `queue`) in the rows left. `room` is the height that decides the title's size.
+/// from, then what's next (if `queue`) in the rows left. `title`: the title's scale and lines in the pixel font (None:
+/// plain bold text).
 #[allow(clippy::too_many_arguments)]
-fn np_info(buf: &mut Buffer, r: Rect, room: u16, item: &singularity_proto::Item, app: &App, queue: bool, th: &Theme) {
+fn np_info(buf: &mut Buffer, r: Rect, title: Option<(u16, Vec<Vec<char>>)>, item: &singularity_proto::Item, app: &App, queue: bool, th: &Theme) {
     if r.width == 0 || r.height == 0 {
         return;
     }
     let bottom = r.bottom();
     let mut y = r.y;
-    match np_title(&item.name, r.width, room) {
+    match title {
         Some((s, lines)) => {
             for line in &lines {
                 crate::ambient::pixel_line(buf, r.x, y, r.width, line, s, 0, None, 0.0, th);
@@ -1294,8 +1282,8 @@ mod tests {
 
     #[test]
     fn a_big_now_playings_cover_grows_with_the_pane_and_never_jumps() {
-        // every wide Pane, short to big: one column more changes the cover by at most a row and moves it by at most
-        // three cells; one row more changes it by at most two rows (the strip under 24 rows meets the big look there)
+        // every wide Pane, short to big, and every song alike: one column or one row more changes the cover by at most
+        // two rows and moves it by at most two; the cover's size is the Pane's alone
         let th = Theme::singularity();
         let mut app = App::new(None);
         let at = |app: &mut App, w: u16, h: u16| {
@@ -1305,38 +1293,82 @@ mod tests {
             let (x, y) = c[0];
             (x, y, c.iter().map(|p| p.1).max().unwrap() + 1 - y)
         };
-        for name in ["Track 2", "Bohemian Rhapsody"] {
+        // (x, y, rows) of the cover at each (w, h)
+        type Grid = HashMap<(u16, u16), (u16, u16, u16)>;
+        let mut first: Option<Grid> = None;
+        for name in TITLES {
             app.playback.item = Some(singularity_proto::Item { name: name.into(), artists: vec!["Fake Artist".into()], ..Default::default() });
             let mut grid = HashMap::new();
-            for h in (4u16..=62).step_by(1) {
-                for w in (2 * h + 26)..(2 * h + 150) {
+            for h in 4u16..=62 {
+                for w in (2 * h + 26)..(2 * h + 100) {
                     grid.insert((w, h), at(&mut app, w, h));
                 }
             }
             for (&(w, h), &(x, y, ch)) in &grid {
-                if let Some(&(lx, ly, lch)) = grid.get(&(w - 1, h)) {
-                    assert!(ch.abs_diff(lch) <= 1 && x.abs_diff(lx) <= 3 && y.abs_diff(ly) <= 2, "{name} {w}×{h}: ({lx},{ly}) {lch} rows → ({x},{y}) {ch}");
-                }
-                if let Some(&(_, _, below)) = grid.get(&(w, h - 1)) {
-                    assert!(ch.abs_diff(below) <= 2, "{name} {w}×{h}: {below} rows a row shorter, {ch} now");
+                for (dw, dh) in [(1, 0), (0, 1)] {
+                    if let Some(&(lx, ly, lch)) = grid.get(&(w - dw, h - dh)) {
+                        assert!(ch.abs_diff(lch) <= 2 && x.abs_diff(lx) <= 2 && y.abs_diff(ly) <= 2, "{name} {w}×{h} (one less: {dw}, {dh}): ({lx},{ly}) {lch} rows → ({x},{y}) {ch}");
+                    }
                 }
             }
             for h in 4u16..=62 {
-                assert_eq!(grid[&(2 * h + 149, h)].2, h, "{name}, {h} rows: at last a cover as tall as the Pane");
+                assert_eq!(grid[&(2 * h + 99, h)].2, h, "{name}, {h} rows: at last a cover as tall as the Pane");
+            }
+            match &first {
+                None => first = Some(grid),
+                Some(f) => assert!(f.iter().all(|(k, v)| grid[k] == *v), "{name}: the cover moved with the song"),
             }
         }
     }
 
+    /// Titles of every kind: short, two words, long, very long, CJK, emoji.
+    const TITLES: [&str; 10] = [
+        "Track 2",
+        "Hey Jude",
+        "Mr Brightside",
+        "Bohemian Rhapsody",
+        "Smells Like Teen Spirit",
+        "The Less I Know The Better",
+        "Seven Nation Army Live At Somewhere",
+        "Supercalifragilisticexpialidocious",
+        "夜に駆ける",
+        "Fire 🔥",
+    ];
+
     #[test]
-    fn a_title_the_pixel_font_cant_spell_keeps_the_cover_as_tall_as_the_pane() {
+    fn the_full_screen_looks_as_before_for_every_song_and_the_big_one_spells_what_fits() {
         let th = Theme::singularity();
         let mut app = App::new(None);
-        for name in ["夜に駆ける", "Supercalifragilisticexpialidocious Antidisestablishmentarianism", "Track 2"] {
+        for name in TITLES {
             app.playback.item = Some(singularity_proto::Item { name: name.into(), artists: vec!["Fake Artist".into()], ..Default::default() });
-            let mut buf = Buffer::empty(Rect::new(0, 0, 118, 38));
-            nowplaying(&mut buf, Rect::new(0, 0, 118, 38), &mut app, &th);
-            let full = (0..38).all(|y| buf[(1, y)].bg == th.selection.color());
-            assert_eq!(full, name != "Track 2", "{name}");
+            // the full screen (178×47): the cover as tall as the Pane, the words beside it as they always were
+            let r = Rect::new(0, 0, 178, 47);
+            let mut got = Buffer::empty(r);
+            nowplaying(&mut got, r, &mut app, &th);
+            let mut want = Buffer::empty(r);
+            crate::home::cover(&mut want, Rect::new(1, 0, 94, 47), "", "♪", &mut app, &th);
+            let item = app.playback.item.clone().unwrap();
+            np_info(&mut want, Rect::new(97, 0, 79, 47), np_title(name, 79, 47), &item, &app, false, &th);
+            assert_eq!(got, want, "{name}");
+            // the sheet's big size (118×38): a 30-row cover for every song, the title in the pixel font where it fits
+            // and the font has its letters, else in plain bold text beside the cover's top
+            let r = Rect::new(0, 0, 118, 38);
+            let mut buf = Buffer::empty(r);
+            nowplaying(&mut buf, r, &mut app, &th);
+            let rows = (0..38).filter(|&y| buf[(1, y)].bg == th.selection.color()).count();
+            assert_eq!(rows, 30, "{name}");
+            let top = (0..38).find(|&y| buf[(1, y)].bg == th.selection.color()).unwrap();
+            let pixels = (63..118).any(|x| "█▀▄".contains(buf[(x, top)].symbol()) || "█▀▄".contains(buf[(x, top + 1)].symbol()));
+            let plain = (63..118).map(|x| buf[(x, top)].symbol().to_string()).collect::<String>();
+            // (54 columns beside the cover, up to two lines in a third of the Pane)
+            let fits = name.is_ascii() && (1..=4).any(|s| crate::ambient::pixel_fit(name, 54, 12, s, 2).is_some());
+            assert_eq!(fits, ["Track 2", "Hey Jude", "Mr Brightside", "Bohemian Rhapsody", "Smells Like Teen Spirit"].contains(&name), "{name}");
+            if fits {
+                assert!(pixels, "{name}: in the pixel font");
+            } else {
+                let first: String = name.chars().take(2).collect();
+                assert!(!pixels && plain.replace(" ", "").contains(&first.replace(" ", "")) && buf[(63, top)].modifier.contains(Modifier::BOLD), "{name}: plain bold: {plain}");
+            }
         }
     }
 
