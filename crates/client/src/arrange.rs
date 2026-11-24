@@ -11,8 +11,9 @@
 //! the palette's and the Pane menu's "Arrange", and Esc in a split's Widget picker. Done (or Esc) ends it, once Home
 //! has a Pane again.
 //!
-//! A drag only moves contents: while a Widget is held nothing on screen moves but a highlight on the Pane (or the
-//! Tray) under the pointer (at once, no dwell, saying what a release would do) and a chip with the Widget's name by
+//! A drag only moves contents. When a drag starts Arrange mode the Panes make room for the Tray once, as it starts
+//! (Q39); after that, while a Widget is held, nothing on screen moves but a highlight on the Pane (or the Tray) under
+//! the pointer (at once, no dwell, saying what a release would do) and a chip with the Widget's name by
 //! the pointer. The release drops there: on a Pane the two Widgets swap (or an empty Pane is filled); on the Tray the
 //! Widget waits there and its Pane is left empty; from the Tray onto a Pane it takes that Pane, whose Widget goes into
 //! the Tray in its place. On its own Pane, off the Panes, on Esc, or when the release was never heard, the drag ends
