@@ -1035,3 +1035,42 @@ fn a_new_design_is_drawn_at_once_and_the_focus_stays_on_its_widget() {
     let want = Node::classic().compute_shaped(a.pane_area(), a.cell_aspect()).rect_of(Widget::Home).unwrap();
     assert_eq!(pane(&a, Widget::Home), want, "the first frame is the new layout");
 }
+
+#[test]
+fn an_empty_pane_has_nothing_to_move() {
+    let mut a = app();
+    let (area, aspect) = (a.pane_area(), a.cell_aspect());
+    a.layout = a.layout.split(pid(&a, Widget::Queue), Side::Right, None, area, aspect).unwrap();
+    render(&mut a, W, H);
+    let empty = a.layout.panes().into_iter().find(|p| p.widget.is_none()).unwrap().id;
+    a.focus = Some(empty);
+    key(&mut a, KeyCode::Char('m'));
+    assert!(a.move_mode.is_none());
+    assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("nothing to move")), "{:?}", a.toast);
+    a.open_pane_menu(empty, None);
+    assert!(!a.menu().unwrap().items.iter().any(|(l, _)| l == "Move pane"));
+}
+
+/// Something opening on top mid-drag (a popup, the login code): the drag ends, so its chip isn't drawn over it.
+#[test]
+fn a_popup_opening_mid_drag_lets_the_widget_go() {
+    let mut a = app();
+    let (x, y) = title_spot(&a, Widget::Stream);
+    press(&mut a, x, y);
+    let q = centre(pane(&a, Widget::Queue));
+    drag(&mut a, q.0, q.1);
+    assert!(a.tile.as_ref().is_some_and(|t| t.live));
+    a.run(Action::Palette);
+    assert!(a.tile.is_none());
+    let shot = render(&mut a, W, H);
+    assert!(!shot.contains("⠿ stream") && !shot.contains("swap with"), "{shot}");
+    key(&mut a, KeyCode::Esc);
+    // the login code is a layer, not a popup: the next frame lets go
+    press(&mut a, x, y);
+    drag(&mut a, q.0, q.1);
+    assert!(a.tile.as_ref().is_some_and(|t| t.live));
+    a.hear(singularity_proto::Event::Catalogue(singularity_proto::CatalogueStatus::LoginPending { url: "u".into(), code: "ABCD".into() }));
+    let shot = render(&mut a, W, H);
+    assert!(a.tile.is_none() && !shot.contains("⠿ stream"));
+    release(&mut a, q.0, q.1);
+}

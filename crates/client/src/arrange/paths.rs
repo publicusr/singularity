@@ -197,7 +197,10 @@ impl Replay {
                 }
             }
             Event::FocusLost => self.a.pointer_gone(),
-            Event::Resize(..) => self.a.pointer_gone(),
+            Event::Resize(w, h) => {
+                self.a.pointer_gone();
+                self.a.window_resized(w, h);
+            }
             _ => {}
         }
         self.a.input_at = None;
@@ -643,10 +646,11 @@ fn a_resize_mid_drag_drops_on_a_pane_of_the_new_window() {
     });
     // resting on a spot inside both windows, then the window shrinks and it's let go at once: what drops is the Pane
     // under the pointer in the new window, never the one the old window had there
-    for (x, y) in [(20u16, 8u16), (40, 15), (60, 20), (80, 10), (30, 22), (85, 24)] {
-        for (what, r) in every_way(&format!("rest at {x},{y}, resized, let go"), |r, h| {
+    // (the release 20 ms after the resize, or in the same batch of input: before any frame is drawn at the new size)
+    for ((x, y), gap) in [(20u16, 8u16), (40, 15), (60, 20), (80, 10), (30, 22), (85, 24)].into_iter().flat_map(|p| [(p, 20.0), (p, 0.0)]) {
+        for (what, r) in every_way(&format!("rest at {x},{y}, resized, let go {gap} ms later"), |r, h| {
             let (tx, ty) = r.title(held(r));
-            h.press(tx, ty).glide(x as f64, y as f64, 200.0).rest(250.0).then(1.0, Ev::Drag(x, y)).then(5.0, Ev::Resize(100, 30)).then(20.0, Ev::Release(x, y));
+            h.press(tx, ty).glide(x as f64, y as f64, 200.0).rest(250.0).then(1.0, Ev::Drag(x, y)).then(5.0, Ev::Resize(100, 30)).then(gap, Ev::Release(x, y));
         }) {
             let me = pid(&r.start, held_in(&r.start));
             let (area, aspect) = (r.a.pane_area(), r.a.cell_aspect());

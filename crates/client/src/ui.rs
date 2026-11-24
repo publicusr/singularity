@@ -87,6 +87,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // too small for any layout: just a player (#47)
     if crate::mini::wanted(area) {
         app.overlays.clear();
+        app.tile_cancel();
+        if let Some(k) = app.kitty.as_mut() {
+            k.holes.clear();
+        }
         crate::mini::draw(f.buffer_mut(), area, app, &th);
         if let Some((msg, _)) = app.toast.clone()
             && area.height > 2
@@ -96,8 +100,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
     let [top, body, player, hints] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(3), Constraint::Length(1)]).areas(area);
-    // a held Widget: the Pane under the pointer is highlighted with a label, a chip follows the pointer (images
-    // under either step aside)
+    // a held Widget: the Pane under the pointer is highlighted with a label, a chip follows the pointer. Neither
+    // changes how anything under it is drawn (no step down a tier: that flickered): images are placed around them
+    // something drawn on top now (the login code, the wizard): a held Widget is let go, its chip would cover it
+    if app.modal().is_some() {
+        app.tile_cancel();
+    }
     if app.body != body {
         app.body = body;
         // a new window size moves every Pane: the one under a held Widget is found again
@@ -110,10 +118,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // Panes, the top first (D83)
     let layers = app.layers();
     let mut overlays: Vec<Rect> = layers.iter().filter_map(|&m| layer_rect(area, app, m)).collect();
-    overlays.extend(target.as_ref().and_then(|(r, l)| crate::arrange::label_rect(*r, l, chip.as_ref().map(|c| c.0))));
-    overlays.extend(chip.as_ref().map(|(r, _)| *r));
     overlays.extend(app.toast.as_ref().filter(|_| app.move_mode.is_none()).map(|(msg, _)| toast_rect(area, msg)));
     app.overlays = overlays;
+    let holes: Vec<Rect> = target.as_ref().and_then(|(r, l)| crate::arrange::label_rect(*r, l, chip.as_ref().map(|c| c.0))).into_iter().chain(chip.as_ref().map(|(r, _)| *r)).collect();
+    if let Some(k) = app.kitty.as_mut() {
+        k.holes = holes;
+    }
     top_bar(f, top, app, &th);
     panes(f, body, app, &th);
     if let Some((r, label)) = &target {
@@ -1661,6 +1671,68 @@ mod tests {
         // …and not one kitty takes for its default: pure black (its usual background) would let the covers through
         let bg = t.backend().buffer()[(pal.x + 2, pal.y + 1)].bg;
         assert!(bg != ratatui::style::Color::Reset && bg != app.theme.bg.color(), "{bg:?}");
+    }
+
+    /// #40 review: during a drag nothing but the target's frame, its label and the chip may change. Over covers on the
+    /// pixel tier (Ghostty: images over cell backgrounds) the chip and the label used to count as popups, so the covers
+    /// under them stepped down to half-blocks the moment they passed: flicker. Now every frame of a drag draws the same
+    /// cells everywhere else, and the images are cut around the chip and the label instead.
+    #[test]
+    fn a_drag_over_covers_changes_nothing_but_the_highlight_and_the_chip() {
+        let (mut app, _rx) = home_app();
+        app.kitty = Some(crate::gfx::Kitty::new(false));
+        app.cell_px = Some((10.0, 20.0));
+        let (w, h) = (200u16, 64u16);
+        let frame = |app: &mut App| {
+            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+            t.draw(|f| draw(f, app)).unwrap();
+            app.kitty.as_mut().unwrap().flush(&mut vec![]).unwrap();
+            t.backend().buffer().clone()
+        };
+        frame(&mut app);
+        let body = app.pane_area();
+        let c = app.layout.compute_shaped(body, app.cell_aspect());
+        let (q, home) = (c.rect_of(Widget::Queue).unwrap(), c.rect_of(Widget::Home).unwrap());
+        let mouse = |app: &mut App, kind, x, y| app.mouse(MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE });
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), q.x + 3, q.y);
+        // the cells a frame may change: the target's frame, its label and the chip
+        let marks = |app: &App| -> Vec<Rect> {
+            let Some((target, chip)) = app.drag_marks() else { return vec![] };
+            let chip_r = app.chip_rect(Rect::new(0, 0, w, h), &chip);
+            let mut v: Vec<Rect> = chip_r.into_iter().collect();
+            if let Some((id, label)) = target {
+                let r = app.layout.compute_shaped(body, app.cell_aspect()).rect(id).unwrap();
+                v.extend([Rect::new(r.x, r.y, r.width, 1), Rect::new(r.x, r.bottom() - 1, r.width, 1), Rect::new(r.x, r.y, 1, r.height), Rect::new(r.right() - 1, r.y, 1, r.height)]);
+                v.extend(crate::arrange::label_rect(r, &label, chip_r));
+            }
+            v
+        };
+        let mut frames: Vec<(Buffer, Vec<Rect>)> = vec![];
+        // across Home's covers, a cell at a time, and on into the library
+        let path = (0..40u16).map(|i| (home.x + 4 + i * 3, home.y + 6 + i / 3)).chain([(5, 20)]);
+        for (x, y) in path {
+            mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, y);
+            let buf = frame(&mut app);
+            if let Some((_, chip)) = app.drag_marks() {
+                let r = app.chip_rect(Rect::new(0, 0, w, h), &chip).unwrap();
+                assert!(app.kitty.as_ref().unwrap().holes.contains(&r), "images are cut around the chip");
+            }
+            frames.push((buf, marks(&app)));
+        }
+        let free = |x: u16, y: u16, ms: &[Rect]| !ms.iter().any(|r| x >= r.x && x < r.right() && y >= r.y && y < r.bottom());
+        for (n, pair) in frames.windows(2).enumerate() {
+            let ((a, ma), (b, mb)) = (&pair[0], &pair[1]);
+            for y in 0..h {
+                for x in 0..w {
+                    if free(x, y, ma) && free(x, y, mb) {
+                        let (p, q) = (&a[(x, y)], &b[(x, y)]);
+                        assert!(p.symbol() == q.symbol() && p.fg == q.fg && p.bg == q.bg, "frame {n}→{}: ({x}, {y}) changed from {p:?} to {q:?}", n + 1);
+                    }
+                }
+            }
+            assert!(!(0..h).any(|y| (0..w).any(|x| b[(x, y)].symbol() == "▀")), "no cover stepped down to half-blocks");
+        }
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 5, 20);
     }
 
     #[test]

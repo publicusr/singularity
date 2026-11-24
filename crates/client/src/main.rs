@@ -200,9 +200,10 @@ fn handle(app: &mut App, ev: TermEvent, at: Instant, focused: &mut bool, units: 
             app.pointer_gone();
         }
         TermEvent::FocusGained => *focused = true,
-        TermEvent::Resize(..) => {
+        TermEvent::Resize(w, h) => {
             // the borders move: the one under the pointer is found again on its next move
             app.pointer_gone();
+            app.window_resized(w, h);
             if *units != term::MouseUnits::Cells {
                 *units = term::MouseUnits::measure().unwrap_or(*units);
             }

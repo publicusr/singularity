@@ -120,9 +120,10 @@ class Term:
             crop = tuple(int(kv[k]) for k in "xywh") if all(k in kv for k in "xywh") else None
             self.placed[(int(kv["i"]), int(kv["p"]))] = (col, row, int(kv["c"]), int(kv["r"]), crop, int(kv.get("z", "0")))
         elif a == "d":
-            if kv.get("d") == "i":
+            if kv.get("d") == "i" and "p" in kv:
                 self.placed.pop((int(kv["i"]), int(kv["p"])), None)
-            elif kv.get("d") == "I":
+            elif kv.get("d") in ("I", "i"):
+                # without a placement id: all of that image's placements (d=i keeps the image, d=I frees it too)
                 for k in [k for k in self.placed if k[0] == int(kv["i"])]:
                     self.placed.pop(k)
             elif kv.get("d") in ("A", "a"):
@@ -1697,8 +1698,9 @@ def tiling(t, out, env):
     t.shot(f"{out}/00-start.png")
     # 1. onto the queue: the queue lit, "swap with queue", the chip by the pointer; released, the two swap
     qx, qy = t.find("\u250c queue")
-    pull("stream", (qx + 25, qy + 6), "01-swap-drag.png")
+    pull("stream", (qx + 25, qy + 6), "01-swap-drag.png", hold=True)
     print("mid-drag:", "label shown" if t.find("swap with queue") else "NO LABEL", "·", "chip shown" if t.find("\u283f stream") else "NO CHIP")
+    mouse(t, 0, qx + 25, qy + 6, release=True, wait=0.5)
     t.shot(f"{out}/02-swap-done-naming.png")
     # the first edit of a built-in Design asks what to call it
     t.send(b"\x7f" * 14, 0.2)

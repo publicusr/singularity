@@ -3016,6 +3016,8 @@ popup_data! {
 impl App {
     /// Open `p`, replacing the popup open (popups don't nest).
     pub(crate) fn open_popup(&mut self, p: Popup) {
+        // a Widget held meanwhile is let go: its chip would be drawn over the popup (#40 review)
+        self.tile_cancel();
         self.popup = Some(p);
     }
 

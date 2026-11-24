@@ -205,6 +205,14 @@ impl App {
         }
     }
 
+    /// The terminal took a new size (`w` × `h`): the Panes' area is known at once, so a release in the same batch of
+    /// input finds the Pane under it in the new window, not the old (#40 review).
+    pub fn window_resized(&mut self, w: u16, h: u16) {
+        // the top bar above, the player (3 rows) and the hints below: as `ui::draw` lays them out
+        self.body = Rect::new(0, 1, w, h.saturating_sub(5));
+        self.tile_resized();
+    }
+
     /// The window changed size while a Widget is held: the Panes moved under the pointer, so the one under it is found
     /// again (#21: a release dropped on a Pane of the old window).
     pub fn tile_resized(&mut self) {
