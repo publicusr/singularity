@@ -12,6 +12,13 @@
   to `GLOSSARY.md` immediately, and offer an ADR only for decisions that are hard to reverse,
   surprising, and a real trade-off.
 - `docs/SPEC.md` is the v1 spec; tickets are GitHub issues (`ready-for-agent`). Close them with `Closes #N` in commits.
+- Specs are built on an **integration branch** (D87: `d87`): helpers branch `d87-<name>` from it, PRs target it, and
+  `tools/integrate.sh <branch>` merges a reviewed one in (merge, `run-hidden tools/check.sh`, push). The spec's
+  planning docs (DESIGN-TREE row, ADR, glossary terms) land on the integration branch **before** its first build.
+  Issues close when the integration branch reaches `main`.
+- Helper briefs point at `docs/agents/helper-brief.md` (the rules every build agent follows); review briefs point at
+  `CODING_STANDARDS.md` (anything beyond the ticket is a finding for the owner; "nothing else changes" is checked on
+  the drawn buffer).
 - Spotify's platform rules change often. Re-verify facts in `docs/research/` that are more than ~3 months old before
   building on them.
 - Never commit secrets (Soloist API key, tokens).
