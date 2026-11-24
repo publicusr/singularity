@@ -261,7 +261,8 @@ fn the_library_queue_and_lyrics_only_trade_places() {
     key(&mut a, KeyCode::Char('w'));
     let list = rows(&a);
     assert!(!list.is_empty() && list.iter().all(|(_, on)| *on), "{list:?}");
-    assert!(render(&mut a).contains("stays on screen"));
+    let shot = render(&mut a);
+    assert!(shot.contains("stays on screen") && shot.contains("Esc cancel"), "{shot}");
     // picking one swaps: the queue is still on screen
     key(&mut a, KeyCode::Enter);
     assert!(a.layout.has(Widget::Queue));
@@ -304,4 +305,43 @@ fn the_key_is_in_the_help_and_free_of_clashes() {
     let mut a = app();
     a.run(Action::Help);
     assert!(render(&mut a).contains("replace the focused pane's widget"));
+}
+
+#[test]
+fn the_picker_closes_when_its_pane_goes() {
+    let mut a = app();
+    a.open_widget_picker(pid(&a, Widget::Fft));
+    render(&mut a);
+    // the Design comes back as it was built, without that Pane identity
+    let tree = a.layout.clone();
+    let gone = tree.without(pid(&a, Widget::Fft)).unwrap();
+    a.layout = gone;
+    let shot = render(&mut a);
+    assert!(a.modal().is_none(), "closed, not an empty picker");
+    assert!(!shot.contains("Choose a widget"));
+    // and a key meanwhile does nothing
+    a.layout = tree;
+    a.open_widget_picker(pid(&a, Widget::Fft));
+    a.layout = a.layout.without(pid(&a, Widget::Fft)).unwrap();
+    key(&mut a, KeyCode::Enter);
+    assert!(a.modal().is_none());
+}
+
+/// D87: a Replace or a swap changes only what the Panes show, never where they are. The gravity well still reshapes
+/// the columns when it moves (`compute_shaped`); #36 fixes that and un-ignores this.
+#[test]
+#[ignore = "until #36: moving the well reshapes columns"]
+fn a_replace_or_swap_never_changes_any_panes_rect() {
+    let rects = |a: &App| a.layout.compute_shaped(a.pane_area(), a.cell_aspect()).panes.iter().map(|(p, r)| (p.id, *r)).collect::<Vec<_>>();
+    for (target, pick) in [(Widget::Stream, Widget::Well), (Widget::Well, Widget::Starfield), (Widget::Fft, Widget::Karaoke), (Widget::Fft, Widget::Queue)] {
+        let mut a = app();
+        let before = rects(&a);
+        let target = pid(&a, target);
+        let tree = match a.layout.pane_of(pick) {
+            Some(from) => exchanged(&a.layout, target, from),
+            None => holding(&a.layout, target, Some(pick)),
+        };
+        a.layout = tree;
+        assert_eq!(rects(&a), before, "{pick} into {target:?}");
+    }
 }

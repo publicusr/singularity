@@ -201,7 +201,8 @@ fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
         Modal::Naming => naming_rect(area),
         Modal::Widgets => crate::arrange::widgets_rect(area, app.widget_pick()?),
         Modal::WidgetPicker => {
-            app.widget_picker()?;
+            // (its Pane gone: drawing it closes it)
+            app.widget_picker().filter(|p| app.layout.contains(p.target))?;
             crate::panemenu::rect(area, app)
         }
         Modal::Details => crate::playlists::details_rect(area),

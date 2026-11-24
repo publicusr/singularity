@@ -7,6 +7,12 @@
 //! nothing that wouldn't fit there.
 //!
 //! The picker names a Pane, not a Widget, so it can fill an empty one too (a split's new Pane, #39).
+//!
+//! Until #36: moving the gravity well (into another Pane, or replacing it in its own) reshapes the columns via
+//! `compute_shaped` (its shape nudge and its taller minimum), so a Replace or a swap involving it changes Pane sizes;
+//! D87 wants only the contents to change (the ignored test `a_replace_or_swap_never_changes_any_panes_rect`). And
+//! the picker lists only Widgets that would fit there, against ADR 0005's "every drop is allowed": a stop-gap until
+//! #36 gives each Widget its `needs W × H` line (#39 removes the filter).
 
 use crate::app::{App, Hit, Modal, Popup};
 use crate::layout::{Node, PaneId, Widget, is_hole};
@@ -90,7 +96,8 @@ impl App {
     }
 
     /// What Pane `target` could show instead of what it shows, unfiltered: the Widgets off screen it may take, then the
-    /// on-screen ones it may trade with, each only where the result fits.
+    /// on-screen ones it may trade with, each only where the result fits (a stop-gap until #36, against ADR 0005's
+    /// "every drop is allowed"; #39 removes it).
     pub fn choices_for(&self, target: PaneId) -> Vec<Choice> {
         let Some(here) = self.layout.get(target) else { return vec![] };
         let mine = here.widget;
@@ -114,14 +121,27 @@ impl App {
         off.chain(on).collect()
     }
 
-    /// Whether `tree` may replace the layout: it fits the window, or the layout doesn't either (a window too small for
+    /// (until #36) Whether `tree` may replace the layout: it fits the window, or the layout doesn't either (a window too small for
     /// the Design, which then shows the mini-player: a change can't make that worse).
     fn room_for(&self, tree: &Node) -> bool {
         self.fits(tree) || !self.fits(&self.layout)
     }
 
+    /// The picker's Pane went (a Design reloaded, a resize, an undo): the picker closes instead of offering Widgets
+    /// for nothing. True if it did.
+    pub fn picker_lost_its_pane(&mut self) -> bool {
+        let gone = self.widget_picker().is_some_and(|p| !self.layout.contains(p.target));
+        if gone {
+            self.close_if_open(Modal::WidgetPicker);
+        }
+        gone
+    }
+
     /// Pick row `i`: the Widget goes into the picker's Pane (from its own Pane, if it's on screen: they swap).
     pub fn widget_picked(&mut self, i: usize) {
+        if self.picker_lost_its_pane() {
+            return;
+        }
         let Some(c) = self.widget_choices().get(i).copied() else { return };
         let Some(p) = self.take_widget_picker() else { return };
         let tree = match c.from {
@@ -138,6 +158,9 @@ impl App {
 
     /// Keys in the Widget picker: typing filters, ↑↓ (and PgUp PgDn) move, Enter picks, Esc cancels.
     pub fn widget_picker_key(&mut self, k: KeyEvent) {
+        if self.picker_lost_its_pane() {
+            return;
+        }
         let n = self.widget_choices().len();
         let Some(p) = self.widget_picker_mut() else { return };
         match k.code {
@@ -183,6 +206,9 @@ pub fn rect(area: Rect, app: &App) -> Rect {
 
 /// The Widget picker, palette-style: what was typed, the Widgets, the hint.
 pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
+    if app.picker_lost_its_pane() {
+        return;
+    }
     let Some(p) = app.widget_picker() else { return };
     let (target, query, sel) = (p.target, p.query.clone(), p.sel);
     let rows = app.widget_choices();
@@ -227,7 +253,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     }
     let keeps = here.and_then(|h| h.widget).is_some_and(|w| CORE.contains(&w));
     let hint = match rows.get(sel) {
-        _ if keeps && query.is_empty() => "it stays on screen: pick one to trade places",
+        _ if keeps && query.is_empty() => "it stays on screen: pick one to swap · Esc cancel",
         Some(c) if c.from.is_some() => "type to filter · Enter swaps it here · Esc cancel",
         _ => "type to filter · Enter puts it here · Esc cancel",
     };
