@@ -14,7 +14,7 @@ BIN = os.environ.get("PTY_BIN") or f"{ROOT}/target/debug"
 WRAP = os.environ.get("PTY_WRAP", "").split()
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
 # the tiling scenario wants room for the whole Singularity layout
-if sys.argv[1:2] in (["tiling"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"], ["paneless"]):
+if sys.argv[1:2] in (["tiling"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"], ["paneless"], ["arrange"]):
     COLS, ROWS = int(os.environ.get("PTY_COLS", 160)), int(os.environ.get("PTY_ROWS", 48))
 # the wheel everywhere: short Panes, so everything holds more than fits
 if sys.argv[1:2] == ["wheel-all"]:
@@ -2051,6 +2051,75 @@ def tiling(t, out, env):
     t.send(b"q", 0.5)
 
 
+def arrange(t, out):
+    """D87, #41: an arrange session. stream's title dragged onto the Tray (shot mid-drag, the Tray lit), dropped
+    (its Pane left empty, the Tray, the legend, Done, each Pane's ⊞ and ×); the queue split with its ⊞ and the picker
+    left with Esc (an empty Pane); stream dragged from the Tray into it; Home set aside (Done says why it can't) and
+    put back; Done asks for the name (kept unnamed with Esc), and the app looks as before. Prints what each step left.
+    160×48, cell tier, an empty output folder."""
+    t.pump(1.0)
+    t.send(b" ", 0.5)
+    tray_y = ROWS - 3
+
+    def title_at(title):
+        x, y = t.find("┌ " + title)
+        return x + 3, y
+
+    def drag(frm, to, shot=None):
+        (x, y), (tx, ty) = frm, to
+        mouse(t, 0, x, y)
+        mouse(t, 32, x + 3, max(1, y - 2), wait=0.15)
+        mouse(t, 32, tx, ty, wait=0.4)
+        if shot:
+            t.shot(f"{out}/{shot}")
+        mouse(t, 0, tx, ty, release=True, wait=0.6)
+
+    def on_row(s, y, after=0):
+        x = t.screen.display[y].find(s, after)
+        return (x, y) if x >= 0 else None
+
+    def legend():
+        return t.screen.display[ROWS - 1].strip()
+
+    t.shot(f"{out}/00-start.png")
+    # 1. stream's title onto the Tray: the mode is on while it's held, the Tray lit
+    drag(title_at("stream"), (COLS // 2, tray_y), shot="01-over-the-tray.png")
+    t.shot(f"{out}/02-in-the-tray.png")
+    print("in the Tray:", bool(on_row("⠿ stream", tray_y)), "· legend:", legend())
+    # 2. the queue's ⊞: a new empty Pane and the picker; Esc leaves it empty
+    qx, qy = t.find("┌ queue")
+    x, _ = on_row("⊞", qy, qx)
+    mouse(t, 0, x, qy); mouse(t, 0, x, qy, release=True, wait=0.6)
+    t.shot(f"{out}/03-split-picker.png")
+    t.send(b"\x1b", 0.6)
+    t.shot(f"{out}/04-empty-pane.png")
+    # 3. stream from the Tray into the new empty Pane (beside the queue)
+    ex, ey = next((line.find("empty", qx + 20), y) for y, line in enumerate(t.screen.display) if y > qy and line.find("empty", qx + 20) >= 0)
+    sx, _ = on_row("⠿ stream", tray_y)
+    drag((sx + 3, tray_y), (ex + 2, ey), shot="05-from-the-tray.png")
+    t.shot(f"{out}/06-filled.png")
+    # 4. Home into the Tray: Done is unavailable and says why; then back into its empty Pane
+    hx, hy = t.find("┌ home") or t.find("┌ ")
+    drag((hx + 3, hy), (COLS // 2, tray_y))
+    t.shot(f"{out}/07-home-in-the-tray.png")
+    print("Home set aside · legend:", legend())
+    t.send(b"\x1b", 0.4)
+    print("Esc with Home in the Tray keeps arranging:", "ARRANGE" in legend())
+    ex, ey = next((line.find("empty"), y) for y, line in enumerate(t.screen.display) if "empty" in line and y < tray_y - 1)
+    hx, _ = on_row("⠿ home", tray_y)
+    drag((hx + 3, tray_y), (ex + 2, ey))
+    t.shot(f"{out}/08-home-back.png")
+    # 5. Done: the name prompt (something changed); Esc keeps it as "Singularity (edited)"
+    dx, _ = on_row(" Done ", ROWS - 1)
+    mouse(t, 0, dx + 2, ROWS - 1); mouse(t, 0, dx + 2, ROWS - 1, release=True, wait=0.6)
+    t.shot(f"{out}/09-done-asks.png")
+    print("Done asks for a name:", bool(t.find("Keep your changes as a design")))
+    t.send(b"\x1b", 0.8)
+    t.shot(f"{out}/10-after.png")
+    print("after Done: no Tray:", not t.find(" Tray ") and "ARRANGE" not in legend(), "· bottom:", legend()[:60])
+    t.send(b"q", 0.5)
+
+
 def pane_menu(t, out):
     """D87, #37: the Pane menu and the Widget picker. A right-click on a title (Replace widget… first), the picker
     (Widgets not on screen, then the on-screen ones dimmed below a line), typing to filter, a replace; a right-click on
@@ -2539,6 +2608,8 @@ def main():
             return tiling(t, out, env)
         if scenario == "paneless":
             return paneless(t, out)
+        if scenario == "arrange":
+            return arrange(t, out)
         if scenario == "pane-menu":
             return pane_menu(t, out)
         if scenario == "tiling-fast":
