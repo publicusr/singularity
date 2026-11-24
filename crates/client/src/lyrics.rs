@@ -464,6 +464,8 @@ fn draw_big(r: Rect, app: &mut App, th: &Theme, f: &Fit, b: &BigFit, (cw, ch): (
     // a settled view shows only whole rows; one gliding, the rows cut off at its edges too
     let settled = top.fract() == 0.0;
     let first = (off / row).floor() as usize;
+    // the view's top row: settled, `top` itself (the row before it can share its first cell, but isn't shown)
+    let top_row = if settled { top as usize } else { first };
     // the block (the timestamps and the song's widest row) moved toward the middle, in whole cells
     let column = (b.text_x + b.text_w) as f64;
     let block = (b.text_x + cache.widest + b.px * 0.15) as f64;
@@ -485,7 +487,7 @@ fn draw_big(r: Rect, app: &mut App, th: &Theme, f: &Fit, b: &BigFit, (cw, ch): (
             continue;
         }
         // (as the cells do: the tail of a line that starts above the view isn't shown)
-        if lyr.synced && cache.starts[i] < first && now != Some(i) {
+        if lyr.synced && cache.starts[i] < top_row && now != Some(i) {
             continue;
         }
         let (rgb, bold) = match now {
@@ -776,6 +778,40 @@ pub(crate) mod tests {
         // a small Pane: the cells, as before
         let (rows, out) = frame(&mut app, 72, 27);
         assert!(rows.iter().any(|r| r.contains("[01:40] Light bends")) && placements(&out).is_empty());
+    }
+
+    /// As in the cells (the 2026-11-05 audit): the tail of a line that starts above the view never shows alone on the
+    /// top row. Rows a step taller than a cell put the view's top inside a cell, which once let such a tail through.
+    #[test]
+    fn a_settled_big_view_never_starts_with_a_lines_tail() {
+        use singularity_proto::Lyrics;
+        let mut app = pixel_app(60, 0);
+        let long = "Every line a slow orbit and the long ones fold over onto the next row and the one after that when the Pane is not wide enough to hold them whole";
+        let lines = (0..60u64).map(|i| LyricLine { start_ms: i * 4_000, text: if i % 2 == 0 { format!("{i} {long}") } else { format!("line {i}") }, ..Default::default() }).collect();
+        app.playback.item.as_mut().unwrap().uri = "spotify:track:w".into();
+        app.lyrics_event(Lyrics { uri: "spotify:track:w".into(), synced: true, lines, source: "fake".into(), ..Default::default() });
+        for (w, h) in [(108u16, 28u16), (116, 36), (128, 38), (140, 44)] {
+            for line in 0..60u64 {
+                app.playback.position_ms = line * 4_000 + 100;
+                // settled: two frames with the glide's time long past
+                for _ in 0..2 {
+                    app.lyrics.lyrics_view().unwrap().1.at = None;
+                    let _ = frame(&mut app, w, h);
+                }
+                let (cells, _) = frame(&mut app, w, h);
+                assert!(!cells.iter().any(|r| r.contains("[0")), "{w}x{h}: big text");
+                let (lyr, cache) = app.lyrics.lyrics_view().unwrap();
+                let wraps = cache.ends.iter().zip(&cache.starts).any(|(e, s)| e - s > 1);
+                assert!(wraps, "{w}x{h}: the long lines wrap in big text");
+                // every line shown shows all its rows (the current one may be taller than the view)
+                let mut shown: Vec<(u16, u64)> = app.hits.iter().filter_map(|(r, h)| if let Hit::Lyric(ms) = h { Some((r.y, *ms)) } else { None }).collect();
+                shown.sort();
+                let top = shown[0].1;
+                let i = lyr.lines.iter().position(|l| l.start_ms == top).unwrap();
+                let rows = shown.iter().filter(|s| s.1 == top).count();
+                assert!(rows == cache.ends[i] - cache.starts[i] || i as u64 == line, "{w}x{h} at line {line}: line {i} starts the view with {rows} of its {} rows", cache.ends[i] - cache.starts[i]);
+            }
+        }
     }
 
     #[test]

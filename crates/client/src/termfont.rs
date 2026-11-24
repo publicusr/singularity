@@ -4,8 +4,9 @@
 //!
 //! Which family: `SINGULARITY_BIG_FONT` when set, else the terminal's own setting (Ghostty's first `font-family`, or
 //! in Ghostty with none set its built-in JetBrains Mono, as installed or as a Nerd Font build; kitty's `font_family`),
-//! else the system's monospace (`fc-match monospace`, where fontconfig is), else a few common monospace families. The face files come from the system font
-//! folders (`fontdb`); a family that isn't installed is skipped. None found: big text keeps the bundled font.
+//! else the system's monospace (`fc-match monospace`, where fontconfig is), else a few common monospace families.
+//! The face files come from the system font folders (`fontdb`); a family that isn't installed is skipped. None
+//! found: big text keeps the bundled font.
 
 use std::path::{Path, PathBuf};
 

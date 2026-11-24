@@ -3168,9 +3168,9 @@ mod tests {
     }
 
     /// The owner's report (2026-11-05): a tall Pane put a blank row between lyric lines, which read as each line split
-    /// in two, and a 72-column one centred a narrow column. Lines follow each other row by row, from the left edge up
-    /// to a big Pane; a big one (120 columns and more, #53: "centre it so a large Pane looks balanced") holds them as a
-    /// block in its middle, still `[mm:ss] text` like a log.
+    /// in two, and a wide one centred a narrow column. Lines follow each other row by row from the left edge.
+    /// The exception since #53 (the owner's contact sheet marks, "centre it so a large Pane looks balanced"): a big Pane
+    /// (120 columns and more) holds them as a block in its middle, still row by row, `[mm:ss] text` like a log.
     #[test]
     fn lyric_lines_follow_each_other_from_the_left_edge_and_a_big_pane_centres_them() {
         use singularity_proto::{LyricLine, Lyrics};
