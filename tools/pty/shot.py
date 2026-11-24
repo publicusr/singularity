@@ -2376,6 +2376,8 @@ def main():
                SINGULARITY_NO_KEYRING="1", SINGULARITY_NOWPLAYING="off")
     for k in ("KITTY_WINDOW_ID", "TERM_PROGRAM", "GHOSTTY_RESOURCES_DIR", "TMUX"):
         env.pop(k, None)
+    # big text in the font these shots draw the cells with, as a terminal's own font (#53)
+    env.setdefault("SINGULARITY_BIG_FONT", FONT.getname()[0])
     if scenario == "pixel":
         env["SINGULARITY_PIXEL_MOUSE"] = "1"
     cat = ["--no-catalogue"]
