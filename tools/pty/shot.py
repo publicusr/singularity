@@ -2060,8 +2060,8 @@ def arrange(t, out):
     """D87, #41: an arrange session. stream's title dragged onto the Tray (shot mid-drag, the Tray lit), dropped
     (its Pane left empty, the Tray, the legend, Done, each Pane's ⊞ and ×); the queue split with its ⊞ and the picker
     left with Esc (an empty Pane); stream dragged from the Tray into it; Home set aside (Done says why it can't) and
-    put back; Done asks for the name (kept unnamed with Esc), and the app looks as before. Prints what each step left.
-    160×48, cell tier, an empty output folder."""
+    put back; Done asks for the name (kept unnamed with Esc), and the app looks as before. The player bar stays over
+    the Tray while arranging (#69). Prints what each step left. 160×48, cell tier, an empty output folder."""
     t.pump(1.0)
     t.send(b" ", 0.5)
     tray_y = ROWS - 3
@@ -2091,6 +2091,8 @@ def arrange(t, out):
     drag(title_at("stream"), (COLS // 2, tray_y), shot="01-over-the-tray.png")
     t.shot(f"{out}/02-in-the-tray.png")
     print("in the Tray:", bool(on_row("⠿ stream", tray_y)), "· legend:", legend())
+    # (#69, Q39: the player bar stays, over the Tray)
+    print("player bar over the Tray:", bool(on_row("▶|", tray_y - 3)))
     # 2. the queue's ⊞: a new empty Pane and the picker; Esc leaves it empty
     qx, qy = t.find("┌ queue")
     x, _ = on_row("⊞", qy, qx)

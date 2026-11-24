@@ -716,6 +716,8 @@ pub struct App {
     /// clicks are the player's)
     pub mini: bool,
     pub body: Rect,
+    /// the whole window, as last drawn or resized to (the Panes' area follows it and Arrange mode)
+    pub window: Rect,
     /// the layout as it was when a divider was grabbed (a changed one counts as an edit on release)
     pub(crate) divider_from: Option<crate::arrangement::Arrangement>,
     /// the divider whose grip is under the pointer (lit, and a resize pointer where the terminal has one)
@@ -834,6 +836,7 @@ impl App {
             arranging: None,
             mini: false,
             body: Rect::default(),
+            window: Rect::default(),
             divider_from: None,
             grip_hover: None,
             pointer_shape_sent: "",
@@ -2643,7 +2646,11 @@ impl App {
         let coarse = m.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT);
         // the one gate: while a popup is open the mouse belongs to it, and nothing behind it ever sees an event
         // (decided from state, not from last frame's hit rectangles, which a burst or a key in the same batch outdates)
-        if let Some(modal) = self.modal() {
+        // (Arrange mode leaves the player bar as it is, Q39: a press or the wheel on it, and a scrub begun there, are
+        // the bar's own, as outside it)
+        let bar = self.player_rect();
+        let on_bar = self.scrub.is_some() || m.column >= bar.x && m.column < bar.right() && m.row >= bar.y && m.row < bar.bottom();
+        if let Some(modal) = self.modal().filter(|&md| !(md == Modal::Arrange && on_bar && self.tile.is_none() && self.drag.is_none())) {
             return self.modal_pointer(modal, m, coarse);
         }
         // a song held in the queue popup, which has closed (another popup took its place, a key closed it): the drag
@@ -2985,8 +2992,8 @@ modals! {
     Health,
     Menu,
     Help,
-    /// Arrange mode (D87): the Panes take title drags, dividers and their split and close buttons; the Tray, the
-    /// legend and Done sit where the player and the hints were
+    /// Arrange mode (D87): the Panes take title drags, dividers and their split and close buttons; the player bar
+    /// stays as it is, the Tray sits under it, the legend and Done where the hints were (Q39)
     Arrange,
     /// the pairing popup: not a keyboard modal, but it covers the screen and so takes the wheel
     Login,

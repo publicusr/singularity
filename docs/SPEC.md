@@ -288,13 +288,15 @@ audio, and looks spectacular.
     leaves the layout be, and a release drops where the pointer is; a split is offered only where both halves stay
     comfortable (≥ 24 columns or ≥ 8 rows each): small Panes are swap targets, and ⇧arrows say so in the bar.
     **Rethought (D87, ADR 0005, #40):** a drag only moves contents: dropped on another Pane the two Widgets swap (an
-    empty Pane is filled); while it is held nothing moves but a highlight on the Pane under the pointer (at once,
+    empty Pane is filled); when a drag starts Arrange mode the Panes make room for the Tray once, as it starts
+    (Q39, #69), and after that, while it is held, nothing moves but a highlight on the Pane under the pointer (at once,
     "swap with …" / "put here") and a chip with the Widget's name by the pointer. The edge and screen-edge zones, the
     live reflow, the dwell, the floating Pane and its springs, and Move mode's ⇧arrows are gone; every drop is
     allowed. All edits go through Arrangement (the floor plan, which Widget is in which Pane, and the Tray).
     **Arrange mode and the Tray (D87, #41):** a title drag, Ctrl+K → Arrange, the Pane menu's Arrange (it replaced
     Move pane) or Esc in a split's picker start Arrange mode; Done or Esc end it once Home has a Pane ("Home still needs
-    a Pane"). The Tray takes the player's rows (no Pane moves), each Pane gets split and close buttons, a one-line
+    a Pane"). The Tray sits under the player bar, which stays usable (Q39, #69: the Panes' area is the Tray's height
+    shorter while arranging, the floor plan's proportions and the saved Design unchanged), each Pane gets split and close buttons, a one-line
     legend sits at the bottom. A Widget dropped on the Tray waits there (its Pane stays empty); from the Tray onto a
     Pane it takes that Pane (its Widget goes into the Tray); `×` closes into the Tray; `×` on a Tray Widget and Clear
     Tray remove Widgets (never Home). The Tray is saved per Design and covered by undo. **Naming (Q33, replaces the
