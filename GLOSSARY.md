@@ -314,7 +314,7 @@ D66's edge and screen-edge zones are gone).
 _Avoid_: target, dock
 
 **Move mode**:
-The keyboard way to tile; being folded into Arrange mode's keys (D87, #43).
+The old keyboard way to tile (D66); gone, folded into Arrange mode's keys (D87, #43): `m` enters Arrange mode.
 _Avoid_: edit mode, layout mode
 
 **Design direction**:

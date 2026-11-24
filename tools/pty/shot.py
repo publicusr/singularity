@@ -14,7 +14,7 @@ BIN = os.environ.get("PTY_BIN") or f"{ROOT}/target/debug"
 WRAP = os.environ.get("PTY_WRAP", "").split()
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
 # the tiling scenario wants room for the whole Singularity layout
-if sys.argv[1:2] in (["tiling"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"], ["paneless"], ["arrange"]):
+if sys.argv[1:2] in (["tiling"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"], ["paneless"], ["arrange"], ["arrange-keys"]):
     COLS, ROWS = int(os.environ.get("PTY_COLS", 160)), int(os.environ.get("PTY_ROWS", 48))
 # the wheel everywhere: short Panes, so everything holds more than fits
 if sys.argv[1:2] == ["wheel-all"]:
@@ -1956,7 +1956,8 @@ def tiling(t, out, env):
     nothing has moved, the Pane under the pointer is lit with "swap with …" and the Widget's chip follows the pointer;
     another after the release: the two Widgets swapped, every outline where it was), the naming prompt on the first
     edit, a release on its own Pane and over the top bar (nothing happens), Esc cancelling a drag, a close with the x,
-    a split from the right-click menu with the Widget list, and Move mode (arrows swap, + - size). Run it at
+    a split from the right-click menu with the Widget list, and Arrange mode's keys (Enter picks up, ↑ aims, Enter swaps,
+    + - size). Run it at
     PTY_COLS=160 PTY_ROWS=48 (the default here)."""
     t.pump(1.0)
     t.send(b" ", 0.5)
@@ -2030,14 +2031,18 @@ def tiling(t, out, env):
     t.send(b"\x1b[B", 0.2)
     t.send(b"\r", 0.6)
     t.shot(f"{out}/15-split-done.png")
-    # 7. Move mode on the focused Pane: arrows swap its Widget with the neighbour's, + - size its Pane
+    # 7. Arrange mode's keys on the focused Pane: Enter picks its Widget up, ↑ aims, Enter swaps; + + grow its Pane;
+    # Esc is Done (its name prompt kept unnamed with Esc)
     t.send(b"m", 0.4)
-    t.shot(f"{out}/16-move-mode.png")
+    t.send(b"\r", 0.3)
     t.send(b"\x1b[A", 0.4)
-    t.shot(f"{out}/17-move-swapped-up.png")
-    t.send(b"+", 0.3); t.send(b"+", 0.3)
-    t.shot(f"{out}/18-move-grown.png")
+    t.shot(f"{out}/16-picked-up-aimed.png")
     t.send(b"\r", 0.4)
+    t.shot(f"{out}/17-swapped-up.png")
+    t.send(b"+", 0.3); t.send(b"+", 0.3)
+    t.shot(f"{out}/18-grown.png")
+    t.send(b"\x1b", 0.5)
+    t.send(b"\x1b", 0.5)
     # 8. the design list has your design, and the file is on disk
     t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
     t.shot(f"{out}/19-picker.png")
@@ -2116,6 +2121,70 @@ def arrange(t, out):
     print("Done asks for a name:", bool(t.find("Keep your changes as a design")))
     t.send(b"\x1b", 0.8)
     t.shot(f"{out}/10-after.png")
+    print("after Done: no Tray:", not t.find(" Tray ") and "ARRANGE" not in legend(), "· bottom:", legend()[:60])
+    t.send(b"q", 0.5)
+
+
+def arrange_keys(t, out):
+    """D87, #43: Arrange mode from the keyboard alone. `m` and the legend; arrows move the focus; Enter picks the
+    queue up (its Pane lit, the chip), ↑ aims at Home ("swap with …"), Enter swaps; Esc puts a pick-up back; `t` sets
+    the focused Widget aside in the Tray; Home picked up and aimed at that empty Pane ("put here"); `s` (the legend
+    waits for the arrow) then → splits (the picker; Esc leaves the new Pane empty); `x` closes it; `-` `+` move a line;
+    Esc is Done (the name prompt; Esc keeps it unnamed) and the app looks as before. Prints what each step left.
+    160×48, cell tier, an empty output folder."""
+    t.pump(1.0)
+    t.send(b" ", 0.5)
+    UP, DOWN, LEFT, RIGHT = b"\x1b[A", b"\x1b[B", b"\x1b[D", b"\x1b[C"
+
+    def legend():
+        return t.screen.display[ROWS - 1].strip()
+
+    def at(title):
+        return t.find("┌ " + title)
+
+    def step(name, keys, wait=0.4):
+        for k in keys:
+            t.send(k, wait)
+        t.shot(f"{out}/{name}.png")
+
+    t.shot(f"{out}/00-start.png")
+    before = list(t.screen.display)
+    step("01-arrange-mode", [b"m"])
+    print("legend:", legend())
+    # 1. the focus: from Home down to the queue
+    step("02-focus-down", [DOWN])
+    # 2. the queue picked up, aimed at Home above it, swapped
+    q, h = at("queue"), at("home")
+    step("03-picked-up", [b"\r"])
+    print("picked up: chip", bool(t.find("⠿ queue")), "· legend:", legend())
+    step("04-aimed-up", [UP])
+    print("aimed: label", bool(t.find("swap with home")))
+    step("05-dropped", [b"\r"])
+    print("swapped:", at("queue") == h and at("home") == q)
+    # 3. picked up again and put back with Esc: still arranging
+    step("06-esc-put-back", [b"\r", DOWN, b"\x1b"])
+    print("Esc put it back:", at("queue") == h, "· still arranging:", "ARRANGE" in legend())
+    # 4. the focus down to Home (where the queue was), → to its neighbour, which `t` sets aside in the Tray
+    step("07-focus-home", [DOWN])
+    step("08-t-to-tray", [RIGHT, b"t"])
+    print("after t, the Tray row:", t.screen.display[ROWS - 3].strip()[:100])
+    # 5. Home picked up, aimed at the empty Pane, "put here", then Esc
+    step("09-home-aimed-at-empty", [LEFT, b"\r", RIGHT])
+    print("put here:", bool(t.find("put here")))
+    step("10-esc", [b"\x1b"])
+    # 6. s waits for the arrow (the legend says so); → splits: the picker; Esc leaves the new Pane empty
+    step("11-s-waits", [b"s"])
+    print("after s, legend:", legend())
+    step("12-split-picker", [RIGHT], wait=0.6)
+    step("13-split-empty", [b"\x1b"], wait=0.6)
+    # 7. x closes the focused (new, empty) Pane; - + move Home's line
+    step("14-x-closed", [b"x"])
+    step("15-shrunk", [b"-", b"-"])
+    step("16-grown", [b"+", b"+"])
+    # 8. Esc is Done: the name prompt (something changed); Esc keeps it unnamed, and the app looks as before
+    step("17-done-asks", [b"\x1b"], wait=0.6)
+    print("Done asks for a name:", bool(t.find("Keep your changes as a design")))
+    step("18-after", [b"\x1b"], wait=0.8)
     print("after Done: no Tray:", not t.find(" Tray ") and "ARRANGE" not in legend(), "· bottom:", legend()[:60])
     t.send(b"q", 0.5)
 
@@ -2612,6 +2681,8 @@ def main():
             return paneless(t, out)
         if scenario == "arrange":
             return arrange(t, out)
+        if scenario == "arrange-keys":
+            return arrange_keys(t, out)
         if scenario == "pane-menu":
             return pane_menu(t, out)
         if scenario == "tiling-fast":

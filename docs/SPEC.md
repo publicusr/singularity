@@ -300,7 +300,10 @@ audio, and looks spectacular.
     Tray remove Widgets (never Home). The Tray is saved per Design and covered by undo. **Naming (Q33, replaces the
     first-edit prompt above):** an edit never asks: a built-in Design's edit is kept at once as "<Design> (edited)"
     (the bar says "Kept as …" outside Arrange mode); Done asks for a name only if something changed while arranging;
-    Save design as… names one any time.
+    Save design as… names one any time. **The keyboard in Arrange mode (D87, #43, replaces Move mode):** `m` enters
+    Arrange mode; arrows move the focus between Panes, Enter picks up the focused Widget (the same lit Pane and chip
+    as the mouse), arrows aim, Enter drops (swap, or fill an empty Pane), Esc puts it back; `t` to the Tray, `s` then
+    an arrow splits that way, `x` closes, `+`/`-` move the focused Pane's line, Esc with nothing picked up is Done.
 86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready. Started 2026-10-19 (D48),
     tickets #63–#70, parity rule D49; the light librespot Engine on both OSes (D52, #70).
 

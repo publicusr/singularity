@@ -89,7 +89,6 @@ pub enum Action {
     SplitUp,
     SplitDown,
     ClosePane,
-    MovePane,
     Arrange,
     ResetLayout,
     UndoLayout,
@@ -100,7 +99,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 65] = [
+    pub const ALL: [Action; 64] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -158,7 +157,6 @@ impl Action {
         Action::SplitUp,
         Action::SplitDown,
         Action::ClosePane,
-        Action::MovePane,
         Action::Arrange,
         Action::ResetLayout,
         Action::UndoLayout,
@@ -226,7 +224,6 @@ impl Action {
             Action::SplitUp => "Split up",
             Action::SplitDown => "Split down",
             Action::ClosePane => "Close pane",
-            Action::MovePane => "Move pane",
             Action::Arrange => "Arrange",
             Action::ResetLayout => "Reset design",
             Action::UndoLayout => "Undo layout",
@@ -249,7 +246,6 @@ impl Action {
             Action::SplitUp => "tile add pane widget above",
             Action::SplitDown => "tile add pane widget below",
             Action::ClosePane => "tile remove delete widget",
-            Action::MovePane => "tile arrange swap drag layout keyboard",
             Action::Arrange => "tray tile move swap drag layout split close pane widget",
             Action::ResetLayout => "layout tiling undo original default",
             Action::UndoLayout => "tiling pane change back revert move drop close split",
@@ -341,7 +337,6 @@ impl Action {
             Action::SplitUp => "split_up",
             Action::SplitDown => "split_down",
             Action::ClosePane => "close_pane",
-            Action::MovePane => "move_pane",
             Action::Arrange => "arrange",
             Action::ResetLayout => "reset_layout",
             Action::UndoLayout => "undo_layout",
@@ -712,10 +707,8 @@ pub struct App {
     /// the saved layout on screen (its file name) and the ones there are (#19)
     pub layout_name: Option<String>,
     pub saved_layouts: Vec<crate::layouts::Saved>,
-    /// free tiling (D66): a Pane being dragged by its title, the Pane in Move mode, and the area the Panes were last
-    /// drawn in
+    /// free tiling (D66): a Widget held by its Pane's title or picked up with Enter in Arrange mode
     pub tile: Option<crate::arrange::TileDrag>,
-    pub move_mode: Option<PaneId>,
     /// Arrange mode (D87), while it is on
     pub arranging: Option<crate::arrange::Arranging>,
     /// the window is too small for the Panes: the mini player shows, and Arrange mode waits behind it (its keys and
@@ -837,7 +830,6 @@ impl App {
             layout_name: None,
             saved_layouts: vec![],
             tile: None,
-            move_mode: None,
             arranging: None,
             mini: false,
             body: Rect::default(),
@@ -1259,7 +1251,6 @@ impl App {
                     self.close_pane(p);
                 }
             }
-            Action::MovePane => self.start_move(),
             Action::Arrange => self.enter_arrange(),
             Action::ResetLayout => self.reset_design(),
             Action::UndoLayout => self.undo_layout(),
@@ -1338,10 +1329,11 @@ impl App {
                 return;
             }
             // (Arrange mode: its keys come below, after a held Widget's Esc and the shortcuts that work everywhere)
-            Some(Modal::Login | Modal::Move | Modal::Arrange) | None => {}
+            Some(Modal::Login | Modal::Arrange) | None => {}
         }
-        // a Pane being dragged: Esc puts it back, nothing else gets through
-        if self.tile.is_some() {
+        // a Pane being dragged: Esc puts it back, nothing else gets through (one picked up with Enter is Arrange
+        // mode's, below)
+        if self.tile.as_ref().is_some_and(|t| t.aim.is_none() || self.mini) {
             if k.code == KeyCode::Esc {
                 self.tile_cancel();
             }
@@ -1361,9 +1353,6 @@ impl App {
             && let Some(a) = self.keymap.action(k)
         {
             return self.run(a);
-        }
-        if self.move_mode.is_some() {
-            return self.move_key(k);
         }
         if self.arranging.is_some() && !self.mini {
             return self.arrange_key(k);
@@ -2467,9 +2456,10 @@ impl App {
         self.config.visuals.motion_fps.clamp(30, 240) as u64
     }
 
-    /// Whether something on screen is moving with the pointer or on its way somewhere.
+    /// Whether something on screen is moving with the pointer or on its way somewhere (a Widget picked up with Enter
+    /// moves with the keys only).
     pub fn moving_now(&self) -> bool {
-        self.tile.as_ref().is_some_and(|t| t.live) || self.divider_from.is_some()
+        self.tile.as_ref().is_some_and(|t| t.live && t.aim.is_none()) || self.divider_from.is_some()
     }
 
     /// Called every frame: sends nudges once they've settled.
@@ -2958,7 +2948,7 @@ impl App {
 macro_rules! modals {
     ($($(#[$doc:meta])* $v:ident,)*) => {
         /// What can be on top of the Panes, owning the mouse (and the keyboard): a [`Popup`], the setup wizard, the
-        /// login code or Move mode. [`App::layers`] gives the one order they stack in (D83).
+        /// login code or Arrange mode. [`App::layers`] gives the one order they stack in (D83).
         ///
         /// Adding a popup? Make it a variant here and in [`Popup`]; the compiler then asks for its arms in
         /// `Popup::modal`, `App::modal_scroll` (what the wheel does in it), the key and click handling and `ui`'s
@@ -2994,8 +2984,6 @@ modals! {
     Health,
     Menu,
     Help,
-    /// Move mode: the keyboard has the Pane, so a click only ends it
-    Move,
     /// Arrange mode (D87): the Panes take title drags, dividers and their split and close buttons; the Tray, the
     /// legend and Done sit where the player and the hints were
     Arrange,
@@ -3004,7 +2992,7 @@ modals! {
 }
 
 /// The popup open, holding what it shows (D83). One at a time: opening one replaces the one open. The setup wizard,
-/// the login code and Move mode aren't popups you open; they follow from state ([`App::layers`]).
+/// the login code and Arrange mode aren't popups you open; they follow from state ([`App::layers`]).
 pub(crate) enum Popup {
     Palette(Palette),
     Picker(crate::looks::Picker),
@@ -3126,13 +3114,13 @@ impl App {
     }
 
     /// What's over the Panes, the top first: the popup you opened, then the setup wizard, then the login code, then
-    /// Move mode, then Arrange mode (D83, D87). This is the one order: keys, the pointer, the wheel and drawing all follow it.
+    /// Arrange mode (D83, D87). This is the one order: keys, the pointer, the wheel and drawing all follow it.
     pub(crate) fn layers(&self) -> Vec<Modal> {
         let wizard = crate::setup::wanted(self);
         // the wizard shows the code itself
         let login = !wizard && matches!(self.catalogue, Some(CatalogueStatus::LoginPending { .. })) && !self.login_hidden;
         let mut layers: Vec<Modal> = self.popup.as_ref().map(Popup::modal).into_iter().collect();
-        let on = [(wizard, Modal::Wizard), (login, Modal::Login), (self.move_mode.is_some(), Modal::Move), (self.arranging.is_some() && !self.mini, Modal::Arrange)];
+        let on = [(wizard, Modal::Wizard), (login, Modal::Login), (self.arranging.is_some() && !self.mini, Modal::Arrange)];
         layers.extend(on.into_iter().filter_map(|(on, m)| on.then_some(m)));
         layers
     }
@@ -3205,8 +3193,8 @@ impl App {
                     d.scroll.by(-rows);
                 }
             }
-            // one line to type in, a short notice, or the Pane itself (Move mode): nothing to scroll
-            Modal::Naming | Modal::Cover | Modal::Login | Modal::Move => {}
+            // one line to type in, a short notice: nothing to scroll
+            Modal::Naming | Modal::Cover | Modal::Login => {}
         }
     }
 
@@ -3276,11 +3264,6 @@ impl App {
                         _ => {}
                     },
                     Modal::Help => self.close_if_open(Modal::Help),
-                    // the bar's "undo" works in Move mode; any other click ends it
-                    Modal::Move => match hit {
-                        Some(Hit::Action(a @ (Action::UndoLayout | Action::RedoLayout))) => self.run(a),
-                        _ => self.move_mode = None,
-                    },
                     // outside the popup closes it; inside, on the typed line or the line, nothing
                     Modal::WidgetPicker => match hit {
                         Some(Hit::PickWidget(i)) => self.widget_picked(i),
