@@ -3169,8 +3169,10 @@ mod tests {
 
     /// The owner's report (2026-11-05): a tall Pane put a blank row between lyric lines, which read as each line split
     /// in two, and a wide one centred a narrow column. Lines follow each other row by row from the left edge.
+    /// The exception since #53 (the owner's contact sheet marks, "centre it so a large Pane looks balanced"): a big Pane
+    /// (120 columns and more) holds them as a block in its middle, still row by row, `[mm:ss] text` like a log.
     #[test]
-    fn lyric_lines_follow_each_other_from_the_left_edge_at_every_size() {
+    fn lyric_lines_follow_each_other_from_the_left_edge_and_a_big_pane_centres_them() {
         use singularity_proto::{LyricLine, Lyrics};
         let (mut app, _rx) = playing_app(400_000);
         app.playback.item.as_mut().unwrap().uri = "spotify:track:s".into();
@@ -3178,10 +3180,13 @@ mod tests {
         app.lyrics_event(Lyrics { uri: "spotify:track:s".into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() });
         app.playback.position_ms = 300_100;
         app.playback.timestamp_ms = singularity_proto::now_ms();
-        for (w, h) in [(72u16, 27u16), (40, 12), (120, 36), (160, 48), (256, 64)] {
+        for (w, h) in [(72u16, 27u16), (40, 12), (90, 30), (120, 36), (160, 48), (256, 64)] {
             let rows = lyrics_pane(&mut app, w, h);
             let body = &rows[..h as usize - 1];
-            assert!(body.iter().all(|r| r.starts_with(" [")), "{w}x{h}: every row a line, from the left edge: {rows:#?}");
+            // the block: the stamps and the song's widest line ("line 199 of the song"), 8 + 20 columns, in the middle
+            // of the Pane's 1-column margins
+            let col = if w >= 120 { 1 + (w as usize - 2 - 28) / 2 } else { 1 };
+            assert!(body.iter().all(|r| r.find('[') == Some(col) && r[..col].trim().is_empty()), "{w}x{h}: every row a line, from column {col}: {rows:#?}");
             let i = body.iter().position(|r| r.contains("line 60 of")).unwrap();
             assert_eq!(i, (h as usize - 1) / 3, "{w}x{h}: the current line a third down");
             assert!(body[i + 1].contains("line 61 of"), "{w}x{h}: the next line on the next row: {rows:#?}");

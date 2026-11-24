@@ -212,9 +212,10 @@ _Avoid_: sing-along view, karaoke mode
 
 **Big text**:
 Text drawn as an image on the pixel tier in the terminal's own font (found on the system; Noto Sans, bundled with the
-Client, for characters it lacks or when none is found), so a big lyrics or Karaoke Pane is filled with text sized to
-the Pane instead of terminal-sized text in its corner. One size per song and Pane; a song with characters no font has, a
-popup over the Pane, or the cell tier keeps terminal text.
+Client, for characters it lacks or when none is found), bigger than a terminal draws its cells. A big lyrics Pane draws
+its lines in it a step larger than the cells (up to 1.5×, growing with the Pane, the same look otherwise); a big Karaoke
+Pane fills itself with the line on stage, one size per song and Pane. A song with characters no font has, a popup over
+the Pane, or the cell tier keeps terminal text.
 _Avoid_: pixel font (the marquee's 3×5 blocks), big font
 
 **Word timing**:

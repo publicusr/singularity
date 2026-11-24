@@ -158,10 +158,19 @@ pub struct Span<'a> {
     pub bold: bool,
 }
 
+/// A band of colour across an image from pixel row `.1` to `.2`, under its text (the lyrics' current line).
+pub type Band = Option<(Rgb, u32, u32)>;
+
 /// An image of `spans`, `w`×`h` pixels, the baseline `baseline` pixels from its top: the key it is stored under.
 pub fn key(spans: &[Span], w: u32, h: u32, baseline: f32) -> ImageKey {
+    key_on(spans, w, h, baseline, None)
+}
+
+/// `key` for an image of `spans` on `band`.
+pub fn key_on(spans: &[Span], w: u32, h: u32, baseline: f32, band: Band) -> ImageKey {
     let mut s = std::collections::hash_map::DefaultHasher::new();
     baseline.to_bits().hash(&mut s);
+    band.map(|(c, y0, y1)| (c.0, c.1, c.2, y0, y1)).hash(&mut s);
     for sp in spans {
         (sp.x.to_bits(), sp.text, sp.rgb.0, sp.rgb.1, sp.rgb.2, sp.px.to_bits(), sp.bold).hash(&mut s);
     }
@@ -209,8 +218,18 @@ fn alpha(cov: u8) -> u8 {
 
 /// Draw `spans` into a transparent `w`×`h` RGBA image, on a baseline `baseline` pixels from the top.
 pub fn render(spans: &[Span], w: u32, h: u32, baseline: f32) -> Vec<u8> {
+    render_on(spans, w, h, baseline, None)
+}
+
+/// `render` on `band`: its rows opaque in its colour, the text blended over them.
+pub fn render_on(spans: &[Span], w: u32, h: u32, baseline: f32, band: Band) -> Vec<u8> {
     let (w, h) = (w as usize, h as usize);
     let mut px = vec![0u8; w * h * 4];
+    if let Some((c, y0, y1)) = band {
+        for p in px[(y0 as usize).min(h) * w * 4..(y1 as usize).min(h) * w * 4].chunks_mut(4) {
+            p.copy_from_slice(&[c.0, c.1, c.2, 255]);
+        }
+    }
     for sp in spans {
         let mut pen = sp.x;
         for c in sp.text.chars() {
@@ -232,7 +251,13 @@ pub fn render(spans: &[Span], w: u32, h: u32, baseline: f32) -> Vec<u8> {
                     }
                     let a = alpha(a);
                     let i = (y as usize * w + x as usize) * 4;
-                    if a > px[i + 3] {
+                    if px[i + 3] == 255 {
+                        // over the band (or full ink): blended
+                        let mix = |o: u8, n: u8| ((o as u32 * (255 - a as u32) + n as u32 * a as u32) / 255) as u8;
+                        px[i] = mix(px[i], sp.rgb.0);
+                        px[i + 1] = mix(px[i + 1], sp.rgb.1);
+                        px[i + 2] = mix(px[i + 2], sp.rgb.2);
+                    } else if a > px[i + 3] {
                         px[i..i + 4].copy_from_slice(&[sp.rgb.0, sp.rgb.1, sp.rgb.2, a]);
                     }
                 }
@@ -295,5 +320,21 @@ mod tests {
         let before = rasterized();
         let _ = render(&spans, w, h, 32.0);
         assert_eq!(rasterized(), before);
+    }
+
+    #[test]
+    fn a_band_lies_under_the_text_across_its_rows() {
+        let spans = [Span { x: 2.0, text: "Hi", rgb: Rgb(250, 250, 250), px: 30.0, bold: false }];
+        let (w, h, band) = (60u32, 50u32, Some((Rgb(40, 30, 20), 5, 45)));
+        let px = render_on(&spans, w, h, 32.0, band);
+        let at = |x: u32, y: u32| &px[((y * w + x) * 4) as usize..][..4];
+        assert_eq!(at(59, 5), [40, 30, 20, 255], "the band, to the image's edge");
+        assert_eq!(at(0, 44), [40, 30, 20, 255]);
+        assert_eq!(at(30, 4)[3], 0, "above it, clear");
+        assert_eq!(at(30, 45)[3], 0, "below it, clear");
+        // the ink is blended over the band: opaque, between the band and the text's colour
+        let ink: Vec<&[u8]> = px.chunks(4).filter(|p| p[0] > 40).collect();
+        assert!(ink.len() > 50 && ink.iter().all(|p| p[3] == 255 && p[0] >= p[2]), "{}", ink.len());
+        assert_ne!(key_on(&spans, w, h, 32.0, band), key(&spans, w, h, 32.0), "a band, another image");
     }
 }

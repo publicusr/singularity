@@ -1153,6 +1153,21 @@ flowchart LR
   they don't depend on the PC. **Listening**: the big Pane pinned its numbers to the bottom, leaving the rows between
   the grid (or the breakdown) and them empty ("a ton of dead space"); the parts now stack a row apart and the block is
   centred in the Pane's height (`the_big_listening_pane_keeps_its_numbers_close_under_the_grid`, ten sizes).
+- **Lyrics at big sizes: the same font a little bigger, centred** (2026-11-24, D87; #53, the owner's contact sheet
+  marks: big text "jumps from the normal size to a far bigger font"; "in the context of the app this font and style are
+  out of place"; the full screen "centre it and use a slightly larger font, but not like the second option"). A big
+  lyrics Pane (96×24 and more inside its frame) now draws the cells' own view (timestamps as big as the lines, the
+  current line bold on its band) `lyrics::step` times bigger: 1 at 96×24, growing with the Pane's width or height
+  (whichever is less) to 1.5×, never more than a 96th a column, so no size jumps to another font; from 1.1× on the
+  pixel tier as big text, below that the cells. Rows are `step` cells tall, so a row that starts inside a cell is drawn
+  that far down its image (the view still glides by whole cells, so each row keeps its image), and the band is painted
+  in the current line's images. Both tiers centre the block of timestamps and the song's widest row, eased in over the
+  first 20 columns and 8 rows past 96×24 (`lyrics::centring`). Also found: in Ghostty with no `font-family` set, big
+  text took fontconfig's monospace (Noto Sans Mono here) while Ghostty draws JetBrains Mono; it now takes Ghostty's
+  built-in JetBrains Mono (installed, or a Nerd Font build) first. The pty draws big text in its own cell font
+  (`SINGULARITY_BIG_FONT`). Tests: `lyrics_grow_a_step_with_the_pane_and_never_jump`,
+  `a_big_pane_on_the_pixel_tier_draws_the_cells_text_a_step_larger_and_centred`,
+  `lyric_lines_follow_each_other_from_the_left_edge_and_a_big_pane_centres_them`.
 - **Home without empty slots; search on Home; Linux on ARM** (2026-11-20, D68–D73; owner's screenshot "empty album
   slots on the home view"). Asked the owner's running Daemon read-only for its Home feed: 10 shortcuts (7 in the
   screenshot) in a 3-column grid, and "New release from …" as a Shelf of one Card. Built: the short last line stretches
