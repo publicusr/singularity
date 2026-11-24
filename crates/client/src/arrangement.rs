@@ -12,7 +12,7 @@
 //! Edits are values: each returns the new Arrangement and leaves this one as it was, so undo can keep the old one.
 //! Reading goes through `Deref` to the floor plan (`Node`): where a Pane is, what it holds; writing never does.
 
-use crate::layout::{Divider, Node, PaneId, Widget, is_hole};
+use crate::layout::{Axis, Divider, Node, PaneId, Widget, is_hole};
 use crate::tiling::Side;
 use ratatui::layout::Rect;
 
@@ -304,13 +304,14 @@ impl Arrangement {
         to(good)
     }
 
-    /// Pane `pane`'s line a step further out (`grow`) or in: 2 columns or 1 row, the nearest line around it that can
-    /// move and still leaves the floor plan valid.
-    pub fn step_line(&self, pane: PaneId, grow: bool, area: Rect) -> Result<Arrangement, Refused> {
+    /// Pane `pane`'s line a step further out (`grow`) or in: 2 columns (`axis` Horizontal: a border left or right of
+    /// it) or 1 row (Vertical: above or below), the nearest such line around it that can move and still leaves the
+    /// floor plan valid.
+    pub fn step_line(&self, pane: PaneId, grow: bool, area: Rect, axis: Axis) -> Result<Arrangement, Refused> {
         if !self.plan.contains(pane) {
             return Err(Refused::NoPane);
         }
-        let plan = self.plan.resized(pane, grow, area).ok_or(Refused::NoRoom)?;
+        let plan = self.plan.resized(pane, grow, area, axis).ok_or(Refused::NoRoom)?;
         self.checked(plan, area)
     }
 

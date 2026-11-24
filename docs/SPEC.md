@@ -305,10 +305,13 @@ audio, and looks spectacular.
     Save design as… names one any time. **The keyboard in Arrange mode (D87, #43, replaces Move mode):** `m` enters
     Arrange mode; arrows move the focus between Panes, Enter picks up the focused Widget (the same lit Pane and chip
     as the mouse), arrows aim, Enter drops (swap, or fill an empty Pane), Esc puts it back; `t` to the Tray, `s` then
-    an arrow splits that way, `x` closes, `+`/`-` move the focused Pane's line, Esc with nothing picked up is Done.
+    an arrow splits that way, `x` closes, `+` (or `=`) / `-` move the focused Pane's border left or right of it and
+    `]` / `[` the one above or below it, `w` opens "+ Widget"'s picker (Q71), Esc with nothing picked up is Done;
+    `m` does what Esc does (Q70: it puts a pick-up back, else it is Done).
     The Tray by keyboard (owner, Q50): ↓ from a bottom Pane onto the Tray, ← → along it, Enter picks a Widget up,
-    ↑ aims into the Panes, Enter drops; a Pane's Widget aimed down at the Tray is set aside there. While arranging the
-    arrows, `s` and `+`/`-` are Arrange mode's (Q48); `move_pane` stays a name for `arrange` (Q51).
+    ↑ aims into the Panes, Enter drops; a Pane's Widget aimed down at the Tray is set aside there (its chip shows in
+    the Tray's row, where it will go). While arranging the arrows, `s`, `w` and the size keys are Arrange mode's
+    (Q48); `move_pane` stays a name for `arrange` (Q51).
     **New design… (D87, #42):** Ctrl+K → New design… starts Arrange mode from one empty Pane filling the screen, with
     Home in the Tray; "+ Widget" on the Tray opens the Widget picker and puts the pick in the Tray (by keyboard: the
     Tray's last focus stop, after its Widgets, there even when the Tray is empty; Enter opens the picker). Done (once Home has a

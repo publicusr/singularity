@@ -520,7 +520,7 @@ fn m_enters_arrange_mode_and_arrows_move_the_focus_between_panes() {
     // the legend shows the keys
     let shot = render(&mut a, W, H);
     let legend = shot.lines().last().unwrap();
-    for k in ["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "+ − size", "Esc done"] {
+    for k in ["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "+−[]size", "Esc done"] {
         assert!(legend.contains(k), "{k:?} in {legend:?}");
     }
 }
@@ -612,15 +612,23 @@ fn s_then_an_arrow_splits_x_closes_and_plus_minus_move_the_line() {
     key(&mut a, KeyCode::Char('m'));
     a.focus_on(Widget::Queue);
     render(&mut a, W, H);
-    // + grows, - shrinks (the queue's Pane is in a stack: by a row)
-    let h0 = pane(&a, Widget::Queue).height;
+    // + (or =) grows, - shrinks: by its border left or right of it (2 columns); ] taller, [ shorter: by the one above
+    // or below it (a row; the queue's Pane is in a stack)
+    let (w0, h0) = (pane(&a, Widget::Queue).width, pane(&a, Widget::Queue).height);
+    let size = |a: &mut App| {
+        render(a, W, H);
+        (pane(a, Widget::Queue).width, pane(a, Widget::Queue).height)
+    };
     key(&mut a, KeyCode::Char('-'));
-    render(&mut a, W, H);
-    assert_eq!(pane(&a, Widget::Queue).height, h0 - 1);
+    assert_eq!(size(&mut a), (w0 - 2, h0));
     key(&mut a, KeyCode::Char('+'));
-    key(&mut a, KeyCode::Char('+'));
-    render(&mut a, W, H);
-    assert_eq!(pane(&a, Widget::Queue).height, h0 + 1);
+    key(&mut a, KeyCode::Char('='));
+    assert_eq!(size(&mut a), (w0 + 2, h0));
+    key(&mut a, KeyCode::Char('['));
+    assert_eq!(size(&mut a), (w0 + 2, h0 - 1));
+    key(&mut a, KeyCode::Char(']'));
+    key(&mut a, KeyCode::Char(']'));
+    assert_eq!(size(&mut a), (w0 + 2, h0 + 1));
     // s waits for the arrow (the legend says so); ↓ splits below: a new empty Pane and the Widget picker on it
     let (q, n) = (pane(&a, Widget::Queue), a.layout.panes().len());
     key(&mut a, KeyCode::Char('s'));
@@ -717,7 +725,6 @@ fn the_playback_keys_the_arrange_keys_leave_free_work_while_arranging() {
     let sent = std::iter::from_fn(|| rx.try_recv().ok()).filter(playback).collect::<Vec<_>>();
     assert!(sent.is_empty(), "no playback on the arrange keys: {sent:?}");
     assert_eq!((a.display_position(0), a.display_volume()), (pos, vol));
-    key(&mut a, KeyCode::Char('m'));
     for code in [KeyCode::Char(' '), KeyCode::Char('n')] {
         key(&mut a, code);
         assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|c| playback(&c)), "{code:?} works while arranging");
@@ -757,7 +764,7 @@ fn the_focus_always_lands_on_a_real_pane() {
 /// The legend drops what doesn't fit from the mouse's gesture and undo / redo first: the keys stay longest.
 #[test]
 fn the_legend_keeps_the_keys_on_small_screens() {
-    for (w, h, want) in [(100u16, 30u16, &["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "+ − size", "Esc done"][..]), (90, 50, &["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "Esc done"][..])] {
+    for (w, h, want) in [(100u16, 30u16, &["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "Esc done"][..]), (90, 50, &["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "Esc done"][..])] {
         let mut a = App::new(None);
         render(&mut a, w, h);
         key(&mut a, KeyCode::Char('m'));
@@ -821,7 +828,7 @@ fn the_keys_wait_while_the_mouse_holds_a_divider() {
     assert_eq!(a.layout, start, "the move was recorded");
 }
 
-/// Only the bare keys arrange: Ctrl+X doesn't close, Alt+T doesn't set aside, Ctrl+Enter picks nothing up, `=`
+/// Only the bare keys arrange: Ctrl+X doesn't close, Alt+T doesn't set aside, Ctrl+Enter picks nothing up, Ctrl+=
 /// doesn't grow; `s` waits for its arrow until a mouse press.
 #[test]
 fn only_the_bare_keys_arrange() {
@@ -833,7 +840,7 @@ fn only_the_bare_keys_arrange() {
     a.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
     a.key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT));
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
-    key(&mut a, KeyCode::Char('='));
+    a.key(KeyEvent::new(KeyCode::Char('='), KeyModifiers::CONTROL));
     assert_eq!(a.layout, before);
     assert!(a.tile.is_none());
     // `+` as the terminal may send it, with its Shift: grows
@@ -1087,11 +1094,11 @@ fn the_chip_follows_the_pointer_and_the_highlight_says_what_a_release_does() {
     assert_eq!(buf[(q.x, q.y + 2)].fg, a.theme.accent.color());
     let label = (q.y..q.bottom()).find(|&y| row(&buf, y, q.x, q.right()).contains(" swap with queue ")).expect("the label");
     assert!(label != cy && label.abs_diff(q.y + q.height / 2) <= 2, "near the middle, clear of the chip on the pointer's row");
-    // by the screen's right edge the chip goes left of the pointer, never off screen
+    // by the screen's right edge the chip stops there (the pointer goes on over it), never off screen
     drag(&mut a, W - 1, cy);
     let buf = render_buf(&mut a, W, H);
     let r = a.chip_rect(Rect::new(0, 0, W, H), "⠿ stream").unwrap();
-    assert!(r.right() < W && r.width <= crate::arrange::CHIP_MAX && r.height == 1, "{r:?}");
+    assert!(r.right() == W && r.width <= crate::arrange::CHIP_MAX && r.height == 1, "{r:?}");
     assert!(row(&buf, cy, r.x, r.right()).contains("⠿ stream"));
     key(&mut a, KeyCode::Esc);
     release(&mut a, W - 1, cy);
@@ -1837,8 +1844,9 @@ fn arrange_mode_keeps_the_panes_keys() {
     let mut a = app();
     a.run(Action::Arrange);
     a.focus_on(Widget::Stream);
+    // (`w` is Arrange mode's: "+ Widget", not the Pane's Replace widget…)
     key(&mut a, KeyCode::Char('w'));
-    assert!(a.widget_picker().is_none());
+    assert!(a.widget_picker().is_some_and(|p| p.tray), "the Tray's picker");
     assert!(a.arranging.is_some());
 }
 
@@ -2304,4 +2312,261 @@ fn the_keyboard_reaches_plus_widget_on_the_tray_even_when_it_is_empty() {
     // ↑: back to the Pane above
     key(&mut a, KeyCode::Up);
     assert!(stop(&a).is_none() && a.is_focused(Widget::Home));
+}
+
+// ── the owner's Arrange-mode test (#41, #43) ──────────────────────────
+
+/// Where `s` is drawn in `b`: its first cell.
+fn spot(b: &Buffer, s: &str) -> Option<(u16, u16)> {
+    let n = s.chars().count() as u16;
+    (0..b.area.height).flat_map(|y| (0..b.area.width.saturating_sub(n)).map(move |x| (x, y))).find(|&(x, y)| row(b, y, x, x + n) == s)
+}
+
+/// The owner: the chip by a dragged title "teleporting all over the place" as the pointer went a little up and down.
+/// Over small moves it keeps one place beside the pointer, the target's label doesn't hop round it, and by the
+/// screen's right edge the chip stops instead of jumping to the pointer's other side.
+#[test]
+fn the_chip_keeps_its_place_by_the_pointer_over_small_moves() {
+    let mut a = app();
+    let (x, y) = title_spot(&a, Widget::Stream);
+    press(&mut a, x, y);
+    // (the first move turns Arrange mode on, which makes room for the Tray: the Panes are where it puts them after)
+    drag(&mut a, x + 6, y + 3);
+    render(&mut a, W, H);
+    let (cx, cy) = centre(pane(&a, Widget::Queue));
+    let mut labels = vec![];
+    // a row up and down and a column or two sideways, round the queue's middle (where its label is)
+    for (dx, dy) in [(0i32, 0i32), (1, -1), (0, 0), (1, 1), (-1, 0), (0, -1), (2, 1), (1, 0), (0, -1), (1, 1), (0, 0), (-1, -1)] {
+        let (px, py) = ((cx as i32 + dx) as u16, (cy as i32 + dy) as u16);
+        drag(&mut a, px, py);
+        let buf = render_buf(&mut a, W, H);
+        // the grip: two cells right of the pointer, then " ⠿ stream"
+        assert_eq!(spot(&buf, "⠿ stream"), Some((px + 3, py)), "the chip beside the pointer at ({px}, {py})");
+        labels.push(spot(&buf, " swap with queue ").expect("the label"));
+    }
+    let hops = labels.windows(2).filter(|w| w[0] != w[1]).count();
+    assert!(hops <= 1, "the label hopped round the chip: {labels:?}");
+    // along the right edge and back, a column at a time: the chip moves at most as far as the pointer, never across it
+    let mut was: Option<(u16, (u16, u16))> = None;
+    for px in (W - 16..W).chain((W - 16..W).rev()) {
+        drag(&mut a, px, cy);
+        let buf = render_buf(&mut a, W, H);
+        let at = spot(&buf, "⠿ stream").expect("the chip");
+        assert!(at.0 >= px.min(W - 9), "the chip stays right of the pointer until the edge stops it: {at:?} at {px}");
+        if let Some((p, c)) = was {
+            assert!(at.0.abs_diff(c.0) <= px.abs_diff(p), "a column's move moved the chip {} columns", at.0.abs_diff(c.0));
+        }
+        was = Some((px, at));
+    }
+    key(&mut a, KeyCode::Esc);
+    release(&mut a, W - 1, cy);
+}
+
+/// The owner: a Pane's Widget carried down into the Tray with the arrows was drawn above the Tray, by the play
+/// button. Its chip is in the Tray's row, after what waits there (where Enter puts it), and nothing else on screen
+/// changes but the lit Pane it came from, the Tray and the legend.
+#[test]
+fn a_widget_carried_into_the_tray_with_the_keys_is_shown_in_the_tray() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    a.focus_on(Widget::Fft);
+    key(&mut a, KeyCode::Char('t'));
+    a.focus_on(Widget::Queue);
+    let before = render_buf(&mut a, W, H);
+    let own = pane(&a, Widget::Queue);
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Down);
+    assert!(a.tile.as_ref().is_some_and(|t| t.tray), "aimed at the Tray");
+    let buf = render_buf(&mut a, W, H);
+    let tray = a.tray_rect();
+    let chip = spot(&buf, "⠿ queue").expect("the chip");
+    assert_eq!(chip.1, tray.y + 1, "in the Tray's row, not on its frame or above it");
+    let fft = spot(&buf, &format!(" ⠿ {} ", crate::ui::pane_name(a.design, Widget::Fft))).unwrap();
+    assert!(chip.0 > fft.0 + 6 && chip.0 < tray.right() - 2, "after the Widget waiting there: {chip:?} {fft:?}");
+    let inside = |r: Rect, x: u16, y: u16| x >= r.x && x < r.right() && y >= r.y && y < r.bottom();
+    for y in 0..H - 1 {
+        for x in 0..W {
+            if !inside(tray, x, y) && !inside(own, x, y) {
+                let (p, q) = (&before[(x, y)], &buf[(x, y)]);
+                assert!(p.symbol() == q.symbol() && p.fg == q.fg && p.bg == q.bg, "({x}, {y}) changed from {p:?} to {q:?}");
+            }
+        }
+    }
+    // an empty Tray: at its start, in place of "drop a Widget here…"
+    let mut e = app();
+    key(&mut e, KeyCode::Char('m'));
+    e.focus_on(Widget::Queue);
+    key(&mut e, KeyCode::Enter);
+    key(&mut e, KeyCode::Down);
+    let buf = render_buf(&mut e, W, H);
+    let t = e.tray_rect();
+    assert_eq!(spot(&buf, "⠿ queue"), Some((t.x + 3, t.y + 1)));
+    assert!(spot(&buf, "drop a Widget").is_none());
+    // Enter sets it aside there
+    key(&mut e, KeyCode::Enter);
+    assert_eq!(e.layout.tray(), [Widget::Queue]);
+}
+
+/// Owner, Q70: `m`, which came into Arrange mode, leaves it as Esc does: a Widget picked up is put back first, `s`'s
+/// wait for its arrow ends, and with nothing picked up it is Done (asking for a name if anything changed).
+#[test]
+fn m_leaves_arrange_mode_as_esc_does() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    assert!(a.arranging.is_some());
+    key(&mut a, KeyCode::Char('m'));
+    assert!(a.arranging.is_none() && a.modal().is_none(), "nothing changed: Done, no prompt");
+    // a Widget picked up: put back, still arranging
+    key(&mut a, KeyCode::Char('m'));
+    a.focus_on(Widget::Queue);
+    let before = a.layout.clone();
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Up);
+    key(&mut a, KeyCode::Char('m'));
+    assert!(a.tile.is_none() && a.arranging.is_some() && a.layout == before);
+    // `s` waiting: the wait ends, nothing else
+    key(&mut a, KeyCode::Char('s'));
+    key(&mut a, KeyCode::Char('m'));
+    assert!(a.arranging.as_ref().is_some_and(|r| !r.split_next));
+    // from the Tray's focus too
+    key(&mut a, KeyCode::Down);
+    assert!(a.arranging.as_ref().unwrap().tray_focus.is_some());
+    key(&mut a, KeyCode::Char('m'));
+    assert!(a.arranging.is_none());
+    // with a change: Done asks for its name, as Esc does
+    let (mut a, _dir) = with_dirs();
+    key(&mut a, KeyCode::Char('m'));
+    a.focus_on(Widget::Fft);
+    key(&mut a, KeyCode::Char('x'));
+    key(&mut a, KeyCode::Char('m'));
+    assert!(a.arranging.is_none() && a.naming().is_some());
+}
+
+/// Owner, Q71: `w` opens "+ Widget"'s picker from anywhere in Arrange mode (a Pane or the Tray focused); a pick goes
+/// into the Tray. While a Widget is carried the keys aim it, and `w` does nothing.
+#[test]
+fn w_opens_the_trays_widget_picker_anywhere_in_arrange_mode() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    a.focus_on(Widget::Fft);
+    key(&mut a, KeyCode::Char('x'));
+    a.focus_on(Widget::Queue);
+    key(&mut a, KeyCode::Char('w'));
+    assert!(a.widget_picker().is_some_and(|p| p.tray));
+    key(&mut a, KeyCode::Esc);
+    assert!(a.widget_picker().is_none() && a.arranging.is_some());
+    // from the Tray's focus
+    key(&mut a, KeyCode::Down);
+    assert!(a.arranging.as_ref().unwrap().tray_focus.is_some());
+    key(&mut a, KeyCode::Char('w'));
+    assert!(a.widget_picker().is_some_and(|p| p.tray));
+    typed(&mut a, "starfield");
+    key(&mut a, KeyCode::Enter);
+    assert!(a.layout.tray().contains(&Widget::Starfield));
+    // carrying: nothing
+    a.focus_on(Widget::Queue);
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('w'));
+    assert!(a.widget_picker().is_none() && a.tile.is_some());
+}
+
+/// A Widget picked up from the Tray with Enter, aimed at the Tray (where it is): its chip is on its own place in the
+/// Tray's row, never on the Tray's frame (where it covered "Tray" or "+ Widget"); nothing else on screen changes
+/// but the Tray and the legend.
+#[test]
+fn a_widget_picked_up_from_the_tray_is_shown_in_its_place_there() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    for w in [Widget::Fft, Widget::Loudness] {
+        a.focus_on(w);
+        key(&mut a, KeyCode::Char('t'));
+    }
+    a.focus_on(Widget::Queue);
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Left);
+    assert_eq!(a.arranging.as_ref().unwrap().tray_focus, Some(crate::arrange::TrayStop::Widget(Widget::Fft)));
+    let before = render_buf(&mut a, W, H);
+    let tray = a.tray_rect();
+    let name = crate::ui::pane_name(a.design, Widget::Fft);
+    let own = spot(&before, &format!(" ⠿ {name} ")).unwrap();
+    key(&mut a, KeyCode::Enter);
+    let buf = render_buf(&mut a, W, H);
+    assert_eq!(spot(&buf, &format!("⠿ {name}")), Some((own.0 + 1, tray.y + 1)), "on its own place in the Tray's row");
+    assert_eq!(row(&buf, tray.y, tray.x, tray.right()), row(&before, tray.y, tray.x, tray.right()), "the Tray's frame as it was");
+    let inside = |x: u16, y: u16| x >= tray.x && x < tray.right() && y >= tray.y && y < tray.bottom();
+    for y in 0..H - 1 {
+        for x in 0..W {
+            if !inside(x, y) {
+                let (p, q) = (&before[(x, y)], &buf[(x, y)]);
+                assert!(p.symbol() == q.symbol() && p.fg == q.fg && p.bg == q.bg, "({x}, {y}) changed from {p:?} to {q:?}");
+            }
+        }
+    }
+    // ↑ aims into the Panes, ↓ back at the Tray: on its place again
+    key(&mut a, KeyCode::Up);
+    key(&mut a, KeyCode::Down);
+    let buf = render_buf(&mut a, W, H);
+    assert_eq!(spot(&buf, &format!("⠿ {name}")), Some((own.0 + 1, tray.y + 1)));
+}
+
+/// A Tray holding more than its strip shows: a Pane's Widget aimed at it scrolls the strip to its end, so the chip is
+/// shown where Enter puts it (after the last Widget, not after the last one that happened to be shown).
+#[test]
+fn a_widget_aimed_at_a_full_tray_shows_its_end() {
+    let mut a = App::new(None);
+    render(&mut a, 100, 40);
+    key(&mut a, KeyCode::Char('m'));
+    for w in [Widget::Fft, Widget::Loudness, Widget::Lyrics, Widget::Stream, Widget::Library] {
+        a.focus_on(w);
+        key(&mut a, KeyCode::Char('t'));
+    }
+    for w in ["starfield", "rain", "levels", "glow"] {
+        a.open_tray_picker();
+        typed(&mut a, w);
+        key(&mut a, KeyCode::Enter);
+    }
+    render(&mut a, 100, 40);
+    if let Some(r) = a.arranging.as_mut() {
+        r.tray_first = 0;
+    }
+    let buf = render_buf(&mut a, 100, 40);
+    let last = *a.layout.tray().last().unwrap();
+    let last_name = crate::ui::pane_name(a.design, last);
+    assert!(spot(&buf, &format!(" ⠿ {last_name} ")).is_none(), "the strip doesn't show its end yet");
+    a.focus_on(Widget::Queue);
+    key(&mut a, KeyCode::Enter);
+    while !a.tile.as_ref().is_some_and(|t| t.tray) {
+        key(&mut a, KeyCode::Down);
+    }
+    let buf = render_buf(&mut a, 100, 40);
+    let tray = a.tray_rect();
+    // the last Widget whole, with its ×, then the chip whole, clear of it and of the ›
+    let item = format!(" ⠿ {last_name} × ");
+    let shown = spot(&buf, &item).expect("the last Widget shown whole");
+    let chip = spot(&buf, "⠿ queue ").expect("the chip whole");
+    assert!(chip.1 == tray.y + 1 && chip.0 > shown.0 + item.chars().count() as u16, "after the last Widget: {chip:?} {shown:?}");
+    assert!(chip.0 + 7 < tray.right() - 2, "inside the strip: {chip:?}");
+    // set aside there: the strip shows it
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.layout.tray().last(), Some(&Widget::Queue));
+    let buf = render_buf(&mut a, 100, 40);
+    assert!(spot(&buf, " ⠿ queue × ").is_some_and(|(_, y)| y == tray.y + 1), "{}", row(&buf, tray.y + 1, 0, 100));
+}
+
+/// `arrange` bound to a key with Ctrl (keys.toml): pressed while arranging it leaves, as Esc does (the legend says so).
+#[test]
+fn arrange_bound_with_ctrl_leaves_arrange_mode_too() {
+    use singularity_config::{Keys, OneOrMany};
+    let mut a = app();
+    a.keymap = crate::keymap::Keymap::from_keys(&Keys { bindings: [("arrange".to_string(), OneOrMany::One("ctrl+e".into()))].into(), ..Default::default() });
+    assert!(a.keymap.problems.is_empty(), "{:?}", a.keymap.problems);
+    ctrl(&mut a, 'e');
+    assert!(a.arranging.is_some());
+    // a Widget picked up: put back first
+    a.focus_on(Widget::Queue);
+    key(&mut a, KeyCode::Enter);
+    ctrl(&mut a, 'e');
+    assert!(a.tile.is_none() && a.arranging.is_some());
+    ctrl(&mut a, 'e');
+    assert!(a.arranging.is_none());
 }

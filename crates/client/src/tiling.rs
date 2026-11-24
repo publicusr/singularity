@@ -152,13 +152,13 @@ impl Node {
         go(self, target, new, side)
     }
 
-    /// Pane `id` a step bigger or smaller (2 columns, or 1 row): the nearest split around it that can move its
-    /// boundary does. None if none can.
-    pub fn resized(&self, id: PaneId, grow: bool, area: Rect) -> Option<Node> {
+    /// Pane `id` a step wider or narrower (2 columns, `axis` Horizontal) or taller or shorter (1 row, Vertical): the
+    /// nearest split around it along `axis` that can move its boundary does. None if none can.
+    pub fn resized(&self, id: PaneId, grow: bool, area: Rect, axis: Axis) -> Option<Node> {
         let path = self.path_of(id)?;
         let now = self.compute(area);
         for k in (0..path.len()).rev() {
-            let Some(d) = now.dividers.iter().find(|d| d.path == path[..k]) else { continue };
+            let Some(d) = now.dividers.iter().find(|d| d.path == path[..k] && d.axis == axis) else { continue };
             let (boundary, step) = match d.axis {
                 Axis::Horizontal => (d.grip.x + 1, 2),
                 Axis::Vertical => (d.grip.y + 1, 1),
@@ -231,17 +231,22 @@ mod tests {
     fn a_step_resizes_the_nearest_split_that_can_move() {
         let n = Node::classic();
         let before = rect(&n, AREA, W::Library).width;
-        let m = n.resized(id(&n, W::Library), true, AREA).unwrap();
+        let m = n.resized(id(&n, W::Library), true, AREA, Axis::Horizontal).unwrap();
         assert_eq!(rect(&m, AREA, W::Library).width, before + 2);
-        let m = n.resized(id(&n, W::Library), false, AREA).unwrap();
+        let m = n.resized(id(&n, W::Library), false, AREA, Axis::Horizontal).unwrap();
         assert_eq!(rect(&m, AREA, W::Library).width, before - 2);
-        // home is in a stack: it grows taller first
-        let h = rect(&n, AREA, W::Home).height;
-        assert_eq!(rect(&n.resized(id(&n, W::Home), true, AREA).unwrap(), AREA, W::Home).height, h + 1);
+        // home is in a stack: a step on the rows makes it taller, one on the columns wider (the split out of its stack)
+        let (h, w) = (rect(&n, AREA, W::Home).height, rect(&n, AREA, W::Home).width);
+        let taller = n.resized(id(&n, W::Home), true, AREA, Axis::Vertical).unwrap();
+        assert_eq!((rect(&taller, AREA, W::Home).height, rect(&taller, AREA, W::Home).width), (h + 1, w));
+        let wider = n.resized(id(&n, W::Home), true, AREA, Axis::Horizontal).unwrap();
+        assert_eq!((rect(&wider, AREA, W::Home).height, rect(&wider, AREA, W::Home).width), (h, w + 2));
+        // the library fills its column: no line above or below it
+        assert!(n.resized(id(&n, W::Library), true, AREA, Axis::Vertical).is_none());
         // squeezed to its minimum, it can't shrink more: the next split out is tried, else None
         let mut m = n.clone();
         for _ in 0..80 {
-            m = m.resized(id(&m, W::Library), false, AREA).unwrap_or(m);
+            m = m.resized(id(&m, W::Library), false, AREA, Axis::Horizontal).unwrap_or(m);
         }
         assert_eq!(rect(&m, AREA, W::Library).width, MIN_W);
         assert!(m.valid(AREA));
