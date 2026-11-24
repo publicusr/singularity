@@ -313,7 +313,9 @@ audio, and looks spectacular.
     Home in the Tray; "+ Widget" on the Tray opens the Widget picker and puts the pick in the Tray (by keyboard: the
     Tray's last focus stop, after its Widgets, there even when the Tray is empty; Enter opens the picker). Done (once Home has a
     Pane) asks for a name and saves a Design of your own with the current Theme; nothing is written before that. Esc
-    before anything is placed goes back to the Design on screen, untouched. A New design is saved only on Done (owner
+    before anything is placed goes back to the Design on screen, untouched; once something is placed, Ctrl+D on Done's
+    name prompt (its last row says so) throws the build away and goes back to it the same way (owner, after #42; Esc on
+    the prompt goes back to building). A New design is saved only on Done (owner
     Q61, 2026-11-24): quitting mid-build loses it, so spec #34's story 73 (empty Panes and the Tray saved, to come back
     halfway) holds for a Design that has a name, not for an unnamed build. While it is built, Pick a design, Save
     design as… and Reset design are left out of the palette.

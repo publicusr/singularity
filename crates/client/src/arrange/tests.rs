@@ -2105,6 +2105,46 @@ fn esc_on_a_new_design_before_anything_is_placed_leaves_the_design_untouched() {
     assert!(a.layout.has(Widget::Fft));
 }
 
+/// Owner, after #42: a New design… with things placed can be thrown away: Ctrl+D on its name prompt (which says so)
+/// brings back the Design that was on screen, untouched (its files, its look, its undo); nothing of the build is kept.
+#[test]
+fn ctrl_d_on_a_new_designs_name_prompt_throws_it_away() {
+    let (mut a, dir) = with_dirs();
+    a.close_pane(pid(&a, Widget::Fft));
+    a.toast = None;
+    a.undo_offer = None;
+    let plain = render(&mut a, W, H);
+    let (layout, name, on_disk) = (a.layout.clone(), a.layout_name.clone(), files(dir.path()));
+    a.run(Action::NewDesign);
+    render(&mut a, W, H);
+    drag_to!(&mut a, tray_item(&a, 0), centre(drawn_panes(&a)[0].1));
+    assert!(a.layout.has(Widget::Home) && a.layout != layout);
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.naming().map(|n| n.purpose), Some(crate::app::NameFor::NewDesign));
+    assert!(render(&mut a, W, H).contains("Ctrl+D discard it, back to the design you had"));
+    typed(&mut a, "Half");
+    ctrl(&mut a, 'd');
+    assert!(a.naming().is_none() && a.arranging.is_none() && a.modal().is_none());
+    assert_eq!((a.layout.clone(), a.layout_name.clone(), files(dir.path())), (layout, name, on_disk));
+    assert_eq!(render(&mut a, W, H), plain, "the app as before");
+    // the close from before the build is still undoable
+    ctrl(&mut a, 'z');
+    assert!(a.layout.has(Widget::Fft));
+}
+
+/// The other name prompts have no such row, and Ctrl+D there is no discard.
+#[test]
+fn only_a_new_designs_name_prompt_offers_discard() {
+    let (mut a, _dir) = with_dirs();
+    a.run(Action::SaveLayout);
+    let shot = render(&mut a, W, H);
+    assert!(shot.contains("Save design as") && !shot.contains("Ctrl+D"), "{shot}");
+    let layout = a.layout.clone();
+    ctrl(&mut a, 'd');
+    assert!(a.naming().is_some());
+    assert_eq!(a.layout, layout);
+}
+
 /// A name already taken is refused and the prompt stays; Esc on it goes back to arranging, the build intact.
 #[test]
 fn a_new_designs_name_is_never_one_taken_and_esc_on_it_keeps_building() {

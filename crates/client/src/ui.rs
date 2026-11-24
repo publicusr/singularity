@@ -233,7 +233,7 @@ fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
         Modal::Health => crate::setup::health_rect(area),
         Modal::Devices => devices_rect(area, app),
         Modal::Picker => crate::looks::picker_rect(area, app.picker()?),
-        Modal::Naming => naming_rect(area),
+        Modal::Naming => naming_rect(area, app),
         Modal::WidgetPicker => {
             // (its Pane gone: drawing it closes it)
             app.widget_picker().filter(|p| p.tray || app.layout.contains(p.target))?;
@@ -274,7 +274,7 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
             let mut edited = format!("Enter save · Esc keep it as “{} (edited)”", crate::design::DESIGNS[app.design].name);
             // the edit can still be undone from here, where there's room to say so
             let undo = app.keymap.label(Action::UndoLayout);
-            if !undo.is_empty() && edited.chars().count() + undo.chars().count() + 8 <= naming_rect(area).width.saturating_sub(4) as usize {
+            if !undo.is_empty() && edited.chars().count() + undo.chars().count() + 8 <= naming_rect(area, app).width.saturating_sub(4) as usize {
                 edited += &format!(" · {undo} undo");
             }
             let (title, hint) = match n.purpose {
@@ -282,13 +282,17 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
                 crate::app::NameFor::Fork => ("Keep your changes as a design", edited.as_str()),
                 crate::app::NameFor::NewPlaylist => ("New playlist", "Enter create · Esc cancel"),
             };
-            let inner = popup(f.buffer_mut(), naming_rect(area), th, title);
+            let inner = popup(f.buffer_mut(), naming_rect(area, app), th, title);
             let buf = f.buffer_mut();
             // the end of a long name stays in view
             let w = inner.width.saturating_sub(5) as usize;
             let shown: String = n.text.chars().skip(n.text.chars().count().saturating_sub(w)).collect();
             text(buf, inner.x + 1, inner.y, inner.width.saturating_sub(2), &format!("› {shown}▏"), th.s(th.fg).add_modifier(Modifier::BOLD));
             text(buf, inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), hint, th.s(th.dim));
+            // a New design… can be thrown away from here (owner, after #42)
+            if n.purpose == crate::app::NameFor::NewDesign && inner.height > 2 {
+                text(buf, inner.x + 1, inner.y + 2, inner.width.saturating_sub(2), "Ctrl+D discard it, back to the design you had", th.s(th.dim));
+            }
         }
         Modal::Details => crate::playlists::draw_details(f.buffer_mut(), area, app, th),
         Modal::Adding => crate::playlists::draw_adding(f.buffer_mut(), area, app, th),
@@ -299,8 +303,10 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
     }
 }
 
-fn naming_rect(area: Rect) -> Rect {
-    centered(area, 64, 4)
+fn naming_rect(area: Rect, app: &App) -> Rect {
+    // a New design's has a row more: how to throw it away
+    let discard = app.naming().is_some_and(|n| n.purpose == crate::app::NameFor::NewDesign);
+    centered(area, 64, if discard { 5 } else { 4 })
 }
 
 /// How many device rows the picker shows at once: all of them, unless the screen is too short (then they scroll).
@@ -3370,6 +3376,73 @@ mod tests {
         }
         let s = render(&mut app, 200, 64);
         assert!(s.contains("Recent searches") && s.contains("  nova"), "{s}");
+    }
+
+    /// Owner, after #55: in the smallest Home, search found songs you couldn't see or scroll to. There the songs fill the
+    /// rows under the chips (the highlight's window follows ↓ and the wheel), then the Shelves take their place, and
+    /// ↑ (or the wheel up) from the Shelves' top brings the songs back.
+    #[test]
+    fn a_tiny_homes_search_shows_its_results_and_scrolls_through_them() {
+        use crate::layout::{Axis, Node, Size, Widget};
+        use singularity_proto::{Card, SearchResults, TrackRow};
+        let (mut app, _rx) = playing_app(1);
+        let (sw, sh) = crate::needs::smallest(Widget::Home);
+        for w in [sw, 40] {
+            app.layout = Node::split(Axis::Vertical, Size::Cells(sh), Node::split(Axis::Horizontal, Size::Cells(w), Node::pane(Widget::Home), Node::pane(Widget::Lyrics)), Node::pane(Widget::Queue)).into();
+            app.focus = app.layout.pane_of(Widget::Home);
+            render(&mut app, 100, 30);
+            app.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+            for c in "nova".chars() {
+                app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+            let tracks = (1..=4).map(|i| TrackRow { uri: format!("spotify:track:t{i}"), name: format!("S{i}"), duration_ms: 60_000, ..Default::default() }).collect();
+            let artists = vec![Card { uri: "spotify:artist:a".into(), name: "Arty".into(), subtitle: String::new(), image_url: None, kind: "artist".into() }];
+            receive_search(&mut app, SearchResults { query: "nova".into(), tracks, artists, ..Default::default() });
+            // the Pane's rows inside its frame: the bar, the chips, then the first two songs
+            let inside = |app: &mut App| -> Vec<String> {
+                let s = render(app, 100, 30);
+                let by = s.lines().position(|r| r.contains('⌕')).expect("the search bar");
+                s.lines().skip(by).take(sh as usize - 2).map(|r| r.chars().skip(1).take(w as usize - 2).collect::<String>()).collect()
+            };
+            let rows = inside(&mut app);
+            assert!(rows[2].contains("S1") && rows[3].contains("S2"), "{w} wide: {rows:#?}");
+            // ↓ to the last song: the window follows it
+            for _ in 0..4 {
+                app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+            }
+            let rows = inside(&mut app);
+            assert!(rows[3].contains("S4"), "{rows:#?}");
+            // ↓ once more: into the Shelves, which take the songs' place
+            app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+            let rows = inside(&mut app);
+            assert!(rows[2..].iter().any(|r| r.contains("Art")) && !rows.iter().any(|r| r.contains("S4")), "{rows:#?}");
+            // ↑ from their top: the last song again
+            app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+            assert_eq!(app.searching().and_then(|s| s.track_sel), Some(3));
+            assert!(inside(&mut app)[3].contains("S4"));
+            // the wheel: over the last song down into the Shelves, and up again
+            let y = render(&mut app, 100, 30).lines().position(|r| r.contains('⌕')).unwrap() as u16 + 3;
+            let wheel = |app: &mut App, kind: MouseEventKind| app.mouse(MouseEvent { kind, column: 3, row: y, modifiers: KeyModifiers::NONE });
+            wheel(&mut app, MouseEventKind::ScrollDown);
+            assert!(app.searching().is_some_and(|s| s.track_sel.is_none() && s.shelves.sel.is_some()));
+            inside(&mut app);
+            wheel(&mut app, MouseEventKind::ScrollUp);
+            assert_eq!(app.searching().and_then(|s| s.track_sel), Some(3));
+            app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        }
+        // a Home with room keeps its headings
+        app.layout = Node::split(Axis::Vertical, Size::Cells(20), Node::pane(Widget::Home), Node::pane(Widget::Queue)).into();
+        app.focus = app.layout.pane_of(Widget::Home);
+        render(&mut app, 100, 30);
+        app.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        for c in "nova".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let tracks = vec![TrackRow { uri: "spotify:track:t1".into(), name: "S1".into(), ..Default::default() }];
+        receive_search(&mut app, SearchResults { query: "nova".into(), tracks, ..Default::default() });
+        let s = render(&mut app, 100, 30);
+        assert!(s.contains("Songs") && s.contains("S1"), "{s}");
     }
 
     #[test]

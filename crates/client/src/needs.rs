@@ -1,6 +1,7 @@
 //! Each Widget's smallest size (#36, D87): the whole Pane, frame included, below which it stops being usable. A Pane
-//! smaller than that shows one dim, centred line, `needs 30 × 10`, instead of its Widget; a Pane too small even for
-//! that line shows only its frame, the Widget's name in its title. Every drop is allowed, so this is what a Widget in
+//! smaller than that shows one dim, centred line, `needs 30 × 10`, instead of its Widget (down the Pane, a character a
+//! row, where it is too thin for it across; the shortest `30×10` where neither fits); a Pane too small even for that
+//! shows only its frame, the Widget's name in its title. Every drop is allowed, so this is what a Widget in
 //! too small a Pane looks like. Picked from the size contact sheet (`tools/pty`'s `contact-sheet`).
 
 use crate::layout::{MIN_H, MIN_W, WELL_ASPECT};
@@ -46,16 +47,27 @@ pub fn too_small(widget: Widget, rect: Rect) -> bool {
     rect.width < w || rect.height < h
 }
 
-/// The `needs W × H` line, dim and centred in `inner` (inside the Pane's frame), if it fits; nothing if it doesn't.
+/// The `needs W × H` line, dim and centred in `inner` (inside the Pane's frame). Where it doesn't fit across, it runs
+/// down, one character a row (owner, after #36: a thin Pane still says it); where neither fits, the shortest `W×H`,
+/// across or down; nothing only where even that doesn't fit.
 pub fn draw(buf: &mut Buffer, inner: Rect, widget: Widget, th: &Theme) {
     let (w, h) = smallest(widget);
-    let line = format!("needs {w} × {h}");
-    let len = line.chars().count() as u16;
-    if inner.height == 0 || inner.width < len {
-        return;
+    let style = th.s(th.dim);
+    for line in [format!("needs {w} × {h}"), format!("{w}×{h}")] {
+        let len = line.chars().count() as u16;
+        if inner.height >= 1 && inner.width >= len {
+            let x = inner.x + (inner.width - len) / 2;
+            crate::ui::text(buf, x, inner.y + (inner.height - 1) / 2, len, &line, style);
+            return;
+        }
+        if inner.width >= 1 && inner.height >= len {
+            let (x, y) = (inner.x + (inner.width - 1) / 2, inner.y + (inner.height - len) / 2);
+            for (i, c) in line.chars().enumerate() {
+                buf[(x, y + i as u16)].set_char(c).set_style(style);
+            }
+            return;
+        }
     }
-    let x = inner.x + (inner.width - len) / 2;
-    crate::ui::text(buf, x, inner.y + (inner.height - 1) / 2, len, &line, th.s(th.dim));
 }
 
 #[cfg(test)]
@@ -224,14 +236,52 @@ mod tests {
         }
     }
 
+    /// The rows inside the top-left Pane's frame, as characters.
+    fn inside(p: &[String]) -> Vec<Vec<char>> {
+        p[1..p.len() - 1].iter().map(|r| r.chars().skip(1).take(r.chars().count() - 2).collect()).collect()
+    }
+
+    /// Owner, after #36: a Pane too thin for the line across (Panes go down to `MIN_W`, ten columns inside) says it
+    /// down the Pane, a character a row, centred.
     #[test]
-    fn a_pane_too_small_for_the_line_shows_only_its_title() {
+    fn a_pane_too_thin_for_the_line_says_it_down_the_pane() {
         let mut app = App::new(None);
-        // 12×3: one row of ten cells inside, too few for `needs …`
+        let line: Vec<char> = "needs 16 × 4".chars().collect();
+        for (widget, w) in [(Widget::NowPlaying, 12), (Widget::NowPlaying, 13), (Widget::Lyrics, 12), (Widget::Queue, 13)] {
+            let (rows, buf) = screen(&mut app, widget, w, 20);
+            let (y0, p) = pane(&rows);
+            let inside = inside(&p);
+            let cols = inside[0].len();
+            // the one column with anything in it, centred side to side
+            let col = (0..cols).find(|&x| inside.iter().any(|r| r[x] != ' ')).unwrap_or_else(|| panic!("{widget} at {w}×20: blank\n{}", p.join("\n")));
+            assert!(col.abs_diff(cols - 1 - col) <= 1, "{widget} at {w}×20: centred side to side\n{}", p.join("\n"));
+            let down: Vec<char> = inside.iter().map(|r| r[col]).collect();
+            let top = down.iter().position(|c| *c == 'n').unwrap();
+            assert_eq!(&down[top..top + line.len()], line.as_slice(), "{}", p.join("\n"));
+            assert!(top.abs_diff(down.len() - top - line.len()) <= 1, "centred top to bottom\n{}", p.join("\n"));
+            assert!(inside.iter().all(|r| r.iter().enumerate().all(|(x, c)| x == col || *c == ' ')), "only the line\n{}", p.join("\n"));
+            assert_eq!(Some(buf[(1 + col as u16, y0 + 1 + top as u16)].fg), app.theme.s(app.theme.dim).fg, "dim");
+        }
+    }
+
+    /// Neither across nor down: the shortest `W×H`, across or down; nothing only where even that doesn't fit.
+    #[test]
+    fn a_pane_too_small_for_the_line_says_the_size_alone() {
+        let mut app = App::new(None);
+        // 12×3: one row of ten cells inside, too few for `needs …` across, too short for it down
         let (rows, _) = screen(&mut app, Widget::Lyrics, 12, 3);
         let (_, p) = pane(&rows);
         assert!(p[0].chars().any(char::is_alphabetic), "its name in the title: {p:#?}");
-        let inside: String = p[1].chars().skip(1).take(10).collect();
-        assert!(inside.trim().is_empty(), "nothing inside: {p:#?}");
+        let across: String = p[1].chars().skip(1).take(10).collect();
+        assert_eq!(across, "   16×4   ", "{p:#?}");
+        // (no Pane is that thin, but the line still never spills): one column, then a single cell
+        let th = &app.theme;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 8));
+        draw(&mut buf, Rect::new(1, 0, 1, 8), Widget::Lyrics, th);
+        let down: String = (0..8).map(|y| buf[(1, y)].symbol().to_string()).collect();
+        assert_eq!(down, "  16×4  ");
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 3));
+        draw(&mut buf, Rect::new(1, 1, 1, 1), Widget::Lyrics, th);
+        assert!(buf.content.iter().all(|c| c.symbol() == " "));
     }
 }

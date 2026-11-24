@@ -250,6 +250,11 @@ impl App {
                 _ => {}
             }
         }
+        // a New design… thrown away (owner, after #42): the Design that was on screen comes back, untouched
+        if purpose == crate::app::NameFor::NewDesign && k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('d' | 'D')) {
+            self.take_naming();
+            return self.cancel_new_design();
+        }
         match k.code {
             KeyCode::Esc => {
                 // the first edit of a built-in Design, left unnamed: kept as its one "(edited)" Design

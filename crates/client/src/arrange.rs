@@ -667,8 +667,9 @@ impl App {
         self.arranging.as_ref()?.fresh.as_ref()?.before.name.clone()
     }
 
-    /// Esc on a New design… before anything is placed: the Design that was on screen, as it was, and its undo history.
-    fn cancel_new_design(&mut self) {
+    /// Esc on a New design… before anything is placed, or Ctrl+D on its name prompt: the Design that was on screen, as
+    /// it was, and its undo history.
+    pub fn cancel_new_design(&mut self) {
         let Some(f) = self.arranging.take().and_then(|a| a.fresh) else { return };
         let Fresh { before, history } = *f;
         self.tile = None;

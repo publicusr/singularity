@@ -1820,6 +1820,11 @@ impl App {
                 s.shelves.move_sel(0, 0);
             }
             KeyCode::Up if s.track_sel.is_some_and(|i| i > 0) => s.track_sel = s.track_sel.map(|i| i - 1),
+            // a short Pane shows the songs or the Shelves: ↑ from the Shelves' top row brings the songs back
+            KeyCode::Up if s.short && songs > 0 && s.shelves.on_top_row() => {
+                s.shelves.sel = None;
+                s.track_sel = Some(songs - 1);
+            }
             KeyCode::Enter if s.track_sel.is_some() => {
                 let i = s.track_sel.unwrap_or(0);
                 self.play_search_track(i);
