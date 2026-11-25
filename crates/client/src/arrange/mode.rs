@@ -2,8 +2,9 @@
 //! moves come in together with what the module needs to see of the screen (a [`Scene`]: the layout, the focus, the
 //! window and the Panes' area, the dividers (the Screen plan's), the Design's names, the keymap), and what happened
 //! comes out as [`Out`]s, in the order the App carries them out (an edit committed, a line for the bar, the Widget
-//! picker, Done's name prompt…). The layout changes through one door: [`Out::Commit`] for an edit (one undo step, already
-//! remembered here), [`Out::Show`] for a layout shown without being one (a divider on its way, a New design… begun).
+//! picker, Done's name prompt…). The layout changes through one door: [`Out::Commit`] for an edit (one undo step,
+//! already remembered here), [`Out::Show`] for a layout shown without being one (a divider on its way, a New design…
+//! begun).
 //! Design-file effects are the Shown Design's: the App runs them for an `Out::Commit`.
 //!
 //! The module holds Arrange mode itself (`on`: since when, whether anything was edited, the Tray's scroll and focus,

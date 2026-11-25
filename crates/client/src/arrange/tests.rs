@@ -34,10 +34,10 @@ fn key(app: &mut App, code: KeyCode) {
 fn pid(app: &App, w: Widget) -> PaneId {
     app.layout.pane_of(w).unwrap_or_else(|| panic!("no Pane shows {w}"))
 }
-/// The drawn Pane showing `w`'s rectangle, from the hit boxes of the last frame.
+/// The rectangle of the Pane showing `w`, where the Screen plan has it now.
 fn pane(app: &App, w: Widget) -> Rect {
     let id = pid(app, w);
-    app.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if *p == id).then_some(*r)).unwrap_or_else(|| panic!("no pane {w}"))
+    app.plan().pane(id).map(|p| p.rect).unwrap_or_else(|| panic!("no pane {w}"))
 }
 /// A spot on the title bar of the Pane showing `w` that is neither a button nor a divider's.
 fn title_spot(app: &App, w: Widget) -> (u16, u16) {
@@ -49,12 +49,9 @@ fn swapped(n: impl Into<Arrangement>, x: Widget, y: Widget) -> Arrangement {
     let n = n.into();
     n.swap(n.pane_of(x).unwrap(), n.pane_of(y).unwrap()).unwrap()
 }
-/// Every Pane's rectangle as drawn in the last frame (its own hit box), by identity.
+/// Every Pane's rectangle where the Screen plan has it now (what the next frame draws), by identity.
 fn drawn_panes(app: &App) -> Vec<(PaneId, Rect)> {
-    let mut v: Vec<(PaneId, Rect)> = app.all_hits().iter().filter_map(|(r, h)| match h {
-        Hit::Focus(p) => Some((*p, *r)),
-        _ => None,
-    }).collect();
+    let mut v: Vec<(PaneId, Rect)> = app.plan().panes.iter().map(|p| (p.pane.id, p.rect)).collect();
     v.sort_by_key(|(p, _)| *p);
     v
 }

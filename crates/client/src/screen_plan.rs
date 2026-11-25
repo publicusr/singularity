@@ -144,9 +144,16 @@ pub fn has_panes(window: Rect) -> bool {
     window.width > 0 && !crate::mini::wanted(window)
 }
 
-/// Whether a Pane gets a ×: not the Required Widget's, not the only Pane, and only where its title has the room.
+/// Whether the Pane holding `widget`, one of `panes` on screen, can be closed (by its ×, the Pane menu's "Close pane",
+/// Arrange mode's `x`): not the Required Widget's, and not the only Pane (owner, Q105).
+pub fn closable(widget: Option<Widget>, panes: usize) -> bool {
+    !crate::arrangement::required(widget) && panes > 1
+}
+
+/// Whether a Pane gets a ×: it can be closed (`closable`), and its title has the room. Without the room, the Pane
+/// menu still offers "Close pane" (Q105).
 pub fn close_button(widget: Option<Widget>, panes: usize, width: u16) -> bool {
-    !crate::arrangement::required(widget) && panes > 1 && width >= 14
+    closable(widget, panes) && width >= 14
 }
 
 /// The rows, Panes and dividers for `f` (no Tray and no drag: those are Arrange mode's, `App::plan`).
@@ -288,7 +295,6 @@ impl ScreenPlan {
     }
 
     /// Whether Pane `id` is on screen too small for its Widget.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn short(&self, id: PaneId) -> bool {
         self.pane(id).is_some_and(|p| p.short)
     }
@@ -331,7 +337,7 @@ impl App {
     /// Where everything is on screen, as the App is now (before the first frame or a resize, a window of no size: no
     /// Panes).
     pub fn plan(&self) -> ScreenPlan {
-        let mut plan = plan(&self.plan_facts());
+        let mut plan = self.panes_plan();
         if !has_panes(self.window) {
             return plan;
         }
@@ -352,17 +358,20 @@ impl App {
         plan
     }
 
-    /// The dividers between the Panes, where they are now (Arrange mode's Scene, the pointer's shape).
-    pub fn dividers(&self) -> Vec<Divider> {
-        if !has_panes(self.window) {
-            return vec![];
-        }
-        self.layout.compute(rows(self.window, self.arrange.is_on()).body).dividers
+    /// The plan's rows, Panes and dividers, without the Tray and the drag (which Arrange mode works out from the
+    /// dividers: `App::plan` would ask itself).
+    fn panes_plan(&self) -> ScreenPlan {
+        plan(&self.plan_facts())
     }
 
-    /// Whether Pane `p` is on screen too small for its Widget: it takes no wheel, keys or clicks for it.
+    /// The dividers between the Panes, where the plan has them now (Arrange mode's Scene, the pointer's shape).
+    pub fn dividers(&self) -> Vec<Divider> {
+        self.panes_plan().dividers
+    }
+
+    /// Whether Pane `p` is on screen too small for its Widget (the plan's): it takes no wheel, keys or clicks for it.
     pub fn pane_is_short(&self, p: PaneId) -> bool {
-        has_panes(self.window) && self.layout.compute(rows(self.window, self.arrange.is_on()).body).rect(p).zip(self.layout.widget_in(p)).is_some_and(|(r, w)| crate::needs::too_small(w, r))
+        self.panes_plan().short(p)
     }
 
     /// A frame begins in `area`: everything a frame changes happens here, before drawing, and the plan it draws is

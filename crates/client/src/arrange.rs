@@ -139,7 +139,8 @@ impl App {
         mode::aspect(self.cell_px)
     }
 
-    /// Where the Panes are drawn (the last frame's), or a roomy guess before the first.
+    /// Where the Panes are laid out (`body`, kept with the window by `App::frame_begins` and Arrange mode), or a
+    /// roomy guess before the first frame.
     pub fn pane_area(&self) -> Rect {
         mode::pane_area(self.body)
     }
@@ -547,7 +548,8 @@ impl App {
             items.push(("Replace widget…".to_string(), MenuAct::ReplaceWidget));
         }
         items.push((SPLIT_ROW.to_string(), MenuAct::Split(self.default_split(id))));
-        if !crate::arrangement::required(self.layout.widget_in(id)) {
+        // (the ×'s rule, without its need for room: a Pane too narrow for a × still closes from here, Q105)
+        if crate::screen_plan::closable(self.layout.widget_in(id), self.layout.panes().len()) {
             items.push(("Close pane".into(), MenuAct::ClosePane));
         }
         if !self.arrange.is_on() {

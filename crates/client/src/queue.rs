@@ -756,6 +756,8 @@ mod tests {
         let r = Rect::new(0, 0, BIG.0, BIG.1);
         let mut app = full_app(27);
         let (_, hits, _) = drawn(r, &mut app, draw);
+        // (all drawn inside the queue's Pane)
+        app.hits_in_panes = hits.len();
         app.hits = hits;
         let rr = app.hit_rect(&Hit::QueueRow(2)).unwrap();
         app.open_queue_menu(2, None);

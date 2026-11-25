@@ -142,11 +142,11 @@ async fn main() -> anyhow::Result<()> {
             let mut out = stdout().lock();
             out.write_all(b"\x1b[?2026h")?; // synchronized output: the frame and its images appear together
             drop(out);
-            let mut built = Duration::ZERO;
+            let mut framed = Duration::ZERO;
             tui.draw(|f| {
                 let t = Instant::now();
                 ui::frame(f, &mut app);
-                built = t.elapsed();
+                framed = t.elapsed();
             })?;
             let drawn = start.elapsed();
             let mut out = stdout().lock();
@@ -169,8 +169,8 @@ async fn main() -> anyhow::Result<()> {
             drop(out);
             if let Some(l) = log.as_mut() {
                 let us = |d: Duration| d.as_micros();
-                // start, rate, then µs: tick, ui::draw, diff and write, images and flush
-                writeln!(l, "{} {fps} {} {} {} {}", us(start - t0), us(ticked), us(built), us(drawn.saturating_sub(ticked + built)), us(start.elapsed().saturating_sub(drawn)))?;
+                // start, rate, then µs: tick, the frame (App::frame_begins and ui::draw), diff and write, images and flush
+                writeln!(l, "{} {fps} {} {} {} {}", us(start - t0), us(ticked), us(framed), us(drawn.saturating_sub(ticked + framed)), us(start.elapsed().saturating_sub(drawn)))?;
             }
         }
         Ok(())

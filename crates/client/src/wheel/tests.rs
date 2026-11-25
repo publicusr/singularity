@@ -43,9 +43,9 @@ fn cells(buf: &Buffer, r: Rect) -> Vec<Cell> {
     (r.y..r.bottom()).flat_map(|y| (r.x..r.right()).map(move |x| (x, y))).map(|(x, y)| buf[(x, y)].clone()).collect()
 }
 
+/// The rectangle of the Pane showing `w`, where the Screen plan has it now.
 fn pane(app: &App, w: Widget) -> Rect {
-    let id = app.layout.pane_of(w);
-    app.all_hits().iter().rev().find_map(|(r, h)| matches!(h, Hit::Focus(p) if Some(*p) == id).then_some(*r)).unwrap_or_else(|| panic!("no Pane shows {w}"))
+    app.layout.pane_of(w).and_then(|id| app.plan().pane(id).map(|p| p.rect)).unwrap_or_else(|| panic!("no Pane shows {w}"))
 }
 
 fn wheel(app: &mut App, kind: MouseEventKind, x: u16, y: u16, notches: usize) {
