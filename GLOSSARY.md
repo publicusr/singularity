@@ -73,7 +73,8 @@ _Avoid_: hit map, layout (that's the Arrangement)
 
 **Widget catalogue**:
 Every Widget's fixed facts in one place: its title, smallest size, swap group, whether the Widget picker offers it,
-whether it is Required, whether it is the black hole, whether it draws its own frame, and how it is drawn (D89).
+whether it is Required, whether it is the black hole, whether it draws its own frame, whether it moves with the music
+(needs its spectrum), and how it is drawn (D89).
 _Avoid_: registry
 
 **Gesture**:
