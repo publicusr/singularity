@@ -36,11 +36,11 @@ pub const DEVICE_NAME: &str = "Singularity";
 
 #[derive(Clone)]
 pub struct SoloistEngine {
-    pub data_dir: PathBuf,
     /// its name on Connect
     pub device_name: String,
-    /// where Soloist runs, picked by the Engine assembly
-    pub runner: Local,
+    /// where Soloist runs, picked by the Engine assembly; it also holds Singularity's data folder (one place, so the
+    /// log and volume can't end up apart from Soloist's own data)
+    runner: Local,
     /// macOS: Soloist runs in the Soloist VM (D55)
     #[cfg(target_os = "macos")]
     pub vm: Option<Arc<crate::soloist_vm::VmHost>>,
@@ -52,10 +52,8 @@ impl SoloistEngine {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
             .unwrap_or_else(std::env::temp_dir);
-        let data_dir = base.join("singularity");
         SoloistEngine {
-            runner: Local::new(data_dir.clone(), singularity_config::EngineChoice::default().soloist_cache_mb()),
-            data_dir,
+            runner: Local::new(base.join("singularity"), singularity_config::EngineChoice::default().soloist_cache_mb()),
             device_name: DEVICE_NAME.into(),
             #[cfg(target_os = "macos")]
             vm: None,
@@ -66,7 +64,7 @@ impl SoloistEngine {
     pub fn local(device_name: String, cache_mb: u32) -> SoloistEngine {
         let mut e = SoloistEngine::from_env();
         e.device_name = device_name;
-        e.runner = Local::new(e.data_dir.clone(), cache_mb);
+        e.runner = Local::new(e.data_dir().to_path_buf(), cache_mb);
         e
     }
 
@@ -76,7 +74,7 @@ impl SoloistEngine {
     pub fn in_vm(device_name: String, feed: Arc<crate::tap::Feed>) -> SoloistEngine {
         let mut e = SoloistEngine::from_env();
         e.device_name = device_name;
-        e.vm = Some(Arc::new(crate::soloist_vm::VmHost::new(&e.data_dir, feed)));
+        e.vm = Some(Arc::new(crate::soloist_vm::VmHost::new(e.data_dir(), feed)));
         e
     }
 
@@ -107,8 +105,12 @@ impl SoloistEngine {
         }
         self.runner.update_waiting()
     }
+    /// Singularity's data folder (`$XDG_DATA_HOME/singularity`): Soloist's builds and state are under it.
+    pub fn data_dir(&self) -> &std::path::Path {
+        self.runner.data_dir()
+    }
     fn state_dir(&self) -> PathBuf {
-        self.data_dir.join("soloist-state")
+        self.runner.state_dir().to_path_buf()
     }
 }
 

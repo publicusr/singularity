@@ -60,6 +60,16 @@ impl Local {
         Local { state: data_dir.join("soloist-state"), builds: Builds { root: data_dir }, cache_mb }
     }
 
+    /// Singularity's data folder, which holds Soloist's builds and state.
+    pub fn data_dir(&self) -> &std::path::Path {
+        &self.builds.root
+    }
+
+    /// Soloist's own state (pairing, cache, its log).
+    pub fn state_dir(&self) -> &std::path::Path {
+        &self.state
+    }
+
     fn binary(&self) -> PathBuf {
         self.builds.binary()
     }
