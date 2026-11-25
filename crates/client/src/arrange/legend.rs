@@ -61,9 +61,13 @@ fn state(name: &str, w: u16) -> App {
             assert_eq!(a.layout.tray(), &[Widget::Fft]);
             legend(&mut a, w);
             down_to_tray(&mut a, w);
-            while tray_focus(&a) != Some(TrayStop::Widget(Widget::Fft)) {
+            for _ in 0..10 {
+                if tray_focus(&a) == Some(TrayStop::Widget(Widget::Fft)) {
+                    break;
+                }
                 key(&mut a, KeyCode::Left);
             }
+            assert_eq!(tray_focus(&a), Some(TrayStop::Widget(Widget::Fft)), "← reaches the Tray's Widget");
         }
         "+ Widget focused" => {
             key(&mut a, KeyCode::Char('m'));
@@ -80,7 +84,7 @@ fn state(name: &str, w: u16) -> App {
     a
 }
 
-/// Today's legend (`main` at the D87 merge), state by state and width by width: the keys between the ` ARRANGE ` tag
+/// Today's legend (`main` when #86 was built, after the D87 merge), state by state and width by width: the keys between the ` ARRANGE ` tag
 /// and the right end, which is ` Done ` (after "Home still needs a Pane" while Home waits in the Tray).
 const PINNED: [(&str, u16, &str); 30] = [
     ("nothing picked up", 90, "←↑↓→ Enter pick up · t Tray · ⊞ s+arrow split · × x close · Esc done"),
@@ -123,7 +127,10 @@ fn the_arrange_legend_is_pinned_at_the_owners_widths() {
         let right = if name == "Home still needs a Pane" { "Home still needs a Pane   Done" } else { "Done" };
         let left = format!("  ARRANGE  {keys}");
         // ` Done ` ends a cell short of the edge (the row's blanks after it are trimmed)
-        let gap = (w as usize - 2).checked_sub(left.chars().count() + right.chars().count()).expect("fits");
+        let Some(gap) = (w as usize - 2).checked_sub(left.chars().count() + right.chars().count()) else {
+            wrong.push(format!("{name} at {w}: the pinned keys don't fit {w} columns"));
+            continue;
+        };
         let want = format!("{left}{}{right}", " ".repeat(gap));
         let mut a = state(name, w);
         let got = legend(&mut a, w);
