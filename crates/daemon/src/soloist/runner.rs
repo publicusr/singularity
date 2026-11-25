@@ -173,6 +173,5 @@ async fn keep_current(builds: Builds, url: String, days: watch::Receiver<Option<
 /// Is a Soloist already running on this state directory? (Its pid file names a live `soloist` process.)
 pub fn running_soloist(state: &std::path::Path) -> Option<u32> {
     let pid: u32 = std::fs::read_to_string(state.join("data/soloist.pid")).ok()?.trim().parse().ok()?;
-    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
-    (comm.trim() == "soloist").then_some(pid)
+    (singularity_config::host::Host::this().name_of(pid)? == "soloist").then_some(pid)
 }

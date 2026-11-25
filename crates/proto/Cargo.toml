@@ -12,3 +12,5 @@ repository.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+# the Host: this user's id, for the socket's fallback folder
+singularity-config = { path = "../config" }

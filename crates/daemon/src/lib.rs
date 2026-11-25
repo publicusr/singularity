@@ -26,6 +26,10 @@ pub mod secrets;
 pub mod soloist;
 #[cfg(target_os = "macos")]
 pub mod soloist_vm;
+/// The Spotify app as this OS installs and starts it (a Platform seam; the AppEngine asks it)
+#[cfg_attr(target_os = "macos", path = "app_engine/macos.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "app_engine/linux.rs")]
+pub mod spotify_app;
 pub mod store;
 pub mod tap;
 pub mod update;

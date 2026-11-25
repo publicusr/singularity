@@ -27,7 +27,7 @@ pub fn lossless_fix(app: &App) -> &'static str {
 pub const KEY_URL: &str = "https://developer.spotify.com/dashboard/soloist";
 
 /// What this OS calls its keyring (the Daemon reports "keyring" for either).
-const KEYRING: &str = if cfg!(target_os = "macos") { "Keychain" } else { "keyring" };
+use singularity_config::host::KEYRING;
 
 /// Where a secret lives, as the health view says it.
 fn place(at: &str) -> String {
