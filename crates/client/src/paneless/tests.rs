@@ -1,7 +1,7 @@
 //! The library and the queue without a Pane, driven through the App with real keys and clicks (D87).
 
 use super::*;
-use crate::app::{Action, Hit, Page, Target};
+use crate::app::{Action, Hit, PageName, Target};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -73,7 +73,7 @@ fn row(a: &App, h: Hit) -> (u16, u16) {
 
 fn page_title(a: &App) -> Option<String> {
     match a.current_page() {
-        Page::List { title, .. } => Some(title),
+        PageName::List { title, .. } => Some(title),
         _ => None,
     }
 }

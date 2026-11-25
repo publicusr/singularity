@@ -202,7 +202,7 @@ impl App {
             self.say("Cover changed");
         }
         if ok {
-            if self.open.is_open(uri) {
+            if self.shows_list(uri) {
                 self.send(Command::GetTracks { uri: uri.into() });
             } else {
                 self.open.drop_list(uri);

@@ -192,8 +192,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     side.top = first(side.sel, side.top, side.rows, side.cols, n);
     // (its popup, where no Pane shows it, has the keys as a focused Pane has them)
     let focused = app.is_focused(crate::layout::Widget::Library) || app.is_open(crate::app::Modal::Library);
-    let open = app.open.view().map(|v| v.uri.clone());
-    let page = app.current_page();
+    let open = app.list_view().map(|v| v.uri.clone());
     let mut hits = vec![];
     for row in side.top..n.min(side.top + side.visible) {
         let (c, k) = ((row - side.top) / side.rows, (row - side.top) % side.rows);
@@ -202,7 +201,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let e = Rect::new(col.x, col.y + k as u16 * pitch, col.width, cover);
         let y = e.y;
         let (g, name, sub, depth, current, art) = match row {
-            0 => ("⌂", "Home".to_string(), String::new(), 0u16, page == crate::app::Page::Home, None),
+            0 => ("⌂", "Home".to_string(), String::new(), 0u16, matches!(app.page, crate::app::Page::Home), None),
             i => {
                 let it = &app.library.as_ref().expect("row exists").items[i - FIXED];
                 let art = it.image_url.clone().filter(|_| it.kind != "folder");

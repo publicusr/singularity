@@ -185,7 +185,7 @@ impl App {
         if !complete {
             // pages are still arriving by offset: start over rather than shift them
             self.open.drop_list(LIKED);
-            if self.open.is_open(LIKED) {
+            if self.shows_list(LIKED) {
                 self.send(Command::GetTracks { uri: LIKED.into() });
             }
             return;
@@ -201,10 +201,10 @@ impl App {
                     None => return,
                 },
             };
-            if let Some(mut list) = self.open.edit(LIKED) {
+            if let Some(mut list) = self.open.edit(LIKED, self.shows_list(LIKED)) {
                 list.insert(at, row);
             }
-        } else if let Some(removed) = self.open.edit(LIKED).and_then(|mut l| l.remove(uri)) {
+        } else if let Some(removed) = self.open.edit(LIKED, self.shows_list(LIKED)).and_then(|mut l| l.remove(uri)) {
             self.saved.stash.insert(uri.into(), removed);
         }
         // the sidebar's and the list's "N songs" count along
@@ -213,8 +213,14 @@ impl App {
         if let Some(it) = self.library.as_mut().and_then(|l| l.items.iter_mut().find(|i| i.kind == "liked")) {
             it.subtitle = count.clone();
         }
-        if let Some(v) = self.open.view_mut().filter(|v| v.uri == LIKED) {
-            v.subtitle = count;
+        if let Some(v) = self.list_view_mut().filter(|v| v.uri == LIKED) {
+            v.subtitle = count.clone();
+        }
+        // the page names the list as its view does
+        if let crate::app::Page::List { uri, subtitle, .. } = &mut self.page
+            && uri == LIKED
+        {
+            *subtitle = count;
         }
     }
 
@@ -222,7 +228,7 @@ impl App {
     fn find_row(&self, uri: &str) -> Option<TrackRow> {
         let lists = self.open.all_rows();
         let search = self.searching().into_iter().filter_map(|s| s.results()).flat_map(|r| r.tracks.iter());
-        let artist = self.artist.iter().filter_map(|a| a.page.as_ref()).flat_map(|p| p.top_tracks.iter());
+        let artist = self.page.artist().into_iter().filter_map(|a| a.page.as_ref()).flat_map(|p| p.top_tracks.iter());
         if let Some(r) = lists.chain(search).chain(artist).find(|r| r.uri == uri) {
             return Some(r.clone());
         }

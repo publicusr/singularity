@@ -169,7 +169,7 @@ impl App {
         let Some(e) = entries(self).into_iter().nth(i) else { return };
         match e.kind {
             Kind::Number { .. } => {
-                if let Some(v) = self.settings_view.as_mut() {
+                if let Some(v) = self.page.settings_mut() {
                     v.sel = i;
                     v.typing = Some(String::new());
                 }
@@ -193,11 +193,11 @@ impl App {
 
     /// Typing goes to the number being edited.
     pub fn settings_typing(&self) -> bool {
-        self.settings_view.as_ref().is_some_and(|v| v.typing.is_some())
+        self.page.settings().is_some_and(|v| v.typing.is_some())
     }
 
     pub fn settings_key(&mut self, k: KeyEvent) -> bool {
-        let Some(v) = self.settings_view.clone() else { return false };
+        let Some(v) = self.page.settings().cloned() else { return false };
         if let Some(mut typed) = v.typing {
             match k.code {
                 KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == ',' || (c == '-' && typed.is_empty()) => typed.push(c),
@@ -205,21 +205,21 @@ impl App {
                     typed.pop();
                 }
                 KeyCode::Enter => {
-                    if let Some(v) = self.settings_view.as_mut() {
+                    if let Some(v) = self.page.settings_mut() {
                         v.typing = None;
                     }
                     self.settings_save_typed(v.sel, &typed);
                     return true;
                 }
                 KeyCode::Esc => {
-                    if let Some(v) = self.settings_view.as_mut() {
+                    if let Some(v) = self.page.settings_mut() {
                         v.typing = None;
                     }
                     return true;
                 }
                 _ => {}
             }
-            if let Some(v) = self.settings_view.as_mut() {
+            if let Some(v) = self.page.settings_mut() {
                 v.typing = Some(typed);
             }
             return true;
@@ -232,7 +232,7 @@ impl App {
                     return true;
                 }
                 KeyCode::Down if v.on_tabs => {
-                    if let Some(v) = self.settings_view.as_mut() {
+                    if let Some(v) = self.page.settings_mut() {
                         v.on_tabs = false;
                     }
                     return true;
@@ -254,7 +254,7 @@ impl App {
                 KeyCode::End => n - 1,
                 _ => return false,
             };
-            if let Some(v) = self.settings_view.as_mut() {
+            if let Some(v) = self.page.settings_mut() {
                 v.key_sel = sel;
             }
             return true;
@@ -279,14 +279,14 @@ impl App {
             }
             _ => return false,
         };
-        if let Some(v) = self.settings_view.as_mut() {
+        if let Some(v) = self.page.settings_mut() {
             v.sel = sel;
         }
         true
     }
 
     fn settings_to_tabs(&mut self) -> bool {
-        if let Some(v) = self.settings_view.as_mut() {
+        if let Some(v) = self.page.settings_mut() {
             v.on_tabs = true;
         }
         true
@@ -294,7 +294,7 @@ impl App {
 
     /// Show tab `t` (the highlight stays on the tab row if it was there).
     pub fn settings_tab(&mut self, t: Tab) {
-        if let Some(v) = self.settings_view.as_mut() {
+        if let Some(v) = self.page.settings_mut() {
             v.tab = t;
             v.typing = None;
         }
@@ -302,7 +302,7 @@ impl App {
 
     /// The wheel over the page moves the highlight (Shift: a page).
     pub fn settings_wheel(&mut self, d: i64, coarse: bool) {
-        let Some(v) = self.settings_view.as_mut() else { return };
+        let Some(v) = self.page.settings_mut() else { return };
         v.on_tabs = false;
         let step = if coarse { v.visible.max(1) as i64 } else { 1 };
         let (sel, n) = match v.tab {
@@ -336,7 +336,7 @@ fn scrolled(all: &[Line], sel: usize, top: usize, visible: usize) -> usize {
 }
 
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
-    let Some(mut view) = app.settings_view.clone() else { return };
+    let Some(mut view) = app.page.settings().cloned() else { return };
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     if w < 24 || r.height < 3 {
         return;
@@ -367,7 +367,9 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         for (rect, h) in hits {
             app.hit(rect, h);
         }
-        app.settings_view = Some(view);
+        if let Some(v) = app.page.settings_mut() {
+            *v = view;
+        }
         return;
     }
     for p in problems.iter().take(3) {
@@ -427,7 +429,9 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     for (rect, h) in hits {
         app.hit(rect, h);
     }
-    app.settings_view = Some(view);
+    if let Some(v) = app.page.settings_mut() {
+        *v = view;
+    }
 }
 
 /// The keys tab: what's wrong with `keys.toml`, then every action with its keys and its name in the file.
@@ -495,7 +499,7 @@ mod tests {
 
     fn select(app: &mut App, key: &str) {
         let i = singularity_config::SETTINGS.iter().position(|(k, _)| *k == key).unwrap();
-        app.settings_view.as_mut().unwrap().sel = i;
+        app.page.settings_mut().unwrap().sel = i;
     }
 
     #[test]
@@ -541,13 +545,13 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Char('q'));
         key(&mut app, KeyCode::Esc);
-        assert!(!app.quit && app.settings_view.is_some());
+        assert!(!app.quit && app.page.settings().is_some());
         key(&mut app, KeyCode::Right);
         assert_eq!(app.config.idle.minutes, 3.5);
         assert!(file().contains("minutes = 3.5"));
         // Esc leaves the page
         key(&mut app, KeyCode::Esc);
-        assert!(app.settings_view.is_none() && !app.quit);
+        assert!(app.page.settings().is_none() && !app.quit);
     }
 
     #[test]
@@ -581,7 +585,7 @@ mod tests {
         draw(&mut app);
         key(&mut app, KeyCode::Up);
         key(&mut app, KeyCode::Right);
-        assert_eq!(app.settings_view.as_ref().unwrap().tab, Tab::Keys);
+        assert_eq!(app.page.settings().unwrap().tab, Tab::Keys);
         let s = draw(&mut app);
         assert!(s.contains("standard preset") && s.contains("Space") && s.contains("Play / pause") && s.contains("play_pause"), "{s}");
         // every action has a row, reached by moving down (an unbound one shows —)
@@ -590,20 +594,20 @@ mod tests {
             key(&mut app, KeyCode::Down);
             draw(&mut app);
         }
-        assert_eq!(app.settings_view.as_ref().unwrap().key_sel, Action::ALL.len() - 1);
+        assert_eq!(app.page.settings().unwrap().key_sel, Action::ALL.len() - 1);
         assert!(draw(&mut app).contains("Quit"));
         // a binding and a mistake in keys.toml show (what the watcher does)
         let kp = dir.path().join("keys.toml");
         std::fs::write(&kp, "schema = 1\npreset = \"vim\"\n[bindings]\nstats = \"Ctrl+T\"\nnope = \"x\"\n").unwrap();
         app.apply_keys(singularity_config::load_keys(&kp));
-        app.settings_view.as_mut().unwrap().key_sel = Action::ALL.iter().position(|a| *a == Action::Stats).unwrap();
+        app.page.settings_mut().unwrap().key_sel = Action::ALL.iter().position(|a| *a == Action::Stats).unwrap();
         let s = draw(&mut app);
         assert!(s.contains("vim preset") && s.contains("^T") && s.contains("no action called \"nope\""), "{s}");
         // ← goes back to the config tab; Esc leaves the page
         key(&mut app, KeyCode::Left);
-        assert_eq!(app.settings_view.as_ref().unwrap().tab, Tab::Config);
+        assert_eq!(app.page.settings().unwrap().tab, Tab::Config);
         key(&mut app, KeyCode::Esc);
-        assert!(app.settings_view.is_none());
+        assert!(app.page.settings().is_none());
     }
 
     #[test]

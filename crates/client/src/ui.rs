@@ -1,6 +1,6 @@
 //! Rendering. Pure function of `App` state, plus hit-box registration for the mouse.
 
-use crate::app::{Action, App, Hit, Link, Menu, Modal};
+use crate::app::{Action, App, Hit, Link, Menu, Modal, Page};
 use crate::layout::{Pane, PaneId, Widget};
 use crate::scrub::{self, Bar};
 use crate::theme::{Rgb, Theme};
@@ -507,15 +507,18 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     let (title, todo) = w.map_or(("", ""), slot_info);
     let title = w.map_or(title, |w| crate::design::title(app.design, w, title));
     // the main Pane is titled after what it shows
-    let title = match (w, app.open.view(), &app.artist) {
-        (Some(Widget::Home), _, _) if app.search.is_open() => "search".to_string(),
-        (Some(Widget::Home), _, _) if app.stats_view.is_some() => "stats".to_string(),
-        (Some(Widget::Home), _, _) if app.settings_view.is_some() => "settings".to_string(),
-        (Some(Widget::Home), _, Some(a)) => a.name.clone(),
-        (Some(Widget::Home), Some(v), _) => v.title.clone(),
+    let title = match w {
+        Some(Widget::Home) => match &app.page {
+            Page::Search => "search".to_string(),
+            Page::Stats(_) => "stats".to_string(),
+            Page::Settings(_) => "settings".to_string(),
+            Page::Artist(a) => a.name.clone(),
+            Page::List { .. } => app.list_view().map_or_else(|| title.to_string(), |v| v.title.clone()),
+            Page::Home => title.to_string(),
+        },
         // its title is the switch between artists and tracks
-        (Some(Widget::TopWeek), _, _) if app.top_week_tracks => "top tracks · week ⇄".to_string(),
-        (Some(Widget::TopWeek), _, _) => "top artists · week ⇄".to_string(),
+        Some(Widget::TopWeek) if app.top_week_tracks => "top tracks · week ⇄".to_string(),
+        Some(Widget::TopWeek) => "top artists · week ⇄".to_string(),
         _ => title.to_string(),
     };
     let number = if th.numbered { superscript(i + 1) } else { String::new() };
@@ -701,45 +704,15 @@ pub fn widget(buf: &mut Buffer, rect: Rect, inner: Rect, w: Widget, todo: &str, 
         crate::meters::loudness(buf, inner, &app.meters, th);
         return;
     }
-    if w == Home && app.search.is_open() {
-        crate::search::draw(buf, inner, app, th);
-        return;
-    }
-    if w == Home && app.stats_view.is_some() {
-        crate::stats::draw(buf, inner, app, th);
-        return;
-    }
-    if w == Home && app.settings_view.is_some() {
-        crate::settings::draw(buf, inner, app, th);
-        return;
-    }
-    if w == Home && app.artist.is_some() {
-        crate::artist::draw(buf, inner, app, th);
-        return;
-    }
-    if w == Home && app.open.view().is_some() {
-        crate::tracks::draw(buf, inner, app, th);
-        return;
-    }
+    // the main Pane draws the page it shows (no catch-all arm)
     if w == Home {
-        // Search is built into Home (D70): the bar on top, the feed under it; a short Home keeps the bar as a search line
-        // without the blank row under it (#55)
-        let mut feed_area = inner;
-        if inner.height >= 2 && inner.width >= 12 {
-            let (x, w) = (inner.x + 1, inner.width.saturating_sub(2));
-            let on = app.is_focused(Home) && app.home_view.on_bar;
-            let hint = if on { "type or Enter".to_string() } else { app.keymap.label(Action::Search) };
-            crate::search::bar(buf, Rect::new(x, inner.y, w, 1), "", on, &hint, th);
-            app.hit(Rect::new(x, inner.y, w, 1), Hit::SearchBar);
-            let below = if inner.height >= 6 { 2 } else { 1 };
-            feed_area = Rect::new(inner.x, inner.y + below, inner.width, inner.height - below);
-            app.home_view.has_bar = true;
-        } else {
-            app.home_view.has_bar = false;
-            app.home_view.on_bar = false;
-        }
-        if !home_status(buf, feed_area, app, th) {
-            crate::home::draw(buf, feed_area, app, th);
+        match app.page {
+            Page::Search => crate::search::draw(buf, inner, app, th),
+            Page::Stats(_) => crate::stats::draw(buf, inner, app, th),
+            Page::Settings(_) => crate::settings::draw(buf, inner, app, th),
+            Page::Artist(_) => crate::artist::draw(buf, inner, app, th),
+            Page::List { .. } => crate::tracks::draw(buf, inner, app, th),
+            Page::Home => home_page(buf, inner, app, th),
         }
         return;
     }
@@ -752,6 +725,29 @@ pub fn widget(buf: &mut Buffer, rect: Rect, inner: Rect, w: Widget, todo: &str, 
 }
 
 
+
+/// Home in the main Pane: the search bar on top, the feed under it.
+fn home_page(buf: &mut Buffer, inner: Rect, app: &mut App, th: &Theme) {
+    // Search is built into Home (D70): the bar on top, the feed under it; a short Home keeps the bar as a search line
+    // without the blank row under it (#55)
+    let mut feed_area = inner;
+    if inner.height >= 2 && inner.width >= 12 {
+        let (x, w) = (inner.x + 1, inner.width.saturating_sub(2));
+        let on = app.is_focused(crate::layout::Widget::Home) && app.home_view.on_bar;
+        let hint = if on { "type or Enter".to_string() } else { app.keymap.label(Action::Search) };
+        crate::search::bar(buf, Rect::new(x, inner.y, w, 1), "", on, &hint, th);
+        app.hit(Rect::new(x, inner.y, w, 1), Hit::SearchBar);
+        let below = if inner.height >= 6 { 2 } else { 1 };
+        feed_area = Rect::new(inner.x, inner.y + below, inner.width, inner.height - below);
+        app.home_view.has_bar = true;
+    } else {
+        app.home_view.has_bar = false;
+        app.home_view.on_bar = false;
+    }
+    if !home_status(buf, feed_area, app, th) {
+        crate::home::draw(buf, feed_area, app, th);
+    }
+}
 
 fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     // what the bar shows, without the queue it doesn't (the whole state, queue and all, was cloned every frame: Q1)
@@ -1543,7 +1539,7 @@ mod tests {
         assert!(!s.lines().skip(lib.y as usize).take(4).any(|l| lib_text(l).contains("Search")), "no Search row in the library");
         let bar = app.hits.iter().find_map(|(r, h)| (*h == Hit::SearchBar).then_some(*r)).expect("a clickable bar");
         click(&mut app, bar.x + 4, bar.y);
-        assert_eq!(app.current_page(), crate::app::Page::Search);
+        assert_eq!(app.current_page(), crate::app::PageName::Search);
         app.run(Action::GoHome);
         render(&mut app, 200, 64);
         app.focus_on(Widget::Home);
@@ -1611,7 +1607,7 @@ mod tests {
         render(&mut app, 200, 64);
         let b = bar(&app).unwrap();
         click(&mut app, b.x + 3, b.y);
-        assert_eq!(app.current_page(), crate::app::Page::Search);
+        assert_eq!(app.current_page(), crate::app::PageName::Search);
     }
 
     #[test]
@@ -1677,13 +1673,90 @@ mod tests {
         let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).rect_of(Widget::Home).unwrap();
         assert!(back.x > home.x + home.width / 2, "{back:?} in {home:?}");
         assert!(render(&mut app, 200, 64).contains("← →"));
-        assert!(app.open.view().is_some());
+        assert!(app.list_view().is_some());
         click(&mut app, back.x + 1, back.y);
-        assert!(app.open.view().is_none() && app.forward.len() == 1, "back on Home");
+        assert!(app.list_view().is_none() && app.forward.len() == 1, "back on Home");
         render(&mut app, 200, 64);
         let fwd = app.hits.iter().find_map(|(r, h)| (*h == Hit::History(1)).then_some(*r)).expect("▸ shown");
         click(&mut app, fwd.x, fwd.y);
-        assert!(app.open.view().is_some_and(|v| v.uri == "spotify:playlist:mfy1"), "forward again");
+        assert!(app.list_view().is_some_and(|v| v.uri == "spotify:playlist:mfy1"), "forward again");
+    }
+
+    /// D88: the main Pane shows one page at a time, holding its view. Through a list, Search, an artist page, Stats
+    /// and Settings and back to Home, a key reaches only the page shown, and a page left leaves no view behind: back on
+    /// a list or Search finds it as it was, Home where it was; an artist page and Settings start fresh, Stats on the
+    /// period it was left on (Q84).
+    #[test]
+    fn a_page_holds_its_view_and_keys_reach_only_the_page_shown() {
+        use singularity_proto::{ArtistPage, SearchResults, Shelf, StatsPeriod, TrackPage, TrackRow};
+        let (mut app, _rx) = home_app();
+        for p in StatsPeriod::ALL {
+            app.stats.insert(p, seeded_stats(p));
+        }
+        let list = "spotify:playlist:p";
+        let rows = |n: usize| (0..n).map(|i| TrackRow { uri: format!("spotify:track:{i}"), name: format!("Song {i}"), playable: true, ..Default::default() }).collect::<Vec<_>>();
+        app.track_page(TrackPage { uri: list.into(), offset: 0, total: 20, tracks: rows(20), header: None });
+        let shelves = app.home.as_ref().unwrap().shelves.iter().take(3).cloned().collect::<Vec<Shelf>>();
+        app.artist_page(ArtistPage { uri: "spotify:artist:a".into(), name: "Nova Drift".into(), shelves, ..Default::default() });
+        // what each page's view says (None: not shown); Search's words, highlighted song and results stay beside it
+        let marks = |app: &App| {
+            [
+                format!("{:?}", app.home_view.sel),
+                format!("{:?}", app.open.view(list).map(|v| v.sel)),
+                format!("{:?}", app.page.artist().map(|a| a.shelves.sel)),
+                format!("{:?}", app.page.stats().map(|v| (v.period, v.sel))),
+                format!("{:?}", app.page.settings().map(|v| v.sel)),
+                format!("{:?} {:?} {:?}", app.search.query(), app.search.track_sel, app.search.results().map(|r| r.tracks.len())),
+            ]
+        };
+        let names = ["Home", "the list", "the artist page", "Stats", "Settings", "Search"];
+        // ↓ on the page shown moves its highlight, and nothing else
+        let down = |app: &mut App, at: usize, seen: &mut [Option<[String; 6]>; 6]| {
+            render(app, 200, 64);
+            let before = marks(app);
+            app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+            render(app, 200, 64);
+            let after = marks(app);
+            for i in 0..6 {
+                assert_eq!(before[i] != after[i], i == at, "↓ on {}: {} {} → {}", names[at], names[i], before[i], after[i]);
+            }
+            seen[at] = Some(after);
+        };
+        let mut seen: [Option<[String; 6]>; 6] = Default::default();
+        down(&mut app, 0, &mut seen);
+        app.open(list, "P", "", "playlist");
+        down(&mut app, 1, &mut seen);
+        app.run(Action::Search);
+        for c in "nova".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        receive_search(&mut app, SearchResults { query: "nova".into(), tracks: rows(5), ..Default::default() });
+        down(&mut app, 5, &mut seen);
+        let search_left = seen[5].as_ref().unwrap()[5].clone();
+        assert_eq!(search_left, format!("{:?} {:?} {:?}", "nova", Some(0usize), Some(5usize)));
+        app.open("spotify:artist:a", "Nova Drift", "", "artist");
+        down(&mut app, 2, &mut seen);
+        app.run(Action::Stats);
+        down(&mut app, 3, &mut seen);
+        // the next period: Stats comes back on it
+        app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        let period = app.page.stats().unwrap().period;
+        assert_eq!(period, StatsPeriod::Month);
+        app.run(Action::Settings);
+        down(&mut app, 4, &mut seen);
+        // a key Settings doesn't use goes nowhere: it used to open a menu for the Card highlighted on Home
+        app.key(KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE));
+        assert!(app.popup.is_none(), "{:?}", app.modal());
+        let fresh = [None, None, Some(format!("{:?}", Some(None::<crate::home::CardRef>))), Some(format!("{:?}", Some((period, 0usize)))), Some(format!("{:?}", Some(0usize))), None];
+        for at in [3, 2, 5, 1, 0] {
+            app.run(Action::Back);
+            let now = marks(&app);
+            // where it was left (after its ↓), or fresh
+            let want = fresh[at].clone().unwrap_or_else(|| seen[at].as_ref().unwrap()[at].clone());
+            assert_eq!(now[at], want, "back on {}", names[at]);
+            down(&mut app, at, &mut seen);
+        }
+        assert!(matches!(app.page, Page::Home) && app.forward.len() == 5);
     }
 
     #[test]
@@ -1703,7 +1776,7 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:playlist:mfy1".into()) }]);
         // Esc is back to Home, where it was
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.open.view().is_none());
+        assert!(app.list_view().is_none());
     }
 
     #[test]
@@ -2014,7 +2087,7 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::PlayFrom { context_uri: "spotify:collection".into(), index: 49, track_uri: Some("spotify:track:t49".into()) }]);
         // Backspace goes back to Home
         key(&mut app, KeyCode::Backspace);
-        assert!(app.open.view().is_none());
+        assert!(app.list_view().is_none());
     }
 
     #[test]
@@ -2089,6 +2162,7 @@ mod tests {
     fn the_wheel_moves_the_highlight_anywhere_over_a_list_and_the_library() {
         let mut app = App::new(None);
         app.open.put_view(crate::tracks::TrackView::new("spotify:playlist:p", "P"));
+        app.page = Page::List { uri: "spotify:playlist:p".into(), title: "P".into(), subtitle: String::new() };
         let rows = (0..80)
             .map(|i| singularity_proto::TrackRow {
                 uri: format!("spotify:track:{i}"),
@@ -2111,15 +2185,15 @@ mod tests {
         for _ in 0..3 {
             mouse(&mut app, MouseEventKind::ScrollDown, link.x as f64 + 0.5, link.y, false);
         }
-        assert_eq!(app.open.view().unwrap().sel, 3);
+        assert_eq!(app.list_view().unwrap().sel, 3);
         mouse(&mut app, MouseEventKind::ScrollUp, link.x as f64 + 0.5, link.y, false);
-        assert_eq!(app.open.view().unwrap().sel, 2);
+        assert_eq!(app.list_view().unwrap().sel, 2);
         // Shift: a page; the list follows the highlight
-        let vis = app.open.view().unwrap().visible;
+        let vis = app.list_view().unwrap().visible;
         for _ in 0..3 {
             app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: link.x, row: link.y, modifiers: KeyModifiers::SHIFT }, link.x as f64 + 0.5, false);
         }
-        let v = app.open.view().unwrap();
+        let v = app.list_view().unwrap();
         assert_eq!(v.sel, 2 + 3 * vis);
         assert!(v.sel >= v.top && v.sel < v.top + v.visible, "the highlight stays in view");
         // the library sidebar
@@ -2398,7 +2472,7 @@ mod tests {
         assert!(sent(&mut rx).iter().any(|c| matches!(c, Command::MoreTracks { offset: 100, .. })));
         app.track_page(eps(100, 130));
         render(&mut app, 160, 48);
-        let v = app.open.view().unwrap();
+        let v = app.list_view().unwrap();
         assert_eq!((v.sel, v.reveal_uri.is_none()), (120, true));
         assert!(render(&mut app, 160, 48).contains("Episode 10"));
     }
@@ -2857,7 +2931,7 @@ mod tests {
             for _ in 0..5 {
                 app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
             }
-            assert_eq!(app.stats_view.as_ref().unwrap().period, StatsPeriod::Week);
+            assert_eq!(app.page.stats().unwrap().period, StatsPeriod::Week);
         }
         let s = render(&mut app, 256, 68);
         assert!(s.contains("Top artists") && s.contains("Top tracks") && s.contains("Top albums"));
@@ -2873,10 +2947,10 @@ mod tests {
         // a click on the top artist opens its page, and Back comes back to Stats
         let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::StatsRow(0)).then_some(*r)).unwrap();
         click(&mut app, r.x + 4, r.y);
-        assert_eq!(app.artist.as_ref().map(|a| a.uri.as_str()), Some("spotify:artist:0"));
+        assert_eq!(app.page.artist().map(|a| a.uri.as_str()), Some("spotify:artist:0"));
         sent(&mut rx);
         app.run(Action::Back);
-        assert!(app.stats_view.is_some());
+        assert!(app.page.stats().is_some());
         assert_eq!(sent(&mut rx), vec![Command::GetStats { period: StatsPeriod::Week }], "asked again on return");
         // Enter on the first track plays it (rows: 4 artists, then tracks)
         render(&mut app, 140, 40);
@@ -3146,7 +3220,7 @@ mod tests {
         render(&mut app, 160, 48);
         let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeek(0)).then_some(*r)).unwrap();
         click(&mut app, r.x + 4, r.y);
-        assert_eq!(app.artist.as_ref().map(|a| a.uri.as_str()), Some("spotify:artist:0"));
+        assert_eq!(app.page.artist().map(|a| a.uri.as_str()), Some("spotify:artist:0"));
     }
 
     #[test]
@@ -3188,12 +3262,12 @@ mod tests {
         let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopTrack(2)).then_some(*r)).unwrap();
         let link = app.hits.iter().find_map(|(r, h)| (matches!(h, Hit::Link(_)) && r.y == row.y).then_some(*r)).expect("a name link on the row");
         wheel(&mut app, link.x + 1, link.y);
-        assert_eq!(app.artist.as_ref().unwrap().top_sel, 1);
+        assert_eq!(app.page.artist().unwrap().top_sel, 1);
         // below the songs, over the Shelves (Cards or not): the page scrolls by lines
         let home = app.layout.compute(Rect::new(0, 1, 200, 48 - 5)).rect_of(Widget::Home).unwrap();
         wheel(&mut app, home.right() - 3, home.bottom() - 3);
         render(&mut app, 200, 48);
-        assert!(app.artist.as_ref().unwrap().shelves.offset > 0, "the Shelves scrolled");
+        assert!(app.page.artist().unwrap().shelves.offset > 0, "the Shelves scrolled");
     }
 
     // ── Ambient Widgets (#44) ──
@@ -3459,12 +3533,12 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::GetTracks { uri: "spotify:album:orbits".into() }]);
         // back: the artist (from cache), back again: Liked Songs, still sorted
         app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
-        assert!(app.artist.is_some() && sent(&mut rx).is_empty(), "no refetch");
+        assert!(app.page.artist().is_some() && sent(&mut rx).is_empty(), "no refetch");
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(app.open.view().map(|v| (v.uri.as_str(), v.sort.is_some())), Some(("spotify:collection", true)));
+        assert_eq!(app.list_view().map(|v| (v.uri.as_str(), v.sort.is_some())), Some(("spotify:collection", true)));
         // forward again
         app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
-        assert!(app.artist.is_some());
+        assert!(app.page.artist().is_some());
         // double-click a popular track: the artist's context from there
         render(&mut app, 200, 48);
         let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopTrack(2)).then_some(*r)).unwrap();
@@ -3484,7 +3558,7 @@ mod tests {
         use singularity_proto::{Card, Command, SearchResults, TrackRow};
         let (mut app, mut rx) = playing_app(1);
         app.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
-        assert!(app.search.is_open());
+        assert!(matches!(app.page, crate::app::Page::Search));
         for c in "nova".chars() {
             app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
             app.tick();
@@ -3756,7 +3830,7 @@ mod tests {
         render(&mut app, 160, 48);
         mouse(&mut app, MouseEventKind::ScrollDown, 1.5, 10, false);
         assert_eq!(app.sidebar.sel, 0);
-        let v = app.settings_view.as_ref().unwrap();
+        let v = app.page.settings().unwrap();
         assert!(v.sel > 0 || v.on_tabs, "the Settings page scrolled");
     }
 

@@ -147,10 +147,10 @@ fn page_index(p: &Page) -> usize {
     match p {
         Page::Home => 0,
         Page::List { .. } => 1,
-        Page::Artist { .. } => 2,
+        Page::Artist(_) => 2,
         Page::Search => 3,
-        Page::Stats => 4,
-        Page::Settings => 5,
+        Page::Stats(_) => 4,
+        Page::Settings(_) => 5,
     }
 }
 const PAGES: usize = 6;
@@ -202,7 +202,7 @@ fn pages() -> Vec<Case> {
                 app.open("spotify:artist:a", "Nova Drift", "", "artist");
                 let shelf = |s: usize| Shelf { title: format!("Releases {s}"), kind: "shelf".into(), cards: (0..12).map(|i| card(i, "album")).collect() };
                 let page = singularity_proto::ArtistPage { uri: "spotify:artist:a".into(), name: "Nova Drift".into(), top_tracks: (0..10).map(|i| row(i, "track")).collect(), shelves: (0..8).map(shelf).collect(), ..Default::default() };
-                app.artist.as_mut().unwrap().set_page(page);
+                app.page.artist_mut().unwrap().set_page(page);
             },
             // ten popular tracks: nine notches from the first to the last
             moves: 9,
@@ -212,7 +212,7 @@ fn pages() -> Vec<Case> {
             set: |app| {
                 app.open("spotify:artist:a", "Nova Drift", "", "artist");
                 let page = singularity_proto::ArtistPage { uri: "spotify:artist:a".into(), name: "Nova Drift".into(), top_tracks: (0..10).map(|i| row(i, "track")).collect(), ..Default::default() };
-                app.artist.as_mut().unwrap().set_page(page);
+                app.page.artist_mut().unwrap().set_page(page);
             },
             moves: 9,
         },
@@ -236,7 +236,7 @@ fn pages() -> Vec<Case> {
             what: "the Stats page",
             set: |app| {
                 app.run(Action::Stats);
-                let p = app.stats_view.as_ref().unwrap().period;
+                let p = app.page.stats().unwrap().period;
                 app.stats.insert(p, stats(p));
             },
             moves: 20,
@@ -311,7 +311,7 @@ fn the_wheel_scrolls_every_widget_and_page_that_holds_more_than_fits() {
     for case in pages() {
         let mut app = app();
         (case.set)(&mut app);
-        seen[page_index(&app.current_page())] = true;
+        seen[page_index(&app.page)] = true;
         bad.extend(check(Widget::Home, &case));
     }
     assert!(seen.iter().all(|s| *s), "every page has a case: {seen:?}");

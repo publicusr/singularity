@@ -30,7 +30,6 @@ const NARROW_W: u16 = 24;
 /// query, and the page's own view state. App owns one for its whole life; leaving the page keeps it as it was.
 #[derive(Default)]
 pub struct Search {
-    open: bool,
     query: String,
     results: Option<SearchResults>,
     /// the last search failed: why
@@ -63,14 +62,6 @@ impl Search {
     /// Search with these recent searches (newest first).
     pub fn with_recent(recent: Vec<String>) -> Self {
         Self { recent, ..Default::default() }
-    }
-
-    pub fn is_open(&self) -> bool {
-        self.open
-    }
-
-    pub fn set_open(&mut self, open: bool) {
-        self.open = open;
     }
 
     pub fn query(&self) -> &str {
@@ -336,7 +327,7 @@ pub fn bar(buf: &mut Buffer, r: Rect, query: &str, active: bool, hint: &str, th:
 }
 
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
-    if !app.search.is_open() {
+    if !matches!(app.page, crate::app::Page::Search) {
         return;
     }
     let mut v = std::mem::take(&mut app.search);

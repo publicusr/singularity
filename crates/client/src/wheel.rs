@@ -23,7 +23,7 @@ impl App {
         match w {
             Widget::Home => {
                 self.focus_on(Widget::Home);
-                self.page_wheel(self.current_page(), x, y, rows, coarse);
+                self.page_wheel(x, y, rows, coarse);
             }
             Widget::Library => {
                 self.focus_on(Widget::Library);
@@ -63,25 +63,24 @@ impl App {
         }
     }
 
-    /// The wheel over the main Pane showing `page`. Every page decides here: no catch-all arm.
-    fn page_wheel(&mut self, page: Page, x: u16, y: u16, rows: i32, coarse: bool) {
+    /// The wheel over the main Pane, by the page it shows. Every page decides here: no catch-all arm.
+    fn page_wheel(&mut self, x: u16, y: u16, rows: i32, coarse: bool) {
         // a song row (or its name links) under the pointer, on the pages with songs above Shelves
         let on_song = self.hits.iter().any(|(r, h)| matches!(h, Hit::TopTrack(_) | Hit::SearchTrack(_)) && r.y == y && x >= r.x && x < r.right());
-        match page {
+        match &mut self.page {
             // Shelves scroll by lines (Shift over a Shelf: sideways, a Card at a time)
             Page::Home => self.shelves_wheel(x, y, rows, coarse),
             // track lists, Show and Book pages: the highlight, and the list follows it
-            Page::List { .. } => {
-                let len = self.open.order().len();
-                if let Some(v) = self.open.view_mut() {
+            Page::List { uri, .. } => {
+                let len = self.open.order(uri).len();
+                if let Some(v) = self.open.view_mut(uri) {
                     let step = if coarse { v.visible.max(1) as i32 } else { 1 };
                     v.sel = moved(v.sel, rows * step, len);
                     v.reveal();
                 }
             }
             // popular tracks on top, Shelves below: over a track (or with no Shelves) the highlight, else the Shelves
-            Page::Artist { .. } => {
-                let Some(a) = self.artist.as_mut() else { return };
+            Page::Artist(a) => {
                 let n = a.page.as_ref().map_or(0, |p| p.top_tracks.len());
                 if n > 0 && (on_song || a.feed.shelves.is_empty()) {
                     a.top_sel = moved(a.top_sel, rows * if coarse { 5 } else { 1 }, n);
@@ -91,7 +90,7 @@ impl App {
             }
             // no query yet: the recent searches; then songs (or episodes) and Shelves, as on an artist page
             Page::Search => {
-                let Some(s) = self.searching_mut() else { return };
+                let s = &mut self.search;
                 let recent = s.recent().len();
                 let step = rows * if coarse { 5 } else { 1 };
                 if s.query().trim().is_empty() {
@@ -115,14 +114,12 @@ impl App {
                     self.shelves_wheel(x, y, rows, coarse);
                 }
             }
-            Page::Stats => {
-                let n = self.stats_view.as_ref().and_then(|v| self.stats.get(&v.period)).map_or(0, |s| crate::stats::entries(s).len());
-                if let Some(v) = self.stats_view.as_mut() {
-                    let step = if coarse { v.visible.max(1) as i32 } else { 1 };
-                    v.sel = moved(v.sel, rows * step, n);
-                }
+            Page::Stats(v) => {
+                let n = self.stats.get(&v.period).map_or(0, |s| crate::stats::entries(s).len());
+                let step = if coarse { v.visible.max(1) as i32 } else { 1 };
+                v.sel = moved(v.sel, rows * step, n);
             }
-            Page::Settings => self.settings_wheel(rows as i64, coarse),
+            Page::Settings(_) => self.settings_wheel(rows as i64, coarse),
         }
     }
 

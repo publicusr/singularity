@@ -322,7 +322,7 @@ fn fmt_dur(ms: u64) -> String {
 }
 
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
-    let Some(mut view) = app.open.take_view() else { return };
+    let Some(mut view) = app.page.list().map(str::to_string).and_then(|uri| app.open.take_view(&uri)) else { return };
     let empty = TrackList::default();
     // a page has arrived (an empty playlist's says total 0)
     let arrived = app.open.has(&view.uri);

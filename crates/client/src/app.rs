@@ -543,15 +543,93 @@ impl Naming {
     }
 }
 
-/// What the main Pane shows; back/forward walk these.
-#[derive(Clone, Debug, PartialEq)]
+/// What the main Pane shows, one at a time (D88), each page holding its view: keys, drawing, the wheel and history
+/// match on it, so a page can't leave a view behind. A list's view stays in [`OpenList`](crate::openlist::OpenList)
+/// (D81) and Search's words and results in [`Search`](crate::search::Search) (D74): those pages only say they show.
 pub enum Page {
+    Home,
+    /// a Track list (a playlist, album, Liked Songs, a Show or Book page), by name
+    List { uri: String, title: String, subtitle: String },
+    /// (boxed: it holds the artist's Shelves)
+    Artist(Box<crate::artist::ArtistView>),
+    Search,
+    Stats(crate::stats::StatsView),
+    Settings(crate::settings::SettingsView),
+}
+
+/// A page by name, as back and forward keep it: going there again shows a list or Search as you left it, Home where
+/// you were and Stats on its period; an artist page and Settings start fresh (Q84).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PageName {
     Home,
     List { uri: String, title: String, subtitle: String },
     Artist { uri: String, name: String },
     Search,
     Stats,
     Settings,
+}
+
+impl Page {
+    pub fn name(&self) -> PageName {
+        match self {
+            Page::Home => PageName::Home,
+            Page::List { uri, title, subtitle } => PageName::List { uri: uri.clone(), title: title.clone(), subtitle: subtitle.clone() },
+            Page::Artist(a) => PageName::Artist { uri: a.uri.clone(), name: a.name.clone() },
+            Page::Search => PageName::Search,
+            Page::Stats(_) => PageName::Stats,
+            Page::Settings(_) => PageName::Settings,
+        }
+    }
+
+    /// The list shown, if a list is.
+    pub fn list(&self) -> Option<&str> {
+        match self {
+            Page::List { uri, .. } => Some(uri),
+            _ => None,
+        }
+    }
+
+    pub fn artist(&self) -> Option<&crate::artist::ArtistView> {
+        match self {
+            Page::Artist(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub fn artist_mut(&mut self) -> Option<&mut crate::artist::ArtistView> {
+        match self {
+            Page::Artist(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub fn stats(&self) -> Option<&crate::stats::StatsView> {
+        match self {
+            Page::Stats(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn stats_mut(&mut self) -> Option<&mut crate::stats::StatsView> {
+        match self {
+            Page::Stats(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn settings(&self) -> Option<&crate::settings::SettingsView> {
+        match self {
+            Page::Settings(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn settings_mut(&mut self) -> Option<&mut crate::settings::SettingsView> {
+        match self {
+            Page::Settings(v) => Some(v),
+            _ => None,
+        }
+    }
 }
 
 pub struct Menu {
@@ -648,16 +726,13 @@ pub struct App {
     pub open_url: Option<String>,
     pub library: Option<singularity_proto::Library>,
     pub sidebar: Sidebar,
-    /// the Track lists received so far and the one open (None open: the main Pane shows Home or an artist), D81
+    /// what the main Pane shows (D88)
+    pub page: Page,
+    /// the Track lists received so far and each one's view (D81); `page` says which shows
     pub open: crate::openlist::OpenList,
-    /// the open artist page
-    pub artist: Option<crate::artist::ArtistView>,
-    /// Search (D74): open while its page shows; kept as it was while you browse its results, so back returns to them
+    /// Search (D74): kept as it was while you browse its results, so back returns to them; `page` says when it shows
     pub search: crate::search::Search,
-    /// the Stats page, while it's open (#36)
-    pub stats_view: Option<crate::stats::StatsView>,
-    pub settings_view: Option<crate::settings::SettingsView>,
-    /// an episode card was opened: its show is being looked up (#59)
+    /// an episode card was opened: its show is being looked up (#59); going to another page cancels it (Q87)
     pub pending_episode: Option<String>,
     /// `config.toml` as it is now (the Settings page is built from it), and what's wrong with it
     pub config_text: String,
@@ -682,8 +757,8 @@ pub struct App {
     /// the newest [`KEPT`] are kept (B6: a Client left open for days showed last week's lists)
     fetched: HashMap<String, Instant>,
     /// history: pages to go back and forward to
-    pub back: Vec<Page>,
-    pub forward: Vec<Page>,
+    pub back: Vec<PageName>,
+    pub forward: Vec<PageName>,
     last_click: Option<(Instant, usize)>,
     /// the row a click on the open list was on, for telling a double-click (D81)
     last_row: Option<crate::openlist::RowId>,
@@ -803,11 +878,9 @@ impl App {
             open_url: None,
             library: None,
             sidebar: Sidebar::default(),
+            page: Page::Home,
             open: Default::default(),
-            artist: None,
             search: Default::default(),
-            stats_view: None,
-            settings_view: None,
             pending_episode: None,
             config_text: String::new(),
             config_problems: vec![],
@@ -972,8 +1045,8 @@ impl App {
         matches!(self.modal(), Some(Modal::Palette | Modal::Picker | Modal::Naming | Modal::WidgetPicker | Modal::Details | Modal::Adding | Modal::Cover))
             || (self.modal() == Some(Modal::Wizard) && crate::setup::step(self) == crate::setup::Step::Key)
             || self.settings_typing()
-            || self.open.view().is_some_and(|v| v.filtering)
-            || (self.search.is_open() && self.is_focused(Widget::Home))
+            || self.list_view().is_some_and(|v| v.filtering)
+            || (matches!(self.page, Page::Search) && self.is_focused(Widget::Home))
     }
 
     // ── idle takeover ─────────────────────────────────────────────────
@@ -1201,15 +1274,15 @@ impl App {
             Action::RestartEngine => self.send(Command::RestartEngine),
             Action::Logout => self.send(Command::Logout),
             Action::RefreshHome => self.send(Command::GetHome),
-            Action::GoHome => self.navigate(Page::Home),
+            Action::GoHome => self.navigate(PageName::Home),
             Action::ShowLibrary => self.show_library(),
             Action::ShowQueue => self.show_queue(),
             Action::Back => self.go_back(),
-            Action::Search => self.navigate(Page::Search),
-            Action::Stats => self.navigate(Page::Stats),
-            Action::Settings => self.navigate(Page::Settings),
+            Action::Search => self.navigate(PageName::Search),
+            Action::Stats => self.navigate(PageName::Stats),
+            Action::Settings => self.navigate(PageName::Settings),
             Action::Forward => self.go_forward(),
-            Action::Filter => match self.open.view_mut() {
+            Action::Filter => match self.list_view_mut() {
                 Some(v) => {
                     v.filtering = true;
                     self.focus_on(Widget::Home);
@@ -1373,7 +1446,7 @@ impl App {
         }
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         // (not under Arrange mode, which keeps the keys: a filter left open on the page must not take them)
-        if self.open.view().is_some_and(|v| v.filtering) && self.modal() != Some(Modal::Arrange) {
+        if self.list_view().is_some_and(|v| v.filtering) && self.modal() != Some(Modal::Arrange) {
             return self.filter_key(k);
         }
         // Ctrl+Shift+Z redoes, where the terminal tells it from Ctrl+Z (the keymap reads both as Ctrl+Z)
@@ -1391,23 +1464,15 @@ impl App {
         }
         // a focused Pane showing its needs line has no keys of its own: they'd act on what it hides (#36)
         let shown = !self.focus.is_some_and(|p| self.short_panes.contains(&p));
-        if shown && self.is_focused(Widget::Home) && self.search.is_open() && self.search_key(k) {
+        if shown && self.is_focused(Widget::Home) && self.page_key(k, shift) {
             return;
         }
-        if shown && self.is_focused(Widget::Home) && !shift && self.stats_view.is_some() && self.stats_key(k) {
-            return;
-        }
-        if shown && self.is_focused(Widget::Home) && self.settings_view.is_some() && (self.settings_typing() || !shift) && self.settings_key(k) {
-            return;
-        }
-        if shown && self.is_focused(Widget::Home) && !shift && self.open.view().is_some() && self.tracks_key(k) {
-            return;
-        }
-        if shown && self.is_focused(Widget::Home) && !shift && self.open.view().is_none() && self.home_key(k) {
-            return;
-        }
-        // Esc on an artist or search page goes back, never quits
-        if (self.artist.is_some() || self.search.is_open() || self.stats_view.is_some() || self.settings_view.is_some()) && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
+        // Esc on an artist, search, Stats or Settings page goes back, never quits
+        let goes_back = match self.page {
+            Page::Home | Page::List { .. } => false,
+            Page::Artist(_) | Page::Search | Page::Stats(_) | Page::Settings(_) => true,
+        };
+        if goes_back && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
             return self.run(Action::Back);
         }
         if shown && self.is_focused(Widget::Library) && !shift && self.side_key(k) {
@@ -1422,13 +1487,25 @@ impl App {
         }
     }
 
+    /// Keys for the focused main Pane: the page shown takes them, and only it (no catch-all arm); false for keys it
+    /// doesn't use.
+    fn page_key(&mut self, k: KeyEvent, shift: bool) -> bool {
+        match self.page {
+            Page::Home | Page::Artist(_) => !shift && self.home_key(k),
+            Page::List { .. } => !shift && self.tracks_key(k),
+            Page::Search => self.search_key(k),
+            Page::Stats(_) => !shift && self.stats_key(k),
+            Page::Settings(_) => (self.settings_typing() || !shift) && self.settings_key(k),
+        }
+    }
+
     // ── Stats page (#36) ───────────────────────────────────────────
 
     /// Ask the Daemon again for the stats on screen (after a Play was logged): the page's period, and the week for
     /// the "top this week" Widget.
     pub fn refresh_stats(&mut self) {
         use singularity_proto::StatsPeriod;
-        let page = self.stats_view.as_ref().map(|v| v.period);
+        let page = self.page.stats().map(|v| v.period);
         if let Some(period) = page {
             self.send(Command::GetStats { period });
         }
@@ -1461,7 +1538,7 @@ impl App {
 
     fn stats_set_period(&mut self, p: singularity_proto::StatsPeriod) {
         self.stats_period = p;
-        if let Some(v) = self.stats_view.as_mut() {
+        if let Some(v) = self.page.stats_mut() {
             *v = crate::stats::StatsView { period: p, ..Default::default() };
         }
         self.send(Command::GetStats { period: p });
@@ -1469,7 +1546,7 @@ impl App {
 
     /// The selected row of the Stats page: its section and the row itself.
     fn stats_entry(&self, i: usize) -> Option<(crate::stats::Section, singularity_proto::StatsRow)> {
-        let s = self.stats.get(&self.stats_view.as_ref()?.period)?;
+        let s = self.stats.get(&self.page.stats()?.period)?;
         let (sec, k) = *crate::stats::entries(s).get(i)?;
         Some((sec, sec.rows(s)[k].clone()))
     }
@@ -1492,7 +1569,7 @@ impl App {
 
     fn stats_key(&mut self, k: KeyEvent) -> bool {
         use singularity_proto::StatsPeriod;
-        let Some(v) = self.stats_view.clone() else { return false };
+        let Some(v) = self.page.stats().cloned() else { return false };
         let n = self.stats.get(&v.period).map(|s| crate::stats::entries(s).len()).unwrap_or(0);
         let at = StatsPeriod::ALL.iter().position(|p| *p == v.period).unwrap_or(0);
         let step = |d: i64| (v.sel as i64 + d).clamp(0, n.saturating_sub(1) as i64) as usize;
@@ -1521,7 +1598,7 @@ impl App {
             }
             _ => return false,
         };
-        if let Some(v) = self.stats_view.as_mut() {
+        if let Some(v) = self.page.stats_mut() {
             v.sel = sel;
         }
         true
@@ -1538,7 +1615,7 @@ impl App {
     /// Keys for the focused Home; returns false for keys it doesn't use.
     fn home_key(&mut self, k: KeyEvent) -> bool {
         // the search bar holds the selection: Enter or typing opens Search (with what was typed), ↓ leaves it
-        if !self.search.is_open() && self.artist.is_none() && self.home_view.on_bar {
+        if matches!(self.page, Page::Home) && self.home_view.on_bar {
             let ctrl = k.modifiers.contains(KeyModifiers::CONTROL) || k.modifiers.contains(KeyModifiers::ALT);
             match k.code {
                 KeyCode::Enter => {
@@ -1546,7 +1623,7 @@ impl App {
                     return true;
                 }
                 KeyCode::Char(c) if !ctrl => {
-                    self.navigate(Page::Search);
+                    self.navigate(PageName::Search);
                     self.search.type_text(c.encode_utf8(&mut [0; 4]));
                     return true;
                 }
@@ -1586,7 +1663,7 @@ impl App {
         if p.uri == crate::tracks::LIKED {
             self.seed_liked(&p.tracks);
         }
-        self.open.add_page(&p);
+        self.open.add_page(&p, self.page.list() == Some(p.uri.as_str()));
         self.fetched.insert(p.uri.clone(), Instant::now());
         self.details_arrived(&p.uri);
         self.forget_old();
@@ -1602,7 +1679,7 @@ impl App {
         if self.fetched.len() <= KEPT {
             return;
         }
-        let shown = [self.open.view().map(|v| v.uri.as_str()), self.artist.as_ref().map(|a| a.uri.as_str())];
+        let shown = [self.list_view().map(|v| v.uri.as_str()), self.page.artist().map(|a| a.uri.as_str())];
         let mut by_age: Vec<(Instant, String)> = self.fetched.iter().filter(|(u, _)| !shown.contains(&Some(u.as_str()))).map(|(u, at)| (*at, u.clone())).collect();
         by_age.sort();
         for (_, uri) in by_age.into_iter().take(self.fetched.len() - KEPT) {
@@ -1631,10 +1708,10 @@ impl App {
         let uri = if kind == "liked" || uri.ends_with(":collection") || uri.contains(":collection:") { crate::tracks::LIKED } else { uri };
         let kind = if kind.is_empty() { uri.split(':').nth(1).unwrap_or("") } else { kind };
         let page = match kind {
-            _ if uri == crate::tracks::LIKED => Page::List { uri: uri.into(), title: "Liked Songs".into(), subtitle: subtitle.into() },
-            "playlist" | "album" => Page::List { uri: uri.into(), title: name.into(), subtitle: subtitle.into() },
-            "artist" => Page::Artist { uri: uri.into(), name: name.into() },
-            "show" => Page::List { uri: uri.into(), title: name.into(), subtitle: subtitle.into() },
+            _ if uri == crate::tracks::LIKED => PageName::List { uri: uri.into(), title: "Liked Songs".into(), subtitle: subtitle.into() },
+            "playlist" | "album" => PageName::List { uri: uri.into(), title: name.into(), subtitle: subtitle.into() },
+            "artist" => PageName::Artist { uri: uri.into(), name: name.into() },
+            "show" => PageName::List { uri: uri.into(), title: name.into(), subtitle: subtitle.into() },
             // an episode opens its show, at that episode (the Daemon says which show)
             "episode" => {
                 self.pending_episode = Some(uri.to_string());
@@ -1657,46 +1734,48 @@ impl App {
             return;
         }
         self.pending_episode = None;
-        self.navigate(Page::List { uri: show.uri, title: show.name, subtitle: String::new() });
-        if let Some(v) = self.open.view_mut() {
+        self.navigate(PageName::List { uri: show.uri, title: show.name, subtitle: String::new() });
+        if let Some(v) = self.list_view_mut() {
             v.reveal_uri = Some(episode);
         }
     }
 
     /// Search, while its page is open.
     pub fn searching(&self) -> Option<&crate::search::Search> {
-        Some(&self.search).filter(|s| s.is_open())
+        matches!(self.page, Page::Search).then_some(&self.search)
     }
 
     pub fn searching_mut(&mut self) -> Option<&mut crate::search::Search> {
-        Some(&mut self.search).filter(|s| s.is_open())
+        matches!(self.page, Page::Search).then_some(&mut self.search)
     }
 
-    pub fn current_page(&self) -> Page {
-        if self.search.is_open() {
-            return Page::Search;
-        }
-        if let Some(a) = &self.artist {
-            return Page::Artist { uri: a.uri.clone(), name: a.name.clone() };
-        }
-        if self.stats_view.is_some() {
-            return Page::Stats;
-        }
-        if self.settings_view.is_some() {
-            return Page::Settings;
-        }
-        match self.open.view() {
-            Some(v) => Page::List { uri: v.uri.clone(), title: v.title.clone(), subtitle: v.subtitle.clone() },
-            None => Page::Home,
-        }
+    /// The view of the list shown, if a list is.
+    pub fn list_view(&self) -> Option<&TrackView> {
+        self.open.view(self.page.list()?)
+    }
+
+    pub fn list_view_mut(&mut self) -> Option<&mut TrackView> {
+        let uri = self.page.list()?;
+        self.open.view_mut(uri)
+    }
+
+    /// Is `uri`'s list the one shown?
+    pub fn shows_list(&self, uri: &str) -> bool {
+        self.page.list() == Some(uri)
+    }
+
+    /// The page shown, by name.
+    pub fn current_page(&self) -> PageName {
+        self.page.name()
     }
 
     /// Go to `p`, remembering where we were.
-    pub fn navigate(&mut self, p: Page) {
+    pub fn navigate(&mut self, p: PageName) {
         let here = self.current_page();
         if here != p {
             self.back.push(here);
             self.forward.clear();
+            self.pending_episode = None;
         }
         self.show(p);
     }
@@ -1704,6 +1783,7 @@ impl App {
     fn go_back(&mut self) {
         if let Some(p) = self.back.pop() {
             self.forward.push(self.current_page());
+            self.pending_episode = None;
             self.show(p);
         }
     }
@@ -1711,47 +1791,47 @@ impl App {
     fn go_forward(&mut self) {
         if let Some(p) = self.forward.pop() {
             self.back.push(self.current_page());
+            self.pending_episode = None;
             self.show(p);
         }
     }
 
-    /// Put `p` in the main Pane (no history change).
-    fn show(&mut self, p: Page) {
-        // keep the list we leave as it was (sort, filter, scroll)
-        self.open.close();
-        self.artist = None;
-        self.stats_view = None;
-        self.settings_view = None;
-        self.search.set_open(false);
+    /// Put `p` in the main Pane (no history change); the page left goes with its view (a list's stays as it was:
+    /// sort, filter, scroll).
+    fn show(&mut self, p: PageName) {
+        self.page = Page::Home;
         self.focus_on(Widget::Home);
-        match p {
-            Page::Home => {}
-            Page::Search => self.search.set_open(true),
-            Page::Stats => {
-                self.stats_view = Some(crate::stats::StatsView { period: self.stats_period, ..Default::default() });
+        self.page = match p {
+            PageName::Home => Page::Home,
+            PageName::Search => Page::Search,
+            PageName::Stats => {
                 self.send(Command::GetStats { period: self.stats_period });
+                Page::Stats(crate::stats::StatsView { period: self.stats_period, ..Default::default() })
             }
-            Page::Settings => {
+            PageName::Settings => {
                 self.read_config_text();
-                self.settings_view = Some(Default::default());
+                Page::Settings(Default::default())
             }
-            Page::List { uri, title, subtitle } => {
-                self.open.open(&uri, || {
+            PageName::List { uri, title, subtitle } => {
+                // named as its view names it (a list left keeps the title it had)
+                let v = self.open.open(&uri, || {
                     let mut v = TrackView::new(&uri, &title);
                     v.subtitle = subtitle;
                     v
                 });
+                let (title, subtitle) = (v.title.clone(), v.subtitle.clone());
                 self.recheck_saved(&uri);
                 if self.open.list(&uri).is_none_or(|l| !l.complete()) || self.stale(&uri) {
                     self.open.drop_list(&uri);
                     // fetched again from the top: a show asks for its older episodes again too
-                    if let Some(v) = self.open.view_mut() {
+                    if let Some(v) = self.open.view_mut(&uri) {
                         v.more_for = None;
                     }
-                    self.send(Command::GetTracks { uri });
+                    self.send(Command::GetTracks { uri: uri.clone() });
                 }
+                Page::List { uri, title, subtitle }
             }
-            Page::Artist { uri, name } => {
+            PageName::Artist { uri, name } => {
                 self.recheck_saved(&uri);
                 let mut a = crate::artist::ArtistView::new(&uri, &name);
                 // a stale page shows until the fresh one arrives
@@ -1761,14 +1841,14 @@ impl App {
                 if !self.artist_pages.contains_key(&uri) || self.stale(&uri) {
                     self.send(Command::GetArtist { uri });
                 }
-                self.artist = Some(a);
+                Page::Artist(Box::new(a))
             }
-        }
+        };
     }
 
     /// An artist page from the Daemon.
     pub fn artist_page(&mut self, p: singularity_proto::ArtistPage) {
-        if let Some(a) = self.artist.as_mut().filter(|a| a.uri == p.uri) {
+        if let Some(a) = self.page.artist_mut().filter(|a| a.uri == p.uri) {
             a.set_page(p.clone());
         }
         self.fetched.insert(p.uri.clone(), Instant::now());
@@ -1776,24 +1856,20 @@ impl App {
         self.forget_old();
     }
 
-    /// The Shelves on screen (Home's, or the artist page's) and their view state.
+    /// The Shelves on screen (Home's, the artist page's, the search results') and their view state.
     fn active_feed(&self) -> Option<&singularity_proto::HomeFeed> {
-        if let Some(s) = self.searching() {
-            return Some(&s.feed);
-        }
-        match &self.artist {
-            Some(a) => Some(&a.feed),
-            None => self.home.as_ref(),
+        match &self.page {
+            Page::Search => Some(&self.search.feed),
+            Page::Artist(a) => Some(&a.feed),
+            Page::Home | Page::List { .. } | Page::Stats(_) | Page::Settings(_) => self.home.as_ref(),
         }
     }
 
     pub fn feed_view(&mut self) -> &mut HomeView {
-        if self.search.is_open() {
-            return &mut self.search.shelves;
-        }
-        match self.artist.as_mut() {
-            Some(a) => &mut a.shelves,
-            None => &mut self.home_view,
+        match &mut self.page {
+            Page::Search => &mut self.search.shelves,
+            Page::Artist(a) => &mut a.shelves,
+            Page::Home | Page::List { .. } | Page::Stats(_) | Page::Settings(_) => &mut self.home_view,
         }
     }
 
@@ -1917,7 +1993,7 @@ impl App {
     }
 
     fn play_artist(&mut self) {
-        if let Some(a) = &self.artist {
+        if let Some(a) = self.page.artist() {
             let uri = a.uri.clone();
             self.send(Command::Play { uri: Some(uri) });
         }
@@ -1925,7 +2001,7 @@ impl App {
 
     /// Popular track `i`: the artist's context from that track.
     fn play_top(&mut self, i: usize) {
-        let Some(a) = &self.artist else { return };
+        let Some(a) = self.page.artist() else { return };
         let Some(t) = a.page.as_ref().and_then(|p| p.top_tracks.get(i)) else { return };
         let cmd = Command::PlayFrom { context_uri: a.uri.clone(), index: i as u32, track_uri: Some(t.uri.clone()) };
         self.send(cmd);
@@ -1949,11 +2025,11 @@ impl App {
 
     /// ▶ Play on the open list: the whole context from its first track.
     fn play_view(&mut self) {
-        let Some(uri) = self.open.view().map(|v| v.uri.clone()) else { return };
+        let Some(uri) = self.list_view().map(|v| v.uri.clone()) else { return };
         if self.book_refused(&uri) {
             return;
         }
-        let Some(v) = self.open.view() else { return };
+        let Some(v) = self.list_view() else { return };
         let cmd = if v.uri == crate::tracks::LIKED {
             Command::PlayFrom { context_uri: v.uri.clone(), index: 0, track_uri: None }
         } else {
@@ -1963,7 +2039,7 @@ impl App {
     }
 
     fn sort(&mut self, col: Col) {
-        match self.open.view_mut() {
+        match self.list_view_mut() {
             Some(v) => v.cycle_sort(col),
             None => self.say("Open a playlist, album or Liked Songs to sort it"),
         }
@@ -1981,7 +2057,7 @@ impl App {
 
     /// Play the row at view position `vi`: the context starts at that track's place in the original list.
     fn play_row(&mut self, vi: usize) {
-        let (Some(v), Some((ri, row))) = (self.open.view(), self.open.row_at(vi)) else { return };
+        let (Some(v), Some((ri, row))) = (self.list_view(), self.open.row_at(self.page.list().unwrap_or_default(), vi)) else { return };
         if !row.playable {
             return self.say("This track isn't available");
         }
@@ -2020,9 +2096,9 @@ impl App {
     }
 
     fn tracks_key(&mut self, k: KeyEvent) -> bool {
-        let len = self.open.order().len();
+        let len = self.open.order(self.page.list().unwrap_or_default()).len();
         let removable = self.rows_removable();
-        let Some(v) = self.open.view_mut() else { return false };
+        let Some(v) = self.list_view_mut() else { return false };
         let page = v.visible.max(1) as i64;
         match k.code {
             // Alt+↑↓: the selected row moves one place in your own playlist (#55)
@@ -2049,7 +2125,10 @@ impl App {
                 self.remove_row(sel);
             }
             // Esc clears the filter, then goes back to Home (it never quits from inside a list)
-            KeyCode::Esc if !v.filter.is_empty() => self.open.set_filter(String::new()),
+            KeyCode::Esc if !v.filter.is_empty() => {
+                let uri = v.uri.clone();
+                self.open.set_filter(&uri, String::new());
+            }
             KeyCode::Esc => self.run(Action::Back),
             _ => return false,
         }
@@ -2057,8 +2136,8 @@ impl App {
     }
 
     fn filter_key(&mut self, k: KeyEvent) {
-        let len = self.open.order().len();
-        let Some(v) = self.open.view_mut() else { return };
+        let len = self.open.order(self.page.list().unwrap_or_default()).len();
+        let Some(v) = self.list_view_mut() else { return };
         let filter = match k.code {
             KeyCode::Esc => {
                 v.filtering = false;
@@ -2075,7 +2154,7 @@ impl App {
             KeyCode::Char(c) => format!("{}{c}", v.filter),
             _ => return,
         };
-        self.open.set_filter(filter);
+        self.open.set_filter(self.page.list().unwrap_or_default(), filter);
     }
 
     pub(crate) fn side_key(&mut self, k: KeyEvent) -> bool {
@@ -2086,7 +2165,7 @@ impl App {
             KeyCode::Enter | KeyCode::Right => {
                 let row = self.sidebar.sel;
                 self.open_side(row);
-                if row > 0 && self.open.view().is_some() {
+                if row > 0 && self.list_view().is_some() {
                     self.focus_on(Widget::Home);
                 }
             }
@@ -2146,8 +2225,8 @@ impl App {
 
     /// Right-click on a track-list row.
     pub fn open_row_menu(&mut self, vi: usize, at: Option<(u16, u16)>) {
-        let Some(id) = self.open.id_at(vi) else { return };
-        if let Some(v) = self.open.view_mut() {
+        let Some(id) = self.open.id_at(self.page.list().unwrap_or_default(), vi) else { return };
+        if let Some(v) = self.list_view_mut() {
             v.sel = vi;
         }
         let mut items = vec![("Play from here".to_string(), MenuAct::PlayHere), ("Play next".into(), MenuAct::PlayNext), ("Add to queue".into(), MenuAct::Queue)];
@@ -2244,7 +2323,7 @@ impl App {
     pub(crate) fn target_track(&self, t: &Target) -> Option<(String, String, String)> {
         match t {
             Target::Card(_) => self.target_card(t).and_then(|c| self.card(c)).map(|k| (k.uri.clone(), k.name.clone(), k.kind.clone())),
-            Target::Row(id) => self.open.find(id).map(|(_, row)| (row.uri.clone(), row.name.clone(), "track".into())),
+            Target::Row(id) => self.open.find(self.page.list()?, id).map(|(_, row)| (row.uri.clone(), row.name.clone(), "track".into())),
             Target::Queued { uri, name, .. } | Target::Track { uri, name } => Some((uri.clone(), name.clone(), "track".into())),
             Target::Library { uri, name } => Some((uri.clone(), name.clone(), uri.split(':').nth(1).unwrap_or("").into())),
             Target::Pane(_) => None,
@@ -2268,7 +2347,7 @@ impl App {
         };
         // where a row shows now
         let shown_at = |app: &App| match &m.target {
-            Target::Row(id) => app.open.find(id).map(|(vi, _)| vi),
+            Target::Row(id) => app.open.find(app.page.list()?, id).map(|(vi, _)| vi),
             _ => None,
         };
         let name = if name.is_empty() { "it".to_string() } else { name };
@@ -2404,9 +2483,9 @@ impl App {
         } else if let Some(p) = self.widget_picker_mut() {
             p.query.extend(s.chars().filter(|c| !c.is_control()).take(40usize.saturating_sub(p.query.chars().count())));
             p.sel = 0;
-        } else if self.popup.is_none() && let Some(v) = self.open.view().filter(|v| v.filtering) {
-            let f = format!("{}{s}", v.filter);
-            self.open.set_filter(f);
+        } else if self.popup.is_none() && let Some(v) = self.list_view().filter(|v| v.filtering) {
+            let (uri, f) = (v.uri.clone(), format!("{}{s}", v.filter));
+            self.open.set_filter(&uri, f);
         }
     }
 
@@ -2703,7 +2782,7 @@ impl App {
             return self.tile_pointer(m);
         }
         // the Settings page owns the wheel wherever the pointer is: drifting off it must not scroll a Pane behind
-        if self.settings_view.is_some() && matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) {
+        if self.page.settings().is_some() && matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) {
             // (as over the main Pane: it takes the focus, so the highlight shows)
             if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
                 self.pane_wheel(Widget::Home, m.column, m.row, if m.kind == MouseEventKind::ScrollUp { -1 } else { 1 }, coarse);
@@ -2733,7 +2812,7 @@ impl App {
                     }
                     Some(Hit::StatsRow(i)) => {
                         self.focus_on(Widget::Home);
-                        if let Some(v) = self.stats_view.as_mut() {
+                        if let Some(v) = self.page.stats_mut() {
                             v.sel = i;
                         }
                         self.stats_menu(i, at);
@@ -2750,7 +2829,7 @@ impl App {
                         }
                     }
                     Some(Hit::TopTrack(i)) => {
-                        let t = self.artist.as_ref().and_then(|a| a.page.as_ref()?.top_tracks.get(i).cloned());
+                        let t = self.page.artist().and_then(|a| a.page.as_ref()?.top_tracks.get(i).cloned());
                         if let Some(t) = t {
                             self.open_track_menu(t.uri, t.name, at);
                         }
@@ -2777,10 +2856,10 @@ impl App {
                         self.focus_on(Widget::Home);
                         // a second click on the same row soon after plays it
                         // (by identity: a page arriving between the clicks doesn't make it another song, D81)
-                        let id = self.open.id_at(vi);
+                        let id = self.open.id_at(self.page.list().unwrap_or_default(), vi);
                         let double = self.last_click.is_some_and(|(t, i)| i == vi && t.elapsed() < DOUBLE_CLICK) && id.is_some() && self.last_row == id;
                         self.last_row = id;
-                        if let Some(v) = self.open.view_mut() {
+                        if let Some(v) = self.list_view_mut() {
                             v.sel = vi;
                         }
                         if double {
@@ -2789,13 +2868,13 @@ impl App {
                         } else {
                             self.last_click = Some((Instant::now(), vi));
                             // a drag from here reorders your own playlist
-                            self.playlists.press = self.rows_removable().then(|| self.open.id_at(vi)).flatten();
+                            self.playlists.press = self.rows_removable().then(|| self.open.id_at(self.page.list().unwrap_or_default(), vi)).flatten();
                         }
                     }
                     Some(Hit::SortCol(c)) => self.sort(c),
                     Some(Hit::Setting(i)) => {
                         self.focus_on(Widget::Home);
-                        if let Some(v) = self.settings_view.as_mut() {
+                        if let Some(v) = self.page.settings_mut() {
                             v.sel = i;
                             v.typing = None;
                             v.on_tabs = false;
@@ -2808,14 +2887,14 @@ impl App {
                     }
                     Some(Hit::KeyRow(i)) => {
                         self.focus_on(Widget::Home);
-                        if let Some(v) = self.settings_view.as_mut() {
+                        if let Some(v) = self.page.settings_mut() {
                             v.key_sel = i;
                             v.on_tabs = false;
                         }
                     }
                     Some(Hit::SettingStep(i, d)) => {
                         self.focus_on(Widget::Home);
-                        if let Some(v) = self.settings_view.as_mut() {
+                        if let Some(v) = self.page.settings_mut() {
                             v.sel = i;
                             v.typing = None;
                             v.on_tabs = false;
@@ -2830,7 +2909,7 @@ impl App {
                     Some(Hit::TopWeekToggle) => self.top_week_tracks = !self.top_week_tracks,
                     Some(Hit::StatsRow(i)) => {
                         self.focus_on(Widget::Home);
-                        if let Some(v) = self.stats_view.as_mut() {
+                        if let Some(v) = self.page.stats_mut() {
                             v.sel = i;
                         }
                         // an artist or album opens at once (like a link); a track plays on a second click
@@ -2891,7 +2970,7 @@ impl App {
                     Some(Hit::TopTrack(i)) => {
                         // top tracks share the double-click memory with list rows, kept apart by index
                         let double = self.last_click.is_some_and(|(t, j)| j == usize::MAX - i && t.elapsed() < DOUBLE_CLICK);
-                        if let Some(a) = self.artist.as_mut() {
+                        if let Some(a) = self.page.artist_mut() {
                             a.top_sel = i;
                         }
                         if double {
@@ -3357,10 +3436,10 @@ impl App {
     pub(crate) fn home_row_at(&self, x: u16, y: u16) -> Option<usize> {
         match self.hit_at(x, y)? {
             Hit::Card(c) => {
-                let rows = match (self.searching(), &self.artist) {
-                    (Some(s), _) => &s.shelves.rows,
-                    (_, Some(a)) => &a.shelves.rows,
-                    _ => &self.home_view.rows,
+                let rows = match &self.page {
+                    Page::Search => &self.search.shelves.rows,
+                    Page::Artist(a) => &a.shelves.rows,
+                    Page::Home | Page::List { .. } | Page::Stats(_) | Page::Settings(_) => &self.home_view.rows,
                 };
                 rows.iter().position(|r| r.cards.contains(&c))
             }
@@ -3454,17 +3533,18 @@ mod tests {
         saved(&mut app);
         assert_eq!(app.keymap.preset, "vim");
         app.open.put_view(TrackView::new("spotify:collection", "Liked Songs"));
+        app.page = Page::List { uri: "spotify:collection".into(), title: "Liked Songs".into(), subtitle: String::new() };
         let rows = (0..5).map(|i| singularity_proto::TrackRow { uri: format!("spotify:track:{i}"), name: format!("Song {i}"), playable: true, ..Default::default() }).collect();
         app.track_page(singularity_proto::TrackPage { uri: "spotify:collection".into(), offset: 0, total: 5, tracks: rows, header: None });
         press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
         press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.open.view().unwrap().sel, 2);
+        assert_eq!(app.list_view().unwrap().sel, 2);
         press(&mut app, KeyCode::Char('G'), KeyModifiers::SHIFT);
-        assert_eq!(app.open.view().unwrap().sel, 4);
+        assert_eq!(app.list_view().unwrap().sel, 4);
         // in the filter, j is a letter
         press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
         press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.open.view().unwrap().filter, "j");
+        assert_eq!(app.list_view().unwrap().filter, "j");
     }
 
     #[test]
@@ -3498,11 +3578,11 @@ mod tests {
         let uri = "spotify:playlist:weekly";
         let page = |uri: &str| singularity_proto::TrackPage { uri: uri.into(), offset: 0, total: 1, tracks: vec![singularity_proto::TrackRow { uri: "spotify:track:a".into(), name: "a".into(), ..Default::default() }], header: None };
         app.track_page(page(uri));
-        let list = || Page::List { uri: uri.into(), title: "Weekly".into(), subtitle: String::new() };
+        let list = || PageName::List { uri: uri.into(), title: "Weekly".into(), subtitle: String::new() };
         let asked = |rx: &mut mpsc::Receiver<Command>| std::iter::from_fn(|| rx.try_recv().ok()).any(|c| matches!(c, Command::GetTracks { .. }));
         app.navigate(list());
         assert!(!asked(&mut rx), "fresh: shown from what the Client has");
-        app.navigate(Page::Home);
+        app.navigate(PageName::Home);
         *app.fetched.get_mut(uri).unwrap() -= KEPT_FOR;
         app.navigate(list());
         assert!(asked(&mut rx), "ten minutes on: asked for again");
@@ -3593,7 +3673,38 @@ mod tests {
         let said = app.toast.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
         assert!(said.contains("Can't open"), "an unknown kind is answered, not swallowed: {said:?}");
         app.open("spotify:album:a1", "An Album", "", "album");
-        assert!(matches!(app.current_page(), Page::List { .. }), "a known kind still opens");
+        assert!(matches!(app.current_page(), PageName::List { .. }), "a known kind still opens");
+    }
+
+    /// Q87 (D88): an episode being looked up is not a page. Going to another page before its show is found (a new
+    /// page, back, forward) cancels it; it used to pull you to the show anyway.
+    #[test]
+    fn going_to_another_page_cancels_an_episode_being_looked_up() {
+        let show = || singularity_proto::Link { name: "A Show".into(), uri: "spotify:show:s".into() };
+        type Way = (&'static str, fn(&mut App));
+        let ways: [Way; 3] = [
+            ("a new page", |app| app.run(Action::Stats)),
+            ("back", |app| app.run(Action::Back)),
+            ("forward", |app| app.run(Action::Forward)),
+        ];
+        for (way, go) in ways {
+            let mut app = App::new(None);
+            app.open("spotify:album:a1", "An Album", "", "album");
+            app.run(Action::Settings);
+            app.run(Action::Back);
+            // on the album, with Home behind and Settings ahead
+            app.open("spotify:episode:e1", "Episode 1", "", "episode");
+            go(&mut app);
+            let there = app.current_page();
+            app.episode_show("spotify:episode:e1".into(), show());
+            assert_eq!(app.current_page(), there, "{way}: the show doesn't pull you away");
+            assert!(app.pending_episode.is_none(), "{way}: cancelled");
+        }
+        // left alone, the show opens at the episode
+        let mut app = App::new(None);
+        app.open("spotify:episode:e1", "Episode 1", "", "episode");
+        app.episode_show("spotify:episode:e1".into(), show());
+        assert!(matches!(app.current_page(), PageName::List { uri, .. } if uri == "spotify:show:s"));
     }
 
     #[test]
