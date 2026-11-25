@@ -2,7 +2,6 @@
 //! (re-read when they change), and the pickers, which preview as you move and put things back on Esc.
 
 use crate::app::{App, Hit};
-use crate::design::DESIGNS;
 use crate::layout::{PaneId, Widget};
 use crate::theme::{self, Theme};
 use crate::ui::{centered, popup, text, blank};
@@ -23,8 +22,8 @@ pub struct Picker {
     /// id, name, what it is
     pub items: Vec<(String, String, String)>,
     pub sel: usize,
-    /// what to go back to on Esc: design, theme id, layout and the saved layout's name
-    before: (usize, String, crate::arrangement::Arrangement, Option<String>),
+    /// what to go back to on Esc: design, theme id, layout and the saved layout's file
+    before: (usize, String, crate::arrangement::Arrangement, crate::shown::Mark),
 }
 
 /// The user's themes folder and what it held last time we looked.
@@ -57,12 +56,12 @@ fn stamp(dir: &std::path::Path) -> Option<(SystemTime, usize)> {
 impl App {
     /// Switch design: its layout, its own palette (unless `theme` says otherwise), its Disk look.
     pub fn set_design(&mut self, d: usize) {
-        let d = d.min(DESIGNS.len() - 1);
-        self.design = d;
-        self.set_layout((DESIGNS[d].layout)());
-        self.hole.look = DESIGNS[d].look;
+        self.shown.show_built_in(d);
+        let d = self.shown.built_in();
+        self.set_layout((d.layout)());
+        self.hole.look = d.look;
         self.focus_on(Widget::Home);
-        self.theme = theme::builtin(DESIGNS[d].themes[0]).expect("built in").into();
+        self.theme = theme::builtin(d.themes[0]).expect("built in").into();
         self.want_widget_data();
     }
 
@@ -81,28 +80,21 @@ impl App {
     /// `ui.design`, `ui.layout` and `ui.theme` from the config, if they differ from what's on screen.
     pub fn apply_ui(&mut self, ui: &singularity_config::Ui) {
         match crate::design::by_id(&ui.design) {
-            Some(d) if d != self.design || self.theme.id.is_empty() => {
-                self.set_design(d);
-                self.layout_name = None;
-            }
+            Some(d) if d != self.shown.design() || self.theme.id.is_empty() => self.set_design(d),
             Some(_) => {}
             None => self.say(format!("config.toml: no design called {:?}", ui.design)),
         }
         let want = (!ui.layout.is_empty()).then_some(ui.layout.as_str());
-        if want != self.layout_name.as_deref() {
+        if want != self.shown.file() {
             match want {
-                Some(id) => match self.saved_layouts.iter().find(|s| s.id == id).cloned() {
+                Some(id) => match self.shown.find(id).cloned() {
                     Some(s) => self.use_layout(&s),
                     None => self.say(format!("config.toml: no saved layout called {id:?} in layouts/")),
                 },
-                None => {
-                    let d = self.design;
-                    self.set_design(d);
-                    self.layout_name = None;
-                }
+                None => self.set_design(self.shown.design()),
             }
         }
-        let want = if ui.theme.is_empty() { DESIGNS[self.design].themes[0] } else { ui.theme.as_str() };
+        let want = if ui.theme.is_empty() { self.shown.built_in().themes[0] } else { ui.theme.as_str() };
         if want != self.theme.id && !self.set_theme(want) {
             self.say(format!("config.toml: no theme called {want:?} (built-in, or a file in themes/)"));
         }
@@ -110,10 +102,8 @@ impl App {
 
     /// Remember the design, theme and layout in config.toml (so they survive a restart).
     pub fn save_ui(&mut self) {
-        let own = DESIGNS[self.design].themes[0] == self.theme.id;
-        let (design, theme) = (DESIGNS[self.design].id.to_string(), if own { String::new() } else { self.theme.id.clone() });
         // (while a New design… is built, the Design it began from: it is still the one you have)
-        let layout = self.layout_name.clone().or_else(|| self.building_from()).unwrap_or_default();
+        let crate::shown::Remembered { design, theme, layout } = self.shown.remembered(&self.theme.id, self.building_from().as_deref());
         self.config.ui.design = design.clone();
         self.config.ui.theme = theme.clone();
         self.config.ui.layout = layout.clone();
@@ -128,11 +118,11 @@ impl App {
 
     /// `t`: the design's next palette, then the shared ones, then the user's themes, round again.
     pub fn next_variant(&mut self) {
-        let mut ids: Vec<String> = DESIGNS[self.design].themes.iter().map(|s| s.to_string()).collect();
+        let mut ids: Vec<String> = self.shown.built_in().themes.iter().map(|s| s.to_string()).collect();
         ids.extend(theme::extra_ids().map(String::from));
         ids.extend(self.user_themes.iter().map(|t| t.id.clone()));
         if ids.len() < 2 {
-            return self.say(format!("{} has one palette · Ctrl+K → Pick a theme for the others", DESIGNS[self.design].name));
+            return self.say(format!("{} has one palette · Ctrl+K → Pick a theme for the others", self.shown.built_in().name));
         }
         let i = ids.iter().position(|id| *id == self.theme.id).map(|i| (i + 1) % ids.len()).unwrap_or(0);
         self.set_theme(&ids[i]);
@@ -183,26 +173,21 @@ impl App {
         self.reload_layouts();
         let items = match kind {
             // the built-in designs, then the user's saved layouts
-            PickerKind::Design => DESIGNS
-                .iter()
-                .map(|d| (d.id.to_string(), d.name.to_string(), d.blurb.to_string()))
-                .chain(self.saved_layouts.iter().map(|s| (format!("layout:{}", s.id), s.name.clone(), if s.edited { format!("your changes, unnamed · layouts/{}.toml", s.id) } else { format!("yours · layouts/{}.toml", s.id) })))
-                .collect(),
+            PickerKind::Design => self.shown.picker_items(),
             PickerKind::Theme => theme_items(&self.user_themes),
         };
-        let current = match (kind, &self.layout_name) {
-            (PickerKind::Design, Some(l)) => format!("layout:{l}"),
-            (PickerKind::Design, None) => DESIGNS[self.design].id.to_string(),
-            (PickerKind::Theme, _) => self.theme.id.clone(),
+        let current = match kind {
+            PickerKind::Design => self.shown.picker_current(),
+            PickerKind::Theme => self.theme.id.clone(),
         };
         let sel = items.iter().position(|(id, ..)| *id == current).unwrap_or(0);
-        self.open_popup(crate::app::Popup::Picker(Picker { kind, items, sel, before: (self.design, self.theme.id.clone(), self.layout.clone(), self.layout_name.clone()) }));
+        self.open_popup(crate::app::Popup::Picker(Picker { kind, items, sel, before: (self.shown.design(), self.theme.id.clone(), self.layout.clone(), self.shown.mark()) }));
     }
 
     /// Put saved layout `s` on screen (with the colours it was saved with, or its design's).
     pub fn use_layout(&mut self, s: &crate::layouts::Saved) {
-        let d = crate::design::by_id(&s.design).unwrap_or(self.design);
-        if d != self.design {
+        let d = crate::design::by_id(&s.design).unwrap_or(self.shown.design());
+        if d != self.shown.design() {
             self.set_design(d);
         }
         // the colours it was saved with (a theme that has since gone keeps the design's own)
@@ -210,32 +195,32 @@ impl App {
             self.set_theme(t);
         }
         self.set_layout(s.arrangement());
-        self.layout_name = Some(s.id.clone());
+        self.shown.open(s);
         self.focus_on(Widget::Home);
         self.want_widget_data();
     }
 
+    /// Read the user's Designs again (what couldn't be read, the bar says).
     pub fn reload_layouts(&mut self) {
-        let Some(dir) = self.layouts_dir.clone() else { return };
-        let (saved, problems) = crate::layouts::load_dir(&dir);
-        self.saved_layouts = saved;
-        if !problems.is_empty() {
-            self.say(problems.join(" · "));
+        if let Some(p) = self.shown.reload() {
+            self.say(p);
+        }
+    }
+
+    /// What a change to the Shown Design asks for: config.toml follows, the bar says it.
+    pub(crate) fn shown_did(&mut self, o: crate::shown::Outcome) {
+        if o.save_ui {
+            self.save_ui();
+        }
+        if let Some(s) = o.said {
+            self.say(s);
         }
     }
 
     /// Save what's on screen under `name`; it shows up in the Design picker.
     pub fn save_layout(&mut self, name: &str) {
-        let Some(dir) = self.layouts_dir.clone() else { return self.say("No config folder to save layouts in") };
-        match crate::layouts::save(&dir, name, DESIGNS[self.design].id, &self.theme.id, &self.layout) {
-            Ok(s) => {
-                self.layout_name = Some(s.id.clone());
-                self.reload_layouts();
-                self.save_ui();
-                self.say(format!("Saved design \"{}\" (Ctrl+K → Pick a design)", s.name));
-            }
-            Err(e) => self.say(format!("Couldn't save the layout: {e}")),
-        }
+        let o = self.shown.save_as(name, &self.layout, &self.theme.id);
+        self.shown_did(o);
     }
 
     /// Discard new design (Ctrl+D on its name prompt, or the palette's, owner Q78): the build is thrown away and the
@@ -281,28 +266,19 @@ impl App {
                     crate::app::NameFor::Layout => {}
                     crate::app::NameFor::Fork if n.text.trim().is_empty() => self.keep_edited(),
                     // never over another Design of the user's
-                    crate::app::NameFor::Fork => {
-                        let id = crate::layouts::file_id(&n.text);
-                        if self.saved_layouts.iter().any(|s| s.id == id && !s.edited) {
-                            self.say(format!("There is already a design called \"{}\"", n.text.trim()));
+                    crate::app::NameFor::Fork => match self.shown.name_edit(&n.text, &self.layout, &self.theme.id) {
+                        Ok(o) => self.shown_did(o),
+                        Err(o) => {
+                            self.shown_did(o);
                             self.open_popup(crate::app::Popup::Naming(n));
-                        } else {
-                            let was = self.layout_name.clone();
-                            self.save_layout(&n.text);
-                            self.named_edited_copy(was);
                         }
-                    }
+                    },
                     crate::app::NameFor::NewPlaylist => self.create_playlist(&n.text),
                     // a New design… (#42): never over a Design of the user's, nor where a built-in Design's unnamed
                     // "(edited)" copy goes (that would later be written over it); a name that can't be saved (one that
                     // makes no file name) keeps the prompt, saying why
                     crate::app::NameFor::NewDesign => {
-                        let id = crate::layouts::file_id(&n.text);
-                        let taken = self.saved_layouts.iter().any(|s| s.id == id) || DESIGNS.iter().any(|d| crate::layouts::edited_id(d.id) == id);
-                        if taken {
-                            self.say(format!("There is already a design called \"{}\"", n.text.trim()));
-                            self.open_popup(crate::app::Popup::Naming(n));
-                        } else if !self.save_new_design(&n.text) {
+                        if !self.save_new_design(&n.text) {
                             self.open_popup(crate::app::Popup::Naming(n));
                         }
                     }
@@ -346,12 +322,11 @@ impl App {
         match kind {
             PickerKind::Design => {
                 if let Some(l) = id.strip_prefix("layout:") {
-                    if let Some(s) = self.saved_layouts.iter().find(|s| s.id == l).cloned() {
+                    if let Some(s) = self.shown.find(l).cloned() {
                         self.use_layout(&s);
                     }
-                } else if let Some(d) = crate::design::by_id(&id).filter(|d| *d != self.design || self.layout_name.is_some()) {
+                } else if let Some(d) = crate::design::by_id(&id).filter(|d| *d != self.shown.design() || self.shown.file().is_some()) {
                     self.set_design(d);
-                    self.layout_name = None;
                 }
             }
             PickerKind::Theme => {
@@ -364,7 +339,7 @@ impl App {
     pub fn picker_keep(&mut self) {
         if let Some(p) = self.take_picker() {
             // another Design: the layout undo history was the last one's
-            if p.before.0 != self.design || p.before.2 != self.layout || p.before.3 != self.layout_name {
+            if p.before.0 != self.shown.design() || p.before.2 != self.layout || p.before.3.file() != self.shown.file() {
                 self.history.clear();
             }
             self.save_ui();
@@ -374,12 +349,12 @@ impl App {
     /// Esc: put back what was there.
     pub fn picker_cancel(&mut self) {
         let Some(p) = self.take_picker() else { return };
-        if p.before.0 != self.design {
+        if p.before.0 != self.shown.design() {
             self.set_design(p.before.0);
         }
         self.set_theme(&p.before.1);
         self.set_layout(p.before.2);
-        self.layout_name = p.before.3;
+        self.shown.resume(p.before.3);
         self.want_widget_data();
     }
 
@@ -447,6 +422,7 @@ pub fn draw_picker(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::design::DESIGNS;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::KeyModifiers;
@@ -532,21 +508,21 @@ mod tests {
         let (mut app, dir) = with_dirs();
         app.run(crate::app::Action::PickDesign);
         key(&mut app, KeyCode::Down);
-        assert_eq!(DESIGNS[app.design].id, "event-horizon", "previewed at once");
+        assert_eq!(DESIGNS[app.shown.design()].id, "event-horizon", "previewed at once");
         assert!(app.layout.has(Widget::Hole));
         key(&mut app, KeyCode::Esc);
-        assert_eq!((DESIGNS[app.design].id, app.theme.id.as_str()), ("singularity", "singularity"), "Esc puts it back");
+        assert_eq!((DESIGNS[app.shown.design()].id, app.theme.id.as_str()), ("singularity", "singularity"), "Esc puts it back");
         app.run(crate::app::Action::PickDesign);
         key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Enter);
-        assert_eq!(DESIGNS[app.design].id, "classic");
+        assert_eq!(DESIGNS[app.shown.design()].id, "classic");
         let cfg = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
         assert!(cfg.contains("design = \"classic\"") && cfg.contains("# the design:"), "kept in config.toml, comments too:\n{cfg}");
         // a restart reads it back
         let mut again = App::new(None);
         again.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
-        assert_eq!((DESIGNS[again.design].id, again.theme.id.as_str()), ("classic", "classic"));
+        assert_eq!((DESIGNS[again.shown.design()].id, again.theme.id.as_str()), ("classic", "classic"));
     }
 
     #[test]
@@ -623,7 +599,7 @@ mod tests {
         }
         key(&mut app, KeyCode::Enter);
         assert!(dir.path().join("layouts/wide-library.toml").exists());
-        assert_eq!(app.layout_name.as_deref(), Some("wide-library"));
+        assert_eq!(app.shown.file(), Some("wide-library"));
         // a restart
         let mut again = App::new(None);
         again.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
@@ -668,14 +644,14 @@ mod tests {
         // saving over the name again takes the new colours
         again.set_theme("cockpit-ice");
         again.save_layout("Warm");
-        assert_eq!(again.saved_layouts[0].theme.as_deref(), Some("cockpit-ice"));
+        assert_eq!(again.shown.saved()[0].theme.as_deref(), Some("cockpit-ice"));
         // an old file (no theme) keeps today's behaviour: the design's own colours
         let old: String = std::fs::read_to_string(dir.path().join("layouts/warm.toml")).unwrap().lines().filter(|l| !l.starts_with("theme")).collect::<Vec<_>>().join("\n");
         std::fs::write(dir.path().join("layouts/warm.toml"), old).unwrap();
         again.set_design(2);
         again.run(crate::app::Action::PickDesign);
         key(&mut again, KeyCode::End);
-        assert_eq!(again.theme.id, DESIGNS[again.design].themes[0]);
+        assert_eq!(again.theme.id, DESIGNS[again.shown.design()].themes[0]);
     }
 
     #[test]

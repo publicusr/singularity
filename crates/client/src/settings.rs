@@ -71,7 +71,7 @@ fn choices(app: &App, e: &Entry) -> Vec<(String, String)> {
         }
         (Kind::Named, "ui.layout") => {
             let mut v = vec![own()];
-            v.extend(app.saved_layouts.iter().map(|l| (l.id.clone(), l.id.clone())));
+            v.extend(app.shown.saved().iter().map(|l| (l.id.clone(), l.id.clone())));
             v
         }
         _ => vec![],
@@ -521,7 +521,7 @@ mod tests {
         select(&mut app, "ui.design");
         key(&mut app, KeyCode::Right);
         assert_eq!(app.config.ui.design, "event-horizon");
-        assert_eq!(crate::design::DESIGNS[app.design].id, "event-horizon");
+        assert_eq!(app.shown.built_in().id, "event-horizon");
         // numbers step, stay in range, and can be typed
         select(&mut app, "visuals.unfocused_fps");
         key(&mut app, KeyCode::Left);

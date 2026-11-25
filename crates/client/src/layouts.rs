@@ -60,6 +60,8 @@ impl Saved {
     }
 }
 
+/// Save `a` under the name typed (the Shown Design saves through its store: this is for the file format's tests).
+#[cfg(test)]
 pub fn save(dir: &Path, name: &str, design: &str, theme: &str, a: impl Into<Arrangement>) -> Result<Saved, String> {
     let id = file_id(name);
     if id.is_empty() {

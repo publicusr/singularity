@@ -100,7 +100,7 @@ pub fn queue_rect(area: Rect, app: &App) -> Rect {
 /// The library popup: the library Pane's list in a box, titled as the Design titles its Pane.
 pub fn draw_library(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     let r = library_rect(area, app);
-    let inner = popup(buf, r, th, &crate::ui::pane_name(app.design, Widget::Library));
+    let inner = popup(buf, r, th, &crate::ui::pane_name(app.shown.design(), Widget::Library));
     let list = Rect { height: inner.height.saturating_sub(1), ..inner };
     crate::sidebar::draw(buf, list, app, th);
     text(buf, inner.x + 1, inner.bottom().saturating_sub(1), inner.width.saturating_sub(2), "Enter or click: open in Home · Esc close", th.s(th.dim));
@@ -112,7 +112,7 @@ pub fn draw_queue(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     if let Some(Popup::Queue { h }) = app.popup.as_mut() {
         *h = r.height;
     }
-    let inner = popup(buf, r, th, &crate::ui::pane_name(app.design, Widget::Queue));
+    let inner = popup(buf, r, th, &crate::ui::pane_name(app.shown.design(), Widget::Queue));
     let list = Rect { height: inner.height.saturating_sub(1), ..inner };
     crate::queue::draw(buf, list, app, th);
     text(buf, inner.x + 1, inner.bottom().saturating_sub(1), inner.width.saturating_sub(2), "drag to reorder · Delete remove · Enter menu · Esc close", th.s(th.dim));
