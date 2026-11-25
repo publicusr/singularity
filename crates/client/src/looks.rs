@@ -3,6 +3,7 @@
 
 use crate::app::{App, Hit};
 use crate::design::DESIGNS;
+use crate::layout::{PaneId, Widget};
 use crate::theme::{self, Theme};
 use crate::ui::{centered, popup, text, blank};
 use ratatui::buffer::Buffer;
@@ -23,7 +24,7 @@ pub struct Picker {
     pub items: Vec<(String, String, String)>,
     pub sel: usize,
     /// what to go back to on Esc: design, theme id, layout and the saved layout's name
-    before: (usize, String, crate::layout::Node, Option<String>),
+    before: (usize, String, crate::arrangement::Arrangement, Option<String>),
 }
 
 /// The user's themes folder and what it held last time we looked.
@@ -58,9 +59,9 @@ impl App {
     pub fn set_design(&mut self, d: usize) {
         let d = d.min(DESIGNS.len() - 1);
         self.design = d;
-        self.layout = (DESIGNS[d].layout)();
+        self.set_layout((DESIGNS[d].layout)());
         self.hole.look = DESIGNS[d].look;
-        self.focus = "home".into();
+        self.focus_on(Widget::Home);
         self.theme = theme::builtin(DESIGNS[d].themes[0]).expect("built in").into();
         self.want_widget_data();
     }
@@ -111,7 +112,8 @@ impl App {
     pub fn save_ui(&mut self) {
         let own = DESIGNS[self.design].themes[0] == self.theme.id;
         let (design, theme) = (DESIGNS[self.design].id.to_string(), if own { String::new() } else { self.theme.id.clone() });
-        let layout = self.layout_name.clone().unwrap_or_default();
+        // (while a New design… is built, the Design it began from: it is still the one you have)
+        let layout = self.layout_name.clone().or_else(|| self.building_from()).unwrap_or_default();
         self.config.ui.design = design.clone();
         self.config.ui.theme = theme.clone();
         self.config.ui.layout = layout.clone();
@@ -207,9 +209,9 @@ impl App {
         if let Some(t) = s.theme.as_deref() {
             self.set_theme(t);
         }
-        self.layout = s.tree.clone();
+        self.set_layout(s.arrangement());
         self.layout_name = Some(s.id.clone());
-        self.focus = "home".into();
+        self.focus_on(Widget::Home);
         self.want_widget_data();
     }
 
@@ -236,17 +238,34 @@ impl App {
         }
     }
 
+    /// Discard new design (Ctrl+D on its name prompt, or the palette's, owner Q78): the build is thrown away and the
+    /// Design you had comes back, untouched; the bar says so.
+    pub fn discard_new_design(&mut self) {
+        if !self.building() {
+            return;
+        }
+        if self.naming().is_some() {
+            self.take_naming();
+        }
+        self.cancel_new_design();
+        self.say("New design discarded".to_string());
+    }
+
     /// Typing a name: for "Save design as…" (#19) or a new playlist (#51).
     pub fn naming_key(&mut self, k: KeyEvent) {
         let Some(purpose) = self.naming().map(|n| n.purpose) else { return };
-        let max = if matches!(purpose, crate::app::NameFor::Layout | crate::app::NameFor::Fork) { 40 } else { 100 };
-        // the first edit of a built-in Design can still be undone (or, undone, redone) from its naming prompt
+        let max = if matches!(purpose, crate::app::NameFor::Layout | crate::app::NameFor::Fork | crate::app::NameFor::NewDesign) { 40 } else { 100 };
+        // the changes Done's prompt names can still be undone (or, undone, redone) from it
         if purpose == crate::app::NameFor::Fork && k.modifiers.contains(KeyModifiers::CONTROL) {
             match self.keymap.action(k) {
                 Some(crate::app::Action::UndoLayout) if !k.modifiers.contains(KeyModifiers::SHIFT) => return self.undo_layout(),
                 Some(crate::app::Action::UndoLayout | crate::app::Action::RedoLayout) => return self.redo_layout(),
                 _ => {}
             }
+        }
+        // a New design… thrown away (owner, after #42): the Design that was on screen comes back, untouched
+        if purpose == crate::app::NameFor::NewDesign && k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('d' | 'D')) {
+            return self.discard_new_design();
         }
         match k.code {
             KeyCode::Esc => {
@@ -268,10 +287,25 @@ impl App {
                             self.say(format!("There is already a design called \"{}\"", n.text.trim()));
                             self.open_popup(crate::app::Popup::Naming(n));
                         } else {
+                            let was = self.layout_name.clone();
                             self.save_layout(&n.text);
+                            self.named_edited_copy(was);
                         }
                     }
                     crate::app::NameFor::NewPlaylist => self.create_playlist(&n.text),
+                    // a New design… (#42): never over a Design of the user's, nor where a built-in Design's unnamed
+                    // "(edited)" copy goes (that would later be written over it); a name that can't be saved (one that
+                    // makes no file name) keeps the prompt, saying why
+                    crate::app::NameFor::NewDesign => {
+                        let id = crate::layouts::file_id(&n.text);
+                        let taken = self.saved_layouts.iter().any(|s| s.id == id) || DESIGNS.iter().any(|d| crate::layouts::edited_id(d.id) == id);
+                        if taken {
+                            self.say(format!("There is already a design called \"{}\"", n.text.trim()));
+                            self.open_popup(crate::app::Popup::Naming(n));
+                        } else if !self.save_new_design(&n.text) {
+                            self.open_popup(crate::app::Popup::Naming(n));
+                        }
+                    }
                 }
             }
             KeyCode::Backspace => {
@@ -288,13 +322,17 @@ impl App {
         }
     }
 
-    /// Swap the Widget in the Slot showing `slot` for the next one in its group. False if that Slot can't swap.
-    pub fn swap_widget(&mut self, slot: &str, dir: i32) -> bool {
-        let shown = self.layout.slot_names();
-        let Some(to) = crate::layouts::next(slot, &shown, dir) else { return false };
-        self.layout.swap(slot, to);
-        if self.focus == slot {
-            self.focus = to.into();
+    /// Swap the Widget in Pane `id` for the next one in its group (the Pane, and the focus on it, stay). False if
+    /// that Pane's Widget can't swap.
+    pub fn swap_widget(&mut self, id: PaneId, dir: i32) -> bool {
+        let Some(from) = self.layout.widget_in(id) else { return false };
+        // (not one waiting in the Tray: ◂ ▸ aren't an edit, and would take it out unrecorded)
+        let mut taken = self.layout.widgets();
+        taken.extend(self.layout.tray());
+        let Some(to) = crate::layouts::next(from, &taken, dir) else { return false };
+        match self.layout.replace(id, to) {
+            Ok(a) => self.layout = a,
+            Err(_) => return false,
         }
         self.want_widget_data();
         true
@@ -340,7 +378,7 @@ impl App {
             self.set_design(p.before.0);
         }
         self.set_theme(&p.before.1);
-        self.layout = p.before.2;
+        self.set_layout(p.before.2);
         self.layout_name = p.before.3;
         self.want_widget_data();
     }
@@ -443,18 +481,19 @@ mod tests {
             app.set_design(d);
             app.meters.push(singularity_proto::SpectrumFrame { bands: vec![120; 64], level: 150, vu: [150, 150], beat: false, out_level: 150, out_vu: [150, 150], out_bands: [120; 3] });
             let s = screen(&render(&mut app));
-            for (slot, _) in app.layout.compute(Rect::new(0, 1, 160, 43)).slots {
-                let usual = match slot.as_str() {
-                    "well" => "gravity well",
-                    "hole" => "black hole",
-                    "nowplaying" => "Now playing",
-                    "scope" => "osc",
-                    "fft" => "fft",
+            for (p, _) in app.layout.compute(Rect::new(0, 1, 160, 43)).panes {
+                let w = p.widget.unwrap();
+                let usual = match w {
+                    Widget::Well => "gravity well",
+                    Widget::Hole => "black hole",
+                    Widget::NowPlaying => "Now playing",
+                    Widget::Scope => "osc",
+                    Widget::Fft => "fft",
                     _ => "",
                 };
-                // most Panes are titled after their Slot
-                let title = match crate::design::title(d, &slot, usual) {
-                    "" => slot.as_str(),
+                // most Panes are titled after their Widget
+                let title = match crate::design::title(d, w, usual) {
+                    "" => w.name(),
                     t => t,
                 };
                 // (the main Pane is titled after what it shows: "home" here)
@@ -494,7 +533,7 @@ mod tests {
         app.run(crate::app::Action::PickDesign);
         key(&mut app, KeyCode::Down);
         assert_eq!(DESIGNS[app.design].id, "event-horizon", "previewed at once");
-        assert!(app.layout.compute(Rect::new(0, 0, 160, 43)).slots.iter().any(|(s, _)| s == "hole"));
+        assert!(app.layout.has(Widget::Hole));
         key(&mut app, KeyCode::Esc);
         assert_eq!((DESIGNS[app.design].id, app.theme.id.as_str()), ("singularity", "singularity"), "Esc puts it back");
         app.run(crate::app::Action::PickDesign);
@@ -533,18 +572,18 @@ mod tests {
     #[test]
     fn slots_swap_with_v_or_a_click_and_never_show_a_widget_twice() {
         let mut app = App::new(None);
-        app.focus = "fft".into();
+        app.focus_on(Widget::Fft);
         key(&mut app, KeyCode::Char('v'));
-        let slots = app.layout.slot_names();
-        assert!(slots.contains(&"levels".to_string()) && !slots.contains(&"fft".to_string()), "{slots:?}");
-        assert_eq!(app.focus, "levels", "focus follows the Widget");
+        let slots = app.layout.widgets();
+        assert!(slots.contains(&Widget::Levels) && !slots.contains(&Widget::Fft), "{slots:?}");
+        assert_eq!(app.focused(), Some(Widget::Levels), "focus follows the Widget");
         // click the ▸ of the loudness Pane: levels is taken, so scope
         render(&mut app);
-        let r = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Swap(s, 1) if s == "loudness").then_some(*r)).expect("a ◂ ▸ on loudness");
+        let r = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Swap(p, 1) if Some(*p) == app.layout.pane_of(Widget::Loudness)).then_some(*r)).expect("a ◂ ▸ on loudness");
         app.mouse(ratatui::crossterm::event::MouseEvent { kind: ratatui::crossterm::event::MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left), column: r.x, row: r.y, modifiers: KeyModifiers::NONE });
-        assert!(app.layout.slot_names().contains(&"scope".to_string()));
+        assert!(app.layout.has(Widget::Scope));
         // the well has no Widgets to swap: v changes its Disk look
-        app.focus = "well".into();
+        app.focus_on(Widget::Well);
         let look = app.hole.look;
         key(&mut app, KeyCode::Char('v'));
         assert_ne!(app.hole.look, look);
@@ -555,17 +594,19 @@ mod tests {
     #[test]
     fn the_swap_arrows_stay_put_whatever_the_widget() {
         let mut app = App::new(None);
-        let arrows = |app: &mut App, slot: &str| {
+        let arrows = |app: &mut App, pane: PaneId| {
             render(app);
-            app.hits.iter().filter(|(_, h)| matches!(h, Hit::Swap(s, _) if s == slot)).map(|(r, _)| r.x).collect::<Vec<_>>()
+            app.hits.iter().filter(|(_, h)| matches!(h, Hit::Swap(p, _) if *p == pane)).map(|(r, _)| r.x).collect::<Vec<_>>()
         };
-        let slot = app.layout.slot_names().into_iter().find(|s| s == "stream" || s == "listening").expect("a swappable side Pane");
-        let before = arrows(&mut app, &slot);
+        let slot = app.layout.widgets().into_iter().find(|s| matches!(s, Widget::Stream | Widget::Listening)).expect("a swappable side Pane");
+        let pane = app.layout.pane_of(slot).unwrap();
+        let before = arrows(&mut app, pane);
         assert_eq!(before.len(), 2);
         // put the queue there (no × on it) and the queue's own Pane gets this one's Widget
-        app.layout.swap("queue", "marquee");
-        app.layout.swap(&slot, "queue");
-        assert_eq!(arrows(&mut app, "queue"), before, "the ◂ ▸ moved");
+        app.layout = app.layout.replace(app.layout.pane_of(Widget::Queue).unwrap(), Widget::Marquee).unwrap();
+        app.layout = app.layout.replace(pane, Widget::Queue).unwrap();
+        assert_eq!(app.layout.pane_of(Widget::Queue), Some(pane));
+        assert_eq!(arrows(&mut app, pane), before, "the ◂ ▸ moved");
     }
 
     #[test]
@@ -573,8 +614,8 @@ mod tests {
         let (mut app, dir) = with_dirs();
         let area = Rect::new(0, 1, 160, 43);
         let d = app.layout.compute(area).dividers[0].clone();
-        app.layout.drag(&d, 41);
-        app.swap_widget("fft", 1);
+        app.layout = app.layout.move_line(&d, 41, area);
+        app.swap_widget(app.layout.pane_of(Widget::Fft).unwrap(), 1);
         let mine = app.layout.clone();
         app.run(crate::app::Action::SaveLayout);
         for c in "Wide library".chars() {

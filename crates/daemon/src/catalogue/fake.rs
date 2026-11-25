@@ -39,7 +39,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                     created += 1;
                     let uri = format!("spotify:playlist:fakenew{created}");
                     let at = lib.items.iter().position(|i| i.kind != "liked").unwrap_or(lib.items.len());
-                    lib.items.insert(at, singularity_proto::LibraryItem { uri: uri.clone(), name: name.clone(), subtitle: "Playlist · fake".into(), kind: "playlist".into(), image_url: None, depth: 0, own: true });
+                    lib.items.insert(at, singularity_proto::LibraryItem { uri: uri.clone(), name: name.clone(), subtitle: "Playlist · fake".into(), kind: "playlist".into(), image_url: None, depth: 0, own: true, authors: vec!["fake".into()] });
                     let mut ev = vec![CatEvent::Created { uri: uri.clone(), name: name.clone() }];
                     if !uris.is_empty() {
                         added.entry(uri.clone()).or_default().extend(uris.iter().cloned());
@@ -192,7 +192,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                         if uri.starts_with("spotify:show:") {
                             lib.items.retain(|i| i.uri != uri);
                             if want {
-                                lib.items.insert(1, singularity_proto::LibraryItem { uri: uri.clone(), name: "Fake Show".into(), subtitle: "Podcast · Fake Publisher".into(), kind: "show".into(), image_url: None, depth: 0, own: false });
+                                lib.items.insert(1, singularity_proto::LibraryItem { uri: uri.clone(), name: "Fake Show".into(), subtitle: "Podcast · Fake Publisher".into(), kind: "show".into(), image_url: None, depth: 0, own: false, authors: vec!["Fake Publisher".into()] });
                             }
                             shows = Some(CatEvent::Library(lib.clone()));
                         }
@@ -208,7 +208,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 CatCmd::CheckSaved(uris) => vec![CatEvent::Saved(uris.into_iter().map(|uri| singularity_proto::SavedFlag { saved: saved.get(&uri).copied().unwrap_or_else(|| fake_saved(&uri)), uri }).collect())],
                 CatCmd::Describe(uris) => vec![CatEvent::Described(
                     uris.into_iter()
-                        .map(|u| singularity_proto::Item {
+                        .map(|u| fake_song(&u).unwrap_or_else(|| singularity_proto::Item {
                             name: format!("Described {}", u.rsplit(':').next().unwrap_or("")),
                             uri: u,
                             artists: vec!["Fake Artist".into()],
@@ -216,7 +216,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                             album_uri: Some("spotify:album:fake1".into()),
                             duration_ms: 180_000,
                             ..Default::default()
-                        })
+                        }))
                         .collect(),
                 )],
             };
@@ -356,12 +356,13 @@ fn fake_library(home: &HomeFeed) -> Library {
         image_url: None,
         depth: 0,
         own: false,
+        authors: vec![],
     }];
     for c in home.shelves.iter().take(2).flat_map(|s| &s.cards).filter(|c| c.uri != "spotify:playlist:liked") {
-        items.push(singularity_proto::LibraryItem { uri: c.uri.clone(), name: c.name.clone(), subtitle: c.subtitle.clone(), kind: c.kind.clone(), image_url: c.image_url.clone(), depth: 0, own: false });
+        items.push(singularity_proto::LibraryItem { uri: c.uri.clone(), name: c.name.clone(), subtitle: c.subtitle.clone(), kind: c.kind.clone(), image_url: c.image_url.clone(), depth: 0, own: false, authors: vec![] });
     }
     // one playlist of the fake user's own, to edit
-    items.push(singularity_proto::LibraryItem { uri: "spotify:playlist:fakemine".into(), name: "Fake Mixtape".into(), subtitle: "Playlist · fake".into(), kind: "playlist".into(), image_url: None, depth: 0, own: true });
+    items.push(singularity_proto::LibraryItem { uri: "spotify:playlist:fakemine".into(), name: "Fake Mixtape".into(), subtitle: "Playlist · fake".into(), kind: "playlist".into(), image_url: None, depth: 0, own: true, authors: vec!["fake".into()] });
     Library { items }
 }
 
@@ -409,13 +410,36 @@ fn fake_query(op: &str, vars: &Value, home: &HomeFeed) -> anyhow::Result<Value> 
     }
 }
 
-/// Invented tracks in pages of 100: 250 for Liked Songs, 40 elsewhere.
+/// A made-up song for `spotify:track:song<n>` (a full queue for the contact sheet, #59): a title, an artist, an album,
+/// a length and a cover that differ from song to song, as a real queue's do.
+fn fake_song(uri: &str) -> Option<singularity_proto::Item> {
+    let n: usize = uri.strip_prefix("spotify:track:song")?.parse().ok()?;
+    let first = ["Glass", "Slow", "Neon", "Paper", "Quiet", "Silver", "Hollow", "Velvet", "Static", "Northern", "Golden", "Distant"];
+    let second = ["Orbit", "Harbour", "Tide", "Signals", "Lanterns", "Weather", "Rooms", "Satellites", "Gardens", "Echoes", "Summer", "Engines", "Light"];
+    let artists = ["Nova Drift", "Mira Vale", "Lumen Fields", "Glass Harbour", "Polar Static", "The Low Hours", "Ada Moreno & The Quiet Machines"];
+    let title = format!("{} {}", first[n % first.len()], second[(n * 5) % second.len()]);
+    let album = (n * 5) % 11;
+    Some(singularity_proto::Item {
+        uri: uri.into(),
+        // now and then a long title, as real ones have
+        name: if n % 7 == 3 { format!("{title} (Extended Night Version)") } else { title },
+        artists: vec![artists[n % artists.len()].into()],
+        artist_uris: vec![format!("spotify:artist:fake{}", n % artists.len())],
+        album: Some(format!("{} {}", second[(album * 3) % second.len()], ["EP", "LP", "Sessions"][album % 3])),
+        album_uri: Some(format!("spotify:album:fakesong{album}")),
+        cover_url: Some(format!("https://i.scdn.co/image/fixture{:03}", album * 7 % 30)),
+        duration_ms: 125_000 + (n as u64 * 91_331) % 230_000,
+        ..Default::default()
+    })
+}
+
 /// The fake library before any change: the fake tracks are all in Liked Songs; other things are saved when their URI
 /// ends in 1.
 fn fake_saved(uri: &str) -> bool {
     uri.strip_prefix("spotify:track:fake").is_some_and(|n| n.parse::<u32>().is_ok_and(|n| n < 250)) || uri.ends_with('1')
 }
 
+/// Invented tracks in pages of 100: 250 for Liked Songs, 40 elsewhere.
 fn fake_tracks(uri: &str) -> Vec<CatEvent> {
     if uri == FAKE_BOOK {
         return fake_book();

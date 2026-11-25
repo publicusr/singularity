@@ -229,7 +229,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         }
     }
     view.top = view.top.min(lines.len().saturating_sub(view.visible));
-    let focused = app.focus == "home";
+    let focused = app.is_focused(crate::layout::Widget::Home);
     let selected = all.get(view.sel).copied();
     let peak = |sec: Section| sec.rows(&s).first().map(|r| r.minutes.max(1)).unwrap_or(1);
     let clock_max = s.by_hour.iter().copied().max().unwrap_or(0).max(1);
@@ -306,7 +306,8 @@ const WEEKDAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun
 
 /// The "today" Widget: minutes today as a headline, plays and the streak, and the last days as a column chart.
 /// Small Panes get lines of text and a 7-day sparkline; tall ones a big figure, a comparison with the week's average
-/// and a chart of 7, 14 or 28 days (by width) with the minutes over the columns when they fit.
+/// and a chart of 7, 14 or 28 days (by width) with the minutes over the columns when they fit. The words sit in the
+/// middle of the width (#58).
 pub fn today(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     if r.height == 0 || w < 6 {
@@ -329,21 +330,40 @@ pub fn today(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
         return today_compact(buf, r, sum, mins, &plays, &streak, streak_st, th);
     }
     let mut y = r.y;
-    // the headline: minutes as a figure, plays and streak beside it (or under it, when narrow)
+    // a line in the middle of the Pane's width (#58)
+    let centred = |buf: &mut Buffer, y: u16, s: &str, st| {
+        let s = clip(s, w as usize);
+        let sw = s.width() as u16;
+        text(buf, crate::balance::centre(x, w, sw), y, sw, &s, st);
+    };
+    // the headline in the middle of the width (#58): minutes as a figure, plays and streak beside it (or under it,
+    // when there's no room to set the two side by side in the middle)
     let fig = if mins >= 60 { format!("{}h{:02}m", mins / 60, mins % 60) } else { format!("{mins}m") };
     let big = th.s(th.accent).add_modifier(Modifier::BOLD);
-    let fw = crate::tile::figure(buf, x, y, w, &fig, big, th.s(th.dim));
-    let side = x + fw + 3;
-    if side + 12 <= x + w {
+    let fw = crate::tile::figure_width(&fig).min(w);
+    let words_w = ["today", plays.as_str(), streak.as_str()].iter().map(|s| s.width() as u16).max().unwrap_or(0);
+    let head_w = fw + 3 + words_w;
+    if head_w + 6 <= w {
+        let hx = crate::balance::centre(x, w, head_w);
+        crate::tile::figure(buf, hx, y, w, &fig, big, th.s(th.dim));
+        let side = hx + fw + 3;
         let sw = x + w - side;
         text(buf, side, y, sw, "today", th.s(th.dim));
         text(buf, side, y + 1, sw, &plays, th.s(th.fg).add_modifier(Modifier::BOLD));
         text(buf, side, y + 2, sw, &streak, streak_st);
         y += 4;
     } else {
+        crate::tile::figure(buf, crate::balance::centre(x, w, fw), y, w, &fig, big, th.s(th.dim));
         y += 3;
-        text(buf, x, y, w, &clip(&format!("{plays} · {streak}"), w as usize), th.s(th.fg));
-        y += 2;
+        let both = format!("{plays} · {streak}");
+        if both.width() as u16 <= w {
+            centred(buf, y, &both, th.s(th.fg));
+            y += 2;
+        } else {
+            centred(buf, y, &plays, th.s(th.fg));
+            centred(buf, y + 1, &streak, streak_st);
+            y += 3;
+        }
     }
     // how today compares with the week before it
     let prev = &sum.minutes[sum.minutes.len().saturating_sub(8)..sum.minutes.len().saturating_sub(1)];
@@ -352,7 +372,7 @@ pub fn today(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
         let pct = ((mins as f32 / avg - 1.0) * 100.0).round() as i32;
         let (arrow, st) = if pct >= 0 { ('▲', th.s(th.accent2)) } else { ('▼', th.s(th.dim)) };
         let line = format!("{arrow} {}% vs the 7-day average ({}/day)", pct.abs(), short_minutes(avg.round() as u32));
-        text(buf, x, y, w, &clip(&line, w as usize), st);
+        centred(buf, y, &line, st);
         y += 2;
     }
     // the last week in a line, when the chart has rows to give
@@ -364,12 +384,16 @@ pub fn today(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
         // a narrow Pane: the short label and figure, so the total isn't cut to its first digit
         let (label, tw) = if 12 + fmt_minutes(total).width() as u16 <= w { ("last 7 days ", fmt_minutes(total)) } else { ("7 days ", short_minutes(total)) };
         let lw = label.width() as u16;
-        text(buf, x, y, lw, label, th.s(th.dim));
-        text(buf, x + lw, y, w.saturating_sub(lw), &tw, th.s(th.fg).add_modifier(Modifier::BOLD));
-        let bx = x + lw + tw.width() as u16;
-        if best > 0 && bx + 24 <= x + w {
+        let b = format!("{} ({})", WEEKDAY_NAMES[wd], short_minutes(best));
+        let best_shown = best > 0 && lw + tw.width() as u16 + 24 <= w;
+        // the line in the middle of the width (#58)
+        let line_w = (lw + tw.width() as u16 + if best_shown { 12 + b.width() as u16 } else { 0 }).min(w);
+        let lx = crate::balance::centre(x, w, line_w);
+        text(buf, lx, y, lw, label, th.s(th.dim));
+        text(buf, lx + lw, y, (x + w).saturating_sub(lx + lw), &tw, th.s(th.fg).add_modifier(Modifier::BOLD));
+        let bx = lx + lw + tw.width() as u16;
+        if best_shown {
             text(buf, bx, y, 13, " · best day ", th.s(th.dim));
-            let b = format!("{} ({})", WEEKDAY_NAMES[wd], short_minutes(best));
             text(buf, bx + 12, y, (x + w).saturating_sub(bx + 12), &b, th.s(th.fg));
         }
         y += 2;
@@ -429,12 +453,16 @@ fn today_compact(buf: &mut Buffer, r: Rect, sum: &singularity_proto::ListeningSu
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     let headline = if mins == 0 && sum.plays_today > 0 { "under a minute today".to_string() } else { format!("{} today", fmt_minutes(mins)) };
     let lines = [(headline.as_str(), th.s(th.accent).add_modifier(Modifier::BOLD)), (plays, th.s(th.fg)), (streak, streak_st)];
+    // the lines alone (no room for the days under them or beside them): each in the middle of the width (#58)
+    let alone = r.height <= 4 && !(r.height >= 2 && w >= 48);
     let mut y = r.y;
     for (t, st) in lines {
         if y >= r.bottom() {
             return;
         }
-        text(buf, x, y, w, &clip(t, w as usize), st);
+        let t = clip(t, w as usize);
+        let lx = if alone { crate::balance::centre(x, w, t.width() as u16) } else { x };
+        text(buf, lx, y, (x + w).saturating_sub(lx), &t, st);
         y += 1;
     }
     // wide and short: the last 7 days as columns at the right, beside the lines
@@ -509,25 +537,41 @@ pub fn top_week(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     if !tall {
         let len = sec.rows(&s).len();
         let first = app.top_week_scroll.window(len, r.height as usize);
+        // fewer entries than rows: the list in the middle of the Pane's height (#58)
+        let top = crate::balance::centre(r.y, r.height, len.saturating_sub(first).min(r.height as usize) as u16);
         for i in first..len.min(first + r.height as usize) {
-            let rect = Rect::new(x, r.y + (i - first) as u16, w, 1);
+            let rect = Rect::new(x, top + (i - first) as u16, w, 1);
             row(buf, rect, sec, i, &s, peak, false, th);
             hits.push((rect, Hit::TopWeek(i)));
         }
     } else {
+        let n = rows.len().min(((r.height - 2) / 2) as usize).min(25);
+        // when in the day this week's listening happened, under the entries when there are rows for it
+        let list_h = 2 + n as u16 * 2 + 1;
+        let spare = r.height.saturating_sub(list_h);
+        let hours_shown = spare >= 7 && w >= 30 && s.by_hour.iter().any(|m| *m > 0);
+        // more rows than the chart usually takes (12): it steps up, and the whole block sits in the middle (#58)
+        let roomy = spare > 12;
+        let hours_h = match (hours_shown, roomy) {
+            (true, true) => crate::balance::step(&[12, 16, 20, 24], |h| list_h + h + 4 <= r.height),
+            (true, false) => spare,
+            (false, _) => 0,
+        };
+        // (the list's last row is the gap over the chart)
+        let block = if hours_h > 0 { list_h + hours_h } else { list_h - 1 };
+        let top = if roomy { crate::balance::centre(r.y, r.height, block) } else { r.y };
         // the week in one line: minutes and plays, the dates at the right
         let total = format!("{} · {} plays", fmt_minutes(s.minutes), s.plays);
-        text(buf, x, r.y, w, &clip(&total, w as usize), th.s(th.fg).add_modifier(Modifier::BOLD));
+        text(buf, x, top, w, &clip(&total, w as usize), th.s(th.fg).add_modifier(Modifier::BOLD));
         let dates = range(s.from_day, s.to_day);
         if total.width() + dates.width() + 3 <= w as usize {
-            text(buf, x + w - dates.width() as u16, r.y, dates.width() as u16, &dates, th.s(th.border));
+            text(buf, x + w - dates.width() as u16, top, dates.width() as u16, &dates, th.s(th.border));
         }
-        crate::tile::rule(buf, x, r.y + 1, w, th);
-        let n = rows.len().min(((r.height - 2) / 2) as usize).min(25);
+        crate::tile::rule(buf, x, top + 1, w, th);
         let first = app.top_week_scroll.window(rows.len(), n);
         let rank_w: u16 = if first + n >= 10 { 3 } else { 2 };
         for (i, it) in rows.iter().enumerate().skip(first).take(n) {
-            let y = r.y + 2 + (i - first) as u16 * 2;
+            let y = top + 2 + (i - first) as u16 * 2;
             let lead = i == 0;
             let rank_st = if i < 3 { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.border) };
             text(buf, x, y, rank_w, &format!("{:>w$}", i + 1, w = rank_w as usize - 1), rank_st);
@@ -557,11 +601,8 @@ pub fn top_week(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             text(buf, nx + cells + 1, y + 1, mins.width() as u16, &mins, th.s(if lead { th.accent } else { th.dim }));
             hits.push((Rect::new(x, y, w, 2), Hit::TopWeek(i)));
         }
-        // rows to spare: when in the day this week's listening happened
-        let y = r.y + 2 + n as u16 * 2 + 1;
-        let spare = r.bottom().saturating_sub(y);
-        if spare >= 7 && w >= 30 && s.by_hour.iter().any(|m| *m > 0) {
-            hours(buf, Rect::new(x, y, w, spare.min(12)), &s.by_hour, th);
+        if hours_h > 0 {
+            hours(buf, Rect::new(x, top + list_h, w, hours_h), &s.by_hour, th);
         }
     }
     for (rect, h) in hits {
@@ -682,6 +723,85 @@ mod tests {
         assert_eq!(fmt_minutes(42), "42 min");
         assert_eq!(fmt_minutes(192), "3 h 12 min");
         assert_eq!(short_minutes(192), "3h12");
+    }
+
+    fn summary() -> singularity_proto::ListeningSummary {
+        let mut minutes: Vec<u32> = (0..singularity_proto::LISTENING_DAYS as u32).map(|i| i * 7 % 40).collect();
+        *minutes.last_mut().unwrap() = 0;
+        singularity_proto::ListeningSummary { minutes, today_weekday: 1, hours_this_year: 19.0, top_artist: Some("Mira Vale".into()), streak_days: 10, plays: 534, plays_today: 0 }
+    }
+
+    fn week() -> Stats {
+        let row = |name: &str, minutes: u32, plays: u32| StatsRow { name: name.into(), minutes, plays, ..Default::default() };
+        Stats {
+            period: StatsPeriod::Week,
+            from_day: 20780,
+            to_day: 20781,
+            minutes: 42,
+            plays: 18,
+            by_hour: (0..24).map(|h| if (7..10).contains(&h) { 10 + h } else { 0 }).collect(),
+            top_artists: vec![row("Glass Harbour", 13, 5), row("Saffron Echo", 11, 5), row("The Quiet Orbit", 7, 3), row("Nova Drift", 7, 3), row("Mira Vale", 4, 2)],
+            ..Default::default()
+        }
+    }
+
+    /// The rows of `r` in `buf`, as text.
+    fn rows(buf: &Buffer, r: Rect) -> Vec<String> {
+        (r.top()..r.bottom()).map(|y| (r.left()..r.right()).map(|x| buf[(x, y)].symbol().to_string()).collect()).collect()
+    }
+
+    #[test]
+    fn today_puts_its_count_in_the_middle() {
+        // #58: the count clung to the top-left corner
+        let mut app = App::new(None);
+        app.listening = Some(summary());
+        let th = app.theme.clone();
+        let draw = |w: u16, h: u16| {
+            let r = Rect::new(2, 1, w, h);
+            let mut buf = Buffer::empty(Rect::new(0, 0, w + 4, h + 2));
+            today(&mut buf, r, &app, &th);
+            (buf, r)
+        };
+        // tiny: each line in the middle
+        let (buf, r) = draw(18, 4);
+        for (i, line) in rows(&buf, r).iter().enumerate().take(3) {
+            let (left, right) = (line.len() - line.trim_start().len(), line.len() - line.trim_end().len());
+            assert!(left.abs_diff(right) <= 1, "tiny, line {i}: {line:?}");
+        }
+        // with the figure: the headline (the figure and its words) in the middle of the Pane's width
+        for (w, h) in [(22, 28), (58, 18), (118, 38)] {
+            let (buf, r) = draw(w, h);
+            let head = Rect::new(r.x, r.y, r.width, 3);
+            let (_, _, left, right) = crate::balance::margins(&buf, head);
+            assert!(left >= 3 && left.abs_diff(right) <= 2, "{w}x{h}: {left} columns left of the headline, {right} right\n{}", rows(&buf, r).join("\n"));
+        }
+    }
+
+    #[test]
+    fn top_this_week_sits_balanced_and_grows_in_a_big_pane() {
+        // #58: a narrow, tall Pane left the space under the list empty; big ones stopped growing and left the bottom empty
+        let mut app = App::new(None);
+        app.stats.insert(StatsPeriod::Week, week());
+        let th = app.theme.clone();
+        let mut draw = |w: u16, h: u16| {
+            let r = Rect::new(2, 1, w, h);
+            let mut buf = Buffer::empty(Rect::new(0, 0, w + 4, h + 2));
+            app.hits.clear();
+            top_week(&mut buf, r, &mut app, &th);
+            let first = app.hits.iter().find_map(|(rect, h)| (*h == Hit::TopWeek(0)).then_some(rect.y));
+            (crate::balance::margins(&buf, r), first, buf, r)
+        };
+        let ((over, under, ..), first, ..) = draw(22, 28);
+        assert!(over >= 8 && over.abs_diff(under) <= 1, "narrow-tall: {over} rows over, {under} under");
+        assert_eq!(first, Some(1 + over), "the click follows the row");
+        for (w, h) in [(118, 38), (178, 47)] {
+            let ((over, under, ..), _, buf, r) = draw(w, h);
+            assert!(over.abs_diff(under) <= 1 && over + under <= h / 3, "{w}x{h}: {over} rows over, {under} under\n{}", rows(&buf, r).join("\n"));
+        }
+        // medium, tiny and wide-short: as before, from the top
+        for (w, h) in [(58, 18), (18, 4), (98, 6)] {
+            assert_eq!(draw(w, h).0 .0, 0, "{w}x{h}");
+        }
     }
 
     #[test]

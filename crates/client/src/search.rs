@@ -20,6 +20,11 @@ const RECENT_MAX: usize = 12;
 /// still asked for (the Daemon keeps its own for 5 minutes).
 pub const CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 const CACHE_MAX: usize = 16;
+/// A Search Pane under this many rows (inside its frame) is short: no headings or blank rows, the songs or the Shelves
+/// under the chips (the smallest Homes, #55, have 4 and 5)
+const SHORT_H: u16 = 6;
+/// Song rows narrower than this show the name alone (beside the artists and the time it would get under 8 columns).
+const NARROW_W: u16 = 24;
 
 /// Search (D74): the query and everything that decides what goes out and when, the recent searches, results kept by
 /// query, and the page's own view state. App owns one for its whole life; leaving the page keeps it as it was.
@@ -45,6 +50,8 @@ pub struct Search {
     /// selected song row (None: the selection is in the Shelves)
     pub track_sel: Option<usize>,
     pub recent_sel: usize,
+    /// the Pane was short last frame (under `SHORT_H` rows): the songs and the Shelves take turns under the chips
+    pub short: bool,
 }
 
 /// How queries are matched, as the Daemon matches them.
@@ -334,7 +341,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
     let mut v = std::mem::take(&mut app.search);
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
-    let focused = app.focus == "home";
+    let focused = app.is_focused(crate::layout::Widget::Home);
     // the query, in the same bar Home shows
     bar(buf, Rect::new(x, r.y, w, 1), v.query(), focused, "Tab: filter · Esc: back", th);
     // chips
@@ -351,13 +358,18 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         hits.push((Rect::new(cx, r.y + 1, lw, 1), Hit::Chip(i)));
         cx += lw + 1;
     }
-    let mut y = r.y + 3;
+    // a short Pane (the smallest Homes, #55): no blank rows or headings, what was found right under the chips; the
+    // songs, or the Shelves once the highlight is in them (owner: in a tiny Home the results didn't show)
+    v.short = r.height < SHORT_H;
+    let mut y = r.y + if v.short { 2 } else { 3 };
     if v.query().trim().is_empty() {
         if v.recent().is_empty() {
             text(buf, x, y, w, "Search for songs, artists, albums, playlists, podcasts and audiobooks.", th.s(th.dim));
         } else {
-            text(buf, x, y, w, "Recent searches", th.s(th.accent).add_modifier(Modifier::BOLD));
-            y += 1;
+            if !v.short {
+                text(buf, x, y, w, "Recent searches", th.s(th.accent).add_modifier(Modifier::BOLD));
+                y += 1;
+            }
             // a short Pane shows a window that follows the highlight (wheel, ↑ ↓)
             let first = crate::scroll::window(v.recent_sel, r.bottom().saturating_sub(y) as usize, v.recent().len());
             for (i, q) in v.recent().iter().enumerate().skip(first) {
@@ -375,12 +387,25 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         // under All, songs give way so at least one Shelf of Cards fits below them
         let room = r.bottom().saturating_sub(y + 2) as usize;
         // (with no Shelves below, the songs take the Pane)
-        let n = if !v.feed.shelves.is_empty() { v.songs().min(room.saturating_sub(10)).max(v.songs().min(2)) } else { v.songs().min(room + 1) };
+        let n = if v.short {
+            if v.shelves.sel.is_none() || v.feed.shelves.is_empty() { v.songs().min(r.bottom().saturating_sub(y) as usize) } else { 0 }
+        } else if !v.feed.shelves.is_empty() {
+            v.songs().min(room.saturating_sub(10)).max(v.songs().min(2))
+        } else {
+            v.songs().min(room + 1)
+        };
+        // (the Shelves hidden behind the songs: laid out all the same, so ↓ and the wheel can go into them)
+        if v.short && n > 0 {
+            let aspect = app.cell_px.map(|(cw, ch)| ch / cw).unwrap_or(2.0);
+            v.shelves.rows = crate::home::rows(&v.feed, r.width, r.bottom().saturating_sub(y), aspect).0;
+        }
         let episodes = v.chip == 5;
         let rows = if episodes { &res.episodes } else { &res.tracks };
         if n > 0 {
-            text(buf, x, y, w, if episodes { "Episodes" } else { "Songs" }, th.s(th.accent).add_modifier(Modifier::BOLD));
-            y += 1;
+            if !v.short {
+                text(buf, x, y, w, if episodes { "Episodes" } else { "Songs" }, th.s(th.accent).add_modifier(Modifier::BOLD));
+                y += 1;
+            }
             let playing = app.playback.item.as_ref().map(|i| i.uri.clone());
             // more songs than fit: a window that follows the highlight (wheel, ↑ ↓)
             let skip = crate::scroll::window(v.track_sel.unwrap_or(0), n, v.songs());
@@ -396,6 +421,17 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                 blank(buf, x, y, w, th.base().bg(bg));
                 let now = playing.as_deref() == Some(t.uri.as_str());
                 hits.push((Rect::new(x, y, w, 1), Hit::SearchTrack(i)));
+                // too narrow for the name beside the artists and the time (under 8 columns for it): the name alone,
+                // and a song's ♥ (owner: a tiny Home's results were only "…")
+                if w < NARROW_W {
+                    let nw = w.saturating_sub(3);
+                    text(buf, x + 1, y, nw, &clip(&t.name, nw), th.s(if now { th.accent } else { th.fg }).bg(bg));
+                    if !episodes {
+                        hits.push(crate::saved::heart(buf, x + w - 1, y, &t.uri, &t.name, app.is_saved(&t.uri), bg, th));
+                    }
+                    y += 1;
+                    continue;
+                }
                 let nw = w.saturating_sub(8) / 2;
                 text(buf, x + 1, y, nw, &clip(&t.name, nw.saturating_sub(1)), th.s(if now { th.accent } else { th.fg }).bg(bg));
                 let aw = w.saturating_sub(10 + nw);

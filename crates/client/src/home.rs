@@ -110,6 +110,8 @@ const TILE_MIN: u16 = 18;
 /// covers never shrink below this many rows
 const COVER_MIN_H: u16 = 4;
 const TILE_H: u16 = 2;
+/// a Home under this many rows (under its search bar) is short: its shortcuts' lines get room between them (#55)
+const SHORT_H: u16 = 10;
 
 /// Lay out the feed for a Pane of `width`×`height` cells; `aspect` is a cell's height / width in pixels (≈2).
 pub fn rows(feed: &HomeFeed, width: u16, height: u16, aspect: f64) -> (Vec<Row>, Metrics) {
@@ -139,6 +141,10 @@ pub fn rows(feed: &HomeFeed, width: u16, height: u16, aspect: f64) -> (Vec<Row>,
     let tile_cover_w = ((TILE_H as f64 * aspect).round() as u16).max(1);
     let m = Metrics { card_w, cover_h, tile_w, tile_cover_w };
     let card_row_h = cover_h + 2 + 1;
+    // a narrow Home (one column of shortcuts) or a short one shows mostly shortcuts, and their covers would sit on top of
+    // each other: there a blank row follows every line of the grid (#55). Medium and larger Homes keep it tight. By the
+    // Pane's size alone, so the number of shortcuts never flips the look
+    let spaced = cols == 1 || height < SHORT_H;
 
     let mut out = vec![];
     let mut feed_cards = vec![];
@@ -151,7 +157,7 @@ pub fn rows(feed: &HomeFeed, width: u16, height: u16, aspect: f64) -> (Vec<Row>,
                 for (i, chunk) in all.chunks(cols).enumerate() {
                     // the grid's lines sit tight; a blank row only after the last one. A short last line's tiles share
                     // the whole width (D68): `per_view` is the line's own count
-                    let height = TILE_H + u16::from(i + 1 == lines);
+                    let height = TILE_H + u16::from(spaced || i + 1 == lines);
                     out.push(Row { kind: RowKind::Shortcuts, title: None, cards: chunk.to_vec(), per_view: chunk.len(), height });
                 }
             }
@@ -281,6 +287,11 @@ impl HomeView {
         self.reveal();
     }
 
+    /// Whether the selection is on the top row.
+    pub fn on_top_row(&self) -> bool {
+        self.sel_pos().is_some_and(|(r, _)| r == 0)
+    }
+
     fn row_first(&self, row: usize) -> usize {
         match self.rows.get(row) {
             Some(r) if r.kind == RowKind::Shelf => self.first(r.cards[0].shelf),
@@ -339,7 +350,7 @@ pub fn draw_feed(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, feed: Hom
     let aspect = app.cell_px.map(|(w, h)| h / w).unwrap_or(2.0);
     let (rows, m) = rows(&feed, r.width, r.height, aspect);
     view.rows = rows;
-    let focused = app.focus == "home";
+    let focused = app.is_focused(crate::layout::Widget::Home);
     view.height = r.height;
     view.offset = view.offset.min(view.max_offset());
     let x0 = r.x + 1;
@@ -567,6 +578,43 @@ mod tests {
         assert_eq!(rows[4].title.as_deref(), Some("More for you"));
         assert!(m.card_w >= CARD_MIN && m.card_w <= CARD_MAX);
         assert_eq!(m.cover_h, (m.card_w as f64 / 2.0).round() as u16, "square covers");
+    }
+
+    /// #55: in a narrow or short Home the shortcuts are most of what shows, and their covers sat on top of each other;
+    /// there a blank row follows every line of the grid. Medium (the owner's pick) and larger Homes keep it tight. It's a
+    /// rule of the Pane's size, so how many shortcuts there are never flips the look.
+    #[test]
+    fn small_homes_space_the_shortcut_lines_and_larger_ones_keep_them_tight() {
+        let heights = |w: u16, h: u16| -> Vec<u16> { rows(&feed(), w, h, 2.0).0.iter().filter(|r| r.kind == RowKind::Shortcuts).map(|r| r.height).collect() };
+        // the contact sheet's medium, big and full Homes (the Pane under the search bar)
+        assert_eq!(heights(58, 16), [TILE_H, TILE_H, TILE_H + 1], "medium: tight");
+        assert_eq!(heights(118, 36), [TILE_H, TILE_H + 1], "big: tight");
+        assert_eq!(heights(178, 45), [TILE_H, TILE_H + 1], "full: tight");
+        // tiny, narrow-tall and wide-short
+        for (w, h) in [(18, 3), (22, 26), (98, 4)] {
+            let hs = heights(w, h);
+            assert!(!hs.is_empty() && hs.iter().all(|&x| x == TILE_H + 1), "{w}×{h}: {hs:?}");
+        }
+        // 5 to 16 shortcuts (always two lines or more): the same look at each size
+        for (w, h) in [(18, 3), (22, 26), (98, 4), (58, 16), (58, 12), (118, 36)] {
+            let spaced: Vec<bool> = [5, 8, 12, 16]
+                .into_iter()
+                .map(|n| {
+                    let mut f = feed();
+                    f.shelves[0].cards = (0..n).map(|i| f.shelves[1].cards[i % 10].clone()).collect();
+                    rows(&f, w, h, 2.0).0[0].height > TILE_H
+                })
+                .collect();
+            assert!(spaced.iter().all(|&s| s == spaced[0]), "{w}×{h}: {spaced:?}");
+        }
+        // what scrolls, clicks and reveals goes by the row heights: a tile still reveals whole
+        let mut v = HomeView::default();
+        (v.rows, _) = rows(&feed(), 22, 3, 2.0);
+        v.height = 3;
+        v.sel = Some(v.rows[5].cards[0]);
+        v.reveal();
+        let top = v.row_y(5);
+        assert!(v.offset <= top && top + TILE_H <= v.offset + v.height, "the tile's two lines in view: {} at {top}", v.offset);
     }
 
     #[test]

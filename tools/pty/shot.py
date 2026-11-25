@@ -3,7 +3,7 @@
 usage: venv/bin/python shot.py <scenario> <outdir>
 Starts its own singularityd (--fake-engine --no-catalogue) on a short test socket and kills only that.
 """
-import json, base64, fcntl, os, pty, re, select, shutil, struct, subprocess, sys, termios, time, zlib
+import json, base64, fcntl, os, pty, re, select, shutil, socket, struct, subprocess, sys, termios, threading, time, zlib
 import pyte
 from PIL import Image, ImageDraw, ImageFont
 
@@ -14,7 +14,7 @@ BIN = os.environ.get("PTY_BIN") or f"{ROOT}/target/debug"
 WRAP = os.environ.get("PTY_WRAP", "").split()
 COLS, ROWS, CW, CH = int(os.environ.get("PTY_COLS", 140)), int(os.environ.get("PTY_ROWS", 40)), 10, 20
 # the tiling scenario wants room for the whole Singularity layout
-if sys.argv[1:2] in (["tiling"], ["tiling-lift"], ["tiling-fast"], ["tiling-paths"]):
+if sys.argv[1:2] in (["tiling"], ["tiling-fast"], ["tiling-paths"], ["pane-menu"], ["paneless"], ["arrange"], ["arrange-keys"], ["arrange-fixes"], ["new-design"]):
     COLS, ROWS = int(os.environ.get("PTY_COLS", 160)), int(os.environ.get("PTY_ROWS", 48))
 # the wheel everywhere: short Panes, so everything holds more than fits
 if sys.argv[1:2] == ["wheel-all"]:
@@ -120,9 +120,10 @@ class Term:
             crop = tuple(int(kv[k]) for k in "xywh") if all(k in kv for k in "xywh") else None
             self.placed[(int(kv["i"]), int(kv["p"]))] = (col, row, int(kv["c"]), int(kv["r"]), crop, int(kv.get("z", "0")))
         elif a == "d":
-            if kv.get("d") == "i":
+            if kv.get("d") == "i" and "p" in kv:
                 self.placed.pop((int(kv["i"]), int(kv["p"])), None)
-            elif kv.get("d") == "I":
+            elif kv.get("d") in ("I", "i"):
+                # without a placement id: all of that image's placements (d=i keeps the image, d=I frees it too)
                 for k in [k for k in self.placed if k[0] == int(kv["i"])]:
                     self.placed.pop(k)
             elif kv.get("d") in ("A", "a"):
@@ -568,16 +569,20 @@ def popup_wheel(t, out):
         t.shot(f"{out}/{shot}-up.png")
         print(f"{title}: {first!r} → wheel down → {down!r} → up → {chosen(title)!r} | background unchanged:", look() == bg)
 
-    # "add a pane": right-click a Pane's title → Split right → the Widget list
+    # "add a pane": right-click a Pane's title → the Split row (→ lit) → an empty Pane and the Widget picker on it
     at = t.find("┌ ~/library") or t.find("~/library")
     mouse(t, 2, at[0] + 3, at[1]); mouse(t, 2, at[0] + 3, at[1], release=True, wait=0.4)
     t.shot(f"{out}/5-title-menu.png")
-    t.send(b"\r", 0.6)  # Split right
+    t.send(b"\x1b[B", 0.2)  # past Replace widget…
+    t.send(b"\r", 0.6)  # Split →
     t.shot(f"{out}/6-widget-list.png")
     # three notches: inside, on the border, far off it; then two back, over the library and the bar
-    wheel_popup("New pane", "7-widget-list", lambda px, py: [(px + 4, py + 3), (px - 2, py + 2), (2, ROWS - 6)],
+    wheel_popup("Choose a widget", "7-widget-list", lambda px, py: [(px + 4, py + 3), (px - 2, py + 2), (2, ROWS - 6)],
                 lambda px, py: [(2, 12), (COLS // 2, ROWS - 3)])
     t.send(b"\x1b", 0.5)
+    # the first edit of the built-in Design asks for a name once the picker is gone: Esc keeps it unnamed
+    if t.find("Keep your changes"):
+        t.send(b"\x1b", 0.5)
     # the palette: a long list that scrolls with its selection
     t.send(b"\x0b", 0.6)
     wheel_popup("Command palette", "8-palette", lambda px, py: [(px + 4, py + 4)] * 4 + [(2, 12)] * 16 + [(COLS - 2, 2)] * 4,
@@ -1459,6 +1464,311 @@ def design_sizes(env, out):
             os.close(t.fd)
 
 
+# the contact sheet (#36, D87): every Widget, lyrics and Karaoke first; Pane sizes are the whole Pane, frame included
+SHEET_WIDGETS = ["lyrics", "karaoke", "home", "library", "queue", "nowplaying", "well", "hole", "stream", "top",
+                 "listening", "today", "topweek", "marquee", "glow", "fft", "loudness", "levels", "scope", "rain",
+                 "starfield"]
+SHEET_SIZES = {"tiny": (20, 6), "narrow-tall": (24, 30), "wide-short": (100, 8), "medium": (60, 20), "big": (120, 40),
+               "full": None}
+# the full screen of the sheet, and the full-terminal Design shots: (label, cols, rows, cell px w, cell px h)
+SHEET_TERMS = [("pc", 264, 68, 10, 20), ("laptop-full", 180, 54, 16, 34), ("laptop-half", 90, 50, 16, 34)]
+SHEET_FULL = (180, 54)
+
+
+def set_cell_px(w, h):
+    """The terminal's cell size in pixels (what the pty reports, so the pixel tier draws to it) and fonts to match."""
+    global CW, CH, FONT, BRAILLE
+    CW, CH = w, h
+    size = round(h * 0.8)
+    FONT = ImageFont.truetype(FONT.path, size)
+    BRAILLE = ImageFont.truetype(BRAILLE.path, size)
+
+
+def pane_rect(t, want, widget):
+    """The top-left Pane's rect in cells (x, y, w, h), read off its frame in the screen. The well's frame sags (no
+    corners to read): `want` (w, h) under the top bar, narrowed as its shape rule narrows it (4:3 in pixels)."""
+    rows = t.screen.display
+    y0 = next((y for y, line in enumerate(rows) if line[:1] in "╭┌╔┏"), None)
+    if widget == "well" or y0 is None:
+        w, h = want
+        shaped = round((h - 2) * CH / CW * 4 / 3) + 2
+        # (alone on the screen there's no neighbour to give the width to)
+        return (0, 1, shaped if w > shaped + shaped // 20 and w < COLS else w, h)
+    top = rows[y0]
+    x1 = next((x for x in range(1, len(top)) if top[x] in "╮┐╗┓"), None)
+    y1 = next((y for y in range(y0 + 1, len(rows)) if rows[y][:1] in "╰└╚┗"), None)
+    if x1 is None or y1 is None:
+        return (0, y0, *want)
+    return (0, y0, x1 + 1, y1 - y0 + 1)
+
+
+def bar_track(t):
+    """Which of the fake Catalogue's tracks the player bar (the last rows) shows, or None."""
+    for line in t.screen.display[-4:]:
+        m = re.search(r"Track (\d+)", line)
+        if m:
+            return int(m[1])
+    return None
+
+
+def bar_secs(t):
+    """Where the song is, as the player bar shows it (the time before the song's length, 3:20), or None."""
+    for line in t.screen.display[-4:]:
+        m = re.search(r"(\d+):(\d\d)\s.*3:20", line)
+        if m:
+            return int(m[1]) * 60 + int(m[2])
+    return None
+
+
+def sheet_font(size):
+    return ImageFont.truetype(FONT.path, size)
+
+
+def compose_sheet(path, title, cells):
+    """One image of captioned cells, packed in rows: `cells` is [(caption, PIL image)], in order."""
+    cap, gap, pad, maxw = 30, 28, 32, 3900
+    font = sheet_font(20)
+    # each cell as wide as its picture or its caption
+    span = lambda c, im: max(im.width, int(font.getlength(c)))
+    rows, row, x = [], [], 0
+    for c, im in cells:
+        if row and x + span(c, im) > maxw:
+            rows.append(row)
+            row, x = [], 0
+        row.append((c, im))
+        x += span(c, im) + gap
+    if row:
+        rows.append(row)
+    width = max(sum(span(c, im) + gap for c, im in r) - gap for r in rows) + 2 * pad
+    height = 80 + sum(cap + max(im.height for _, im in r) + gap for r in rows) + pad
+    sheet = Image.new("RGB", (width, height), "#202024")
+    d = ImageDraw.Draw(sheet)
+    d.text((pad, 22), title, font=sheet_font(34), fill="#f0f0f0")
+    y = 80
+    for r in rows:
+        x = pad
+        for c, im in r:
+            d.text((x, y + 2), c, font=font, fill="#c8c8d0")
+            sheet.paste(im, (x, y + cap))
+            d.rectangle([x - 1, y + cap - 1, x + im.width, y + cap + im.height], outline="#55555f")
+            x += span(c, im) + gap
+        y += cap + max(im.height for _, im in r) + gap
+    sheet.save(path)
+
+
+SHEET_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Size contact sheet</title>
+<style>
+:root { color-scheme: dark; --bg: #18181b; --fg: #e8e8ec; --dim: #9a9aa6; --good: #3fa56b; --bad: #d0473f; }
+body { background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; margin: 0 16px 64px; }
+h1 { font-size: 22px; margin: 20px 0 4px; } h2 { font-size: 18px; margin: 36px 0 8px; border-top: 1px solid #333; padding-top: 16px; }
+p { color: var(--dim); max-width: 70ch; }
+nav a { color: var(--dim); margin-right: 10px; }
+.cells { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+figure { margin: 0; } figcaption { font: 13px ui-monospace, monospace; color: var(--dim); margin-bottom: 4px; display: flex; gap: 6px; align-items: center; }
+figure img { display: block; max-width: min(100%, 92vw); outline: 1px solid #444; image-rendering: auto; }
+figure.good img { outline: 3px solid var(--good); } figure.bad img { outline: 3px solid var(--bad); }
+button { font: 12px system-ui; background: #2a2a30; color: var(--fg); border: 1px solid #444; border-radius: 4px; cursor: pointer; padding: 1px 7px; }
+figure.good button.g { background: var(--good); } figure.bad button.b { background: var(--bad); }
+textarea { width: 100%; max-width: 900px; height: 10em; background: #101013; color: var(--fg); border: 1px solid #444; font: 13px ui-monospace, monospace; }
+</style></head><body>
+<h1>Size contact sheet</h1>
+<p>Every Widget alone in a Pane at six sizes (the whole Pane, frame included), on the cell tier and the pixel tier,
+then each built-in Design at the PC's size and an emulated 13-inch laptop (Retina cells). Mark each cell good or bad;
+the marks are kept in this browser and listed at the bottom to copy. Click an image for full size.</p>
+<nav>NAV</nav>
+BODY
+<h2 id="marks">Marks</h2>
+<p>Bad cells (with a note if you add one by clicking "bad" again):</p>
+<textarea id="out" readonly></textarea>
+<script>
+const KEY = "contact-sheet-marks";
+let marks = {};
+try { marks = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) {}
+function save() { try { localStorage.setItem(KEY, JSON.stringify(marks)); } catch (e) {} show(); }
+function show() {
+  document.querySelectorAll("figure[data-id]").forEach(f => {
+    const m = marks[f.dataset.id];
+    f.classList.toggle("good", !!m && m.v === "good");
+    f.classList.toggle("bad", !!m && m.v === "bad");
+  });
+  const bad = Object.entries(marks).filter(([, m]) => m.v === "bad").map(([id, m]) => id + (m.note ? ": " + m.note : ""));
+  document.getElementById("out").value = bad.join("\\n");
+}
+document.querySelectorAll("figure[data-id]").forEach(f => {
+  f.querySelector("button.g").onclick = () => { marks[f.dataset.id] = { v: "good" }; save(); };
+  f.querySelector("button.b").onclick = () => {
+    const was = marks[f.dataset.id];
+    const note = was && was.v === "bad" ? prompt("What's wrong here?", was.note || "") : "";
+    marks[f.dataset.id] = { v: "bad", note: note || (was && was.note) || "" }; save();
+  };
+});
+show();
+</script></body></html>
+"""
+
+
+def sheet_html(sheet, add):
+    """index.html for the sheet: every Widget's cells in order, then the Designs. `add` is {file: caption} of this
+    run's shots, kept in the sheet's captions.json with the earlier runs' (a run of a few Widgets updates their cells)."""
+    path = f"{sheet}/captions.json"
+    captions = json.load(open(path)) if os.path.exists(path) else {}
+    captions.update(add)
+    json.dump(captions, open(path, "w"), indent=0, ensure_ascii=False)
+    def fig(src):
+        cid = captions[src]
+        return (f'<figure data-id="{cid}"><figcaption>{cid} <button class="g">good</button> <button class="b">bad</button>'
+                f'</figcaption><a href="{src}"><img src="{src}" loading="lazy" alt="{cid}"></a></figure>')
+    order = {f"{w}-{n}-{t}": i for i, (w, n, t) in enumerate((w, n, t) for w in SHEET_WIDGETS for n in SHEET_SIZES for t in ("cells", "pixels"))}
+    body, nav = [], []
+    for w in SHEET_WIDGETS:
+        cells = sorted((f for f in captions if f.startswith(f"cells/{w}-")), key=lambda f: order.get(f[6:-4], len(order)))
+        if cells:
+            nav.append(f'<a href="#{w}">{w}</a>')
+            body.append(f'<h2 id="{w}">{w}</h2><p><a href="{w}.png">the whole sheet</a></p><div class="cells">'
+                        + "".join(fig(f) for f in cells) + "</div>")
+    designs = [f for f in captions if f.startswith("designs/")]
+    if designs:
+        nav.append('<a href="#designs">Designs</a>')
+        body.append('<h2 id="designs">Designs, full terminal</h2><div class="cells">' + "".join(fig(f) for f in designs) + "</div>")
+    nav.append('<a href="#marks">marks</a>')
+    open(f"{sheet}/index.html", "w").write(SHEET_HTML.replace("NAV", " ".join(nav)).replace("BODY", "\n".join(body)))
+
+
+SHEET_QUEUE = 60  # more than the full screen's queue shows
+
+
+def fill_queue(env, n):
+    """Queue `n` made-up songs over the Daemon's socket, as a Client would (the fake Catalogue names
+    `spotify:track:song<i>` with a title, artist, album, length and cover each, #59)."""
+    s = socket.socket(socket.AF_UNIX)
+    s.connect(env["SINGULARITY_SOCKET"])
+    # (drain what the Daemon sends: it writes its whole snapshot before reading anything)
+    threading.Thread(target=lambda: [None for _ in iter(lambda: s.recv(65536), b"")], daemon=True).start()
+    msgs = [{"t": "hello", "protocol": 1, "client": "contact-sheet"}]
+    msgs += [{"t": "command", "cmd": "add_to_queue", "uri": f"spotify:track:song{i}"} for i in range(n)]
+    for m in msgs:
+        b = json.dumps(m).encode()
+        s.sendall(struct.pack(">I", len(b)) + b)
+    time.sleep(1.0)
+    s.shutdown(socket.SHUT_RDWR)
+    s.close()
+
+
+def contact_sheet(env, out):
+    """The size contact sheet (#36, D87): every Widget (SHEET_WIDGETS, lyrics and Karaoke first) alone in a Pane of
+    each size in SHEET_SIZES (the whole Pane: tiny 20×6 up to big 120×40, and the full 180×54 screen) on the cell and
+    the pixel tier, the fake Catalogue's second track (synced, word-timed lyrics) playing about 10 s in; one Client per
+    shot. Then every built-in Design full-terminal at SHEET_TERMS (the PC's 264×68, a 13-inch laptop's 180×54 full
+    screen and 90×50 half-screen window with Retina-sized 16×34 px cells) on both tiers. Raw shots go to `out`; the
+    sheet (one captioned image per Widget, each cell on its own, the Design shots and an index.html to mark them in)
+    goes to PTY_SHEET (default `<out>/sheet` when `out` is an ignored `out-*` folder, else
+    `tools/pty/out-contact-sheet/sheet`); set it outside the repo to keep the sheet. PTY_WIDGETS /
+    PTY_SIZES / PTY_TIERS (cells,pixels) / PTY_DESIGNS pick a subset; PTY_WIDGETS= skips the Widgets, PTY_DESIGNS= the
+    Designs."""
+    global COLS, ROWS
+    widgets = [w for w in os.environ.get("PTY_WIDGETS", ",".join(SHEET_WIDGETS)).split(",") if w]
+    sizes = os.environ.get("PTY_SIZES", ",".join(SHEET_SIZES)).split(",")
+    tiers = os.environ.get("PTY_TIERS", "cells,pixels").split(",")
+    designs = [d for d in os.environ.get("PTY_DESIGNS", ",".join(DESIGNS)).split(",") if d]
+    # by default under the output folder when it is an ignored `out-*` one, else under tools/pty/out-contact-sheet: the
+    # sheet's index.html and captions.json must never land untracked in the repo
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = out if os.path.basename(os.path.abspath(out)).startswith("out-") else f"{here}/out-contact-sheet"
+    sheet = os.environ.get("PTY_SHEET") or f"{base}/sheet"
+    os.makedirs(f"{sheet}/cells", exist_ok=True)
+    os.makedirs(f"{sheet}/designs", exist_ok=True)
+    cfg = f"{env['XDG_CONFIG_HOME']}/singularity"
+    os.makedirs(f"{cfg}/layouts", exist_ok=True)
+    # a full queue, so the queue Widget is judged as it looks in use (#59)
+    fill_queue(env, SHEET_QUEUE)
+    started = [False]
+
+    def run(tier, setup, shoot):
+        """One Client on `tier`: set up its config, play track 2 from 0 (started once), seek, shoot, stop."""
+        setup()
+        t = Term(dict(env, SINGULARITY_PIXEL="1" if tier == "pixels" else "0"))
+        t.pump(1.5)
+        if not started[0]:
+            t.send(b" ", 0.8)  # play (track 1 of the fake Catalogue)
+            started[0] = True
+        # every shot at about the same moment: track 2 (n/b until the player bar says so; each starts it from 0), then
+        # 5 s seeks (Shift+→/←) until the bar is a few seconds short of 12 s, then wait for it
+        for _ in range(6):
+            n = bar_track(t)
+            if n == 2:
+                break
+            t.send(b"n" if n is None or n < 2 else b"b", 0.6)
+        for _ in range(8):
+            at = bar_secs(t)
+            if at is None or 0 <= 12 - at < 5:
+                break
+            t.send(b"\x1b[1;2C" if at < 12 else b"\x1b[1;2D", 0.6)
+        t.pump(max(1.0, 12 - (at or 12)))
+        shoot(t)
+        t.send(b"q", 0.3)
+        try:
+            os.kill(t.pid, 9)
+        except ProcessLookupError:
+            pass
+        os.waitpid(t.pid, 0)
+        os.close(t.fd)
+
+    set_cell_px(10, 20)
+    for widget in widgets:
+        cells, figs = [], []
+        for name in sizes:
+            for tier in tiers:
+                if SHEET_SIZES.get(name, 0) is None:
+                    COLS, ROWS = SHEET_FULL
+                    layout = f'name = "Sizes"\ndesign = "singularity"\ntree = {{ slot = "{widget}" }}\n'
+                    want = (SHEET_FULL[0], SHEET_FULL[1] - 5)  # under the top bar, over the player bar
+                else:
+                    # a size's name, or any `<w>x<h>`
+                    w, h = SHEET_SIZES[name] if name in SHEET_SIZES else (int(n) for n in name.split("x"))
+                    # room for Home beside it and a row of Panes under it, and never so small the mini-player takes over
+                    COLS, ROWS = max(90, w + 16), max(30, h + 12)
+                    layout = sizes_layout(widget, w - 2, h - 2)
+                    want = (w, h)
+                def setup():
+                    open(f"{cfg}/layouts/sizes.toml", "w").write(layout)
+                    open(f"{cfg}/config.toml", "w").write('schema = 6\n[ui]\ndesign = "singularity"\nlayout = "sizes"\n')
+                raw = f"{out}/{widget}-{name}-{tier}.png"
+                got = []
+                def shoot(t):
+                    t.shot(raw)
+                    got.append(pane_rect(t, want, widget))
+                run(tier, setup, shoot)
+                x, y, w, h = got[0]
+                crop = Image.open(raw).crop((x * CW, y * CH, (x + w) * CW, (y + h) * CH))
+                cid = f"{widget} · {name} {w}×{h} · {tier}"
+                fname = f"cells/{widget}-{name}-{tier}.png"
+                crop.save(f"{sheet}/{fname}")
+                cells.append((cid, crop))
+                figs.append((cid, fname))
+                print(cid, flush=True)
+        compose_sheet(f"{sheet}/{widget}.png", widget, cells)
+        sheet_html(sheet, {f: c for c, f in figs})
+    shots = []
+    for label, cols, rows, cw, ch in SHEET_TERMS:
+        set_cell_px(cw, ch)
+        COLS, ROWS = cols, rows
+        for design in designs:
+            for tier in tiers:
+                fname = f"designs/{design}-{label}-{cols}x{rows}-{tier}.png"
+                def setup():
+                    open(f"{cfg}/config.toml", "w").write(f'schema = 6\n[ui]\ndesign = "{design}"\n')
+                raw = f"{out}/{design}-{label}-{tier}.png"
+                run(tier, setup, lambda t: t.shot(raw))
+                shutil.copy(raw, f"{sheet}/{fname}")
+                shots.append((f"{design} · {label} {cols}×{rows} @{cw}×{ch}px · {tier}", fname))
+                print(shots[-1][0], flush=True)
+    set_cell_px(10, 20)
+    sheet_html(sheet, {f: c for c, f in shots})
+    print(f"sheet: {sheet}/index.html")
+
+
 def widgets_large(t, out):
     """The tiling Widgets (stream, top, listening, today, top this week) each in a big Pane of a saved layout, a
     track playing on a healthy fake stream; then top this week switched to tracks. Try PTY_COLS=240 PTY_ROWS=70 (Panes
@@ -1664,11 +1974,14 @@ def layouts(t, out, env):
 
 
 def tiling(t, out, env):
-    """D66, free tiling: drag a Pane by its title to a swap zone, an edge zone and the screen's edge (a shot while the
-    pointer is still down: the whole layout reflowed, the moved Pane highlighted, its title following; another after
-    the release), the naming prompt on the first edit, Esc cancelling a drag, a close with the x, a split from the
-    right-click menu with the Widget list, and Move mode. Run it at PTY_COLS=160 PTY_ROWS=48 (the default here)."""
-    t.pump(1.0)
+    """D87, a drag moves contents: drag a Pane's title onto another Pane (a shot while the pointer is still down:
+    nothing has moved, the Pane under the pointer is lit with "swap with …" and the Widget's chip follows the pointer;
+    another after the release: the two Widgets swapped, every outline where it was), a release on its own Pane and over the top bar (nothing happens), Esc cancelling a drag, a close with the x,
+    a split from the right-click menu with the Widget list, and Arrange mode's keys (Enter picks up, ↑ aims, Enter swaps,
+    + - size). Run it at
+    PTY_COLS=160 PTY_ROWS=48 (the default here)."""
+    # (the pixel tier's first frames and the fake Catalogue take a while: start once they're there)
+    t.pump(6.0)
     t.send(b" ", 0.5)
 
     def title_at(title):
@@ -1679,10 +1992,6 @@ def tiling(t, out, env):
             return at[0] + 3, at[1]
         x, y = t.find(title)
         return x + 2, y
-
-    def pane_at(title, dx, dy):
-        x, y = title_at(title)
-        return x - 3 + dx, y + dy
 
     def pull(title, to, shot=None, steps=6, hold=False):
         x0, y0 = title_at(title)
@@ -1696,182 +2005,629 @@ def tiling(t, out, env):
             mouse(t, 0, to[0], to[1], release=True, wait=0.5)
 
     t.shot(f"{out}/00-start.png")
-    # 1. a centre: stream swaps with the queue
+    # 1. onto the queue: the queue lit, "swap with queue", the chip by the pointer; released, the two swap
     qx, qy = t.find("\u250c queue")
-    pull("stream", (qx + 25, qy + 6), "01-swap-drag.png")
-    t.shot(f"{out}/02-swap-done-naming.png")
-    # the first edit of a built-in Design asks what to call it
-    t.send(b"\x7f" * 14, 0.2)
-    t.send(b"Mine", 0.3)
-    t.shot(f"{out}/03-naming-typed.png")
-    t.send(b"\r", 0.6)
-    # 2. an edge band: lyrics goes left of home (a split)
+    pull("stream", (qx + 25, qy + 6), "01-swap-drag.png", hold=True)
+    print("mid-drag:", "label shown" if t.find("swap with queue") else "NO LABEL", "·", "chip shown" if t.find("\u283f stream") else "NO CHIP")
+    mouse(t, 0, qx + 25, qy + 6, release=True, wait=0.5)
+    t.shot(f"{out}/02-swap-done.png")
+    print("after the swap: stream where the queue was" if t.find("\u250c stream") == (qx, qy) else f"stream at {t.find(chr(0x250c) + ' stream')}, the queue was at {(qx, qy)}")
+    # 2. lyrics onto Home, a small Pane onto a big one: they swap, the floor plan stays
     hx, hy = t.find("\u250c home")
-    pull("tail -f lyrics.log", (hx + 2, hy + 10), "04-edge-drag.png")
-    t.shot(f"{out}/05-edge-done.png")
-    # 3. the screen's left edge: fft becomes a full-height column
-    pull("fft", (0, 22), "06-screen-edge-drag.png")
-    t.shot(f"{out}/07-screen-edge-done.png")
-    # 4. Esc puts a held Pane back
+    pull("tail -f lyrics.log", (hx + 30, hy + 10), "04-onto-home-drag.png")
+    t.shot(f"{out}/05-onto-home-done.png")
+    # 3. fft let go on its own Pane, then over the top bar: nothing happens either time
+    fx, fy = title_at("fft")
+    pull("fft", (fx + 4, fy + 4), "06-own-pane-drag.png")
+    pull("fft", (60, 0), "07-top-bar-drag.png")
+    t.shot(f"{out}/08-nothing-moved.png")
+    # 4. Esc cancels a drag
     x0, y0 = title_at("home")
     mouse(t, 0, x0, y0)
     for i in range(1, 5):
         mouse(t, 32, x0 + 8 * i, y0 + 3 * i, wait=0.12)
     t.pump(0.3)
-    t.shot(f"{out}/08-esc-held.png")
+    t.shot(f"{out}/09-esc-held.png")
     t.send(b"\x1b", 0.4)
     mouse(t, 0, x0 + 32, y0 + 12, release=True, wait=0.4)
-    t.shot(f"{out}/09-esc-after.png")
+    t.shot(f"{out}/10-esc-after.png")
     # 5. close the loudness Pane with its x
     lx, ly = t.find("loudness")
     row = t.screen.display[ly]
     cx = row.index("\u00d7", lx)
-    t.shot(f"{out}/10-before-close.png")
+    t.shot(f"{out}/11-before-close.png")
     mouse(t, 0, cx, ly); mouse(t, 0, cx, ly, release=True, wait=0.6)
-    t.shot(f"{out}/11-closed.png")
-    # 6. split: right-click a title, Split down (the second row), pick a Widget
+    t.shot(f"{out}/12-closed.png")
+    # 6. split: right-click a title, the Split row (the second; → lit), pick a Widget for the new empty Pane
     x0, y0 = title_at("~/library")
     mouse(t, 2, x0, y0); mouse(t, 2, x0, y0, release=True, wait=0.4)
-    t.shot(f"{out}/12-title-menu.png")
+    t.shot(f"{out}/13-title-menu.png")
     t.send(b"\x1b[B", 0.2)
     t.send(b"\r", 0.5)
-    t.shot(f"{out}/13-widget-list.png")
+    t.shot(f"{out}/14-widget-list.png")
     t.send(b"\x1b[B", 0.2)
     t.send(b"\r", 0.6)
-    t.shot(f"{out}/14-split-done.png")
-    # 7. Move mode on the focused Pane: arrows swap, Shift+arrows split beside, + - size
+    t.shot(f"{out}/15-split-done.png")
+    # 7. Arrange mode's keys: the queue (where stream was, bottom left) focused with a click on its body; Enter picks it
+    # up, ↑ aims at the Pane above it, Enter swaps; + + grow its Pane; Esc is Done (its name prompt kept unnamed)
     t.send(b"m", 0.4)
-    t.shot(f"{out}/15-move-mode.png")
-    t.send(b"\x1b[1;2D", 0.4)
-    t.shot(f"{out}/16-move-shift-left.png")
+    qx, qy = t.find("\u250c queue")
+    mouse(t, 0, qx + 6, qy + 3); mouse(t, 0, qx + 6, qy + 3, release=True, wait=0.4)
+    t.send(b"\r", 0.3)
     t.send(b"\x1b[A", 0.4)
-    t.send(b"+", 0.3); t.send(b"+", 0.3)
-    t.shot(f"{out}/17-move-grown.png")
+    t.shot(f"{out}/16-picked-up-aimed.png")
+    lab = t.find("swap with ")
+    print("aimed:", t.screen.display[lab[1]][lab[0]:lab[0] + 24].strip() if lab else "NO LABEL", "·", "chip shown" if t.find("\u283f queue") else "NO CHIP")
     t.send(b"\r", 0.4)
+    t.shot(f"{out}/17-swapped-up.png")
+    print("swapped: the queue moved up from", (qx, qy), "to", t.find("\u250c queue"))
+    t.send(b"+", 0.3); t.send(b"+", 0.3)
+    t.shot(f"{out}/18-grown.png")
+    t.send(b"\x1b", 0.5)
+    t.send(b"\x1b", 0.5)
     # 8. the design list has your design, and the file is on disk
     t.send(b"\x0b", 0.3); t.send(b"design", 0.3); t.send(b"\r", 0.6)
-    t.shot(f"{out}/18-picker.png")
+    t.shot(f"{out}/19-picker.png")
     t.send(b"\x1b", 0.3)
     import glob
     files = sorted(glob.glob(f"{env['XDG_CONFIG_HOME']}/singularity/layouts/*.toml"))
     print("layout files:", [os.path.basename(f) for f in files])
     # 9. Reset design
     t.send(b"\x0b", 0.3); t.send(b"reset design", 0.3); t.send(b"\r", 0.6)
-    t.shot(f"{out}/19-reset.png")
+    t.shot(f"{out}/20-reset.png")
     t.send(b"q", 0.5)
 
 
-def tiling_lift(t, out, env):
-    """The owner's 2026-11-01 round on free tiling: a drop that would only resize a neighbour is no drop; a held Pane
-    is lifted (it shrinks to its floating size) and floats live with a shadow while the others ease into place around
-    a dashed slot (shots at several moments of each animation); the screen's edges; the landing; undo from the naming
-    prompt, redo; Move mode's Shift+arrow refusals in the bar, a whole column and `u`; a top-edge row and Ctrl+Z
-    mid-animation. Pixel tier, 160x48; start from an empty output folder."""
+def arrange(t, out):
+    """D87, #41: an arrange session. stream's title dragged onto the Tray (shot mid-drag, the Tray lit), dropped
+    (its Pane left empty, the Tray, the legend, Done, each Pane's ⊞ and ×); the queue split with its ⊞ and the picker
+    left with Esc (an empty Pane); stream dragged from the Tray into it; Home set aside (Done says why it can't) and
+    put back; Done asks for the name (kept unnamed with Esc), and the app looks as before. The player bar stays over
+    the Tray while arranging (#69). Prints what each step left. 160×48, cell tier, an empty output folder."""
+    t.pump(1.0)
+    t.send(b" ", 0.5)
+    tray_y = ROWS - 3
+
+    def title_at(title):
+        x, y = t.find("┌ " + title)
+        return x + 3, y
+
+    def drag(frm, to, shot=None):
+        (x, y), (tx, ty) = frm, to
+        mouse(t, 0, x, y)
+        mouse(t, 32, x + 3, max(1, y - 2), wait=0.15)
+        mouse(t, 32, tx, ty, wait=0.4)
+        if shot:
+            t.shot(f"{out}/{shot}")
+        mouse(t, 0, tx, ty, release=True, wait=0.6)
+
+    def on_row(s, y, after=0):
+        x = t.screen.display[y].find(s, after)
+        return (x, y) if x >= 0 else None
+
+    def legend():
+        return t.screen.display[ROWS - 1].strip()
+
+    t.shot(f"{out}/00-start.png")
+    # 1. stream's title onto the Tray: the mode is on while it's held, the Tray lit
+    drag(title_at("stream"), (COLS // 2, tray_y), shot="01-over-the-tray.png")
+    t.shot(f"{out}/02-in-the-tray.png")
+    print("in the Tray:", bool(on_row("⠿ stream", tray_y)), "· legend:", legend())
+    # (#69, Q39: the player bar stays, over the Tray)
+    print("player bar over the Tray:", bool(on_row("▶|", tray_y - 3)))
+    # 2. the queue's ⊞: a new empty Pane and the picker; Esc leaves it empty
+    qx, qy = t.find("┌ queue")
+    x, _ = on_row("⊞", qy, qx)
+    mouse(t, 0, x, qy); mouse(t, 0, x, qy, release=True, wait=0.6)
+    t.shot(f"{out}/03-split-picker.png")
+    t.send(b"\x1b", 0.6)
+    t.shot(f"{out}/04-empty-pane.png")
+    # 3. stream from the Tray into the new empty Pane (beside the queue)
+    ex, ey = next((line.find("empty", qx + 20), y) for y, line in enumerate(t.screen.display) if y > qy and line.find("empty", qx + 20) >= 0)
+    sx, _ = on_row("⠿ stream", tray_y)
+    drag((sx + 3, tray_y), (ex + 2, ey), shot="05-from-the-tray.png")
+    t.shot(f"{out}/06-filled.png")
+    # 4. Home into the Tray: Done is unavailable and says why; then back into its empty Pane
+    hx, hy = t.find("┌ home") or t.find("┌ ")
+    drag((hx + 3, hy), (COLS // 2, tray_y))
+    t.shot(f"{out}/07-home-in-the-tray.png")
+    print("Home set aside · legend:", legend())
+    t.send(b"\x1b", 0.4)
+    print("Esc with Home in the Tray keeps arranging:", "ARRANGE" in legend())
+    ex, ey = next((line.find("empty"), y) for y, line in enumerate(t.screen.display) if "empty" in line and y < tray_y - 1)
+    hx, _ = on_row("⠿ home", tray_y)
+    drag((hx + 3, tray_y), (ex + 2, ey))
+    t.shot(f"{out}/08-home-back.png")
+    # 5. Done: the name prompt (something changed); Esc keeps it as "Singularity (edited)"
+    dx, _ = on_row(" Done ", ROWS - 1)
+    mouse(t, 0, dx + 2, ROWS - 1); mouse(t, 0, dx + 2, ROWS - 1, release=True, wait=0.6)
+    t.shot(f"{out}/09-done-asks.png")
+    print("Done asks for a name:", bool(t.find("Keep your changes as a design")))
+    t.send(b"\x1b", 0.8)
+    t.shot(f"{out}/10-after.png")
+    print("after Done: no Tray:", not t.find(" Tray ") and "ARRANGE" not in legend(), "· bottom:", legend()[:60])
+    t.send(b"q", 0.5)
+
+
+def arrange_keys(t, out):
+    """D87, #43: Arrange mode from the keyboard alone. `m` and the legend; arrows move the focus; Enter picks the
+    queue up (its Pane lit, the chip), ↑ aims at Home ("swap with …"), Enter swaps; Esc puts a pick-up back; `t` sets
+    the focused Widget aside in the Tray; Home picked up and aimed at that empty Pane ("put here"); ↓ onto the Tray,
+    Enter, ↑ and Enter take its Widget out into a Pane (undone with Ctrl+Z); `s` (the legend
+    waits for the arrow) then → splits (the picker; Esc leaves the new Pane empty); `x` closes it; `-` `+` move a line;
+    Esc is Done (the name prompt; Esc keeps it unnamed) and the app looks as before. Prints what each step left.
+    160×48, cell tier, an empty output folder."""
+    t.pump(1.0)
+    t.send(b" ", 0.5)
+    UP, DOWN, LEFT, RIGHT = b"\x1b[A", b"\x1b[B", b"\x1b[D", b"\x1b[C"
+
+    def legend():
+        return t.screen.display[ROWS - 1].strip()
+
+    def at(title):
+        return t.find("┌ " + title)
+
+    def step(name, keys, wait=0.4):
+        for k in keys:
+            t.send(k, wait)
+        t.shot(f"{out}/{name}.png")
+
+    t.shot(f"{out}/00-start.png")
+    before = list(t.screen.display)
+    step("01-arrange-mode", [b"m"])
+    print("legend:", legend())
+    # 1. the focus: from Home down to the queue
+    step("02-focus-down", [DOWN])
+    # 2. the queue picked up, aimed at Home above it, swapped
+    q, h = at("queue"), at("home")
+    step("03-picked-up", [b"\r"])
+    print("picked up: chip", bool(t.find("⠿ queue")), "· legend:", legend())
+    step("04-aimed-up", [UP])
+    print("aimed: label", bool(t.find("swap with home")))
+    step("05-dropped", [b"\r"])
+    print("swapped:", at("queue") == h and at("home") == q)
+    # 3. picked up again and put back with Esc: still arranging
+    step("06-esc-put-back", [b"\r", DOWN, b"\x1b"])
+    print("Esc put it back:", at("queue") == h, "· still arranging:", "ARRANGE" in legend())
+    # 4. the focus down to Home (where the queue was), → to its neighbour, which `t` sets aside in the Tray
+    step("07-focus-home", [DOWN])
+    step("08-t-to-tray", [RIGHT, b"t"])
+    print("after t, the Tray row:", t.screen.display[ROWS - 3].strip()[:100])
+    # 5. Home picked up, aimed at the empty Pane, "put here", then Esc
+    step("09-home-aimed-at-empty", [LEFT, b"\r", RIGHT])
+    print("put here:", bool(t.find("put here")))
+    step("10-esc", [b"\x1b"])
+    # 5b. the Tray by keyboard: ↓ from Home (a bottom Pane) onto the Tray's Widget, Enter picks it up, ↑ aims at the
+    # Pane above it, Enter puts it there (that Pane's Widget into the Tray); Ctrl+Z takes it back (the focus on Home)
+    step("10a-tray-focus", [DOWN])
+    step("10b-from-tray-aimed", [b"\r", UP])
+    lab = t.find("swap with ") or t.find("put here")
+    print("from the Tray, aimed:", t.screen.display[lab[1]][lab[0]:lab[0] + 24].strip() if lab else "NO LABEL")
+    step("10c-from-tray-dropped", [b"\r"])
+    print("after the drop, the Tray row:", t.screen.display[ROWS - 3].strip()[:100])
+    step("10d-undone", [b"\x1a"])
+    # 6. s waits for the arrow (the legend says so); → splits: the picker; Esc leaves the new Pane empty
+    step("11-s-waits", [b"s"])
+    print("after s, legend:", legend())
+    step("12-split-picker", [RIGHT], wait=0.6)
+    step("13-split-empty", [b"\x1b"], wait=0.6)
+    # 7. x closes the focused (new, empty) Pane; - + move Home's line
+    step("14-x-closed", [b"x"])
+    step("15-shrunk", [b"-", b"-"])
+    step("16-grown", [b"+", b"+"])
+    # 8. Esc is Done: the name prompt (something changed); Esc keeps it unnamed, and the app looks as before
+    step("17-done-asks", [b"\x1b"], wait=0.6)
+    print("Done asks for a name:", bool(t.find("Keep your changes as a design")))
+    step("18-after", [b"\x1b"], wait=0.8)
+    print("after Done: no Tray:", not t.find(" Tray ") and "ARRANGE" not in legend(), "· bottom:", legend()[:60])
+    t.send(b"q", 0.5)
+
+
+def arrange_fixes(t, out):
+    """The owner's Arrange-mode test (#41, #43): the chip by a dragged title over small pointer moves (pixel mouse
+    reports, as Ghostty sends them: prints the chip's cell against the pointer's for each move); the queue picked up
+    with Enter and aimed ↓ into the Tray (the chip in the Tray's row, where it would land); `=` `-` `]` `[` on the
+    focused Pane's borders (prints the sizes); `w` opens "+ Widget"'s picker; `m` leaves Arrange mode. Pixel tier and
+    pixel mouse, 160x48; start from an empty output folder."""
+    t.pump(6.0)
+    t.send(b" ", 0.5)
+    UP, DOWN = b"\x1b[A", b"\x1b[B"
+    t.shot(f"{out}/00-start.png")
+
+    def px(code, x, y, release=False, wait=0.05):
+        # pixel reports (SGR-Pixels), 1-based
+        t.send(f"\x1b[<{code};{int(x) + 1};{int(y) + 1}{'m' if release else 'M'}".encode(), wait)
+
+    def legend():
+        return t.screen.display[ROWS - 1].strip()
+
+    # 1. a title held and wiggled a few pixels at a time, up, down and sideways: the chip keeps its place by the pointer
+    sx, sy = t.find("┌ stream")
+    px(0, (sx + 3.5) * CW, (sy + 0.5) * CH)
+    cx, cy = 60.3 * CW, 22.5 * CH
+    px(32, cx, cy, wait=1.0)
+    offsets = []
+
+    def settled(want):
+        # (under load a frame can come late: wait up to 3 s for the chip to get where this move puts it)
+        at = None
+        for _ in range(30):
+            t.pump(0.1)
+            at = t.find("⠿ stream")
+            if at == want:
+                break
+        return at
+    for i in range(48):
+        dx = [0, 3, -3, 6, -2, 1][i % 6]
+        dy = [0, 7, 14, 4, -6, -12, -3, 9][i % 8]
+        x, y = cx + i * 1.7 + dx, cy + dy
+        px(32, x, y, wait=0.05)
+        at = settled((int(x // CW) + 3, int(y // CH)))
+        offsets.append(None if not at else (at[0] - int(x // CW), at[1] - int(y // CH)))
+        if i == 20:
+            t.shot(f"{out}/01-chip-mid-wiggle.png")
+    print("chip - pointer (cells) over", len(offsets), "moves:", sorted(set(offsets), key=str))
+    t.send(b"\x1b", 1.0)
+    px(0, cx, cy, release=True, wait=1.0)
+    t.send(b"\x1b", 1.5)
+    # 2. the keyboard: m (the focus on the stream's Pane, where the drag left it: a bottom one), Enter picks it up, ↓
+    # aims past the bottom of the Panes into the Tray
+    t.send(b"m", 1.0)
+    t.shot(f"{out}/02-arrange.png")
+    print("legend:", legend())
+    t.send(b"\r", 0.4)
+    t.shot(f"{out}/03-picked-up.png")
+    t.send(DOWN, 0.4)
+    t.shot(f"{out}/04-aimed-into-tray.png")
+    at = t.find("⠿ stream")
+    print("aimed into the Tray: chip at", at, "· the Tray's frame rows", ROWS - 4, "to", ROWS - 2, "· in its inner row:", bool(at) and at[1] == ROWS - 3)
+    t.send(b"\r", 0.4)
+    t.shot(f"{out}/05-set-aside.png")
+    print("after Enter, the Tray row:", t.screen.display[ROWS - 3].strip()[:100])
+    # ↓ onto it in the Tray and Enter picks it up from there: its chip on its own place in the Tray's row
+    t.send(DOWN, 0.3)
+    t.send(b"\r", 0.4)
+    t.shot(f"{out}/05b-picked-up-from-tray.png")
+    at = t.find("⠿ stream")
+    print("picked up from the Tray: chip at", at, "· the Tray's frame:", t.screen.display[ROWS - 4].strip()[:40])
+    t.send(b"\x1b", 0.3)
+    t.send(b"\x1a", 0.4)
+    # 3. Home focused (a click on it): `=` grows like `+`, `-` shrinks; `]` taller, `[` shorter. Prints where the
+    # titles of Home and the queue under it are
+    hx, hy = t.find("home")
+    px(0, (hx + 20) * CW, (hy + 8) * CH)
+    px(0, (hx + 20) * CW, (hy + 8) * CH, release=True, wait=0.3)
+
+    def where():
+        return {w: t.find(w) for w in ("┌ queue", "┌ home")}
+    for name, keys in [("06-eq", b"=="), ("07-minus", b"--"), ("08-taller", b"]]"), ("09-shorter", b"[["), ("10-plus", b"+")]:
+        before = where()
+        for k in keys:
+            t.send(bytes([k]), 0.3)
+        t.shot(f"{out}/{name}.png")
+        print(name, "titles (x, y):", before, "->", where())
+    # 4. `w`: the "+ Widget" picker, from a Pane
+    t.send(b"w", 0.5)
+    t.shot(f"{out}/11-w-picker.png")
+    print("after w:", [l.strip()[:70] for l in t.screen.display if "Widget" in l or "widget" in l][:3])
+    t.send(b"\x1b", 0.4)
+    # 5. `m` leaves Arrange mode as Esc does (something changed: the name prompt; Esc keeps it unnamed)
+    t.send(b"m", 0.6)
+    t.shot(f"{out}/12-m-done.png")
+    print("m: name prompt:", bool(t.find("Keep your changes as a design")), "· legend:", legend()[:60])
+    t.send(b"\x1b", 0.6)
+    t.shot(f"{out}/13-after.png")
+    print("after: arranging:", "ARRANGE" in legend())
+    t.send(b"q", 0.5)
+
+
+def new_design(t, out, env):
+    """D87, #42: a whole New design… build. Ctrl+K → New design…, Esc at once (the Design as before), then again: one
+    empty Pane filling the screen and Home in the Tray; the Tray's "+ Widget" (the picker, the queue picked into the
+    Tray); the Pane's ⊞ split, the picker left with Esc; Home and the queue dragged from the Tray into the two Panes;
+    Done's name prompt, a name; the saved file. Prints what each step left. 160×48, cell tier, an empty output folder."""
+    t.pump(1.0)
+    t.send(b" ", 0.5)
+    tray_y = ROWS - 3
+    layouts = f"{env['XDG_CONFIG_HOME']}/singularity/layouts"
+
+    def on_row(s, y, after=0):
+        x = t.screen.display[y].find(s, after)
+        return (x, y) if x >= 0 else None
+
+    def legend():
+        return t.screen.display[ROWS - 1].strip()
+
+    def click(x, y, wait=0.6):
+        mouse(t, 0, x, y); mouse(t, 0, x, y, release=True, wait=wait)
+
+    def drag(frm, to):
+        (x, y), (tx, ty) = frm, to
+        mouse(t, 0, x, y)
+        mouse(t, 32, x + 3, max(1, y - 2), wait=0.15)
+        mouse(t, 32, tx, ty, wait=0.4)
+        mouse(t, 0, tx, ty, release=True, wait=0.6)
+
+    def palette(word):
+        t.send(b"\x0b", 0.3); t.send(word.encode(), 0.3); t.send(b"\r", 0.8)
+
+    def empties():
+        return [(line.find("empty"), y) for y, line in enumerate(t.screen.display) if 0 < y < tray_y - 3 and "empty" in line]
+
+    t.shot(f"{out}/00-start.png")
+    before = list(t.screen.display)
+    # 1. New design…, Esc before anything is placed: the Design as it was
+    palette("new design")
+    t.shot(f"{out}/01-blank.png")
+    print("blank: empty Panes:", len(empties()), "· Home in the Tray:", bool(on_row("⠿ home", tray_y)), "· legend:", legend())
+    t.send(b"\x1b", 0.8)
+    t.shot(f"{out}/01b-esc.png")
+    titles = lambda d: [x for x in ("┌ ~/library", "┌ home", "┌ queue", "┌ stream", "gravity well", "┌ loudness") if any(x in l for l in d)]
+    print("Esc at once: the same Panes as before:", titles(t.screen.display) == titles(before), titles(before), "· no Tray:", "ARRANGE" not in legend(), "· layouts written:", os.listdir(layouts) if os.path.isdir(layouts) else [])
+    # 2. again; "+ Widget" on the Tray: the picker; the queue goes into the Tray
+    palette("new design")
+    ax, _ = on_row("+ Widget", tray_y - 1)
+    click(ax + 2, tray_y - 1)
+    t.shot(f"{out}/02-tray-picker.png")
+    t.send(b"queue", 0.4)
+    t.send(b"\r", 0.6)
+    t.shot(f"{out}/03-queue-in-the-tray.png")
+    print("in the Tray:", [w for w in ("⠿ home", "⠿ queue") if on_row(w, tray_y)])
+    # 3. the floor plan first: the Pane's ⊞ splits it; Esc leaves the new Pane empty
+    x, y = on_row("⊞", 1)
+    click(x, y)
+    t.send(b"\x1b", 0.6)
+    t.shot(f"{out}/04-split.png")
+    print("after the split: empty Panes:", len(empties()))
+    # 4. then the contents: Home into the first empty Pane, the queue into the other
+    lx, ly = empties()[0]
+    hx, _ = on_row("⠿ home", tray_y)
+    drag((hx + 3, tray_y), (lx + 2, ly))
+    t.shot(f"{out}/05-home-placed.png")
+    lx, ly = empties()[0]
+    qx, _ = on_row("⠿ queue", tray_y)
+    drag((qx + 3, tray_y), (lx + 2, ly))
+    t.shot(f"{out}/06-filled.png")
+    print("filled: empty Panes:", len(empties()), "· legend:", legend())
+    # 5. Done: the name prompt; a name saves it
+    dx, _ = on_row(" Done ", ROWS - 1)
+    click(dx + 2, ROWS - 1)
+    t.shot(f"{out}/07-name.png")
+    print("Done asks for a name:", bool(t.find("Save design as")))
+    t.send(b"Built", 0.4)
+    t.send(b"\r", 0.8)
+    t.shot(f"{out}/08-saved.png")
+    path = f"{layouts}/built.toml"
+    print("after: no Tray:", "ARRANGE" not in legend(), "· saved:", os.path.exists(path))
+    if os.path.exists(path):
+        print(open(path).read())
+    t.send(b"q", 0.5)
+
+
+def pane_menu(t, out):
+    """D87, #37: the Pane menu and the Widget picker. A right-click on a title (Replace widget… first), the picker
+    (Widgets not on screen, then the on-screen ones dimmed below a line), typing to filter, a replace; a right-click on
+    a body; a click on the Widget's name, a pick from the on-screen part (a swap); Home's menu and the `w` key on Home.
+    #39: the Split row's arrows (↓ then Esc: an empty Pane; ← then a pick; ↑ from a body; → from the keyboard), a
+    `needs W × H` row in the picker, the palette's Split up until it's refused. Prints each menu's items and what each
+    Pane shows. 160×48, cell tier, an empty output folder."""
     t.pump(1.0)
     t.send(b" ", 0.5)
 
     def title_at(title):
-        at = t.find("┌ " + title)
+        at = t.find("\u250c " + title)
         if at:
-            return at[0] + 3, at[1]
+            return at[0] + 2, at[1]
         x, y = t.find(title)
-        return x + 2, y
+        return x, y
 
-    def glide(x0, y0, x1, y1, steps=5):
-        for i in range(1, steps + 1):
-            mouse(t, 32, x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps, wait=0.0)
+    def menu_items():
+        # the menu's rows: between its rounded corners
+        at = next(((x, y) for y, line in enumerate(t.screen.display) for x in [line.find("\u256d")] if x >= 0), None)
+        if not at:
+            return None
+        x, y = at
+        items = []
+        for line in t.screen.display[y + 1:]:
+            if line[x] != "\u2502":
+                break
+            items.append(line[x + 1:line.index("\u2502", x + 1)].strip())
+        return items
 
-    def moments(name, times=(0.03, 0.06, 0.4)):
-        for i, dt in enumerate(times):
-            t.pump(dt)
-            t.shot(f"{out}/{name}-{'abc'[i]}.png")
+    def titles():
+        return [w for w in ("fft", "stream", "queue", "starfield", "karaoke", "loudness", "tail -f lyrics.log") if t.find("\u250c " + w) or t.find(w + " ")]
 
     t.shot(f"{out}/00-start.png")
-    # 1. the owner's bug: the stream held a little way up over its border, into the library's bottom band. That used
-    # to re-split the two 50/50 (the library shrank, nothing else happened); now it's no drop: the slot says "back"
-    sx, sy = title_at("stream")
-    lx, ly = title_at("~/library")
-    mouse(t, 0, sx, sy, wait=0.05)
-    glide(sx, sy, sx + 4, sy - 3)
-    t.pump(0.5)
-    t.shot(f"{out}/01-near-own-neighbour.png")
-    mouse(t, 0, sx + 4, sy - 3, release=True, wait=0.5)
-    t.shot(f"{out}/02-near-own-neighbour-released.png")
-    # 2. lift Home: it comes up from its place, shrinking to its floating size
-    hx, hy = title_at("home")
-    mouse(t, 0, hx, hy, wait=0.05)
-    mouse(t, 32, hx + 4, hy + 2, wait=0.0)
-    moments("03-lift")
-    # 3. over the library's middle: the others make room (a swap), an empty slot where it would land
-    glide(hx + 4, hy + 2, 12, 14)
-    moments("04-over-library")
-    # 4. the queue's left band: a split beside it
-    qx, qy = 31, 33
-    glide(12, 14, qx, qy)
-    t.pump(0.4)
-    t.shot(f"{out}/05-queue-left-band.png")
-    # 5. the screen's right edge (the outermost column): a whole column
-    glide(qx, qy, 159, 26)
-    t.pump(0.4)
-    t.shot(f"{out}/06-right-edge.png")
-    # 6. below the Panes (the player): a whole row at the bottom
-    glide(159, 26, 80, 45)
-    t.pump(0.4)
-    t.shot(f"{out}/07-bottom-edge.png")
-    # 7. let go in the queue's left band: it lands in its slot
-    glide(80, 45, qx, qy)
-    t.pump(0.4)
-    mouse(t, 0, qx, qy, release=True, wait=0.0)
-    moments("08-landing")
-    # 8. the first edit asks for a name; Ctrl+Z from there goes back to the built-in Design, Ctrl+Y redoes (and asks)
-    t.shot(f"{out}/09-naming.png")
-    t.send(b"\x1a", 0.0)
-    moments("10-undone-from-prompt", (0.05, 0.4))
-    t.send(b"\x19", 0.5)
-    t.shot(f"{out}/11-redone-asks-again.png")
+    # 1. right-click fft's title: its menu
+    x, y = title_at("fft")
+    mouse(t, 2, x + 6, y); mouse(t, 2, x + 6, y, release=True, wait=0.4)
+    t.shot(f"{out}/01-title-menu.png")
+    print("fft's menu:", menu_items())
+    # 2. Replace widget…: the picker
+    t.send(b"\r", 0.5)
+    t.shot(f"{out}/02-picker.png")
+    # 3. typed: filtered
+    t.send(b"star", 0.4)
+    t.shot(f"{out}/03-picker-typed.png")
+    t.send(b"\r", 0.6)
+    # the first edit of a built-in Design asks for a name: Esc keeps it unnamed
+    t.shot(f"{out}/04-replaced-naming.png")
     t.send(b"\x1b", 0.5)
-    t.shot(f"{out}/12-kept-edited-undo-chip.png")
-    # 9. Move mode on lyrics: Shift+Up has no room above the well (said in the bar); Shift+Right makes a whole column;
-    # again, it already is one; u undoes
-    x, y = title_at("lyrics")
-    mouse(t, 0, x, y); mouse(t, 0, x, y, release=True, wait=0.3)
-    t.send(b"m", 0.3)
-    t.send(b"\x1b[1;2A", 0.3)
-    t.shot(f"{out}/13-move-no-room.png")
-    t.send(b"\x1b[1;2C", 0.0)
-    moments("14-move-column", (0.05, 0.4))
-    t.send(b"\x1b[1;2C", 0.3)
-    t.shot(f"{out}/15-move-already-spans.png")
-    t.send(b"u", 0.0)
-    moments("16-move-undo", (0.05, 0.4))
-    t.send(b"\r", 0.3)
-    # 10. fft pushed up past the Panes (the top bar): a whole row at the top; dropped; Ctrl+Z mid-way back
-    fx, fy = title_at("fft")
-    mouse(t, 0, fx, fy, wait=0.05)
-    glide(fx, fy, 70, 0)
+    t.shot(f"{out}/05-replaced.png")
+    print("after replacing fft:", titles())
+    # 4. right-click the lyrics' body: the same menu
+    lx, ly = title_at("tail -f lyrics.log")
+    mouse(t, 2, lx + 10, ly + 6); mouse(t, 2, lx + 10, ly + 6, release=True, wait=0.4)
+    t.shot(f"{out}/06-body-menu.png")
+    print("lyrics body menu:", menu_items())
+    t.send(b"\x1b", 0.4)
+    # 5. a click on the Widget's name in stream's title: the picker; the wheel down into the on-screen part
+    sx, sy = title_at("stream")
+    mouse(t, 0, sx + 1, sy); mouse(t, 0, sx + 1, sy, release=True, wait=0.5)
+    t.shot(f"{out}/07-name-click-picker.png")
+    px, py = t.find("Replace stream")
+    for _ in range(40):
+        t.send(f"\x1b[<65;{px + 6};{py + 4}M".encode(), 0.03)
     t.pump(0.4)
-    t.shot(f"{out}/17-top-edge.png")
-    mouse(t, 0, 70, 0, release=True, wait=0.5)
-    t.shot(f"{out}/18-top-edge-done.png")
-    t.send(b"\x1a", 0.0)
-    moments("19-ctrl-z", (0.04, 0.08, 0.4))
-    t.send(b"\x19", 0.5)
-    t.shot(f"{out}/20-ctrl-y.png")
+    t.shot(f"{out}/08-picker-on-screen.png")
+    t.send(b"\x1b[A" * 3, 0.4)
+    t.shot(f"{out}/09-picker-on-screen-up.png")
+    t.send(b"\r", 0.6)
+    t.shot(f"{out}/10-swapped.png")
+    print("after the swap:", titles())
+    # 6. Home's menu: no Replace widget; `w` on Home says why
+    hx, hy = title_at("home")
+    mouse(t, 2, hx + 8, hy); mouse(t, 2, hx + 8, hy, release=True, wait=0.4)
+    t.shot(f"{out}/11-home-menu.png")
+    print("home's menu:", menu_items())
+    t.send(b"\x1b", 0.3)
+    mouse(t, 0, hx + 8, hy + 3); mouse(t, 0, hx + 8, hy + 3, release=True, wait=0.3)
+    t.send(b"w", 0.4)
+    t.shot(f"{out}/12-home-w.png")
+    # 7. `w` on the queue: Widgets off screen first, as on any Pane but Home's (D87, #38)
+    qx, qy = title_at("queue")
+    mouse(t, 0, qx + 12, qy); mouse(t, 0, qx + 12, qy, release=True, wait=0.3)
+    t.send(b"w", 0.5)
+    t.shot(f"{out}/13-queue-picker.png")
+    t.send(b"\x1b", 0.3)
+
+    # 8. (#39) split: the Split row's arrows, each making an empty Pane with the Widget picker on it
+    def menu_on(title, dx=8):
+        x, y = title_at(title)
+        mouse(t, 2, x + dx, y); mouse(t, 2, x + dx, y, release=True, wait=0.4)
+
+    def click_arrow(arrow):
+        at = t.find("Split  \u2190")
+        x = t.screen.display[at[1]].index(arrow, at[0])
+        mouse(t, 0, x, at[1]); mouse(t, 0, x, at[1], release=True, wait=0.6)
+
+    def panes():
+        return sum(line.count("\u250c") for line in t.screen.display)
+
+    menu_on("stream")
+    t.shot(f"{out}/14-split-row.png")
+    print("stream's menu:", menu_items())
+    n = panes()
+    click_arrow("\u2193")  # ↓
+    t.shot(f"{out}/15-split-down-picker.png")
+    print("split ↓: the picker is up:", bool(t.find("Choose a widget")), "| hint:", bool(t.find("Esc leaves it empty")))
+    t.send(b"\x1b", 0.5)
+    t.shot(f"{out}/16-left-empty.png")
+    print("after Esc: Panes", n, "→", panes(), "| labelled empty:", any(" empty " in line for line in t.screen.display))
+    # ← on the queue: pick by typing
+    menu_on("queue", 12)
+    click_arrow("\u2190")  # ←
+    t.send(b"scope", 0.4)
+    t.shot(f"{out}/17-split-left-typed.png")
+    t.send(b"\r", 0.6)
+    t.shot(f"{out}/18-split-left-filled.png")
+    print("after ← and a pick:", titles(), "| osc shown:", bool(t.find("osc")))
+    # ↑ on the lyrics' body
+    lx, ly = title_at("tail -f lyrics.log")
+    mouse(t, 2, lx + 10, ly + 6); mouse(t, 2, lx + 10, ly + 6, release=True, wait=0.4)
+    click_arrow("\u2191")  # ↑
+    t.shot(f"{out}/19-split-up-picker.png")
+    t.send(b"\x1b", 0.5)
+    # → from the keyboard: the Split row, ← → light an arrow, Enter
+    menu_on("starfi")  # (its title may be cut short by now)
+    t.send(b"\x1b[B", 0.2)
+    t.send(b"\x1b[D", 0.3)  # → lit → ← lit
+    t.shot(f"{out}/20-split-row-key-lit.png")
+    t.send(b"\x1b[C", 0.3)  # → again
+    t.send(b"\r", 0.6)
+    t.shot(f"{out}/21-split-right-picker.png")
+    # a Widget too big for the new Pane says what it needs
+    t.send(b"kara", 0.4)
+    t.shot(f"{out}/22-picker-needs.png")
+    print("karaoke row says:", next((line.strip() for line in t.screen.display if "karaoke" in line and "needs" in line), None))
+    t.send(b"\x1b", 0.5)
+    # the palette: Split up on the focused Pane, until there's no room
+    said = None
+    for i in range(24):
+        t.send(b"\x0b", 0.4); t.send(b"split up", 0.3); t.send(b"\r", 0.6)
+        if t.find("Choose a widget"):
+            t.send(b"\x1b", 0.4)
+            continue
+        said = next((line.strip() for line in t.screen.display if "No room for a new Pane" in line), None)
+        break
+    t.shot(f"{out}/23-split-refused.png")
+    print("refused:", said)
+    t.send(b"q", 0.5)
+
+
+def paneless(t, out):
+    """D87, #38: the library and the queue without a Pane. Three songs queued from Liked Songs; "Your Library" and
+    "Queue" from the palette focus their Panes; both Panes closed with their ×; then the same entries open them as
+    popups: the library's (a playlist opened from it into Home's Pane) and the queue's (a song dragged to the top).
+    Prints the queue's order before and after. 160×48, cell tier, an empty output folder."""
+    t.pump(1.0)
+    x, y = t.find("♥  Liked Songs")
+    mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
+    for row in (3, 5, 7):
+        rx, ry = t.find(f"Fake Track 00{row}")
+        mouse(t, 2, rx + 2, ry, wait=0.3)  # right-click
+        t.send(b"\x1b[B", 0.1)  # down: "Play next"
+        t.send(b"\r", 0.8)
+
+    def palette(what):
+        t.send(b"\x0b", 0.3)  # Ctrl+K
+        t.send(what.encode(), 0.3)
+        t.send(b"\r", 0.6)
+
+    def close(title):
+        # the × at the right end of the Pane's title (the first after its name: its corner may be a neighbour's)
+        x, y = t.find("┌ " + title)
+        cx = t.screen.display[y].index("×", x)
+        mouse(t, 0, cx, y); mouse(t, 0, cx, y, release=True, wait=0.6)
+
+    def order():
+        rows = sorted((at[1], n) for n in ("fake2", "fake4", "fake6") if (at := t.find(f"Described {n} ·")))
+        return [n for _, n in rows]
+
+    palette("your library")
+    t.shot(f"{out}/00-library-pane-focused.png")
+    close("~/library")
+    # the first edit of a built-in Design asks for a name: Esc keeps it unnamed
+    t.send(b"\x1b", 0.5)
+    close("queue")
+    t.shot(f"{out}/01-without-library-and-queue.png")
+    # the library as a popup
+    palette("your library")
+    t.shot(f"{out}/02-library-popup.png")
+    t.send(b"\x1b[B", 0.3)
+    t.shot(f"{out}/03-library-popup-down.png")
+    t.send(b"\r", 0.8)
+    t.shot(f"{out}/04-opened-in-home.png")
+    # the queue as a popup: drag the last queued song (fake2) onto the first (fake6)
+    palette("queue")
+    t.shot(f"{out}/05-queue-popup.png")
+    print("queue in the popup:", order())
+    (sx, sy), (dx, dy) = t.find("Described fake2 ·"), t.find("Described fake6 ·")
+    mouse(t, 0, sx + 2, sy)
+    mouse(t, 32, sx + 2, sy - 1, wait=0.15)
+    mouse(t, 32, dx + 2, dy, wait=0.3)
+    t.shot(f"{out}/06-dragging.png")
+    mouse(t, 0, dx + 2, dy, release=True, wait=1.0)
+    t.shot(f"{out}/07-dropped.png")
+    print("after the drag:", order())
+    t.send(b"\x1b", 0.4)
+    t.shot(f"{out}/08-closed.png")
     t.send(b"q", 0.5)
 
 
 def tiling_fast(t, out, env):
-    """The owner's 2026-11-01 round on fast drags: at `visuals.motion_fps = 240`, a fast sweep across ~5 Panes leaves
-    the layout as it was (only the held Pane follows); a pause shows the preview; a drop on a short wide Pane swaps,
-    no "sandwich". The Client logs every frame to `frames.log` (start µs, rate, tick/draw/diff/flush µs): the frame
-    intervals during the drag are printed. Pixel tier, 160x48; start from an empty output folder."""
+    """Fast drags at `visuals.motion_fps = 240`: a fast sweep across ~5 Panes moves nothing but the highlight (on the
+    Pane under the pointer at once) and the chip; Esc ends it; a drop on a short wide Pane swaps. The Client logs every
+    frame to `frames.log` (start µs, rate, tick/draw/diff/flush µs): the frame intervals during the drag are printed.
+    Pixel tier, 160x48; start from an empty output folder."""
     t.pump(1.0)
     t.send(b" ", 0.5)
     t.shot(f"{out}/00-start.png")
     hx, hy = t.find("┌ home")
     hx += 3
     mouse(t, 0, hx, hy, wait=0.05)
-    # a sweep at ~4 ms a report over the library, the queue, lyrics, the well and back: nothing rearranges
+    # a sweep at ~4 ms a report over the library, the queue, lyrics, the well and back: nothing rearranges, the
+    # highlight is on whatever Pane the pointer is over
     path = [(hx, hy), (12, 14), (31, 33), (140, 30), (120, 10), (60, 38)]
     shots = 0
     for (x0, y0), (x1, y1) in zip(path, path[1:]):
@@ -1879,10 +2635,10 @@ def tiling_fast(t, out, env):
             mouse(t, 32, x0 + (x1 - x0) * i // 20, y0 + (y1 - y0) * i // 20, wait=0.004)
         t.shot(f"{out}/01-sweep-{shots}.png")
         shots += 1
-    # it rests: the zone under it becomes the preview
+    # it rests: the same, nothing waits for a pause
     t.pump(0.5)
     t.shot(f"{out}/02-paused.png")
-    # a jiggle over two Panes, then back: the preview doesn't flicker; Esc puts it back
+    # Esc ends the drag: nothing changed
     t.send(b"\x1b", 0.5)
     mouse(t, 0, 60, 38, release=True, wait=0.5)
     t.shot(f"{out}/03-put-back.png")
@@ -1909,10 +2665,11 @@ def tiling_fast(t, out, env):
 
 
 def tiling_paths(t, out, env):
-    """#21: pointer paths in the real Client. A fling across Panes let go at once puts the Pane back (nothing was
-    shown); a pause on the queue then a flick to the library let go at once drops on the queue (what was shown); a
-    release the Client never heard (the pointer comes back with no button down) puts the Pane back and the next click
-    works. Prints where the held Pane ends each time. Pixel tier, 160x48; start from an empty output folder."""
+    """#21's pointer paths in the real Client, under D87 (a drag moves contents): a fling across Panes let go at once
+    drops on the Pane under the release (Home and the library swap); a pause on the queue then a flick to the library
+    let go at once drops on the library too, the Pane the pointer is over when it comes up; a release the Client never
+    heard (the pointer comes back with no button down) changes nothing and the next click works. Prints where Home and
+    the stream end each time. Pixel tier, 160x48; start from an empty output folder."""
     t.pump(1.0)
     t.send(b" ", 0.5)
     t.shot(f"{out}/00-start.png")
@@ -1924,37 +2681,38 @@ def tiling_paths(t, out, env):
         for i in range(1, n + 1):
             mouse(t, 32, x0 + (x1 - x0) * i // n, y0 + (y1 - y0) * i // n, wait=wait)
 
-    # 1. a fling over the queue, the library and lyrics, let go at once
+    # 1. a fling over the queue to the library, let go at once: Home goes into the library's Pane, the library into Home's
     mouse(t, 0, hx + 3, hy, wait=0.05)
     glide(hx + 3, hy, qx + 10, qy + 5, 10, 0.004)
     glide(qx + 10, qy + 5, lx + 5, ly + 5, 10, 0.004)
+    t.shot(f"{out}/01-fling-over-library.png")
     mouse(t, 0, lx + 5, ly + 5, release=True, wait=0.6)
-    t.shot(f"{out}/01-fling-put-back.png")
-    print("fling: home", "back where it was" if t.find("┌ home") == (hx, hy) else f"moved to {t.find('┌ home')}")
-    # 2. rest over the queue (its zone is shown: the dashed slot), then a flick to the library let go at once: it
-    # lands in that slot
-    mouse(t, 0, hx + 3, hy, wait=0.05)
-    glide(hx + 3, hy, qx + 10, qy + 5, 15, 0.01)
-    t.pump(0.4)
-    t.shot(f"{out}/02-shown-over-queue.png")
-    slot = t.find("╭╌")
-    glide(qx + 10, qy + 5, lx + 5, ly + 5, 6, 0.004)
-    mouse(t, 0, lx + 5, ly + 5, release=True, wait=0.6)
-    t.shot(f"{out}/03-dropped-where-shown.png")
-    print("flick after a pause: home", "in the slot that was shown" if t.find("┌ home") == slot else f"at {t.find('┌ home')}, the slot was {slot}")
+    t.shot(f"{out}/02-fling-dropped.png")
+    print("fling: home", "in the library's Pane" if t.find("┌ home") == (lx, ly) else f"at {t.find('┌ home')}, the library's Pane is at {(lx, ly)}")
     t.send(b"\x1b", 0.4)  # the naming prompt: keep it unnamed
+    # 2. rest over the queue (lit, "swap with queue"), then a flick back to Home's old Pane let go at once: it drops
+    # where the pointer comes up, not where it rested
+    hx2, hy2 = t.find("┌ home")
+    mouse(t, 0, hx2 + 3, hy2, wait=0.05)
+    glide(hx2 + 3, hy2, qx + 10, qy + 5, 15, 0.01)
+    t.pump(0.4)
+    t.shot(f"{out}/03-resting-over-queue.png")
+    glide(qx + 10, qy + 5, hx + 10, hy + 5, 6, 0.004)
+    mouse(t, 0, hx + 10, hy + 5, release=True, wait=0.6)
+    t.shot(f"{out}/04-flicked-dropped.png")
+    print("flick after a pause: home", "back in its own Pane" if t.find("┌ home") == (hx, hy) else f"at {t.find('┌ home')}")
     # 3. picked up, then the pointer moves with no button down: its release went elsewhere
     sx, sy = t.find("┌ stream")
     mouse(t, 0, sx + 3, sy, wait=0.05)
     glide(sx + 3, sy, 60, 20, 10, 0.01)
     t.pump(0.3)
     mouse(t, 35, 61, 21, wait=0.6)
-    t.shot(f"{out}/04-unheard-release.png")
-    print("unheard release: stream", "back where it was" if t.find("┌ stream") == (sx, sy) else f"at {t.find('┌ stream')}")
-    lx, ly = t.find("┌ ~/library")
+    t.shot(f"{out}/05-unheard-release.png")
+    print("unheard release: stream", "where it was" if t.find("┌ stream") == (sx, sy) else f"at {t.find('┌ stream')}")
+    lx, ly = t.find("┌ ~/library") or t.find("┌ home")
     mouse(t, 0, lx + 3, ly, wait=0.05)
     mouse(t, 0, lx + 3, ly, release=True, wait=0.5)
-    t.shot(f"{out}/05-click-after.png")
+    t.shot(f"{out}/06-click-after.png")
     t.send(b"q", 0.5)
 
 
@@ -1971,17 +2729,19 @@ def main():
                SINGULARITY_NO_KEYRING="1", SINGULARITY_NOWPLAYING="off")
     for k in ("KITTY_WINDOW_ID", "TERM_PROGRAM", "GHOSTTY_RESOURCES_DIR", "TMUX"):
         env.pop(k, None)
-    if scenario == "pixel":
+    # big text in the font these shots draw the cells with, as a terminal's own font (#53)
+    env.setdefault("SINGULARITY_BIG_FONT", FONT.getname()[0])
+    if scenario in ("pixel", "arrange-fixes"):
         env["SINGULARITY_PIXEL_MOUSE"] = "1"
     cat = ["--no-catalogue"]
     if scenario.startswith("idle"):
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-lift", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
-        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-lift", "tiling-fast", "tiling-paths", "resize", "karaoke") else "0"
+        env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-fast", "tiling-paths", "resize", "karaoke", "arrange-fixes") else "0"
         if scenario == "design-sizes":
             env["SINGULARITY_PIXEL"] = os.environ.get("PTY_PIXEL", "1")
         if scenario == "sizes":
@@ -1997,10 +2757,10 @@ def main():
         seed_listening(env["SINGULARITY_DATA"])
     if scenario == "stalls":
         env["SINGULARITY_FAKE_STALLS"] = "1"
-    if scenario in ("stats", "stats-widgets", "widgets-large", "sizes", "wheel-all"):
+    if scenario in ("stats", "stats-widgets", "widgets-large", "sizes", "wheel-all", "contact-sheet"):
         env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
         seed_listening(env["SINGULARITY_DATA"])
-    if scenario in ("widgets-large", "sizes"):
+    if scenario in ("widgets-large", "sizes", "contact-sheet"):
         env["SINGULARITY_FAKE_STALLS"] = "fine"
         seed_today(env["SINGULARITY_DATA"])
         os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity/layouts", exist_ok=True)
@@ -2042,6 +2802,8 @@ def main():
             return sizes(env, out)
         if scenario == "design-sizes":
             return design_sizes(env, out)
+        if scenario == "contact-sheet":
+            return contact_sheet(env, out)
         t = Term(env)
         if scenario == "space-startup":
             return space_startup(t, out, env)
@@ -2130,8 +2892,18 @@ def main():
             return layouts(t, out, env)
         if scenario == "tiling":
             return tiling(t, out, env)
-        if scenario == "tiling-lift":
-            return tiling_lift(t, out, env)
+        if scenario == "paneless":
+            return paneless(t, out)
+        if scenario == "arrange":
+            return arrange(t, out)
+        if scenario == "arrange-keys":
+            return arrange_keys(t, out)
+        if scenario == "arrange-fixes":
+            return arrange_fixes(t, out)
+        if scenario == "pane-menu":
+            return pane_menu(t, out)
+        if scenario == "new-design":
+            return new_design(t, out, env)
         if scenario == "tiling-fast":
             return tiling_fast(t, out, env)
         if scenario == "tiling-paths":

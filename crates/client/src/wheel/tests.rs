@@ -43,8 +43,9 @@ fn cells(buf: &Buffer, r: Rect) -> Vec<Cell> {
     (r.y..r.bottom()).flat_map(|y| (r.x..r.right()).map(move |x| (x, y))).map(|(x, y)| buf[(x, y)].clone()).collect()
 }
 
-fn pane(app: &App, slot: &str) -> Rect {
-    app.hits.iter().rev().find_map(|(r, h)| matches!(h, Hit::Focus(s) if s == slot).then_some(*r)).unwrap_or_else(|| panic!("no Pane shows {slot}"))
+fn pane(app: &App, w: Widget) -> Rect {
+    let id = app.layout.pane_of(w);
+    app.hits.iter().rev().find_map(|(r, h)| matches!(h, Hit::Focus(p) if Some(*p) == id).then_some(*r)).unwrap_or_else(|| panic!("no Pane shows {w}"))
 }
 
 fn wheel(app: &mut App, kind: MouseEventKind, x: u16, y: u16, notches: usize) {
@@ -97,7 +98,7 @@ fn cases(w: Widget) -> Vec<Case> {
         Widget::Library => vec![Case {
             what: "a long library",
             set: |app| {
-                let item = |n: usize| LibraryItem { uri: format!("spotify:playlist:p{n}"), name: format!("Playlist {n}"), subtitle: "Playlist".into(), kind: "playlist".into(), image_url: None, depth: 0, own: false };
+                let item = |n: usize| LibraryItem { uri: format!("spotify:playlist:p{n}"), name: format!("Playlist {n}"), subtitle: "Playlist".into(), kind: "playlist".into(), image_url: None, depth: 0, own: false, authors: vec![] };
                 app.hear(singularity_proto::Event::Library(singularity_proto::Library { items: (0..60).map(item).collect() }));
             },
             moves: 20,
@@ -137,6 +138,7 @@ fn cases(w: Widget) -> Vec<Case> {
         Widget::Starfield => still("starfield"),
         Widget::Well => still("well"),
         Widget::Hole => still("hole"),
+        Widget::Unknown(_) => vec![],
     }
 }
 
@@ -245,21 +247,21 @@ fn pages() -> Vec<Case> {
 }
 
 /// The layout for `slot`: it beside Home (or the library beside Home), each half the screen.
-fn layout(slot: &str) -> Node {
-    let other = if slot == "home" { "library" } else { "home" };
-    Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::slot(other), Node::slot(slot))
+fn layout(slot: Widget) -> Node {
+    let other = if slot == Widget::Home { Widget::Library } else { Widget::Home };
+    Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::pane(other), Node::pane(slot))
 }
 
-/// Wheel `case` in Pane `slot` at a few places; returns what went wrong.
-fn check(slot: &str, case: &Case) -> Vec<String> {
+/// Wheel `case` in the Pane showing `slot` at a few places; returns what went wrong.
+fn check(slot: Widget, case: &Case) -> Vec<String> {
     let mut bad = vec![];
-    let other = if slot == "home" { "library" } else { "home" };
+    let other = if slot == Widget::Home { Widget::Library } else { Widget::Home };
     // the top of the body, the middle, the bottom (the main Pane's pages have songs on top and Shelves below)
     for at in 0..3 {
         let mut app = app();
-        app.layout = layout(slot);
+        app.layout = layout(slot).into();
         (case.set)(&mut app);
-        app.focus = other.into();
+        app.focus_on(other);
         render(&mut app);
         let r = pane(&app, slot);
         let inner = Rect::new(r.x + 1, r.y + 1, r.width.saturating_sub(2), r.height.saturating_sub(2));
@@ -272,8 +274,8 @@ fn check(slot: &str, case: &Case) -> Vec<String> {
             render(&mut app);
             continue;
         }
-        if app.focus != slot {
-            bad.push(format!("{what}: the wheel left the focus on {}", app.focus));
+        if !app.is_focused(slot) {
+            bad.push(format!("{what}: the wheel left the focus on {:?}", app.focused()));
         }
         // every notch moves it, all the way (a highlight that leaves the window, or a window that stops short, doesn't)
         let mut last = render(&mut app);
@@ -302,7 +304,7 @@ fn the_wheel_scrolls_every_widget_and_page_that_holds_more_than_fits() {
     let mut bad = vec![];
     for &w in Widget::ALL {
         for case in cases(w) {
-            bad.extend(check(w.slot(), &case));
+            bad.extend(check(w, &case));
         }
     }
     let mut seen = [false; PAGES];
@@ -310,26 +312,130 @@ fn the_wheel_scrolls_every_widget_and_page_that_holds_more_than_fits() {
         let mut app = app();
         (case.set)(&mut app);
         seen[page_index(&app.current_page())] = true;
-        bad.extend(check("home", &case));
+        bad.extend(check(Widget::Home, &case));
     }
     assert!(seen.iter().all(|s| *s), "every page has a case: {seen:?}");
     assert!(bad.is_empty(), "{}", bad.join("\n\n"));
 }
 
-/// Every Slot any Design or the Widget lists can show is a `Widget`, so the wheel knows it.
+/// A big queue (#59: each song on two rows beside its cover): the pointer finds the song under either of its rows
+/// (hover, click, right-click), and the wheel moves its highlight one song a notch, the list following, all the way.
 #[test]
-fn every_slot_is_a_widget() {
-    let mut names: Vec<String> = vec![];
-    for d in 0..crate::design::DESIGNS.len() {
-        let mut app = app();
-        app.set_design(d);
-        names.extend(app.layout.slot_names());
+fn a_big_queues_two_row_songs_take_the_pointer_and_the_wheel_song_by_song() {
+    use crate::app::{Popup, Target};
+    use ratatui::crossterm::event::MouseButton;
+    let (w, h) = (200, 48);
+    let draw = |app: &mut App| {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| crate::ui::draw(f, app)).unwrap();
+        t.backend().buffer().clone()
+    };
+    let mut app = app();
+    app.layout = layout(Widget::Queue).into();
+    app.playback.queue = (0..40).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:q{i}"), name: format!("Queued {i}"), artists: vec!["Nova Drift".into()], duration_ms: 150_000, ..Default::default() }, source: "queue".into(), uid: format!("u{i}") }).collect();
+    app.focus_on(Widget::Home);
+    draw(&mut app);
+    let r = pane(&app, Widget::Queue);
+    assert!(crate::queue::is_big(Rect::new(r.x + 1, r.y + 1, r.width - 2, r.height - 2)), "{r:?}");
+    let row = |app: &App, i: usize| app.hit_rect(&Hit::QueueRow(i)).unwrap_or_else(|| panic!("song {i} isn't drawn"));
+    // hover: both rows of each song shown are that song
+    for i in 0..5 {
+        let rr = row(&app, i);
+        assert_eq!(rr.height, 2);
+        for y in [rr.y, rr.y + 1] {
+            assert_eq!(app.hit_at(rr.x + rr.width / 2, y), Some(Hit::QueueRow(i)), "song {i}, row {y}");
+        }
     }
-    for slot in names.iter().map(String::as_str).chain(crate::layouts::options("lyrics").iter().copied()).chain(crate::layouts::options("fft").iter().copied()) {
-        let w = Widget::of(slot).unwrap_or_else(|| panic!("{slot} isn't a wheel::Widget"));
-        assert_eq!(w.slot(), slot);
+    // a click on a song's second row highlights that song; a right-click there opens its menu
+    let rr = row(&app, 3);
+    let press = |app: &mut App, b: MouseButton, x: u16, y: u16| {
+        app.pointer(MouseEvent { kind: MouseEventKind::Down(b), column: x, row: y, modifiers: KeyModifiers::NONE }, x as f64 + 0.5, false);
+        app.pointer(MouseEvent { kind: MouseEventKind::Up(b), column: x, row: y, modifiers: KeyModifiers::NONE }, x as f64 + 0.5, false);
+    };
+    press(&mut app, MouseButton::Left, rr.x + 20, rr.y + 1);
+    assert_eq!((app.queue_view.sel, app.focused()), (3, Some(Widget::Queue)));
+    draw(&mut app);
+    let rr = row(&app, 2);
+    press(&mut app, MouseButton::Right, rr.x + 20, rr.y + 1);
+    match app.popup.as_ref() {
+        Some(Popup::Menu(m)) => assert!(matches!(&m.target, Target::Queued { name, .. } if name == "Queued 2"), "{:?}", m.target),
+        _ => panic!("no menu"),
     }
+    app.popup = None;
+    // the wheel: one song a notch, the highlighted song always drawn, the list moving once it has to
+    app.queue_view.sel = 0;
+    let mut last = draw(&mut app);
+    let (x, y) = (r.x + r.width / 3, r.y + r.height / 2);
+    for n in 1..40 {
+        wheel(&mut app, MouseEventKind::ScrollDown, x, y, 1);
+        let now = draw(&mut app);
+        assert_eq!(app.queue_view.sel, n);
+        assert!(app.hits.iter().any(|(_, h)| *h == Hit::QueueRow(n)), "notch {n}: the highlighted song isn't drawn");
+        assert!(cells(&now, r) != cells(&last, r), "notch {n} moved nothing");
+        last = now;
+    }
+    assert_eq!(app.queue_view.top + app.queue_view.visible, 41, "at the end, the last song at the bottom");
+    wheel(&mut app, MouseEventKind::ScrollUp, x, y, 1);
+    assert!(cells(&draw(&mut app), r) != cells(&last, r), "a notch up moved nothing");
+    assert_eq!(app.queue_view.sel, 38);
+}
+
+/// Every Widget's name in a saved Design reads back as that Widget.
+#[test]
+fn every_widget_name_reads_back() {
     for &w in Widget::ALL {
-        assert_eq!(Widget::of(w.slot()), Some(w));
+        assert_eq!(Widget::of(w.name()), Some(w));
+    }
+}
+
+/// Search in the smallest Homes (owner, after #55; review of #79): the songs and the Shelves take turns under the chips.
+/// Notch by notch the wheel goes down the songs, on into the Shelves (several of them) to their end, and all the way
+/// back up to the first song; every notch moves something, and only one highlight is ever live.
+#[test]
+fn a_short_homes_search_wheels_through_the_songs_and_every_shelf_and_back() {
+    let (sw, sh) = crate::needs::smallest(Widget::Home);
+    for (w, h) in [(sw, sh), (40, sh), (40, sh + 1)] {
+        let mut app = app();
+        app.layout = Node::split(Axis::Vertical, Size::Cells(h), Node::split(Axis::Horizontal, Size::Cells(w), Node::pane(Widget::Home), Node::pane(Widget::Library)), Node::pane(Widget::Queue)).into();
+        search(&mut app, 0);
+        // songs whose names still tell them apart in a 12-column row
+        let s = app.searching_mut().unwrap();
+        let cards = |kind: &str| (0..30).map(|i| card(i, kind)).collect::<Vec<_>>();
+        let tracks = (0..30).map(|i| TrackRow { name: format!("S{i}"), ..row(i, "track") }).collect();
+        s.receive(SearchResults { query: "orbit".into(), top: cards("album"), tracks, artists: cards("artist"), albums: cards("album"), playlists: cards("playlist"), ..Default::default() });
+        render(&mut app);
+        let r = pane(&app, Widget::Home);
+        let inner = Rect::new(r.x + 1, r.y + 1, r.width - 2, r.height - 2);
+        // over the first result row
+        let (x, y) = (inner.x + 3, inner.y + 2);
+        let what = format!("{w}x{h} Home");
+        let one = |app: &App| app.searching().is_some_and(|s| !(s.track_sel.is_some() && s.shelves.sel.is_some()));
+        let songs = app.searching().unwrap().songs();
+        let mut last = render(&mut app);
+        let (mut down, mut shelves_seen) = (0, false);
+        loop {
+            wheel(&mut app, MouseEventKind::ScrollDown, x, y, 1);
+            let now = render(&mut app);
+            assert!(one(&app), "{what}: two highlights after notch {}", down + 1);
+            if cells(&now, inner) == cells(&last, inner) {
+                break;
+            }
+            shelves_seen |= app.searching().unwrap().track_sel.is_none();
+            down += 1;
+            last = now;
+            assert!(down < 200, "{what}: the wheel never stops");
+        }
+        // every song, then the Shelves (more than a notch of them: several Shelves of Cards under All)
+        assert!(shelves_seen && down > songs + 2, "{what}: {down} notches down\n{}", text(&last, inner));
+        let mut up = 0;
+        while app.searching().unwrap().track_sel != Some(0) {
+            wheel(&mut app, MouseEventKind::ScrollUp, x, y, 1);
+            let now = render(&mut app);
+            assert!(one(&app), "{what}: two highlights after notch {} up", up + 1);
+            assert!(cells(&now, inner) != cells(&last, inner), "{what}: notch {} up moved nothing\n{}", up + 1, text(&now, inner));
+            last = now;
+            up += 1;
+            assert!(up < 200, "{what}: the wheel never gets back to the first song");
+        }
     }
 }

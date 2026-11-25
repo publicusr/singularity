@@ -191,6 +191,10 @@ as its description. A change is written into the file (its comments kept) and ap
 shows on the page. The file is the one source of truth; the page is a view of it.
 _Avoid_: preferences, options, settings screen (the spec's old word)
 
+**Smallest size**:
+The smallest Pane (columns × rows, frame included) a Widget is still usable in; the black hole's is its shape rule. In a smaller Pane the Widget gives way to one dim, centred line, `needs 30 × 10` (down the Pane, a character a row, where it is too thin for it across; the shortest `30×10` where neither fits); a Pane too small even for that shows only its frame, the Widget's name in its title.
+_Avoid_: minimum size (that's the Pane's own, which the floor plan keeps), min dimensions
+
 **Mini-player**:
 What Singularity becomes in a terminal too small for any layout (under 50×14): title, controls and progress only.
 _Avoid_: compact mode, tiny mode
@@ -208,9 +212,10 @@ _Avoid_: sing-along view, karaoke mode
 
 **Big text**:
 Text drawn as an image on the pixel tier in the terminal's own font (found on the system; Noto Sans, bundled with the
-Client, for characters it lacks or when none is found), so a big lyrics or Karaoke Pane is filled with text sized to
-the Pane instead of terminal-sized text in its corner. One size per song and Pane; a song with characters no font has, a
-popup over the Pane, or the cell tier keeps terminal text.
+Client, for characters it lacks or when none is found), bigger than a terminal draws its cells. A big lyrics Pane draws
+its lines in it a step larger than the cells (up to 1.5×, growing with the Pane, the same look otherwise); a big Karaoke
+Pane fills itself with the line on stage, one size per song and Pane. A song with characters no font has, a popup over
+the Pane, or the cell tier keeps terminal text.
 _Avoid_: pixel font (the marquee's 3×5 blocks), big font
 
 **Word timing**:
@@ -243,7 +248,7 @@ A Pane whose Widget the user can swap, limited to the Visuals the current design
 _Avoid_: hero, container
 
 **Gravity well**:
-The Pane that holds the black hole in the Singularity design. Its frame sags toward the hole; content elsewhere never moves.
+The Pane that holds the black hole in the Singularity design. Its frame sags toward the hole; content elsewhere never moves. The black hole's picture, here or in any Pane, is at most 4:3: in a wider Pane it is letterboxed, centred, and the Pane keeps its outline (the hole never reshapes the columns).
 _Avoid_: hole pane, black hole widget
 
 **Idle mode**:
@@ -261,8 +266,14 @@ Gargantua, M87*, Quasar, Blazar, Face-on ember).
 _Avoid_: black hole theme, skin
 
 **Pane**:
-A rectangular region of the screen that holds exactly one Widget or view.
+A rectangular region of the screen that holds one Widget or view, or nothing while you rearrange (an empty Pane).
 _Avoid_: window, panel, split
+
+**Tray**:
+Where Widgets wait while you rearrange: a strip at the screen's edge, shown only in Arrange mode. A Widget dropped
+on it (or closed with `×`) leaves its Pane empty; dragged from it onto a Pane, it takes that Pane (swapping whatever
+was there into the Tray). Each Design keeps its Tray until you clear it; clearing removes what's in it (D87).
+_Avoid_: shelf (that's Home's row of Cards), limbo, dock, clipboard
 
 **Layout preset**:
 A named arrangement of Panes and the Widgets in them; each Design has one.
@@ -275,21 +286,35 @@ A layout you saved ("Save design as…") is a Design of your own: it remembers t
 _Avoid_: skin, mode, look (that's the Disk look)
 
 **Free tiling**:
-Rearranging a Design's Panes by hand: drag a Pane by its title (or use Move mode) to swap it, split another Pane
-with it, or give it a whole screen edge; close Panes and split new ones in (D66).
+Rearranging a Design by hand, in two separate kinds of edit: the *contents* (drag a Pane's title onto another Pane to
+swap their Widgets, or onto the Tray) and the *floor plan* (drag the line between two Panes, split a Pane, close one).
+A drag never changes the floor plan; nothing else moves while you drag (D87, replacing D66's live reflow).
 _Avoid_: edit mode, window manager
 
+**Required Widget**:
+A Widget every Design must give a Pane: only Home, the main Pane where every page opens. The library and the queue
+may go; without a Pane they open as popups from the palette (D87). Built-in Designs still have all four of D43.
+_Avoid_: core Widget, core four
+
+**Arrange mode**:
+The state in which Free tiling happens: the Tray shows, empty Panes say so, each Pane gets split and close buttons, and
+Done (once every required Widget has a Pane) or Esc ends it. Dragging a title enters it. "New design…" starts it from
+one empty Pane filling the screen, with the required Widgets waiting in the Tray (D87).
+_Avoid_: edit mode, layout mode, builder
+
+**Widget picker**:
+The list that chooses a Pane's Widget: Replace widget… (from the Pane's menu on a right-click, a click on the Widget's
+name or a key) or a split's new empty Pane. Type to filter, scroll like any list; Widgets not on screen first, those on
+screen dimmed below a line (picking one swaps the two Panes' Widgets). Each Widget appears once on screen (D87).
+_Avoid_: widget list, chooser
+
 **Drop zone**:
-Where a dragged Pane would land: another Pane's centre (swap), one of its edges (split), or a screen edge (the
-outermost column, or past the top or bottom of the Panes). Only zones that change the arrangement (not just sizes)
-and keep every Pane above its minimum size are offered; a split only where both halves stay comfortable (at least 24
-columns or 8 rows each), so a small Pane is a swap target. The zone under the pointer becomes the preview after a
-short pause on it (the dwell); a release drops on the zone the preview shows, and with none shown the Pane goes back
-(#21, for the owner to confirm: it used to drop on the zone under the pointer at once).
+Where a dragged Widget would land: another Pane (it swaps with what's there, or fills it if empty) or the Tray (D87;
+D66's edge and screen-edge zones are gone).
 _Avoid_: target, dock
 
 **Move mode**:
-The keyboard way to tile: arrows swap the focused Pane with a neighbour, Shift+arrows split it in beside one.
+The old keyboard way to tile (D66); gone, folded into Arrange mode's keys (D87, #43): `m` enters Arrange mode.
 _Avoid_: edit mode, layout mode
 
 **Design direction**:

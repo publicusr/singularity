@@ -269,7 +269,7 @@ audio, and looks spectacular.
 ### Layout (batch 7, D37) and macOS (batch 8, D38)
 85. As a user, I want to tile my Panes freely: drag a Pane by its title to swap it, split another with it or give it a
     screen edge (the layout reflows live; Esc cancels), close and split Panes (`×`, right-click a title, Ctrl+K), and do
-    the same from the keyboard (Move mode, `m`). No drop may leave a Pane under its minimum; Home, the library, the
+    the same from the keyboard (Move mode, `m`; since #43 Arrange mode's keys, below). No drop may leave a Pane under its minimum; Home, the library, the
     queue and lyrics can move but never close. **Built (D66, 2026-10-31):** reopened from the parked state (D59). An edit
     never overwrites a built-in Design: the first one asks for a name (Enter saves a Design of your own, Esc keeps one
     unnamed "<Design> (edited)"); a Design of your own saves itself as you edit; "Reset design" goes back to the
@@ -278,8 +278,8 @@ audio, and looks spectacular.
     while the others ease into place around a dashed "drop here" slot; on release it lands there (Esc: everything
     goes back). A drop that would only change sizes is no drop (it looked like one Pane "just extended 15%"); the
     screen's edges are the outermost columns and past the top or bottom of the Panes. Shift+arrows in Move mode
-    always move the Pane that way or say in the bar why not. Layout undo / redo: Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z),
-    `u` / `U` in Move mode, the bar's "undo" after an edit, and Ctrl+K → "Undo layout" / "Redo layout"; 50 steps per
+    always moved the Pane that way or said in the bar why not (Move mode is gone since #43). Layout undo / redo: Ctrl+Z,
+    Ctrl+Y (or Ctrl+Shift+Z), the bar's "undo" after an edit, and Ctrl+K → "Undo layout" / "Redo layout"; 50 steps per
     session, the Design files follow, and undoing the first edit of a built-in Design returns to it (its unnamed
     "(edited)" file goes again; a Design you named stays in the picker). **Smoother (owner round, 2026-11-01):**
     while anything moves the Client draws at `visuals.motion_fps` (30–240, default 120; frames on a steady grid,
@@ -287,6 +287,44 @@ audio, and looks spectacular.
     zone becomes the preview only after the pointer rests on it (~120 ms, sooner when it creeps), so a fast sweep
     leaves the layout be, and a release drops where the pointer is; a split is offered only where both halves stay
     comfortable (≥ 24 columns or ≥ 8 rows each): small Panes are swap targets, and ⇧arrows say so in the bar.
+    **Rethought (D87, ADR 0005, #40):** a drag only moves contents: dropped on another Pane the two Widgets swap (an
+    empty Pane is filled); when a drag starts Arrange mode the Panes make room for the Tray once, as it starts
+    (Q39, #69), and after that, while it is held, nothing moves but a highlight on the Pane under the pointer (at once,
+    "swap with …" / "put here") and a chip with the Widget's name by the pointer. The edge and screen-edge zones, the
+    live reflow, the dwell, the floating Pane and its springs, and Move mode's ⇧arrows are gone; every drop is
+    allowed. All edits go through Arrangement (the floor plan, which Widget is in which Pane, and the Tray).
+    **Arrange mode and the Tray (D87, #41):** a title drag, Ctrl+K → Arrange, the Pane menu's Arrange (it replaced
+    Move pane) or Esc in a split's picker start Arrange mode; Done or Esc end it once Home has a Pane ("Home still needs
+    a Pane"). The Tray sits under the player bar, which stays usable (Q39, #69: the Panes' area is the Tray's height
+    shorter while arranging, the floor plan's proportions and the saved Design unchanged), each Pane gets split and close buttons, a one-line
+    legend sits at the bottom. A Widget dropped on the Tray waits there (its Pane stays empty); from the Tray onto a
+    Pane it takes that Pane (its Widget goes into the Tray); `×` closes into the Tray; `×` on a Tray Widget and Clear
+    Tray remove Widgets (never Home). The Tray is saved per Design and covered by undo. **Naming (Q33, replaces the
+    first-edit prompt above):** an edit never asks: a built-in Design's edit is kept at once as "<Design> (edited)"
+    (the bar says "Kept as …" outside Arrange mode); Done asks for a name only if something changed while arranging;
+    Save design as… names one any time. **The keyboard in Arrange mode (D87, #43, replaces Move mode):** `m` enters
+    Arrange mode; arrows move the focus between Panes, Enter picks up the focused Widget (the same lit Pane and chip
+    as the mouse), arrows aim, Enter drops (swap, or fill an empty Pane), Esc puts it back; `t` to the Tray, `s` then
+    an arrow splits that way, `x` closes, `+` (or `=`) / `-` move the focused Pane's border left or right of it and
+    `]` / `[` the one above or below it, `w` opens "+ Widget"'s picker (Q71), Esc with nothing picked up is Done;
+    `m` does what Esc does (Q70: it puts a pick-up back, else it is Done).
+    The Tray by keyboard (owner, Q50): ↓ from a bottom Pane onto the Tray, ← → along it, `x` (or Delete,
+    Backspace) removes the focused Widget as its `×` does (never Home; the focus goes to the next one, else the one
+    before, else back to the Panes; the owner's re-test), Enter picks a Widget up,
+    ↑ aims into the Panes, Enter drops; a Pane's Widget aimed down at the Tray is set aside there (its chip shows in
+    the Tray's row, where it will go). While arranging the arrows, `s`, `w` and the size keys are Arrange mode's
+    (Q48); `move_pane` stays a name for `arrange` (Q51).
+    **New design… (D87, #42):** Ctrl+K → New design… starts Arrange mode from one empty Pane filling the screen, with
+    Home in the Tray; "+ Widget" on the Tray opens the Widget picker and puts the pick in the Tray (by keyboard: the
+    Tray's last focus stop, after its Widgets, there even when the Tray is empty; Enter opens the picker). Done (once Home has a
+    Pane) asks for a name and saves a Design of your own with the current Theme; nothing is written before that. Esc
+    before anything is placed goes back to the Design on screen, untouched; once something is placed, Ctrl+D on Done's
+    name prompt ("Enter save · Esc keep building · Ctrl+D discard it") or Ctrl+K → Discard new design (offered only
+    while one is built, owner Q78) throws the build away and goes back to it the same way, the Theme it had included,
+    and the bar says "New design discarded" (owner, after #42). A New design is saved only on Done (owner
+    Q61, 2026-11-24): quitting mid-build loses it, so spec #34's story 73 (empty Panes and the Tray saved, to come back
+    halfway) holds for a Design that has a name, not for an unnamed build. While it is built, Pick a design, Save
+    design as… and Reset design are left out of the palette.
 86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready. Started 2026-10-19 (D48),
     tickets #63–#70, parity rule D49; the light librespot Engine on both OSes (D52, #70).
 

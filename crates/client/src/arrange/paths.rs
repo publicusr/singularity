@@ -1,26 +1,28 @@
-//! Pointer paths (#21): whole gestures replayed the way a real hand makes them, with a test clock. Events arrive at
-//! their own times; frames come when the Client's pacer says they are due (`pace::Pacer`: the motion rate while
-//! something moves, input bringing a frame forward), and pointer moves between two frames are combined as the main
-//! loop combines them (`pace::Moves`), or not. Every frame is recorded (whether a Pane is held, the zone shown, whether
-//! the layout and the preview fit), and every path is checked for the same things: the layout always fits, what's
-//! dropped is what was previewed, the preview doesn't flicker, and nothing is left held once the button is up.
+//! Pointer paths (#21, retargeted for D87): whole gestures replayed the way a real hand makes them, with a test clock.
+//! Events arrive at their own times; frames come when the Client's pacer says they are due (`pace::Pacer`: the motion
+//! rate while something moves, input bringing a frame forward), and pointer moves between two frames are combined as
+//! the main loop combines them (`pace::Moves`), or not. Every frame is recorded (whether a Widget is held, the Pane
+//! highlighted, where every Pane is, whether the floor plan is valid), and every path is checked for the same things:
+//! the floor plan is always valid, nothing but the highlight and the chip changes while a Widget is held (every Pane's
+//! rectangle the same, frame after frame), the highlight is always the Pane under the pointer (no dwell), a release
+//! drops on the Pane under it (the one highlighted at release) by swapping the two Widgets and nothing else, and
+//! nothing is left held once the button is up.
 //!
-//! What replaying them found first (each is a test below that was red):
+//! What replaying them found under D66 (each was a test that was red; the behaviours stay covered):
 //! - a fling, an overshoot let go at once, a release over the top bar or the player, a release right after a resize:
-//!   the Pane landed where it was let go, a place the preview never showed (or a different one than it showed);
+//!   the Pane landed somewhere the preview never showed;
 //! - a release the Client never heard (let go over another window, the focus gone): the Pane stayed held for good and
 //!   swallowed every click; a divider stayed held too (and kept the Client at the motion frame rate);
-//! - a right click while holding a Pane dropped it on the spot, without its landing, though the left button was down;
+//! - a right click while holding a Pane dropped it on the spot, though the left button was down;
 //! - a divider flung past its limit at the well stopped where the last report that fitted left it, short of the limit;
-//! - after a resize mid-drag the preview kept a zone of the old window (found in review, once the replayer drew the
-//!   new window as the Client does).
-//!
-//! Not found: flicker. The dwell (120 ms, 40 ms creeping) and the sticky zone borders keep every preview up for at
-//! least 100 ms on every path tried, jitter included.
+//! - after a resize mid-drag the drop used a Pane of the old window.
 //!
 //! Not modelled: the terminal's pixel reports (`term::MouseUnits`; the Client gets cells either way) and the wheel.
 
 use super::*;
+use crate::layout::Node;
+use ratatui::crossterm::event::KeyModifiers;
+use crate::arrangement::outline;
 use crate::pace::{Moves, Pacer};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -55,36 +57,67 @@ struct Frame {
     /// ms after the start
     t: f64,
     held: bool,
-    zone: Option<Zone>,
-    /// whether the layout, and the preview if any, fit the window they are drawn in
+    /// the Pane highlighted, and the one under the pointer by the geometry (other than the held Widget's own)
+    over: Option<Spot>,
+    under: Option<Spot>,
+    /// where every Pane is drawn, and the size it is drawn at
+    rects: Vec<(PaneId, Rect)>,
+    body: Rect,
+    /// whether the floor plan is valid at the size it is drawn at
     fits: bool,
 }
 
+/// Where a release drops: a Pane, or the Tray.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Spot {
+    Pane(PaneId),
+    Tray,
+}
+
+impl Spot {
+    /// What a held Widget highlights.
+    fn of(t: &crate::arrange::TileDrag) -> Option<Spot> {
+        if t.tray { Some(Spot::Tray) } else { t.over.map(Spot::Pane) }
+    }
+}
+
+/// One hold that ended: the Arrangement before, how it ended (a release heard at a cell, and the Pane under that
+/// cell other than the held one's own, by the geometry; or not a release), the Pane held, and the Arrangement after.
+struct Drop {
+    before: Arrangement,
+    released: Option<Option<Spot>>,
+    /// the highlight as the release found it, if the release came on the cell of the last move
+    shown: Option<Option<Spot>>,
+    held: PaneId,
+    /// the Widget, when it was picked up from the Tray (no Pane of its own: `held` is `PaneId::UNSET`)
+    from_tray: Option<Widget>,
+    after: Arrangement,
+}
+
 /// Where the Panes go in a window of this size (under the top bar, over the player and the hints).
-fn body((w, h): (u16, u16)) -> Rect {
-    Rect::new(0, 1, w, h.saturating_sub(5))
+fn body((w, h): (u16, u16), arranging: bool) -> Rect {
+    crate::ui::rows(Rect::new(0, 0, w, h), arranging)[1]
 }
 
 /// A Client being played a path: the App, the test clock, the frame pacer and what each frame showed.
 struct Replay {
     a: App,
-    /// the test clock's zero: far ahead of the real one, so the frame's own `Instant::now()` (the UI settles the held
-    /// Pane at it) never counts as time that passed
+    /// the test clock's zero
     t0: Instant,
     combine: bool,
     size: (u16, u16),
     frames: Vec<Frame>,
-    /// draw every frame (slow: Panes in motion are drawn), else only when the window or the layout changed
+    /// draw every frame, else only when the window or the layout changed
     draw: bool,
     /// the layout last drawn
-    drawn: Option<Node>,
-    /// for every hold that ended: the layout before, what the preview showed then (None: nothing, or the hold ended
-    /// some other way than a release) and the layout after
-    drops: Vec<(Node, Option<Node>, Node)>,
+    drawn: Option<Arrangement>,
+    drops: Vec<Drop>,
     /// the layout before the path
-    start: Node,
+    start: Arrangement,
     /// the divider a press grabbed
     divider: Option<usize>,
+    /// the last cell the pointer was reported at with the button down
+    last_drag: Option<(u16, u16)>,
     moves: Moves,
     pacer: Pacer,
 }
@@ -94,12 +127,11 @@ impl Replay {
     fn new(design: usize, fps: u64, combine: bool) -> Replay {
         let mut a = App::new(None);
         a.set_design(design);
-        a.motion.on = true;
         a.config.visuals.motion_fps = fps as _;
         let t0 = Instant::now() + Duration::from_secs(3600);
-        let mut r = Replay { a, t0, combine, size: (W, H), frames: vec![], draw: false, drawn: None, drops: vec![], start: Node::Slot(String::new()), divider: None, moves: Moves::default(), pacer: Pacer::new(t0) };
+        let start = a.layout.clone();
+        let mut r = Replay { a, t0, combine, size: (W, H), frames: vec![], draw: false, drawn: None, drops: vec![], start, divider: None, last_drag: None, moves: Moves::default(), pacer: Pacer::new(t0) };
         r.render();
-        r.start = r.a.layout.clone();
         r
     }
 
@@ -117,24 +149,38 @@ impl Replay {
         self.drawn = Some(self.a.layout.clone());
     }
 
-    /// A frame due at `due`: the move that waited for it, then the held Pane settles on the frame's clock, and it is
-    /// drawn (the springs and the lift take the time since the last frame).
-    fn frame(&mut self, due: Instant, since: Duration) {
+    /// What is under (x, y) by the geometry alone: a Pane other than `own`, or the Tray (Arrange mode's strip under
+    /// the player bar).
+    fn under(&self, x: u16, y: u16, own: PaneId) -> Option<Spot> {
+        let t = self.a.tray_rect();
+        if self.a.arranging.is_some() && own != PaneId::UNSET && x < t.right() && y >= t.y && y < t.bottom() {
+            return Some(Spot::Tray);
+        }
+        let c = self.a.layout.compute(self.a.pane_area());
+        c.panes.iter().find(|(_, r)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom()).map(|(p, _)| p.id).filter(|p| *p != own).map(Spot::Pane)
+    }
+
+    /// A frame due at `due`: the move that waited for it, then it is drawn.
+    fn frame(&mut self, due: Instant) {
         if let Some((at, ev)) = self.moves.flush() {
             self.handle(at, ev);
         }
-        self.a.tile_settle(due);
-        self.a.motion.skip(since);
-        if self.draw || self.a.pane_area() != body(self.size) || self.drawn.as_ref() != Some(&self.a.layout) {
+        if self.draw || self.a.pane_area() != body(self.size, self.a.arranging.is_some()) || self.drawn.as_ref() != Some(&self.a.layout) {
             self.render();
         }
-        let (area, aspect) = (self.a.pane_area(), self.a.cell_aspect());
-        let t = self.a.tile.as_ref();
-        let fits = self.a.layout.valid(area, aspect) && t.and_then(|t| t.preview.as_ref()).is_none_or(|p| p.valid(area, aspect));
+        let area = self.a.pane_area();
+        let fits = self.a.layout.fits(area);
+        // drawn this frame: the Panes' own hit boxes say where; else where the layout puts them
+        let mut rects: Vec<(PaneId, Rect)> = if self.draw {
+            self.a.hits.iter().filter_map(|(r, h)| if let Hit::Focus(p) = h { Some((*p, *r)) } else { None }).collect()
+        } else {
+            self.a.layout.compute(area).panes.into_iter().map(|(p, r)| (p.id, r)).collect()
+        };
+        rects.sort_by_key(|(p, _)| *p);
+        let t = self.a.tile.as_ref().filter(|t| t.live);
+        let under = t.and_then(|t| self.under(t.at.0, t.at.1, t.pane.id));
         let ms = self.ms(due);
-        // a screen edge's share follows the window's size: the same edge, whatever its share, is the same zone to the eye
-        let zone = t.and_then(|t| t.zone.clone()).map(|z| if let Zone::Edge(s, _) = z { Zone::Edge(s, 0.0) } else { z });
-        self.frames.push(Frame { t: ms, held: t.is_some_and(|t| t.live), zone, fits });
+        self.frames.push(Frame { t: ms, held: t.is_some(), over: t.and_then(Spot::of), under, rects, body: area, fits });
     }
 
     /// Frames up to `until`, each when the pacer says it is due.
@@ -145,30 +191,37 @@ impl Replay {
             if due > until {
                 return;
             }
-            let last = self.frames.last().map_or(self.t0, |f| self.at(f.t));
-            self.frame(due, due.saturating_duration_since(last));
+            self.frame(due);
             self.pacer.begin(due, due, fps);
         }
     }
 
-    /// One event handled, as `main.rs`'s `handle` does; a hold it ends is recorded with what was shown.
+    /// One event handled, as `main.rs`'s `handle` does; a hold it ends is recorded with how it ended.
     fn handle(&mut self, at: Instant, ev: Event) {
         self.a.input_at = Some(at);
-        let held = self.a.tile.as_ref().filter(|t| t.live).map(|t| t.preview.clone());
+        let held = self.a.tile.as_ref().filter(|t| t.live).map(|t| (t.pane.id, Spot::of(t), t.pane.widget.filter(|_| t.from_tray)));
         let before = self.a.layout.clone();
         match ev {
             Event::Mouse(m) => {
+                let up = m.kind == MouseEventKind::Up(MouseButton::Left);
+                let released = held.filter(|_| up).map(|(own, ..)| self.under(m.column, m.row, own));
+                let shown = held.filter(|_| up && self.last_drag == Some((m.column, m.row))).map(|(_, over, _)| over);
+                if m.kind == MouseEventKind::Drag(MouseButton::Left) {
+                    self.last_drag = Some((m.column, m.row));
+                }
                 self.a.mouse(m);
                 if let (MouseEventKind::Down(MouseButton::Left), Some(Hit::Divider(i))) = (m.kind, &self.a.drag) {
                     self.divider = Some(*i);
                 }
-                if let Some(shown) = held.filter(|_| self.a.tile.is_none()) {
-                    let shown = if m.kind == MouseEventKind::Up(MouseButton::Left) { shown } else { None };
-                    self.drops.push((before, shown, self.a.layout.clone()));
+                if let Some((own, _, from_tray)) = held.filter(|_| self.a.tile.is_none()) {
+                    self.drops.push(Drop { before, released, shown, held: own, from_tray, after: self.a.layout.clone() });
                 }
             }
             Event::FocusLost => self.a.pointer_gone(),
-            Event::Resize(..) => self.a.pointer_gone(),
+            Event::Resize(w, h) => {
+                self.a.pointer_gone();
+                self.a.window_resized(w, h);
+            }
             _ => {}
         }
         self.a.input_at = None;
@@ -211,64 +264,63 @@ impl Replay {
         }
         let end = path.last().map_or(0.0, |p| p.0) + after;
         self.frames_until(self.at(end));
-        // whatever was still landing is down (the first frame takes the skipped time, the second sees it rest)
-        self.a.motion.skip(motion::SETTLE);
-        self.render();
         self.render();
     }
 
     /// The Pane's rectangle in the layout as it stands.
-    fn rect(&self, slot: &str) -> Rect {
-        self.a.layout.compute_shaped(self.a.pane_area(), self.a.cell_aspect()).slots.into_iter().find(|(s, _)| s == slot).map(|(_, r)| r).unwrap_or_else(|| panic!("no {slot}"))
+    fn rect(&self, w: Widget) -> Rect {
+        self.a.layout.compute(self.a.pane_area()).rect_of(w).unwrap_or_else(|| panic!("no {w}"))
     }
 
     /// A spot on the Pane's title bar to grab it by.
-    fn title(&self, slot: &str) -> (u16, u16) {
-        let r = self.rect(slot);
+    fn title(&self, w: Widget) -> (u16, u16) {
+        let r = self.rect(w);
         (r.x + 3, r.y)
     }
 
     /// Every check that holds on every path. `what` names the path in a failure.
     fn check(&self, what: &str) {
-        let (area, aspect) = (self.a.pane_area(), self.a.cell_aspect());
-        assert!(self.a.layout.valid(area, aspect), "{what}: the layout doesn't fit: {:?}", self.a.layout);
+        let area = self.a.pane_area();
+        assert!(self.a.layout.fits(area), "{what}: the floor plan isn't valid: {:?}", self.a.layout);
         // nothing is left held once the button is up (every path ends with it up)
-        assert!(self.a.tile.is_none(), "{what}: a Pane is still held");
+        assert!(self.a.tile.is_none(), "{what}: a Widget is still held");
         assert!(self.a.drag.is_none() && self.a.divider_from.is_none(), "{what}: a divider is still held");
         assert!(!self.a.moving_now(), "{what}: still moving after the path");
-        // what's dropped is what was previewed (nothing previewed, or a hold ended without a release: nothing changes)
-        for (i, (before, preview, after)) in self.drops.iter().enumerate() {
-            assert_eq!(after, preview.as_ref().unwrap_or(before), "{what}: drop {i} landed somewhere other than its preview");
-        }
-        // the layout (a divider's too, as it is dragged) and every preview fit, frame by frame
-        for f in &self.frames {
-            assert!(f.fits, "{what}: a layout or preview that doesn't fit the window at {:.0} ms", f.t);
-        }
-        // no flicker: a preview never comes back to the one it left within a person's reaction time
-        let shown: Vec<(f64, Option<Zone>)> = self.frames.iter().filter(|f| f.held).fold(vec![], |mut v: Vec<(f64, Option<Zone>)>, f| {
-            if v.last().is_none_or(|l| l.1 != f.zone) {
-                v.push((f.t, f.zone.clone()));
+        // a release drops on the Pane under it, which is the one highlighted at release: the two Widgets swap and the
+        // floor plan stays; a hold that ended any other way (Esc, unheard, on its own Pane, off the Panes) changes nothing
+        for (i, d) in self.drops.iter().enumerate() {
+            let want = match (d.released, d.from_tray) {
+                // from the Tray onto a Pane: it takes the Pane, whose Widget waits in its place
+                (Some(Some(Spot::Pane(to))), Some(w)) => d.before.out_of_tray(w, to).unwrap_or_else(|e| panic!("{what}: drop {i} refused: {e:?}")),
+                (_, Some(_)) => d.before.clone(),
+                (Some(Some(Spot::Pane(to))), None) => d.before.swap(d.held, to).unwrap_or_else(|e| panic!("{what}: drop {i} refused: {e:?}")),
+                (Some(Some(Spot::Tray)), None) => d.before.to_tray(d.held).unwrap_or_else(|e| panic!("{what}: drop {i} refused: {e:?}")),
+                _ => d.before.clone(),
+            };
+            assert_eq!(d.after, want, "{what}: drop {i} landed somewhere other than the Pane under the release");
+            assert_eq!(outline(d.after.plan()), outline(d.before.plan()), "{what}: drop {i} changed the floor plan");
+            if let (Some(shown), Some(to)) = (d.shown, d.released) {
+                assert_eq!(shown, to, "{what}: drop {i} went to another Pane than the one highlighted");
             }
-            v
-        });
-        for w in shown.windows(3) {
-            assert!(!(w[0].1 == w[2].1 && w[2].0 - w[1].0 < FOLLOW), "{what}: the preview flickered {:?} → {:?} → back within {:.0} ms", w[0].1, w[1].1, w[2].0 - w[1].0);
         }
-        // …and no zone is shown for less than a dwell's shortest, however many it passes
-        for w in shown.windows(2) {
-            assert!(w[1].0 - w[0].0 >= QUICK_DWELL.as_secs_f64() * 1000.0 - 1.0 || w[0].1.is_none(), "{what}: {:?} shown for only {:.0} ms", w[0].1, w[1].0 - w[0].0);
+        for f in &self.frames {
+            assert!(f.fits, "{what}: the floor plan isn't valid at {:.0} ms", f.t);
+            // no dwell, no lag: the highlight is the Pane under the pointer, every frame
+            assert_eq!(f.over, f.under, "{what}: at {:.0} ms the highlight isn't the Pane under the pointer", f.t);
+        }
+        // while a Widget is held nothing else moves: every Pane where it was the frame before (at the same window size)
+        for w in self.frames.windows(2) {
+            if w[0].held && w[1].held && w[0].body == w[1].body {
+                assert_eq!(w[0].rects, w[1].rects, "{what}: a Pane moved at {:.0} ms during a drag", w[1].t);
+            }
         }
     }
 
-    /// How often the shown zone changed while a Pane was held.
+    /// How often the highlight changed while a Widget was held.
     fn changes(&self) -> usize {
-        self.frames.windows(2).filter(|w| w[1].held && w[0].held && w[0].zone != w[1].zone).count()
+        self.frames.windows(2).filter(|w| w[1].held && w[0].held && w[0].over != w[1].over).count()
     }
 }
-
-/// A preview a person can follow: one gone again sooner than this is flicker. (The dwell makes 100–150 ms the
-/// shortest a random hand gets: a zone it rested in for a dwell and then left.)
-const FOLLOW: f64 = 100.0;
 
 // ── hands ─────────────────────────────────────────────────────────────
 
@@ -427,23 +479,29 @@ const RIGS: [(u64, bool); 3] = [(60, true), (144, true), (60, false)];
 
 /// The Pane a path picks up in `layout`: the stream if there is one, else the first that isn't the queue, the
 /// library or Home.
-fn held_in(layout: &Node) -> String {
-    let names = layout.slot_names();
-    if names.iter().any(|s| s == "stream") { "stream".into() } else { names.into_iter().find(|s| !["queue", "library", "home"].contains(&s.as_str())).unwrap() }
+fn held_in(layout: &Node) -> Widget {
+    let names = layout.widgets();
+    if names.contains(&Widget::Stream) { Widget::Stream } else { names.into_iter().find(|s| ![Widget::Queue, Widget::Library, Widget::Home].contains(s)).unwrap() }
 }
 /// The Pane a path picks up now.
-fn held(r: &Replay) -> String {
+fn held(r: &Replay) -> Widget {
     held_in(&r.a.layout)
 }
 
 /// `shape` played on every Design with a mouse and a trackpad, at every frame rate and with moves combined or not,
 /// each checked; the replays come back for what a test checks on top.
 fn every_way(name: &str, shape: impl Fn(&Replay, &mut Hand)) -> Vec<(String, Replay)> {
+    every_way_from(name, |_| {}, shape)
+}
+
+/// `every_way`, from a start `setup` makes (the Design on screen before the path).
+fn every_way_from(name: &str, setup: impl Fn(&mut Replay), shape: impl Fn(&Replay, &mut Hand)) -> Vec<(String, Replay)> {
     let mut out = vec![];
     for (design, d) in DESIGNS.iter().enumerate() {
         for (dev, kind) in [(MOUSE, "mouse"), (TRACKPAD, "trackpad")] {
             for (seed, &(fps, combine)) in RIGS.iter().enumerate() {
                 let mut r = Replay::new(design, fps, combine);
+                setup(&mut r);
                 let mut h = Hand::new(dev, seed as u64 + 1, 10.0);
                 shape(&r, &mut h);
                 let path = h.done();
@@ -457,33 +515,83 @@ fn every_way(name: &str, shape: impl Fn(&Replay, &mut Hand)) -> Vec<(String, Rep
     out
 }
 
-/// What dropping the held Pane on `zone` makes of the layout the path started from.
-fn dropped_on(r: &Replay, zone: Zone) -> Node {
-    r.start.moved(&held_in(&r.start), &zone).unwrap()
+/// The layout the path started from with the held Widget and `w` swapped.
+fn swapped_with(r: &Replay, w: Widget) -> Arrangement {
+    let s = &r.start;
+    s.swap(pid(s, held_in(s)), pid(s, w)).unwrap()
+}
+
+/// The Pane showing `w` in `n`.
+fn pid(n: &Node, w: Widget) -> PaneId {
+    n.pane_of(w).unwrap_or_else(|| panic!("no Pane shows {w}"))
+}
+
+/// Arrange mode on, with the Widget a path would hold waiting in the Tray (its Pane left empty).
+fn from_the_tray(r: &mut Replay) {
+    let w = held(r);
+    r.a.enter_arrange();
+    r.a.layout = r.a.layout.to_tray(pid(&r.a.layout, w)).unwrap();
+    r.start = r.a.layout.clone();
+    r.render();
+}
+
+/// Where the chip of the Widget waiting in the Tray was drawn.
+fn tray_chip(r: &Replay) -> (f64, f64) {
+    let rect = r.a.hits.iter().find_map(|(rect, h)| matches!(h, Hit::TrayItem(_)).then_some(*rect)).expect("a chip in the Tray");
+    (rect.x as f64 + rect.width as f64 / 2.0, rect.y as f64)
 }
 
 #[test]
-fn a_fast_fling_across_panes_shows_nothing_and_puts_the_pane_back() {
+fn a_widget_dragged_from_the_tray_lands_on_the_pane_under_the_release() {
+    // onto an occupied Pane (its Widget goes into the Tray), onto its own empty Pane (it fills it), and back onto the
+    // Tray (nothing changes)
+    for target in ["occupied", "empty", "tray"] {
+        for (what, r) in every_way_from(&format!("from the Tray onto {target}"), from_the_tray, |r, h| {
+            let (x, y) = tray_chip(r);
+            let to = match target {
+                "occupied" => centre(r.rect(Widget::Home)),
+                "empty" => {
+                    let empty = r.a.layout.panes().into_iter().find(|p| p.widget.is_none()).unwrap().id;
+                    let rect = r.a.layout.compute(r.a.pane_area()).rect(empty).unwrap();
+                    centre(rect)
+                }
+                _ => (x + 30.0, y),
+            };
+            h.press(x as u16, y as u16).glide(to.0, to.1, 250.0).rest(60.0).release();
+        }) {
+            let w = r.start.tray()[0];
+            match target {
+                "occupied" => assert!(r.a.layout.pane_of(w).is_some() && r.a.layout.tray() == [Widget::Home], "{what}: {:?}", r.a.layout),
+                "empty" => assert!(r.a.layout.pane_of(w).is_some() && r.a.layout.tray().is_empty(), "{what}"),
+                _ => assert_eq!(r.a.layout, r.start, "{what}: nothing changes"),
+            }
+        }
+    }
+}
+
+#[test]
+fn a_fast_fling_across_panes_highlights_each_at_once_and_drops_where_it_is_let_go() {
     for (what, r) in every_way("fling", |r, h| {
         let me = held(r);
-        let (x, y) = r.title(&me);
+        let (x, y) = r.title(me);
         h.press(x, y);
-        for s in r.a.layout.slot_names().iter().filter(|s| **s != me) {
+        for s in r.a.layout.widgets().into_iter().filter(|s| *s != me) {
             let c = centre(r.rect(s));
             h.glide(c.0, c.1, 50.0);
         }
         h.release();
     }) {
-        assert_eq!(r.changes(), 0, "{what}: a preview while flinging");
-        assert_eq!(r.a.layout, r.start, "{what}: nothing was shown, so nothing moved");
+        assert!(r.changes() >= 2, "{what}: the highlight followed the pointer across the Panes");
+        let last = *r.start.widgets().iter().rfind(|s| **s != held_in(&r.start)).unwrap();
+        assert_eq!(r.a.layout, swapped_with(&r, last), "{what}");
     }
 }
 
 #[test]
-fn a_slow_creep_into_a_pane_shows_it_and_drops_there() {
+fn a_slow_creep_into_a_pane_drops_there() {
     for (what, r) in every_way("creep", |r, h| {
-        let (x, y) = r.title(&held(r));
-        let q = r.rect("queue");
+        let (x, y) = r.title(held(r));
+        let q = r.rect(Widget::Queue);
         let (qx, qy) = centre(q);
         h.press(x, y).glide(q.x as f64 - 6.0, qy, 150.0);
         let mut cx = q.x as f64 - 6.0;
@@ -493,65 +601,59 @@ fn a_slow_creep_into_a_pane_shows_it_and_drops_there() {
         }
         h.rest(60.0).release();
     }) {
-        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap("queue".into())), "{what}");
+        assert_eq!(r.a.layout, swapped_with(&r, Widget::Queue), "{what}");
     }
 }
 
 #[test]
-fn jitter_on_a_border_between_two_zones_does_not_flicker() {
-    // on the border between the queue's left band and its centre, and on the border between two Panes
-    for (name, band) in [("jitter on a band", true), ("jitter on a border", false)] {
-        for (what, r) in every_way(name, |r, h| {
-            let (x, y) = r.title(&held(r));
-            let q = r.rect("queue");
+fn jitter_on_the_border_between_two_panes_drops_on_the_one_under_the_release() {
+    // on the border between two Panes and well inside one: the release's own cell decides (the checks)
+    for (name, inside) in [("jitter on a border", false), ("jitter inside", true)] {
+        every_way(name, |r, h| {
+            let (x, y) = r.title(held(r));
+            let q = r.rect(Widget::Queue);
             let qy = centre(q).1;
-            let at = if band { q.x as f64 + (q.width as f64 * 0.2).round() } else { q.x as f64 };
-            h.press(x, y).glide(at, qy, 200.0).jitter(if band { 2.0 } else { -3.0 }, 0.0, 10, 30.0).rest(60.0).release();
-        }) {
-            assert!(r.changes() <= 2, "{what}: the preview changed {} times", r.changes());
-        }
+            let at = if inside { q.x as f64 + (q.width as f64 * 0.2).round() } else { q.x as f64 };
+            h.press(x, y).glide(at, qy, 200.0).jitter(if inside { 2.0 } else { -3.0 }, 0.0, 10, 30.0).rest(60.0).release();
+        });
     }
 }
 
 #[test]
 fn overshooting_a_pane_and_coming_back_drops_on_it() {
-    every_way("overshoot, let go at once", |r, h| {
-        let (x, y) = r.title(&held(r));
-        let (qx, qy) = centre(r.rect("queue"));
-        h.press(x, y).glide(qx + 30.0, qy + 4.0, 160.0).glide(qx, qy, 120.0).rest(20.0).release();
-    });
-    for (what, r) in every_way("overshoot and rest", |r, h| {
-        let (x, y) = r.title(&held(r));
-        let (qx, qy) = centre(r.rect("queue"));
-        h.press(x, y).glide(qx + 30.0, qy + 4.0, 160.0).glide(qx, qy, 120.0).rest(250.0).release();
-    }) {
-        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap("queue".into())), "{what}");
+    for rest in [20.0, 250.0] {
+        for (what, r) in every_way(&format!("overshoot, rest {rest} ms"), |r, h| {
+            let (x, y) = r.title(held(r));
+            let (qx, qy) = centre(r.rect(Widget::Queue));
+            h.press(x, y).glide(qx + 30.0, qy + 4.0, 160.0).glide(qx, qy, 120.0).rest(rest).release();
+        }) {
+            assert_eq!(r.a.layout, swapped_with(&r, Widget::Queue), "{what}");
+        }
     }
 }
 
 #[test]
 fn a_pause_on_one_pane_then_going_on_to_another_drops_on_the_second() {
     for (what, r) in every_way("pause, then on", |r, h| {
-        let (x, y) = r.title(&held(r));
-        let (qx, qy) = centre(r.rect("queue"));
-        let lib = centre(r.rect("library"));
+        let (x, y) = r.title(held(r));
+        let (qx, qy) = centre(r.rect(Widget::Queue));
+        let lib = centre(r.rect(Widget::Library));
         h.press(x, y).glide(qx, qy, 200.0).rest(300.0).glide(lib.0, lib.1, 250.0).rest(200.0).release();
     }) {
-        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap("library".into())), "{what}");
-        assert!(r.changes() <= 3, "{what}: {} changes for two pauses", r.changes());
+        assert_eq!(r.a.layout, swapped_with(&r, Widget::Library), "{what}");
     }
 }
 
 /// Picked up, rested on the queue, then out of the window to the right.
 fn out_of_the_window(r: &Replay, h: &mut Hand) {
-    let (x, y) = r.title(&held(r));
-    let (qx, qy) = centre(r.rect("queue"));
+    let (x, y) = r.title(held(r));
+    let (qx, qy) = centre(r.rect(Widget::Queue));
     h.press(x, y).glide(qx, qy, 200.0).rest(200.0).glide(W as f64 + 20.0, qy, 120.0);
 }
 
 #[test]
-fn letting_go_outside_the_window_drops_what_was_shown() {
-    // the terminal reports the release at its edge
+fn letting_go_outside_the_window_drops_on_the_pane_at_its_edge() {
+    // the terminal reports the release at its edge: whatever Pane is there (the checks)
     every_way("let go outside the window", |r, h| {
         out_of_the_window(r, h);
         h.rest(150.0).release();
@@ -559,58 +661,57 @@ fn letting_go_outside_the_window_drops_what_was_shown() {
 }
 
 #[test]
-fn a_release_the_client_never_heard_puts_the_pane_back() {
+fn a_release_the_client_never_heard_changes_nothing() {
     // the release went to another window: the next we hear is the pointer moving with no button down
     for (what, r) in every_way("released unheard", |r, h| {
         out_of_the_window(r, h);
         h.then(300.0, Ev::Hover(W - 1, 20)).then(20.0, Ev::Hover(W - 5, 21));
     }) {
-        assert_eq!(r.a.layout, r.start, "{what}: put back where it was");
+        assert_eq!(r.a.layout, r.start, "{what}: nothing moved");
     }
     // another app took the focus mid-drag
     every_way("focus lost", |r, h| {
         out_of_the_window(r, h);
         h.then(5.0, Ev::FocusLost).then(400.0, Ev::Hover(5, 5));
     });
-    // …or the next thing is a fresh press: the Pane goes back and the press is a press
+    // …or the next thing is a fresh press: the drag is over and the press is a press
     for (what, r) in every_way("pressed again", |r, h| {
         out_of_the_window(r, h);
-        let (lx, ly) = r.title("library");
+        let (lx, ly) = r.title(Widget::Library);
         h.then(300.0, Ev::Press(lx, ly)).then(30.0, Ev::Release(lx, ly));
     }) {
-        assert_eq!(r.a.layout, r.start, "{what}: put back where it was");
-        assert_eq!(r.a.focus, "library", "{what}: the press clicked the library's title");
+        assert_eq!(r.a.layout, r.start, "{what}: nothing moved");
+        assert_eq!(r.a.focused(), Some(Widget::Library), "{what}: the press clicked the library's title");
     }
 }
 
 #[test]
-fn letting_go_over_the_top_bar_or_the_player_drops_what_was_shown() {
-    for top in [true, false] {
-        let y_out = if top { 0.0 } else { H as f64 - 2.0 };
-        // from the queue straight out and let go: the queue was shown, so the queue it is
-        for (what, r) in every_way(if top { "let go over the top bar" } else { "let go over the player" }, |r, h| {
-            let (x, y) = r.title(&held(r));
-            let (qx, qy) = centre(r.rect("queue"));
-            let hx = centre(r.rect("home")).0;
+fn letting_go_over_the_top_bar_changes_nothing_and_over_the_tray_sets_it_aside() {
+    for (y_out, name) in [(0.0, "the top bar"), (H as f64 - 3.0, "the Tray")] {
+        for (what, r) in every_way(&format!("let go over {name}"), |r, h| {
+            let (x, y) = r.title(held(r));
+            let (qx, qy) = centre(r.rect(Widget::Queue));
+            let hx = centre(r.rect(Widget::Home)).0;
             h.press(x, y).glide(qx, qy, 200.0).rest(200.0).glide(hx, y_out, 150.0).rest(20.0).release();
         }) {
-            assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap("queue".into())), "{what}");
+            // (Arrange mode began with the drag, so the Tray is under the player bar)
+            match name {
+                "the Tray" => {
+                    let w = r.start.widget_in(r.drops[0].held).unwrap();
+                    assert_eq!(r.a.layout.tray(), [w], "{what}: it waits in the Tray");
+                    assert_eq!(r.a.layout.widget_in(r.drops[0].held), None, "{what}: its Pane is left empty");
+                }
+                _ => assert_eq!(r.a.layout, r.start, "{what}: no Pane there, no drop"),
+            }
         }
-        // resting there: whatever it shows (a whole row at that edge, or the Pane next to it, whose zone holds on
-        // for a row) is the drop
-        every_way(if top { "rest over the top bar" } else { "rest over the player" }, |r, h| {
-            let (x, y) = r.title(&held(r));
-            let hx = centre(r.rect("home")).0;
-            h.press(x, y).glide(hx, y_out, 200.0).rest(250.0).release();
-        });
     }
 }
 
 #[test]
-fn a_resize_mid_drag_keeps_every_preview_and_the_drop_in_the_new_window() {
+fn a_resize_mid_drag_drops_on_a_pane_of_the_new_window() {
     let grab = |r: &Replay, h: &mut Hand| {
-        let (x, y) = r.title(&held(r));
-        let (qx, qy) = centre(r.rect("queue"));
+        let (x, y) = r.title(held(r));
+        let (qx, qy) = centre(r.rect(Widget::Queue));
         h.press(x, y).glide(qx, qy, 200.0).rest(200.0).then(5.0, Ev::Resize(100, 30));
         *h = std::mem::replace(h, Hand::new(MOUSE, 0, 0.0)).within(100, 30);
         h.at = (qx.min(90.0), qy.min(25.0));
@@ -624,31 +725,32 @@ fn a_resize_mid_drag_keeps_every_preview_and_the_drop_in_the_new_window() {
         let (x, y) = (h.at.0 as u16, h.at.1 as u16);
         h.then(20.0, Ev::Release(x, y));
     });
-    // resting on a spot inside both windows, then the window shrinks and it's let go at once: what drops is the zone
-    // under the pointer in the new window (or nothing), never the one the old window had there
-    for (x, y) in [(20u16, 8u16), (40, 15), (60, 20), (80, 10), (30, 22), (85, 24)] {
-        for (what, r) in every_way(&format!("rest at {x},{y}, resized, let go"), |r, h| {
-            let (tx, ty) = r.title(&held(r));
-            h.press(tx, ty).glide(x as f64, y as f64, 200.0).rest(250.0).then(1.0, Ev::Drag(x, y)).then(5.0, Ev::Resize(100, 30)).then(20.0, Ev::Release(x, y));
+    // resting on a spot inside both windows, then the window shrinks and it's let go at once: what drops is the Pane
+    // under the pointer in the new window, never the one the old window had there
+    // (the release 20 ms after the resize, or in the same batch of input: before any frame is drawn at the new size)
+    for ((x, y), gap) in [(20u16, 8u16), (40, 15), (60, 20), (80, 10), (30, 22), (85, 24)].into_iter().flat_map(|p| [(p, 20.0), (p, 0.0)]) {
+        for (what, r) in every_way(&format!("rest at {x},{y}, resized, let go {gap} ms later"), |r, h| {
+            let (tx, ty) = r.title(held(r));
+            h.press(tx, ty).glide(x as f64, y as f64, 200.0).rest(250.0).then(1.0, Ev::Drag(x, y)).then(5.0, Ev::Resize(100, 30)).then(gap, Ev::Release(x, y));
         }) {
-            let me = held_in(&r.start);
-            let (area, aspect) = (r.a.pane_area(), r.a.cell_aspect());
-            let here = crate::tiling::zone_at(&r.start.compute_shaped(area, aspect).slots, area, &me, x, y);
-            let new = here.and_then(|z| r.start.moved(&me, &z));
-            assert!(r.a.layout == r.start || Some(&r.a.layout) == new.as_ref(), "{what}: dropped on a zone of the old window");
+            let me = pid(&r.start, held_in(&r.start));
+            let area = r.a.pane_area();
+            let here = r.start.compute(area).panes.into_iter().find(|(_, q)| x >= q.x && x < q.right() && y >= q.y && y < q.bottom()).map(|(p, _)| p.id).filter(|p| *p != me);
+            let new = here.map(|p| r.start.swap(me, p).unwrap());
+            assert!(r.a.layout == r.start || Some(&r.a.layout) == new.as_ref(), "{what}: dropped on a Pane of the old window");
         }
     }
 }
 
 #[test]
-fn a_right_click_mid_drag_does_not_drop_the_pane() {
+fn a_right_click_mid_drag_does_not_drop_the_widget() {
     for (what, r) in every_way("right click", |r, h| {
-        let (x, y) = r.title(&held(r));
-        let (qx, qy) = centre(r.rect("queue"));
-        let lib = centre(r.rect("library"));
+        let (x, y) = r.title(held(r));
+        let (qx, qy) = centre(r.rect(Widget::Queue));
+        let lib = centre(r.rect(Widget::Library));
         h.press(x, y).glide(qx, qy, 200.0).rest(200.0).then(5.0, Ev::RightClick(qx as u16, qy as u16)).glide(lib.0, lib.1, 150.0).rest(200.0).release();
     }) {
-        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap("library".into())), "{what}: still held, dropped on the library");
+        assert_eq!(r.a.layout, swapped_with(&r, Widget::Library), "{what}: still held, dropped on the library");
     }
 }
 
@@ -670,7 +772,7 @@ fn every_divider(name: &str, shape: impl Fn(&mut Hand, (u16, u16), bool)) -> Vec
                 shape(h, at, r.a.dividers[i].axis == crate::layout::Axis::Horizontal);
             }
         }) {
-            assert!(!r.frames.iter().any(|f| f.held), "{what}: a press on a divider picked up a Pane");
+            assert!(!r.frames.iter().any(|f| f.held), "{what}: a press on a divider picked up a Widget");
             if r.divider.is_some() {
                 out.push((what, r));
             }
@@ -701,13 +803,13 @@ fn a_divider_flung_past_its_limit_stops_at_the_limit() {
             h.press(x, y).glide(to.0, to.1, 40.0).release();
         }) {
             // one cell further that way and something would no longer fit (or it can't go further at all)
-            let (area, aspect) = (r.a.pane_area(), r.a.cell_aspect());
+            let area = r.a.pane_area();
             let i = r.divider.unwrap();
-            let d = r.a.layout.compute_shaped(area, aspect).dividers[i].clone();
+            let d = r.a.layout.compute(area).dividers[i].clone();
             let at = r.a.layout.boundary(&d).unwrap();
-            let mut further = r.a.layout.clone();
+            let mut further = r.a.layout.plan().clone();
             further.drag(&d, if low { at.saturating_sub(1) } else { at + 1 });
-            assert!(further == r.a.layout || !further.valid(area, aspect), "{what}: stopped short at {at}");
+            assert!(further == r.a.layout || !Arrangement::from(further).fits(area), "{what}: stopped short at {at}");
         }
     }
 }
@@ -730,9 +832,9 @@ fn random_human_paths_keep_every_property() {
         let (fps, combine) = RIGS[(rng.next() % RIGS.len() as u64) as usize];
         let dev = if rng.next().is_multiple_of(2) { MOUSE } else { TRACKPAD };
         let mut r = Replay::new(design, fps, combine);
-        let names = r.a.layout.slot_names();
-        let me = names[(rng.next() % names.len() as u64) as usize].clone();
-        let (x, y) = r.title(&me);
+        let names = r.a.layout.widgets();
+        let me = names[(rng.next() % names.len() as u64) as usize];
+        let (x, y) = r.title(me);
         let mut h = Hand::new(dev, rng.next(), 10.0);
         h.press(x, y);
         for _ in 0..1 + rng.next() % 6 {
@@ -780,23 +882,31 @@ fn random_human_paths_keep_every_property() {
     }
 }
 
-/// One path drawn frame by frame with Panes in motion: what's on screen stays inside the layout all the way.
+/// One path drawn frame by frame: every Pane's drawn rectangle (its hit box) is the same in every frame of the drag,
+/// and the chip and the highlight are what changes.
 #[test]
-fn a_drag_drawn_frame_by_frame_stays_inside_the_layout() {
+fn a_drag_drawn_frame_by_frame_moves_nothing_but_the_chip_and_the_highlight() {
     for (dev, combine) in [(MOUSE, true), (TRACKPAD, false)] {
         let mut r = Replay::new(0, 120, combine);
         r.draw = true;
-        let (x, y) = r.title("stream");
-        let (qx, qy) = centre(r.rect("queue"));
-        let lib = centre(r.rect("library"));
+        let (x, y) = r.title(Widget::Stream);
+        let (qx, qy) = centre(r.rect(Widget::Queue));
+        let lib = centre(r.rect(Widget::Library));
         let mut h = Hand::new(dev, 5, 10.0);
         h.press(x, y).glide(qx, qy, 200.0).rest(200.0).glide(lib.0, lib.1, 150.0).rest(200.0).release();
         let path = h.done();
         r.play(&path, 400.0);
         r.check("drawn");
-        let body = r.a.pane_area();
-        assert!(r.a.drawn.iter().all(|d| d.x >= body.x && d.y >= body.y && d.right() <= body.right() && d.bottom() <= body.bottom()));
-        assert_eq!(r.a.layout, dropped_on(&r, Zone::Swap("library".into())));
+        let held: Vec<&Frame> = r.frames.iter().filter(|f| f.held).collect();
+        // (the drag turned Arrange mode on: the Panes made room for the Tray once, at its start, Q39)
+        assert!(held.len() > 20 && held.iter().all(|f| f.rects == held[0].rects), "every frame of the drag drew every Pane where it was");
+        // and that is the floor plan in the Panes' area less the Tray's rows; before the press, in the whole area
+        assert_eq!((r.frames[0].body, held[0].body), (body(r.size, false), body(r.size, true)));
+        assert_eq!(held[0].body.height + crate::arrange::TRAY_H, r.frames[0].body.height);
+        let mut arranged: Vec<(PaneId, Rect)> = r.start.compute(held[0].body).panes.into_iter().map(|(p, r)| (p.id, r)).collect();
+        arranged.sort_by_key(|(p, _)| *p);
+        assert_eq!(held[0].rects, arranged, "the held frames show the arranged floor plan");
+        assert!(r.changes() >= 2, "the highlight went from Pane to Pane");
+        assert_eq!(r.a.layout, swapped_with(&r, Widget::Library));
     }
 }
-

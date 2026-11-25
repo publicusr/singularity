@@ -2,10 +2,11 @@
 //! as the cells, only bigger (the owner, 2026-11-08: the bundled Noto Sans looked "basic"; "the font I have worked
 //! really well for the smaller lyrics widgets").
 //!
-//! Which family: `SINGULARITY_BIG_FONT` when set, else the terminal's own setting (Ghostty's first `font-family`,
-//! kitty's `font_family`), else the system's monospace (`fc-match monospace`, where fontconfig is), else a few common
-//! monospace families (Ghostty's built-in default JetBrains Mono among them). The face files come from the system font
-//! folders (`fontdb`); a family that isn't installed is skipped. None found: big text keeps the bundled font.
+//! Which family: `SINGULARITY_BIG_FONT` when set, else the terminal's own setting (Ghostty's first `font-family`, or
+//! in Ghostty with none set its built-in JetBrains Mono, as installed or as a Nerd Font build; kitty's `font_family`),
+//! else the system's monospace (`fc-match monospace`, where fontconfig is), else a few common monospace families.
+//! The face files come from the system font folders (`fontdb`); a family that isn't installed is skipped. None
+//! found: big text keeps the bundled font.
 
 use std::path::{Path, PathBuf};
 
@@ -30,7 +31,10 @@ fn candidates() -> Vec<String> {
         out.push(f.trim().to_string());
     }
     let kitty = std::env::var_os("KITTY_WINDOW_ID").is_some() || std::env::var("TERM").is_ok_and(|t| t.contains("kitty"));
-    let (ghostty, kitty_font) = (ghostty_family(), kitty_family());
+    let in_ghostty = std::env::var("TERM_PROGRAM").is_ok_and(|t| t.eq_ignore_ascii_case("ghostty"))
+        || std::env::var("TERM").is_ok_and(|t| t.contains("ghostty"))
+        || std::env::var_os("GHOSTTY_RESOURCES_DIR").is_some();
+    let (ghostty, kitty_font) = (ghostty_fonts(ghostty_family(), in_ghostty), kitty_family());
     if kitty {
         out.extend(kitty_font);
         out.extend(ghostty);
@@ -51,6 +55,20 @@ fn config_files(dir: &str, mac_id: &str, names: &[&str]) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = xdg.into_iter().map(|x| x.join(dir)).collect();
     dirs.extend(home.map(|h| h.join("Library/Application Support").join(mac_id)));
     dirs.iter().flat_map(|d| names.iter().map(move |n| d.join(n))).filter(|p| p.is_file()).collect()
+}
+
+/// Ghostty's own font when its config names none: the JetBrains Mono built into it, which the system may have under its
+/// own name or a Nerd Font build's (the same letters). Without this, big text took fontconfig's monospace while Ghostty
+/// drew the cells in JetBrains Mono: another font beside the app's (#53).
+const GHOSTTY_DEFAULT: [&str; 3] = ["JetBrains Mono", "JetBrainsMono Nerd Font Mono", "JetBrainsMono Nerd Font"];
+
+/// The families Ghostty draws with: the configured one, else (running in Ghostty) its built-in default's.
+fn ghostty_fonts(configured: Option<String>, in_ghostty: bool) -> Vec<String> {
+    match configured {
+        Some(f) => vec![f],
+        None if in_ghostty => GHOSTTY_DEFAULT.map(String::from).to_vec(),
+        None => vec![],
+    }
 }
 
 fn ghostty_family() -> Option<String> {
@@ -164,6 +182,14 @@ mod tests {
         assert_eq!(ghostty_font("font-family = \"Fira Code\"\nfont-family = Symbols\n"), Some("Fira Code".into()));
         assert_eq!(ghostty_font("font-family = A\nfont-family = \"\"\nfont-family = B\n"), Some("B".into()));
         assert_eq!(ghostty_font("# font-family = A\nfont-size = 3\n"), None);
+    }
+
+    #[test]
+    fn ghostty_with_no_font_set_draws_its_built_in_jetbrains_mono() {
+        assert_eq!(ghostty_fonts(Some("Fira Code".into()), true), ["Fira Code"]);
+        assert_eq!(ghostty_fonts(None, true)[0], "JetBrains Mono");
+        assert!(ghostty_fonts(None, true).iter().all(|f| f.replace(' ', "").starts_with("JetBrainsMono")));
+        assert!(ghostty_fonts(None, false).is_empty(), "another terminal: its own font, or fontconfig's");
     }
 
     #[test]

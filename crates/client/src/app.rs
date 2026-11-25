@@ -4,7 +4,7 @@
 use crate::covers::Covers;
 use crate::gfx::Kitty;
 use crate::home::{CardId, CardRef, HomeView};
-use crate::layout::{Divider, Node};
+use crate::layout::{Divider, Node, PaneId, Widget};
 use crate::meters::Meters;
 use crate::visual::BlackHole;
 use crate::visual::well::Hole;
@@ -61,6 +61,8 @@ pub enum Action {
     RestartEngine,
     RefreshHome,
     GoHome,
+    ShowLibrary,
+    ShowQueue,
     Back,
     Forward,
     Search,
@@ -81,10 +83,15 @@ pub enum Action {
     DeleteListening,
     Setup,
     FocusNext,
+    ReplaceWidget,
+    SplitLeft,
     SplitRight,
+    SplitUp,
     SplitDown,
     ClosePane,
-    MovePane,
+    Arrange,
+    NewDesign,
+    DiscardNewDesign,
     ResetLayout,
     UndoLayout,
     RedoLayout,
@@ -94,7 +101,11 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 59] = [
+    /// Not offered (and their keys do nothing) while a New design… is built (#42): each would swap or save the Design
+    /// under the build. Done names it.
+    pub const NOT_WHILE_BUILDING: [Action; 3] = [Action::PickDesign, Action::SaveLayout, Action::ResetLayout];
+
+    pub const ALL: [Action; 66] = [
         Action::TogglePlay,
         Action::Next,
         Action::Previous,
@@ -124,6 +135,8 @@ impl Action {
         Action::RestartEngine,
         Action::RefreshHome,
         Action::GoHome,
+        Action::ShowLibrary,
+        Action::ShowQueue,
         Action::Back,
         Action::Forward,
         Action::Search,
@@ -144,10 +157,15 @@ impl Action {
         Action::DeleteListening,
         Action::Setup,
         Action::FocusNext,
+        Action::ReplaceWidget,
+        Action::SplitLeft,
         Action::SplitRight,
+        Action::SplitUp,
         Action::SplitDown,
         Action::ClosePane,
-        Action::MovePane,
+        Action::Arrange,
+        Action::NewDesign,
+        Action::DiscardNewDesign,
         Action::ResetLayout,
         Action::UndoLayout,
         Action::RedoLayout,
@@ -186,6 +204,8 @@ impl Action {
             Action::RestartEngine => "Restart the player",
             Action::RefreshHome => "Refresh Home",
             Action::GoHome => "Go to Home",
+            Action::ShowLibrary => "Your Library",
+            Action::ShowQueue => "Queue",
             Action::Back => "Back",
             Action::Forward => "Forward",
             Action::Search => "Search",
@@ -206,10 +226,15 @@ impl Action {
             Action::DeleteListening => "Delete listening data…",
             Action::Setup => "Run setup",
             Action::FocusNext => "Focus next pane",
+            Action::ReplaceWidget => "Replace widget…",
+            Action::SplitLeft => "Split left",
             Action::SplitRight => "Split right",
+            Action::SplitUp => "Split up",
             Action::SplitDown => "Split down",
             Action::ClosePane => "Close pane",
-            Action::MovePane => "Move pane",
+            Action::Arrange => "Arrange",
+            Action::NewDesign => "New design…",
+            Action::DiscardNewDesign => "Discard new design",
             Action::ResetLayout => "Reset design",
             Action::UndoLayout => "Undo layout",
             Action::RedoLayout => "Redo layout",
@@ -225,10 +250,13 @@ impl Action {
             Action::PickDesign => "layout colours colors look",
             Action::PickTheme => "palette colours colors",
             Action::SaveLayout => "layout keep",
+            Action::ReplaceWidget => "swap change pane widget pick choose",
+            Action::SplitLeft => "tile add pane widget beside",
             Action::SplitRight => "tile add pane widget beside",
+            Action::SplitUp => "tile add pane widget above",
             Action::SplitDown => "tile add pane widget below",
             Action::ClosePane => "tile remove delete widget",
-            Action::MovePane => "tile arrange swap drag layout keyboard",
+            Action::Arrange => "tray tile move swap drag layout split close pane widget",
             Action::ResetLayout => "layout tiling undo original default",
             Action::UndoLayout => "tiling pane change back revert move drop close split",
             Action::RedoLayout => "tiling pane change again forward",
@@ -246,6 +274,8 @@ impl Action {
             Action::NextLook => "pane disk black hole",
             Action::Devices => "speaker phone connect",
             Action::Jam => "invite session",
+            Action::ShowLibrary => "playlists liked songs albums artists sidebar",
+            Action::ShowQueue => "up next songs reorder",
             Action::Health => "engine login audio stream quality",
             Action::Stats => "wrapped top artists tracks albums",
             Action::Settings => "config toml",
@@ -289,6 +319,8 @@ impl Action {
             Action::RestartEngine => "restart_player",
             Action::RefreshHome => "refresh_home",
             Action::GoHome => "home",
+            Action::ShowLibrary => "library",
+            Action::ShowQueue => "queue",
             Action::Back => "back",
             Action::Forward => "forward",
             Action::Search => "search",
@@ -309,10 +341,15 @@ impl Action {
             Action::DeleteListening => "delete_listening",
             Action::Setup => "setup",
             Action::FocusNext => "focus_next",
+            Action::ReplaceWidget => "replace_widget",
+            Action::SplitLeft => "split_left",
             Action::SplitRight => "split_right",
+            Action::SplitUp => "split_up",
             Action::SplitDown => "split_down",
             Action::ClosePane => "close_pane",
-            Action::MovePane => "move_pane",
+            Action::Arrange => "arrange",
+            Action::NewDesign => "new_design",
+            Action::DiscardNewDesign => "discard_new_design",
             Action::ResetLayout => "reset_layout",
             Action::UndoLayout => "undo_layout",
             Action::RedoLayout => "redo_layout",
@@ -322,14 +359,20 @@ impl Action {
         }
     }
 
+    /// (`move_pane`, Move mode's, is another name for `arrange` since Move mode folded into it: #43)
     pub fn from_id(id: &str) -> Option<Action> {
-        Action::ALL.into_iter().find(|a| a.id() == id)
+        Action::ALL.into_iter().find(|a| a.id() == id).or_else(|| (id == "move_pane").then_some(Action::Arrange))
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
-    Focus(String),
+    /// a Pane, where the layout puts it (a click focuses it)
+    Focus(PaneId),
+    /// the Widget's name in a Pane's title: a click opens the Widget picker (a drag moves the Pane, as from the title)
+    TitleName(PaneId),
+    /// a row of the Widget picker
+    PickWidget(usize),
     Divider(usize),
     Action(Action),
     PaletteItem(usize),
@@ -340,6 +383,22 @@ pub enum Hit {
     /// Home's search bar (D70): opens Search
     SearchBar,
     MenuItem(usize),
+    /// an arrow of a Pane menu's Split row: a new empty Pane on that side
+    MenuSplit(crate::tiling::Side),
+    /// Arrange mode (D87): a Pane's split button (the way the Pane menu's Split row splits it first)
+    SplitPane(PaneId),
+    /// a Widget waiting in the Tray: drag it onto a Pane (by the Widget, so a burst of clicks can't reach the next)
+    TrayItem(Widget),
+    /// the × of a Widget in the Tray: it is removed
+    TrayRemove(Widget),
+    /// Clear Tray
+    ClearTray,
+    /// the Tray's "+ Widget": the Widget picker, adding to the Tray (#42)
+    TrayAdd,
+    /// the Tray's ‹ ›, when it holds more than fits
+    TrayScroll(i32),
+    /// Done: Arrange mode ends
+    ArrangeDone,
     /// a sidebar row (0 = Home)
     Side(usize),
     /// a track-list row, by position in the view
@@ -373,16 +432,14 @@ pub enum Hit {
     PickerItem(usize),
     /// a row of the "Add to playlist" picker (#53)
     AddPick(usize),
-    /// a Pane's ◂ ▸: the Slot's Widget, and which way to swap it
-    Swap(String, i32),
+    /// a Pane's ◂ ▸: the Pane, and which way to swap its Widget
+    Swap(PaneId, i32),
     /// the main Pane's ◂ ▸: back / forward through the pages seen
     History(i32),
     /// a Pane's title bar (D66): drag it to move the Pane
-    Title(String),
+    Title(PaneId),
     /// a Pane's ×
-    Close(String),
-    /// a row of the Widget picker for a new Pane
-    WidgetItem(usize),
+    Close(PaneId),
     /// a period tab on the Stats page
     StatsPeriod(singularity_proto::StatsPeriod),
     /// a ranked row on the Stats page, by its place in `stats::entries`
@@ -425,10 +482,12 @@ pub enum MenuAct {
     ChangeCover,
     RemoveCover,
     DeletePlaylist,
-    /// the Pane menu (right-click on a title)
-    SplitRight,
-    SplitDown,
-    MovePane,
+    /// the Pane menu (right-click on a title, or a body without a menu of its own)
+    ReplaceWidget,
+    /// the Split row: ← → ↑ ↓, each clickable; the side is the lit arrow, the one the word Split (and Enter) splits
+    /// toward: the Pane's longer side at first (`App::default_split`), then wherever ← → move it
+    Split(crate::tiling::Side),
+    Arrange,
     ClosePane,
 }
 
@@ -445,8 +504,8 @@ pub enum Target {
     Track { uri: String, name: String },
     /// a sidebar row: a playlist, album, artist or folder of the library
     Library { uri: String, name: String },
-    /// a Pane, by its Slot
-    Pane(String),
+    /// a Pane, by its identity
+    Pane(PaneId),
 }
 
 /// The naming popup: a name being typed, and what it's for.
@@ -462,8 +521,10 @@ pub enum NameFor {
     Layout,
     /// "New playlist…" (#51)
     NewPlaylist,
-    /// the first edit of a built-in Design asks what to call the Design it makes (D66)
+    /// Done in Arrange mode asks what to call the changes kept as "<Design> (edited)" (Q33; was D66's first edit)
     Fork,
+    /// Done on a New design… asks what to call it (#42)
+    NewDesign,
 }
 
 impl Naming {
@@ -473,6 +534,9 @@ impl Naming {
     /// Prefilled with a free suggestion.
     pub fn fork(text: String) -> Naming {
         Naming { text, purpose: NameFor::Fork }
+    }
+    pub fn new_design() -> Naming {
+        Naming { text: String::new(), purpose: NameFor::NewDesign }
     }
     pub fn playlist() -> Naming {
         Naming { text: String::new(), purpose: NameFor::NewPlaylist }
@@ -528,7 +592,8 @@ const KEPT: usize = 64;
 pub struct App {
     /// shared with each frame, which holds it while it draws (a clone per frame was the whole Theme: audit Q1)
     pub theme: std::rc::Rc<Theme>,
-    pub layout: Node,
+    /// the floor plan and which Widget is in which Pane: changed only through its edits
+    pub layout: crate::arrangement::Arrangement,
     pub link: Link,
     pub engine: Option<EngineStatus>,
     /// which Engine the Daemon runs (Soloist, the Spotify app): the setup wizard and health view follow it
@@ -536,7 +601,8 @@ pub struct App {
     pub playback: PlaybackState,
     pub catalogue: Option<CatalogueStatus>,
     pub home: Option<HomeFeed>,
-    pub focus: String,
+    /// the focused Pane (None: none of the layout's; `focused` says what it shows)
+    pub focus: Option<PaneId>,
     /// the popup open, if any (D83): one at a time
     pub(crate) popup: Option<Popup>,
     /// how far the wizard is scrolled (when taller than the screen)
@@ -551,7 +617,7 @@ pub struct App {
     /// a queued song being dragged to a new place
     pub queue_drag: Option<crate::queue::QueueDrag>,
     /// boundary minus grab position, so a divider moves exactly with the mouse whichever grip cell was grabbed
-    drag_offset: i32,
+    pub(crate) drag_offset: i32,
     /// the seek or volume bar being dragged
     pub scrub: Option<Scrub>,
     nudge: Nudge,
@@ -637,6 +703,9 @@ pub struct App {
     pub lyrics: crate::songlyrics::SongLyrics,
     /// where the hole was drawn this frame (for bending the neighbouring borders)
     pub hole_at: Option<Hole>,
+    /// the Panes drawn this frame too small for their Widget (its needs line, #36): they take no wheel, keys or clicks
+    /// for it
+    pub short_panes: Vec<PaneId>,
     /// what's liked, saved and followed (#22)
     pub(crate) saved: crate::saved::Saved,
     /// a saved playlist's Saved button was clicked once: a second click soon after removes it
@@ -658,24 +727,24 @@ pub struct App {
     /// the saved layout on screen (its file name) and the ones there are (#19)
     pub layout_name: Option<String>,
     pub saved_layouts: Vec<crate::layouts::Saved>,
-    /// free tiling (D66): a Pane being dragged by its title, the Pane in Move mode, and the area the Panes were last
-    /// drawn in
+    /// free tiling (D66): a Widget held by its Pane's title or picked up with Enter in Arrange mode
     pub tile: Option<crate::arrange::TileDrag>,
-    pub move_mode: Option<String>,
+    /// Arrange mode (D87), while it is on
+    pub arranging: Option<crate::arrange::Arranging>,
+    /// the window is too small for the Panes: the mini player shows, and Arrange mode waits behind it (its keys and
+    /// clicks are the player's)
+    pub mini: bool,
     pub body: Rect,
+    /// the whole window, as last drawn or resized to (the Panes' area follows it and Arrange mode)
+    pub window: Rect,
     /// the layout as it was when a divider was grabbed (a changed one counts as an edit on release)
-    pub(crate) divider_from: Option<Node>,
+    pub(crate) divider_from: Option<crate::arrangement::Arrangement>,
     /// the divider whose grip is under the pointer (lit, and a resize pointer where the terminal has one)
     pub(crate) grip_hover: Option<usize>,
     /// the pointer shape last sent to the terminal (OSC 22)
     pub pointer_shape_sent: &'static str,
-    /// Panes easing to new places and the one held up (owner, 2026-11-01); this frame's rects, reused
-    pub motion: crate::arrange::motion::Motion,
-    pub(crate) drawn: Vec<Rect>,
     /// when the input event being handled arrived (stamped by the input thread; None: now)
     pub input_at: Option<Instant>,
-    /// drawing the held Pane: its images stay in cells
-    pub(crate) floating: bool,
     /// layout undo / redo, and when the last edit offered its "undo"
     pub(crate) history: crate::arrange::history::History<crate::arrange::Snapshot>,
     pub(crate) undo_offer: Option<(Instant, Action)>,
@@ -699,14 +768,14 @@ impl App {
     pub fn new(commands: Option<mpsc::Sender<Command>>) -> App {
         App {
             theme: std::rc::Rc::new(Theme::singularity()),
-            layout: Node::singularity(),
+            layout: Node::singularity().into(),
             link: Link::Connecting,
             engine: None,
             engine_kind: Default::default(),
             playback: PlaybackState::default(),
             catalogue: None,
             home: None,
-            focus: "home".into(),
+            focus: Node::singularity().pane_of(Widget::Home),
             popup: None,
             wizard_scroll: Default::default(),
             toast: None,
@@ -768,6 +837,7 @@ impl App {
             queue_view: Default::default(),
             lyrics: Default::default(),
             hole_at: None,
+            short_panes: Vec::new(),
             saved: Default::default(),
             confirm_remove: None,
             playlists: Default::default(),
@@ -782,15 +852,14 @@ impl App {
             layout_name: None,
             saved_layouts: vec![],
             tile: None,
-            move_mode: None,
+            arranging: None,
+            mini: false,
             body: Rect::default(),
+            window: Rect::default(),
             divider_from: None,
             grip_hover: None,
             pointer_shape_sent: "",
-            motion: crate::arrange::motion::Motion::new(!cfg!(test)),
-            drawn: vec![],
             input_at: None,
-            floating: false,
             history: Default::default(),
             undo_offer: None,
             covers_was: HashMap::new(),
@@ -900,11 +969,11 @@ impl App {
 
     /// Typing goes to a text field, so letters aren't shortcuts.
     fn typing(&self) -> bool {
-        matches!(self.modal(), Some(Modal::Palette | Modal::Picker | Modal::Naming | Modal::Widgets | Modal::Details | Modal::Adding | Modal::Cover))
+        matches!(self.modal(), Some(Modal::Palette | Modal::Picker | Modal::Naming | Modal::WidgetPicker | Modal::Details | Modal::Adding | Modal::Cover))
             || (self.modal() == Some(Modal::Wizard) && crate::setup::step(self) == crate::setup::Step::Key)
             || self.settings_typing()
             || self.open.view().is_some_and(|v| v.filtering)
-            || (self.search.is_open() && self.focus == "home")
+            || (self.search.is_open() && self.is_focused(Widget::Home))
     }
 
     // ── idle takeover ─────────────────────────────────────────────────
@@ -947,6 +1016,7 @@ impl App {
         self.hits.clear();
         self.overlays.clear();
         self.hole_at = None;
+        self.short_panes.clear();
         self.covers.poll();
         if self.toast.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_millis(2500)) {
             self.toast = None;
@@ -957,10 +1027,10 @@ impl App {
         self.hits.push((r, h));
     }
 
-    /// The Pane (Slot name) under a point.
-    fn pane_at(&self, x: u16, y: u16) -> Option<String> {
+    /// The Pane under a point.
+    fn pane_at(&self, x: u16, y: u16) -> Option<PaneId> {
         self.hits.iter().rev().find_map(|(r, h)| match h {
-            Hit::Focus(s) if x >= r.x && x < r.right() && y >= r.y && y < r.bottom() => Some(s.clone()),
+            Hit::Focus(p) if x >= r.x && x < r.right() && y >= r.y && y < r.bottom() => Some(*p),
             _ => None,
         })
     }
@@ -972,9 +1042,6 @@ impl App {
     /// The pixel tier's cell size, if `r` can be drawn with it this frame.
     pub fn pixel_tier_for(&self, r: Rect) -> Option<(f64, f64)> {
         let px = self.cell_px?;
-        if self.floating {
-            return None;
-        }
         // under cell backgrounds (kitty), a popup simply covers an image; elsewhere the image steps down to cells
         let k = self.kitty.as_ref()?;
         (k.below_backgrounds || !self.overlays.iter().any(|o| o.intersects(r))).then_some(px)
@@ -984,9 +1051,7 @@ impl App {
     /// cells' backgrounds even in kitty, so a popup over `r` (whose cells couldn't hide it) means terminal text.
     pub fn pixel_text_for(&self, r: Rect) -> Option<(f64, f64)> {
         let px = self.cell_px?;
-        if self.floating || self.kitty.is_none() {
-            return None;
-        }
+        self.kitty.as_ref()?;
         (!self.overlays.iter().any(|o| o.intersects(r))).then_some(px)
     }
 
@@ -1059,21 +1124,17 @@ impl App {
     /// whenever the layout changes.
     pub fn want_widget_data(&mut self) {
         self.want_spectrum();
-        if !self.stats.contains_key(&singularity_proto::StatsPeriod::Week) && self.on_screen("topweek") {
+        if !self.stats.contains_key(&singularity_proto::StatsPeriod::Week) && self.layout.has(Widget::TopWeek) {
             self.send(Command::GetStats { period: singularity_proto::StatsPeriod::Week });
         }
-    }
-
-    /// Whether some Pane of the layout shows `slot`.
-    fn on_screen(&self, slot: &str) -> bool {
-        self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| s == slot)
     }
 
     /// Spectrum frames flow only while a Widget that moves with the music is on screen (the Daemon's tap idles
     /// otherwise); called on connect and whenever the layout changes.
     pub fn want_spectrum(&mut self) {
-        const AUDIO: [&str; 9] = ["fft", "loudness", "levels", "rain", "scope", "well", "hole", "starfield", "glow"];
-        let on = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| AUDIO.contains(&s.as_str()));
+        use Widget::*;
+        const AUDIO: [Widget; 9] = [Fft, Loudness, Levels, Rain, Scope, Well, Hole, Starfield, Glow];
+        let on = self.layout.widgets().iter().any(|w| AUDIO.contains(w));
         if on != self.spectrum_on && matches!(self.link, Link::Connected { .. }) {
             self.spectrum_on = on;
             self.send(Command::Spectrum { on });
@@ -1101,6 +1162,9 @@ impl App {
     // ── actions ───────────────────────────────────────────────────────
 
     pub fn run(&mut self, a: Action) {
+        if self.building() && Action::NOT_WHILE_BUILDING.contains(&a) {
+            return;
+        }
         match a {
             Action::TogglePlay => self.toggle_play(),
             Action::Next => self.send(Command::Next),
@@ -1138,6 +1202,8 @@ impl App {
             Action::Logout => self.send(Command::Logout),
             Action::RefreshHome => self.send(Command::GetHome),
             Action::GoHome => self.navigate(Page::Home),
+            Action::ShowLibrary => self.show_library(),
+            Action::ShowQueue => self.show_queue(),
             Action::Back => self.go_back(),
             Action::Search => self.navigate(Page::Search),
             Action::Stats => self.navigate(Page::Stats),
@@ -1146,7 +1212,7 @@ impl App {
             Action::Filter => match self.open.view_mut() {
                 Some(v) => {
                     v.filtering = true;
-                    self.focus = "home".into();
+                    self.focus_on(Widget::Home);
                 }
                 None => self.say("Open a playlist, album or Liked Songs to filter it"),
             },
@@ -1189,24 +1255,33 @@ impl App {
                 self.setup.dismissed = false;
             }
             Action::NextLook => {
-                let focus = self.focus.clone();
-                if !self.swap_widget(&focus, 1) {
+                // an empty Pane has nothing to swap, and isn't the hole's: nothing happens
+                let empty = self.focus.and_then(|p| self.layout.get(p)).is_some_and(|p| p.widget.is_none());
+                if !empty && !self.focus.is_some_and(|p| self.swap_widget(p, 1)) {
                     self.hole.next_look();
                     self.say(format!("Disk look: {}", self.hole.look().name));
                 }
             }
             Action::FocusNext => {
-                let slots: Vec<String> = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.into_iter().map(|(s, _)| s).collect();
-                let i = slots.iter().position(|s| *s == self.focus).map(|i| (i + 1) % slots.len()).unwrap_or(0);
-                self.focus = slots[i].clone();
+                let panes = self.layout.panes();
+                let i = panes.iter().position(|p| Some(p.id) == self.focus).map(|i| (i + 1) % panes.len()).unwrap_or(0);
+                self.focus = Some(panes[i].id);
             }
+            Action::ReplaceWidget => self.replace_focused(),
+            Action::SplitLeft => self.split_focused(crate::tiling::Side::Left),
             Action::SplitRight => self.split_focused(crate::tiling::Side::Right),
+            Action::SplitUp => self.split_focused(crate::tiling::Side::Top),
             Action::SplitDown => self.split_focused(crate::tiling::Side::Bottom),
             Action::ClosePane => {
-                let slot = self.focused_slot();
-                self.close_pane(&slot);
+                if let Some(p) = self.focused_pane() {
+                    self.close_pane(p);
+                }
             }
-            Action::MovePane => self.start_move(),
+            // (while arranging, the key that came in leaves as Esc does, Q70: also one bound with Ctrl or Alt)
+            Action::Arrange if self.arranging.is_some() => self.arrange_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Action::Arrange => self.enter_arrange(),
+            Action::NewDesign => self.new_design(),
+            Action::DiscardNewDesign => self.discard_new_design(),
             Action::ResetLayout => self.reset_design(),
             Action::UndoLayout => self.undo_layout(),
             Action::RedoLayout => self.redo_layout(),
@@ -1218,7 +1293,9 @@ impl App {
 
     pub fn palette_items(&self) -> Vec<Action> {
         let q = self.palette().map(|p| p.query.to_lowercase()).unwrap_or_default();
-        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
+        let building = self.building();
+        // (Discard new design only while one is built, Q78)
+        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && !(building && Action::NOT_WHILE_BUILDING.contains(a)) && (building || *a != Action::DiscardNewDesign) && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
         // what you typed, as typed: at the start first, then anywhere, then loose matches
         let q = q.trim();
         items.sort_by_key(|a| {
@@ -1250,7 +1327,9 @@ impl App {
             Some(Modal::Palette) => return self.palette_key(k),
             Some(Modal::Picker) => return self.picker_key(k),
             Some(Modal::Naming) => return self.naming_key(k),
-            Some(Modal::Widgets) => return self.widget_key(k),
+            Some(Modal::WidgetPicker) => return self.widget_picker_key(k),
+            Some(Modal::Library) => return self.library_popup_key(k),
+            Some(Modal::Queue) => return self.queue_popup_key(k),
             Some(Modal::Details) => return self.details_key(k),
             Some(Modal::Adding) => return self.adding_key(k),
             Some(Modal::Cover) => return self.cover_key(k),
@@ -1281,17 +1360,20 @@ impl App {
                 self.login_hidden = true;
                 return;
             }
-            Some(Modal::Login | Modal::Move) | None => {}
+            // (Arrange mode: its keys come below, after a held Widget's Esc and the shortcuts that work everywhere)
+            Some(Modal::Login | Modal::Arrange) | None => {}
         }
-        // a Pane being dragged: Esc puts it back, nothing else gets through
-        if self.tile.is_some() {
+        // a Pane being dragged: Esc puts it back, nothing else gets through (one picked up with Enter is Arrange
+        // mode's, below)
+        if self.tile.as_ref().is_some_and(|t| t.aim.is_none() || self.mini) {
             if k.code == KeyCode::Esc {
                 self.tile_cancel();
             }
             return;
         }
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
-        if self.open.view().is_some_and(|v| v.filtering) {
+        // (not under Arrange mode, which keeps the keys: a filter left open on the page must not take them)
+        if self.open.view().is_some_and(|v| v.filtering) && self.modal() != Some(Modal::Arrange) {
             return self.filter_key(k);
         }
         // Ctrl+Shift+Z redoes, where the terminal tells it from Ctrl+Z (the keymap reads both as Ctrl+Z)
@@ -1304,32 +1386,34 @@ impl App {
         {
             return self.run(a);
         }
-        if self.move_mode.is_some() {
-            return self.move_key(k);
+        if self.arranging.is_some() && !self.mini {
+            return self.arrange_key(k);
         }
-        if self.focus == "home" && self.search.is_open() && self.search_key(k) {
+        // a focused Pane showing its needs line has no keys of its own: they'd act on what it hides (#36)
+        let shown = !self.focus.is_some_and(|p| self.short_panes.contains(&p));
+        if shown && self.is_focused(Widget::Home) && self.search.is_open() && self.search_key(k) {
             return;
         }
-        if self.focus == "home" && !shift && self.stats_view.is_some() && self.stats_key(k) {
+        if shown && self.is_focused(Widget::Home) && !shift && self.stats_view.is_some() && self.stats_key(k) {
             return;
         }
-        if self.focus == "home" && self.settings_view.is_some() && (self.settings_typing() || !shift) && self.settings_key(k) {
+        if shown && self.is_focused(Widget::Home) && self.settings_view.is_some() && (self.settings_typing() || !shift) && self.settings_key(k) {
             return;
         }
-        if self.focus == "home" && !shift && self.open.view().is_some() && self.tracks_key(k) {
+        if shown && self.is_focused(Widget::Home) && !shift && self.open.view().is_some() && self.tracks_key(k) {
             return;
         }
-        if self.focus == "home" && !shift && self.open.view().is_none() && self.home_key(k) {
+        if shown && self.is_focused(Widget::Home) && !shift && self.open.view().is_none() && self.home_key(k) {
             return;
         }
         // Esc on an artist or search page goes back, never quits
         if (self.artist.is_some() || self.search.is_open() || self.stats_view.is_some() || self.settings_view.is_some()) && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
             return self.run(Action::Back);
         }
-        if self.focus == "library" && !shift && self.side_key(k) {
+        if shown && self.is_focused(Widget::Library) && !shift && self.side_key(k) {
             return;
         }
-        if self.focus == "queue" && !shift && self.queue_key(k) {
+        if shown && self.is_focused(Widget::Queue) && !shift && self.queue_key(k) {
             return;
         }
         // the keymap (keys.toml); arrows a focused Pane didn't use fall through to here and seek
@@ -1348,7 +1432,7 @@ impl App {
         if let Some(period) = page {
             self.send(Command::GetStats { period });
         }
-        if page != Some(StatsPeriod::Week) && self.on_screen("topweek") {
+        if page != Some(StatsPeriod::Week) && self.layout.has(Widget::TopWeek) {
             self.send(Command::GetStats { period: StatsPeriod::Week });
         }
     }
@@ -1529,7 +1613,7 @@ impl App {
     }
 
     /// Open sidebar row `row` (0 = Home, then the library).
-    fn open_side(&mut self, row: usize) {
+    pub(crate) fn open_side(&mut self, row: usize) {
         self.sidebar.sel = row;
         if row == 0 {
             return self.run(Action::GoHome);
@@ -1639,7 +1723,7 @@ impl App {
         self.stats_view = None;
         self.settings_view = None;
         self.search.set_open(false);
-        self.focus = "home".into();
+        self.focus_on(Widget::Home);
         match p {
             Page::Home => {}
             Page::Search => self.search.set_open(true),
@@ -1744,12 +1828,20 @@ impl App {
                 s.shelves.move_sel(0, 0);
             }
             KeyCode::Up if s.track_sel.is_some_and(|i| i > 0) => s.track_sel = s.track_sel.map(|i| i - 1),
+            // a short Pane shows the songs or the Shelves: ↑ from the Shelves' top row brings the songs back
+            KeyCode::Up if s.short && songs > 0 && s.shelves.on_top_row() => {
+                s.shelves.sel = None;
+                s.track_sel = Some(songs - 1);
+            }
             KeyCode::Enter if s.track_sel.is_some() => {
                 let i = s.track_sel.unwrap_or(0);
                 self.play_search_track(i);
             }
             // nothing highlighted and no answer for these words yet: they go out now, without waiting for a pause
             KeyCode::Enter if s.shelves.sel.is_none() && !s.answered() => s.submit(),
+            // a short Pane shows the songs or the Shelves, never both: while a song is highlighted (↑ on the first one
+            // too) the Shelves' moves wait
+            KeyCode::Up | KeyCode::Left | KeyCode::Right | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End if s.short && s.track_sel.is_some() => {}
             _ => {
                 // the Shelves take arrows and Enter like Home's
                 return self.home_key(k);
@@ -1901,7 +1993,7 @@ impl App {
         self.send(cmd);
     }
 
-    fn queue_key(&mut self, k: KeyEvent) -> bool {
+    pub(crate) fn queue_key(&mut self, k: KeyEvent) -> bool {
         let n = self.playback.queue.len();
         if n == 0 {
             return false;
@@ -1986,7 +2078,7 @@ impl App {
         self.open.set_filter(filter);
     }
 
-    fn side_key(&mut self, k: KeyEvent) -> bool {
+    pub(crate) fn side_key(&mut self, k: KeyEvent) -> bool {
         let n = crate::sidebar::len(self);
         match k.code {
             KeyCode::Up => self.sidebar.move_sel(-1, n),
@@ -1995,7 +2087,7 @@ impl App {
                 let row = self.sidebar.sel;
                 self.open_side(row);
                 if row > 0 && self.open.view().is_some() {
-                    self.focus = "home".into();
+                    self.focus_on(Widget::Home);
                 }
             }
             KeyCode::Menu | KeyCode::F(10) => {
@@ -2074,7 +2166,7 @@ impl App {
     /// Right-click on a queue entry.
     /// A dragged song let go: shown in its new place at once, then moved on Spotify (if Spotify refuses, the Daemon
     /// sends the real queue back).
-    fn drop_queued(&mut self, d: crate::queue::QueueDrag) {
+    pub(crate) fn drop_queued(&mut self, d: crate::queue::QueueDrag) {
         // the queue can have changed during the drag, so find the song again by its uid/URI and never subtract a
         // stale index from another (a track change, or a phone editing the queue, shifts both)
         let Some(from) = d.index_in(&self.playback.queue) else { return };
@@ -2096,13 +2188,13 @@ impl App {
         };
         let into_queue = d.into_queue;
         self.playback.queue = crate::queue::preview(&self.playback.queue, Some(crate::queue::QueueDrag { to: at, ..d }));
-        self.queue_view.sel = at.min(self.playback.queue.len().saturating_sub(1));
+        self.queue_view.place(at.min(self.playback.queue.len().saturating_sub(1)));
         self.send(Command::MoveInQueue { uri, uid, to, into_queue });
     }
 
     pub fn open_queue_menu(&mut self, i: usize, at: Option<(u16, u16)>) {
         let Some(q) = self.playback.queue.get(i).cloned() else { return };
-        self.queue_view.sel = i;
+        self.queue_view.place(i);
         let queued = q.source == "queue";
         let mut items = vec![];
         if queued {
@@ -2116,7 +2208,8 @@ impl App {
         items.push(("Add to playlist…".into(), MenuAct::AddToPlaylist));
         items.extend(self.save_entry(&q.item.uri));
         items.push(("Copy link".into(), MenuAct::CopyLink));
-        let at = at.or_else(|| self.hit_rect(&Hit::QueueRow(i)).map(|r| (r.x + 4, r.y + 1))).unwrap_or((0, 0));
+        // (under the song: a big queue's songs are two rows tall)
+        let at = at.or_else(|| self.hit_rect(&Hit::QueueRow(i)).map(|r| (r.x + 4, r.bottom()))).unwrap_or((0, 0));
         let target = Target::Queued { uri: q.item.uri.clone(), uid: q.uid.clone(), name: q.item.name.clone(), queued };
         self.open_popup(Popup::Menu(Menu { at, target, items, selected: 0 }));
     }
@@ -2161,8 +2254,8 @@ impl App {
     pub(crate) fn menu_run(&mut self, i: usize) {
         let Some(m) = self.take_menu() else { return };
         let Some((_, act)) = m.items.get(i).cloned() else { return };
-        if let Target::Pane(slot) = &m.target {
-            return self.pane_menu_run(slot, act);
+        if let Target::Pane(id) = m.target {
+            return self.pane_menu_run(id, act);
         }
         let Some((uri, name, kind)) = self.target_track(&m.target) else {
             // (another Client took it out, or the list was fetched again without it)
@@ -2227,7 +2320,7 @@ impl App {
             MenuAct::ChangeCover => self.ask_cover(&uri),
             MenuAct::RemoveCover => self.remove_cover(&uri),
             MenuAct::DeletePlaylist => self.delete_playlist(&uri),
-            MenuAct::SplitRight | MenuAct::SplitDown | MenuAct::MovePane | MenuAct::ClosePane => {}
+            MenuAct::ReplaceWidget | MenuAct::Split(_) | MenuAct::Arrange | MenuAct::ClosePane => {}
         }
     }
 
@@ -2237,6 +2330,13 @@ impl App {
             KeyCode::Esc => self.close_if_open(Modal::Menu),
             KeyCode::Up => m.selected = m.selected.saturating_sub(1),
             KeyCode::Down => m.selected = (m.selected + 1).min(m.items.len().saturating_sub(1)),
+            // on the Split row, ← → light the side Enter splits
+            KeyCode::Left | KeyCode::Right => {
+                let right = k.code == KeyCode::Right;
+                if let Some((_, MenuAct::Split(side))) = m.items.get_mut(m.selected) {
+                    *side = crate::arrange::next_side(*side, right);
+                }
+            }
             KeyCode::Enter => {
                 let i = m.selected;
                 self.menu_run(i);
@@ -2301,6 +2401,9 @@ impl App {
         } else if let Some(p) = self.palette_mut() {
             p.query.push_str(s);
             p.selected = 0;
+        } else if let Some(p) = self.widget_picker_mut() {
+            p.query.extend(s.chars().filter(|c| !c.is_control()).take(40usize.saturating_sub(p.query.chars().count())));
+            p.sel = 0;
         } else if self.popup.is_none() && let Some(v) = self.open.view().filter(|v| v.filtering) {
             let f = format!("{}{s}", v.filter);
             self.open.set_filter(f);
@@ -2376,7 +2479,7 @@ impl App {
     }
 
     /// Frames a second: 30, or `visuals.unfocused_fps` while the terminal isn't focused (D60, D62); while anything
-    /// moves (a held Pane, Panes springing into place, a divider being dragged) `visuals.motion_fps`, focused or not.
+    /// moves (a held Widget's chip, a divider being dragged) `visuals.motion_fps`, focused or not.
     /// The karaoke ball, moving on the pixel tier and focused: up to 60 (it glides along the line as it is sung; more
     /// buys nothing a singer sees, and every frame is a whole redraw).
     pub fn frame_rate(&self, focused: bool) -> u64 {
@@ -2394,9 +2497,10 @@ impl App {
         self.config.visuals.motion_fps.clamp(30, 240) as u64
     }
 
-    /// Whether something on screen is moving with the pointer or on its way somewhere.
+    /// Whether something on screen is moving with the pointer or on its way somewhere (a Widget picked up with Enter
+    /// moves with the keys only).
     pub fn moving_now(&self) -> bool {
-        self.motion.busy() || self.tile.as_ref().is_some_and(|t| t.live) || self.divider_from.is_some()
+        self.tile.as_ref().is_some_and(|t| t.live && t.aim.is_none()) || self.divider_from.is_some()
     }
 
     /// Called every frame: sends nudges once they've settled.
@@ -2424,7 +2528,7 @@ impl App {
             && matches!(self.link, Link::Connected { .. })
         {
             // (a tree walk each frame, no layout maths)
-            let (lyrics, karaoke) = (self.layout.path_of("lyrics").is_some(), self.layout.path_of("karaoke").is_some());
+            let (lyrics, karaoke) = (self.layout.has(Widget::Lyrics), self.layout.has(Widget::Karaoke));
             if let Some(words) = self.lyrics.ask(&uri, lyrics, karaoke) {
                 self.send(Command::GetLyrics { uri, words });
             }
@@ -2528,6 +2632,9 @@ impl App {
                 p.volume = v;
             }
         }
+        // the queue's highlight stays on its song, not its slot (a skip shifts every slot by one), shown or not (an
+        // unfocused queue doesn't scroll to it: `queue::draw`), once the user has placed it
+        self.queue_view.queue_changed(&self.playback.queue, &p.queue);
         self.playback = p;
     }
 
@@ -2567,7 +2674,7 @@ impl App {
         // the border under the pointer, from every event that says where it is (a release off the border, a wake, a
         // popup opening: none of them may leave a stale resize pointer behind; the owner, 2026-11-05)
         self.grip_hover = match (self.modal(), self.hit_at(m.column, m.row)) {
-            (None, Some(Hit::Divider(i))) => Some(i),
+            (None | Some(Modal::Arrange), Some(Hit::Divider(i))) => Some(i),
             _ => None,
         };
         // a release we never heard ends what it held, before anything else sees the event (even one that only wakes)
@@ -2579,8 +2686,17 @@ impl App {
         let coarse = m.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT);
         // the one gate: while a popup is open the mouse belongs to it, and nothing behind it ever sees an event
         // (decided from state, not from last frame's hit rectangles, which a burst or a key in the same batch outdates)
-        if let Some(modal) = self.modal() {
+        // (Arrange mode leaves the player bar as it is, Q39: a press or the wheel on it, and a scrub begun there, are
+        // the bar's own, as outside it)
+        let bar = self.player_rect();
+        let on_bar = self.scrub.is_some() || m.column >= bar.x && m.column < bar.right() && m.row >= bar.y && m.row < bar.bottom();
+        if let Some(modal) = self.modal().filter(|&md| !(md == Modal::Arrange && on_bar && self.tile.is_none() && self.drag.is_none())) {
             return self.modal_pointer(modal, m, coarse);
+        }
+        // a song held in the queue popup, which has closed (another popup took its place, a key closed it): the drag
+        // aimed at a list that's gone, so it ends without moving anything
+        if self.queue_drag.is_some() && !self.layout.has(Widget::Queue) {
+            self.queue_drag = None;
         }
         // a Pane held by its title: the pointer is the Pane's until it lets go
         if self.tile.is_some() {
@@ -2590,7 +2706,7 @@ impl App {
         if self.settings_view.is_some() && matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) {
             // (as over the main Pane: it takes the focus, so the highlight shows)
             if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
-                self.pane_wheel(crate::wheel::Widget::Home, m.column, m.row, if m.kind == MouseEventKind::ScrollUp { -1 } else { 1 }, coarse);
+                self.pane_wheel(Widget::Home, m.column, m.row, if m.kind == MouseEventKind::ScrollUp { -1 } else { 1 }, coarse);
             }
             return;
         }
@@ -2600,23 +2716,23 @@ impl App {
                 let at = Some((m.column, m.row));
                 match self.hit_at(m.column, m.row) {
                     Some(Hit::Card(c)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         self.open_menu(c, at);
                     }
                     Some(Hit::Side(row)) => {
-                        self.focus = "library".into();
+                        self.focus_on(Widget::Library);
                         self.open_side_menu(row, at);
                     }
                     Some(Hit::Track(vi)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         self.open_row_menu(vi, at);
                     }
                     Some(Hit::QueueRow(i)) => {
-                        self.focus = "queue".into();
+                        self.focus_on(Widget::Queue);
                         self.open_queue_menu(i, at);
                     }
                     Some(Hit::StatsRow(i)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         if let Some(v) = self.stats_view.as_mut() {
                             v.sel = i;
                         }
@@ -2639,19 +2755,26 @@ impl App {
                             self.open_track_menu(t.uri, t.name, at);
                         }
                     }
-                    // a Pane's title bar: split, move, close
-                    Some(Hit::Title(s) | Hit::Swap(s, _)) => self.open_pane_menu(s, at),
-                    _ => {}
+                    // a Pane's title bar: replace, split, close, move
+                    Some(Hit::Title(s) | Hit::TitleName(s) | Hit::Swap(s, _)) => self.open_pane_menu(s, at),
+                    // a border between Panes is no Pane's
+                    Some(Hit::Divider(_)) => {}
+                    // a Pane's body without a menu of its own: the Pane's (D87)
+                    _ => {
+                        if let Some(p) = self.pane_at(m.column, m.row) {
+                            self.open_pane_menu(p, at);
+                        }
+                    }
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 match self.hit_at(m.column, m.row) {
                     Some(Hit::Side(row)) => {
-                        self.focus = "library".into();
+                        self.focus_on(Widget::Library);
                         self.open_side(row);
                     }
                     Some(Hit::Track(vi)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         // a second click on the same row soon after plays it
                         // (by identity: a page arriving between the clicks doesn't make it another song, D81)
                         let id = self.open.id_at(vi);
@@ -2671,7 +2794,7 @@ impl App {
                     }
                     Some(Hit::SortCol(c)) => self.sort(c),
                     Some(Hit::Setting(i)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         if let Some(v) = self.settings_view.as_mut() {
                             v.sel = i;
                             v.typing = None;
@@ -2680,18 +2803,18 @@ impl App {
                         self.settings_activate(i);
                     }
                     Some(Hit::SettingsTab(t)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         self.settings_tab(t);
                     }
                     Some(Hit::KeyRow(i)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         if let Some(v) = self.settings_view.as_mut() {
                             v.key_sel = i;
                             v.on_tabs = false;
                         }
                     }
                     Some(Hit::SettingStep(i, d)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         if let Some(v) = self.settings_view.as_mut() {
                             v.sel = i;
                             v.typing = None;
@@ -2700,13 +2823,13 @@ impl App {
                         self.settings_step(i, d);
                     }
                     Some(Hit::StatsPeriod(p)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         self.stats_set_period(p);
                     }
                     Some(Hit::TopWeek(i)) => self.top_week_click(i),
                     Some(Hit::TopWeekToggle) => self.top_week_tracks = !self.top_week_tracks,
                     Some(Hit::StatsRow(i)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         if let Some(v) = self.stats_view.as_mut() {
                             v.sel = i;
                         }
@@ -2721,20 +2844,19 @@ impl App {
                         }
                     }
                     Some(Hit::QueueRow(i)) => {
-                        self.focus = "queue".into();
-                        self.queue_view.sel = i;
+                        self.focus_on(Widget::Queue);
+                        self.queue_view.place(i);
                         // a queued or context song can be dragged (a context song also up into your queue)
                         self.queue_drag = crate::queue::QueueDrag::start(self, i);
                     }
                     // click a lyric line: jump there (where the music is when the delayed line shows)
                     Some(Hit::Lyric(ms)) => self.seek_to((ms as i64 + self.config.lyrics.delay()).max(0) as u64),
                     Some(Hit::Well) => {
-                        let hole = self.layout.compute(Rect::new(0, 0, 200, 60)).slots.iter().any(|(s, _)| s == "hole");
-                        self.focus = if hole { "hole" } else { "well" }.into();
+                        self.focus_on(if self.layout.has(Widget::Hole) { Widget::Hole } else { Widget::Well });
                         self.run(Action::NextLook);
                     }
                     Some(Hit::Card(c)) => {
-                        self.focus = "home".into();
+                        self.focus_on(Widget::Home);
                         self.open_card(c);
                     }
                     Some(Hit::PlayView) => self.play_view(),
@@ -2779,27 +2901,19 @@ impl App {
                             self.last_click = Some((Instant::now(), usize::MAX - i));
                         }
                     }
-                    Some(Hit::MenuItem(_) | Hit::PickerItem(_) | Hit::AddPick(_)) => {}
-                    Some(Hit::Swap(slot, d)) => {
-                        self.swap_widget(&slot, d);
+                    Some(Hit::MenuItem(_) | Hit::MenuSplit(_) | Hit::PickerItem(_) | Hit::AddPick(_)) => {}
+                    Some(Hit::Swap(p, d)) => {
+                        self.swap_widget(p, d);
                     }
                     Some(Hit::History(d)) if d < 0 => self.go_back(),
                     Some(Hit::History(_)) => self.go_forward(),
-                    Some(Hit::Focus(s)) => self.focus = s,
-                    Some(Hit::Title(s)) => self.tile_down(s, m.column, m.row),
-                    Some(Hit::Close(s)) => self.close_pane(&s),
-                    Some(Hit::WidgetItem(_)) => {}
-                    Some(Hit::Divider(i)) => {
-                        self.divider_from = Some(self.layout.clone());
-                        if let Some(d) = self.dividers.get(i) {
-                            let (boundary, grab) = match d.axis {
-                                crate::layout::Axis::Horizontal => (d.grip.x + 1, m.column),
-                                crate::layout::Axis::Vertical => (d.grip.y + 1, m.row),
-                            };
-                            self.drag_offset = boundary as i32 - grab as i32;
-                        }
-                        self.drag = Some(Hit::Divider(i));
-                    }
+                    Some(Hit::Focus(p)) => self.focus = Some(p),
+                    Some(Hit::Title(p) | Hit::TitleName(p)) => self.tile_down(p, m.column, m.row),
+                    Some(Hit::Close(p)) => self.close_pane(p),
+                    Some(Hit::PickWidget(_)) => {}
+                    Some(Hit::Divider(i)) => self.grab_divider(i, m.column, m.row),
+                    // (only drawn in Arrange mode, which takes its own clicks)
+                    Some(Hit::SplitPane(_) | Hit::TrayItem(_) | Hit::TrayRemove(_) | Hit::ClearTray | Hit::TrayAdd | Hit::TrayScroll(_) | Hit::ArrangeDone) => {}
                     Some(Hit::Action(a)) => self.run(a),
                     Some(Hit::PaletteItem(i)) => {
                         if let Some(a) = self.palette_items().get(i).copied() {
@@ -2869,7 +2983,7 @@ impl App {
                     _ => {}
                 }
                 // a Pane, whatever's under the pointer in it: its Widget says what the wheel does there (`wheel.rs`)
-                if let Some(w) = self.pane_at(m.column, m.row).as_deref().and_then(crate::wheel::Widget::of) {
+                if let Some(w) = self.pane_at(m.column, m.row).and_then(|p| self.layout.widget_in(p)) {
                     self.pane_wheel(w, m.column, m.row, rows, coarse);
                 }
             }
@@ -2882,7 +2996,7 @@ impl App {
 macro_rules! modals {
     ($($(#[$doc:meta])* $v:ident,)*) => {
         /// What can be on top of the Panes, owning the mouse (and the keyboard): a [`Popup`], the setup wizard, the
-        /// login code or Move mode. [`App::layers`] gives the one order they stack in (D83).
+        /// login code or Arrange mode. [`App::layers`] gives the one order they stack in (D83).
         ///
         /// Adding a popup? Make it a variant here and in [`Popup`]; the compiler then asks for its arms in
         /// `Popup::modal`, `App::modal_scroll` (what the wheel does in it), the key and click handling and `ui`'s
@@ -2904,8 +3018,12 @@ modals! {
     Palette,
     Picker,
     Naming,
-    /// the Widget list for a new Pane ("Split right" and the like)
-    Widgets,
+    /// the Widget picker: what a Pane shows (Replace widget…)
+    WidgetPicker,
+    /// the library as a popup, where no Pane shows it (D87)
+    Library,
+    /// the queue as a popup, where no Pane shows it (D87)
+    Queue,
     Details,
     Adding,
     Cover,
@@ -2914,19 +3032,25 @@ modals! {
     Health,
     Menu,
     Help,
-    /// Move mode: the keyboard has the Pane, so a click only ends it
-    Move,
+    /// Arrange mode (D87): the Panes take title drags, dividers and their split and close buttons; the player bar
+    /// stays as it is, the Tray sits under it, the legend and Done where the hints were (Q39)
+    Arrange,
     /// the pairing popup: not a keyboard modal, but it covers the screen and so takes the wheel
     Login,
 }
 
 /// The popup open, holding what it shows (D83). One at a time: opening one replaces the one open. The setup wizard,
-/// the login code and Move mode aren't popups you open; they follow from state ([`App::layers`]).
+/// the login code and Arrange mode aren't popups you open; they follow from state ([`App::layers`]).
 pub(crate) enum Popup {
     Palette(Palette),
     Picker(crate::looks::Picker),
     Naming(Naming),
-    Widgets(crate::arrange::WidgetPick),
+    WidgetPicker(crate::panemenu::WidgetPicker),
+    /// the library without a Pane (D87): its list, its selection (`App::sidebar`) and its keys
+    Library,
+    /// the queue without a Pane (D87): its list, its selection (`App::queue_view`) and its keys; `h` is the height it
+    /// was last drawn at, which it keeps while a song is held (a queue changing mid-drag doesn't move the box)
+    Queue { h: u16 },
     Details(crate::playlists::Details),
     Adding(crate::playlists::Adding),
     Cover(crate::cover::CoverForm),
@@ -2943,7 +3067,9 @@ impl Popup {
             Popup::Palette(_) => Modal::Palette,
             Popup::Picker(_) => Modal::Picker,
             Popup::Naming(_) => Modal::Naming,
-            Popup::Widgets(_) => Modal::Widgets,
+            Popup::WidgetPicker(_) => Modal::WidgetPicker,
+            Popup::Library => Modal::Library,
+            Popup::Queue { .. } => Modal::Queue,
             Popup::Details(_) => Modal::Details,
             Popup::Adding(_) => Modal::Adding,
             Popup::Cover(_) => Modal::Cover,
@@ -2992,7 +3118,7 @@ popup_data! {
     palette, palette_mut, take_palette: Palette(Palette);
     picker, picker_mut, take_picker: Picker(crate::looks::Picker);
     naming, naming_mut, take_naming: Naming(Naming);
-    widget_pick, widget_pick_mut, take_widget_pick: Widgets(crate::arrange::WidgetPick);
+    widget_picker, widget_picker_mut, take_widget_picker: WidgetPicker(crate::panemenu::WidgetPicker);
     details, details_mut, take_details: Details(crate::playlists::Details);
     adding, adding_mut, take_adding: Adding(crate::playlists::Adding);
     cover_form, cover_form_mut, take_cover_form: Cover(crate::cover::CoverForm);
@@ -3002,6 +3128,8 @@ popup_data! {
 impl App {
     /// Open `p`, replacing the popup open (popups don't nest).
     pub(crate) fn open_popup(&mut self, p: Popup) {
+        // a Widget held meanwhile is let go: its chip would be drawn over the popup (#40 review)
+        self.tile_cancel();
         self.popup = Some(p);
     }
 
@@ -3034,13 +3162,14 @@ impl App {
     }
 
     /// What's over the Panes, the top first: the popup you opened, then the setup wizard, then the login code, then
-    /// Move mode (D83). This is the one order: keys, the pointer, the wheel and drawing all follow it.
+    /// Arrange mode (D83, D87). This is the one order: keys, the pointer, the wheel and drawing all follow it.
     pub(crate) fn layers(&self) -> Vec<Modal> {
         let wizard = crate::setup::wanted(self);
         // the wizard shows the code itself
         let login = !wizard && matches!(self.catalogue, Some(CatalogueStatus::LoginPending { .. })) && !self.login_hidden;
         let mut layers: Vec<Modal> = self.popup.as_ref().map(Popup::modal).into_iter().collect();
-        layers.extend([(wizard, Modal::Wizard), (login, Modal::Login), (self.move_mode.is_some(), Modal::Move)].into_iter().filter_map(|(on, m)| on.then_some(m)));
+        let on = [(wizard, Modal::Wizard), (login, Modal::Login), (self.arranging.is_some() && !self.mini, Modal::Arrange)];
+        layers.extend(on.into_iter().filter_map(|(on, m)| on.then_some(m)));
         layers
     }
 
@@ -3070,10 +3199,20 @@ impl App {
                     }
                 }
             }
-            Modal::Widgets => {
-                if let Some(p) = self.widget_pick_mut() {
-                    p.sel = moved(p.sel, rows, p.items.len());
+            Modal::WidgetPicker => {
+                let n = self.widget_choices().len();
+                if let Some(p) = self.widget_picker_mut() {
+                    p.sel = moved(p.sel, rows, n);
                 }
+            }
+            // as over their Panes: the highlight moves (and the list's window follows it)
+            Modal::Library => {
+                let n = crate::sidebar::len(self);
+                self.sidebar.move_sel(rows as i64, n);
+            }
+            Modal::Queue => {
+                let n = self.playback.queue.len();
+                self.queue_view.move_sel(rows as i64, n);
             }
             Modal::Adding => self.adding_move(rows),
             // the row after the devices is the Jam's
@@ -3094,24 +3233,47 @@ impl App {
                 }
             }
             Modal::Wizard => self.wizard_scroll.by(rows),
+            // the Tray, when it holds more than fits: one Widget a notch
+            Modal::Arrange => self.tray_scroll(rows),
             // a long description: back up through it (it shows its end, where you type)
             Modal::Details => {
                 if let Some(d) = self.details() {
                     d.scroll.by(-rows);
                 }
             }
-            // one line to type in, a short notice, or the Pane itself (Move mode): nothing to scroll
-            Modal::Naming | Modal::Cover | Modal::Login | Modal::Move => {}
+            // one line to type in, a short notice: nothing to scroll
+            Modal::Naming | Modal::Cover | Modal::Login => {}
         }
     }
 
     /// A mouse event while `modal` is open. The wheel scrolls the popup wherever the pointer is (so a burst, a
     /// pointer past the popup's edge or a stale rectangle can't hand it to the Pane behind), clicks work inside it
     /// (outside, they close the popups that can be closed by a click), and drags, right clicks and sideways wheels
-    /// do nothing.
+    /// do nothing, but in the library and queue popups, which are their Panes' lists: a right click on a row opens its
+    /// menu, and the queue's songs are dragged into a new order.
     fn modal_pointer(&mut self, modal: Modal, m: MouseEvent, coarse: bool) {
+        // Arrange mode is the Panes' own layer: its gestures are the arranging ones (`arrange.rs`)
+        if modal == Modal::Arrange {
+            return self.arrange_pointer(m, coarse);
+        }
         let up = m.kind == MouseEventKind::ScrollUp;
+        let inside = self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom());
         match m.kind {
+            MouseEventKind::Down(MouseButton::Right) => match (modal, self.hit_at(m.column, m.row)) {
+                (Modal::Library, Some(Hit::Side(row))) => self.open_side_menu(row, Some((m.column, m.row))),
+                (Modal::Queue, Some(Hit::QueueRow(i))) => self.open_queue_menu(i, Some((m.column, m.row))),
+                _ => {}
+            },
+            MouseEventKind::Drag(MouseButton::Left) if modal == Modal::Queue => {
+                if let Some(d) = self.queue_drag.clone() {
+                    self.queue_drag = Some(crate::queue::target(self, d, m.row));
+                }
+            }
+            MouseEventKind::Up(_) if modal == Modal::Queue && self.queue_drag.is_some() => {
+                if let Some(d) = self.queue_drag.take() {
+                    self.drop_queued(d);
+                }
+            }
             // one row a notch (a burst is one notch by now), ten with a modifier
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => self.modal_scroll(modal, if up { -1 } else { 1 } * if coarse { 10 } else { 1 }),
             MouseEventKind::Down(MouseButton::Left) => {
@@ -3130,6 +3292,7 @@ impl App {
                     },
                     // a click elsewhere only closes the menu
                     Modal::Menu => match hit {
+                        Some(Hit::MenuSplit(side)) => self.menu_split(side),
                         Some(Hit::MenuItem(i)) => self.menu_run(i),
                         _ => self.close_if_open(Modal::Menu),
                     },
@@ -3149,17 +3312,29 @@ impl App {
                         _ => {}
                     },
                     Modal::Help => self.close_if_open(Modal::Help),
-                    // the bar's "undo" works in Move mode; any other click ends it
-                    Modal::Move => match hit {
-                        Some(Hit::Action(a @ (Action::UndoLayout | Action::RedoLayout))) => self.run(a),
-                        _ => self.move_mode = None,
+                    // outside the popup closes it; inside, on the typed line or the line, nothing
+                    Modal::WidgetPicker => match hit {
+                        Some(Hit::PickWidget(i)) => self.widget_picked(i),
+                        _ if !self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom()) => self.widget_picker_cancel(),
+                        _ => {}
                     },
-                    Modal::Widgets => match hit {
-                        Some(Hit::WidgetItem(i)) => self.widget_chosen(i),
-                        _ => self.close_if_open(Modal::Widgets),
+                    // a row opens into Home's Pane; outside closes it; inside, on the hint, nothing
+                    Modal::Library => match hit {
+                        Some(Hit::Side(row)) => self.library_popup_open(row),
+                        _ if !inside => self.close_if_open(Modal::Library),
+                        _ => {}
+                    },
+                    // a song is highlighted and can be dragged (as in its Pane)
+                    Modal::Queue => match hit {
+                        Some(Hit::QueueRow(i)) => {
+                            self.queue_view.place(i);
+                            self.queue_drag = crate::queue::QueueDrag::start(self, i);
+                        }
+                        _ if !inside => self.close_queue_popup(),
+                        _ => {}
                     },
                     // forms and the wizard are typed into; a click on or around them does nothing
-                    Modal::Naming | Modal::Details | Modal::Cover | Modal::Wizard | Modal::Health | Modal::Login => {}
+                    Modal::Naming | Modal::Details | Modal::Cover | Modal::Wizard | Modal::Health | Modal::Login | Modal::Arrange => {}
                 }
             }
             // a press that started before the popup opened ends without doing anything
@@ -3220,7 +3395,7 @@ fn capitalise(s: &str) -> String {
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
-fn fuzzy(hay: &str, q: &str) -> bool {
+pub(crate) fn fuzzy(hay: &str, q: &str) -> bool {
     let mut it = hay.chars();
     q.chars().filter(|c| !c.is_whitespace()).all(|c| it.any(|h| h == c))
 }

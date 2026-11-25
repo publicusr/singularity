@@ -1,6 +1,7 @@
 //! The gravity well (#16): the Pane that holds the black hole. Its own frame sags toward the hole, breathing with the
 //! bass, and the border lines of neighbouring Panes bend toward it. Only structure moves (box-drawing lines, redrawn as
-//! braille dots); text, titles and content never move, and no dot ever lands on text.
+//! braille dots); text, titles and content never move, and no dot ever lands on text. The hole's picture is at most
+//! 4:3: in a wider Pane it is letterboxed, centred (`picture`), and the frame still follows the Pane (#48).
 
 use crate::app::{App, Hit};
 use crate::theme::{Rgb, Theme};
@@ -27,20 +28,21 @@ pub fn draw(buf: &mut Buffer, outer: Rect, app: &mut App, th: &Theme) {
     for y in outer.top()..outer.bottom() {
         text(buf, outer.x, y, outer.width, &" ".repeat(outer.width as usize), th.base());
     }
-    let inner = Rect::new(outer.x + 2, outer.y + 1, outer.width.saturating_sub(4), outer.height.saturating_sub(2));
+    let inside = Rect::new(outer.x + 2, outer.y + 1, outer.width.saturating_sub(4), outer.height.saturating_sub(2));
     app.hit(outer, Hit::Well);
-    // its hole is out (idle takeover): the well is empty, and nothing bends
+    // its hole is out (idle takeover): the well is empty (said across the whole inside), and nothing bends
     if app.idle_secs().is_some() {
-        crate::visual::idle::empty_well(buf, inner, th);
+        crate::visual::idle::empty_well(buf, inside, th);
         warped_frame(buf, outer, 0.0, [th.border, th.dim]);
         text(buf, outer.x + 2, outer.y, 14, " gravity well ", th.s(th.accent));
         return;
     }
+    let inner = picture(inside, app.cell_aspect());
     remember_origin(inner, app);
     if render(buf, inner, app) {
         app.hole_at = Some(Hole { well: outer, cx: inner.x as f32 + inner.width as f32 / 2.0, cy: inner.y as f32 + inner.height as f32 / 2.0 });
     }
-    let focused = app.focus == "well";
+    let focused = app.is_focused(crate::layout::Widget::Well);
     warped_frame(buf, outer, 0.5 + app.hole.bass() * 0.9, if focused { [th.border_focus, th.accent] } else { [th.border, th.dim] });
     text(buf, outer.x + 2, outer.y, 14, " gravity well ", if focused { th.title() } else { th.s(th.accent) });
     look_label(buf, outer, app, th);
@@ -52,6 +54,7 @@ pub fn draw_plain(buf: &mut Buffer, outer: Rect, inner: Rect, app: &mut App, th:
     if app.idle_secs().is_some() {
         return crate::visual::idle::empty_well(buf, inner, th);
     }
+    let inner = picture(inner, app.cell_aspect());
     remember_origin(inner, app);
     render(buf, inner, app);
     look_label(buf, outer, app, th);
@@ -97,6 +100,17 @@ fn render(buf: &mut Buffer, inner: Rect, app: &mut App) -> bool {
         return true;
     }
     false
+}
+
+/// Where the hole's picture goes inside `inner` (a Pane's inside, cells `cell_aspect` times taller than wide): all of
+/// it, unless that is wider than the well's 4:3 (`WELL_ASPECT`, a little wider let be); then a 4:3 picture as tall as
+/// the Pane, centred in it, with the theme's background either side (#48: the Pane keeps its outline wherever it is).
+pub fn picture(inner: Rect, cell_aspect: f64) -> Rect {
+    let want = (inner.height as f64 * cell_aspect * crate::layout::WELL_ASPECT).round() as u16;
+    if inner.width <= want + want / 20 {
+        return inner;
+    }
+    Rect::new(inner.x + (inner.width - want) / 2, inner.y, want, inner.height)
 }
 
 fn mix(a: Rgb, b: Rgb, t: f32) -> Color {
@@ -285,6 +299,17 @@ mod tests {
                 assert_eq!(buf[(x, y)].symbol(), " ", "nothing lands in the well");
             }
         }
+    }
+
+    #[test]
+    fn a_wide_pane_letterboxes_the_picture_and_a_narrow_one_fills() {
+        // 20 rows inside: a 4:3 picture is 53 cells wide with cells twice as tall as wide, 57 with Retina's 16×34
+        let wide = Rect::new(10, 3, 101, 20);
+        assert_eq!(picture(wide, 2.0), Rect::new(34, 3, 53, 20), "centred in the Pane, as tall as it");
+        assert_eq!(picture(wide, 34.0 / 16.0).width, 57);
+        // a little wider than 4:3 is let be, and a narrower Pane's picture fills it (the hole fits itself in)
+        assert_eq!(picture(Rect::new(0, 0, 55, 20), 2.0), Rect::new(0, 0, 55, 20));
+        assert_eq!(picture(Rect::new(0, 0, 30, 20), 2.0), Rect::new(0, 0, 30, 20));
     }
 
     #[test]

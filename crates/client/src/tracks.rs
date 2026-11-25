@@ -349,7 +349,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
     // hit-boxes are registered once the list is no longer borrowed
     let mut hits: Vec<(Rect, Hit)> = vec![];
-    let focused = app.focus == "home";
+    let focused = app.is_focused(crate::layout::Widget::Home);
     let x0 = r.x + 1;
     let w = r.width.saturating_sub(2);
     // header: title, count / progress, filter
