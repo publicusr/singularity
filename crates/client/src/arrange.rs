@@ -524,14 +524,20 @@ impl App {
         self.edited();
     }
 
+    /// `tree` replaces the layout as an edit (one undo step).
     pub(crate) fn commit_layout(&mut self, tree: Arrangement) {
+        self.commit_kept(tree);
+    }
+
+    /// `commit_layout`, and what `edited` says of it: Some, the built-in Design's copy it was just kept as.
+    fn commit_kept(&mut self, tree: Arrangement) -> Option<String> {
         let was = self.snapshot();
         let tray = self.layout.tray().to_vec();
         self.layout = tree;
         self.settle_tray_focus(&tray);
         self.remember(was);
         self.want_widget_data();
-        self.edited();
+        self.edited()
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -594,18 +600,21 @@ impl App {
 
     /// The layout was edited. A Design of the user's own (or the unnamed edit of a built-in one) follows in its file;
     /// an edit of a built-in Design is kept at once as its "<Design> (edited)", never asking (Q33): outside Arrange
-    /// mode the bar says so, and in Arrange mode Done asks for a name.
-    pub fn edited(&mut self) {
+    /// mode the bar says so, and in Arrange mode Done asks for a name. Some: the edit was just kept as that copy
+    /// ("Singularity (edited)") outside Arrange mode.
+    pub fn edited(&mut self) -> Option<String> {
         if let Some(a) = self.arranging.as_mut() {
             a.edited = true;
             a.split_next = false;
             // a New design… is written when Done names it
             if a.fresh.is_some() {
-                return;
+                return None;
             }
         }
-        let o = self.shown.edited(&self.layout, &self.theme.id, self.arranging.is_some());
+        let mut o = self.shown.edited(&self.layout, &self.theme.id, self.arranging.is_some());
+        let kept = o.kept_as.take();
         self.shown_did(o);
+        kept
     }
 
     // ── Arrange mode ──────────────────────────────────────────────────
@@ -737,9 +746,10 @@ impl App {
         self.tile = None;
         self.relayout();
         let changed = a.edited && a.since != self.layout;
-        if changed && self.shown.on_edited_copy() && self.naming().is_none() {
-            self.reload_layouts();
-            let name = self.shown.suggest_name();
+        if changed && self.naming().is_none() && let Some((name, problems)) = self.shown.done_prompt() {
+            if let Some(p) = problems {
+                self.say(p);
+            }
             self.open_popup(crate::app::Popup::Naming(Naming::fork(name)));
         }
     }
@@ -1041,12 +1051,10 @@ impl App {
         if self.focus == Some(id) {
             self.focus = fallback_pane(&tree);
         }
-        let built_in = self.shown.file().is_none();
-        self.commit_layout(tree);
         // (the bar's one line: what the edit did, and where a built-in Design's edit went)
-        match built_in && self.shown.file().is_some() && self.arranging.is_none() {
-            true => self.say(format!("Closed {name} · kept as {} (edited)", self.shown.built_in().name)),
-            false => self.say(format!("Closed {name}")),
+        match self.commit_kept(tree) {
+            Some(copy) => self.say(format!("Closed {name} · kept as {copy}")),
+            None => self.say(format!("Closed {name}")),
         }
     }
 

@@ -37,18 +37,49 @@ impl Store for Folder {
     }
 }
 
-/// What a change to the Shown Design asks of the App: a line for the bar, and whether config.toml should follow
-/// (another Design or file is on screen).
+/// What a change to the Shown Design asks of the App, in the order it happens: lines for the bar (the last one shows)
+/// and saving config.toml (another Design or file is on screen); and, when an edit of a built-in Design was just kept
+/// as its copy outside Arrange mode, that copy's name ("Singularity (edited)").
 #[must_use]
 #[derive(Debug, Default, PartialEq)]
 pub struct Outcome {
-    pub said: Option<String>,
-    pub save_ui: bool,
+    steps: Vec<Step>,
+    pub kept_as: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Step {
+    Say(String),
+    SaveUi,
 }
 
 impl Outcome {
     fn say(&mut self, s: impl Into<String>) {
-        self.said = Some(s.into());
+        self.steps.push(Step::Say(s.into()));
+    }
+
+    fn save_ui(&mut self) {
+        self.steps.push(Step::SaveUi);
+    }
+
+    /// What the bar ends up saying, if anything.
+    #[cfg(test)]
+    pub fn said(&self) -> Option<&str> {
+        self.steps.iter().rev().find_map(|s| match s {
+            Step::Say(t) => Some(t.as_str()),
+            Step::SaveUi => None,
+        })
+    }
+
+    /// Whether config.toml is saved.
+    #[cfg(test)]
+    pub fn saves_ui(&self) -> bool {
+        self.steps.contains(&Step::SaveUi)
+    }
+
+    /// The steps, in order, for the App to carry out.
+    pub fn steps(self) -> Vec<Step> {
+        self.steps
     }
 }
 
@@ -163,8 +194,18 @@ impl ShownDesign {
         }
     }
 
+    /// Done after changes in Arrange mode: if they went to a built-in Design's "(edited)" copy, the name its prompt
+    /// suggests, after reading the folder again (and what couldn't be read, for the bar); None: no prompt.
+    pub fn done_prompt(&mut self) -> Option<(String, Option<String>)> {
+        if !self.on_edited_copy() {
+            return None;
+        }
+        let problems = self.reload();
+        Some((self.suggest_name(), problems))
+    }
+
     /// "Singularity 2", "Singularity 3"…: the first name not taken by a Design of the user's.
-    pub fn suggest_name(&self) -> String {
+    fn suggest_name(&self) -> String {
         let base = self.built_in().name;
         (2..).map(|n| format!("{base} {n}")).find(|c| !self.saved.iter().any(|s| s.id == file_id(c))).expect("a free name")
     }
@@ -215,13 +256,17 @@ impl ShownDesign {
         match self.own().cloned() {
             Some(s) => self.write(&s.id, &s.name, &s.design, s.edited, a, theme),
             None => {
-                self.file = None;
+                // (a file on screen that has since gone from the folder: kept as the copy too, but it wasn't the
+                // built-in Design that was edited)
+                let built_in = self.file.take().is_none();
                 if self.store.is_none() {
                     return Outcome::default();
                 }
                 let mut out = self.keep_edited(a, theme);
                 if !quiet && self.file.is_some() {
-                    out.say(format!("Kept as {} (edited)", self.built_in().name));
+                    let copy = self.copy_name();
+                    out.say(format!("Kept as {copy}"));
+                    out.kept_as = built_in.then_some(copy);
                 }
                 out
             }
@@ -231,7 +276,12 @@ impl ShownDesign {
     /// Keep `a` as the built-in Design's one unnamed "<Design> (edited)", replacing the last (Esc on Done's prompt).
     pub fn keep_edited(&mut self, a: &Arrangement, theme: &str) -> Outcome {
         let d = self.built_in();
-        self.write(&edited_id(d.id), &format!("{} (edited)", d.name), d.id, true, a, theme)
+        self.write(&edited_id(d.id), &self.copy_name(), d.id, true, a, theme)
+    }
+
+    /// The name of the built-in Design's unnamed copy: "<Design> (edited)".
+    fn copy_name(&self) -> String {
+        format!("{} (edited)", self.built_in().name)
     }
 
     /// Save `a` as a Design of the user's called `name`: it is the one on screen from now on.
@@ -251,7 +301,7 @@ impl ShownDesign {
             Ok(()) => {
                 self.file = Some(id);
                 self.reread(&mut out);
-                out.save_ui = true;
+                out.save_ui();
                 out.say(format!("Saved design \"{}\" (Ctrl+K → Pick a design)", s.name));
             }
             Err(e) => out.say(format!("Couldn't save the layout: {e}")),
@@ -295,7 +345,8 @@ impl ShownDesign {
     /// "Reset design": the built-in Design again (the App puts its layout back). A Design of the user's stays in the
     /// picker as it was last saved; the unnamed edit of a built-in one is dropped.
     pub fn reset(&mut self) -> Outcome {
-        let mut out = Outcome { save_ui: true, ..Default::default() };
+        let mut out = Outcome::default();
+        out.save_ui();
         let name = self.built_in().name;
         let was = self.own().cloned();
         self.file = None;
@@ -327,11 +378,11 @@ impl ShownDesign {
             Some(w) if w.edited => {
                 self.remove(&w.id);
                 self.reread(&mut out);
-                out.save_ui = true;
+                out.save_ui();
                 out.say(format!("Back to {base}"));
             }
             Some(w) => {
-                out.save_ui = true;
+                out.save_ui();
                 out.say(format!("Back to {base} · \"{}\" is still in the Design picker", w.name));
             }
             None => {}
@@ -349,9 +400,12 @@ impl ShownDesign {
         }
         match self.put(&saved(id, name, design, theme, a, edited)) {
             Ok(()) => {
-                out.save_ui = self.file.as_deref() != Some(id);
+                let new = self.file.as_deref() != Some(id);
                 self.file = Some(id.to_string());
                 self.reread(&mut out);
+                if new {
+                    out.save_ui();
+                }
             }
             Err(e) => out.say(format!("Couldn't save the layout: {e}")),
         }
@@ -375,29 +429,38 @@ fn saved(id: &str, name: &str, design: &str, theme: &str, a: &Arrangement, edite
 }
 
 fn taken(name: &str) -> Outcome {
-    Outcome { said: Some(format!("There is already a design called \"{}\"", name.trim())), save_ui: false }
+    let mut out = Outcome::default();
+    out.say(format!("There is already a design called \"{}\"", name.trim()));
+    out
 }
 
 /// The user's Designs in memory, for tests.
 #[cfg(test)]
-#[derive(Default)]
-pub struct Memory(pub std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<String, Saved>>>);
+#[derive(Clone, Default)]
+pub struct Memory {
+    pub files: std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<String, Saved>>>,
+    /// the next write fails (as a full disk would)
+    pub fail_next: std::rc::Rc<std::cell::Cell<bool>>,
+}
 
 #[cfg(test)]
 impl Store for Memory {
     fn read(&self) -> (Vec<Saved>, Vec<String>) {
-        let mut all: Vec<Saved> = self.0.borrow().values().cloned().collect();
+        let mut all: Vec<Saved> = self.files.borrow().values().cloned().collect();
         all.sort_by_key(|s| s.name.to_lowercase());
         (all, vec![])
     }
 
     fn write(&mut self, s: &Saved) -> Result<(), String> {
-        self.0.borrow_mut().insert(s.id.clone(), s.clone());
+        if self.fail_next.replace(false) {
+            return Err("disk full".into());
+        }
+        self.files.borrow_mut().insert(s.id.clone(), s.clone());
         Ok(())
     }
 
     fn remove(&mut self, id: &str) {
-        self.0.borrow_mut().remove(id);
+        self.files.borrow_mut().remove(id);
     }
 }
 

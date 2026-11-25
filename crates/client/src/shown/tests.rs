@@ -7,7 +7,7 @@ use crate::layout::{Node, Widget};
 fn shown() -> (ShownDesign, Memory) {
     let mem = Memory::default();
     let mut s = ShownDesign::default();
-    s.set_store(Box::new(Memory(mem.0.clone())));
+    s.set_store(Box::new(mem.clone()));
     assert_eq!(s.reload(), None);
     (s, mem)
 }
@@ -15,7 +15,7 @@ fn shown() -> (ShownDesign, Memory) {
 const THEME: &str = "singularity";
 
 fn files(m: &Memory) -> Vec<(String, String, bool)> {
-    m.0.borrow().values().map(|s| (s.id.clone(), s.name.clone(), s.edited)).collect()
+    m.files.borrow().values().map(|s| (s.id.clone(), s.name.clone(), s.edited)).collect()
 }
 
 /// The built-in Singularity layout with two Widgets swapped: an edit.
@@ -28,7 +28,7 @@ fn edit(a: Node, x: Widget, y: Widget) -> Arrangement {
 }
 
 fn said(o: &Outcome) -> Option<&str> {
-    o.said.as_deref()
+    o.said()
 }
 
 #[test]
@@ -37,7 +37,9 @@ fn an_edit_of_a_built_in_design_is_kept_at_once_as_its_edited_copy() {
     let a = edit(Node::singularity(), Widget::Stream, Widget::Queue);
     let o = s.edited(&a, THEME, false);
     assert_eq!(said(&o), Some("Kept as Singularity (edited)"), "never asked, the bar says so (Q33)");
-    assert!(o.save_ui, "config.toml names the copy");
+    assert!(o.saves_ui(), "config.toml names the copy");
+    assert_eq!(o.kept_as.as_deref(), Some("Singularity (edited)"), "Close words it as \"· kept as …\"");
+    assert_eq!(o.steps().last(), Some(&Step::Say("Kept as Singularity (edited)".into())), "config.toml first, then the bar");
     assert_eq!(s.file(), Some("singularity-edited"));
     assert!(s.on_edited_copy());
     assert_eq!(files(&mem), [("singularity-edited".to_string(), "Singularity (edited)".to_string(), true)]);
@@ -56,8 +58,47 @@ fn an_edit_of_a_built_in_design_is_kept_at_once_as_its_edited_copy() {
 fn in_arrange_mode_the_copy_is_kept_quietly() {
     let (mut s, mem) = shown();
     let o = s.edited(&edit(Node::singularity(), Widget::Stream, Widget::Queue), THEME, true);
-    assert_eq!(said(&o), None, "Done asks for a name instead");
+    assert_eq!((said(&o), o.kept_as.as_deref()), (None, None), "Done asks for a name instead");
     assert!(s.on_edited_copy() && files(&mem).len() == 1);
+}
+
+#[test]
+fn done_asks_for_a_name_only_on_the_edited_copy_reading_the_folder_first() {
+    let (mut s, mem) = shown();
+    assert_eq!(s.done_prompt(), None, "the built-in Design: nothing was kept");
+    let a = edit(Node::singularity(), Widget::Stream, Widget::Queue);
+    let _ = s.edited(&a, THEME, true);
+    // a Design saved elsewhere meanwhile (another Client, a file copied in): the suggestion steps past it
+    mem.files.borrow_mut().insert("singularity-2".into(), saved("singularity-2", "Singularity 2", "singularity", THEME, &a, false));
+    assert_eq!(s.done_prompt(), Some(("Singularity 3".to_string(), None)));
+    let _ = s.save_as("Mine", &a, THEME);
+    assert_eq!(s.done_prompt(), None, "a Design of your own: its file has the changes");
+}
+
+#[test]
+fn undo_into_a_design_whose_write_fails_says_so_and_leaves_things_as_they_are() {
+    let (mut s, mem) = shown();
+    let a = edit(Node::singularity(), Widget::Stream, Widget::Queue);
+    let _ = s.save_as("Mine", &a, THEME);
+    let mine = s.mark();
+    let _ = s.reset();
+    mem.fail_next.set(true);
+    let o = s.restore(mine, &a, THEME);
+    assert_eq!(o.steps(), [Step::Say("Couldn't save the layout: disk full".into())]);
+    assert_eq!(s.file(), None, "still the built-in Design");
+    assert_eq!(s.find("mine").unwrap().arrangement(), a);
+}
+
+#[test]
+fn naming_the_copy_when_the_write_fails_says_so_and_keeps_the_copy() {
+    let (mut s, mem) = shown();
+    let a = edit(Node::singularity(), Widget::Stream, Widget::Queue);
+    let _ = s.edited(&a, THEME, true);
+    mem.fail_next.set(true);
+    let o = s.name_edit("Mine", &a, THEME).expect("not refused: the prompt closes");
+    assert_eq!(o.steps(), [Step::Say("Couldn't save the layout: disk full".into())]);
+    assert_eq!(s.file(), Some("singularity-edited"));
+    assert_eq!(files(&mem), [("singularity-edited".to_string(), "Singularity (edited)".to_string(), true)]);
 }
 
 #[test]
@@ -86,7 +127,7 @@ fn naming_the_copy_moves_it_into_a_design_of_your_own() {
     assert_eq!(s.suggest_name(), "Singularity 2");
     let o = s.name_edit("Mine", &a, THEME).expect("saved");
     assert_eq!(said(&o), Some("Saved design \"Mine\" (Ctrl+K → Pick a design)"));
-    assert!(o.save_ui);
+    assert!(o.saves_ui());
     assert_eq!(s.file(), Some("mine"));
     assert_eq!(files(&mem), [("mine".to_string(), "Mine".to_string(), false)], "no second file");
     // further edits go into its file, silently
@@ -116,7 +157,7 @@ fn reset_goes_back_to_the_built_in_design() {
     let (mut s, mem) = shown();
     // from the built-in one
     let o = s.reset();
-    assert_eq!((said(&o), o.save_ui), (Some("Singularity reset"), true));
+    assert_eq!((said(&o), o.saves_ui()), (Some("Singularity reset"), true));
     // from its edited copy: the copy goes
     let a = edit(Node::singularity(), Widget::Stream, Widget::Queue);
     let _ = s.edited(&a, THEME, false);
@@ -143,12 +184,12 @@ fn undo_brings_back_the_design_with_the_layout() {
     assert_eq!(edited.file(), Some("singularity-edited"));
     // undo the edit: the copy goes with the edit that made it
     let o = s.restore(before.clone(), &built_in, THEME);
-    assert_eq!((said(&o), o.save_ui), (Some("Back to Singularity"), true));
+    assert_eq!((said(&o), o.saves_ui()), (Some("Back to Singularity"), true));
     assert!(s.file().is_none() && files(&mem).is_empty());
     // redo: the copy is back, saying the edit again
     let o = s.restore(edited, &a, THEME);
     assert_eq!(said(&o), None);
-    assert!(o.save_ui);
+    assert!(o.saves_ui());
     assert_eq!(files(&mem), [("singularity-edited".to_string(), "Singularity (edited)".to_string(), true)]);
     assert_eq!(s.saved()[0].arrangement(), a);
     // undo within a Design of your own writes its file back; out of it to the built-in one, the file stays

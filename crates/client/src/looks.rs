@@ -207,13 +207,13 @@ impl App {
         }
     }
 
-    /// What a change to the Shown Design asks for: config.toml follows, the bar says it.
+    /// What a change to the Shown Design asks for, in its order: config.toml follows, the bar says it.
     pub(crate) fn shown_did(&mut self, o: crate::shown::Outcome) {
-        if o.save_ui {
-            self.save_ui();
-        }
-        if let Some(s) = o.said {
-            self.say(s);
+        for step in o.steps() {
+            match step {
+                crate::shown::Step::SaveUi => self.save_ui(),
+                crate::shown::Step::Say(s) => self.say(s),
+            }
         }
     }
 
