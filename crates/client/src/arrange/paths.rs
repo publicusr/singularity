@@ -197,8 +197,8 @@ impl Replay {
         }
     }
 
-    /// One event handled, as `main.rs`'s `handle` does (the pointer straight to Arrange mode's module, D89); a hold it ends is
-    /// recorded with how it ended.
+    /// One event handled, as `main.rs`'s `handle` does (the pointer straight to Arrange mode's module, D89); a hold it
+    /// ends is recorded with how it ended.
     fn handle(&mut self, at: Instant, ev: Event) {
         self.a.input_at = Some(at);
         let held = self.a.arrange.tile.as_ref().filter(|t| t.live).map(|t| (t.pane.id, Spot::of(t), t.pane.widget.filter(|_| t.from_tray)));
