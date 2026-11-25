@@ -1,57 +1,18 @@
-//! The OS's media integration on macOS (#68), MPRIS's counterpart: the Now Playing entry (Control Centre, the menu
+//! OS media integration's macOS adapter (#68), MPRIS's counterpart: the Now Playing entry (Control Centre, the menu
 //! bar), media keys and other remote commands, and track-change notifications.
 //!
-//! - Only for an Engine that plays from the Daemon (librespot): the Spotify app publishes its own Now Playing entry,
-//!   and a second one would fight it for the media keys.
-//! - Apple delivers remote commands on the main thread's run loop, so on macOS the Daemon runs tokio on another
-//!   thread and gives the main thread to [`main_thread`]; commands reach the Hub as a Client's would
-//!   (`crate::transport`).
-//! - Which track changes are news is shared with Linux ([`TrackNews`]); macOS notifications go through `osascript`
-//!   (a process without an app bundle can't post its own), without the cover.
+//! - Apple delivers remote commands on the main thread's run loop: [`main_thread`] is the main thread's part (the
+//!   handover is `super::main_thread`); commands reach the Hub as a Client's would (`crate::transport`).
+//! - macOS notifications go through `osascript` (a process without an app bundle can't post its own), without the
+//!   cover. Which track changes are news is shared (`super::TrackNews`).
 
-use singularity_proto::{PlayStatus, PlaybackState};
+use super::News;
 
-/// What the Daemon tells the OS.
-#[derive(Clone, Debug, Default)]
-pub struct Options {
-    /// a notification on each new track (`notifications.track_change`, changed live)
-    pub notify: std::sync::Arc<std::sync::atomic::AtomicBool>,
-}
+/// The name of its background task (the health view's row when it stops).
+pub const NAME: &str = "Now Playing";
 
-/// Decides when a track change is worth a notification: once per new track, when it starts playing, and not for the
-/// track that was already playing when the Daemon started.
-#[derive(Default)]
-pub struct TrackNews {
-    last_uri: Option<String>,
-}
-
-/// A notification: the track's name, and "artists — album".
-#[derive(Debug, Clone, PartialEq)]
-pub struct News {
-    pub title: String,
-    pub body: String,
-    pub cover_url: Option<String>,
-}
-
-impl TrackNews {
-    /// The notification for `s`, if it's news (and notifications are `on`).
-    pub fn news(&mut self, s: &PlaybackState, on: bool) -> Option<News> {
-        let i = s.item.as_ref().filter(|_| s.status == PlayStatus::Playing)?;
-        if self.last_uri.as_deref() == Some(i.uri.as_str()) {
-            return None;
-        }
-        let first = self.last_uri.is_none();
-        self.last_uri = Some(i.uri.clone());
-        if !on || (first && s.position_at(singularity_proto::now_ms()) > 5000) {
-            return None; // off, or the Daemon just started into a playing track: not news
-        }
-        let body = match &i.album {
-            Some(a) if !a.is_empty() => format!("{} — {a}", i.artists.join(", ")),
-            _ => i.artists.join(", "),
-        };
-        Some(News { title: i.name.clone(), body, cover_url: i.cover_url.clone() })
-    }
-}
+/// Now Playing is one entry for the whole system: the app that has it gets the media keys.
+pub const ONE_ENTRY: bool = true;
 
 /// `osascript`'s arguments for a notification. The title and body are data from Spotify (a podcast's episode titles
 /// come straight from its publisher's feed), so they go after `--`: a title like `-e…` would otherwise be read as
@@ -66,7 +27,7 @@ pub use mac::{main_thread, run};
 
 #[cfg(target_os = "macos")]
 mod mac {
-    use super::{News, Options, TrackNews};
+    use crate::os_media::{News, Options, TrackNews};
     use crate::Hub;
     use block2::RcBlock;
     use objc2::rc::Retained;
@@ -240,7 +201,6 @@ pub use mac::not_wanted;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use singularity_proto::Item;
 
     #[test]
     fn a_title_or_body_that_looks_like_an_option_stays_data_for_osascript() {
@@ -249,25 +209,5 @@ mod tests {
         let end = args.iter().position(|a| *a == "--").expect("options end before the data");
         assert_eq!(&args[end + 1..], [n.title.as_str(), n.body.as_str()]);
         assert_eq!(args.len(), end + 3, "nothing else after the data");
-    }
-
-    fn playing(uri: &str, pos: u64) -> PlaybackState {
-        let now = singularity_proto::now_ms();
-        PlaybackState { status: PlayStatus::Playing, item: Some(Item { uri: uri.into(), name: "Song".into(), artists: vec!["A".into(), "B".into()], album: Some("LP".into()), ..Default::default() }), position_ms: pos, timestamp_ms: now, speed: 1.0, ..Default::default() }
-    }
-
-    #[test]
-    fn a_new_track_is_news_once_and_the_one_playing_at_start_is_not() {
-        let mut n = TrackNews::default();
-        assert_eq!(n.news(&playing("t:1", 60_000), true), None, "already playing when the Daemon started");
-        let first = n.news(&playing("t:2", 0), true).unwrap();
-        assert_eq!((first.title.as_str(), first.body.as_str()), ("Song", "A, B — LP"));
-        assert_eq!(n.news(&playing("t:2", 1000), true), None, "the same track again");
-        assert_eq!(n.news(&playing("t:3", 0), false), None, "notifications off");
-        assert_eq!(n.news(&playing("t:3", 0), true), None, "seen while off: not news later");
-        let mut paused = playing("t:4", 0);
-        paused.status = PlayStatus::Paused;
-        assert_eq!(n.news(&paused, true), None, "only once it plays");
-        assert!(n.news(&playing("t:4", 0), true).is_some());
     }
 }

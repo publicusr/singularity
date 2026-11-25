@@ -66,7 +66,7 @@ asked librespot not to pursue it), hence Soloist itself in a small Linux VM (D53
 | Engine (ADR-0001, D51, D52, D55) | Soloist over its WebSocket; or the app / librespot | librespot; Soloist in the VM (`vm.rs`, `soloist_vm.rs`, `pcm.rs`); the app (started hidden) | see the Engines table |
 | AudioTap (D16) | `parec` on the Engine's PipeWire stream (Soloist's, or the app's); librespot in-process | librespot and the Soloist VM in-process; Core Audio process tap on Spotify.app (48 → 44.1 kHz) | 🔶 #67 for the app |
 | Secrets (D24) | `secret-tool` | `/usr/bin/security` | ✅ #64 |
-| OS media integration | MPRIS on D-Bus | Now Playing + remote commands (MediaPlayer framework; the main thread runs the run loop, tokio another thread) | 🔶 #68 |
+| OS media integration (`os_media`: one module picks the adapter, owns the main-thread handover and the shared policy; `SINGULARITY_NOWPLAYING=off` turns it off on both, `SINGULARITY_DBUS=off` still works) | MPRIS on D-Bus (`os_media/mpris.rs`) | Now Playing + remote commands (`os_media/now_playing.rs`, MediaPlayer framework; the main thread runs the run loop, tokio another thread) | 🔶 #68 |
 | Notifications | D-Bus | `osascript` | 🔶 #68 |
 | Autostart | systemd user unit | LaunchAgent | ✅ #69 |
 | Process lookup | `/proc` | `proc_name`, libproc | ✅ |

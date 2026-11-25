@@ -1,9 +1,10 @@
-//! MPRIS (#21): media keys, KDE's media widget and `playerctl` drive the Daemon over D-Bus, and optional desktop
-//! notifications say what's playing on a track change.
+//! OS media integration's Linux adapter, MPRIS (#21): media keys, KDE's media widget and `playerctl` drive the Daemon
+//! over D-Bus, and optional desktop notifications say what's playing on a track change.
 //!
 //! The player follows `Hub::playback` (so it shows another device's playback while that one plays) and sends the same
 //! transport commands a Client would (`crate::transport`).
 
+use super::Options;
 use crate::Hub;
 use singularity_proto::{Command, Event, PlayStatus, PlaybackState, RepeatMode};
 use std::collections::HashMap;
@@ -15,14 +16,14 @@ pub const BUS_NAME: &str = "org.mpris.MediaPlayer2.singularity";
 const PATH: &str = "/org/mpris/MediaPlayer2";
 const NO_TRACK: &str = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
 
-/// Where the Daemon meets the desktop.
-#[derive(Clone, Debug, Default)]
-pub struct Options {
-    /// a D-Bus address (tests use a private bus); `None` is the session bus
-    pub address: Option<String>,
-    /// a desktop notification on each new track (`notifications.track_change`, changed live)
-    pub notify: Arc<std::sync::atomic::AtomicBool>,
-}
+/// The name of its background task (the health view's row when it stops).
+pub const NAME: &str = "MPRIS";
+
+/// MPRIS lists every player: the Spotify app's own entry sits next to ours.
+pub const ONE_ENTRY: bool = false;
+
+/// Nothing to tell when the Daemon runs without it.
+pub fn not_wanted() {}
 
 /// Serve MPRIS until the Daemon stops. Without a bus (a headless box, a container) the Daemon carries on without it.
 pub async fn run(hub: Arc<Hub>, opts: Options) {
@@ -360,7 +361,7 @@ impl Player {
 /// Desktop notifications on track change (`org.freedesktop.Notifications`), each replacing the last.
 struct Notifier {
     conn: zbus::Connection,
-    news: crate::nowplaying::TrackNews,
+    news: super::TrackNews,
     /// the notification to replace (0: none yet)
     id: u32,
     on: Arc<std::sync::atomic::AtomicBool>,

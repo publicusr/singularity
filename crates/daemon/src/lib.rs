@@ -12,8 +12,7 @@ pub mod health;
 pub mod jam;
 pub mod library;
 pub mod lyrics;
-pub mod mpris;
-pub mod nowplaying;
+pub mod os_media;
 pub mod pcm;
 #[cfg(target_os = "macos")]
 pub mod process_tap;
@@ -234,10 +233,8 @@ fn same_user(stream: &UnixStream) -> bool {
 /// What a Daemon runs beyond playback and the Catalogue.
 #[derive(Default)]
 pub struct Extras {
-    /// MPRIS (and notifications) on a D-Bus
-    pub mpris: Option<mpris::Options>,
-    /// Now Playing, media keys and notifications on macOS (#68)
-    pub now_playing: Option<nowplaying::Options>,
+    /// OS media integration: the desktop's media controls, media keys and track notifications
+    pub os_media: Option<os_media::Options>,
     /// the LocalStore's directory: the listening log and nightly library backups
     pub store: Option<PathBuf>,
     /// the desktop-notification flag a background task keeps following `config.toml` (`notifications.track_change`)
@@ -307,23 +304,7 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
     if let Some(rx) = cat_rx {
         tokio::spawn(run_catalogue(rx, hub.clone()));
     }
-    if let Some(opts) = extras.mpris {
-        let h = hub.clone();
-        let again = opts.clone();
-        supervise(hub.clone(), "MPRIS", move || mpris::run(h.clone(), again.clone()));
-    }
-    #[cfg(target_os = "macos")]
-    match extras.now_playing {
-        Some(opts) => {
-            let h = hub.clone();
-            let notify = opts.notify.clone();
-            supervise(hub.clone(), "Now Playing", move || {
-                let (h, notify) = (h.clone(), notify.clone());
-                nowplaying::run(h, nowplaying::Options { notify })
-            });
-        }
-        None => nowplaying::not_wanted(),
-    }
+    os_media::start(&hub, extras.os_media);
     loop {
         let stream = tokio::select! {
             r = listener.accept() => r?.0,
@@ -348,7 +329,7 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
 /// Run a background task, and keep it running: when it ends or panics, say so (log, Clients, the health view) and
 /// start it again after a growing pause (A1). `start` builds a fresh future each time: a restarted task keeps none of
 /// the old one's state.
-fn supervise<F, Fut>(hub: Arc<Hub>, name: &'static str, mut start: F) -> tokio::task::JoinHandle<()>
+pub(crate) fn supervise<F, Fut>(hub: Arc<Hub>, name: &'static str, mut start: F) -> tokio::task::JoinHandle<()>
 where
     F: FnMut() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,

@@ -89,7 +89,7 @@ class Run:
         json.dump({"etag": '"v1"', "last_modified": LAST_MODIFIED, "version": "soloist v1"}, open(f"{self.inst}/build.json", "w"))
         self.sock = f"{shot.RUNTIME}/sgl-phone-{name}-{os.getpid()}.sock"
         self.env = dict(os.environ, SINGULARITY_ENGINE="soloist", SINGULARITY_SOLOIST="local", SINGULARITY_START_APP="0", SINGULARITY_SOCKET=self.sock, TERM="xterm-256color", COLORTERM="truecolor", SINGULARITY_NO_KEYRING="1",
-                        SOLOIST_API_KEY="not-a-real-key", SINGULARITY_TAP="off", SINGULARITY_DBUS="off", SINGULARITY_PIXEL="0",
+                        SOLOIST_API_KEY="not-a-real-key", SINGULARITY_TAP="off", SINGULARITY_NOWPLAYING="off", SINGULARITY_PIXEL="0",
                         SINGULARITY_SOLOIST_CDN=f"http://127.0.0.1:{cdn.server_address[1]}/soloist_release_x86_64.tar.gz",
                         SINGULARITY_SOLOIST_CHECK_SECS="2", FAKE_SOLOIST_EVENTS=self.events,
                         XDG_DATA_HOME=f"{self.scratch}/data", XDG_CONFIG_HOME=f"{self.scratch}/config", XDG_CACHE_HOME=f"{here}/xdgcache", XDG_STATE_HOME=f"{self.scratch}/state")

@@ -2790,8 +2790,9 @@ def main():
     bus = None
     if scenario == "mpris":
         bus, addr = private_bus(out)
-        env["SINGULARITY_DBUS"] = env["DBUS_SESSION_BUS_ADDRESS"] = addr
-        env.pop("SINGULARITY_NOWPLAYING")
+        # MPRIS on the private bus (the Daemon's session bus here), for a fake Engine too
+        env["DBUS_SESSION_BUS_ADDRESS"] = addr
+        env["SINGULARITY_NOWPLAYING"] = "on"
     d = subprocess.Popen([f"{BIN}/singularityd", "--fake-engine", *cat], env=env, stdout=subprocess.DEVNULL, stderr=open(f"{out}/daemon.log", "w"))
     try:
         time.sleep(0.4)
