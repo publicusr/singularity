@@ -691,11 +691,8 @@ pub struct App {
     pub login_hidden: bool,
     pub dividers: Vec<Divider>,
     pub(crate) hits: Vec<(Rect, Hit)>,
-    pub(crate) drag: Option<Hit>,
     /// a queued song being dragged to a new place
     pub queue_drag: Option<crate::queue::QueueDrag>,
-    /// boundary minus grab position, so a divider moves exactly with the mouse whichever grip cell was grabbed
-    pub(crate) drag_offset: i32,
     /// the seek or volume bar being dragged
     pub scrub: Option<Scrub>,
     nudge: Nudge,
@@ -799,27 +796,21 @@ pub struct App {
     pub widgets: crate::widgets::State,
     /// the ambient Widgets' own state (starfield, marquee, glow)
     pub ambient: crate::ambient::State,
-    /// free tiling (D66): a Widget held by its Pane's title or picked up with Enter in Arrange mode
-    pub tile: Option<crate::arrange::TileDrag>,
-    /// Arrange mode (D87), while it is on
-    pub arranging: Option<crate::arrange::Arranging>,
+    /// Arrange mode (D87, its own module since D89): on or off, a Widget held by its Pane's title or picked up with
+    /// Enter, a divider held, and layout undo
+    pub arrange: crate::arrange::Arrange,
     /// the window is too small for the Panes: the mini player shows, and Arrange mode waits behind it (its keys and
     /// clicks are the player's)
     pub mini: bool,
     pub body: Rect,
     /// the whole window, as last drawn or resized to (the Panes' area follows it and Arrange mode)
     pub window: Rect,
-    /// the layout as it was when a divider was grabbed (a changed one counts as an edit on release)
-    pub(crate) divider_from: Option<crate::arrangement::Arrangement>,
     /// the divider whose grip is under the pointer (lit, and a resize pointer where the terminal has one)
     pub(crate) grip_hover: Option<usize>,
     /// the pointer shape last sent to the terminal (OSC 22)
     pub pointer_shape_sent: &'static str,
     /// when the input event being handled arrived (stamped by the input thread; None: now)
     pub input_at: Option<Instant>,
-    /// layout undo / redo, and when the last edit offered its "undo"
-    pub(crate) history: crate::arrange::history::History<crate::arrange::Snapshot>,
-    pub(crate) undo_offer: Option<(Instant, Action)>,
     /// covers shown before Spotify answered (#56): (library's, header's) to put back
     pub covers_was: HashMap<String, (Option<String>, Option<String>)>,
     /// whether we asked the Daemon for spectrum frames
@@ -854,9 +845,7 @@ impl App {
             login_hidden: false,
             dividers: vec![],
             hits: vec![],
-            drag: None,
             queue_drag: None,
-            drag_offset: 0,
             scrub: None,
             nudge: Nudge::default(),
             volume_hold: None,
@@ -918,17 +907,13 @@ impl App {
             theme_dir: None,
             widgets: Default::default(),
             ambient: Default::default(),
-            tile: None,
-            arranging: None,
+            arrange: Default::default(),
             mini: false,
             body: Rect::default(),
             window: Rect::default(),
-            divider_from: None,
             grip_hover: None,
             pointer_shape_sent: "",
             input_at: None,
-            history: Default::default(),
-            undo_offer: None,
             covers_was: HashMap::new(),
             spectrum_on: false,
             last_input: Instant::now(),
@@ -1344,7 +1329,7 @@ impl App {
                 }
             }
             // (while arranging, the key that came in leaves as Esc does, Q70: also one bound with Ctrl or Alt)
-            Action::Arrange if self.arranging.is_some() => self.arrange_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Action::Arrange if self.arrange.is_on() => self.arrange_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
             Action::Arrange => self.enter_arrange(),
             Action::NewDesign => self.new_design(),
             Action::DiscardNewDesign => self.discard_new_design(),
@@ -1431,7 +1416,7 @@ impl App {
         }
         // a Pane being dragged: Esc puts it back, nothing else gets through (one picked up with Enter is Arrange
         // mode's, below)
-        if self.tile.as_ref().is_some_and(|t| t.aim.is_none() || self.mini) {
+        if self.arrange.tile.is_some() && (self.arrange.held_by_pointer() || self.mini) {
             if k.code == KeyCode::Esc {
                 self.tile_cancel();
             }
@@ -1452,7 +1437,7 @@ impl App {
         {
             return self.run(a);
         }
-        if self.arranging.is_some() && !self.mini {
+        if self.arrange.is_on() && !self.mini {
             return self.arrange_key(k);
         }
         // a focused Pane showing its needs line has no keys of its own: they'd act on what it hides (#36)
@@ -2572,7 +2557,7 @@ impl App {
     /// Whether something on screen is moving with the pointer or on its way somewhere (a Widget picked up with Enter
     /// moves with the keys only).
     pub fn moving_now(&self) -> bool {
-        self.tile.as_ref().is_some_and(|t| t.live && t.aim.is_none()) || self.divider_from.is_some()
+        self.arrange.moving_now()
     }
 
     /// Called every frame: sends nudges once they've settled.
@@ -2762,7 +2747,7 @@ impl App {
         // the bar's own, as outside it)
         let bar = self.player_rect();
         let on_bar = self.scrub.is_some() || m.column >= bar.x && m.column < bar.right() && m.row >= bar.y && m.row < bar.bottom();
-        if let Some(modal) = self.modal().filter(|&md| !(md == Modal::Arrange && on_bar && self.tile.is_none() && self.drag.is_none())) {
+        if let Some(modal) = self.modal().filter(|&md| !(md == Modal::Arrange && on_bar && !self.arrange.holding())) {
             return self.modal_pointer(modal, m, coarse);
         }
         // a song held in the queue popup, which has closed (another popup took its place, a key closed it): the drag
@@ -2771,8 +2756,8 @@ impl App {
             self.queue_drag = None;
         }
         // a Pane held by its title: the pointer is the Pane's until it lets go
-        if self.tile.is_some() {
-            return self.tile_pointer(m);
+        if self.arrange.tile.is_some() {
+            return self.arrange_tile_pointer(m);
         }
         // the Settings page owns the wheel wherever the pointer is: drifting off it must not scroll a Pane behind
         if self.page.settings().is_some() && matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) {
@@ -2980,7 +2965,7 @@ impl App {
                     Some(Hit::History(d)) if d < 0 => self.go_back(),
                     Some(Hit::History(_)) => self.go_forward(),
                     Some(Hit::Focus(p)) => self.focus = Some(p),
-                    Some(Hit::Title(p) | Hit::TitleName(p)) => self.tile_down(p, m.column, m.row),
+                    Some(Hit::Title(p) | Hit::TitleName(p)) => self.title_down(p, m.column, m.row),
                     Some(Hit::Close(p)) => self.close_pane(p),
                     Some(Hit::PickWidget(_)) => {}
                     Some(Hit::Divider(i)) => self.grab_divider(i, m.column, m.row),
@@ -3018,17 +3003,12 @@ impl App {
                     self.queue_drag = Some(crate::queue::target(self, d, m.row));
                 } else if self.playlists.press.is_some() {
                     self.drag_row_to(m.row);
-                } else if let Some(Hit::Divider(i)) = self.drag.clone()
-                    && let Some(d) = self.dividers.get(i).cloned()
-                {
-                    let pos = if d.axis == crate::layout::Axis::Vertical { m.row } else { m.column };
-                    self.drag_divider(&d, (pos as i32 + self.drag_offset).max(0) as u16);
+                } else if self.arrange.divider_held().is_some() {
+                    self.divider_to(m.column, m.row);
                 }
             }
             MouseEventKind::Up(_) => {
-                if self.drag.take().is_some() {
-                    self.divider_released();
-                }
+                self.divider_up();
                 if let Some(d) = self.queue_drag.take() {
                     self.drop_queued(d);
                 }
@@ -3240,7 +3220,7 @@ impl App {
         // the wizard shows the code itself
         let login = !wizard && matches!(self.catalogue, Some(CatalogueStatus::LoginPending { .. })) && !self.login_hidden;
         let mut layers: Vec<Modal> = self.popup.as_ref().map(Popup::modal).into_iter().collect();
-        let on = [(wizard, Modal::Wizard), (login, Modal::Login), (self.arranging.is_some() && !self.mini, Modal::Arrange)];
+        let on = [(wizard, Modal::Wizard), (login, Modal::Login), (self.arrange.is_on() && !self.mini, Modal::Arrange)];
         layers.extend(on.into_iter().filter_map(|(on, m)| on.then_some(m)));
         layers
     }
@@ -3411,13 +3391,11 @@ impl App {
             }
             // a press that started before the popup opened ends without doing anything
             MouseEventKind::Up(_) => {
-                self.drag = None;
+                self.arrange.let_go();
                 self.queue_drag = None;
                 self.scrub = None;
                 self.playlists.press = None;
                 self.playlists.row_drag = None;
-                self.tile = None;
-                self.divider_from = None;
             }
             _ => {}
         }

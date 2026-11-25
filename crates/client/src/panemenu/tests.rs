@@ -159,7 +159,7 @@ fn the_name_the_key_and_the_palette_open_the_picker() {
     let (x, y) = name_spot(&a, Widget::Fft);
     mouse(&mut a, MouseEventKind::Down(MouseButton::Left), x, y);
     mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), x + 10, y + 6);
-    assert!(a.tile.as_ref().is_some_and(|t| t.live), "a drag from the name lifts the Pane");
+    assert!(a.arrange.tile.as_ref().is_some_and(|t| t.live), "a drag from the name lifts the Pane");
     a.tile_cancel();
     // (the drag turned Arrange mode on)
     a.arrange_done();
