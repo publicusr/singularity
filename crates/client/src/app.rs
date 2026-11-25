@@ -791,17 +791,14 @@ pub struct App {
     pub config: singularity_config::Config,
     pub keymap: crate::keymap::Keymap,
     config_files: Option<ConfigFiles>,
-    /// the design on screen (index into `design::DESIGNS`) and the user's themes (#18)
-    pub design: usize,
+    /// the Design on screen, its file and the user's own Designs (D89), and the user's themes (#18)
+    pub shown: crate::shown::ShownDesign,
     pub user_themes: Vec<crate::theme::Theme>,
     pub theme_dir: Option<crate::looks::ThemeDir>,
     /// state of the Widgets other designs bring (rain, scope, top)
     pub widgets: crate::widgets::State,
     /// the ambient Widgets' own state (starfield, marquee, glow)
     pub ambient: crate::ambient::State,
-    /// the saved layout on screen (its file name) and the ones there are (#19)
-    pub layout_name: Option<String>,
-    pub saved_layouts: Vec<crate::layouts::Saved>,
     /// free tiling (D66): a Widget held by its Pane's title or picked up with Enter in Arrange mode
     pub tile: Option<crate::arrange::TileDrag>,
     /// Arrange mode (D87), while it is on
@@ -825,7 +822,6 @@ pub struct App {
     pub(crate) undo_offer: Option<(Instant, Action)>,
     /// covers shown before Spotify answered (#56): (library's, header's) to put back
     pub covers_was: HashMap<String, (Option<String>, Option<String>)>,
-    pub layouts_dir: Option<std::path::PathBuf>,
     /// whether we asked the Daemon for spectrum frames
     spectrum_on: bool,
     /// the idle takeover (#17): the last input, since when the hole is out, a preview asked for, and where the hole
@@ -917,13 +913,11 @@ impl App {
             config: Default::default(),
             keymap: Default::default(),
             config_files: None,
-            design: 0,
+            shown: Default::default(),
             user_themes: vec![],
             theme_dir: None,
             widgets: Default::default(),
             ambient: Default::default(),
-            layout_name: None,
-            saved_layouts: vec![],
             tile: None,
             arranging: None,
             mini: false,
@@ -936,7 +930,6 @@ impl App {
             history: Default::default(),
             undo_offer: None,
             covers_was: HashMap::new(),
-            layouts_dir: None,
             spectrum_on: false,
             last_input: Instant::now(),
             idle_since: None,
@@ -959,7 +952,7 @@ impl App {
         // the user's themes first, so a theme named in config.toml can be found
         if let Some(dir) = cp.parent() {
             self.init_theme_dir(dir.join("themes"));
-            self.layouts_dir = Some(dir.join("layouts"));
+            self.shown.set_store(Box::new(crate::shown::Folder(dir.join("layouts"))));
             self.reload_layouts();
         }
         let c = singularity_config::load_config(&cp);

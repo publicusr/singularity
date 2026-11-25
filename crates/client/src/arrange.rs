@@ -46,7 +46,6 @@
 pub mod history;
 
 use crate::app::{Action, App, Hit, Menu, MenuAct, Modal, NameFor, Naming, Target};
-use crate::design::DESIGNS;
 use crate::arrangement::{Arrangement, Refused};
 use crate::layout::{Axis, Divider, Node, Pane, PaneId, Widget, is_hole};
 use crate::theme::Theme;
@@ -132,14 +131,11 @@ struct Fresh {
     theme: String,
 }
 
-/// What undo goes back to: the layout, the Design it was (None: the built-in one) and what its file said about it,
-/// and the focus.
+/// What undo goes back to: the layout, the Design it was (its file, and what that said about it) and the focus.
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     tree: Arrangement,
-    name: Option<String>,
-    /// (name, design, edited) from the Design's file
-    file: Option<(String, String, bool)>,
+    shown: crate::shown::Mark,
     focus: Option<PaneId>,
 }
 
@@ -190,7 +186,7 @@ impl App {
 
     /// Why an edit was refused, in the bar's words.
     pub(crate) fn refused(&mut self, e: Refused) {
-        let design = self.design;
+        let design = self.shown.design();
         self.say(e.why(|w| crate::ui::pane_name(design, w)));
     }
 
@@ -411,7 +407,7 @@ impl App {
     pub fn drag_marks(&self) -> Option<(Option<(PaneId, String)>, String)> {
         let t = self.tile.as_ref().filter(|t| t.live)?;
         let w = t.pane.widget?;
-        let design = self.design;
+        let design = self.shown.design();
         let target = t.over.map(|o| {
             let label = match self.layout.widget_in(o) {
                 Some(x) => format!("swap with {}", crate::ui::pane_name(design, x)),
@@ -528,19 +524,24 @@ impl App {
         self.edited();
     }
 
+    /// `tree` replaces the layout as an edit (one undo step).
     pub(crate) fn commit_layout(&mut self, tree: Arrangement) {
+        self.commit_kept(tree);
+    }
+
+    /// `commit_layout`, and what `edited` says of it: Some, the built-in Design's copy it was just kept as.
+    fn commit_kept(&mut self, tree: Arrangement) -> Option<String> {
         let was = self.snapshot();
         let tray = self.layout.tray().to_vec();
         self.layout = tree;
         self.settle_tray_focus(&tray);
         self.remember(was);
         self.want_widget_data();
-        self.edited();
+        self.edited()
     }
 
     fn snapshot(&self) -> Snapshot {
-        let file = self.layout_name.as_ref().and_then(|id| self.saved_layouts.iter().find(|s| s.id == *id)).map(|s| (s.name.clone(), s.design.clone(), s.edited));
-        Snapshot { tree: self.layout.clone(), name: self.layout_name.clone(), file, focus: self.focus }
+        Snapshot { tree: self.layout.clone(), shown: self.shown.mark(), focus: self.focus }
     }
 
     /// An edit replaced `was`: undo can go back to it, and the bar offers that for a few seconds.
@@ -586,7 +587,6 @@ impl App {
 
     /// Put `s` back on screen, and its Design's file with it.
     fn restore(&mut self, s: Snapshot) {
-        let was = self.layout_name.clone().and_then(|id| self.saved_layouts.iter().find(|x| x.id == id).cloned());
         // Done's name prompt: the changes it would name are going
         if self.naming().is_some_and(|n| n.purpose == NameFor::Fork) {
             self.close_if_open(crate::app::Modal::Naming);
@@ -594,73 +594,27 @@ impl App {
         self.set_layout(s.tree);
         self.focus = s.focus.filter(|p| self.layout.contains(*p)).or_else(|| fallback_pane(&self.layout));
         self.want_widget_data();
-        match s.name {
-            Some(id) => {
-                let (name, design, edited) = s.file.unwrap_or_else(|| (id.clone(), DESIGNS[self.design].id.to_string(), false));
-                self.write_layout(&id, &name, &design, edited);
-            }
-            None => {
-                self.layout_name = None;
-                let base = DESIGNS[self.design].name;
-                match was {
-                    // the unnamed edit of a built-in Design goes with the edit that made it
-                    Some(w) if w.edited => {
-                        if let Some(dir) = &self.layouts_dir {
-                            let _ = std::fs::remove_file(dir.join(format!("{}.toml", w.id)));
-                        }
-                        self.reload_layouts();
-                        self.save_ui();
-                        self.say(format!("Back to {base}"));
-                    }
-                    Some(w) => {
-                        self.save_ui();
-                        self.say(format!("Back to {base} · \"{}\" is still in the Design picker", w.name));
-                    }
-                    None => {}
-                }
-            }
-        }
+        let o = self.shown.restore(s.shown, &self.layout, &self.theme.id);
+        self.shown_did(o);
     }
 
     /// The layout was edited. A Design of the user's own (or the unnamed edit of a built-in one) follows in its file;
     /// an edit of a built-in Design is kept at once as its "<Design> (edited)", never asking (Q33): outside Arrange
-    /// mode the bar says so, and in Arrange mode Done asks for a name.
-    pub fn edited(&mut self) {
+    /// mode the bar says so, and in Arrange mode Done asks for a name. Some: the edit was just kept as that copy
+    /// ("Singularity (edited)") outside Arrange mode.
+    pub fn edited(&mut self) -> Option<String> {
         if let Some(a) = self.arranging.as_mut() {
             a.edited = true;
             a.split_next = false;
             // a New design… is written when Done names it
             if a.fresh.is_some() {
-                return;
+                return None;
             }
         }
-        let own = self.layout_name.clone().and_then(|id| self.saved_layouts.iter().find(|s| s.id == id).cloned());
-        match own {
-            Some(s) => self.write_layout(&s.id, &s.name, &s.design, s.edited),
-            None => {
-                self.layout_name = None;
-                if self.layouts_dir.is_some() {
-                    self.keep_edited();
-                    if self.arranging.is_none() && self.layout_name.is_some() {
-                        self.say(format!("Kept as {} (edited)", DESIGNS[self.design].name));
-                    }
-                }
-            }
-        }
-    }
-
-    /// Whether the Design on screen is the unnamed "<Design> (edited)" of a built-in one.
-    fn on_edited_copy(&self) -> bool {
-        self.layout_name.as_ref().is_some_and(|id| self.saved_layouts.iter().any(|s| s.id == *id && s.edited))
-    }
-
-    /// The unnamed "<Design> (edited)" on screen got a name (Done's prompt): its file goes, the named one has it all.
-    pub fn named_edited_copy(&mut self, was: Option<String>) {
-        let Some(id) = was.filter(|id| self.layout_name.as_ref() != Some(id) && self.saved_layouts.iter().any(|s| s.id == *id && s.edited)) else { return };
-        if let Some(dir) = &self.layouts_dir {
-            let _ = std::fs::remove_file(dir.join(format!("{id}.toml")));
-        }
-        self.reload_layouts();
+        let mut o = self.shown.edited(&self.layout, &self.theme.id, self.arranging.is_some());
+        let kept = o.kept_as.take();
+        self.shown_did(o);
+        kept
     }
 
     // ── Arrange mode ──────────────────────────────────────────────────
@@ -687,7 +641,7 @@ impl App {
         self.tile = None;
         self.undo_offer = None;
         self.layout = Arrangement::new(Node::empty(), vec![]);
-        self.layout_name = None;
+        self.shown.build_new();
         self.focus = self.layout.panes().first().map(|p| p.id);
         self.want_widget_data();
         self.enter_arrange();
@@ -703,7 +657,7 @@ impl App {
 
     /// The saved Design that was on screen when a New design… began (config.toml keeps naming it meanwhile).
     pub fn building_from(&self) -> Option<String> {
-        self.arranging.as_ref()?.fresh.as_ref()?.before.name.clone()
+        self.arranging.as_ref()?.fresh.as_ref()?.before.shown.file().map(String::from)
     }
 
     /// Esc on a New design… before anything is placed, or Discard: the Design that was on screen, as it was, with its
@@ -714,7 +668,7 @@ impl App {
         self.tile = None;
         self.undo_offer = None;
         self.layout = before.tree;
-        self.layout_name = before.name;
+        self.shown.resume(before.shown);
         self.focus = before.focus.filter(|p| self.layout.contains(*p)).or_else(|| self.layout.pane_of(Widget::Home));
         self.history = history;
         if theme != self.theme.id && self.set_theme(&theme) {
@@ -726,11 +680,13 @@ impl App {
 
     /// The name typed on Done's prompt for a New design…: saved as a Design of your own with the current Theme, and
     /// Arrange mode ends. The build's undo steps go with it: the new Design starts its own history. False if it
-    /// couldn't be saved (a name that makes no file name, a write error: the bar says why): it is still being built.
+    /// couldn't be saved (a name taken, one that makes no file name, a write error: the bar says why): it is still
+    /// being built.
     pub fn save_new_design(&mut self, name: &str) -> bool {
-        self.save_layout(name);
-        // (without a config folder there is nowhere to save it)
-        if self.layout_name.is_none() && self.layouts_dir.is_some() {
+        let saved = self.shown.save_new(name, &self.layout, &self.theme.id);
+        let ok = saved.is_ok();
+        self.shown_did(saved.unwrap_or_else(|o| o));
+        if !ok {
             return false;
         }
         self.arranging = None;
@@ -758,7 +714,7 @@ impl App {
     /// What keeps Done unavailable: "Home still needs a Pane", while it waits in the Tray.
     pub fn done_blocked(&self) -> Option<String> {
         let w = self.layout.unplaced()?;
-        let name = crate::ui::pane_name(self.design, w);
+        let name = crate::ui::pane_name(self.shown.design(), w);
         let mut c = name.chars();
         let name = c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default();
         Some(format!("{name} still needs a Pane"))
@@ -790,8 +746,10 @@ impl App {
         self.tile = None;
         self.relayout();
         let changed = a.edited && a.since != self.layout;
-        if changed && self.on_edited_copy() && self.naming().is_none() {
-            let name = self.suggest_name();
+        if changed && self.naming().is_none() && let Some((name, problems)) = self.shown.done_prompt() {
+            if let Some(p) = problems {
+                self.say(p);
+            }
             self.open_popup(crate::app::Popup::Naming(Naming::fork(name)));
         }
     }
@@ -1058,57 +1016,22 @@ impl App {
         self.drag = Some(Hit::Divider(i));
     }
 
-    /// "Singularity 2", "Singularity 3"…: the first not taken by a Design of the user's.
-    fn suggest_name(&mut self) -> String {
-        self.reload_layouts();
-        let base = DESIGNS[self.design].name;
-        (2..).map(|n| format!("{base} {n}")).find(|c| !self.saved_layouts.iter().any(|s| s.id == crate::layouts::file_id(c))).expect("a free name")
-    }
-
     /// Esc on the naming prompt: keep the edit as the one unnamed "<Design> (edited)", replacing the last.
     pub fn keep_edited(&mut self) {
-        let d = &DESIGNS[self.design];
-        self.write_layout(&crate::layouts::edited_id(d.id), &format!("{} (edited)", d.name), d.id, true);
-    }
-
-    fn write_layout(&mut self, id: &str, name: &str, design: &str, edited: bool) {
-        let Some(dir) = self.layouts_dir.clone() else { return };
-        match crate::layouts::write(&dir, id, name, design, &self.theme.id, &self.layout, edited) {
-            Ok(s) => {
-                let new = self.layout_name.as_deref() != Some(s.id.as_str());
-                self.layout_name = Some(s.id);
-                self.reload_layouts();
-                if new {
-                    self.save_ui();
-                }
-            }
-            Err(e) => self.say(format!("Couldn't save the layout: {e}")),
-        }
+        let o = self.shown.keep_edited(&self.layout, &self.theme.id);
+        self.shown_did(o);
     }
 
     /// "Reset design": the built-in Design's own layout again. A Design of the user's stays in the picker as it was
     /// last saved (its file isn't touched); the unnamed edit of a built-in one is dropped.
     pub fn reset_design(&mut self) {
         let before = self.snapshot();
-        let (d, theme) = (self.design, self.theme.id.clone());
-        let name = DESIGNS[d].name;
-        let was = self.layout_name.clone().and_then(|id| self.saved_layouts.iter().find(|s| s.id == id).cloned());
-        self.set_design(d);
+        let theme = self.theme.id.clone();
+        let o = self.shown.reset();
+        self.set_design(self.shown.design());
         self.set_theme(&theme);
-        self.layout_name = None;
-        self.save_ui();
-        match was {
-            Some(s) if s.edited => {
-                if let Some(dir) = &self.layouts_dir {
-                    let _ = std::fs::remove_file(dir.join(format!("{}.toml", s.id)));
-                }
-                self.reload_layouts();
-                self.say(format!("Back to {name}"));
-            }
-            Some(s) => self.say(format!("Back to {name} · \"{}\" is still in the Design picker", s.name)),
-            None => self.say(format!("{name} reset")),
-        }
-        if before.tree != self.layout || before.name.is_some() {
+        self.shown_did(o);
+        if before.tree != self.layout || before.shown.file().is_some() {
             self.remember(before);
         }
     }
@@ -1128,18 +1051,16 @@ impl App {
         if self.focus == Some(id) {
             self.focus = fallback_pane(&tree);
         }
-        let built_in = self.layout_name.is_none();
-        self.commit_layout(tree);
         // (the bar's one line: what the edit did, and where a built-in Design's edit went)
-        match built_in && self.layout_name.is_some() && self.arranging.is_none() {
-            true => self.say(format!("Closed {name} · kept as {} (edited)", DESIGNS[self.design].name)),
-            false => self.say(format!("Closed {name}")),
+        match self.commit_kept(tree) {
+            Some(copy) => self.say(format!("Closed {name} · kept as {copy}")),
+            None => self.say(format!("Closed {name}")),
         }
     }
 
     /// What Pane `p` is called on screen (its Widget's title; an empty Pane is "an empty pane").
     pub fn name_of(&self, p: Pane) -> String {
-        p.widget.map_or_else(|| "an empty pane".into(), |w| crate::ui::pane_name(self.design, w))
+        p.widget.map_or_else(|| "an empty pane".into(), |w| crate::ui::pane_name(self.shown.design(), w))
     }
 
     pub fn split_focused(&mut self, side: Side) {
@@ -1492,11 +1413,11 @@ pub fn tray_layout(app: &App, r: Rect, first: usize) -> TrayLayout {
     let tray = app.layout.tray();
     let y = r.y + 1;
     let (x0, x1) = (r.x + 2, r.right().saturating_sub(2));
-    let width = |w: Widget| tray_chip(&crate::ui::pane_name(app.design, w)).chars().count() as u16 + if crate::arrangement::required(Some(w)) { 0 } else { 2 };
+    let width = |w: Widget| tray_chip(&crate::ui::pane_name(app.shown.design(), w)).chars().count() as u16 + if crate::arrangement::required(Some(w)) { 0 } else { 2 };
     let widths: Vec<u16> = tray.iter().map(|w| width(*w)).collect();
     // a Pane's Widget aimed here with the keys: room for its chip after the last one, where it lands
     let reserve = app.tile.as_ref().filter(|t| t.live && t.tray && t.aim.is_some()).and_then(|t| t.pane.widget).map_or(0, |w| {
-        (crate::ui::pane_name(app.design, w).chars().count() as u16 + 4).min(CHIP_MAX) + 1
+        (crate::ui::pane_name(app.shown.design(), w).chars().count() as u16 + 4).min(CHIP_MAX) + 1
     });
     let all: u16 = widths.iter().map(|w| w + 1).sum::<u16>() + reserve;
     let over = all > x1.saturating_sub(x0) + 1;
@@ -1519,7 +1440,7 @@ pub fn tray_layout(app: &App, r: Rect, first: usize) -> TrayLayout {
         if x + cw > to {
             break;
         }
-        let chip = tray_chip(&crate::ui::pane_name(app.design, *w)).chars().count() as u16;
+        let chip = tray_chip(&crate::ui::pane_name(app.shown.design(), *w)).chars().count() as u16;
         let close = (!crate::arrangement::required(Some(*w))).then(|| Rect::new(x + chip, y, 2, 1));
         items.push((i, Rect::new(x, y, chip, 1), close));
         x += cw + 1;
@@ -1560,7 +1481,7 @@ pub fn draw_tray(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let focus = app.arranging.as_ref().and_then(|a| a.tray_focus);
     let focus_on = |w: Widget| focus == Some(TrayStop::Widget(w));
     for (i, chip, close) in &l.items {
-        let name = crate::ui::pane_name(app.design, tray[*i]);
+        let name = crate::ui::pane_name(app.shown.design(), tray[*i]);
         // (the one the keyboard's focus is on: in the focus colour)
         let st = if focus_on(tray[*i]) { th.chip(th.accent) } else { th.chip(th.accent2) };
         text(buf, chip.x, chip.y, chip.width, &tray_chip(&name), st);

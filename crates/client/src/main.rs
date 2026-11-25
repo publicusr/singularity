@@ -36,6 +36,7 @@ mod scrub;
 mod saved;
 mod search;
 mod settings;
+mod shown;
 mod setup;
 mod songlyrics;
 mod sidebar;

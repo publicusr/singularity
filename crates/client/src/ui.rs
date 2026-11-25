@@ -243,7 +243,7 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
         Modal::Queue => crate::paneless::draw_queue(f.buffer_mut(), area, app, th),
         Modal::Naming => {
             let Some(n) = app.naming().cloned() else { return };
-            let mut edited = format!("Enter save · Esc keep it as “{} (edited)”", crate::design::DESIGNS[app.design].name);
+            let mut edited = format!("Enter save · Esc keep it as “{} (edited)”", app.shown.built_in().name);
             // the edit can still be undone from here, where there's room to say so
             let undo = app.keymap.label(Action::UndoLayout);
             if !undo.is_empty() && edited.chars().count() + undo.chars().count() + 8 <= naming_rect(area, app).width.saturating_sub(4) as usize {
@@ -475,7 +475,7 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     // them on the row below a horizontal divider; the buttons are registered after it and win in turn)
     swaps.push((Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(2), 1), Hit::Title(p.id)));
     // (an empty Pane has no title yet)
-    let title = w.map_or("", |w| crate::design::title(app.design, w, crate::widget_catalogue::facts(w).title));
+    let title = w.map_or("", |w| crate::design::title(app.shown.design(), w, crate::widget_catalogue::facts(w).title));
     // the main Pane is titled after what it shows
     let title = match w {
         Some(Widget::Home) => match &app.page {
@@ -662,7 +662,7 @@ fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     let pb = singularity_proto::PlaybackState { status: p.status, item: p.item.clone(), context_name: p.context_name.clone(), shuffle: p.shuffle, repeat: p.repeat, ..Default::default() };
     let buf = f.buffer_mut();
     let now = pb.item.as_ref().map(|i| format!("{} — {}", i.name, i.artists.join(", "))).unwrap_or_else(|| "nothing playing".into());
-    match crate::design::DESIGNS[app.design].prompt {
+    match app.shown.built_in().prompt {
         Some(host) => {
             let p = format!("{host}:~$ ");
             let pw = p.chars().count() as u16;

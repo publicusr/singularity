@@ -562,10 +562,10 @@ fn a_split_and_its_pick_are_one_undo_step() {
     typed(&mut a, "scope");
     key(&mut a, KeyCode::Enter);
     assert!(a.modal().is_none(), "no name prompt (Q33)");
-    assert_eq!(a.layout_name.as_deref(), Some("singularity-edited"));
+    assert_eq!(a.shown.file(), Some("singularity-edited"));
     a.run(Action::UndoLayout);
     assert_eq!(a.layout, built_in, "the split went with the pick");
-    assert!(a.layout_name.is_none() && !a.layout.has(Widget::Scope));
+    assert!(a.shown.file().is_none() && !a.layout.has(Widget::Scope));
 }
 
 #[test]

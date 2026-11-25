@@ -21,6 +21,7 @@
 
 use super::*;
 use crate::layout::Node;
+use crate::design::DESIGNS;
 use ratatui::crossterm::event::KeyModifiers;
 use crate::arrangement::outline;
 use crate::pace::{Moves, Pacer};

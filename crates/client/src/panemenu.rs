@@ -77,7 +77,7 @@ impl App {
     pub fn widget_choices(&self) -> Vec<Choice> {
         let Some(p) = self.widget_picker() else { return vec![] };
         let q = p.query.trim().to_lowercase();
-        let named = |c: &Choice| format!("{} {}", crate::ui::pane_name(self.design, c.widget), c.widget.name()).to_lowercase();
+        let named = |c: &Choice| format!("{} {}", crate::ui::pane_name(self.shown.design(), c.widget), c.widget.name()).to_lowercase();
         let all = if p.tray { self.tray_choices() } else { self.choices_for(p.target) };
         let mut rows: Vec<Choice> = all.into_iter().filter(|c| crate::app::fuzzy(&named(c), &q)).collect();
         // within each part: what you typed at the start first, then anywhere, then loose matches
@@ -257,7 +257,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
             (false, false) => th.s(th.fg),
         };
         blank(buf, inner.x, y, inner.width, st);
-        text(buf, inner.x + 2, y, 28, &crate::ui::pane_name(app.design, c.widget), st);
+        text(buf, inner.x + 2, y, 28, &crate::ui::pane_name(app.shown.design(), c.widget), st);
         text(buf, inner.x + 31, y, inner.width.saturating_sub(33), c.widget.name(), if i == sel { st } else { th.s(th.dim) });
         // too big for this Pane: the line it would show there
         if room.is_some_and(|r| crate::needs::too_small(c.widget, r)) {

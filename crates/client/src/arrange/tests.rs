@@ -329,7 +329,7 @@ fn edits_to_a_built_in_design_are_kept_as_edited_and_done_asks_for_a_name() {
     assert!(a.naming().is_none() && a.arranging.is_some());
     let saved = crate::layouts::load_dir(&layouts).0;
     assert!(saved.len() == 1 && saved[0].edited && saved[0].name == "Singularity (edited)" && saved[0].arrangement() == a.layout, "{saved:?}");
-    assert_eq!(a.layout_name.as_deref(), Some("singularity-edited"));
+    assert_eq!(a.shown.file(), Some("singularity-edited"));
     // Done asks for a name, since something changed
     key(&mut a, KeyCode::Esc);
     assert!(a.arranging.is_none());
@@ -346,7 +346,7 @@ fn edits_to_a_built_in_design_are_kept_as_edited_and_done_asks_for_a_name() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.layout_name.as_deref(), Some("mine"));
+    assert_eq!(a.shown.file(), Some("mine"));
     let text = std::fs::read_to_string(dir.path().join("layouts/mine.toml")).unwrap();
     assert!(text.contains("name = \"Mine\"") && text.contains("theme = \"singularity\"") && !text.contains("edited"), "{text}");
     assert!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap().contains("layout = \"mine\""));
@@ -403,7 +403,7 @@ fn quick_edits_are_kept_as_one_unnamed_edit_per_design_that_later_edits_overwrit
     a.edited();
     assert!(a.naming().is_none(), "never asked outside Arrange mode");
     assert!(a.toast.as_ref().is_some_and(|(t, _)| t == "Kept as Singularity (edited)"), "{:?}", a.toast);
-    assert_eq!(a.layout_name.as_deref(), Some("singularity-edited"));
+    assert_eq!(a.shown.file(), Some("singularity-edited"));
     let saved = crate::layouts::load_dir(&layouts).0;
     assert_eq!(saved.len(), 1);
     assert!(saved[0].edited && saved[0].name == "Singularity (edited)" && saved[0].arrangement() == a.layout);
@@ -423,7 +423,6 @@ fn quick_edits_are_kept_as_one_unnamed_edit_per_design_that_later_edits_overwrit
     assert_eq!(again.layout, a.layout);
     // from the built-in Design again, an unnamed edit replaces it
     a.set_design(0);
-    a.layout_name = None;
     a.layout = swapped(Node::singularity(), Widget::Fft, Widget::Loudness);
     a.edited();
     let saved = crate::layouts::load_dir(&layouts).0;
@@ -431,7 +430,6 @@ fn quick_edits_are_kept_as_one_unnamed_edit_per_design_that_later_edits_overwrit
     assert_eq!(saved[0].arrangement(), a.layout);
     // another Design has its own
     a.set_design(3);
-    a.layout_name = None;
     a.layout = swapped(Node::cockpit(), Widget::Fft, Widget::Loudness);
     a.edited();
     assert_eq!(crate::layouts::load_dir(&layouts).0.len(), 2);
@@ -445,7 +443,7 @@ fn reset_design_goes_back_to_the_built_in_one() {
     a.edited();
     a.run(Action::ResetLayout);
     assert_eq!(a.layout, Node::singularity());
-    assert_eq!(a.layout_name, None);
+    assert_eq!(a.shown.file(), None);
     assert!(crate::layouts::load_dir(&layouts).0.is_empty(), "the unnamed edit is dropped");
     // a Design of your own stays where it was saved
     a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
@@ -466,10 +464,10 @@ fn letting_go_of_a_divider_is_an_edit() {
     let grip = a.dividers[0].grip;
     press(&mut a, grip.x, grip.y + 5);
     drag(&mut a, grip.x + 8, grip.y + 5);
-    assert!(a.layout_name.is_none(), "not while it moves");
+    assert!(a.shown.file().is_none(), "not while it moves");
     release(&mut a, grip.x + 8, grip.y + 5);
     // kept silently, with the bar's note (Q33)
-    assert!(a.naming().is_none() && a.layout_name.as_deref() == Some("singularity-edited"));
+    assert!(a.naming().is_none() && a.shown.file() == Some("singularity-edited"));
     assert!(a.toast.as_ref().is_some_and(|(t, _)| t == "Kept as Singularity (edited)"), "{:?}", a.toast);
 }
 
@@ -540,7 +538,7 @@ fn enter_picks_up_arrows_aim_and_enter_swaps_while_nothing_moves() {
     assert!(shot.lines().last().unwrap().contains("←↑↓→ aim · Enter drop · Esc put back"));
     // ↑ aims at home: lit, saying what Enter does; nothing moved
     key(&mut a, KeyCode::Up);
-    let home = crate::ui::pane_name(a.design, Widget::Home);
+    let home = crate::ui::pane_name(a.shown.design(), Widget::Home);
     let shot = render(&mut a, W, H);
     assert!(shot.contains(&format!("swap with {home}")), "{shot}");
     assert_eq!((drawn_panes(&a), &a.layout), (floor, &before));
@@ -696,7 +694,7 @@ fn the_keyboard_lights_the_same_panes_and_shows_the_same_chip_as_the_mouse() {
     assert_eq!(cells(&kb, q, false), cells(&mb, q, false), "the held Pane");
     assert_eq!(cells(&kb, h, true), cells(&mb, h, true), "the target's frame");
     // the label and the chip: the same text in the same colours
-    let home = crate::ui::pane_name(k.design, Widget::Home);
+    let home = crate::ui::pane_name(k.shown.design(), Widget::Home);
     for s in [format!(" swap with {home} "), " ⠿ queue ".to_string()] {
         assert_eq!(drawn(&kb, &s), drawn(&mb, &s), "{s}");
     }
@@ -890,10 +888,10 @@ fn the_keyboard_takes_widgets_out_of_the_tray() {
     key(&mut a, KeyCode::Right);
     assert_eq!(on(&a), Some(Widget::Loudness));
     let buf = render_buf(&mut a, W, H);
-    let name = crate::ui::pane_name(a.design, Widget::Loudness);
+    let name = crate::ui::pane_name(a.shown.design(), Widget::Loudness);
     let lit = drawn(&buf, &format!(" ⠿ {name} "));
     assert_eq!(lit[1].1.bg, a.theme.chip(a.theme.accent).bg, "the focused one in the focus colour");
-    let other = drawn(&buf, &format!(" ⠿ {} ", crate::ui::pane_name(a.design, Widget::Fft)));
+    let other = drawn(&buf, &format!(" ⠿ {} ", crate::ui::pane_name(a.shown.design(), Widget::Fft)));
     assert_eq!(other[1].1.bg, a.theme.chip(a.theme.accent2).bg, "the others as before");
     // the keys for a Pane do nothing here
     let before = a.layout.clone();
@@ -912,7 +910,7 @@ fn the_keyboard_takes_widgets_out_of_the_tray() {
     let to = a.tile.as_ref().and_then(|t| t.over).expect("aimed at a Pane");
     let was = a.layout.widget_in(to);
     let label = match was {
-        Some(w) => format!("swap with {}", crate::ui::pane_name(a.design, w)),
+        Some(w) => format!("swap with {}", crate::ui::pane_name(a.shown.design(), w)),
         None => "put here".into(),
     };
     assert!(render(&mut a, W, H).contains(&label), "{label}");
@@ -1236,7 +1234,7 @@ fn undo_of_the_first_edit_of_a_built_in_design_goes_back_to_it_and_leaves_no_fil
     key(&mut a, KeyCode::Esc);
     assert!(a.naming().is_some());
     ctrl(&mut a, 'z');
-    assert!(a.naming().is_none() && a.layout == built_in && a.layout_name.is_none() && files().is_empty());
+    assert!(a.naming().is_none() && a.layout == built_in && a.shown.file().is_none() && files().is_empty());
     ctrl(&mut a, 'y');
     assert_eq!(a.layout, edit);
     assert!(a.naming().is_none(), "a redo doesn't ask");
@@ -1244,10 +1242,10 @@ fn undo_of_the_first_edit_of_a_built_in_design_goes_back_to_it_and_leaves_no_fil
     assert_eq!(files().len(), 1);
     render(&mut a, W, H);
     ctrl(&mut a, 'z');
-    assert!(a.layout == built_in && a.layout_name.is_none() && files().is_empty(), "{:?}", files());
+    assert!(a.layout == built_in && a.shown.file().is_none() && files().is_empty(), "{:?}", files());
     assert!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap().contains("layout = \"\""));
     ctrl(&mut a, 'y');
-    assert_eq!(a.layout_name.as_deref(), Some("singularity-edited"));
+    assert_eq!(a.shown.file(), Some("singularity-edited"));
     let f = files();
     assert!(f.len() == 1 && f[0].edited && f[0].arrangement() == edit);
     // 3. a name given: undo goes back to the built-in Design, and the named one stays in the picker as saved
@@ -1261,10 +1259,10 @@ fn undo_of_the_first_edit_of_a_built_in_design_goes_back_to_it_and_leaves_no_fil
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.layout_name.as_deref(), Some("mine"));
+    assert_eq!(a.shown.file(), Some("mine"));
     render(&mut a, W, H);
     ctrl(&mut a, 'z');
-    assert!(a.layout == built_in && a.layout_name.is_none());
+    assert!(a.layout == built_in && a.shown.file().is_none());
     assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("\"Mine\" is still in the Design picker")), "{:?}", a.toast);
     let f = files();
     assert!(f.len() == 1 && f[0].id == "mine" && f[0].arrangement() == edit);
@@ -1288,9 +1286,9 @@ fn undo_in_a_design_of_your_own_rewrites_its_file() {
     assert_eq!(crate::layouts::load_dir(&layouts).0[0].arrangement(), closed);
     // undoing a Reset puts the Design of your own back on screen, and its file
     a.run(Action::ResetLayout);
-    assert!(a.layout_name.is_none());
+    assert!(a.shown.file().is_none());
     ctrl(&mut a, 'z');
-    assert_eq!(a.layout_name.as_deref(), Some("mine"));
+    assert_eq!(a.shown.file(), Some("mine"));
     assert_eq!(a.layout, closed);
     assert!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap().contains("layout = \"mine\""));
     // another Design picked: the history was the last one's
@@ -2011,7 +2009,7 @@ fn a_new_design_is_built_from_one_empty_pane_and_done_saves_it_under_a_name() {
     // a Theme other than the Design's own, so the saved one is the current one
     a.run(Action::NextVariant);
     let theme = a.theme.id.clone();
-    assert_ne!(theme, DESIGNS[a.design].themes[0]);
+    assert_ne!(theme, DESIGNS[a.shown.design()].themes[0]);
     // the palette's "New design…"
     a.run(Action::Palette);
     typed(&mut a, "new design");
@@ -2063,7 +2061,7 @@ fn a_new_design_is_built_from_one_empty_pane_and_done_saves_it_under_a_name() {
     typed(&mut a, "Built");
     key(&mut a, KeyCode::Enter);
     assert!(a.naming().is_none() && a.arranging.is_none());
-    assert_eq!(a.layout_name.as_deref(), Some("built"));
+    assert_eq!(a.shown.file(), Some("built"));
     let text = std::fs::read_to_string(dir.path().join("layouts/built.toml")).unwrap();
     assert!(text.contains("name = \"Built\"") && text.contains(&format!("theme = \"{theme}\"")) && !text.contains("edited"), "{text}");
     assert!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap().contains("layout = \"built\""));
@@ -2085,14 +2083,14 @@ fn esc_on_a_new_design_before_anything_is_placed_leaves_the_design_untouched() {
     a.toast = None;
     a.undo_offer = None;
     let plain = render(&mut a, W, H);
-    let (layout, name, on_disk) = (a.layout.clone(), a.layout_name.clone(), files(dir.path()));
+    let (layout, name, on_disk) = (a.layout.clone(), a.shown.file().map(String::from), files(dir.path()));
     assert!(name.is_some() && on_disk.iter().any(|(p, _)| p.ends_with("layouts/singularity-edited.toml")), "{on_disk:?}");
     a.run(Action::NewDesign);
     render(&mut a, W, H);
     assert_eq!(a.layout.tray(), [Widget::Home]);
     key(&mut a, KeyCode::Esc);
     assert!(a.arranging.is_none() && a.modal().is_none());
-    assert_eq!((a.layout.clone(), a.layout_name.clone(), files(dir.path())), (layout.clone(), name.clone(), on_disk.clone()));
+    assert_eq!((a.layout.clone(), a.shown.file().map(String::from), files(dir.path())), (layout.clone(), name.clone(), on_disk.clone()));
     assert_eq!(render(&mut a, W, H), plain, "the app as before");
     // a Widget added: Esc is Done, which waits for Home; nothing is written meanwhile
     a.run(Action::NewDesign);
@@ -2108,7 +2106,7 @@ fn esc_on_a_new_design_before_anything_is_placed_leaves_the_design_untouched() {
     assert_eq!(a.layout.tray(), [Widget::Home]);
     key(&mut a, KeyCode::Esc);
     assert!(a.arranging.is_none());
-    assert_eq!((a.layout.clone(), a.layout_name.clone(), files(dir.path())), (layout, name, on_disk));
+    assert_eq!((a.layout.clone(), a.shown.file().map(String::from), files(dir.path())), (layout, name, on_disk));
     ctrl(&mut a, 'z');
     assert!(a.layout.has(Widget::Fft));
 }
@@ -2123,7 +2121,7 @@ fn ctrl_d_on_a_new_designs_name_prompt_throws_it_away() {
     a.toast = None;
     a.undo_offer = None;
     let plain = render(&mut a, W, H);
-    let (layout, name, on_disk) = (a.layout.clone(), a.layout_name.clone(), files(dir.path()));
+    let (layout, name, on_disk) = (a.layout.clone(), a.shown.file().map(String::from), files(dir.path()));
     a.run(Action::NewDesign);
     render(&mut a, W, H);
     drag_to!(&mut a, tray_item(&a, 0), centre(drawn_panes(&a)[0].1));
@@ -2137,7 +2135,7 @@ fn ctrl_d_on_a_new_designs_name_prompt_throws_it_away() {
     assert!(a.naming().is_none() && a.arranging.is_none() && a.modal().is_none());
     assert!(a.toast.as_ref().is_some_and(|t| t.0 == "New design discarded"), "{:?}", a.toast);
     a.toast = None;
-    assert_eq!((a.layout.clone(), a.layout_name.clone(), files(dir.path())), (layout, name, on_disk));
+    assert_eq!((a.layout.clone(), a.shown.file().map(String::from), files(dir.path())), (layout, name, on_disk));
     assert_eq!(render(&mut a, W, H), plain, "the app as before");
     // the close from before the build is still undoable
     ctrl(&mut a, 'z');
@@ -2508,7 +2506,7 @@ fn a_widget_carried_into_the_tray_with_the_keys_is_shown_in_the_tray() {
     let tray = a.tray_rect();
     let chip = spot(&buf, "⠿ queue").expect("the chip");
     assert_eq!(chip.1, tray.y + 1, "in the Tray's row, not on its frame or above it");
-    let fft = spot(&buf, &format!(" ⠿ {} ", crate::ui::pane_name(a.design, Widget::Fft))).unwrap();
+    let fft = spot(&buf, &format!(" ⠿ {} ", crate::ui::pane_name(a.shown.design(), Widget::Fft))).unwrap();
     assert!(chip.0 > fft.0 + 6 && chip.0 < tray.right() - 2, "after the Widget waiting there: {chip:?} {fft:?}");
     let inside = |r: Rect, x: u16, y: u16| x >= r.x && x < r.right() && y >= r.y && y < r.bottom();
     for y in 0..H - 1 {
@@ -2614,7 +2612,7 @@ fn a_widget_picked_up_from_the_tray_is_shown_in_its_place_there() {
     assert_eq!(a.arranging.as_ref().unwrap().tray_focus, Some(crate::arrange::TrayStop::Widget(Widget::Fft)));
     let before = render_buf(&mut a, W, H);
     let tray = a.tray_rect();
-    let name = crate::ui::pane_name(a.design, Widget::Fft);
+    let name = crate::ui::pane_name(a.shown.design(), Widget::Fft);
     let own = spot(&before, &format!(" ⠿ {name} ")).unwrap();
     key(&mut a, KeyCode::Enter);
     let buf = render_buf(&mut a, W, H);
@@ -2658,7 +2656,7 @@ fn a_widget_aimed_at_a_full_tray_shows_its_end() {
     }
     let buf = render_buf(&mut a, 100, 40);
     let last = *a.layout.tray().last().unwrap();
-    let last_name = crate::ui::pane_name(a.design, last);
+    let last_name = crate::ui::pane_name(a.shown.design(), last);
     assert!(spot(&buf, &format!(" ⠿ {last_name} ")).is_none(), "the strip doesn't show its end yet");
     a.focus_on(Widget::Queue);
     key(&mut a, KeyCode::Enter);
