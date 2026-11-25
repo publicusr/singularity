@@ -345,14 +345,14 @@ impl App {
         if self.arrange.is_on() && r.height >= 3 && r.width >= 20 {
             let design = self.shown.design();
             let first = self.arrange.tray_first().unwrap_or(0);
-            plan.tray = Some(crate::arrange::tray_layout(self.layout.tray(), design, self.arrange.tray_reserve(design), r, first));
+            plan.tray = Some(crate::arrange::tray_layout(self.layout.tray(), design, crate::arrange::Arrange::tray_reserve(&self.gesture, design), r, first));
         }
         // a held Widget: the Pane under the pointer is highlighted with a label, a chip follows the pointer. Neither
         // changes how anything under it is drawn (no step down a tier: that flickered): images are placed around them
         if let Some((target, chip_text)) = self.drag_marks() {
             let target = target.and_then(|(id, label)| Some((id, plan.pane(id)?.rect, label)));
             let chip = self.chip_rect(plan.window, &chip_text).map(|r| (r, chip_text));
-            let label = target.as_ref().and_then(|(id, r, l)| crate::arrange::label_rect(*r, l, chip.as_ref().map(|c| c.0), self.arrange.label_row(*id)));
+            let label = target.as_ref().and_then(|(id, r, l)| crate::arrange::label_rect(*r, l, chip.as_ref().map(|c| c.0), crate::arrange::Arrange::label_row(&self.gesture, *id)));
             plan.drag = Some(Drag { target, label, chip });
         }
         plan
@@ -399,9 +399,10 @@ impl App {
             }
             return self.plan();
         }
-        // something drawn on top now (the login code, the wizard): a held Widget is let go, its chip would cover it
+        // something drawn on top now (the login code, the wizard): a held Widget is let go (its chip would cover it),
+        // a held divider let go where it is, as when a popup opens (Q103)
         if self.modal().is_some_and(|m| m != Modal::Arrange) {
-            self.tile_cancel();
+            self.gesture_interrupted();
         }
         // a Widget picked up with Enter, and the layout edited by something else since: it is put back
         self.pick_up_check();
@@ -420,7 +421,7 @@ impl App {
         if let Some(d) = &plan.drag {
             // the label stays on its row next frame while the chip leaves that free
             if let Some((id, ..)) = d.target {
-                self.arrange.label_placed(id, d.label);
+                crate::arrange::Arrange::label_placed(&mut self.gesture, id, d.label);
             }
             if let Some(k) = self.kitty.as_mut() {
                 k.holes = d.label.into_iter().chain(d.chip.as_ref().map(|(r, _)| *r)).collect();

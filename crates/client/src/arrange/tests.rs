@@ -120,11 +120,11 @@ fn dragging_a_title_onto_another_pane_swaps_their_widgets_and_nothing_moves_mean
         assert!(shot.contains("⠿ stream"), "the chip follows the pointer");
         assert_eq!(a.layout, before, "nothing is committed yet");
     }
-    assert_eq!(a.arrange.tile.as_ref().unwrap().over, Some(queue));
+    assert_eq!(a.gesture.carry().unwrap().over, Some(queue));
     let shot = render(&mut a, W, H);
     assert!(shot.contains(" swap with queue "), "{shot}");
     release(&mut a, cx, cy);
-    assert!(a.arrange.tile.is_none());
+    assert!(a.gesture.carry().is_none());
     // the contents moved, the Panes stayed
     assert_eq!((a.layout.widget_in(queue), a.layout.widget_in(stream)), (Some(Widget::Stream), Some(Widget::Queue)));
     assert_eq!(crate::arrangement::outline(a.layout.plan()), crate::arrangement::outline(before.plan()));
@@ -405,7 +405,7 @@ fn enter_picks_up_arrows_aim_and_enter_swaps_while_nothing_moves() {
     key(&mut a, KeyCode::Enter);
     render(&mut a, W, H);
     assert_eq!((pane(&a, Widget::Queue), pane(&a, Widget::Home)), (h, q));
-    assert!(a.arrange.tile.is_none() && a.is_focused(Widget::Queue) && a.arrange.on.is_some());
+    assert!(a.gesture.carry().is_none() && a.is_focused(Widget::Queue) && a.arrange.on.is_some());
     // one undo step
     ctrl(&mut a, 'z');
     assert_eq!(a.layout, before);
@@ -547,11 +547,11 @@ fn the_keyboard_takes_widgets_out_of_the_tray() {
     key(&mut a, KeyCode::Enter);
     assert!(render(&mut a, W, H).contains(&format!("⠿ {name}")));
     key(&mut a, KeyCode::Esc);
-    assert!(a.arrange.tile.is_none() && on(&a) == Some(Widget::Loudness) && a.arrange.on.is_some());
+    assert!(a.gesture.carry().is_none() && on(&a) == Some(Widget::Loudness) && a.arrange.on.is_some());
     // picked up again, ↑ aims at the Pane above it, Enter puts it there: that Pane's Widget goes into the Tray
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Up);
-    let to = a.arrange.tile.as_ref().and_then(|t| t.over).expect("aimed at a Pane");
+    let to = a.gesture.carry().and_then(|t| t.over).expect("aimed at a Pane");
     let was = a.layout.widget_in(to);
     let label = match was {
         Some(w) => format!("swap with {}", crate::ui::pane_name(a.shown.design(), w)),
@@ -561,7 +561,7 @@ fn the_keyboard_takes_widgets_out_of_the_tray() {
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.layout.widget_in(to), Some(Widget::Loudness));
     assert!(was.is_none_or(|w| a.layout.tray().contains(&w)) && !a.layout.tray().contains(&Widget::Loudness));
-    assert!(a.focus == Some(to) && on(&a).is_none() && a.arrange.tile.is_none());
+    assert!(a.focus == Some(to) && on(&a).is_none() && a.gesture.carry().is_none());
     // ↓ to the Tray and ↑ back: the focus is on a bottom Pane again
     key(&mut a, KeyCode::Down);
     assert!(on(&a).is_some());
@@ -619,7 +619,7 @@ fn random_gestures_leave_every_design_valid() {
                             render(&mut a, w, h);
                             let now = drawn_panes(&a);
                             assert_eq!(now, laid_out(&a), "{} {w}x{h}: the Panes aren't the floor plan in their area", design.id);
-                            if a.arrange.tile.as_ref().is_some_and(|t| t.live) {
+                            if a.gesture.carry().is_some_and(|t| t.live) {
                                 assert!(a.arrange.on.is_some());
                                 assert_eq!(floor.get_or_insert_with(|| now.clone()), &now, "{} {w}x{h}: a Pane moved mid-drag", design.id);
                             } else {
@@ -665,7 +665,7 @@ fn random_gestures_leave_every_design_valid() {
                 assert!(tree.fits(a.pane_area()), "{} {w}x{h}: {tree:?}", design.id);
                 // (Home may wait in the Tray, while Arrange mode is on)
                 assert!(crate::arrangement::required_widgets().all(|c| tree.has(c) || tree.tray().contains(&c) && a.arrange.on.is_some()));
-                assert!(a.arrange.tile.is_none() && a.widget_picker().is_none());
+                assert!(a.gesture.carry().is_none() && a.widget_picker().is_none());
             }
         }
     }
@@ -1025,7 +1025,7 @@ fn an_empty_pane_has_nothing_to_move() {
     a.focus = Some(empty);
     key(&mut a, KeyCode::Char('m'));
     key(&mut a, KeyCode::Enter);
-    assert!(a.arrange.tile.is_none());
+    assert!(a.gesture.carry().is_none());
     a.open_pane_menu(empty, None);
     assert!(!a.menu().unwrap().items.iter().any(|(l, _)| l == "Move pane"));
 }
@@ -1038,9 +1038,9 @@ fn a_popup_opening_mid_drag_lets_the_widget_go() {
     press(&mut a, x, y);
     let q = centre(pane(&a, Widget::Queue));
     drag(&mut a, q.0, q.1);
-    assert!(a.arrange.tile.as_ref().is_some_and(|t| t.live));
+    assert!(a.gesture.carry().is_some_and(|t| t.live));
     a.run(Action::Palette);
-    assert!(a.arrange.tile.is_none());
+    assert!(a.gesture.carry().is_none());
     let shot = render(&mut a, W, H);
     assert!(!shot.contains("⠿ stream") && !shot.contains("swap with"), "{shot}");
     key(&mut a, KeyCode::Esc);
@@ -1050,10 +1050,10 @@ fn a_popup_opening_mid_drag_lets_the_widget_go() {
     let q = centre(pane(&a, Widget::Queue));
     press(&mut a, x, y);
     drag(&mut a, q.0, q.1);
-    assert!(a.arrange.tile.as_ref().is_some_and(|t| t.live));
+    assert!(a.gesture.carry().is_some_and(|t| t.live));
     a.hear(singularity_proto::Event::Catalogue(singularity_proto::CatalogueStatus::LoginPending { url: "u".into(), code: "ABCD".into() }));
     let shot = render(&mut a, W, H);
-    assert!(a.arrange.tile.is_none() && !shot.contains("⠿ stream"));
+    assert!(a.gesture.carry().is_none() && !shot.contains("⠿ stream"));
     release(&mut a, q.0, q.1);
 }
 
@@ -1111,7 +1111,7 @@ fn a_title_drag_turns_arrange_mode_on_and_a_drop_on_the_tray_sets_the_widget_asi
     assert!(shot.contains(" Tray ") && shot.contains("ARRANGE") && shot.contains(" Done "), "{shot}");
     let (tx, ty) = tray_spot(&a);
     drag(&mut a, tx, ty);
-    assert!(a.arrange.tile.as_ref().is_some_and(|t| t.tray && t.over.is_none()), "the Tray is highlighted");
+    assert!(a.gesture.carry().is_some_and(|t| t.tray && t.over.is_none()), "the Tray is highlighted");
     assert!(render(&mut a, W, H).contains(" set aside here "));
     assert_eq!(drawn_panes(&a), floor);
     release(&mut a, tx, ty);
@@ -1355,14 +1355,14 @@ fn in_arrange_mode_the_player_bar_stays_and_its_buttons_seek_bar_and_keys_work()
     assert!(seek.y >= bar.y && seek.y < bar.bottom());
     press(&mut a, seek.x + 10, seek.y);
     drag(&mut a, seek.x + 20, seek.y);
-    assert!(a.scrub.is_some() && sent(&mut rx).is_empty(), "scrubbing");
+    assert!(a.gesture.scrub().is_some() && sent(&mut rx).is_empty(), "scrubbing");
     release(&mut a, seek.x + 20, seek.y);
     assert!(matches!(sent(&mut rx)[..], [Command::Seek { .. }]));
     // its keys
     key(&mut a, KeyCode::Char(' '));
     assert_eq!(sent(&mut rx), vec![Command::Pause]);
     assert_eq!(a.modal(), Some(Modal::Arrange), "still arranging");
-    assert!(a.arrange.tile.is_none() && !a.arrange.history.can_undo());
+    assert!(a.gesture.carry().is_none() && !a.arrange.history.can_undo());
 }
 
 #[test]
@@ -1865,7 +1865,7 @@ fn a_widget_carried_into_the_tray_with_the_keys_is_shown_in_the_tray() {
     let own = pane(&a, Widget::Queue);
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Down);
-    assert!(a.arrange.tile.as_ref().is_some_and(|t| t.tray), "aimed at the Tray");
+    assert!(a.gesture.carry().is_some_and(|t| t.tray), "aimed at the Tray");
     let buf = render_buf(&mut a, W, H);
     let tray = a.tray_rect();
     let chip = spot(&buf, "⠿ queue").expect("the chip");
@@ -1961,7 +1961,7 @@ fn a_widget_aimed_at_a_full_tray_shows_its_end() {
     assert!(spot(&buf, &format!(" ⠿ {last_name} ")).is_none(), "the strip doesn't show its end yet");
     a.focus_on(Widget::Queue);
     key(&mut a, KeyCode::Enter);
-    while !a.arrange.tile.as_ref().is_some_and(|t| t.tray) {
+    while !a.gesture.carry().is_some_and(|t| t.tray) {
         key(&mut a, KeyCode::Down);
     }
     let buf = render_buf(&mut a, 100, 40);
@@ -1992,7 +1992,7 @@ fn arrange_bound_with_ctrl_leaves_arrange_mode_too() {
     a.focus_on(Widget::Queue);
     key(&mut a, KeyCode::Enter);
     ctrl(&mut a, 'e');
-    assert!(a.arrange.tile.is_none() && a.arrange.on.is_some());
+    assert!(a.gesture.carry().is_none() && a.arrange.on.is_some());
     ctrl(&mut a, 'e');
     assert!(a.arrange.on.is_none());
 }
@@ -2005,16 +2005,16 @@ fn esc_or_a_drop_on_its_own_pane_or_off_the_panes_leaves_the_layout_alone() {
     let (x, y) = title_spot(&a, Widget::Stream);
     press(&mut a, x, y);
     drag(&mut a, centre(q).0, centre(q).1);
-    assert!(a.arrange.tile.as_ref().unwrap().over.is_some());
+    assert!(a.gesture.carry().unwrap().over.is_some());
     key(&mut a, KeyCode::Esc);
-    assert!(a.arrange.tile.is_none());
+    assert!(a.gesture.carry().is_none());
     release(&mut a, centre(q).0, centre(q).1);
     assert_eq!(a.layout, before);
     // over its own Pane: nothing highlighted, and a release there is no drop
     let (x, y) = title_spot(&a, Widget::Stream);
     press(&mut a, x, y);
     drag(&mut a, x + 5, y + 4);
-    assert!(a.arrange.tile.as_ref().unwrap().over.is_none());
+    assert!(a.gesture.carry().unwrap().over.is_none());
     let shot = render(&mut a, W, H);
     assert!(!shot.contains("swap with") && shot.contains("⠿ stream"), "{shot}");
     release(&mut a, x + 5, y + 4);
@@ -2042,10 +2042,10 @@ fn the_keys_wait_while_the_mouse_holds_a_divider() {
     drag(&mut a, grip.x + 6, grip.y + 5);
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Char('x'));
-    assert!(a.arrange.tile.is_none() && a.arrange.divider.is_some(), "still the divider's");
+    assert!(a.gesture.carry().is_none() && a.gesture.divider().is_some(), "still the divider's");
     drag(&mut a, grip.x + 8, grip.y + 5);
     release(&mut a, grip.x + 8, grip.y + 5);
-    assert!(a.arrange.divider.is_none() && a.layout != start);
+    assert!(a.gesture.divider().is_none() && a.layout != start);
     ctrl(&mut a, 'z');
     assert_eq!(a.layout, start, "the move was recorded");
 }
@@ -2060,15 +2060,94 @@ fn the_palettes_close_pane_or_replace_widget_puts_a_picked_up_widget_back() {
     // Close pane, on the focused (picked-up) Pane
     a.run(Action::ClosePane);
     render(&mut a, W, H);
-    assert!(a.arrange.tile.is_none() && a.drag_marks().is_none());
+    assert!(a.gesture.carry().is_none() && a.drag_marks().is_none());
     // Replace widget…: the picker opens, and the pick-up is gone with it
     a.focus_on(Widget::Loudness);
     key(&mut a, KeyCode::Enter);
-    assert!(a.arrange.carrying());
+    assert!(Arrange::carrying(&a.gesture));
     a.run(Action::ReplaceWidget);
     let i = a.widget_choices().iter().position(|c| c.widget == Widget::Scope).unwrap();
     a.widget_picked(i);
     render(&mut a, W, H);
-    assert!(a.arrange.tile.is_none());
+    assert!(a.gesture.carry().is_none());
     assert!(a.layout.has(Widget::Scope) && a.arrange.is_on());
+}
+
+// ── a held divider that something else interrupts (Q103) ──────────────
+
+/// A divider held by the mouse and moved 6 cells right: the layout before the press.
+fn hold_a_divider(a: &mut App) -> Arrangement {
+    let start = a.layout.clone();
+    let grip = a.dividers()[0].grip;
+    press(a, grip.x, grip.y + 5);
+    drag(a, grip.x + 6, grip.y + 5);
+    assert_ne!(a.layout, start, "the line moved");
+    start
+}
+
+/// A popup (Ctrl+K's palette) opening while a divider is held ends the drag as a release would: the move so far is
+/// one undo step and the built-in Design's edit is kept; the release that lands in the popup does nothing more.
+#[test]
+fn a_popup_opening_while_a_divider_is_held_records_the_move() {
+    let (mut a, _dir) = with_dirs();
+    let start = hold_a_divider(&mut a);
+    let moved = a.layout.clone();
+    ctrl(&mut a, 'k');
+    assert!(a.is_open(Modal::Palette));
+    let grip = a.dividers()[0].grip;
+    release(&mut a, grip.x + 9, grip.y + 5);
+    assert_eq!(a.layout, moved, "the line stays where it was held");
+    assert!(a.shown.on_edited_copy(), "the edit was kept as the Design's (edited) copy");
+    key(&mut a, KeyCode::Esc);
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout, start, "the move is one undo step");
+}
+
+/// Ctrl+Z while a divider is held ends the drag first (the move is recorded), then undoes it: the line goes back
+/// to where the drag began, the release does nothing more, and no step is added or lost.
+#[test]
+fn ctrl_z_while_a_divider_is_held_undoes_that_move_and_nothing_else() {
+    let (mut a, _dir) = with_dirs();
+    // one edit before: a divider moved and let go
+    let first = hold_a_divider(&mut a);
+    let grip = a.dividers()[0].grip;
+    release(&mut a, grip.x + 6, grip.y + 5);
+    let before = a.layout.clone();
+    assert_ne!(before, first);
+    // a second drag, Ctrl+Z while it's held
+    hold_a_divider(&mut a);
+    let moved = a.layout.clone();
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout, before, "the held move is undone, not the one before it");
+    let grip = a.dividers()[0].grip;
+    drag(&mut a, grip.x + 3, grip.y + 5);
+    release(&mut a, grip.x + 3, grip.y + 5);
+    assert_eq!(a.layout, before, "the drag ended with the undo: the pointer moves nothing");
+    ctrl(&mut a, 'y');
+    assert_eq!(a.layout, moved, "redo brings the held move back");
+    ctrl(&mut a, 'z');
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout, first, "then the edit before it");
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout, first, "and no step more");
+}
+
+/// Another Design shown while a divider is held (a pick from the palette) ends the drag first: the move is kept as
+/// the old Design's edit, the new Design comes up as it is, and the release records nothing.
+#[test]
+fn another_design_shown_while_a_divider_is_held_ends_the_drag_first() {
+    let (mut a, _dir) = with_dirs();
+    let start = hold_a_divider(&mut a);
+    let was = a.shown.design();
+    let other = (was + 1) % DESIGNS.len();
+    a.set_design(other);
+    let shown = a.layout.clone();
+    let grip = a.dividers()[0].grip;
+    release(&mut a, grip.x + 2, grip.y + 5);
+    assert_eq!(a.layout, shown, "the release changes nothing");
+    assert!(!a.shown.on_edited_copy(), "the new Design isn't an edit");
+    let kept: Vec<_> = a.shown.saved().iter().filter(|s| s.edited).map(|s| (s.design.clone(), s.arrangement())).collect();
+    assert_eq!(kept.len(), 1, "one edit kept");
+    assert_eq!(kept[0].0, DESIGNS[was].id, "the old Design's");
+    assert_ne!(kept[0].1, start, "with the move");
 }

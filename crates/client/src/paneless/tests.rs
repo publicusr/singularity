@@ -191,7 +191,7 @@ fn esc_mid_drag_ends_the_queue_popups_drag_too() {
     mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), x, to);
     key(&mut a, KeyCode::Esc);
     assert_eq!(a.modal(), None);
-    assert!(a.queue_drag.is_none(), "the drag ended with the popup");
+    assert!(a.gesture.is_none(), "the drag ended with the popup");
     // the pointer goes on and lets go: nothing moves out of sight
     mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), x, to);
     mouse(&mut a, MouseEventKind::Up(MouseButton::Left), x, to);

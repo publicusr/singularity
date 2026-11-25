@@ -618,7 +618,7 @@ fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     let now_ms = singularity_proto::now_ms();
     let pos = app.display_position(now_ms);
     let dur = pb.item.as_ref().map(|i| i.duration_ms).unwrap_or(0);
-    let scrubbing = app.scrub.as_ref().map(|s| s.bar);
+    let scrubbing = crate::gesture::Held::scrub(&app.gesture).map(|s| s.bar);
     let bar = Rect::new(mx + 6, y + 1, mid_w.saturating_sub(12), 1);
     let seeking = scrubbing == Some(Bar::Seek);
     let buf = f.buffer_mut();
@@ -1131,7 +1131,7 @@ mod tests {
         let row = bar.y;
         let x0 = bar.x as f64 + 10.5;
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x0, row, false);
-        let start = app.scrub.as_ref().unwrap().value;
+        let start = crate::gesture::Held::scrub(&app.gesture).unwrap().value;
         for d in 1..=7 {
             mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x0 + d as f64, row, false);
         }
@@ -1141,7 +1141,7 @@ mod tests {
         assert!(s.lines().nth(row as usize - 1).unwrap().contains(&format!(" {target} ")), "tooltip with {target} above the bar:\n{s}");
         mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x0 + 7.0, row, false);
         assert_eq!(sent(&mut rx), vec![Command::Seek { position_ms: start + 7000 }]);
-        assert!(app.scrub.is_none());
+        assert!(app.gesture.is_none());
         assert_eq!(app.display_position(app.playback.timestamp_ms), start + 7000, "bar stays at the target");
     }
 

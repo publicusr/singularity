@@ -4,6 +4,7 @@
 //! and the same keys. Liked Songs and playlists open from the library into Home's Pane, as a click in the library Pane
 //! does; the queue's songs are seen, dragged into a new order and removed.
 
+use crate::gesture::Held;
 use crate::app::{App, Modal, Popup};
 use crate::layout::Widget;
 use crate::theme::Theme;
@@ -64,7 +65,9 @@ impl App {
     /// Close the queue popup, and end a drag in it (the drag aims at the popup's list, gone now).
     pub fn close_queue_popup(&mut self) {
         self.close_if_open(Modal::Queue);
-        self.queue_drag = None;
+        if self.gesture.queue().is_some() {
+            self.gesture = None;
+        }
     }
 
     /// Keys in the queue popup: its Pane's (↑↓, Delete removes the song, Enter its menu), Esc closes.
@@ -87,7 +90,7 @@ pub fn library_rect(area: Rect, app: &App) -> Rect {
 pub fn queue_rect(area: Rect, app: &App) -> Rect {
     // while a song is held, the height it had (the queue may change under the drag)
     if let Some(Popup::Queue { h }) = app.popup.as_ref()
-        && app.queue_drag.is_some()
+        && crate::gesture::Held::queue(&app.gesture).is_some()
         && *h > 0
     {
         return centered(area, 64, *h);

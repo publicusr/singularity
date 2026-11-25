@@ -341,7 +341,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         view.reveal_uri = None;
     }
     // a row being dragged shows where it would land (#55)
-    if let Some(d) = app.playlists.row_drag.filter(|d| d.from < order.len() && d.to < order.len()) {
+    if let Some(d) = crate::gesture::Held::row(&app.gesture).and_then(|r| r.drag).filter(|d| d.from < order.len() && d.to < order.len()) {
         let mut moved = order.to_vec();
         let x = moved.remove(d.from);
         moved.insert(d.to, x);

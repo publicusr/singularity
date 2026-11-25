@@ -6,6 +6,7 @@
 //! once and put back where it was if Spotify refuses. Reorder (#55): drag a row (or Alt+↑↓) in the playlist's own
 //! order; the preview follows the pointer, the drop sends one move anchored to a neighbour's uid.
 
+use crate::gesture::{Gesture, Held, RowPress};
 use crate::app::{App, Hit, MenuAct, Naming, Page, PageName, Target};
 use crate::theme::Theme;
 use crate::ui::{text, blank};
@@ -72,10 +73,6 @@ pub struct Playlists {
     dup: Option<(String, Vec<String>, Instant)>,
     /// rows taken out before Spotify answered, by (playlist, uid): where they were
     removing: HashMap<(String, String), (usize, singularity_proto::TrackRow)>,
-    /// the row pressed on (a drag from it reorders), and the drag under way
-    /// the row pressed, by identity (D81: a row taken out before the drag lands doesn't make it move another)
-    pub press: Option<crate::openlist::RowId>,
-    pub row_drag: Option<RowDrag>,
     /// rows moved before Spotify answered, by (playlist, uid): where they were, and how many moves are unanswered
     moving: HashMap<(String, String), (usize, usize)>,
 }
@@ -480,7 +477,7 @@ impl App {
 
     /// The pointer moved with the button held after pressing a row: start or follow a drag.
     pub fn drag_row_to(&mut self, y: u16) {
-        let Some(from) = self.pressed_at() else { return };
+        let Some(from) = self.gesture.row().and_then(|r| self.row_at(&r.id)) else { return };
         // the row under the pointer (rows are drawn in the preview's order), clamped to the visible ones
         let rows: Vec<(u16, usize)> = self.hits.iter().filter_map(|(r, h)| if let Hit::Track(k) = h { Some((r.y, *k)) } else { None }).collect();
         let to = match rows.iter().find(|(ry, _)| *ry == y) {
@@ -489,29 +486,27 @@ impl App {
             None => rows.iter().map(|(_, k)| *k).max().unwrap_or(from),
         };
         // a drag starts once the pointer reaches another row (a shaky click isn't one)
-        if self.playlists.row_drag.is_none() {
+        if self.gesture.row().is_some_and(|r| r.drag.is_none()) {
             if to == from {
                 return;
             }
             if let Some(why) = self.unmovable() {
-                self.playlists.press = None;
+                self.gesture = None;
                 return self.say(why);
             }
-            self.playlists.row_drag = Some(RowDrag { from, to: from });
         }
-        if let Some(d) = self.playlists.row_drag.as_mut() {
-            (d.from, d.to) = (from, to);
+        if let Some(Gesture::Row(r)) = self.gesture.as_mut() {
+            r.drag = Some(RowDrag { from, to });
         }
         if let Some(v) = self.list_view_mut() {
             v.sel = to;
         }
     }
 
-    /// The button let go: a drag lands.
-    pub fn drop_row(&mut self) {
-        let from = self.pressed_at();
-        self.playlists.press = None;
-        let Some(d) = self.playlists.row_drag.take() else { return };
+    /// The button let go of row `r`: a drag lands.
+    pub fn drop_row(&mut self, r: RowPress) {
+        let from = self.row_at(&r.id);
+        let Some(d) = r.drag else { return };
         match from {
             Some(from) if from != d.to => self.move_row(from, d.to),
             Some(_) => {}
@@ -519,9 +514,9 @@ impl App {
         }
     }
 
-    /// Where the pressed row shows now.
-    fn pressed_at(&self) -> Option<usize> {
-        self.open.find(self.page.list()?, self.playlists.press.as_ref()?).map(|(vi, _)| vi)
+    /// Where row `id` shows now.
+    fn row_at(&self, id: &crate::openlist::RowId) -> Option<usize> {
+        self.open.find(self.page.list()?, id).map(|(vi, _)| vi)
     }
 
     /// Alt+↑↓ on the selected row.
@@ -684,6 +679,7 @@ pub fn draw_details(buf: &mut Buffer, area: Rect, app: &App, th: &Theme) {
 #[cfg(test)]
 mod tests {
     use crate::app::{Action, App, MenuAct};
+    use crate::gesture::{Gesture, Held, RowPress};
     use singularity_proto::{Command, Library, LibraryItem};
 
     fn item(uri: &str, name: &str, own: bool) -> LibraryItem {
@@ -961,16 +957,18 @@ mod tests {
         draw(&mut app);
         let y = |app: &App, k: usize| app.hit_rect(&Hit::Track(k)).unwrap().y;
         // press row 0, drag down onto row 3: the preview shows it there before the drop
-        app.playlists.press = app.open.id_at(app.page.list().unwrap(), 0);
+        let id = app.open.id_at(app.page.list().unwrap(), 0).unwrap();
+        app.gesture = Some(Gesture::Row(RowPress { id, drag: None }));
         let (y0, y3) = (y(&app, 0), y(&app, 3));
         app.drag_row_to(y0);
-        assert!(app.playlists.row_drag.is_none(), "a shaky click isn't a drag");
+        assert!(app.gesture.row().unwrap().drag.is_none(), "a shaky click isn't a drag");
         app.drag_row_to(y3);
         let screen = draw(&mut app);
         let line = |b: &ratatui::buffer::Buffer, yy: u16| (0..b.area.width).map(|x| b[(x, yy)].symbol().to_string()).collect::<String>();
         assert!(line(&screen, y3).contains("Song 0"), "{}", line(&screen, y3));
         assert!(sent(&mut rx).is_empty(), "nothing sent while dragging");
-        app.drop_row();
+        let Some(Gesture::Row(r)) = app.gesture.take() else { panic!("the row is held") };
+        app.drop_row(r);
         assert_eq!(sent(&mut rx), vec![Command::MoveInPlaylist { playlist: "spotify:playlist:mine".into(), uids: vec!["u0".into()], before: Some("u4".into()), after: None }]);
         assert_eq!(uids(&app), vec!["u1", "u2", "u3", "u0", "u4"]);
         // Alt+↓ on the last-but-one: to the end, anchored after the last

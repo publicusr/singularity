@@ -8,6 +8,7 @@ use crate::layout::{Node, PaneId, Widget};
 use crate::meters::Meters;
 use crate::visual::BlackHole;
 use crate::visual::well::Hole;
+use crate::gesture::{Clicked, Gesture, Held};
 use crate::scrub::{Bar, Scrub};
 use crate::sidebar::Sidebar;
 use crate::tracks::{Col, TrackView};
@@ -459,7 +460,7 @@ pub enum Hit {
 }
 
 /// Two clicks on the same row within this time play it.
-const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// What a context-menu entry does to its target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -695,10 +696,9 @@ pub struct App {
     /// how many of `hits` the Widgets drew inside their Panes (under the Panes' titles and dividers); the rest is over
     /// them
     pub(crate) hits_in_panes: usize,
-    /// a queued song being dragged to a new place
-    pub queue_drag: Option<crate::queue::QueueDrag>,
-    /// the seek or volume bar being dragged
-    pub scrub: Option<Scrub>,
+    /// the one press or drag in progress (D89): seeking, the volume, a queued song or a list row dragged, a divider,
+    /// a Widget carried in Arrange mode
+    pub gesture: Option<Gesture>,
     nudge: Nudge,
     /// the volume just set here, until the player confirms it (a Connect device reports its new volume ~0.5 s late:
     /// updates meanwhile would snap the slider back)
@@ -760,9 +760,8 @@ pub struct App {
     /// history: pages to go back and forward to
     pub back: Vec<PageName>,
     pub forward: Vec<PageName>,
-    last_click: Option<(Instant, usize)>,
-    /// the row a click on the open list was on, for telling a double-click (D81)
-    last_row: Option<crate::openlist::RowId>,
+    /// the last click that a second one soon after makes a double click, and what it was on
+    pub(crate) last_click: Option<(Instant, Clicked)>,
     pub meters: Meters,
     pub stream: Option<singularity_proto::StreamInfo>,
     pub health: Option<singularity_proto::Health>,
@@ -846,8 +845,7 @@ impl App {
             login_hidden: false,
             hits: vec![],
             hits_in_panes: 0,
-            queue_drag: None,
-            scrub: None,
+            gesture: None,
             nudge: Nudge::default(),
             volume_hold: None,
             play_hold: None,
@@ -883,7 +881,6 @@ impl App {
             back: vec![],
             forward: vec![],
             last_click: None,
-            last_row: None,
             meters: Meters::default(),
             stream: None,
             health: None,
@@ -1430,7 +1427,7 @@ impl App {
         }
         // a Pane being dragged: Esc puts it back, nothing else gets through (one picked up with Enter is Arrange
         // mode's, below)
-        if self.arrange.holds_keys(k, self.mini) {
+        if crate::arrange::Arrange::holds_keys(&mut self.gesture, k, self.mini) {
             return;
         }
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
@@ -1516,12 +1513,8 @@ impl App {
             }
             return;
         }
-        let key = usize::MAX / 4 - i;
-        if self.last_click.is_some_and(|(t, j)| j == key && t.elapsed() < DOUBLE_CLICK) {
-            self.last_click = None;
+        if self.double_click(Clicked::TopWeek(i)) {
             self.send(Command::Play { uri: Some(row.track_uri) });
-        } else {
-            self.last_click = Some((Instant::now(), key));
         }
     }
 
@@ -2518,14 +2511,14 @@ impl App {
 
     /// Where the seek bar stands: the drag target, a pending nudge, or the interpolated playback position.
     pub fn display_position(&self, now_ms: u64) -> u64 {
-        match &self.scrub {
+        match self.gesture.scrub() {
             Some(s) if s.bar == Bar::Seek => s.value,
             _ => self.nudge.seek.unwrap_or_else(|| self.playback.position_at(now_ms)),
         }
     }
 
     pub fn display_volume(&self) -> u8 {
-        match &self.scrub {
+        match self.gesture.scrub() {
             Some(s) if s.bar == Bar::Volume => s.value as u8,
             _ => self.nudge.volume.unwrap_or(self.playback.volume),
         }
@@ -2568,7 +2561,7 @@ impl App {
     /// Whether something on screen is moving with the pointer or on its way somewhere (a Widget picked up with Enter
     /// moves with the keys only).
     pub fn moving_now(&self) -> bool {
-        self.arrange.moving_now()
+        crate::arrange::Arrange::moving_now(&self.gesture)
     }
 
     /// Called every frame: sends nudges once they've settled.
@@ -2638,13 +2631,13 @@ impl App {
     }
 
     /// Sends the seek and moves the local position anchor, so the bar doesn't snap back while the Daemon answers.
-    fn seek_to(&mut self, ms: u64) {
+    pub(crate) fn seek_to(&mut self, ms: u64) {
         self.send(Command::Seek { position_ms: ms });
         self.playback.position_ms = ms;
         self.playback.timestamp_ms = singularity_proto::now_ms();
     }
 
-    fn set_volume(&mut self, percent: u8) {
+    pub(crate) fn set_volume(&mut self, percent: u8) {
         if percent != self.playback.volume {
             self.send(Command::SetVolume { percent });
             self.playback.volume = percent;
@@ -2757,17 +2750,17 @@ impl App {
         // (Arrange mode leaves the player bar as it is, Q39: a press or the wheel on it, and a scrub begun there, are
         // the bar's own, as outside it)
         let bar = self.player_rect();
-        let on_bar = self.scrub.is_some() || m.column >= bar.x && m.column < bar.right() && m.row >= bar.y && m.row < bar.bottom();
-        if let Some(modal) = self.modal().filter(|&md| !(md == Modal::Arrange && on_bar && !self.arrange.holding())) {
+        let on_bar = self.gesture.scrub().is_some() || m.column >= bar.x && m.column < bar.right() && m.row >= bar.y && m.row < bar.bottom();
+        if let Some(modal) = self.modal().filter(|&md| !(md == Modal::Arrange && on_bar && !crate::arrange::Arrange::holding(&self.gesture))) {
             return self.modal_pointer(modal, m, coarse);
         }
         // a song held in the queue popup, which has closed (another popup took its place, a key closed it): the drag
         // aimed at a list that's gone, so it ends without moving anything
-        if self.queue_drag.is_some() && !self.layout.has(Widget::Queue) {
-            self.queue_drag = None;
+        if self.gesture.queue().is_some() && !self.layout.has(Widget::Queue) {
+            self.gesture = None;
         }
         // a Pane held by its title: the pointer is the Pane's until it lets go
-        if self.arrange.tile.is_some() {
+        if self.gesture.carry().is_some() {
             return self.arrange_route(m, coarse);
         }
         // the Settings page owns the wheel wherever the pointer is: drifting off it must not scroll a Pane behind
@@ -2846,18 +2839,21 @@ impl App {
                         // a second click on the same row soon after plays it
                         // (by identity: a page arriving between the clicks doesn't make it another song, D81)
                         let id = self.open.id_at(self.page.list().unwrap_or_default(), vi);
-                        let double = self.last_click.is_some_and(|(t, i)| i == vi && t.elapsed() < DOUBLE_CLICK) && id.is_some() && self.last_row == id;
-                        self.last_row = id;
+                        let double = match id.clone() {
+                            Some(id) => self.double_click(Clicked::Row(id, vi)),
+                            None => {
+                                self.last_click = None;
+                                false
+                            }
+                        };
                         if let Some(v) = self.list_view_mut() {
                             v.sel = vi;
                         }
                         if double {
-                            self.last_click = None;
                             self.play_row(vi);
-                        } else {
-                            self.last_click = Some((Instant::now(), vi));
+                        } else if let Some(id) = id.filter(|_| self.rows_removable()) {
                             // a drag from here reorders your own playlist
-                            self.playlists.press = self.rows_removable().then(|| self.open.id_at(self.page.list().unwrap_or_default(), vi)).flatten();
+                            self.gesture = Some(Gesture::Row(crate::gesture::RowPress { id, drag: None }));
                         }
                     }
                     Some(Hit::SortCol(c)) => self.sort(c),
@@ -2903,19 +2899,18 @@ impl App {
                         }
                         // an artist or album opens at once (like a link); a track plays on a second click
                         let track = matches!(self.stats_entry(i), Some((crate::stats::Section::Tracks, _)));
-                        let double = self.last_click.is_some_and(|(t, j)| j == usize::MAX / 3 - i && t.elapsed() < DOUBLE_CLICK);
-                        if !track || double {
+                        if !track {
                             self.last_click = None;
                             self.stats_act(i);
-                        } else {
-                            self.last_click = Some((Instant::now(), usize::MAX / 3 - i));
+                        } else if self.double_click(Clicked::StatsRow(i)) {
+                            self.stats_act(i);
                         }
                     }
                     Some(Hit::QueueRow(i)) => {
                         self.focus_on(Widget::Queue);
                         self.queue_view.place(i);
                         // a queued or context song can be dragged (a context song also up into your queue)
-                        self.queue_drag = crate::queue::QueueDrag::start(self, i);
+                        self.gesture = crate::queue::QueueDrag::start(self, i).map(Gesture::Queue);
                     }
                     // click a lyric line: jump there (where the music is when the delayed line shows)
                     Some(Hit::Lyric(ms)) => self.seek_to((ms as i64 + self.config.lyrics.delay()).max(0) as u64),
@@ -2943,30 +2938,23 @@ impl App {
                         }
                     }
                     Some(Hit::SearchTrack(i)) => {
-                        let double = self.last_click.is_some_and(|(t, j)| j == usize::MAX / 2 - i && t.elapsed() < DOUBLE_CLICK);
+                        let double = self.double_click(Clicked::SearchTrack(i));
                         if let Some(s) = self.searching_mut() {
                             s.track_sel = Some(i);
                         }
                         if double {
-                            self.last_click = None;
                             self.play_search_track(i);
-                        } else {
-                            self.last_click = Some((Instant::now(), usize::MAX / 2 - i));
                         }
                     }
                     Some(Hit::PlayArtist) => self.play_artist(),
                     Some(Hit::Save(l)) => self.save_clicked(l),
                     Some(Hit::TopTrack(i)) => {
-                        // top tracks share the double-click memory with list rows, kept apart by index
-                        let double = self.last_click.is_some_and(|(t, j)| j == usize::MAX - i && t.elapsed() < DOUBLE_CLICK);
+                        let double = self.double_click(Clicked::TopTrack(i));
                         if let Some(a) = self.page.artist_mut() {
                             a.top_sel = i;
                         }
                         if double {
-                            self.last_click = None;
                             self.play_top(i);
-                        } else {
-                            self.last_click = Some((Instant::now(), usize::MAX - i));
                         }
                     }
                     Some(Hit::MenuItem(_) | Hit::MenuSplit(_) | Hit::PickerItem(_) | Hit::AddPick(_)) => {}
@@ -2995,43 +2983,42 @@ impl App {
                         };
                         if max > 0 {
                             self.nudge = Nudge::default();
-                            self.scrub = Some(Scrub::press(bar, r, max, fx, precise));
+                            self.gesture = Some(Gesture::Scrub(Scrub::press(bar, r, max, fx, precise)));
                         }
                     }
                     None => self.close_if_open(Modal::Palette),
                 }
             }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                if let Some(s) = self.scrub.as_mut() {
+            MouseEventKind::Drag(MouseButton::Left) => match self.gesture.as_mut() {
+                Some(Gesture::Scrub(s)) => {
                     s.drag(fx, coarse);
                     // volume is heard while dragging (deduped per percent); the seek waits for the release
                     if s.bar == Bar::Volume {
                         let v = s.value as u8;
                         self.set_volume(v);
                     }
-                } else if let Some(d) = self.queue_drag.clone() {
-                    self.queue_drag = Some(crate::queue::target(self, d, m.row));
-                } else if self.playlists.press.is_some() {
-                    self.drag_row_to(m.row);
-                } else if self.arrange.divider_held().is_some() {
+                }
+                Some(Gesture::Queue(d)) => {
+                    let d = d.clone();
+                    self.gesture = Some(Gesture::Queue(crate::queue::target(self, d, m.row)));
+                }
+                Some(Gesture::Row(_)) => self.drag_row_to(m.row),
+                Some(Gesture::Divider(_)) => self.arrange_route(m, coarse),
+                Some(Gesture::Carry(_)) | None => {}
+            },
+            MouseEventKind::Up(_) => match self.gesture.take() {
+                g @ Some(Gesture::Divider(_)) => {
+                    self.gesture = g;
                     self.arrange_route(m, coarse);
                 }
-            }
-            MouseEventKind::Up(_) => {
-                if self.arrange.divider_held().is_some() {
-                    self.arrange_route(m, coarse);
-                }
-                if let Some(d) = self.queue_drag.take() {
-                    self.drop_queued(d);
-                }
-                self.drop_row();
-                if let Some(s) = self.scrub.take() {
-                    match s.bar {
-                        Bar::Seek => self.seek_to(s.value),
-                        Bar::Volume => self.set_volume(s.value as u8),
-                    }
-                }
-            }
+                Some(Gesture::Queue(d)) => self.drop_queued(d),
+                Some(Gesture::Row(r)) => self.drop_row(r),
+                Some(Gesture::Scrub(s)) => match s.bar {
+                    Bar::Seek => self.seek_to(s.value),
+                    Bar::Volume => self.set_volume(s.value as u8),
+                },
+                g @ (Some(Gesture::Carry(_)) | None) => self.gesture = g,
+            },
             MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
                 let d = if m.kind == MouseEventKind::ScrollLeft { -1 } else { 1 };
                 if let Some(row) = self.home_row_at(m.column, m.row) {
@@ -3192,8 +3179,9 @@ popup_data! {
 impl App {
     /// Open `p`, replacing the popup open (popups don't nest).
     pub(crate) fn open_popup(&mut self, p: Popup) {
-        // a Widget held meanwhile is let go: its chip would be drawn over the popup (#40 review)
-        self.tile_cancel();
+        // a Widget held meanwhile is let go (its chip would be drawn over the popup, #40 review), a divider held is
+        // let go where it is (Q103)
+        self.gesture_interrupted();
         self.popup = Some(p);
     }
 
@@ -3329,12 +3317,12 @@ impl App {
                 _ => {}
             },
             MouseEventKind::Drag(MouseButton::Left) if modal == Modal::Queue => {
-                if let Some(d) = self.queue_drag.clone() {
-                    self.queue_drag = Some(crate::queue::target(self, d, m.row));
+                if let Some(d) = self.gesture.queue().cloned() {
+                    self.gesture = Some(Gesture::Queue(crate::queue::target(self, d, m.row)));
                 }
             }
-            MouseEventKind::Up(_) if modal == Modal::Queue && self.queue_drag.is_some() => {
-                if let Some(d) = self.queue_drag.take() {
+            MouseEventKind::Up(_) if modal == Modal::Queue && self.gesture.queue().is_some() => {
+                if let Some(Gesture::Queue(d)) = self.gesture.take() {
                     self.drop_queued(d);
                 }
             }
@@ -3392,7 +3380,7 @@ impl App {
                     Modal::Queue => match hit {
                         Some(Hit::QueueRow(i)) => {
                             self.queue_view.place(i);
-                            self.queue_drag = crate::queue::QueueDrag::start(self, i);
+                            self.gesture = crate::queue::QueueDrag::start(self, i).map(Gesture::Queue);
                         }
                         _ if !inside => self.close_queue_popup(),
                         _ => {}
@@ -3402,13 +3390,7 @@ impl App {
                 }
             }
             // a press that started before the popup opened ends without doing anything
-            MouseEventKind::Up(_) => {
-                self.arrange.let_go();
-                self.queue_drag = None;
-                self.scrub = None;
-                self.playlists.press = None;
-                self.playlists.row_drag = None;
-            }
+            MouseEventKind::Up(_) => self.gesture_dropped(),
             _ => {}
         }
     }
