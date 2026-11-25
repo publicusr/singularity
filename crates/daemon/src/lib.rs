@@ -55,6 +55,8 @@ pub struct Hub {
     pub started_unix_ms: u64,
     /// which Engine this Daemon runs
     pub engine_kind: proto::EngineKind,
+    /// Soloist runs in the Soloist VM (Q94)
+    pub soloist_in_vm: bool,
     /// what is playing and on which device (D80); never held across an await
     pub now: std::sync::Mutex<playing::NowPlaying>,
     pub engine_status: Mutex<Option<proto::EngineStatus>>,
@@ -266,6 +268,7 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
     let hub = Arc::new(Hub {
         started_unix_ms: proto::now_ms(),
         engine_kind: engine.kind(),
+        soloist_in_vm: engine.soloist_in_vm(),
         now: Default::default(),
         engine_status: Mutex::new(None),
         catalogue_status: Mutex::new(None),
@@ -781,8 +784,8 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     match hello {
         Some(ClientMsg::Hello { protocol, client }) if protocol == PROTOCOL_VERSION => {
             tracing::info!("client connected: {client}");
-            proto::write_msg(&mut wr, &DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind })
-                .await?;
+            let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind, soloist_in_vm: hub.soloist_in_vm };
+            proto::write_msg(&mut wr, &welcome).await?;
         }
         Some(ClientMsg::Hello { protocol, .. }) => {
             let message = format!("this singularityd speaks protocol {PROTOCOL_VERSION}, the Client speaks {protocol}. Restart the Daemon ({RESTART}) after updating.");
@@ -1017,6 +1020,7 @@ mod tests {
         Arc::new(Hub {
             started_unix_ms: 0,
             engine_kind: proto::EngineKind::Fake,
+            soloist_in_vm: false,
             now: Default::default(),
             engine_status: Mutex::new(None),
             catalogue_status: Mutex::new(None),

@@ -252,6 +252,10 @@ impl<R: Runner> Engine for SoloistEngine<R> {
         Some(Box::new(self.clone()))
     }
 
+    fn soloist_in_vm(&self) -> bool {
+        self.runner.in_vm()
+    }
+
     fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>) {
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let (ev_tx, ev_rx) = mpsc::channel(256);

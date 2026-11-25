@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 pub enum ConnEvent {
     Connecting,
-    Connected { daemon_version: String, engine: proto::EngineKind },
+    Connected { daemon_version: String, engine: proto::EngineKind, soloist_in_vm: bool },
     /// the running Daemon is older than the `singularityd` on disk; it's being replaced
     Updating,
     Incompatible(String),
@@ -65,7 +65,7 @@ async fn run(mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>
             continue;
         }
         match proto::read_msg::<_, DaemonMsg>(&mut rd).await {
-            Ok(Some(DaemonMsg::Welcome { daemon_version, started_unix_ms, engine, .. })) => {
+            Ok(Some(DaemonMsg::Welcome { daemon_version, started_unix_ms, engine, soloist_in_vm, .. })) => {
                 // after a rebuild the old Daemon keeps running; ask it to make way for the new binary (once)
                 if !replaced && daemon_binary().is_some_and(|b| built_after(&b, started_unix_ms)) {
                     replaced = true;
@@ -83,7 +83,7 @@ async fn run(mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>
                     started_daemon = false;
                     continue;
                 }
-                let _ = ev_tx.send(ConnEvent::Connected { daemon_version, engine }).await;
+                let _ = ev_tx.send(ConnEvent::Connected { daemon_version, engine, soloist_in_vm }).await;
             }
             Ok(Some(DaemonMsg::Incompatible { message, .. })) => {
                 let _ = ev_tx.send(ConnEvent::Incompatible(message)).await;

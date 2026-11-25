@@ -40,6 +40,10 @@ pub enum DaemonMsg {
         /// which Engine this Daemon runs (#66; older Daemons ran Soloist)
         #[serde(default)]
         engine: EngineKind,
+        /// Soloist runs in the Soloist VM (D55), so the setup says what the VM's first start involves (Q94; older
+        /// Daemons don't say: false)
+        #[serde(default)]
+        soloist_in_vm: bool,
     },
     Incompatible { protocol: u32, message: String },
     Pong { id: u64 },
@@ -843,6 +847,27 @@ mod tests {
         write_msg(&mut a, &msg).await.unwrap();
         let got: ClientMsg = read_msg(&mut b).await.unwrap().unwrap();
         assert_eq!(got, msg);
+    }
+
+    /// Q94: the Daemon says whether Soloist runs in the Soloist VM; an older Daemon doesn't (not in a VM), and an older
+    /// Client skips the field.
+    #[tokio::test]
+    async fn the_welcome_says_whether_soloist_runs_in_a_vm() {
+        let (mut a, mut b) = tokio::io::duplex(1024);
+        let msg = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: "1".into(), started_unix_ms: 5, engine: EngineKind::Soloist, soloist_in_vm: true };
+        write_msg(&mut a, &msg).await.unwrap();
+        let got: DaemonMsg = read_msg(&mut b).await.unwrap().unwrap();
+        assert_eq!(got, msg);
+        let old: DaemonMsg = serde_json::from_str(r#"{"t":"welcome","protocol":1,"daemon_version":"1","started_unix_ms":5,"engine":"soloist"}"#).unwrap();
+        assert!(matches!(old, DaemonMsg::Welcome { soloist_in_vm: false, .. }), "{old:?}");
+        #[derive(Deserialize)]
+        #[serde(tag = "t", rename_all = "snake_case")]
+        #[allow(dead_code)]
+        enum OldDaemonMsg {
+            Welcome { protocol: u32, daemon_version: String, started_unix_ms: u64, engine: EngineKind },
+        }
+        let OldDaemonMsg::Welcome { engine, .. } = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(engine, EngineKind::Soloist);
     }
 
     #[test]
