@@ -70,9 +70,10 @@ const ID_ROOM: u32 = 1 << 30;
 pub const MIN_W: u16 = 12;
 pub const MIN_H: u16 = 3;
 
-/// Panes that hold the hole: the gravity well (its own frame) and Event Horizon's plain black hole.
+/// Panes that hold the hole: the gravity well (its own frame) and Event Horizon's plain black hole (the Widget
+/// catalogue's fact).
 pub fn is_hole(w: Option<Widget>) -> bool {
-    matches!(w, Some(Widget::Well | Widget::Hole))
+    w.is_some_and(|w| crate::widget_catalogue::facts(w).hole)
 }
 
 /// The black hole's picture's widest shape, width over height in pixels (4:3, owner round 2; was 16:10): in a wider

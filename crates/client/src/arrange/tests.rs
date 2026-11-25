@@ -1062,7 +1062,7 @@ fn random_gestures_leave_every_design_valid() {
                 let tree = a.layout.clone();
                 assert!(tree.fits(a.pane_area()), "{} {w}x{h}: {tree:?}", design.id);
                 // (Home may wait in the Tray, while Arrange mode is on)
-                assert!(crate::arrangement::REQUIRED.iter().all(|c| tree.has(*c) || tree.tray().contains(c) && a.arranging.is_some()));
+                assert!(crate::arrangement::required_widgets().all(|c| tree.has(c) || tree.tray().contains(&c) && a.arranging.is_some()));
                 assert!(a.tile.is_none() && a.widget_picker().is_none());
             }
         }
