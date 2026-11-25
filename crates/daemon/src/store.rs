@@ -62,8 +62,7 @@ impl Store {
 
     /// The default place: `$XDG_DATA_HOME/singularity`.
     pub fn default_dir() -> PathBuf {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-        std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".local/share")).join("singularity")
+        singularity_config::app_folders::AppFolders::this().data
     }
 
     pub fn record(&self, p: &Play) -> anyhow::Result<()> {
@@ -343,19 +342,8 @@ fn temp_suffix() -> u64 {
 }
 
 /// The Downloads folder: `$XDG_DOWNLOAD_DIR`, else `user-dirs.dirs`, else `~/Downloads` (or home if that's missing).
-pub fn downloads_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    let expand = |v: &str| PathBuf::from(v.trim_matches('"').replace("$HOME", &home.to_string_lossy()));
-    if let Some(v) = std::env::var_os("XDG_DOWNLOAD_DIR") {
-        return expand(&v.to_string_lossy());
-    }
-    let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".config"));
-    if let Ok(text) = std::fs::read_to_string(config.join("user-dirs.dirs"))
-        && let Some(v) = text.lines().find_map(|l| l.trim().strip_prefix("XDG_DOWNLOAD_DIR="))
-    {
-        return expand(v);
-    }
-    Some(home.join("Downloads")).filter(|d| d.is_dir()).unwrap_or(home)
+pub fn downloads_dir() -> anyhow::Result<PathBuf> {
+    Ok(singularity_config::app_folders::AppFolders::from_env()?.downloads()?)
 }
 
 // ── what counts as a play ─────────────────────────────────────────────

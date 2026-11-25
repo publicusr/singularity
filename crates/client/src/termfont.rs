@@ -51,7 +51,7 @@ fn candidates() -> Vec<String> {
 /// `~/Library/Application Support/<app id>`.
 fn config_files(dir: &str, mac_id: &str, names: &[&str]) -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| home.as_ref().map(|h| h.join(".config")));
+    let xdg = singularity_config::app_folders::xdg_config_home();
     let mut dirs: Vec<PathBuf> = xdg.into_iter().map(|x| x.join(dir)).collect();
     dirs.extend(home.map(|h| h.join("Library/Application Support").join(mac_id)));
     dirs.iter().flat_map(|d| names.iter().map(move |n| d.join(n))).filter(|p| p.is_file()).collect()

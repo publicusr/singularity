@@ -48,12 +48,8 @@ pub struct SoloistEngine {
 
 impl SoloistEngine {
     pub fn from_env() -> SoloistEngine {
-        let base = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-            .unwrap_or_else(std::env::temp_dir);
         SoloistEngine {
-            runner: Local::new(base.join("singularity"), singularity_config::EngineChoice::default().soloist_cache_mb()),
+            runner: Local::new(singularity_config::app_folders::AppFolders::this().data, singularity_config::EngineChoice::default().soloist_cache_mb()),
             device_name: DEVICE_NAME.into(),
             #[cfg(target_os = "macos")]
             vm: None,

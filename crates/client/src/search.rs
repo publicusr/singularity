@@ -265,8 +265,7 @@ impl Search {
 }
 
 fn recent_file() -> std::path::PathBuf {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    std::env::var_os("XDG_STATE_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".local/state")).join("singularity/recent-searches.json")
+    singularity_config::app_folders::AppFolders::this().state.join("recent-searches.json")
 }
 
 pub fn load_recent() -> Vec<String> {

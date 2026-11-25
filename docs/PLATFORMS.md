@@ -75,7 +75,7 @@ asked librespot not to pursue it), hence Soloist itself in a small Linux VM (D53
 | Audio output name (health) | `pactl` (the Engine's stream → its sink) | cpal's default output device | ✅ |
 | Opening a URL (the Host) | `xdg-open` from `/usr/bin`, `/bin` or `/usr/local/bin` | `open` from the same | ✅ |
 | The Client starting the Daemon | `singularityd` next to the Client (never `PATH`) | the same | ✅ |
-| Socket dir | `$XDG_RUNTIME_DIR/singularity/` | `$TMPDIR/singularity-<uid>/singularity/` (per-user `$TMPDIR`; the uid part reads "user" without `/proc`, harmless) | ✅ |
+| Socket dir (App folders, `config/src/app_folders.rs`) | `$XDG_RUNTIME_DIR/singularity/` | `$TMPDIR/singularity-<uid>/singularity/` (per-user `$TMPDIR`; the uid part reads "user" without `/proc`, harmless) | ✅ |
 
 ## Not yet run on Linux
 
@@ -86,5 +86,6 @@ thing back on the Linux machine: `cargo test --workspace`, the pty scenarios, an
 ## Shared, and the same on both
 
 Paths (D50): `~/.config/singularity`, `~/.local/share/singularity`, `~/.local/state/singularity`,
-`~/.cache/singularity`, with the `XDG_*` variables respected. Terminals: kitty, Ghostty and WezTerm for the pixel tier
+`~/.cache/singularity`, with the `XDG_*` variables respected, named in one place (App folders,
+`config/src/app_folders.rs`, D89). With `HOME` unset (and those `XDG_*` unset) the Client and Daemon stop and say so. Terminals: kitty, Ghostty and WezTerm for the pixel tier
 on both; the cell tier everywhere else. Visuals: wgpu on Vulkan (Linux) or Metal (macOS), CPU fallback on both.

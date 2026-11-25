@@ -440,8 +440,7 @@ fn fetchable_cover(url: &str) -> anyhow::Result<()> {
 
 async fn cover_file(url: &str) -> anyhow::Result<std::path::PathBuf> {
     fetchable_cover(url)?;
-    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else { anyhow::bail!("no HOME for the cache") };
-    let dir = std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".cache")).join("singularity");
+    let dir = singularity_config::app_folders::AppFolders::from_env()?.cache;
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).redirect(https_redirects()).build()?;
     let mut resp = client.get(url).send().await?.error_for_status()?;
     // (#71) a cover is tens of KB: nothing past 8 MB is read, whether or not the server says its length

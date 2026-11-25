@@ -22,8 +22,7 @@ pub enum Stored {
 pub use singularity_config::host::KEYRING;
 
 fn fallback_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".config")).join("singularity/secrets")
+    singularity_config::app_folders::AppFolders::this().config.join("secrets")
 }
 
 /// `SINGULARITY_NO_KEYRING=1` skips the keyring (tests, or a deliberate file-only setup).
