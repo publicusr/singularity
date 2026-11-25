@@ -169,7 +169,7 @@ impl Assembly {
                 soloist_in_vm(identity.device_name, &mut feed)
             }
             Plan::Soloist { cache_mb } => {
-                Box::new(crate::soloist::SoloistEngine { cache_mb, device_name: identity.device_name, ..crate::soloist::SoloistEngine::from_env() })
+                Box::new(crate::soloist::SoloistEngine::local(identity.device_name, cache_mb))
             }
         };
         let tap = self.tap.and_then(|t| match t {

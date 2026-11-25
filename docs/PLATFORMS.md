@@ -63,7 +63,7 @@ asked librespot not to pursue it), hence Soloist itself in a small Linux VM (D53
 
 | Seam | Linux | macOS | macOS status |
 |------|-------|-------|--------------|
-| Engine (ADR-0001, D51, D52, D55) | Soloist over its WebSocket; or the app / librespot | librespot; Soloist in the VM (`vm.rs`, `soloist_vm.rs`, `pcm.rs`); the app (started hidden) | see the Engines table |
+| Engine (ADR-0001, D51, D52, D55) | Soloist over its WebSocket, started and kept current by the Soloist runner (`soloist/runner.rs`: a local process, D89); or the app / librespot | librespot; Soloist in the VM (`vm.rs`, `soloist_vm.rs`, `pcm.rs`); the app (started hidden) | see the Engines table |
 | AudioTap (D16) | `parec` on the Engine's PipeWire stream (Soloist's, or the app's); librespot in-process | librespot and the Soloist VM in-process; Core Audio process tap on Spotify.app (48 → 44.1 kHz) | 🔶 #67 for the app |
 | Secrets (D24) | `secret-tool` | `/usr/bin/security` | ✅ #64 |
 | OS media integration | MPRIS on D-Bus | Now Playing + remote commands (MediaPlayer framework; the main thread runs the run loop, tokio another thread) | 🔶 #68 |
