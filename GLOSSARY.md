@@ -8,9 +8,10 @@ through Spotify Soloist, and built-in audio-reactive visuals.
 ### Backends
 
 **Engine**:
-The thing that actually decodes and plays audio: Spotify Soloist on Linux (SoloistEngine), the hidden Spotify.app on
-macOS (AppEngine, D51), or librespot inside the Daemon on either (LibrespotEngine, D52). Whichever runs is "this
-computer" in the device list; `[engine] kind` picks it.
+The thing that actually decodes and plays audio: Spotify Soloist (SoloistEngine: on Linux, or on macOS in the
+Soloist VM, D55), librespot inside the Daemon (LibrespotEngine, D52; the macOS default since D54), or the official
+Spotify app, started hidden (AppEngine, D51), each on either OS. Whichever runs is "this computer" in the device list;
+`[engine] kind` picks it (`auto`: Soloist on Linux, librespot on macOS).
 _Avoid_: player backend, daemon, streamer
 
 **AppEngine**:
@@ -26,7 +27,7 @@ _Avoid_: built-in player (fine in UI text, not as a term), spotifyd
 
 **Soloist VM**:
 Soloist (Linux-only) run on macOS inside a small Linux VM the Daemon manages (`kind = "soloist"` there, D55): the
-SoloistEngine with a VM host. Its audio comes to the Daemon over vsock and plays from there.
+SoloistEngine behind the VM's Soloist runner. Its audio comes to the Daemon over vsock and plays from there.
 _Avoid_: Linux VM engine, "the VM Engine" (the Engine is still Soloist)
 
 **Process tap**:
@@ -39,8 +40,12 @@ The AudioTap's in-process input: an Engine that plays from the Daemon (librespot
 hands it samples, only while a Client shows audio Widgets.
 
 **Platform seam**:
-One of the few places where Linux and macOS have their own code (Engine, AudioTap, Secrets, OS media integration,
-autostart, process lookup). Everything else is shared (D49); `docs/PLATFORMS.md` lists them.
+One of the few places where Linux and macOS have their own code; each picks its OS adapter in one place, so callers
+carry no `cfg`. They are: the Engine, where Soloist runs (the Soloist runner), Engine `auto` and Soloist CPUs, dying
+with the Daemon, the AudioTap, Secrets, OS media integration (with notifications), autostart, the Host (process
+lookup and stop, the computer's name, opening a link), detecting and starting the Spotify app (`spotify_app`), the
+programs the Daemon runs, the audio output's name, and the socket's folder (App folders). Everything else is shared
+(D49); `docs/PLATFORMS.md` has one row each.
 _Avoid_: port, backend
 
 **Soloist runner**:
@@ -49,15 +54,23 @@ VM. It starts Soloist, says its version and WebSocket address, keeps its build c
 stops it with the Daemon. The Soloist session (one run's state machine) talks to Soloist through it (D89).
 _Avoid_: VM host, launcher
 
+**OS media integration**:
+What the desktop shows and sends about playback: the now-playing entry, media keys driving the Daemon, and a
+notification on each new track. One module (`os_media`, D89) decides whether it runs (`SINGULARITY_NOWPLAYING=off`
+turns it off on both OSes) and which track changes are news; each OS supplies an adapter: MPRIS on D-Bus on Linux,
+Now Playing and remote commands on macOS (with notifications through `osascript`).
+_Avoid_: MPRIS or Now Playing for the whole (each is one OS's adapter; *Now playing* is what plays)
+
 **Host**:
 What the Daemon and the Client know about this computer, asked in one place: its OS and CPU, its name, whether a
-process runs and how to stop it, how to open a link, which CPUs Soloist has builds for, the memory page size. Engine
-assembly decides from it; tests pass a made-up Host (D77, widened by D89).
+process runs, what it uses and how to stop it, how to open a link, which CPUs Soloist has builds for, the memory page
+size, what it calls its keyring. Engine assembly decides from it; tests pass a made-up Host (D77, widened by D89).
 _Avoid_: platform, system info
 
 **App folders**:
 Where Singularity keeps its files: config, data, state, cache, downloads and the socket's folder, by the XDG rule on
-both OSes (D50). One place decides them; with `HOME` unset the app stops and says so (D89).
+both OSes (D50). One place decides them; with `HOME` unset (and not all four `XDG_*_HOME` set) the app stops and
+says so (D89).
 _Avoid_: dirs, paths (in prose)
 
 **Shown Design**:

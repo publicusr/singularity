@@ -14,3 +14,8 @@ between the two, and more moving parts than a single binary.
   running Client, and the Client must reconnect gracefully.
 - Heavy visual rendering lives in the Client (it's per-window). Audio analysis lives in the Daemon
   (one tap, many subscribers).
+
+## Note (2026-11-25, D89)
+
+"Serves MPRIS" is the Linux half: the Daemon runs OS media integration (`os_media`), which on Linux serves MPRIS and on
+macOS the Now Playing entry and its remote commands. The decision above stands.
