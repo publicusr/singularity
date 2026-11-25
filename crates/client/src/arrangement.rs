@@ -18,12 +18,15 @@ use ratatui::layout::Rect;
 
 /// The Required Widgets: moved, never closed or replaced away (D87: only Home, the main Pane where every page opens).
 /// The built-in Designs also have the library, the queue and lyrics (D43), but an edit forks one into a Design of your
-/// own, which may let them go: without a Pane, the library and the queue open as popups from the palette.
-pub const REQUIRED: [Widget; 1] = [Widget::Home];
+/// own, which may let them go: without a Pane, the library and the queue open as popups from the palette. Which they
+/// are is the Widget catalogue's fact.
+pub fn required_widgets() -> impl Iterator<Item = Widget> {
+    Widget::ALL.iter().copied().filter(|w| crate::widget_catalogue::facts(*w).required)
+}
 
 /// Whether `w` is a Required Widget.
 pub fn required(w: Option<Widget>) -> bool {
-    w.is_some_and(|w| REQUIRED.contains(&w))
+    w.is_some_and(|w| crate::widget_catalogue::facts(w).required)
 }
 
 /// The floor plan, its contents and the Tray.
@@ -132,7 +135,7 @@ impl Arrangement {
             }
         }
         // a Required Widget the file left out altogether waits in the Tray (Done waits for it, and Home is never lost)
-        for r in REQUIRED {
+        for r in required_widgets() {
             if !plan.has(r) && !kept.contains(&r) {
                 kept.push(r);
             }
@@ -147,7 +150,7 @@ impl Arrangement {
 
     /// The first Required Widget without a Pane (waiting in the Tray), if any: Done waits for it.
     pub fn unplaced(&self) -> Option<Widget> {
-        REQUIRED.into_iter().find(|w| !self.plan.has(*w))
+        required_widgets().find(|w| !self.plan.has(*w))
     }
 
     /// The floor plan, as saved.

@@ -14,36 +14,7 @@ use singularity_proto::{CatalogueStatus, EngineStatus, PlayStatus};
 
 /// A Pane's title as the Design on screen words it (not the main Pane's, which follows the page).
 pub fn pane_name(design: usize, w: Widget) -> String {
-    crate::design::title(design, w, slot_info(w).0).to_string()
-}
-
-/// Pane titles, and which ticket brings each Pane's real Widget.
-fn slot_info(w: Widget) -> (&'static str, &'static str) {
-    match w {
-        Widget::Library => ("~/library", "library sidebar arrives with #9"),
-        Widget::Stream => ("stream", ""),
-        Widget::Home => ("home", ""),
-        Widget::Queue => ("queue", ""),
-        Widget::Well => ("gravity well", "the black hole arrives with #16"),
-        Widget::Lyrics => ("tail -f lyrics.log", ""),
-        Widget::Karaoke => ("karaoke", ""),
-        Widget::Loudness => ("loudness", "arrives with #15"),
-        Widget::Fft => ("fft", "arrives with #15"),
-        Widget::Hole => ("black hole", ""),
-        Widget::NowPlaying => ("Now playing", ""),
-        Widget::Levels => ("levels", ""),
-        Widget::Listening => ("listening · 26 weeks", ""),
-        Widget::Rain => ("rain", ""),
-        Widget::Scope => ("osc", ""),
-        Widget::Top => ("top · system", ""),
-        Widget::Today => ("today", ""),
-        Widget::TopWeek => ("top this week", ""),
-        Widget::Starfield => ("starfield", ""),
-        Widget::Marquee => ("marquee", ""),
-        Widget::Glow => ("glow", ""),
-        // another build's Widget: as before Panes had an identity, a "?" and nothing in it
-        Widget::Unknown(_) => ("?", ""),
-    }
+    crate::design::title(design, w, crate::widget_catalogue::facts(w).title).to_string()
 }
 
 /// Text at (`x`, `y`), at most `max` columns. Anything outside the buffer is left out (ratatui panics on a row below
@@ -504,8 +475,7 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     // them on the row below a horizontal divider; the buttons are registered after it and win in turn)
     swaps.push((Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(2), 1), Hit::Title(p.id)));
     // (an empty Pane has no title yet)
-    let (title, todo) = w.map_or(("", ""), slot_info);
-    let title = w.map_or(title, |w| crate::design::title(app.design, w, title));
+    let title = w.map_or("", |w| crate::design::title(app.design, w, crate::widget_catalogue::facts(w).title));
     // the main Pane is titled after what it shows
     let title = match w {
         Some(Widget::Home) => match &app.page {
@@ -533,7 +503,7 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     // Pane's arrows (D44); dim when there's nowhere to go that way
     let history = w == Some(Widget::Home) && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20 && app.arranging.is_none();
     // a Pane whose Widget can give way to others always keeps its ◂ ▸ (7 cells at the right): a long title gives way
-    let can_swap = w.is_some_and(|w| !crate::layouts::options(w).is_empty() && w != Widget::Well) || history;
+    let can_swap = w.is_some_and(|w| crate::widget_catalogue::facts(w).group.is_some() && w != Widget::Well) || history;
     // Arrange mode (D87): a split button before the ×, and no ◂ ▸ (what a Pane shows changes by dragging there)
     let split_btn = app.arranging.is_some() && rect.width >= 14;
     let can_swap = can_swap && !split_btn;
@@ -602,8 +572,8 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
         return;
     }
     // the well draws its own (sagging) frame, unless it is too small for its Widget
-    if w == Some(Widget::Well) && !short {
-        crate::visual::well::draw(f.buffer_mut(), *rect, app, th);
+    if let Some(framed) = w.and_then(|w| crate::widget_catalogue::facts(w).own_frame).filter(|_| !short) {
+        framed(f.buffer_mut(), *rect, app, th);
         if closable {
             close_button(f.buffer_mut(), *rect, th, focused, p.id, swaps);
         }
@@ -639,7 +609,7 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     }
     match w {
         Some(w) if short => crate::needs::draw(f.buffer_mut(), inner, w, th),
-        Some(w) => widget(f.buffer_mut(), *rect, inner, w, todo, app, th),
+        Some(w) => crate::widget_catalogue::draw(f.buffer_mut(), *rect, inner, w, app, th),
         // an empty Pane says so, quietly (a split's new Pane until something is picked for it)
         None => {
             if inner.height > 0 && inner.width >= 5 {
@@ -649,82 +619,17 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     }
 }
 
-/// What a Pane showing `w` draws inside its frame (`rect` the Pane, `inner` inside the frame): the one place each
-/// Widget is
-/// drawn, so tests can draw every Widget at any size the way a Pane does.
-pub fn widget(buf: &mut Buffer, rect: Rect, inner: Rect, w: Widget, todo: &str, app: &mut App, th: &Theme) {
-    use Widget::*;
-    match w {
-        Hole | Well => crate::visual::well::draw_plain(buf, rect, inner, app, th),
-        NowPlaying => crate::widgets::nowplaying(buf, inner, app, th),
-        Levels => crate::widgets::levels(buf, inner, app, th),
-        Listening => {
-            crate::widgets::listening(buf, inner, app, th);
-            // a click opens the whole story
-            app.hit(inner, Hit::Action(Action::Stats));
-        }
-        Rain => crate::widgets::rain(buf, inner, app, th),
-        Scope => crate::widgets::scope(buf, inner, app, th),
-        Top => crate::widgets::top(buf, inner, app, th),
-        Today => {
-            crate::stats::today(buf, inner, app, th);
-            app.hit(inner, Hit::Action(Action::Stats));
-        }
-        TopWeek => crate::stats::top_week(buf, inner, app, th),
-        Starfield => crate::ambient::starfield(buf, inner, app, th),
-        Marquee => crate::ambient::marquee(buf, inner, app, th),
-        Glow => crate::ambient::glow(buf, inner, app, th),
-        Karaoke => crate::karaoke::draw(buf, inner, app, th),
-        _ => {}
-    }
-    if matches!(w, Hole | Well | NowPlaying | Levels | Listening | Rain | Scope | Top | Today | TopWeek | Starfield | Marquee | Glow | Karaoke) {
-        return;
-    }
-    if w == Library {
-        crate::sidebar::draw(buf, inner, app, th);
-        return;
-    }
-    if w == Lyrics {
-        crate::lyrics::draw(buf, inner, app, th);
-        return;
-    }
-    if w == Queue {
-        crate::queue::draw(buf, inner, app, th);
-        return;
-    }
-    if w == Stream {
-        crate::setup::draw_stream(buf, inner, app, th);
-        return;
-    }
-    if w == Fft {
-        crate::meters::spectrum(buf, inner, &app.meters, th);
-        return;
-    }
-    if w == Loudness {
-        crate::meters::loudness(buf, inner, &app.meters, th);
-        return;
-    }
-    // the main Pane draws the page it shows (no catch-all arm)
-    if w == Home {
-        match app.page {
-            Page::Search => crate::search::draw(buf, inner, app, th),
-            Page::Stats(_) => crate::stats::draw(buf, inner, app, th),
-            Page::Settings(_) => crate::settings::draw(buf, inner, app, th),
-            Page::Artist(_) => crate::artist::draw(buf, inner, app, th),
-            Page::List { .. } => crate::tracks::draw(buf, inner, app, th),
-            Page::Home => home_page(buf, inner, app, th),
-        }
-        return;
-    }
-    if inner.height > 0 {
-        let y = inner.y + inner.height / 2;
-        let w = todo.chars().count() as u16;
-        let x = inner.x + inner.width.saturating_sub(w) / 2;
-        text(buf, x, y, inner.width, todo, th.s(th.dim));
+/// The main Pane (Home, the Required Widget) inside its frame: the page it shows (no catch-all arm).
+pub fn main_page(buf: &mut Buffer, inner: Rect, app: &mut App, th: &Theme) {
+    match app.page {
+        Page::Search => crate::search::draw(buf, inner, app, th),
+        Page::Stats(_) => crate::stats::draw(buf, inner, app, th),
+        Page::Settings(_) => crate::settings::draw(buf, inner, app, th),
+        Page::Artist(_) => crate::artist::draw(buf, inner, app, th),
+        Page::List { .. } => crate::tracks::draw(buf, inner, app, th),
+        Page::Home => home_page(buf, inner, app, th),
     }
 }
-
-
 
 /// Home in the main Pane: the search bar on top, the feed under it.
 fn home_page(buf: &mut Buffer, inner: Rect, app: &mut App, th: &Theme) {
@@ -3177,7 +3082,7 @@ mod tests {
                     let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, w + 2, h + 2));
                     app.hits.clear();
                     let outer = buf.area;
-                    let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| widget(&mut buf, outer, Rect::new(1, 1, w, h), slot, "", &mut app, &th)));
+                    let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::widget_catalogue::draw(&mut buf, outer, Rect::new(1, 1, w, h), slot, &mut app, &th)));
                     if drawn.is_err() {
                         bad.push((slot, format!("{slot} {w}x{h}: panicked")));
                         continue;
