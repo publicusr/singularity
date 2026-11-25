@@ -12,6 +12,8 @@ const H: u16 = 48;
 
 struct Bench {
     a: Arrange,
+    /// the built-in Design (its Widgets' names)
+    design: usize,
     layout: Arrangement,
     focus: Option<PaneId>,
     window: Rect,
@@ -34,7 +36,7 @@ impl Bench {
         let layout: Arrangement = (DESIGNS[d].layout)().into();
         let window = Rect::new(0, 0, W, H);
         let focus = layout.pane_of(Widget::Home);
-        Bench { a: Arrange::default(), layout, focus, window, body: crate::ui::rows(window, false)[1], keymap: Keymap::default(), said: vec![], asked: vec![], commits: 0 }
+        Bench { a: Arrange::default(), design: d, layout, focus, window, body: crate::ui::rows(window, false)[1], keymap: Keymap::default(), said: vec![], asked: vec![], commits: 0 }
     }
 
     /// The dividers as a frame of this layout draws them.
@@ -46,7 +48,7 @@ impl Bench {
     fn run(&mut self, f: impl FnOnce(&mut Arrange, &Scene) -> Vec<Out>) {
         let dividers = self.dividers();
         let outs = {
-            let sc = Scene { layout: &self.layout, focus: self.focus, window: self.window, body: self.body, dividers: &dividers, aspect: 2.0, design: 0, keymap: &self.keymap, mark: Default::default() };
+            let sc = Scene { layout: &self.layout, focus: self.focus, window: self.window, body: self.body, dividers: &dividers, aspect: 2.0, design: self.design, keymap: &self.keymap, mark: Default::default() };
             f(&mut self.a, &sc)
         };
         for o in outs {
@@ -626,17 +628,21 @@ impl Rng {
 /// What a gesture or a key was, for what it may do to the floor plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Kind {
-    /// a title or a Tray Widget carried and let go, or Enter's drop: contents only
+    /// a title or a Tray Widget carried and let go, or Enter's drop: contents only, of the two places involved
     Carry,
-    /// a divider dragged, or `+` `-` `[` `]`: sizes only
+    /// a divider dragged, or `+` `=` `-` `[` `]`: sizes only
     Line,
     /// `s` then an arrow, or a split button
     Split,
     /// `x`, or a ×
     Close,
-    /// a Widget to the Tray (`t`), or out of it (`x` on it, its ×, Clear Tray): contents only
-    Tray,
-    /// arrows, Esc, Done, undo and redo: no edit of their own (undo and redo restore one)
+    /// `t` on the focused Pane (it was focused): only that Pane is emptied, its Widget at the Tray's end
+    ToTray,
+    /// out of the Tray (`x`, Delete or Backspace on it, its ×, Clear Tray): only the Tray loses Widgets
+    TrayRemove,
+    /// undo or redo: back to a state seen before
+    Undo,
+    /// arrows, Esc, Done, `w`, a `t` with nothing focused…: no edit of their own
     Other,
 }
 
@@ -655,154 +661,198 @@ fn held(a: &Arrangement) -> Vec<Widget> {
     v
 }
 
+/// The Panes (of `before`) whose Widget is another in `after`.
+fn changed_panes(before: &Arrangement, after: &Arrangement) -> Vec<PaneId> {
+    before.panes().into_iter().filter(|p| after.widget_in(p.id) != p.widget).map(|p| p.id).collect()
+}
+
+/// One random input to the Bench, and what kind it was.
+fn random_input(b: &mut Bench, rng: &mut Rng) -> Option<Kind> {
+    use KeyCode::*;
+    let keys = [Left, Right, Up, Down, Enter, Esc, Char('t'), Char('s'), Char('x'), Char('+'), Char('='), Char('-'), Char('['), Char(']'), Char('w'), Delete, Backspace];
+    let panes = b.layout.compute(b.body).panes;
+    let pick = |rng: &mut Rng| panes[rng.below(panes.len())];
+    Some(match rng.below(11) {
+        0..=3 => {
+            if !b.a.is_on() {
+                b.enter();
+            }
+            let k = keys[rng.below(keys.len())];
+            let split = b.a.split_waiting() && matches!(k, Left | Right | Up | Down);
+            let carrying = b.a.carrying();
+            let panes = b.layout.panes().len();
+            b.key(k);
+            // (a focus in the Tray on a Widget that has left it is let go first: `x` then closes a Pane)
+            match k {
+                _ if split => Kind::Split,
+                Enter if carrying => Kind::Carry,
+                Char('t') if !carrying => Kind::ToTray,
+                Char('x') if !carrying && b.layout.panes().len() < panes => Kind::Close,
+                Char('x') | Delete | Backspace if !carrying => Kind::TrayRemove,
+                Char('+' | '=' | '-' | '[' | ']') if !carrying => Kind::Line,
+                _ => Kind::Other,
+            }
+        }
+        4 | 5 => {
+            // a title carried somewhere (onto a Pane, the Tray, off the Panes)
+            let (p, r) = pick(rng);
+            b.press((r.x + 3, r.y), Some(Hit::Title(p.id)));
+            let area = if rng.below(4) == 0 { b.tray_rect() } else { b.window };
+            for _ in 0..rng.below(4) + 1 {
+                let c = rng.cell(area);
+                b.drag(c);
+            }
+            let c = rng.cell(area);
+            b.release(c);
+            Kind::Carry
+        }
+        6 => {
+            // a Widget from the Tray onto the Panes
+            let &w = b.layout.tray().get(rng.below(b.layout.tray().len()))?;
+            if !b.a.is_on() {
+                b.enter();
+            }
+            let t = b.tray_rect();
+            b.press((t.x + 3, t.y + 1), Some(Hit::TrayItem(w)));
+            let c = rng.cell(b.body);
+            b.drag(c);
+            b.release(c);
+            Kind::Carry
+        }
+        7 => {
+            let ds = b.dividers();
+            if ds.is_empty() {
+                return None;
+            }
+            let i = rng.below(ds.len());
+            let g = ds[i].grip;
+            b.press((g.x, g.y), Some(Hit::Divider(i)));
+            for _ in 0..rng.below(3) + 1 {
+                let c = rng.cell(b.window);
+                b.drag(c);
+            }
+            let c = rng.cell(b.window);
+            b.release(c);
+            Kind::Line
+        }
+        8 => {
+            b.undo(rng.below(3) > 0);
+            Kind::Undo
+        }
+        9 => {
+            if b.a.is_on() {
+                b.press((0, 0), Some(Hit::ArrangeDone));
+            }
+            Kind::Other
+        }
+        _ => {
+            if !b.a.is_on() {
+                b.enter();
+            }
+            let (p, r) = pick(rng);
+            let tray = b.layout.tray().to_vec();
+            match rng.below(4) {
+                0 => {
+                    b.press((r.right() - 3, r.y), Some(Hit::Close(p.id)));
+                    Kind::Close
+                }
+                1 => {
+                    b.press((r.right() - 6, r.y), Some(Hit::SplitPane(p.id)));
+                    Kind::Split
+                }
+                2 if !tray.is_empty() => {
+                    b.press((0, 0), Some(Hit::TrayRemove(tray[rng.below(tray.len())])));
+                    Kind::TrayRemove
+                }
+                _ => {
+                    b.press((0, 0), Some(Hit::ClearTray));
+                    Kind::TrayRemove
+                }
+            }
+        }
+    })
+}
+
 /// ADR 0005: a drag only moves contents; the floor plan changes only by its own explicit edits (dragging a line,
 /// splitting, closing); no Widget is lost but by removing it from the Tray. Random keys and pointer gestures (on
-/// titles, the Tray, dividers, the split and close buttons) in every built-in Design, each edit checked against what
-/// the input was.
+/// titles, the Tray, dividers, the split and close buttons, Done), undo and redo, in every built-in Design, each
+/// change checked against what the input was.
 #[test]
 fn every_edit_is_one_of_adr_0005s_closed_set() {
-    use KeyCode::*;
-    let keys = [Left, Right, Up, Down, Enter, Esc, Char('t'), Char('s'), Char('x'), Char('+'), Char('-'), Char('['), Char(']'), Delete];
-    // how many edits of each kind were checked
+    // how many changes of each kind were checked
     let mut seen: std::collections::HashMap<Kind, usize> = Default::default();
     for d in 0..DESIGNS.len() {
         for seed in 1..=12u64 {
             let mut rng = Rng(seed * 0x9E37_79B9 + d as u64 + 1);
             let mut b = Bench::design(d);
-            let mut carried = false;
-            for step in 0..120 {
+            // every layout there has been (undo and redo only go back to one of them)
+            let mut states = vec![b.layout.clone()];
+            for step in 0..150 {
                 let before = b.layout.clone();
+                let focused = focused_pane(&before, b.focus);
                 let commits = b.commits;
-                let panes = b.layout.compute(b.body).panes;
-                let pick = |rng: &mut Rng| panes[rng.below(panes.len())];
-                let kind = match rng.below(9) {
-                    0..=3 => {
-                        if !b.a.is_on() {
-                            b.enter();
-                        }
-                        let k = keys[rng.below(keys.len())];
-                        let split = b.a.split_waiting() && matches!(k, Left | Right | Up | Down);
-                        let carrying = b.a.carrying();
-                        let on_tray = b.a.tray_focus().is_some();
-                        b.key(k);
-                        match k {
-                            _ if split => Kind::Split,
-                            Enter if carrying => Kind::Carry,
-                            Char('t') => Kind::Tray,
-                            Char('x') | Delete if on_tray => Kind::Tray,
-                            Char('x') => Kind::Close,
-                            Char('+' | '-' | '[' | ']') => Kind::Line,
-                            _ => Kind::Other,
-                        }
-                    }
-                    4 | 5 => {
-                        // a title carried somewhere (onto a Pane, the Tray, off the Panes)
-                        let (p, r) = pick(&mut rng);
-                        b.press((r.x + 3, r.y), Some(Hit::Title(p.id)));
-                        let area = if rng.below(4) == 0 { b.tray_rect() } else { b.window };
-                        for _ in 0..rng.below(4) + 1 {
-                            let c = rng.cell(area);
-                            b.drag(c);
-                        }
-                        let c = rng.cell(area);
-                        b.release(c);
-                        carried = true;
-                        Kind::Carry
-                    }
-                    6 => {
-                        // a Widget from the Tray onto the Panes
-                        let Some(&w) = b.layout.tray().get(rng.below(b.layout.tray().len())) else { continue };
-                        if !b.a.is_on() {
-                            b.enter();
-                        }
-                        let t = b.tray_rect();
-                        b.press((t.x + 3, t.y + 1), Some(Hit::TrayItem(w)));
-                        let c = rng.cell(b.body);
-                        b.drag(c);
-                        b.release(c);
-                        Kind::Carry
-                    }
-                    7 => {
-                        let ds = b.dividers();
-                        if ds.is_empty() {
-                            continue;
-                        }
-                        let i = rng.below(ds.len());
-                        let g = ds[i].grip;
-                        b.press((g.x, g.y), Some(Hit::Divider(i)));
-                        for _ in 0..rng.below(3) + 1 {
-                            let c = rng.cell(b.window);
-                            b.drag(c);
-                        }
-                        let c = rng.cell(b.window);
-                        b.release(c);
-                        Kind::Line
-                    }
-                    _ => {
-                        if !b.a.is_on() {
-                            b.enter();
-                        }
-                        let (p, r) = pick(&mut rng);
-                        let tray = b.layout.tray().to_vec();
-                        match rng.below(4) {
-                            0 => {
-                                b.press((r.right() - 3, r.y), Some(Hit::Close(p.id)));
-                                Kind::Close
-                            }
-                            1 => {
-                                b.press((r.right() - 6, r.y), Some(Hit::SplitPane(p.id)));
-                                Kind::Split
-                            }
-                            2 if !tray.is_empty() => {
-                                b.press((0, 0), Some(Hit::TrayRemove(tray[rng.below(tray.len())])));
-                                Kind::Tray
-                            }
-                            _ => {
-                                b.press((0, 0), Some(Hit::ClearTray));
-                                Kind::Tray
-                            }
-                        }
-                    }
-                };
+                let Some(kind) = random_input(&mut b, &mut rng) else { continue };
                 let what = format!("design {d} seed {seed} step {step} ({kind:?})");
-                assert!(b.layout.fits(b.body) || !before.fits(b.body), "{what}: the floor plan isn't valid");
                 assert!(b.a.tile.is_none() || b.a.carrying(), "{what}: a Widget left held by the pointer");
                 assert!(b.a.divider.is_none(), "{what}: a divider left held");
                 if b.layout == before {
                     continue;
                 }
-                assert!(b.commits == commits + 1, "{what}: the layout changed by {} edits", b.commits - commits);
                 *seen.entry(kind).or_default() += 1;
                 let (was, now) = (held(&before), held(&b.layout));
+                let moved = changed_panes(&before, &b.layout);
+                let tray_moved = b.layout.tray() != before.tray();
+                if kind == Kind::Undo {
+                    assert!(states.contains(&b.layout), "{what}: undo or redo went to a layout never shown");
+                    assert_eq!(b.commits, commits, "{what}: undo is no edit of its own");
+                    continue;
+                }
+                assert_eq!(b.commits, commits + 1, "{what}: the layout changed by {} edits", b.commits - commits);
+                states.push(b.layout.clone());
                 match kind {
                     Kind::Carry => {
                         assert!(same_floor(&b.layout, &before), "{what}: a carried Widget changed the floor plan");
                         assert_eq!(now, was, "{what}: a carried Widget lost or added one");
+                        assert!(moved.len() + tray_moved as usize <= 2, "{what}: a drop changed {moved:?} (and the Tray: {tray_moved})");
                     }
-                    Kind::Tray => {
-                        assert!(same_floor(&b.layout, &before), "{what}: a Tray edit changed the floor plan");
-                        assert!(now.iter().all(|w| was.contains(w)) && b.layout.widgets() == before.widgets() || now == was, "{what}: a Tray edit did more than set aside or remove");
+                    Kind::ToTray => {
+                        assert!(same_floor(&b.layout, &before), "{what}");
+                        let f = focused.expect("t with a focused Pane");
+                        assert_eq!(moved, vec![f], "{what}: t emptied another Pane");
+                        assert_eq!(b.layout.widget_in(f), None, "{what}");
+                        let w = before.widget_in(f).unwrap();
+                        assert_eq!(b.layout.tray().last(), Some(&w), "{what}: it waits at the Tray's end");
+                        assert_eq!(now, was, "{what}");
+                    }
+                    Kind::TrayRemove => {
+                        assert!(same_floor(&b.layout, &before) && moved.is_empty(), "{what}: a Tray edit touched a Pane");
+                        assert!(b.layout.tray().iter().all(|w| before.tray().contains(w)) && b.layout.tray().len() < before.tray().len(), "{what}");
                     }
                     Kind::Line => {
                         assert_eq!(shape(b.layout.plan()), shape(before.plan()), "{what}: a line moved more than a line");
-                        assert_eq!((b.layout.widgets(), b.layout.tray()), (before.widgets(), before.tray()), "{what}: a line moved contents");
+                        assert!(moved.is_empty() && !tray_moved, "{what}: a line moved contents");
                     }
                     Kind::Split => {
                         assert_eq!(b.layout.panes().len(), before.panes().len() + 1, "{what}");
-                        assert_eq!(now, was, "{what}: a split moved contents");
-                        assert!(before.panes().iter().all(|p| b.layout.widget_in(p.id) == p.widget), "{what}: a split moved a Widget");
+                        assert!(moved.is_empty() && !tray_moved, "{what}: a split moved contents");
+                        assert!(b.layout.panes().iter().filter(|p| !before.contains(p.id)).all(|p| p.widget.is_none()), "{what}: the new Pane isn't empty");
                     }
                     Kind::Close => {
                         assert_eq!(b.layout.panes().len() + 1, before.panes().len(), "{what}");
-                        assert_eq!(now, was, "{what}: a close lost a Widget (it waits in the Tray)");
+                        let gone: Vec<Pane> = before.panes().into_iter().filter(|p| !b.layout.contains(p.id)).collect();
+                        assert_eq!(gone.len(), 1, "{what}: one Pane closes");
+                        assert!(b.layout.panes().iter().all(|p| before.widget_in(p.id) == p.widget), "{what}: a survivor changed Widget");
+                        if let Some(w) = gone[0].widget {
+                            assert!(b.layout.tray().contains(&w) && !before.tray().contains(&w), "{what}: the closed Widget isn't in the Tray");
+                        }
+                        assert_eq!(now, was, "{what}: a close lost a Widget");
                     }
-                    Kind::Other => panic!("{what}: {:?} became {:?} without an edit", before, b.layout),
+                    Kind::Undo | Kind::Other => panic!("{what}: {:?} became {:?} without an edit", before, b.layout),
                 }
             }
-            assert!(carried, "design {d} seed {seed}: no title was carried");
         }
     }
-    for k in [Kind::Carry, Kind::Line, Kind::Split, Kind::Close, Kind::Tray] {
-        assert!(seen.get(&k).is_some_and(|n| *n >= 20), "too few {k:?} edits checked: {seen:?}");
+    for k in [Kind::Carry, Kind::Line, Kind::Split, Kind::Close, Kind::ToTray, Kind::TrayRemove, Kind::Undo] {
+        assert!(seen.get(&k).is_some_and(|n| *n >= 20), "too few {k:?} changes checked: {seen:?}");
     }
 }
