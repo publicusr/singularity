@@ -1820,7 +1820,6 @@ impl App {
                     v
                 });
                 let (title, subtitle) = (v.title.clone(), v.subtitle.clone());
-                self.page = Page::List { uri: uri.clone(), title, subtitle };
                 self.recheck_saved(&uri);
                 if self.open.list(&uri).is_none_or(|l| !l.complete()) || self.stale(&uri) {
                     self.open.drop_list(&uri);
@@ -1828,9 +1827,9 @@ impl App {
                     if let Some(v) = self.open.view_mut(&uri) {
                         v.more_for = None;
                     }
-                    self.send(Command::GetTracks { uri });
+                    self.send(Command::GetTracks { uri: uri.clone() });
                 }
-                return;
+                Page::List { uri, title, subtitle }
             }
             PageName::Artist { uri, name } => {
                 self.recheck_saved(&uri);

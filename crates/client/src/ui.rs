@@ -1682,22 +1682,23 @@ mod tests {
         assert!(app.list_view().is_some_and(|v| v.uri == "spotify:playlist:mfy1"), "forward again");
     }
 
-    /// D88: the main Pane shows one page at a time, holding its view. Through a list, an artist page, Stats, Settings
-    /// and Search and back to Home, a key reaches only the page shown, and a page left leaves no view behind: back on
-    /// a list or Search finds it as it was, Home where it was; an artist page and Settings start fresh, Stats on its
-    /// period (Q84).
+    /// D88: the main Pane shows one page at a time, holding its view. Through a list, Search, an artist page, Stats
+    /// and Settings and back to Home, a key reaches only the page shown, and a page left leaves no view behind: back on
+    /// a list or Search finds it as it was, Home where it was; an artist page and Settings start fresh, Stats on the
+    /// period it was left on (Q84).
     #[test]
     fn a_page_holds_its_view_and_keys_reach_only_the_page_shown() {
-        use singularity_proto::{ArtistPage, Shelf, StatsPeriod, TrackPage, TrackRow};
+        use singularity_proto::{ArtistPage, SearchResults, Shelf, StatsPeriod, TrackPage, TrackRow};
         let (mut app, _rx) = home_app();
-        app.search = crate::search::Search::with_recent((0..5).map(|i| format!("query {i}")).collect());
-        app.stats.insert(StatsPeriod::Week, seeded_stats(StatsPeriod::Week));
+        for p in StatsPeriod::ALL {
+            app.stats.insert(p, seeded_stats(p));
+        }
         let list = "spotify:playlist:p";
-        let rows = (0..20).map(|i| TrackRow { uri: format!("spotify:track:{i}"), name: format!("Song {i}"), playable: true, ..Default::default() }).collect();
-        app.track_page(TrackPage { uri: list.into(), offset: 0, total: 20, tracks: rows, header: None });
+        let rows = |n: usize| (0..n).map(|i| TrackRow { uri: format!("spotify:track:{i}"), name: format!("Song {i}"), playable: true, ..Default::default() }).collect::<Vec<_>>();
+        app.track_page(TrackPage { uri: list.into(), offset: 0, total: 20, tracks: rows(20), header: None });
         let shelves = app.home.as_ref().unwrap().shelves.iter().take(3).cloned().collect::<Vec<Shelf>>();
         app.artist_page(ArtistPage { uri: "spotify:artist:a".into(), name: "Nova Drift".into(), shelves, ..Default::default() });
-        // what each page's view says (None: not shown)
+        // what each page's view says (None: not shown); Search's words, highlighted song and results stay beside it
         let marks = |app: &App| {
             [
                 format!("{:?}", app.home_view.sel),
@@ -1705,12 +1706,12 @@ mod tests {
                 format!("{:?}", app.page.artist().map(|a| a.shelves.sel)),
                 format!("{:?}", app.page.stats().map(|v| (v.period, v.sel))),
                 format!("{:?}", app.page.settings().map(|v| v.sel)),
-                format!("{:?}", app.search.recent_sel),
+                format!("{:?} {:?} {:?}", app.search.query(), app.search.track_sel, app.search.results().map(|r| r.tracks.len())),
             ]
         };
         let names = ["Home", "the list", "the artist page", "Stats", "Settings", "Search"];
         // ↓ on the page shown moves its highlight, and nothing else
-        let down = |app: &mut App, at: usize, seen: &mut Vec<[String; 6]>| {
+        let down = |app: &mut App, at: usize, seen: &mut [Option<[String; 6]>; 6]| {
             render(app, 200, 64);
             let before = marks(app);
             app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
@@ -1719,30 +1720,39 @@ mod tests {
             for i in 0..6 {
                 assert_eq!(before[i] != after[i], i == at, "↓ on {}: {} {} → {}", names[at], names[i], before[i], after[i]);
             }
-            seen.push(after);
+            seen[at] = Some(after);
         };
-        let mut seen = vec![];
+        let mut seen: [Option<[String; 6]>; 6] = Default::default();
         down(&mut app, 0, &mut seen);
         app.open(list, "P", "", "playlist");
         down(&mut app, 1, &mut seen);
+        app.run(Action::Search);
+        for c in "nova".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        receive_search(&mut app, SearchResults { query: "nova".into(), tracks: rows(5), ..Default::default() });
+        down(&mut app, 5, &mut seen);
+        let search_left = seen[5].as_ref().unwrap()[5].clone();
+        assert_eq!(search_left, format!("{:?} {:?} {:?}", "nova", Some(0usize), Some(5usize)));
         app.open("spotify:artist:a", "Nova Drift", "", "artist");
         down(&mut app, 2, &mut seen);
         app.run(Action::Stats);
         down(&mut app, 3, &mut seen);
+        // the next period: Stats comes back on it
+        app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        let period = app.page.stats().unwrap().period;
+        assert_eq!(period, StatsPeriod::Month);
         app.run(Action::Settings);
         down(&mut app, 4, &mut seen);
         // a key Settings doesn't use goes nowhere: it used to open a menu for the Card highlighted on Home
         app.key(KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE));
         assert!(app.popup.is_none(), "{:?}", app.modal());
-        app.run(Action::Search);
-        down(&mut app, 5, &mut seen);
-        let fresh = [None, None, Some(format!("{:?}", Some(None::<crate::home::CardRef>))), Some(format!("{:?}", Some((StatsPeriod::Week, 0usize)))), Some(format!("{:?}", Some(0usize))), None];
-        for at in (0..5).rev() {
+        let fresh = [None, None, Some(format!("{:?}", Some(None::<crate::home::CardRef>))), Some(format!("{:?}", Some((period, 0usize)))), Some(format!("{:?}", Some(0usize))), None];
+        for at in [3, 2, 5, 1, 0] {
             app.run(Action::Back);
-            assert_eq!(app.page.name(), app.current_page());
             let now = marks(&app);
             // where it was left (after its ↓), or fresh
-            let want = fresh[at].clone().unwrap_or_else(|| seen[at][at].clone());
+            let want = fresh[at].clone().unwrap_or_else(|| seen[at].as_ref().unwrap()[at].clone());
             assert_eq!(now[at], want, "back on {}", names[at]);
             down(&mut app, at, &mut seen);
         }
