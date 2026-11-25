@@ -149,7 +149,8 @@ impl Assembly {
     }
 
     /// Make the Engine (commands go to `catalogue`, if there is one) and the tap's source. Only for an assembly made
-    /// with [`Host::this`]: off macOS there is no Soloist VM to make (a panic) and no app process tap (none).
+    /// with [`Host::this`]: off macOS the Soloist VM can't start (its Engine says so) and there is no app process tap
+    /// (none).
     pub fn build(&self, catalogue: Option<mpsc::Sender<CatCmd>>) -> (Box<dyn Engine>, Option<TapSource>) {
         let identity = self.identity.clone();
         // the samples of an Engine that plays from this Daemon, for the tap
@@ -167,7 +168,7 @@ impl Assembly {
             }
             Plan::SoloistVm => {
                 tracing::info!("Engine: Soloist in the Soloist VM, {:?} on Connect", identity.device_name);
-                soloist_in_vm(identity.device_name, &mut feed)
+                Box::new(crate::soloist::SoloistEngine::in_vm(identity.device_name, feed.insert(crate::tap::Feed::new()).clone()))
             }
             Plan::Soloist { cache_mb } => {
                 Box::new(crate::soloist::SoloistEngine::local(identity.device_name, cache_mb))
@@ -184,17 +185,6 @@ impl Assembly {
         });
         (engine, tap)
     }
-}
-
-/// Soloist in the Soloist VM (D55), its audio in a new `feed`.
-#[cfg(target_os = "macos")]
-fn soloist_in_vm(device_name: String, feed: &mut Option<std::sync::Arc<crate::tap::Feed>>) -> Box<dyn Engine> {
-    Box::new(crate::soloist::SoloistEngine::in_vm(device_name, feed.insert(crate::tap::Feed::new()).clone()))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn soloist_in_vm(_: String, _: &mut Option<std::sync::Arc<crate::tap::Feed>>) -> Box<dyn Engine> {
-    unreachable!("the Soloist VM is macOS's: Host::this() never plans it elsewhere")
 }
 
 #[cfg(test)]
