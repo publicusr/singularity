@@ -132,7 +132,7 @@ fn bar(buf: &mut Buffer, x: u16, y: u16, cells: u16, t: f32, th: &Theme) {
 }
 
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
-    let Some(mut view) = app.stats_view.clone() else { return };
+    let Some(mut view) = app.page.stats().cloned() else { return };
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     if w < 16 || r.height < 3 {
         return;
@@ -162,7 +162,9 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
     let Some(s) = app.stats.get(&view.period).cloned() else {
         text(buf, x, r.y + 2, w, "counting…", th.s(th.dim));
-        app.stats_view = Some(view);
+        if let Some(v) = app.page.stats_mut() {
+            *v = view;
+        }
         for (rect, h) in hits {
             app.hit(rect, h);
         }
@@ -295,7 +297,9 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     if view.top + view.visible < lines.len() {
         text(buf, r.right().saturating_sub(1), r.bottom().saturating_sub(1), 1, "▾", th.s(th.dim));
     }
-    app.stats_view = Some(view);
+    if let Some(v) = app.page.stats_mut() {
+        *v = view;
+    }
     for (rect, h) in hits {
         app.hit(rect, h);
     }

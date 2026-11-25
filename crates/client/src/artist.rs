@@ -1,7 +1,7 @@
 //! Artist pages (#11): name and listeners, ▶ Play, popular tracks, then Shelves of releases, appearances and related
 //! artists (drawn like Home's, so Cards open the same way).
 
-use crate::app::{App, Hit};
+use crate::app::{App, Hit, Page};
 use crate::home::HomeView;
 use crate::theme::Theme;
 use crate::ui::{text, blank};
@@ -50,12 +50,16 @@ pub fn top_rows(height: u16, n: usize) -> usize {
 }
 
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
-    let Some(mut v) = app.artist.take() else { return };
+    // the page's view is taken out while it draws (drawing needs the App too) and put back
+    if !matches!(app.page, Page::Artist(_)) {
+        return;
+    }
+    let Page::Artist(mut v) = std::mem::replace(&mut app.page, Page::Home) else { return };
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     // (the name is the Pane's title)
     let Some(page) = v.page.clone() else {
         text(buf, x, r.y, w, "loading…", th.s(th.dim));
-        app.artist = Some(v);
+        app.page = Page::Artist(v);
         return;
     };
     text(buf, x, r.y, 8, " ▶ Play ", th.chip(th.accent));
@@ -109,15 +113,15 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let view = std::mem::take(&mut v.shelves);
         // the Card renderer reads the artist from the App, so put it back while it draws
         let uri = v.uri.clone();
-        app.artist = Some(v);
+        app.page = Page::Artist(v);
         let (feed, view) = crate::home::draw_feed(buf, Rect::new(r.x, y, r.width, r.bottom() - y), app, th, feed, view);
-        if let Some(a) = app.artist.as_mut().filter(|a| a.uri == uri) {
+        if let Some(a) = app.page.artist_mut().filter(|a| a.uri == uri) {
             a.feed = feed;
             a.shelves = view;
         }
         return;
     }
-    app.artist = Some(v);
+    app.page = Page::Artist(v);
 }
 
 #[cfg(test)]

@@ -224,7 +224,7 @@ fn a_big_library_pane_shows_columns_that_keys_the_wheel_and_clicks_cross() {
     app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: r.x + 8, row: r.y + 1, modifiers: KeyModifiers::NONE });
     app.mouse(MouseEvent { kind: MouseEventKind::Up(MouseButton::Left), column: r.x + 8, row: r.y + 1, modifiers: KeyModifiers::NONE });
     assert_eq!(app.sidebar.sel, row);
-    assert_eq!(app.open.view().map(|v| v.uri.clone()), Some(format!("spotify:playlist:p{}", row - FIXED)));
+    assert_eq!(app.list_view().map(|v| v.uri.clone()), Some(format!("spotify:playlist:p{}", row - FIXED)));
 }
 
 #[test]
