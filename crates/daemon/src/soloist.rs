@@ -72,6 +72,11 @@ impl SoloistEngine<InVm<crate::soloist_vm::Mac>> {
 }
 
 impl<R: Runner> SoloistEngine<R> {
+    /// Soloist run by `runner`, as `device_name` on Connect (the tests' fake VM).
+    pub fn with_runner(device_name: String, runner: R) -> SoloistEngine<R> {
+        SoloistEngine { device_name, runner }
+    }
+
     /// The volume to start Soloist at: the last one it played at (it would start at its own 40 % otherwise).
     fn saved_volume(&self) -> Option<u8> {
         std::fs::read_to_string(self.state_dir().join("volume")).ok()?.trim().parse().ok().filter(|v| *v <= 100)

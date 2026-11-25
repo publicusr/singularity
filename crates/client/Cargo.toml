@@ -10,6 +10,8 @@ repository.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+# a real Daemon for the tests that need its side of the protocol (Q94: its word on the Soloist VM)
+singularityd = { path = "../daemon" }
 
 [dependencies]
 singularity-proto = { path = "../proto" }

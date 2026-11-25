@@ -21,6 +21,9 @@ use tokio::sync::{Notify, watch};
 /// Soloist's WebSocket inside the guest.
 pub const GUEST_WS: u16 = 7700;
 
+/// What the guest's `sgl-soloist check` prints when it staged a newer build (the VM's setup writes the script: `vm.rs`).
+pub const STAGED: &str = "staged";
+
 /// The VM Soloist runs in.
 pub trait Guest: Send + Sync + 'static {
     /// Boot it (downloading and setting up what's missing the first time), its audio coming to the Daemon. Progress
@@ -115,7 +118,7 @@ impl<G: Guest> InVm<G> {
     /// Ask the CDN for a newer build; the guest stages it. True if one is waiting.
     async fn check(&self) -> anyhow::Result<bool> {
         let out = self.run("sgl-soloist check").await?;
-        let staged = out.trim() == "staged" || self.0.staged.load(Ordering::Relaxed);
+        let staged = out.trim() == STAGED || self.0.staged.load(Ordering::Relaxed);
         self.0.staged.store(staged, Ordering::Relaxed);
         Ok(staged)
     }
