@@ -10,7 +10,7 @@ const H: u16 = 50;
 /// The last row (the legend's) of a frame drawn `w` wide, its blanks at the end trimmed.
 fn legend(app: &mut App, w: u16) -> String {
     let mut t = Terminal::new(TestBackend::new(w, H)).unwrap();
-    t.draw(|f| crate::ui::draw(f, app)).unwrap();
+    t.draw(|f| crate::ui::frame(f, app)).unwrap();
     let buf = t.backend().buffer();
     (0..w).map(|x| buf[(x, H - 1)].symbol().to_string()).collect::<String>().trim_end().to_string()
 }

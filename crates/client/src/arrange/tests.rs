@@ -8,7 +8,7 @@ use ratatui::backend::TestBackend;
 
 fn render(app: &mut App, w: u16, h: u16) -> String {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-    t.draw(|f| crate::ui::draw(f, app)).unwrap();
+    t.draw(|f| crate::ui::frame(f, app)).unwrap();
     let buf = t.backend().buffer().clone();
     (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
 }
@@ -34,10 +34,10 @@ fn key(app: &mut App, code: KeyCode) {
 fn pid(app: &App, w: Widget) -> PaneId {
     app.layout.pane_of(w).unwrap_or_else(|| panic!("no Pane shows {w}"))
 }
-/// The drawn Pane showing `w`'s rectangle, from the hit boxes of the last frame.
+/// The rectangle of the Pane showing `w`, where the Screen plan has it now.
 fn pane(app: &App, w: Widget) -> Rect {
     let id = pid(app, w);
-    app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if *p == id).then_some(*r)).unwrap_or_else(|| panic!("no pane {w}"))
+    app.plan().pane(id).map(|p| p.rect).unwrap_or_else(|| panic!("no pane {w}"))
 }
 /// A spot on the title bar of the Pane showing `w` that is neither a button nor a divider's.
 fn title_spot(app: &App, w: Widget) -> (u16, u16) {
@@ -49,12 +49,9 @@ fn swapped(n: impl Into<Arrangement>, x: Widget, y: Widget) -> Arrangement {
     let n = n.into();
     n.swap(n.pane_of(x).unwrap(), n.pane_of(y).unwrap()).unwrap()
 }
-/// Every Pane's rectangle as drawn in the last frame (its own hit box), by identity.
+/// Every Pane's rectangle where the Screen plan has it now (what the next frame draws), by identity.
 fn drawn_panes(app: &App) -> Vec<(PaneId, Rect)> {
-    let mut v: Vec<(PaneId, Rect)> = app.hits.iter().filter_map(|(r, h)| match h {
-        Hit::Focus(p) => Some((*p, *r)),
-        _ => None,
-    }).collect();
+    let mut v: Vec<(PaneId, Rect)> = app.plan().panes.iter().map(|p| (p.pane.id, p.rect)).collect();
     v.sort_by_key(|(p, _)| *p);
     v
 }
@@ -78,7 +75,7 @@ fn row(buf: &Buffer, y: u16, x0: u16, x1: u16) -> String {
 }
 fn render_buf(app: &mut App, w: u16, h: u16) -> Buffer {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-    t.draw(|f| crate::ui::draw(f, app)).unwrap();
+    t.draw(|f| crate::ui::frame(f, app)).unwrap();
     t.backend().buffer().clone()
 }
 fn centre(r: Rect) -> (u16, u16) {
@@ -142,7 +139,7 @@ fn the_x_closes_a_pane_and_only_homes_has_none() {
     let mut a = app();
     let shot = render(&mut a, W, H);
     assert!(shot.contains(" × "));
-    let closes = |a: &App, w: Widget| a.hits.iter().any(|(_, h)| matches!(h, Hit::Close(p) if *p == pid(a, w)));
+    let closes = |a: &App, w: Widget| a.all_hits().iter().any(|(_, h)| matches!(h, Hit::Close(p) if *p == pid(a, w)));
     assert!(!closes(&a, Widget::Home), "Home has a ×");
     // D87: the library, the queue and lyrics may go (without a Pane, the first two open as popups)
     for w in [Widget::Library, Widget::Queue, Widget::Lyrics] {
@@ -150,7 +147,7 @@ fn the_x_closes_a_pane_and_only_homes_has_none() {
     }
     let fft = pane(&a, Widget::Fft);
     let old_loudness = pane(&a, Widget::Loudness);
-    let (r, _) = a.hits.iter().find(|(_, h)| matches!(h, Hit::Close(p) if Some(*p) == a.layout.pane_of(Widget::Fft))).cloned().unwrap();
+    let (r, _) = a.all_hits().iter().find(|(_, h)| matches!(h, Hit::Close(p) if Some(*p) == a.layout.pane_of(Widget::Fft))).cloned().unwrap();
     assert!(r.y == fft.y && r.right() <= fft.right());
     press(&mut a, r.x + 1, r.y);
     release(&mut a, r.x + 1, r.y);
@@ -352,7 +349,7 @@ fn reset_design_goes_back_to_the_built_in_one() {
 #[test]
 fn letting_go_of_a_divider_is_an_edit() {
     let (mut a, _dir) = with_dirs();
-    let grip = a.dividers[0].grip;
+    let grip = a.dividers()[0].grip;
     press(&mut a, grip.x, grip.y + 5);
     drag(&mut a, grip.x + 8, grip.y + 5);
     assert!(a.shown.file().is_none(), "not while it moves");
@@ -368,7 +365,7 @@ fn a_divider_squashes_the_well_like_any_pane_and_it_says_what_it_needs() {
     // the divider below the well, dragged as far up as it goes: the well is a Pane like any other (D87, #48), down to
     // the Pane minimum, and below its smallest size it says `needs W × H`
     let well = pane(&a, Widget::Well);
-    let d = a.dividers.iter().find(|d| d.grip.y + 1 == well.bottom() && d.axis == crate::layout::Axis::Vertical).cloned().unwrap();
+    let d = a.dividers().iter().find(|d| d.grip.y + 1 == well.bottom() && d.axis == crate::layout::Axis::Vertical).cloned().unwrap();
     press(&mut a, d.grip.x + 3, d.grip.y);
     drag(&mut a, d.grip.x + 3, 0);
     release(&mut a, d.grip.x + 3, 0);
@@ -797,7 +794,7 @@ fn every_kind_of_edit_is_one_undo_step() {
     key(&mut a, KeyCode::Esc);
     // a divider dragged and let go
     render(&mut a, W, H);
-    let grip = a.dividers[0].grip;
+    let grip = a.dividers()[0].grip;
     press(&mut a, grip.x, grip.y + 5);
     drag(&mut a, grip.x + 6, grip.y + 5);
     drag(&mut a, grip.x + 8, grip.y + 5);
@@ -928,7 +925,7 @@ fn the_frame_rate_is_the_motion_rate_while_anything_moves() {
     render(&mut a, W, H);
     assert_eq!(a.frame_rate(true), 30);
     // a divider being dragged moves with the pointer too
-    let grip = a.dividers[0].grip;
+    let grip = a.dividers()[0].grip;
     press(&mut a, grip.x, grip.y);
     assert_eq!(a.frame_rate(true), 240);
     release(&mut a, grip.x, grip.y);
@@ -949,7 +946,7 @@ fn the_border_lights_up_under_the_pointer_and_dragging_it_resizes() {
     mouse(&mut a, MouseEventKind::Moved, gx, gy);
     assert_eq!(a.pointer_shape(), "ew-resize");
     let mut t = Terminal::new(TestBackend::new(W, H)).unwrap();
-    t.draw(|f| crate::ui::draw(f, &mut a)).unwrap();
+    t.draw(|f| crate::ui::frame(f, &mut a)).unwrap();
     assert_eq!(t.backend().buffer()[(gx, gy)].fg, a.theme.accent.color(), "the grabbable border is lit");
     mouse(&mut a, MouseEventKind::Moved, home.x + 5, gy);
     assert_eq!(a.pointer_shape(), "", "off the border: the terminal's own pointer");
@@ -983,7 +980,7 @@ fn the_resize_pointer_goes_back_off_the_border_in_every_terminal() {
     on(&mut a);
     press(&mut a, gx, gy);
     drag(&mut a, gx - 10, gy);
-    release(&mut a, gx - 10, gy);
+    release(&mut a, gx - 5, gy);
     render(&mut a, W, H);
     assert_eq!(a.pointer_shape(), "", "let go off the border");
     // a click elsewhere straight after hovering it (a terminal that sent no move in between)
@@ -2014,6 +2011,7 @@ fn esc_or_a_drop_on_its_own_pane_or_off_the_panes_leaves_the_layout_alone() {
     release(&mut a, centre(q).0, centre(q).1);
     assert_eq!(a.layout, before);
     // over its own Pane: nothing highlighted, and a release there is no drop
+    let (x, y) = title_spot(&a, Widget::Stream);
     press(&mut a, x, y);
     drag(&mut a, x + 5, y + 4);
     assert!(a.arrange.tile.as_ref().unwrap().over.is_none());
@@ -2039,7 +2037,7 @@ fn the_keys_wait_while_the_mouse_holds_a_divider() {
     key(&mut a, KeyCode::Char('m'));
     render(&mut a, W, H);
     let start = a.layout.clone();
-    let grip = a.dividers[0].grip;
+    let grip = a.dividers()[0].grip;
     press(&mut a, grip.x, grip.y + 5);
     drag(&mut a, grip.x + 6, grip.y + 5);
     key(&mut a, KeyCode::Enter);

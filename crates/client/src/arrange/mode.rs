@@ -1,9 +1,10 @@
 //! Arrange mode's state and what input does to it (D89, #102), like the Soloist session (D76): keys and pointer
 //! moves come in together with what the module needs to see of the screen (a [`Scene`]: the layout, the focus, the
-//! window and the Panes' area, the dividers drawn, the Design's names, the keymap), and what happened comes out as
-//! [`Out`]s, in the order the App carries them out (an edit committed, a line for the bar, the Widget picker, Done's
-//! name prompt…). The layout changes through one door: [`Out::Commit`] for an edit (one undo step, already
-//! remembered here), [`Out::Show`] for a layout shown without being one (a divider on its way, a New design… begun).
+//! window and the Panes' area, the dividers (the Screen plan's), the Design's names, the keymap), and what happened
+//! comes out as [`Out`]s, in the order the App carries them out (an edit committed, a line for the bar, the Widget
+//! picker, Done's name prompt…). The layout changes through one door: [`Out::Commit`] for an edit (one undo step,
+//! already remembered here), [`Out::Show`] for a layout shown without being one (a divider on its way, a New design…
+//! begun).
 //! Design-file effects are the Shown Design's: the App runs them for an `Out::Commit`.
 //!
 //! The module holds Arrange mode itself (`on`: since when, whether anything was edited, the Tray's scroll and focus,
@@ -97,7 +98,7 @@ pub struct Snapshot {
     pub(crate) focus: Option<PaneId>,
 }
 
-/// A divider held by the mouse: which (in the last frame's `dividers`), the boundary minus the grab position (so it
+/// A divider held by the mouse: which (in the Screen plan's `dividers`), the boundary minus the grab position (so it
 /// moves exactly with the pointer whichever grip cell was grabbed), and the layout when it was grabbed (a changed
 /// one is an edit on release).
 pub struct DividerDrag {
@@ -114,7 +115,7 @@ pub struct Scene<'a> {
     pub window: Rect,
     /// where the Panes were last laid out (0 wide before the first frame)
     pub body: Rect,
-    /// the dividers of the last frame
+    /// the dividers between the Panes (the Screen plan's)
     pub dividers: &'a [Divider],
     /// a cell's height over its width
     pub aspect: f64,
@@ -217,6 +218,7 @@ pub fn done_blocked(layout: &Arrangement, design: usize) -> Option<String> {
 
 /// Where the parts of the Tray strip go: each Widget shown (its place in the Tray, its chip, its × unless it is
 /// Home), the ‹ › while they don't all fit, "+ Widget", Clear Tray, and the first Widget shown.
+#[derive(Clone, Debug, PartialEq)]
 pub struct TrayLayout {
     pub items: Vec<(usize, Rect, Option<Rect>)>,
     pub prev: Option<Rect>,
@@ -696,7 +698,7 @@ impl Arrange {
     }
 
     /// A mouse event that is Arrange mode's, once the App's own gates have let it through (a popup open, the player
-    /// bar, a wake, a scrub: `App::pointer`), with what the last frame drew at its cell: Arrange mode's own pointer
+    /// bar, a wake, a scrub: `App::pointer`), with what is at its cell (`App::hit_at`): Arrange mode's own pointer
     /// while it is on, a held Widget's, and outside Arrange mode a press on a title, a × or a divider, a held
     /// divider's drag and the release. (`unheard` comes first, before the App's gates.)
     pub fn route(&mut self, sc: &Scene, m: MouseEvent, hit: Option<Hit>, coarse: bool) -> Vec<Out> {
@@ -773,14 +775,13 @@ impl Arrange {
         Some(Rect::new(x, y.clamp(area.y, area.bottom().saturating_sub(1)), w, 1))
     }
 
-    /// Where the label of target `id` (at `r`) goes this frame, clear of the chip, and remembered: it stays on its row
-    /// while the chip leaves that free, so a pointer moving a row up and down doesn't make it hop round the chip.
-    pub fn place_label(&mut self, id: PaneId, r: Rect, label: &str, chip: Option<Rect>) -> Option<Rect> {
-        let l = super::label_rect(r, label, chip, self.label_row(id));
+    /// The label of target `id` goes at `at` this frame (`label_rect`, worked out by the Screen plan), remembered: it
+    /// stays on its row while the chip leaves that free, so a pointer moving a row up and down doesn't make it hop
+    /// round the chip.
+    pub fn label_placed(&mut self, id: PaneId, at: Option<Rect>) {
         if let Some(t) = self.tile.as_mut() {
-            t.label = l.map(|l| (id, l.y));
+            t.label = at.map(|l| (id, l.y));
         }
-        l
     }
 
     /// The row target `id`'s label was drawn on last.

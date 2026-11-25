@@ -17,7 +17,7 @@ impl App {
     /// Widget decides here: no catch-all arm.
     pub(crate) fn pane_wheel(&mut self, w: Widget, x: u16, y: u16, rows: i32, coarse: bool) {
         // a Pane showing its needs line: nothing it hides moves (#36)
-        if self.layout.pane_of(w).is_some_and(|p| self.short_panes.contains(&p)) {
+        if self.layout.pane_of(w).is_some_and(|p| self.pane_is_short(p)) {
             return;
         }
         match w {

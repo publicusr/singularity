@@ -58,7 +58,7 @@ mod tests {
         let top = Node::split(Axis::Horizontal, Size::Cells(w), Node::pane(widget), Node::pane(filler));
         app.layout = Node::split(Axis::Vertical, Size::Cells(h), top, Node::pane(rest)).into();
         let mut t = Terminal::new(TestBackend::new(160, 60)).unwrap();
-        t.draw(|f| crate::ui::draw(f, app)).unwrap();
+        t.draw(|f| crate::ui::frame(f, app)).unwrap();
         let buf = t.backend().buffer().clone();
         let rows = (0..60).map(|y| (0..160).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect();
         (rows, buf)
@@ -143,7 +143,7 @@ mod tests {
         let mut app = App::new(None);
         let (sw, sh) = smallest(Widget::TopWeek);
         screen(&mut app, Widget::TopWeek, sw, sh - 1);
-        assert!(!app.hits.iter().any(|(_, h)| *h == crate::app::Hit::TopWeekToggle), "a hidden list's switch");
+        assert!(!app.all_hits().iter().any(|(_, h)| *h == crate::app::Hit::TopWeekToggle), "a hidden list's switch");
         // the hole's origin goes with the hole
         let mut app = App::new(None);
         let (sw, sh) = smallest(Widget::Hole);
@@ -200,7 +200,7 @@ mod tests {
                 let mut app = App::new(None);
                 app.set_design(d);
                 let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-                t.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+                t.draw(|f| crate::ui::frame(f, &mut app)).unwrap();
                 let buf = t.backend().buffer().clone();
                 let s: String = (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect();
                 // (the stream Widget has a "needs 205 kB/s" of its own)

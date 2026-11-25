@@ -577,7 +577,7 @@ mod tests {
         let (mut app, dir) = app_with_files();
         let draw = |app: &mut App| {
             let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
-            t.draw(|f| crate::ui::draw(f, app)).unwrap();
+            t.draw(|f| crate::ui::frame(f, app)).unwrap();
             let b = t.backend().buffer().clone();
             (0..48).map(|y| (0..160).map(|x| b[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
         };

@@ -4,7 +4,7 @@
 use crate::covers::Covers;
 use crate::gfx::Kitty;
 use crate::home::{CardId, CardRef, HomeView};
-use crate::layout::{Divider, Node, PaneId, Widget};
+use crate::layout::{Node, PaneId, Widget};
 use crate::meters::Meters;
 use crate::visual::BlackHole;
 use crate::visual::well::Hole;
@@ -689,8 +689,12 @@ pub struct App {
     pub quit: bool,
     /// the user dismissed the login overlay (the login itself keeps waiting)
     pub login_hidden: bool,
-    pub dividers: Vec<Divider>,
+    /// what the last frame drew where (the Widgets' own rows, cards, buttons, and what's over the Panes); the Panes,
+    /// their titles and the dividers are the Screen plan's (`App::plan`)
     pub(crate) hits: Vec<(Rect, Hit)>,
+    /// how many of `hits` the Widgets drew inside their Panes (under the Panes' titles and dividers); the rest is over
+    /// them
+    pub(crate) hits_in_panes: usize,
     /// a queued song being dragged to a new place
     pub queue_drag: Option<crate::queue::QueueDrag>,
     /// the seek or volume bar being dragged
@@ -775,9 +779,6 @@ pub struct App {
     pub lyrics: crate::songlyrics::SongLyrics,
     /// where the hole was drawn this frame (for bending the neighbouring borders)
     pub hole_at: Option<Hole>,
-    /// the Panes drawn this frame too small for their Widget (its needs line, #36): they take no wheel, keys or clicks
-    /// for it
-    pub short_panes: Vec<PaneId>,
     /// what's liked, saved and followed (#22)
     pub(crate) saved: crate::saved::Saved,
     /// a saved playlist's Saved button was clicked once: a second click soon after removes it
@@ -843,8 +844,8 @@ impl App {
             toast: None,
             quit: false,
             login_hidden: false,
-            dividers: vec![],
             hits: vec![],
+            hits_in_panes: 0,
             queue_drag: None,
             scrub: None,
             nudge: Nudge::default(),
@@ -895,7 +896,6 @@ impl App {
             queue_view: Default::default(),
             lyrics: Default::default(),
             hole_at: None,
-            short_panes: Vec::new(),
             saved: Default::default(),
             confirm_remove: None,
             playlists: Default::default(),
@@ -1065,9 +1065,9 @@ impl App {
 
     pub fn begin_frame(&mut self) {
         self.hits.clear();
+        self.hits_in_panes = 0;
         self.overlays.clear();
         self.hole_at = None;
-        self.short_panes.clear();
         self.covers.poll();
         if self.toast.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_millis(2500)) {
             self.toast = None;
@@ -1078,16 +1078,32 @@ impl App {
         self.hits.push((r, h));
     }
 
-    /// The Pane under a point.
+    /// The Pane under a point (the Screen plan's).
     fn pane_at(&self, x: u16, y: u16) -> Option<PaneId> {
-        self.hits.iter().rev().find_map(|(r, h)| match h {
-            Hit::Focus(p) if x >= r.x && x < r.right() && y >= r.y && y < r.bottom() => Some(*p),
-            _ => None,
-        })
+        self.plan().pane_at(x, y)
     }
 
+    /// What a click at (x, y) is on: what the last frame drew over the Panes (the player bar, the Tray, a popup…),
+    /// else a Pane's title part or a divider (the Screen plan's, as things are now), else what a Widget drew there,
+    /// else the Pane.
     pub(crate) fn hit_at(&self, x: u16, y: u16) -> Option<Hit> {
-        self.hits.iter().rev().find(|(r, _)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom()).map(|(_, h)| h.clone())
+        let at = |(r, _): &&(Rect, Hit)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom();
+        let (inside, over) = self.hits.split_at(self.hits_in_panes.min(self.hits.len()));
+        if let Some((_, h)) = over.iter().rev().find(at) {
+            return Some(h.clone());
+        }
+        let plan = self.plan();
+        plan.title_hit(x, y).or_else(|| plan.divider_at(x, y).map(Hit::Divider)).or_else(|| inside.iter().rev().find(at).map(|(_, h)| h.clone())).or_else(|| plan.pane_at(x, y).map(Hit::Focus))
+    }
+
+    /// Every hit box, the Screen plan's and the last frame's, in the order they win from last to first.
+    #[cfg(test)]
+    pub(crate) fn all_hits(&self) -> Vec<(Rect, Hit)> {
+        let plan = self.plan();
+        let (inside, over) = self.hits.split_at(self.hits_in_panes.min(self.hits.len()));
+        let panes = plan.panes.iter().map(|p| (p.rect, Hit::Focus(p.pane.id)));
+        let dividers = plan.dividers.iter().enumerate().map(|(i, d)| (d.grip, Hit::Divider(i)));
+        panes.chain(inside.iter().cloned()).chain(dividers).chain(plan.chrome()).chain(over.iter().cloned()).collect()
     }
 
     /// The pixel tier's cell size, if `r` can be drawn with it this frame.
@@ -1436,7 +1452,7 @@ impl App {
             return self.arrange_key(k);
         }
         // a focused Pane showing its needs line has no keys of its own: they'd act on what it hides (#36)
-        let shown = !self.focus.is_some_and(|p| self.short_panes.contains(&p));
+        let shown = !self.focus.is_some_and(|p| self.pane_is_short(p));
         if shown && self.is_focused(Widget::Home) && self.page_key(k, shift) {
             return;
         }
@@ -2289,7 +2305,7 @@ impl App {
     }
 
     pub(crate) fn hit_rect(&self, h: &Hit) -> Option<Rect> {
-        self.hits.iter().find(|(_, x)| x == h).map(|(r, _)| *r)
+        self.hits.iter().find(|(_, x)| x == h).map(|(r, _)| *r).or_else(|| self.plan().rect_of(h))
     }
 
     /// URI and name of a menu's target.

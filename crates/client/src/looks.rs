@@ -431,7 +431,7 @@ mod tests {
 
     fn render(app: &mut App) -> ratatui::buffer::Buffer {
         let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
-        t.draw(|f| crate::ui::draw(f, app)).unwrap();
+        t.draw(|f| crate::ui::frame(f, app)).unwrap();
         t.backend().buffer().clone()
     }
 
@@ -555,7 +555,7 @@ mod tests {
         assert_eq!(app.focused(), Some(Widget::Levels), "focus follows the Widget");
         // click the ▸ of the loudness Pane: levels is taken, so scope
         render(&mut app);
-        let r = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Swap(p, 1) if Some(*p) == app.layout.pane_of(Widget::Loudness)).then_some(*r)).expect("a ◂ ▸ on loudness");
+        let r = app.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Swap(p, 1) if Some(*p) == app.layout.pane_of(Widget::Loudness)).then_some(*r)).expect("a ◂ ▸ on loudness");
         app.mouse(ratatui::crossterm::event::MouseEvent { kind: ratatui::crossterm::event::MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left), column: r.x, row: r.y, modifiers: KeyModifiers::NONE });
         assert!(app.layout.has(Widget::Scope));
         // the well has no Widgets to swap: v changes its Disk look
@@ -572,7 +572,7 @@ mod tests {
         let mut app = App::new(None);
         let arrows = |app: &mut App, pane: PaneId| {
             render(app);
-            app.hits.iter().filter(|(_, h)| matches!(h, Hit::Swap(p, _) if *p == pane)).map(|(r, _)| r.x).collect::<Vec<_>>()
+            app.all_hits().iter().filter(|(_, h)| matches!(h, Hit::Swap(p, _) if *p == pane)).map(|(r, _)| r.x).collect::<Vec<_>>()
         };
         let slot = app.layout.widgets().into_iter().find(|s| matches!(s, Widget::Stream | Widget::Listening)).expect("a swappable side Pane");
         let pane = app.layout.pane_of(slot).unwrap();
