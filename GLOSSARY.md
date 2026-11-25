@@ -41,7 +41,8 @@ hands it samples, only while a Client shows audio Widgets.
 
 **Platform seam**:
 One of the few places where Linux and macOS have their own code; each picks its OS adapter in one place, so callers
-carry no `cfg`. They are: the Engine, where Soloist runs (the Soloist runner), Engine `auto` and Soloist CPUs, dying
+carry no `cfg` (one exception: the AudioTap's macOS source is `cfg`-gated in `tap.rs`, `lib.rs` and `assembly.rs`).
+They are: the Engine, where Soloist runs (the Soloist runner), Engine `auto` and Soloist CPUs, dying
 with the Daemon, the AudioTap, Secrets, OS media integration (with notifications), autostart, the Host (process
 lookup and stop, the computer's name, opening a link), detecting and starting the Spotify app (`spotify_app`), the
 programs the Daemon runs, the audio output's name, and the socket's folder (App folders). Everything else is shared
