@@ -196,7 +196,7 @@ fn wizard_body(buf: &mut Buffer, inner: Rect, app: &App, th: &Theme) -> u16 {
                 line(buf, &mut y, &format!("Soloist couldn't start: {message}"), th.s(th.error));
                 line(buf, &mut y, "Singularity retries by itself. A wrong key? Press K to enter it again.", th.s(if message.contains("API key") { th.fg } else { th.dim }));
             }
-            _ if cfg!(target_os = "macos") => {
+            _ if app.soloist_in_vm => {
                 line(buf, &mut y, "Setting up Spotify's own player (Soloist) in a small Linux VM, then starting it…", th.s(th.fg));
                 line(buf, &mut y, "The first time downloads ~250 MB and takes a minute or two; the status bar shows each step.", th.s(th.dim));
             }
@@ -923,6 +923,27 @@ mod tests {
         assert_eq!((over, under, left), (0, 0, 1), "a side Pane: from the top, the device at the bottom");
         let (over, _, left, _) = margins(18, 4);
         assert_eq!((over, left), (0, 1), "tiny");
+    }
+
+    /// Q94: the Soloist step says what the VM's first start involves when the Daemon says Soloist runs in it, whatever
+    /// OS the Client runs on.
+    #[test]
+    fn the_soloist_step_follows_the_daemons_word_on_the_vm() {
+        let mut app = App::new(None);
+        app.link = Link::Connected { version: "t".into() };
+        app.hear(singularity_proto::Event::Engine(EngineStatus::Starting));
+        assert_eq!(step(&app), Step::Engine);
+        let th = app.theme.clone();
+        let drawn = |app: &App| {
+            let area = Rect::new(0, 0, 120, 40);
+            let mut buf = Buffer::empty(area);
+            draw_wizard(&mut buf, rect(area), app, &th);
+            buf.content().iter().map(|c| c.symbol()).collect::<String>()
+        };
+        app.soloist_in_vm = true;
+        assert!(drawn(&app).contains("in a small Linux VM"), "the Daemon says Soloist runs in the VM");
+        app.soloist_in_vm = false;
+        assert!(drawn(&app).contains("Downloading Spotify's own player (Soloist) from Spotify"), "a local Soloist");
     }
 
     pub fn vorbis() -> StreamInfo {

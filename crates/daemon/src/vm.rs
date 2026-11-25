@@ -28,8 +28,7 @@ const IMAGE: &str = "debian-13-genericcloud-arm64.tar.xz";
 /// gvproxy's DHCP gives this MAC the guest address below
 const MAC: &str = "5a:94:ef:e4:0c:ee";
 pub const GUEST: &str = "192.168.127.2";
-/// Soloist's WebSocket inside the guest, and the vsock port its audio comes to the Mac on
-pub const GUEST_WS: u16 = 7700;
+/// The vsock port Soloist's audio comes to the Mac on (its WebSocket: `soloist::runner::vm::GUEST_WS`)
 pub const GUEST_PCM: u16 = 5005;
 /// bump when the guest's setup changes: a new instance id makes cloud-init run again (2: the pipe sink over vsock,
 /// and #S7's size caps on the guest's `curl`: 3, the pinned host key: 4)
@@ -507,5 +506,20 @@ mod tests {
         assert!(!u.contains("{{") && !u.contains("}}"), "format escapes resolved");
         // S4/S7: the guest's own download is capped and its tar output checked
         assert!(u.contains("--max-filesize") && u.contains("--max-time") && u.contains("[ ! -L soloist.new/soloist ]"), "the guest script caps what it downloads and unpacks");
+    }
+
+    /// The guest's update script answers what the VM's Soloist runner (`soloist/runner/vm.rs`) asks and reads: its
+    /// three commands, the word `check` prints for a staged build, and the version file `cat soloist/version` reads.
+    #[test]
+    fn the_guest_update_script_keeps_the_runners_contract() {
+        use crate::soloist::runner::vm::STAGED;
+        let host = HostKey { private: "k".into(), public: "ssh-ed25519 AAAAhost singularity-vm\n".into() };
+        let u = user_data("ssh-ed25519 AAAA test", &host);
+        assert!(u.contains("- path: /usr/local/bin/sgl-soloist"));
+        assert!(u.contains("ensure) [ -x soloist/soloist ] || { stage >/dev/null; install; }; cat soloist/version ;;"), "{u}");
+        assert!(u.contains("check) stage ;;") && u.contains("install) install ;;"));
+        assert!(u.contains(&format!("echo {STAGED}\n")), "`check` says {STAGED:?} when it staged a build");
+        assert!(u.contains("echo current;") && u.contains("echo installed;"));
+        assert!(u.contains("soloist.new/soloist --version > soloist.new/version") && u.contains("mv soloist.new soloist"), "the staged build's version file becomes soloist/version");
     }
 }

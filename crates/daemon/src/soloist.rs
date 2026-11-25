@@ -10,9 +10,9 @@
 //! - output: Soloist's verbose log is piped through the Daemon, which reads the stream format and build lifetime
 //!   from it and writes it on to `soloist.log` (the previous one is kept as `soloist.log.1`, never truncated)
 //! - Soloist's own state (pairing, cache) lives under `$XDG_DATA_HOME/singularity/soloist-state`
-//! - On macOS (D55) the same supervision runs Soloist inside the Soloist VM (`soloist_vm.rs`): the build is kept current
-//!   in the guest, Soloist is started over SSH, its WebSocket and audio come through forwarded ports, and pairing is
-//!   announced on the LAN while it waits for it
+//! - On macOS (D55) the same supervision runs Soloist inside the Soloist VM: only the Soloist runner differs
+//!   (`runner/vm.rs`): the build is kept current in the guest, Soloist is started in a session there, its WebSocket and
+//!   audio come through forwarded ports, and pairing is announced on the LAN while it waits for it
 
 pub mod runner;
 mod session;
@@ -21,7 +21,8 @@ pub use runner::running_soloist;
 pub use session::{Action, Handover, Input, Now, Session, Stop};
 
 use crate::engine::{Engine, EngineEvent};
-use runner::{Local, Runner};
+use runner::vm::InVm;
+use runner::{Announcement, Launched, Local, Runner};
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde_json::Value;
 use singularity_proto::{Command, EngineStatus};
@@ -35,47 +36,45 @@ use tokio_tungstenite::tungstenite::Message;
 pub const DEVICE_NAME: &str = "Singularity";
 
 #[derive(Clone)]
-pub struct SoloistEngine {
+pub struct SoloistEngine<R = Local> {
     /// its name on Connect
     pub device_name: String,
     /// where Soloist runs, picked by the Engine assembly; it also holds Singularity's data folder (one place, so the
     /// log and volume can't end up apart from Soloist's own data)
-    runner: Local,
-    /// macOS: Soloist runs in the Soloist VM (D55)
-    #[cfg(target_os = "macos")]
-    pub vm: Option<Arc<crate::soloist_vm::VmHost>>,
+    runner: R,
 }
 
-impl SoloistEngine {
-    pub fn from_env() -> SoloistEngine {
+impl SoloistEngine<Local> {
+    pub fn from_env() -> SoloistEngine<Local> {
         let base = std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
             .unwrap_or_else(std::env::temp_dir);
-        SoloistEngine {
-            runner: Local::new(base.join("singularity"), singularity_config::EngineChoice::default().soloist_cache_mb()),
-            device_name: DEVICE_NAME.into(),
-            #[cfg(target_os = "macos")]
-            vm: None,
-        }
+        SoloistEngine { runner: Local::new(base.join("singularity"), singularity_config::EngineChoice::default().soloist_cache_mb()), device_name: DEVICE_NAME.into() }
     }
 
     /// Soloist as a local process, as `device_name` on Connect, its cache capped at `cache_mb` (0: no limit).
-    pub fn local(device_name: String, cache_mb: u32) -> SoloistEngine {
+    pub fn local(device_name: String, cache_mb: u32) -> SoloistEngine<Local> {
         let mut e = SoloistEngine::from_env();
         e.device_name = device_name;
         e.runner = Local::new(e.data_dir().to_path_buf(), cache_mb);
         e
     }
+}
 
+impl SoloistEngine<InVm<crate::soloist_vm::Mac>> {
     /// Soloist in the Soloist VM, as `device_name` on Connect (the Engine assembly names it); its audio also goes to
     /// `feed`.
-    #[cfg(target_os = "macos")]
-    pub fn in_vm(device_name: String, feed: Arc<crate::tap::Feed>) -> SoloistEngine {
-        let mut e = SoloistEngine::from_env();
-        e.device_name = device_name;
-        e.vm = Some(Arc::new(crate::soloist_vm::VmHost::new(e.data_dir(), feed)));
-        e
+    pub fn in_vm(device_name: String, feed: Arc<crate::tap::Feed>) -> SoloistEngine<InVm<crate::soloist_vm::Mac>> {
+        let data = SoloistEngine::from_env().data_dir().to_path_buf();
+        SoloistEngine { device_name, runner: InVm::new(crate::soloist_vm::Mac::new(&data, feed), data) }
+    }
+}
+
+impl<R: Runner> SoloistEngine<R> {
+    /// Soloist run by `runner`, as `device_name` on Connect (the tests' fake VM).
+    pub fn with_runner(device_name: String, runner: R) -> SoloistEngine<R> {
+        SoloistEngine { device_name, runner }
     }
 
     /// The volume to start Soloist at: the last one it played at (it would start at its own 40 % otherwise).
@@ -87,24 +86,6 @@ impl SoloistEngine {
         let _ = std::fs::write(self.state_dir().join("volume"), v.to_string());
     }
 
-    #[cfg(target_os = "macos")]
-    fn vm(&self) -> Option<&Arc<crate::soloist_vm::VmHost>> {
-        self.vm.as_ref()
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn vm(&self) -> Option<&std::convert::Infallible> {
-        None
-    }
-
-    /// Is a newer build waiting to be restarted into?
-    fn update_waiting(&self) -> bool {
-        #[cfg(target_os = "macos")]
-        if let Some(v) = self.vm() {
-            return v.staged.load(std::sync::atomic::Ordering::Relaxed);
-        }
-        self.runner.update_waiting()
-    }
     /// Singularity's data folder (`$XDG_DATA_HOME/singularity`): Soloist's builds and state are under it.
     pub fn data_dir(&self) -> &std::path::Path {
         self.runner.data_dir()
@@ -271,9 +252,13 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-impl Engine for SoloistEngine {
+impl<R: Runner> Engine for SoloistEngine<R> {
     fn respawn(&self) -> Option<Box<dyn Engine>> {
         Some(Box::new(self.clone()))
+    }
+
+    fn soloist_in_vm(&self) -> bool {
+        self.runner.in_vm()
     }
 
     fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>) {
@@ -324,11 +309,19 @@ struct Updates {
 }
 
 /// Keep Soloist running: start, connect, pump; on exit wait (with backoff) and start again.
-async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<EngineEvent>) {
+async fn supervise<R: Runner>(engine: SoloistEngine<R>, mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<EngineEvent>) {
     let mut backoff = Duration::from_secs(2);
     let runner = &engine.runner;
     let mut upd = Updates { staged: Arc::new(Notify::new()), days: watch::channel(None).0, handover: Handover::default() };
     let mut updater = None;
+    // progress while Soloist is made ready (the VM's first setup), for the status bar
+    let say = {
+        let tx = ev_tx.clone();
+        move |m: String| {
+            tracing::info!("{m}");
+            let _ = tx.try_send(EngineEvent::Notice(m));
+        }
+    };
     loop {
         let Some(key) = api_key().await else {
             status(&ev_tx, EngineStatus::NotConfigured { reason: "no Soloist API key yet".into() }).await;
@@ -338,67 +331,12 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
             continue;
         };
         status(&ev_tx, EngineStatus::Starting).await;
-        // macOS: the VM up, a current build in it (the guest keeps its own builds; D55)
-        #[cfg(target_os = "macos")]
-        if let Some(v) = engine.vm().cloned() {
-            let tx = ev_tx.clone();
-            let say = move |m: String| {
-                tracing::info!("{m}");
-                let _ = tx.try_send(EngineEvent::Notice(m));
-            };
-            if let Err(e) = v.ensure(&say).await {
-                status(&ev_tx, EngineStatus::Failed { message: format!("the Soloist VM: {e}") }).await;
-                v.down().await;
-                if !wait_or_refuse(&mut cmd_rx, &ev_tx, backoff, "the Soloist VM isn't up").await {
-                    v.down().await;
-                    return;
-                }
-                backoff = (backoff * 2).min(Duration::from_secs(300));
-                continue;
-            }
-            if updater.is_none() {
-                let (days, staged, ev, vm) = (upd.days.clone(), upd.staged.clone(), ev_tx.clone(), v.clone());
-                updater = Some(keep_checking("the Soloist update checker", ev, move || keep_current_in_vm(vm.clone(), days.subscribe(), staged.clone())));
-            }
-            let started = std::time::Instant::now();
-            let exit = run_once(&engine, runner, &key, &mut cmd_rx, &ev_tx, &mut upd).await;
-            if matches!(exit, Ok(Exit::Quit)) {
-                if let Some(u) = updater {
-                    u.abort();
-                }
-                v.down().await;
-                return;
-            }
-            match exit {
-                Ok(Exit::Update) | Ok(Exit::Expired) | Ok(Exit::Restart) => {
-                    backoff = Duration::from_secs(2);
-                    continue;
-                }
-                Err(e) if e.downcast_ref::<BadKey>().is_some() => {
-                    status(&ev_tx, EngineStatus::Failed { message: e.to_string() }).await;
-                    if !wait_or_refuse(&mut cmd_rx, &ev_tx, Duration::from_secs(3600), "Spotify rejected the Soloist API key").await {
-                        v.down().await;
-                        return;
-                    }
-                    continue;
-                }
-                Err(e) => status(&ev_tx, EngineStatus::Failed { message: e.to_string() }).await,
-                _ => {}
-            }
-            // the VM itself may be what went away: the next round boots it again
-            if !v.alive().await {
-                v.down().await;
-            }
-            if !wait_or_refuse(&mut cmd_rx, &ev_tx, restart_wait(&mut backoff, started.elapsed()), "Soloist is restarting").await {
-                v.down().await;
-                return;
-            }
-            continue;
-        }
-        // Soloist isn't running: the best moment to put a staged build in place
-        if let Err(e) = runner.prepare().await {
+        // Soloist isn't running: the best moment to put a staged build in place (and bring the VM up, on macOS)
+        if let Err(e) = runner.prepare(&say).await {
             status(&ev_tx, EngineStatus::Failed { message: e.to_string() }).await;
-            if !wait_or_refuse(&mut cmd_rx, &ev_tx, backoff, "Soloist isn't available").await {
+            runner.down().await;
+            if !wait_or_refuse(&mut cmd_rx, &ev_tx, backoff, runner.unavailable()).await {
+                runner.down().await;
                 return;
             }
             backoff = (backoff * 2).min(Duration::from_secs(300));
@@ -410,11 +348,12 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
             updater = Some(keep_checking("the Soloist update checker", ev, move || r.keep_current(days.subscribe(), staged.clone())));
         }
         let started = std::time::Instant::now();
-        match run_once(&engine, runner, &key, &mut cmd_rx, &ev_tx, &mut upd).await {
+        match run_once(&engine, &key, &mut cmd_rx, &ev_tx, &mut upd).await {
             Ok(Exit::Quit) => {
                 if let Some(u) = updater {
                     u.abort();
                 }
+                runner.down().await;
                 return;
             }
             // straight back up with the new build, or because it was asked for
@@ -423,23 +362,32 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
                 continue;
             }
             Ok(Exit::Expired) => {
+                backoff = Duration::from_secs(2);
+                // the VM's guest replaces the build on its own: straight back up
+                if !runner.expired() {
+                    continue;
+                }
                 // (it shouldn't come to this: updates land well before)
                 status(&ev_tx, EngineStatus::Failed { message: "this Soloist build has expired; updating".into() }).await;
-                runner.expired();
-                backoff = Duration::from_secs(2);
             }
             Ok(Exit::Died) => {}
             Err(e) if e.downcast_ref::<BadKey>().is_some() => {
                 status(&ev_tx, EngineStatus::Failed { message: e.to_string() }).await;
                 // a new key (SetSoloistKey) ends the wait at once
                 if !wait_or_refuse(&mut cmd_rx, &ev_tx, Duration::from_secs(3600), "Spotify rejected the Soloist API key").await {
+                    runner.down().await;
                     return;
                 }
                 continue;
             }
             Err(e) => status(&ev_tx, EngineStatus::Failed { message: e.to_string() }).await,
         }
+        // what Soloist runs in may be what went away (the VM): the next round brings it up again
+        if !runner.alive().await {
+            runner.down().await;
+        }
         if !wait_or_refuse(&mut cmd_rx, &ev_tx, restart_wait(&mut backoff, started.elapsed()), "Soloist is restarting").await {
+            runner.down().await;
             return;
         }
     }
@@ -476,28 +424,6 @@ async fn wait_or_refuse(cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Send
                 None => return false,
             },
         }
-    }
-}
-
-/// The same, for the build inside the Soloist VM (the guest asks the CDN itself).
-#[cfg(target_os = "macos")]
-async fn keep_current_in_vm(v: Arc<crate::soloist_vm::VmHost>, days: watch::Receiver<Option<u32>>, staged: Arc<Notify>) {
-    let mut failures = 0;
-    loop {
-        match v.check().await {
-            Ok(true) => {
-                failures = 0;
-                tracing::info!("new Soloist build staged in the VM");
-                staged.notify_one();
-            }
-            Ok(false) => failures = 0,
-            Err(e) => {
-                failures += 1;
-                tracing::warn!("Soloist update check in the VM failed (keeping the current build): {e}");
-            }
-        }
-        let wait = std::env::var("SINGULARITY_SOLOIST_CHECK_SECS").ok().and_then(|s| s.parse().ok()).map(Duration::from_secs).unwrap_or_else(|| crate::update::next_check(failures, *days.borrow()));
-        tokio::time::sleep(wait).await;
     }
 }
 
@@ -541,40 +467,19 @@ struct Started {
     /// what its log says
     news: mpsc::Receiver<LogNews>,
     version: String,
-    /// the VM's Soloist: its WebSocket, through the forwarded port
-    vm_ws: Option<String>,
-    #[cfg(target_os = "macos")]
-    in_vm: Option<Arc<crate::soloist_vm::VmHost>>,
     /// (the VM's Soloist session: closing its stdin stops Soloist, so it's held for the run)
-    _vm_stdin: Option<tokio::process::ChildStdin>,
+    _hold: Option<tokio::process::ChildStdin>,
 }
 
 /// Start Soloist, its output parsed for news and written on to the log.
-async fn start(engine: &SoloistEngine, runner: &impl Runner, key: &str) -> anyhow::Result<Started> {
+async fn start<R: Runner>(engine: &SoloistEngine<R>, key: &str) -> anyhow::Result<Started> {
+    let runner = &engine.runner;
     let state = engine.state_dir();
     // another Daemon's Soloist owns these files: touch nothing (its port file, its log)
-    if engine.vm().is_none() {
-        runner.check_free()?;
-    }
+    runner.check_free()?;
     private_state_dirs(&state)?;
     let mut log = open_log(&state)?;
-    #[allow(unused_mut, unused_assignments)]
-    let mut session_stdin: Option<tokio::process::ChildStdin> = None;
-    #[cfg(target_os = "macos")]
-    let in_vm = engine.vm().cloned();
-    #[cfg(not(target_os = "macos"))]
-    let in_vm: Option<std::convert::Infallible> = None;
-    let mut child: Child = match &in_vm {
-        #[cfg(target_os = "macos")]
-        Some(v) => {
-            let (c, stdin) = v.launch(key, &engine.device_name, engine.saved_volume()).await?;
-            session_stdin = Some(stdin);
-            c
-        }
-        #[allow(unreachable_patterns)]
-        Some(_) => unreachable!(),
-        None => runner.launch(key, &engine.device_name, engine.saved_volume()).await?,
-    };
+    let Launched { mut child, hold } = runner.launch(key, &engine.device_name, engine.saved_volume()).await?;
     // Soloist's output: parsed for news, then written on to the log
     let (news_tx, news_rx) = mpsc::channel::<LogNews>(16);
     let (line_tx, mut line_rx) = mpsc::channel::<String>(256);
@@ -603,41 +508,22 @@ async fn start(engine: &SoloistEngine, runner: &impl Runner, key: &str) -> anyho
             }
         }
     });
-    #[cfg(target_os = "macos")]
-    let version = match &in_vm {
-        Some(v) => v.version().await,
-        None => runner.version().await,
-    };
-    #[cfg(not(target_os = "macos"))]
     let version = runner.version().await;
-    // the VM's Soloist: its WebSocket through the forwarded port
-    #[cfg(target_os = "macos")]
-    let vm_ws = in_vm.as_ref().map(|v| format!("ws://127.0.0.1:{}", v.ws_port));
-    #[cfg(not(target_os = "macos"))]
-    let vm_ws: Option<String> = None;
-    Ok(Started {
-        child,
-        news: news_rx,
-        version,
-        vm_ws,
-        #[cfg(target_os = "macos")]
-        in_vm,
-        _vm_stdin: session_stdin,
-    })
+    Ok(Started { child, news: news_rx, version, _hold: hold })
 }
 
 /// One run of Soloist: started, then its process, its log, its WebSocket, our commands and the update side pumped
 /// through a [`Session`]. What the run leaves for the next one goes back into `upd`.
-async fn run_once(engine: &SoloistEngine, runner: &impl Runner, key: &str, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<EngineEvent>, upd: &mut Updates) -> anyhow::Result<Exit> {
-    let mut run = start(engine, runner, key).await?;
+async fn run_once<R: Runner>(engine: &SoloistEngine<R>, key: &str, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<EngineEvent>, upd: &mut Updates) -> anyhow::Result<Exit> {
+    let mut run = start(engine, key).await?;
     let mut s = Session::new(engine.device_name.clone(), run.version.clone(), engine.saved_volume(), std::mem::take(&mut upd.handover));
-    let exit = pump(engine, runner, &mut run, &mut s, cmd_rx, ev_tx, upd).await;
+    let exit = pump(engine, &mut run, &mut s, cmd_rx, ev_tx, upd).await;
     upd.handover = s.into_handover();
     exit
 }
 
 /// Carry out what a step of the session asks for. Returns the stop among it, if any (Soloist isn't stopped yet).
-async fn carry_out<S>(actions: Vec<Action>, ws: &mut S, engine: &SoloistEngine, ev_tx: &mpsc::Sender<EngineEvent>) -> anyhow::Result<Option<Stop>>
+async fn carry_out<S, R: Runner>(actions: Vec<Action>, ws: &mut S, engine: &SoloistEngine<R>, ev_tx: &mpsc::Sender<EngineEvent>) -> anyhow::Result<Option<Stop>>
 where
     S: futures_util::Sink<Message> + Unpin,
     S::Error: std::error::Error + Send + Sync + 'static,
@@ -689,9 +575,8 @@ async fn stopped(child: &mut Child, s: Stop) -> anyhow::Result<Exit> {
 
 /// The I/O around a [`Session`]: Soloist's process, its log, its WebSocket, our commands, the update side and the
 /// session's deadline in; what the session asks for out.
-// (the ZeroConf port is only used on macOS, to announce the VM's Soloist for pairing)
-#[cfg_attr(not(target_os = "macos"), allow(unused_assignments, unused_variables))]
-async fn pump(engine: &SoloistEngine, runner: &impl Runner, run: &mut Started, s: &mut Session, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<EngineEvent>, upd: &Updates) -> anyhow::Result<Exit> {
+async fn pump<R: Runner>(engine: &SoloistEngine<R>, run: &mut Started, s: &mut Session, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<EngineEvent>, upd: &Updates) -> anyhow::Result<Exit> {
+    let runner = &engine.runner;
     let (child, news_rx) = (&mut run.child, &mut run.news);
     // what the session doesn't need from the log: the build's days left go to the update checker, the ZeroConf port
     // to pairing
@@ -720,13 +605,7 @@ async fn pump(engine: &SoloistEngine, runner: &impl Runner, run: &mut Started, s
                 return stopped(child, stop).await;
             }
         }
-        // the VM's Soloist: ready once its WebSocket answers through the forward
-        if let Some(a) = &run.vm_ws {
-            if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_secs(2), tokio_tungstenite::connect_async(a.as_str())).await {
-                addr = Some(a.clone());
-                break;
-            }
-        } else if let Some(a) = runner.ws_addr().await {
+        if let Some(a) = runner.ws_addr().await {
             addr = Some(a);
             break;
         }
@@ -735,9 +614,9 @@ async fn pump(engine: &SoloistEngine, runner: &impl Runner, run: &mut Started, s
     let Some(addr) = addr else { anyhow::bail!("Soloist never opened its WebSocket") };
     let (ws, _) = tokio_tungstenite::connect_async(addr).await?;
     let (mut ws_tx, mut ws_rx) = ws.split();
-    // macOS: Soloist's pairing endpoint announced on the LAN while it waits for a phone
-    #[cfg(target_os = "macos")]
-    let mut announced: Option<crate::soloist_vm::Announcement> = None;
+    // Soloist's pairing endpoint announced on the LAN while it waits for a phone (the VM's: a local Soloist announces
+    // itself)
+    let mut announced: Option<Announcement> = None;
 
     loop {
         let deadline = s.deadline();
@@ -754,14 +633,13 @@ async fn pump(engine: &SoloistEngine, runner: &impl Runner, run: &mut Started, s
                 let Ok(ev) = serde_json::from_str::<Value>(t.as_str()) else { continue };
                 let pairing = matches!(ev["type"].as_str(), Some("auth_state") | Some("device_changed"));
                 let actions = s.step(Input::Ws(ev), Now::real());
-                #[cfg(target_os = "macos")]
-                if pairing && let Some(v) = &run.in_vm {
+                if pairing {
                     if s.logged_in() {
                         announced = None;
                     } else if announced.is_none()
                         && let Some(p) = zeroconf
                     {
-                        match v.announce(p, &engine.device_name).await {
+                        match runner.announce(p, &engine.device_name).await {
                             Ok(a) => announced = Some(a),
                             Err(e) => tracing::warn!("pairing: couldn't announce Soloist on the LAN: {e}"),
                         }
@@ -770,7 +648,7 @@ async fn pump(engine: &SoloistEngine, runner: &impl Runner, run: &mut Started, s
                 actions
             }
             // (a notice from before this build started may be stale: only a build still waiting counts)
-            _ = upd.staged.notified(), if engine.update_waiting() => s.step(Input::Staged, Now::real()),
+            _ = upd.staged.notified(), if runner.update_waiting() => s.step(Input::Staged, Now::real()),
             // the time the session asked to be woken at: a resume after a restart, a dry spell gone on too long
             _ = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => s.step(Input::Tick, Now::real()),
             Some(n) = news_rx.recv() => {
