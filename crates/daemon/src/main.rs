@@ -1,6 +1,6 @@
 //! `singularityd` binary: parse flags, pick the Engine, serve the socket.
 
-use singularityd::assembly::{CatalogueMode, Host, Plan, assemble};
+use singularityd::assembly::{AssemblyFacts, CatalogueMode, Plan, assemble};
 
 /// The log names the account and what plays: whoever opened it (a Client, launchd, a shell), it's owner-only.
 fn private_log() {
@@ -63,7 +63,7 @@ async fn run() -> anyhow::Result<i32> {
     // (--fake-engine, --no-catalogue, --fake-catalogue <home.json>): see `assembly`
     let args: Vec<String> = std::env::args().collect();
     let config = singularity_config::load_config(&singularity_config::config_path());
-    let assembly = assemble(config, &args, |k| std::env::var(k).ok(), &Host::this());
+    let assembly = assemble(config, &args, |k| std::env::var(k).ok(), &AssemblyFacts::this());
     // the Client reads the same config.toml and shows its problems (a toast, the Settings page); here they're logged
     for p in &assembly.problems {
         tracing::warn!("{p}");

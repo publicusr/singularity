@@ -68,8 +68,6 @@ struct Fake {
     ctl: PathBuf,
     /// Soloist's WebSocket answers on the forward (logged in), as it does once Soloist runs
     answers_ws: Arc<AtomicBool>,
-    /// forwards already listening
-    listening: Arc<Mutex<Vec<String>>>,
     /// powered on (a dead VM answers nothing)
     on: Arc<AtomicBool>,
     /// the next boot fails with this
@@ -86,7 +84,7 @@ impl Fake {
         std::fs::create_dir_all(&ctl).unwrap();
         executable(&home.join("bin/sgl-soloist"), SGL_SOLOIST);
         executable(&cdn.join("soloist"), SOLOIST);
-        let fake = Fake { home, cdn, ctl, answers_ws: Default::default(), listening: Default::default(), on: Default::default(), broken: Default::default(), seen: Default::default(), withdrawn: Default::default() };
+        let fake = Fake { home, cdn, ctl, answers_ws: Default::default(), on: Default::default(), broken: Default::default(), seen: Default::default(), withdrawn: Default::default() };
         fake.release("Soloist 1.0.0");
         fake
     }
@@ -151,23 +149,27 @@ impl Guest for Fake {
         c
     }
 
-    async fn expose(&self, local: &str, port: u16) -> anyhow::Result<()> {
-        self.seen.lock().unwrap().forwards.push((local.to_string(), port));
-        if port == GUEST_WS && self.answers_ws.load(Ordering::SeqCst) && !self.listening.lock().unwrap().contains(&local.to_string()) {
-            self.listening.lock().unwrap().push(local.to_string());
-            let listener = tokio::net::TcpListener::bind(local).await?;
-            tokio::spawn(async move {
-                while let Ok((s, _)) = listener.accept().await {
-                    tokio::spawn(async move {
-                        let Ok(mut ws) = tokio_tungstenite::accept_async(s).await else { return };
-                        let hello = serde_json::json!({"type": "auth_state", "logged_in": true, "is_active": true});
-                        let _ = ws.send(tokio_tungstenite::tungstenite::Message::text(hello.to_string())).await;
-                        while let Some(Ok(_)) = ws.next().await {}
-                    });
+    /// The forward listens on a port the system picks, held from the start (#118: a port picked and let go can be
+    /// taken by a parallel test before it is bound). Only Soloist's WebSocket answers, once `answers_ws` is set.
+    async fn expose(&self, port: u16) -> anyhow::Result<u16> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let local = listener.local_addr()?.port();
+        self.seen.lock().unwrap().forwards.push((format!("127.0.0.1:{local}"), port));
+        let answers = self.answers_ws.clone();
+        tokio::spawn(async move {
+            while let Ok((s, _)) = listener.accept().await {
+                if port != GUEST_WS || !answers.load(Ordering::SeqCst) {
+                    continue;
                 }
-            });
-        }
-        Ok(())
+                tokio::spawn(async move {
+                    let Ok(mut ws) = tokio_tungstenite::accept_async(s).await else { return };
+                    let hello = serde_json::json!({"type": "auth_state", "logged_in": true, "is_active": true});
+                    let _ = ws.send(tokio_tungstenite::tungstenite::Message::text(hello.to_string())).await;
+                    while let Some(Ok(_)) = ws.next().await {}
+                });
+            }
+        });
+        Ok(local)
     }
 
     async fn publish(&self, port: u16, name: &str) -> anyhow::Result<Announcement> {
@@ -257,13 +259,8 @@ async fn the_websocket_is_ready_once_it_answers_through_the_forward() {
     prepare(&vm).await.0.unwrap();
     assert_eq!(vm.ws_addr().await, None, "nothing answers on the forward yet");
     let local = fake.forward_of(GUEST_WS).unwrap();
-    // Soloist's WebSocket, as the forward reaches it
-    let listener = tokio::net::TcpListener::bind(&local).await.unwrap();
-    tokio::spawn(async move {
-        while let Ok((s, _)) = listener.accept().await {
-            tokio::spawn(tokio_tungstenite::accept_async(s));
-        }
-    });
+    // Soloist's WebSocket comes up behind the forward
+    fake.answers_ws.store(true, Ordering::SeqCst);
     assert_eq!(vm.ws_addr().await, Some(format!("ws://{local}")));
 }
 
@@ -285,13 +282,17 @@ async fn pairing_forwards_the_zeroconf_port_and_announces_it_until_dropped() {
 async fn a_vm_that_went_away_is_seen_and_brought_up_again() {
     let dir = tempfile::tempdir().unwrap();
     let (vm, fake) = runner(dir.path());
+    fake.answers_ws.store(true, Ordering::SeqCst);
     prepare(&vm).await.0.unwrap();
     assert!(vm.alive().await);
+    assert!(vm.ws_addr().await.is_some());
     // the VM dies under Soloist
     fake.on.store(false, Ordering::SeqCst);
     assert!(!vm.alive().await);
     vm.down().await;
     assert_eq!(fake.seen(|s| s.power_offs), 1);
+    // (the fake's old forward still answers: the runner mustn't look there)
+    assert_eq!(vm.ws_addr().await, None, "a VM taken down has no WebSocket forward");
     prepare(&vm).await.0.unwrap();
     assert_eq!(fake.seen(|s| s.boots), 2, "the next round boots it again");
     assert_eq!(vm.version().await, "Soloist 1.0.0");

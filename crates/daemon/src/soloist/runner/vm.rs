@@ -14,7 +14,7 @@ use super::{Announcement, Launched, Runner};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::time::Duration;
 use tokio::sync::{Notify, watch};
 
@@ -37,8 +37,9 @@ pub trait Guest: Send + Sync + 'static {
     /// stopped when dropped.
     fn command(&self, script: &str) -> tokio::process::Command;
 
-    /// Forward `local` (an address on the Mac) to the guest's `port`.
-    fn expose(&self, local: &str, port: u16) -> impl Future<Output = anyhow::Result<()>> + Send;
+    /// Forward a free port on the Mac's loopback to the guest's `port`; the Mac's port. (The Guest picks it, so a fake
+    /// can bind port 0 and hold it: a port picked and let go can be taken before it is bound, #118.)
+    fn expose(&self, port: u16) -> impl Future<Output = anyhow::Result<u16>> + Send;
 
     /// Announce a Spotify Connect pairing endpoint, listening on the Mac's loopback `port`, on the LAN as `name`.
     fn publish(&self, port: u16, name: &str) -> impl Future<Output = anyhow::Result<Announcement>> + Send;
@@ -58,8 +59,8 @@ struct Shared<G> {
     data: PathBuf,
     /// the log and the last volume (Soloist's own state is in the guest)
     state: PathBuf,
-    /// Soloist's WebSocket, on the Mac's loopback
-    ws_port: u16,
+    /// Soloist's WebSocket, on the Mac's loopback (0 until the VM is up and it is forwarded)
+    ws_port: AtomicU16,
     /// a newer Soloist build waits in the guest
     staged: AtomicBool,
     /// the VM is up, its WebSocket forwarded
@@ -82,7 +83,7 @@ impl<G: Guest> InVm<G> {
             guest,
             state: data_dir.join("soloist-state"),
             data: data_dir,
-            ws_port: crate::vm::free_port().unwrap_or(47_700),
+            ws_port: AtomicU16::new(0),
             staged: AtomicBool::new(false),
             up: Default::default(),
         }))
@@ -102,7 +103,8 @@ impl<G: Guest> InVm<G> {
         let mut up = self.0.up.lock().await;
         if !*up {
             self.0.guest.boot(say).await?;
-            self.0.guest.expose(&format!("127.0.0.1:{}", self.0.ws_port), GUEST_WS).await?;
+            let ws = self.0.guest.expose(GUEST_WS).await?;
+            self.0.ws_port.store(ws, Ordering::Relaxed);
             *up = true;
         }
         drop(up);
@@ -196,14 +198,17 @@ impl<G: Guest> Runner for InVm<G> {
 
     /// Its WebSocket through the forwarded port, once it answers there.
     async fn ws_addr(&self) -> Option<String> {
-        let a = format!("ws://127.0.0.1:{}", self.0.ws_port);
+        let port = self.0.ws_port.load(Ordering::Relaxed);
+        if port == 0 {
+            return None;
+        }
+        let a = format!("ws://127.0.0.1:{port}");
         matches!(tokio::time::timeout(Duration::from_secs(2), tokio_tungstenite::connect_async(a.as_str())).await, Ok(Ok(_))).then_some(a)
     }
 
     /// The guest's ZeroConf `port` forwarded to one on the Mac's loopback, and that one announced on the LAN.
     async fn announce(&self, port: u16, name: &str) -> anyhow::Result<Announcement> {
-        let local = crate::vm::free_port().ok_or_else(|| anyhow::anyhow!("no free port"))?;
-        self.0.guest.expose(&format!("127.0.0.1:{local}"), port).await?;
+        let local = self.0.guest.expose(port).await?;
         self.0.guest.publish(local, name).await
     }
 
@@ -214,6 +219,9 @@ impl<G: Guest> Runner for InVm<G> {
 
     async fn down(&self) {
         self.0.guest.power_off().await;
-        *self.0.up.lock().await = false;
+        let mut up = self.0.up.lock().await;
+        *up = false;
+        // its forward went with it
+        self.0.ws_port.store(0, Ordering::Relaxed);
     }
 }

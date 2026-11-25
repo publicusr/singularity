@@ -2,8 +2,8 @@
 //! the environment and the command line.
 //!
 //! - [`assemble`] is pure: it picks the Engine, its Identity (the name on Connect), the tap's source and the Catalogue,
-//!   and gathers the problems found on the way. The machine's facts come in as a [`Host`], so both OSes' choices are
-//!   tested on either.
+//!   and gathers the problems found on the way. The machine's facts come in as [`AssemblyFacts`], so both OSes'
+//!   choices are tested on either.
 //! - [`Assembly::build`] makes the chosen Engine and its tap source: the one Identity names the Engine, so the name in
 //!   Connect and the name the Catalogue looks for can't disagree (audit C5), and an Engine that plays from this Daemon
 //!   shares its `Feed` with the tap.
@@ -15,9 +15,10 @@ use singularity_config::{Config, EngineKind, Read};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
-/// The machine the Daemon runs on, as far as choosing an Engine goes: the [Host](singularity_config::host::Host)'s
-/// answers, and the installed app's version. Lookups run only when the choice needs them.
-pub struct Host<'a> {
+/// What [`assemble`] needs to know about the machine the Daemon runs on: a few of the
+/// [Host](singularity_config::host::Host)'s answers, and the installed app's version. Lookups run only when the choice
+/// needs them.
+pub struct AssemblyFacts<'a> {
     pub macos: bool,
     /// a CPU Spotify ships Soloist for (x86_64, arm64: D73)
     pub soloist_cpu: bool,
@@ -27,10 +28,10 @@ pub struct Host<'a> {
     pub app_version: &'a dyn Fn() -> String,
 }
 
-impl Host<'static> {
+impl AssemblyFacts<'static> {
     /// This machine.
-    pub fn this() -> Host<'static> {
-        Host {
+    pub fn this() -> AssemblyFacts<'static> {
+        AssemblyFacts {
             macos: singularity_config::host::MACOS,
             soloist_cpu: singularity_config::host::Host::this().soloist_cpu(),
             computer: &|| singularity_config::host::Host::this().computer(),
@@ -94,7 +95,7 @@ pub struct Assembly {
 /// Decide the Engine: `--fake-engine`, else `SINGULARITY_ENGINE=soloist|spotify-app|librespot` (tests pin it,
 /// whatever the OS), else config.toml's `[engine] kind` (`auto`: Soloist on Linux, librespot on macOS and on CPUs
 /// without Soloist). `env` reads an environment variable.
-pub fn assemble(config: Read<Config>, args: &[String], env: impl Fn(&str) -> Option<String>, host: &Host) -> Assembly {
+pub fn assemble(config: Read<Config>, args: &[String], env: impl Fn(&str) -> Option<String>, facts: &AssemblyFacts) -> Assembly {
     let mut problems = config.problems;
     let choice = config.value.engine;
     let flag = |f: &str| args.iter().any(|a| a == f);
@@ -107,7 +108,7 @@ pub fn assemble(config: Read<Config>, args: &[String], env: impl Fn(&str) -> Opt
             if let Some(v) = other.filter(|v| !v.is_empty()) {
                 problems.push(format!("SINGULARITY_ENGINE={v} isn't known (soloist, spotify-app or librespot); using config.toml's"));
             }
-            Some(choice.kind.resolved_on(host.macos, host.soloist_cpu))
+            Some(choice.kind.resolved_on(facts.macos, facts.soloist_cpu))
         }
     };
     let device = choice.device.trim();
@@ -115,12 +116,12 @@ pub fn assemble(config: Read<Config>, args: &[String], env: impl Fn(&str) -> Opt
     let (plan, identity, tap) = match kind {
         None => (Plan::Fake, Identity::default(), Tap::Synthetic),
         Some(EngineKind::SpotifyApp) => {
-            let identity = Identity { device_name: named(host.computer), via_connect: true, version: (host.app_version)(), player: "the Spotify app" };
-            let tap = if host.macos { Tap::AppProcess } else { Tap::PipeWire(StreamOf::SpotifyApp) };
+            let identity = Identity { device_name: named(facts.computer), via_connect: true, version: (facts.app_version)(), player: "the Spotify app" };
+            let tap = if facts.macos { Tap::AppProcess } else { Tap::PipeWire(StreamOf::SpotifyApp) };
             (Plan::SpotifyApp { start_app: env("SINGULARITY_START_APP").as_deref() != Some("0") }, identity, tap)
         }
         Some(EngineKind::Librespot) => {
-            let identity = Identity { device_name: named(&|| format!("Singularity on {}", (host.computer)())), via_connect: true, version: String::new(), player: "librespot" };
+            let identity = Identity { device_name: named(&|| format!("Singularity on {}", (facts.computer)())), via_connect: true, version: String::new(), player: "librespot" };
             (Plan::Librespot, identity, Tap::EngineFeed)
         }
         // Soloist (Auto is resolved above): in the VM on macOS, where its audio comes to the Daemon, which plays it and
@@ -128,8 +129,8 @@ pub fn assemble(config: Read<Config>, args: &[String], env: impl Fn(&str) -> Opt
         // VM's default name sets it apart from a Linux machine's "Singularity" and this Mac's librespot, which can
         // linger in the device list after a switch, as devices are found by name.
         Some(_) => {
-            let in_vm = host.macos && env("SINGULARITY_SOLOIST").as_deref() != Some("local");
-            let device_name = if in_vm { named(&|| format!("Singularity on {} (lossless)", (host.computer)())) } else { named(&|| crate::soloist::DEVICE_NAME.into()) };
+            let in_vm = facts.macos && env("SINGULARITY_SOLOIST").as_deref() != Some("local");
+            let device_name = if in_vm { named(&|| format!("Singularity on {} (lossless)", (facts.computer)())) } else { named(&|| crate::soloist::DEVICE_NAME.into()) };
             let tap = if in_vm { Tap::EngineFeed } else { Tap::PipeWire(StreamOf::Soloist) };
             (if in_vm { Plan::SoloistVm } else { Plan::Soloist { cache_mb: choice.soloist_cache_mb() } }, Identity { device_name, ..Identity::default() }, tap)
         }
@@ -149,8 +150,8 @@ impl Assembly {
     }
 
     /// Make the Engine (commands go to `catalogue`, if there is one) and the tap's source. Only for an assembly made
-    /// with [`Host::this`]: off macOS the Soloist VM can't start (its Engine says so) and there is no app process tap
-    /// (none).
+    /// with [`AssemblyFacts::this`]: off macOS the Soloist VM can't start (its Engine says so) and there is no app
+    /// process tap (none).
     pub fn build(&self, catalogue: Option<mpsc::Sender<CatCmd>>) -> (Box<dyn Engine>, Option<TapSource>) {
         let identity = self.identity.clone();
         // the samples of an Engine that plays from this Daemon, for the tap
@@ -192,12 +193,12 @@ mod tests {
     use super::*;
     use singularity_config::{CONFIG_MIGRATIONS, CONFIG_SCHEMA};
 
-    fn linux() -> Host<'static> {
-        Host { macos: false, soloist_cpu: true, computer: &|| "desk".into(), app_version: &|| "1.2.3".into() }
+    fn linux() -> AssemblyFacts<'static> {
+        AssemblyFacts { macos: false, soloist_cpu: true, computer: &|| "desk".into(), app_version: &|| "1.2.3".into() }
     }
 
-    fn mac() -> Host<'static> {
-        Host { macos: true, ..linux() }
+    fn mac() -> AssemblyFacts<'static> {
+        AssemblyFacts { macos: true, ..linux() }
     }
 
     /// config.toml with this `[engine]` (and anything else after it).
@@ -242,8 +243,8 @@ mod tests {
 
     #[test]
     fn auto_is_librespot_on_macos_and_where_soloist_has_no_build() {
-        for host in [mac(), Host { soloist_cpu: false, ..linux() }] {
-            let a = assemble(config("kind = \"auto\""), &[], no_env, &host);
+        for facts in [mac(), AssemblyFacts { soloist_cpu: false, ..linux() }] {
+            let a = assemble(config("kind = \"auto\""), &[], no_env, &facts);
             assert_eq!((a.plan, a.tap), (Plan::Librespot, Some(Tap::EngineFeed)));
             assert_eq!((a.identity.device_name.as_str(), a.identity.via_connect, a.identity.player), ("Singularity on desk", true, "librespot"));
         }
