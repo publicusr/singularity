@@ -13,6 +13,7 @@ use std::time::SystemTime;
 pub use toml_edit;
 use toml_edit::{DocumentMut, Item, Value};
 
+pub mod app_folders;
 pub mod host;
 
 /// The `config.toml` schema this build writes and reads.
@@ -20,10 +21,9 @@ pub const CONFIG_SCHEMA: i64 = 7;
 /// The `keys.toml` schema.
 pub const KEYS_SCHEMA: i64 = 1;
 
-/// `$XDG_CONFIG_HOME/singularity` (else `~/.config/singularity`).
+/// `$XDG_CONFIG_HOME/singularity` (else `~/.config/singularity`): the App folders' config folder.
 pub fn dir() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config"))).unwrap_or_else(std::env::temp_dir);
-    base.join("singularity")
+    app_folders::AppFolders::this().config
 }
 
 pub fn config_path() -> PathBuf {

@@ -226,11 +226,7 @@ fn start_daemon() -> Result<(), String> {
     let Some(exe) = daemon_binary() else {
         return Err(format!("can't find `singularityd` next to {}: install or build both together", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "singularity".into())));
     };
-    let log_dir = std::env::var_os("XDG_STATE_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/state")))
-        .unwrap_or_else(std::env::temp_dir)
-        .join("singularity");
+    let log_dir = singularity_config::app_folders::AppFolders::from_env().map_err(|e| e.to_string())?.state;
     let _ = std::fs::create_dir_all(&log_dir);
     // owner-only: the log names the account and what plays
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};

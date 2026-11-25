@@ -787,22 +787,13 @@ pub struct SpectrumFrame {
     pub out_bands: [u8; 3],
 }
 
-/// Where the Daemon listens: `$XDG_RUNTIME_DIR/singularity/daemon.sock` (falls back to /tmp/singularity-$UID).
+/// Where the Daemon listens: `daemon.sock` in the App folders' socket folder, `$XDG_RUNTIME_DIR/singularity` (falls
+/// back to /tmp/singularity-$UID/singularity); `SINGULARITY_SOCKET` names another.
 pub fn socket_path() -> PathBuf {
     if let Ok(p) = std::env::var("SINGULARITY_SOCKET") {
         return PathBuf::from(p);
     }
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("singularity-{}", uid())));
-    base.join("singularity").join("daemon.sock")
-}
-
-/// `$UID`, else the Host's user id. A Mac's folder has always been `singularity-user` (this read `/proc`, which macOS
-/// lacks): renaming it would strand a running Daemon on the old path, so it keeps that name.
-fn uid() -> String {
-    use singularity_config::host;
-    std::env::var("UID").unwrap_or_else(|_| if host::MACOS { "user".into() } else { host::uid().to_string() })
+    singularity_config::app_folders::socket_dir().join("daemon.sock")
 }
 
 pub fn now_ms() -> u64 {

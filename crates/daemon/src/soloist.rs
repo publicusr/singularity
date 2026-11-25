@@ -46,11 +46,7 @@ pub struct SoloistEngine<R = Local> {
 
 impl SoloistEngine<Local> {
     pub fn from_env() -> SoloistEngine<Local> {
-        let base = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-            .unwrap_or_else(std::env::temp_dir);
-        SoloistEngine { runner: Local::new(base.join("singularity"), singularity_config::EngineChoice::default().soloist_cache_mb()), device_name: DEVICE_NAME.into() }
+        SoloistEngine { runner: Local::new(singularity_config::app_folders::AppFolders::this().data, singularity_config::EngineChoice::default().soloist_cache_mb()), device_name: DEVICE_NAME.into() }
     }
 
     /// Soloist as a local process, as `device_name` on Connect, its cache capped at `cache_mb` (0: no limit).
