@@ -74,12 +74,9 @@ pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         if (w - cw) % 2 == 1 {
             cw += 1;
         }
-        // narrow and tall (#57): rows to spare under the words, so the title in the pixel font and the whole centred
-        // (unless what's next is listed under the words: the old look's title, artists, "from", a blank row, then
-        // "Next in queue" and a song)
-        let ctx = u16::from(app.playback.context_name.is_some());
-        let listed = queue && 4 + ctx < r.height - ch - 1;
-        if w <= NARROW_W && !listed && np_column(buf, Rect::new(x, r.y, w, r.height), ch, cw, &item, &url, app, th) {
+        // narrow and tall (#57): rows to spare under the words, so the title in the pixel font and the whole centred,
+        // what's next under it where it fits (owner's re-test: no queue Pane brought the old look back)
+        if w <= NARROW_W && np_column(buf, Rect::new(x, r.y, w, r.height), ch, cw, &item, &url, app, queue, th) {
             return;
         }
         crate::home::cover(buf, Rect::new(x + (w - cw) / 2, r.y, cw, ch), &url, "♪", app, th);
@@ -158,18 +155,24 @@ fn np_subtitles(item: &singularity_proto::Item, app: &App) -> Vec<String> {
 }
 
 /// A narrow, tall Pane with rows to spare under its cover (#57): the cover (`cw`×`ch`), the title in the small pixel
-/// font (up to three lines), the artists, the album and where it plays from, each line centred, the whole in the
-/// middle of the Pane. False (nothing drawn) when it doesn't fit or the pixel font can't spell the title: then the
-/// Pane keeps the words under the cover in plain text.
+/// font (up to three lines), the artists, the album and where it plays from, each line centred, then what's next (if
+/// `queue`, and then only with room for a blank row, "Next in queue" and at least one song), the whole in the middle
+/// of the Pane. False (nothing drawn) when it doesn't fit or the pixel font can't spell the title: then the Pane keeps
+/// the words under the cover in plain text.
 #[allow(clippy::too_many_arguments)]
-fn np_column(buf: &mut Buffer, r: Rect, ch: u16, cw: u16, item: &singularity_proto::Item, url: &str, app: &mut App, th: &Theme) -> bool {
+fn np_column(buf: &mut Buffer, r: Rect, ch: u16, cw: u16, item: &singularity_proto::Item, url: &str, app: &mut App, queue: bool, th: &Theme) -> bool {
     use crate::ambient::{pixel_fit, pixel_line, pixel_rows, pixel_width};
     let Some(lines) = pixel_fit(&item.name, r.width, r.height, 1, 3).filter(|_| spelled(&item.name)) else { return false };
     let subs = np_subtitles(item, app);
     let title_h = lines.len() as u16 * (pixel_rows(1) + 1) - 1;
-    let block = ch + 1 + title_h + 1 + subs.len() as u16;
+    let mut block = ch + 1 + title_h + 1 + subs.len() as u16;
     if block > r.height {
         return false;
+    }
+    // what's next: a blank row, "Next in queue" and as many songs as fit
+    let songs = if queue { (r.height - block).saturating_sub(2).min(app.playback.queue.len() as u16) } else { 0 };
+    if songs > 0 {
+        block += 2 + songs;
     }
     let mut y = r.y + (r.height - block) / 2;
     crate::home::cover(buf, Rect::new(r.x + (r.width - cw) / 2, y, cw, ch), url, "♪", app, th);
@@ -183,6 +186,9 @@ fn np_column(buf: &mut Buffer, r: Rect, ch: u16, cw: u16, item: &singularity_pro
         let sw = (unicode_width::UnicodeWidthStr::width(sub.as_str()) as u16).min(r.width);
         text(buf, r.x + (r.width - sw) / 2, y, sw, sub, th.s(if i == 0 { th.fg } else { th.dim }));
         y += 1;
+    }
+    if songs > 0 {
+        np_next(buf, Rect::new(r.x, y + 1, r.width, 1 + songs), app, th);
     }
     true
 }
@@ -1285,6 +1291,42 @@ mod tests {
                 let (l, r) = (cols[0], w - 1 - cols[cols.len() - 1]);
                 assert_eq!(l, r, "{w}×{h}: {l} columns free on the left, {r} on the right");
             }
+        }
+    }
+
+    /// Owner's re-test: with no queue Pane on screen (what's next listed in Now playing) a narrow, tall Pane keeps the
+    /// centred look too, what's next under it; the cover sits in the very middle at every width, with a queue Pane and
+    /// without.
+    #[test]
+    fn a_tall_now_playing_is_centred_without_a_queue_pane_too() {
+        use crate::layout::{Axis, Node, Size, Widget};
+        let th = Theme::singularity();
+        let mut app = App::new(None);
+        app.playback.item = Some(singularity_proto::Item { name: "Track 2".into(), artists: vec!["Fake Artist".into()], ..Default::default() });
+        app.playback.queue = vec![singularity_proto::QueueEntry { item: singularity_proto::Item { name: "Next One".into(), ..Default::default() }, source: "queue".into(), uid: String::new() }; 3];
+        for other in [Widget::Queue, Widget::Lyrics] {
+            app.layout = Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::pane(Widget::NowPlaying), Node::pane(other)).into();
+            for w in 12..=60u16 {
+                for h in [20u16, 30, 44] {
+                    let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+                    nowplaying(&mut buf, Rect::new(0, 0, w, h), &mut app, &th);
+                    let cols: Vec<u16> = (0..w).filter(|&x| (0..h).any(|y| buf[(x, y)].bg == th.selection.color())).collect();
+                    let (l, r) = (cols[0], w - 1 - cols[cols.len() - 1]);
+                    assert_eq!(l, r, "{other:?} {w}×{h}: {l} columns free on the left, {r} on the right");
+                }
+            }
+        }
+        // no queue Pane, narrow and tall: the cover, the title in the pixel font, then what's next, the whole in the
+        // middle of the Pane (as many rows free above as below, give or take one)
+        for (w, h) in [(26u16, 44u16), (30, 40), (36, 44)] {
+            let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+            nowplaying(&mut buf, Rect::new(0, 0, w, h), &mut app, &th);
+            let rows: Vec<String> = (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect()).collect();
+            let used: Vec<u16> = (0..h).filter(|&y| rows[y as usize].trim() != "" || (0..w).any(|x| buf[(x, y)].bg == th.selection.color())).collect();
+            let (top, bottom) = (used[0], h - 1 - used[used.len() - 1]);
+            assert!(top.abs_diff(bottom) <= 1, "{w}×{h}: {top} rows free above, {bottom} below\n{}", rows.join("\n"));
+            assert!(rows.iter().any(|r| r.contains("Next in queue")) && rows.iter().any(|r| r.contains("Next One")), "{w}×{h}: what's next\n{}", rows.join("\n"));
+            assert!(!rows.iter().any(|r| r.contains("Track 2")), "{w}×{h}: the title in the pixel font\n{}", rows.join("\n"));
         }
     }
 
