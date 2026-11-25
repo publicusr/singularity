@@ -1183,9 +1183,7 @@ impl App {
     /// Spectrum frames flow only while a Widget that moves with the music is on screen (the Daemon's tap idles
     /// otherwise); called on connect and whenever the layout changes.
     pub fn want_spectrum(&mut self) {
-        use Widget::*;
-        const AUDIO: [Widget; 9] = [Fft, Loudness, Levels, Rain, Scope, Well, Hole, Starfield, Glow];
-        let on = self.layout.widgets().iter().any(|w| AUDIO.contains(w));
+        let on = self.layout.widgets().iter().any(|w| crate::widget_catalogue::facts(*w).spectrum);
         if on != self.spectrum_on && matches!(self.link, Link::Connected { .. }) {
             self.spectrum_on = on;
             self.send(Command::Spectrum { on });

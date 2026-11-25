@@ -1,7 +1,8 @@
 //! The Widget catalogue (D89): every Widget's fixed facts in one place. Its title, smallest size, swap group, whether
 //! the Widget picker offers it, whether it is Required, whether it is the black hole, whether it draws its own frame,
-//! and how it is drawn. One match over every Widget, no catch-all: a new Widget doesn't compile until it has them all.
-//! The modules that use a fact (`ui`, `needs`, `layouts`, `panemenu`, `arrangement`, `layout`) ask here.
+//! whether it moves with the music (needs its spectrum), and how it is drawn. One match over every Widget, no
+//! catch-all: a new Widget doesn't compile until it has them all. The modules that use a fact (`ui`, `needs`,
+//! `layouts`, `panemenu`, `arrangement`, `layout`, `app`) ask here.
 
 use crate::app::{Action, App, Hit};
 use crate::layout::{MIN_H, MIN_W, WELL_ASPECT};
@@ -41,6 +42,8 @@ pub struct Facts {
     pub required: bool,
     /// the black hole (one at a time)
     pub hole: bool,
+    /// moves with the music: the Daemon sends spectrum frames while one is on screen (`App::want_spectrum`)
+    pub spectrum: bool,
     /// draws its own frame (unless its Pane is too small for it), instead of the plain one
     pub own_frame: Option<Framed>,
     /// how it is drawn inside the frame
@@ -56,10 +59,16 @@ const HOLE: (u16, u16) = {
     ((rows * 2.0 * WELL_ASPECT + 0.5) as u16 + 2, h)
 };
 
-/// A Widget that the picker offers, in `group`, with the plain frame and nothing else special.
-fn plain(title: &'static str, smallest: (u16, u16), group: Option<Group>, draw: Draw) -> Facts {
-    Facts { title, smallest, group, offered: true, required: false, hole: false, own_frame: None, draw }
+/// A Widget that the picker offers, in `group`, with the plain frame and nothing else special. `spectrum`: whether it
+/// moves with the music (`MOVES` or `STILL`), stated for every Widget.
+fn plain(title: &'static str, smallest: (u16, u16), group: Option<Group>, spectrum: bool, draw: Draw) -> Facts {
+    Facts { title, smallest, group, offered: true, required: false, hole: false, spectrum, own_frame: None, draw }
 }
+
+/// It moves with the music: it needs the spectrum.
+const MOVES: bool = true;
+/// It doesn't move with the music.
+const STILL: bool = false;
 
 /// Widget `w`'s facts. Every Widget has its arm.
 pub fn facts(w: Widget) -> Facts {
@@ -70,44 +79,44 @@ pub fn facts(w: Widget) -> Facts {
     // the meters and the ambient Visuals still read in the smallest Pane with two rows inside
     const VISUAL: (u16, u16) = (MIN_W, MIN_H + 1);
     match w {
-        Fft => plain("fft", VISUAL, Some(Instruments), |b, _, i, a, t| crate::meters::spectrum(b, i, &a.meters, t)),
-        Loudness => plain("loudness", VISUAL, Some(Instruments), |b, _, i, a, t| crate::meters::loudness(b, i, &a.meters, t)),
-        Levels => plain("levels", VISUAL, Some(Instruments), |b, _, i, a, t| crate::widgets::levels(b, i, a, t)),
-        Scope => plain("osc", VISUAL, Some(Instruments), |b, _, i, a, t| crate::widgets::scope(b, i, a, t)),
-        Rain => plain("rain", VISUAL, Some(Instruments), |b, _, i, a, t| crate::widgets::rain(b, i, a, t)),
-        Starfield => plain("starfield", VISUAL, Some(Instruments), |b, _, i, a, t| crate::ambient::starfield(b, i, a, t)),
-        Lyrics => plain("tail -f lyrics.log", TEXT, Some(Side), |b, _, i, a, t| crate::lyrics::draw(b, i, a, t)),
+        Fft => plain("fft", VISUAL, Some(Instruments), MOVES, |b, _, i, a, t| crate::meters::spectrum(b, i, &a.meters, t)),
+        Loudness => plain("loudness", VISUAL, Some(Instruments), MOVES, |b, _, i, a, t| crate::meters::loudness(b, i, &a.meters, t)),
+        Levels => plain("levels", VISUAL, Some(Instruments), MOVES, |b, _, i, a, t| crate::widgets::levels(b, i, a, t)),
+        Scope => plain("osc", VISUAL, Some(Instruments), MOVES, |b, _, i, a, t| crate::widgets::scope(b, i, a, t)),
+        Rain => plain("rain", VISUAL, Some(Instruments), MOVES, |b, _, i, a, t| crate::widgets::rain(b, i, a, t)),
+        Starfield => plain("starfield", VISUAL, Some(Instruments), MOVES, |b, _, i, a, t| crate::ambient::starfield(b, i, a, t)),
+        Lyrics => plain("tail -f lyrics.log", TEXT, Some(Side), STILL, |b, _, i, a, t| crate::lyrics::draw(b, i, a, t)),
         // a line has to wrap to be read: in one row only its middle shows
-        Karaoke => plain("karaoke", (20, 6), Some(Side), |b, _, i, a, t| crate::karaoke::draw(b, i, a, t)),
-        Queue => plain("queue", TEXT, Some(Side), |b, _, i, a, t| crate::queue::draw(b, i, a, t)),
-        NowPlaying => plain("Now playing", TEXT, Some(Side), |b, _, i, a, t| crate::widgets::nowplaying(b, i, a, t)),
+        Karaoke => plain("karaoke", (20, 6), Some(Side), STILL, |b, _, i, a, t| crate::karaoke::draw(b, i, a, t)),
+        Queue => plain("queue", TEXT, Some(Side), STILL, |b, _, i, a, t| crate::queue::draw(b, i, a, t)),
+        NowPlaying => plain("Now playing", TEXT, Some(Side), STILL, |b, _, i, a, t| crate::widgets::nowplaying(b, i, a, t)),
         // the bitrate under the badges
-        Stream => plain("stream", (16, 5), Some(Side), |b, _, i, a, t| crate::setup::draw_stream(b, i, a, t)),
-        Top => plain("top · system", TEXT, Some(Side), |b, _, i, a, t| crate::widgets::top(b, i, a, t)),
-        Listening => plain("listening · 26 weeks", TEXT, Some(Side), |b, _, i, a, t| {
+        Stream => plain("stream", (16, 5), Some(Side), STILL, |b, _, i, a, t| crate::setup::draw_stream(b, i, a, t)),
+        Top => plain("top · system", TEXT, Some(Side), STILL, |b, _, i, a, t| crate::widgets::top(b, i, a, t)),
+        Listening => plain("listening · 26 weeks", TEXT, Some(Side), STILL, |b, _, i, a, t| {
             crate::widgets::listening(b, i, a, t);
             // a click opens the whole story
             a.hit(i, Hit::Action(Action::Stats));
         }),
-        Today => plain("today", TEXT, Some(Side), |b, _, i, a, t| {
+        Today => plain("today", TEXT, Some(Side), STILL, |b, _, i, a, t| {
             crate::stats::today(b, i, a, t);
             a.hit(i, Hit::Action(Action::Stats));
         }),
         // the artists' names beside their minutes
-        TopWeek => plain("top this week", (20, 4), Some(Side), |b, _, i, a, t| crate::stats::top_week(b, i, a, t)),
-        Marquee => plain("marquee", TEXT, Some(Side), |b, _, i, a, t| crate::ambient::marquee(b, i, a, t)),
-        Glow => plain("glow", TEXT, Some(Side), |b, _, i, a, t| crate::ambient::glow(b, i, a, t)),
-        Library => plain("~/library", TEXT, None, |b, _, i, a, t| crate::sidebar::draw(b, i, a, t)),
+        TopWeek => plain("top this week", (20, 4), Some(Side), STILL, |b, _, i, a, t| crate::stats::top_week(b, i, a, t)),
+        Marquee => plain("marquee", TEXT, Some(Side), STILL, |b, _, i, a, t| crate::ambient::marquee(b, i, a, t)),
+        Glow => plain("glow", TEXT, Some(Side), MOVES, |b, _, i, a, t| crate::ambient::glow(b, i, a, t)),
+        Library => plain("~/library", TEXT, None, STILL, |b, _, i, a, t| crate::sidebar::draw(b, i, a, t)),
         // the main Pane, where every page opens: it draws the page it shows. A Card's name beside its cover (Classic
         // gives Home 20 columns in a half-screen laptop window)
-        Home => Facts { offered: false, required: true, ..plain("home", (16, 6), None, |b, _, i, a, t| crate::ui::main_page(b, i, a, t)) },
+        Home => Facts { offered: false, required: true, ..plain("home", (16, 6), None, STILL, |b, _, i, a, t| crate::ui::main_page(b, i, a, t)) },
         // the gravity well: its own (sagging) frame
-        Well => Facts { hole: true, own_frame: Some(crate::visual::well::draw), ..plain("gravity well", HOLE, None, crate::visual::well::draw_plain) },
+        Well => Facts { hole: true, own_frame: Some(crate::visual::well::draw), ..plain("gravity well", HOLE, None, MOVES, crate::visual::well::draw_plain) },
         // Event Horizon's plain black hole
-        Hole => Facts { hole: true, ..plain("black hole", HOLE, None, crate::visual::well::draw_plain) },
+        Hole => Facts { hole: true, ..plain("black hole", HOLE, None, MOVES, crate::visual::well::draw_plain) },
         // another build's Widget: as before Panes had an identity, a "?" and nothing in it (its smallest size the
         // smallest Pane's: it draws nothing anyway)
-        Unknown(_) => Facts { offered: false, ..plain("?", (MIN_W, MIN_H), None, |_, _, _, _, _| {}) },
+        Unknown(_) => Facts { offered: false, ..plain("?", (MIN_W, MIN_H), None, STILL, |_, _, _, _, _| {}) },
     }
 }
 
@@ -139,5 +148,10 @@ mod tests {
         assert_eq!(Widget::ALL.iter().filter(|w| facts(**w).required).collect::<Vec<_>>(), [&Widget::Home], "D87: only Home is Required");
         assert_eq!(Widget::ALL.iter().filter(|w| facts(**w).hole).count(), 2);
         assert!(!facts(Widget::Unknown("x")).offered && !facts(Widget::Unknown("x")).required);
+        // the Widgets that move with the music, the ones the spectrum flows for
+        use Widget::*;
+        let moves: Vec<_> = Widget::ALL.iter().copied().filter(|w| facts(*w).spectrum).collect();
+        assert_eq!(moves, [Fft, Loudness, Levels, Scope, Rain, Starfield, Glow, Well, Hole], "the Widgets that move with the music");
+        assert!(!facts(Unknown("x")).spectrum);
     }
 }
