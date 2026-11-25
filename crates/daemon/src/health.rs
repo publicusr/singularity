@@ -17,31 +17,31 @@ fn location(account: &str, env: Option<&str>) -> String {
     }
 }
 
-/// The tools this Daemon needs for `kind`: its own, plus the app's launcher when the app is the Engine (a Soloist or
-/// librespot setup has no use for `spotify`/`open`).
-fn required_tools(kind: singularity_proto::EngineKind) -> Vec<crate::programs::Tool> {
-    let mut tools = crate::programs::Tool::REQUIRED.to_vec();
+/// The tools a Daemon on macOS (`macos`) or Linux needs for `kind`: its own, plus the app's launcher when the app is
+/// the Engine (a Soloist or librespot setup has no use for `spotify`/`open`).
+fn required_tools(macos: bool, kind: singularity_proto::EngineKind) -> Vec<crate::programs::Tool> {
+    let mut tools = crate::programs::Tool::required(macos).to_vec();
     if kind == singularity_proto::EngineKind::SpotifyApp {
-        tools.push(crate::programs::app_tool());
+        tools.push(crate::programs::app_tool(macos));
     }
     tools
 }
 
-/// The tools this Daemon needs but can't find at their fixed locations (`pactl`, `tar`…). The keyring's client
-/// counts only while the keyring is enabled.
+/// The tools this Daemon needs but can't find at their fixed locations (`pactl`, `secret-tool`…). The keyring's
+/// client counts only while the keyring is enabled.
 fn missing_tools(kind: singularity_proto::EngineKind) -> Vec<String> {
-    missing_tools_with(kind, |t| t.find())
+    missing_tools_with(singularity_config::host::MACOS, kind, |t| t.find())
 }
 
-/// [`missing_tools`] looking in `dirs` instead (tests pass an empty scratch directory).
+/// [`missing_tools`] for macOS (`macos`) or Linux, looking in `dirs` instead (tests pass an empty scratch directory).
 #[cfg(test)]
-fn missing_tools_in(dirs: &[&str], kind: singularity_proto::EngineKind) -> Vec<String> {
-    missing_tools_with(kind, |t| t.find_in(dirs))
+fn missing_tools_in(dirs: &[&str], macos: bool, kind: singularity_proto::EngineKind) -> Vec<String> {
+    missing_tools_with(macos, kind, |t| t.find_in(dirs))
 }
 
-fn missing_tools_with(kind: singularity_proto::EngineKind, find: impl Fn(crate::programs::Tool) -> Option<std::path::PathBuf>) -> Vec<String> {
+fn missing_tools_with(macos: bool, kind: singularity_proto::EngineKind, find: impl Fn(crate::programs::Tool) -> Option<std::path::PathBuf>) -> Vec<String> {
     let keyring = crate::secrets::keyring_enabled();
-    required_tools(kind)
+    required_tools(macos, kind)
         .into_iter()
         .filter(|t| *t != crate::programs::Tool::SecretTool || keyring)
         .filter(|t| find(*t).is_none())
@@ -112,17 +112,40 @@ mod tests {
         use singularity_proto::EngineKind;
         let empty = tempfile::tempdir().unwrap();
         let dirs = [empty.path().to_str().unwrap()];
-        let missing = missing_tools_in(&dirs, EngineKind::Soloist);
-        for t in crate::programs::Tool::REQUIRED {
+        let macos = singularity_config::host::MACOS;
+        let missing = missing_tools_in(&dirs, macos, EngineKind::Soloist);
+        for t in crate::programs::Tool::required(macos) {
             if *t == crate::programs::Tool::SecretTool && !crate::secrets::keyring_enabled() {
                 continue;
             }
             assert!(missing.contains(&t.name().to_string()), "{} not named in {missing:?}", t.name());
         }
         // the app's launcher is named only for the app (a Soloist setup has no use for it)
-        assert!(!missing.contains(&crate::programs::app_tool().name().to_string()));
-        let with_app = missing_tools_in(&dirs, EngineKind::SpotifyApp);
-        assert!(with_app.contains(&crate::programs::app_tool().name().to_string()), "{} not named in {with_app:?}", crate::programs::app_tool().name());
+        let app = crate::programs::app_tool(macos).name().to_string();
+        assert!(!missing.contains(&app));
+        let with_app = missing_tools_in(&dirs, macos, EngineKind::SpotifyApp);
+        assert!(with_app.contains(&app), "{app} not named in {with_app:?}");
+    }
+
+    /// #98, Q102: Linux unpacks Soloist's builds with the `tar` crate, and nothing runs `pgrep`/`pkill` any more (the
+    /// Host finds and stops processes); only the macOS VM still runs `tar`. Named here even with every program
+    /// missing.
+    #[test]
+    fn only_the_programs_the_daemon_runs_are_asked_for() {
+        use singularity_proto::EngineKind;
+        let empty = tempfile::tempdir().unwrap();
+        let dirs = [empty.path().to_str().unwrap()];
+        let not_used = ["tar", "pgrep", "pkill"];
+        for kind in [EngineKind::Soloist, EngineKind::Librespot, EngineKind::SpotifyApp] {
+            let linux = missing_tools_in(&dirs, false, kind);
+            assert!(linux.iter().all(|t| !not_used.contains(&t.as_str())), "Linux, {kind:?}: {linux:?}");
+            assert!(linux.iter().any(|t| t == "pactl") && linux.iter().any(|t| t == "parec"), "Linux, {kind:?}: {linux:?}");
+            let mac = missing_tools_in(&dirs, true, kind);
+            assert!(mac.iter().any(|t| t == "tar"), "macOS, {kind:?}: {mac:?}");
+            assert!(mac.iter().all(|t| t != "pgrep" && t != "pkill"), "macOS, {kind:?}: {mac:?}");
+        }
+        assert_eq!(missing_tools_in(&dirs, false, EngineKind::SpotifyApp).last().map(String::as_str), Some("spotify"));
+        assert_eq!(missing_tools_in(&dirs, true, EngineKind::SpotifyApp), ["tar", "open"]);
     }
 
     #[test]
