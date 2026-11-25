@@ -592,7 +592,7 @@ async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>) {
                 }
                 (s.stats(period, now).map(Event::Stats), None)
             }
-            Command::ExportLocalData => (s.export(&store::downloads_dir(), now).map(|p| Event::Notice { message: format!("Listening data exported to {}", p.display()) }), None),
+            Command::ExportLocalData => (store::downloads_dir().and_then(|d| s.export(&d, now)).map(|p| Event::Notice { message: format!("Listening data exported to {}", p.display()) }), None),
             _ => match s.delete_all() {
                 Ok(()) => (Ok(Event::Notice { message: "Deleted the listening log and every library backup".into() }), s.summary(now).ok().map(Event::Listening)),
                 Err(e) => (Err(e), None),

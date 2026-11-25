@@ -44,6 +44,11 @@ async fn run() -> anyhow::Result<i32> {
         println!("singularityd {}", singularityd::VERSION);
         return Ok(0);
     }
+    // nowhere to keep settings and data without HOME: stop and say so (Q93), before taking the socket
+    if let Err(e) = singularity_config::app_folders::AppFolders::from_env() {
+        eprintln!("singularityd: {e}");
+        return Ok(1);
+    }
     let path = singularityd::default_socket();
     let listener = match singularityd::bind(&path) {
         Ok(l) => l,
