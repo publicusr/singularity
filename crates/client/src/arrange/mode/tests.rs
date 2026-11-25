@@ -61,7 +61,7 @@ impl Bench {
                 Out::Show(t) => self.layout = t,
                 Out::Focus(f) => self.focus = f,
                 Out::Say(s) => self.said.push(s),
-                Out::Relayout => self.body = crate::ui::rows(self.window, self.a.is_on())[1],
+                Out::Body(r) => self.body = r,
                 Out::Restore { snap, said } => {
                     self.layout = snap.tree;
                     self.focus = snap.focus.filter(|p| self.layout.contains(*p)).or_else(|| fallback_pane(&self.layout));
@@ -92,7 +92,7 @@ impl Bench {
     fn mouse(&mut self, kind: MouseEventKind, x: u16, y: u16, hit: Option<Hit>) {
         let m = MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
         self.run(|a, sc| a.unheard(sc, m.kind));
-        self.run(|a, sc| a.route(sc, m, hit));
+        self.run(|a, sc| a.route(sc, m, hit, false));
     }
 
     fn press(&mut self, (x, y): (u16, u16), hit: Option<Hit>) {

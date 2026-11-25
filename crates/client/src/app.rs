@@ -1329,7 +1329,7 @@ impl App {
                 }
             }
             // (while arranging, the key that came in leaves as Esc does, Q70: also one bound with Ctrl or Alt)
-            Action::Arrange if self.arrange.is_on() => self.arrange_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Action::Arrange if self.arrange.is_on() => self.arrange_leave(),
             Action::Arrange => self.enter_arrange(),
             Action::NewDesign => self.new_design(),
             Action::DiscardNewDesign => self.discard_new_design(),
@@ -1416,10 +1416,7 @@ impl App {
         }
         // a Pane being dragged: Esc puts it back, nothing else gets through (one picked up with Enter is Arrange
         // mode's, below)
-        if self.arrange.tile.is_some() && (self.arrange.held_by_pointer() || self.mini) {
-            if k.code == KeyCode::Esc {
-                self.tile_cancel();
-            }
+        if self.arrange.holds_keys(k, self.mini) {
             return;
         }
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
@@ -2757,7 +2754,7 @@ impl App {
         }
         // a Pane held by its title: the pointer is the Pane's until it lets go
         if self.arrange.tile.is_some() {
-            return self.arrange_tile_pointer(m);
+            return self.arrange_route(m, coarse);
         }
         // the Settings page owns the wheel wherever the pointer is: drifting off it must not scroll a Pane behind
         if self.page.settings().is_some() && matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) {
@@ -2965,10 +2962,9 @@ impl App {
                     Some(Hit::History(d)) if d < 0 => self.go_back(),
                     Some(Hit::History(_)) => self.go_forward(),
                     Some(Hit::Focus(p)) => self.focus = Some(p),
-                    Some(Hit::Title(p) | Hit::TitleName(p)) => self.title_down(p, m.column, m.row),
-                    Some(Hit::Close(p)) => self.close_pane(p),
+                    Some(Hit::Title(_) | Hit::TitleName(_) | Hit::Close(_)) => self.arrange_route(m, coarse),
                     Some(Hit::PickWidget(_)) => {}
-                    Some(Hit::Divider(i)) => self.grab_divider(i, m.column, m.row),
+                    Some(Hit::Divider(_)) => self.arrange_route(m, coarse),
                     // (only drawn in Arrange mode, which takes its own clicks)
                     Some(Hit::SplitPane(_) | Hit::TrayItem(_) | Hit::TrayRemove(_) | Hit::ClearTray | Hit::TrayAdd | Hit::TrayScroll(_) | Hit::ArrangeDone) => {}
                     Some(Hit::Action(a)) => self.run(a),
@@ -3004,11 +3000,13 @@ impl App {
                 } else if self.playlists.press.is_some() {
                     self.drag_row_to(m.row);
                 } else if self.arrange.divider_held().is_some() {
-                    self.divider_to(m.column, m.row);
+                    self.arrange_route(m, coarse);
                 }
             }
             MouseEventKind::Up(_) => {
-                self.divider_up();
+                if self.arrange.divider_held().is_some() {
+                    self.arrange_route(m, coarse);
+                }
                 if let Some(d) = self.queue_drag.take() {
                     self.drop_queued(d);
                 }
@@ -3306,7 +3304,7 @@ impl App {
     fn modal_pointer(&mut self, modal: Modal, m: MouseEvent, coarse: bool) {
         // Arrange mode is the Panes' own layer: its gestures are the arranging ones (`arrange.rs`)
         if modal == Modal::Arrange {
-            return self.arrange_pointer(m, coarse);
+            return self.arrange_route(m, coarse);
         }
         let up = m.kind == MouseEventKind::ScrollUp;
         let inside = self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom());

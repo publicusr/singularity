@@ -197,8 +197,7 @@ impl Replay {
         }
     }
 
-    /// One event handled, as `main.rs`'s `handle` does (the pointer straight to Arrange mode's module, D89); a hold it
-    /// ends is recorded with how it ended.
+    /// One event handled, as `main.rs`'s `handle` does; a hold it ends is recorded with how it ended.
     fn handle(&mut self, at: Instant, ev: Event) {
         self.a.input_at = Some(at);
         let held = self.a.arrange.tile.as_ref().filter(|t| t.live).map(|t| (t.pane.id, Spot::of(t), t.pane.widget.filter(|_| t.from_tray)));
@@ -211,19 +210,7 @@ impl Replay {
                 if m.kind == MouseEventKind::Drag(MouseButton::Left) {
                     self.last_drag = Some((m.column, m.row));
                 }
-                // Arrange mode's module itself, with the Scene and what the last frame drew under the pointer (as
-                // `App::pointer` routes its gestures: a release never heard first)
-                let o = {
-                    let sc = scene!(self.a);
-                    self.a.arrange.unheard(&sc, m.kind)
-                };
-                self.a.arrange_did(o);
-                let hit = self.a.hit_at(m.column, m.row);
-                let o = {
-                    let sc = scene!(self.a);
-                    self.a.arrange.route(&sc, m, hit)
-                };
-                self.a.arrange_did(o);
+                self.a.mouse(m);
                 if let (MouseEventKind::Down(MouseButton::Left), Some(i)) = (m.kind, self.a.arrange.divider_held()) {
                     self.divider = Some(i);
                 }

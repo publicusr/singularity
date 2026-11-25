@@ -41,7 +41,8 @@
 //! that a Reset dropped comes back). Undoing the first edit of a built-in Design returns to the built-in one: the
 //! unnamed "<Design> (edited)" that edit made is removed again (no orphan), while a Design the user named stays in the
 //! picker as saved (it was a deliberate save, like after Reset design). With Done's name prompt up, undo closes it. A
-//! state whose floor plan no longer fits the window is refused with a notice.//!
+//! state whose floor plan no longer fits the window is refused with a notice.
+//!
 //! The state and what input does to it are `mode`'s ([`Arrange`]: keys and pointer moves in, outcomes out, D89); this
 //! file is how the App routes input to it and carries out what comes back (`App::arrange_did`, the one door the
 //! layout changes through), and how Arrange mode is drawn.
@@ -114,7 +115,7 @@ macro_rules! scene {
             window: $app.window,
             body: $app.body,
             dividers: &$app.dividers,
-            aspect: $app.cell_px.map(|(w, h)| h / w).unwrap_or(2.0),
+            aspect: crate::arrange::mode::aspect($app.cell_px),
             design: $app.shown.design(),
             keymap: &$app.keymap,
             mark: $app.shown.mark(),
@@ -135,23 +136,22 @@ macro_rules! arrange {
 
 impl App {
     pub fn cell_aspect(&self) -> f64 {
-        self.cell_px.map(|(w, h)| h / w).unwrap_or(2.0)
+        mode::aspect(self.cell_px)
     }
 
     /// Where the Panes are drawn (the last frame's), or a roomy guess before the first.
     pub fn pane_area(&self) -> Rect {
-        if self.body.width > 0 { self.body } else { Rect::new(0, 1, 200, 55) }
+        mode::pane_area(self.body)
     }
 
     /// Why an edit was refused, in the bar's words.
     pub(crate) fn refused(&mut self, e: Refused) {
-        let design = self.shown.design();
-        self.say(e.why(|w| crate::ui::pane_name(design, w)));
+        self.say(mode::refusal(e, self.shown.design()));
     }
 
     /// The Pane to act on: the focused one, or (the focus is on none of this layout's) `fallback_pane`.
     pub fn focused_pane(&self) -> Option<PaneId> {
-        self.focus.filter(|p| self.layout.contains(*p)).or_else(|| fallback_pane(&self.layout))
+        mode::focused_pane(&self.layout, self.focus)
     }
 
     /// What the focused Pane shows (None: nothing is focused, or its Pane is empty).
@@ -175,11 +175,7 @@ impl App {
         let was = self.focused();
         let tray = self.layout.tray().to_vec();
         self.layout = tree.into();
-        arrange!(self, layout_replaced, &tray);
-        self.focus = was.and_then(|w| self.layout.pane_of(w));
-        if self.arrange.is_on() && self.focus.is_none() {
-            self.focus = fallback_pane(&self.layout);
-        }
+        arrange!(self, layout_replaced, &tray, was)
     }
 
     /// The Pane whose Widget is being moved (held by the mouse, or picked up with Enter): drawn highlighted.
@@ -200,21 +196,13 @@ impl App {
 
     /// The screen's rows (`ui::rows`) in this window, arranging or not; before the first frame, around a roomy guess.
     fn rows(&self, arranging: bool) -> [Rect; 5] {
-        let w = if self.window.width > 0 { self.window } else { Rect::new(0, 0, 200, 60) };
-        crate::ui::rows(w, arranging)
+        mode::screen_rows(self.window, arranging)
     }
 
     /// The Panes' area again, for the window's size and whether Arrange mode is on (it takes the Tray's rows), at once:
     /// a release in the same batch of input finds the Pane under it where the next frame draws it.
     fn relayout(&mut self) {
-        self.relayout_body();
-        self.tile_resized();
-    }
-
-    fn relayout_body(&mut self) {
-        if self.window.width > 0 {
-            self.body = crate::ui::rows(self.window, self.arrange.is_on())[1];
-        }
+        arrange!(self, resized)
     }
 
     /// Esc while a Widget is held: nothing changes.
@@ -233,8 +221,7 @@ impl App {
     /// The window changed size while a Widget is held: the Panes moved under the pointer, so the one under it is found
     /// again (#21: a release dropped on a Pane of the old window).
     pub fn tile_resized(&mut self) {
-        let sc = scene!(self);
-        self.arrange.resized(&sc);
+        arrange!(self, resized)
     }
 
     /// While a Widget is held over another Pane: that Pane, what its label says, and the chip's text.
@@ -324,7 +311,7 @@ impl App {
                         self.run(Action::NextLook);
                     }
                 }
-                Out::Relayout => self.relayout_body(),
+                Out::Body(r) => self.body = r,
                 Out::Restore { snap, said } => {
                     self.toast = None;
                     self.restore(snap);
@@ -375,17 +362,11 @@ impl App {
         self.shown_did(o);
     }
 
-    /// The layout was edited. A Design of the user's own (or the unnamed edit of a built-in one) follows in its file;
-    /// an edit of a built-in Design is kept at once as its "<Design> (edited)", never asking (Q33): outside Arrange
-    /// mode the bar says so, and in Arrange mode Done asks for a name. Some: the edit was just kept as that copy
-    /// ("Singularity (edited)") outside Arrange mode.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn edited(&mut self) -> Option<String> {
-        self.arrange.note_edit();
-        self.edited_files()
-    }
-
-    /// What an edit (noted by Arrange mode already) does to the Design's files: none while a New design… is built.
+    /// What an edit (noted by Arrange mode already) does to the Design's files: none while a New design… is built. A
+    /// Design of the user's own (or the unnamed edit of a built-in one) follows in its file; an edit of a built-in
+    /// Design is kept at once as its "<Design> (edited)", never asking (Q33): outside Arrange mode the bar says so, and
+    /// in Arrange mode Done asks for a name. Some: the edit was just kept as that copy ("Singularity (edited)") outside
+    /// Arrange mode.
     fn edited_files(&mut self) -> Option<String> {
         if self.arrange.building() {
             return None;
@@ -398,11 +379,7 @@ impl App {
 
     /// `tree` replaces the layout as the rest of the last edit (a split's pick): one undo takes both back.
     pub(crate) fn amend_layout(&mut self, tree: Arrangement) {
-        let tray = self.layout.tray().to_vec();
-        self.layout = tree;
-        arrange!(self, amended, &tray);
-        self.want_widget_data();
-        self.edited_files();
+        arrange!(self, amend, tree)
     }
 
     /// `tree` replaces the layout as an edit (one undo step).
@@ -500,41 +477,21 @@ impl App {
         self.arrange.tray_scroll(&sc, by);
     }
 
-    /// A mouse event in Arrange mode (`Arrange::pointer`), with what the last frame drew under it.
-    pub(crate) fn arrange_pointer(&mut self, m: MouseEvent, coarse: bool) {
-        let hit = self.hit_at(m.column, m.row);
-        arrange!(self, pointer, m, hit, coarse)
-    }
-
     /// A bare move or a fresh press while something is held: its release was never heard (`Arrange::unheard`).
     pub fn release_unheard(&mut self, kind: ratatui::crossterm::event::MouseEventKind) {
         arrange!(self, unheard, kind)
     }
 
-    /// Mouse events while a Widget is held (`Arrange::tile_pointer`).
-    pub fn arrange_tile_pointer(&mut self, m: MouseEvent) {
-        arrange!(self, tile_pointer, m)
+    /// A mouse event that is Arrange mode's, once `App::pointer`'s own gates let it through (`Arrange::route`), with
+    /// what the last frame drew under it.
+    pub(crate) fn arrange_route(&mut self, m: MouseEvent, coarse: bool) {
+        let hit = self.hit_at(m.column, m.row);
+        arrange!(self, route, m, hit, coarse)
     }
 
-    /// A press on a Pane's title bar outside Arrange mode (`Arrange::title_down`).
-    pub fn title_down(&mut self, id: PaneId, x: u16, y: u16) {
-        arrange!(self, title_down, id, x, y)
-    }
-
-    /// A press on divider `i`'s grip at (x, y): it follows the pointer until the release.
-    pub(crate) fn grab_divider(&mut self, i: usize, x: u16, y: u16) {
-        let sc = scene!(self);
-        self.arrange.grab_divider(&sc, i, x, y);
-    }
-
-    /// The pointer at (x, y) with the button down while a divider is held.
-    pub(crate) fn divider_to(&mut self, x: u16, y: u16) {
-        arrange!(self, divider_to, x, y)
-    }
-
-    /// The button let go: a divider held is let go there (a changed layout is an edit).
-    pub(crate) fn divider_up(&mut self) {
-        arrange!(self, divider_up)
+    /// The `arrange` action while arranging: it leaves as Esc does (Q70).
+    pub fn arrange_leave(&mut self) {
+        arrange!(self, arrange_action)
     }
 
     /// Esc on the naming prompt: keep the edit as the one unnamed "<Design> (edited)", replacing the last.
@@ -546,15 +503,13 @@ impl App {
     /// "Reset design": the built-in Design's own layout again. A Design of the user's stays in the picker as it was
     /// last saved (its file isn't touched); the unnamed edit of a built-in one is dropped.
     pub fn reset_design(&mut self) {
-        let before = Snapshot { tree: self.layout.clone(), shown: self.shown.mark(), focus: self.focus };
+        let before = self.arrange.snapshot(&scene!(self));
         let theme = self.theme.id.clone();
         let o = self.shown.reset();
         self.set_design(self.shown.design());
         self.set_theme(&theme);
         self.shown_did(o);
-        if before.tree != self.layout || before.shown.file().is_some() {
-            self.arrange.remember(before);
-        }
+        self.arrange.reset_done(before, &self.layout);
     }
 
     // ── close and split ───────────────────────────────────────────────
@@ -565,7 +520,7 @@ impl App {
 
     /// What Pane `p` is called on screen (its Widget's title; an empty Pane is "an empty pane").
     pub fn name_of(&self, p: Pane) -> String {
-        p.widget.map_or_else(|| "an empty pane".into(), |w| crate::ui::pane_name(self.shown.design(), w))
+        mode::pane_called(self.shown.design(), p)
     }
 
     pub fn split_focused(&mut self, side: Side) {
