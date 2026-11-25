@@ -316,8 +316,7 @@ fn a_name_already_taken_is_refused_and_suggestions_count_up() {
     a.save_layout("Singularity 2");
     a.reset_design();
     a.enter_arrange();
-    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
-    a.edited();
+    a.commit_layout(swapped(Node::singularity(), Widget::Stream, Widget::Queue));
     a.arrange_done();
     assert_eq!(a.naming().unwrap().text, "Singularity 3", "2 is taken");
     for _ in 0..13 {
@@ -337,8 +336,7 @@ fn a_name_already_taken_is_refused_and_suggestions_count_up() {
 fn quick_edits_are_kept_as_one_unnamed_edit_per_design_that_later_edits_overwrite() {
     let (mut a, dir) = with_dirs();
     let layouts = dir.path().join("layouts");
-    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
-    a.edited();
+    a.commit_layout(swapped(Node::singularity(), Widget::Stream, Widget::Queue));
     assert!(a.naming().is_none(), "never asked outside Arrange mode");
     assert!(a.toast.as_ref().is_some_and(|(t, _)| t == "Kept as Singularity (edited)"), "{:?}", a.toast);
     assert_eq!(a.shown.file(), Some("singularity-edited"));
@@ -346,8 +344,7 @@ fn quick_edits_are_kept_as_one_unnamed_edit_per_design_that_later_edits_overwrit
     assert_eq!(saved.len(), 1);
     assert!(saved[0].edited && saved[0].name == "Singularity (edited)" && saved[0].arrangement() == a.layout);
     // more edits overwrite it, never a pile
-    a.layout = swapped(a.layout.clone(), Widget::Home, Widget::Lyrics);
-    a.edited();
+    a.commit_layout(swapped(a.layout.clone(), Widget::Home, Widget::Lyrics));
     assert!(a.naming().is_none());
     let saved = crate::layouts::load_dir(&layouts).0;
     assert_eq!(saved.len(), 1);
@@ -361,15 +358,13 @@ fn quick_edits_are_kept_as_one_unnamed_edit_per_design_that_later_edits_overwrit
     assert_eq!(again.layout, a.layout);
     // from the built-in Design again, an unnamed edit replaces it
     a.set_design(0);
-    a.layout = swapped(Node::singularity(), Widget::Fft, Widget::Loudness);
-    a.edited();
+    a.commit_layout(swapped(Node::singularity(), Widget::Fft, Widget::Loudness));
     let saved = crate::layouts::load_dir(&layouts).0;
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].arrangement(), a.layout);
     // another Design has its own
     a.set_design(3);
-    a.layout = swapped(Node::cockpit(), Widget::Fft, Widget::Loudness);
-    a.edited();
+    a.commit_layout(swapped(Node::cockpit(), Widget::Fft, Widget::Loudness));
     assert_eq!(crate::layouts::load_dir(&layouts).0.len(), 2);
 }
 
@@ -377,8 +372,7 @@ fn quick_edits_are_kept_as_one_unnamed_edit_per_design_that_later_edits_overwrit
 fn reset_design_goes_back_to_the_built_in_one() {
     let (mut a, dir) = with_dirs();
     let layouts = dir.path().join("layouts");
-    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
-    a.edited();
+    a.commit_layout(swapped(Node::singularity(), Widget::Stream, Widget::Queue));
     a.run(Action::ResetLayout);
     assert_eq!(a.layout, Node::singularity());
     assert_eq!(a.shown.file(), None);
@@ -386,8 +380,7 @@ fn reset_design_goes_back_to_the_built_in_one() {
     // a Design of your own stays where it was saved
     a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
     a.save_layout("Mine");
-    a.layout = swapped(a.layout.clone(), Widget::Home, Widget::Lyrics);
-    a.edited();
+    a.commit_layout(swapped(a.layout.clone(), Widget::Home, Widget::Lyrics));
     a.run(Action::ResetLayout);
     assert_eq!(a.layout, Node::singularity());
     assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("Mine") && t.contains("picker")), "{:?}", a.toast);
@@ -2476,4 +2469,56 @@ fn arrange_bound_with_ctrl_leaves_arrange_mode_too() {
     assert!(a.arrange.tile.is_none() && a.arrange.on.is_some());
     ctrl(&mut a, 'e');
     assert!(a.arrange.on.is_none());
+}
+
+#[test]
+fn esc_or_a_drop_on_its_own_pane_or_off_the_panes_leaves_the_layout_alone() {
+    let mut a = app();
+    let before = a.layout.clone();
+    let q = pane(&a, Widget::Queue);
+    let (x, y) = title_spot(&a, Widget::Stream);
+    press(&mut a, x, y);
+    drag(&mut a, centre(q).0, centre(q).1);
+    assert!(a.arrange.tile.as_ref().unwrap().over.is_some());
+    key(&mut a, KeyCode::Esc);
+    assert!(a.arrange.tile.is_none());
+    release(&mut a, centre(q).0, centre(q).1);
+    assert_eq!(a.layout, before);
+    // over its own Pane: nothing highlighted, and a release there is no drop
+    press(&mut a, x, y);
+    drag(&mut a, x + 5, y + 4);
+    assert!(a.arrange.tile.as_ref().unwrap().over.is_none());
+    let shot = render(&mut a, W, H);
+    assert!(!shot.contains("swap with") && shot.contains("⠿ stream"), "{shot}");
+    release(&mut a, x + 5, y + 4);
+    assert_eq!(a.layout, before);
+    // over the top bar or the legend: no Pane, no drop
+    for out in [0, H - 1] {
+        press(&mut a, x, y);
+        drag(&mut a, centre(q).0, centre(q).1);
+        drag(&mut a, centre(q).0, out);
+        release(&mut a, centre(q).0, out);
+        assert_eq!(a.layout, before, "let go at row {out}");
+    }
+    assert!(a.naming().is_none() && !a.arrange.history.can_undo());
+}
+
+/// While the mouse holds a divider the arrange keys wait: Enter picks nothing up, and the release records the move.
+#[test]
+fn the_keys_wait_while_the_mouse_holds_a_divider() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    render(&mut a, W, H);
+    let start = a.layout.clone();
+    let grip = a.dividers[0].grip;
+    press(&mut a, grip.x, grip.y + 5);
+    drag(&mut a, grip.x + 6, grip.y + 5);
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('x'));
+    assert!(a.arrange.tile.is_none() && a.arrange.divider.is_some(), "still the divider's");
+    drag(&mut a, grip.x + 8, grip.y + 5);
+    release(&mut a, grip.x + 8, grip.y + 5);
+    assert!(a.arrange.divider.is_none() && a.layout != start);
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout, start, "the move was recorded");
 }
