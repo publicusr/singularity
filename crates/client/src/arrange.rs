@@ -218,7 +218,9 @@ impl App {
     /// focus stays on the Widget it was on.
     pub fn set_layout(&mut self, tree: impl Into<Arrangement>) {
         let was = self.focused();
+        let tray = self.layout.tray().to_vec();
         self.layout = tree.into();
+        self.settle_tray_focus(&tray);
         self.focus = was.and_then(|w| self.layout.pane_of(w));
         if self.arranging.is_some() && self.focus.is_none() {
             self.focus = fallback_pane(&self.layout);
@@ -518,7 +520,9 @@ impl App {
     /// Show `tree` as the layout and treat it as an edit (one undo step).
     /// `tree` replaces the layout as the rest of the last edit (a split's pick): one undo takes both back.
     pub(crate) fn amend_layout(&mut self, tree: Arrangement) {
+        let tray = self.layout.tray().to_vec();
         self.layout = tree;
+        self.settle_tray_focus(&tray);
         self.undo_offer = Some((Instant::now(), Action::UndoLayout));
         self.want_widget_data();
         self.edited();
@@ -526,7 +530,9 @@ impl App {
 
     pub(crate) fn commit_layout(&mut self, tree: Arrangement) {
         let was = self.snapshot();
+        let tray = self.layout.tray().to_vec();
         self.layout = tree;
+        self.settle_tray_focus(&tray);
         self.remember(was);
         self.want_widget_data();
         self.edited();
@@ -934,27 +940,38 @@ impl App {
     /// `x` (or Delete, Backspace) on Widget `w` focused in the Tray: removed as by its `×` (Home is refused the same
     /// way); the focus goes to the next Widget in the Tray, else the one before, else back up to the Panes.
     fn tray_remove_focused(&mut self, w: Widget) {
-        let Some(i) = self.layout.tray().iter().position(|t| *t == w) else { return };
         let x = self.tray_chip_x(w);
         self.tray_remove(w);
-        if self.layout.tray().contains(&w) {
+        // (the edit moved the focus on: `settle_tray_focus`; back in the Panes, onto the one above the chip)
+        if !self.layout.tray().contains(&w) && self.arranging.as_ref().is_some_and(|a| a.tray_focus.is_none()) {
+            self.focus = self.pane_above_tray(x).or_else(|| fallback_pane(&self.layout));
+        }
+    }
+
+    /// After the layout changed (an edit, an undo or redo, the mouse's `×` in the Tray): a keyboard focus on a Widget
+    /// that has left the Tray (`old` was the Tray before) moves to the next Widget still there, else the one before,
+    /// else back to the Panes.
+    fn settle_tray_focus(&mut self, old: &[Widget]) {
+        let Some(TrayStop::Widget(w)) = self.arranging.as_ref().and_then(|a| a.tray_focus) else { return };
+        let tray = self.layout.tray().to_vec();
+        if tray.contains(&w) {
             return;
         }
-        let tray = self.layout.tray();
-        let next = tray.get(i).or_else(|| i.checked_sub(1).and_then(|j| tray.get(j))).copied();
+        let i = old.iter().position(|t| *t == w).unwrap_or(old.len());
+        let after = old.iter().skip(i + 1);
+        let before = old.iter().take(i).rev();
+        let next = after.chain(before).find(|t| tray.contains(t)).copied();
+        if let Some(a) = self.arranging.as_mut() {
+            a.tray_focus = next.map(TrayStop::Widget);
+        }
         match next {
             Some(n) => {
-                if let Some(a) = self.arranging.as_mut() {
-                    a.tray_focus = Some(TrayStop::Widget(n));
-                }
                 self.tray_chip_x(n);
             }
             None => {
-                let up = self.pane_above_tray(x);
-                if let Some(a) = self.arranging.as_mut() {
-                    a.tray_focus = None;
+                if !self.focus.is_some_and(|p| self.layout.contains(p)) {
+                    self.focus = fallback_pane(&self.layout);
                 }
-                self.focus = up.or_else(|| fallback_pane(&self.layout));
             }
         }
     }
@@ -1610,7 +1627,7 @@ pub fn draw_legend(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         vec![(9, "←↑↓→ split that way".into())]
     } else {
         // (the focus on a Widget in the Tray: `x` removes it instead of closing a Pane)
-        let on_widget = app.arranging.as_ref().is_some_and(|a| matches!(a.tray_focus, Some(TrayStop::Widget(_))));
+        let on_widget = app.arranging.as_ref().is_some_and(|a| matches!(a.tray_focus, Some(TrayStop::Widget(w)) if app.layout.tray().contains(&w)));
         let x = if on_widget { "x remove" } else { "× x close" };
         let mut parts = vec![(1, "drag a title onto a Pane or the Tray".to_string()), (8, "←↑↓→ Enter pick up".into()), (6, "t Tray".into()), (5, "⊞ s+arrow split".into()), (5, x.into()), (4, "+−[]size".into()), (0, "w + Widget".into())];
         for (a, what) in [(Action::UndoLayout, "undo"), (Action::RedoLayout, "redo")] {

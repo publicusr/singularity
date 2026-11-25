@@ -2331,6 +2331,74 @@ fn x_delete_or_backspace_removes_the_focused_widget_from_the_tray() {
     }
 }
 
+/// Review of #83: a layout change that takes the focused Widget out of the Tray (Ctrl+Z undoing its `t`, the mouse's
+/// `×` on its chip) moves the focus on as `x` does, so the legend never says `x remove` while `x` would close a Pane.
+#[test]
+fn the_trays_focus_follows_an_undo_or_the_mouse_taking_its_widget_away() {
+    use crate::arrange::TrayStop;
+    let stop = |a: &App| a.arranging.as_ref().unwrap().tray_focus;
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    for w in [Widget::Fft, Widget::Loudness] {
+        a.focus_on(w);
+        key(&mut a, KeyCode::Char('t'));
+    }
+    a.focus_on(Widget::Queue);
+    render(&mut a, W, H);
+    key(&mut a, KeyCode::Down);
+    while stop(&a) != Some(TrayStop::Widget(Widget::Loudness)) {
+        key(&mut a, KeyCode::Right);
+    }
+    // Ctrl+Z undoes the last `t`: Loudness is back in its Pane, the focus on the one before it in the Tray
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout.tray(), &[Widget::Fft]);
+    assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Fft)));
+    assert!(render(&mut a, W, H).contains("x remove"));
+    let panes = a.layout.panes().len();
+    key(&mut a, KeyCode::Char('x'));
+    assert!(a.layout.tray().is_empty() && a.layout.panes().len() == panes, "x removed it from the Tray, no Pane closed");
+    // the removal undone, then Fft's own `t` undone with the focus on it: nothing left in the Tray, so the focus is
+    // back in the Panes and the legend says so
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout.tray(), &[Widget::Fft]);
+    render(&mut a, W, H);
+    key(&mut a, KeyCode::Down);
+    while stop(&a) != Some(TrayStop::Widget(Widget::Fft)) {
+        key(&mut a, KeyCode::Left);
+    }
+    ctrl(&mut a, 'z');
+    assert!(a.layout.tray().is_empty() && stop(&a).is_none() && a.focused().is_some());
+    let s = render(&mut a, W, H);
+    assert!(!s.contains("x remove") && s.contains("× x close"), "the Panes' legend");
+    // the mouse's × on the focused chip: the focus goes on as well
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    for w in [Widget::Fft, Widget::Loudness] {
+        a.focus_on(w);
+        key(&mut a, KeyCode::Char('t'));
+    }
+    a.focus_on(Widget::Queue);
+    render(&mut a, W, H);
+    key(&mut a, KeyCode::Down);
+    while stop(&a) != Some(TrayStop::Widget(Widget::Fft)) {
+        key(&mut a, KeyCode::Left);
+    }
+    render(&mut a, W, H);
+    let x = a.hit_rect(&Hit::TrayRemove(Widget::Fft)).unwrap();
+    click!(&mut a, (x.x, x.y));
+    assert_eq!(a.layout.tray(), &[Widget::Loudness]);
+    assert!(stop(&a).is_none_or(|s| s == TrayStop::Widget(Widget::Loudness)), "{:?}", stop(&a));
+    let s = render(&mut a, W, H);
+    let panes = a.layout.panes().len();
+    let says_remove = s.contains("x remove");
+    key(&mut a, KeyCode::Char('x'));
+    if says_remove {
+        assert!(a.layout.tray().is_empty() && a.layout.panes().len() == panes, "the legend said remove: x removed");
+    } else {
+        assert_eq!(a.layout.tray(), &[Widget::Loudness], "the legend said close: the Tray stays");
+    }
+}
+
 /// Review of #42 (full keyboard): "+ Widget" is the Tray's last focus stop: → past the last Widget, or ↓ from a bottom
 /// Pane when the Tray is empty (in a New design once Home is placed); Enter opens the picker for the Tray, lit in the
 /// focus colour meanwhile; ← goes back to the last Widget, ↑ to the Panes.
