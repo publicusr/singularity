@@ -205,7 +205,7 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 - `singularityd --fake-engine` runs a pretend player for UI work; `--no-catalogue` skips Spotify browsing;
   `--fake-catalogue crates/client/tests/fixtures/home.json` serves a recorded (anonymised) Home feed (a build with
   `cargo build -p singularityd --features fake`).
-- `tools/check.sh` runs what CI runs (tests, clippy, `cargo deny`); on a Mac, `tools/check-linux.sh` type-checks the Linux build (zig, cargo-zigbuild,
+- `tools/check.sh` runs what CI runs (tests, clippy, `cargo deny`); on a Mac, `tools/check-linux.sh` type-checks the Linux build, x86_64 and aarch64 (zig, cargo-zigbuild,
   openssl@3: see the script). The pty harness in `tools/pty/` screenshots the real binaries (its README).
 - `git config core.hooksPath tools/hooks` turns on the pre-commit hook, which runs clippy (`SKIP_CLIPPY_HOOK=1` skips it).
 - `CLAUDE.md` has the working agreements.
