@@ -308,7 +308,9 @@ audio, and looks spectacular.
     an arrow splits that way, `x` closes, `+` (or `=`) / `-` move the focused Pane's border left or right of it and
     `]` / `[` the one above or below it, `w` opens "+ Widget"'s picker (Q71), Esc with nothing picked up is Done;
     `m` does what Esc does (Q70: it puts a pick-up back, else it is Done).
-    The Tray by keyboard (owner, Q50): ↓ from a bottom Pane onto the Tray, ← → along it, Enter picks a Widget up,
+    The Tray by keyboard (owner, Q50): ↓ from a bottom Pane onto the Tray, ← → along it, `x` (or Delete,
+    Backspace) removes the focused Widget as its `×` does (never Home; the focus goes to the next one, else the one
+    before, else back to the Panes; the owner's re-test), Enter picks a Widget up,
     ↑ aims into the Panes, Enter drops; a Pane's Widget aimed down at the Tray is set aside there (its chip shows in
     the Tray's row, where it will go). While arranging the arrows, `s`, `w` and the size keys are Arrange mode's
     (Q48); `move_pane` stays a name for `arrange` (Q51).
