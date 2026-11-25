@@ -1,8 +1,9 @@
-//! SoloistEngine (ADR-0001): supervises Spotify Soloist and drives it over its local WebSocket.
+//! SoloistEngine (ADR-0001): supervises Spotify Soloist and drives it over its WebSocket.
 //!
-//! - binary: `$XDG_DATA_HOME/singularity/soloist/soloist`, downloaded from Spotify's CDN when missing (never
-//!   redistributed) and kept current by `update` (#6): a new build is restarted into at a quiet moment, and playback
-//!   picks up where it was
+//! - where it runs: the Soloist runner (`runner.rs`, D89); on Linux a local process, its binary
+//!   `$XDG_DATA_HOME/singularity/soloist/soloist`, downloaded from Spotify's CDN when missing (never redistributed)
+//!   and kept current by `update` (#6): a new build is restarted into at a quiet moment, and playback picks up where
+//!   it was
 //! - API key: `SOLOIST_API_KEY`, else the keyring (`service singularity account soloist`), else the owner-only
 //!   fallback file; the setup wizard stores it (`Command::SetSoloistKey`). Soloist only takes it as `--api-key`, so it
 //!   shows in `ps` for local users: there's no other way in
@@ -13,12 +14,14 @@
 //!   in the guest, Soloist is started over SSH, its WebSocket and audio come through forwarded ports, and pairing is
 //!   announced on the LAN while it waits for it
 
+pub mod runner;
 mod session;
 
+pub use runner::running_soloist;
 pub use session::{Action, Handover, Input, Now, Session, Stop};
 
 use crate::engine::{Engine, EngineEvent};
-use crate::update::{self, Builds, Checked};
+use runner::{Local, Runner};
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde_json::Value;
 use singularity_proto::{Command, EngineStatus};
@@ -33,11 +36,11 @@ pub const DEVICE_NAME: &str = "Singularity";
 
 #[derive(Clone)]
 pub struct SoloistEngine {
-    pub data_dir: PathBuf,
     /// its name on Connect
     pub device_name: String,
-    /// `--cache-size` in MB (0: no limit), from `engine.cache_gb`; the VM keeps its own
-    pub cache_mb: u32,
+    /// where Soloist runs, picked by the Engine assembly; it also holds Singularity's data folder (one place, so the
+    /// log and volume can't end up apart from Soloist's own data)
+    runner: Local,
     /// macOS: Soloist runs in the Soloist VM (D55)
     #[cfg(target_os = "macos")]
     pub vm: Option<Arc<crate::soloist_vm::VmHost>>,
@@ -50,12 +53,19 @@ impl SoloistEngine {
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
             .unwrap_or_else(std::env::temp_dir);
         SoloistEngine {
-            data_dir: base.join("singularity"),
+            runner: Local::new(base.join("singularity"), singularity_config::EngineChoice::default().soloist_cache_mb()),
             device_name: DEVICE_NAME.into(),
-            cache_mb: singularity_config::EngineChoice::default().soloist_cache_mb(),
             #[cfg(target_os = "macos")]
             vm: None,
         }
+    }
+
+    /// Soloist as a local process, as `device_name` on Connect, its cache capped at `cache_mb` (0: no limit).
+    pub fn local(device_name: String, cache_mb: u32) -> SoloistEngine {
+        let mut e = SoloistEngine::from_env();
+        e.device_name = device_name;
+        e.runner = Local::new(e.data_dir().to_path_buf(), cache_mb);
+        e
     }
 
     /// Soloist in the Soloist VM, as `device_name` on Connect (the Engine assembly names it); its audio also goes to
@@ -64,7 +74,7 @@ impl SoloistEngine {
     pub fn in_vm(device_name: String, feed: Arc<crate::tap::Feed>) -> SoloistEngine {
         let mut e = SoloistEngine::from_env();
         e.device_name = device_name;
-        e.vm = Some(Arc::new(crate::soloist_vm::VmHost::new(&e.data_dir, feed)));
+        e.vm = Some(Arc::new(crate::soloist_vm::VmHost::new(e.data_dir(), feed)));
         e
     }
 
@@ -93,16 +103,14 @@ impl SoloistEngine {
         if let Some(v) = self.vm() {
             return v.staged.load(std::sync::atomic::Ordering::Relaxed);
         }
-        self.builds().ready().is_some()
+        self.runner.update_waiting()
     }
-    fn builds(&self) -> Builds {
-        Builds { root: self.data_dir.clone() }
-    }
-    fn binary(&self) -> PathBuf {
-        self.builds().binary()
+    /// Singularity's data folder (`$XDG_DATA_HOME/singularity`): Soloist's builds and state are under it.
+    pub fn data_dir(&self) -> &std::path::Path {
+        self.runner.data_dir()
     }
     fn state_dir(&self) -> PathBuf {
-        self.data_dir.join("soloist-state")
+        self.runner.state_dir().to_path_buf()
     }
 }
 
@@ -318,7 +326,7 @@ struct Updates {
 /// Keep Soloist running: start, connect, pump; on exit wait (with backoff) and start again.
 async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<EngineEvent>) {
     let mut backoff = Duration::from_secs(2);
-    let (builds, url) = (engine.builds(), update::cdn_url());
+    let runner = &engine.runner;
     let mut upd = Updates { staged: Arc::new(Notify::new()), days: watch::channel(None).0, handover: Handover::default() };
     let mut updater = None;
     loop {
@@ -353,7 +361,7 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
                 updater = Some(keep_checking("the Soloist update checker", ev, move || keep_current_in_vm(vm.clone(), days.subscribe(), staged.clone())));
             }
             let started = std::time::Instant::now();
-            let exit = run_once(&engine, &key, &mut cmd_rx, &ev_tx, &mut upd).await;
+            let exit = run_once(&engine, runner, &key, &mut cmd_rx, &ev_tx, &mut upd).await;
             if matches!(exit, Ok(Exit::Quit)) {
                 if let Some(u) = updater {
                     u.abort();
@@ -388,13 +396,8 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
             continue;
         }
         // Soloist isn't running: the best moment to put a staged build in place
-        match builds.install() {
-            Ok(true) => tracing::info!("Soloist updated to {}", builds.installed().map(|b| b.version).unwrap_or_default()),
-            Ok(false) => {}
-            Err(e) => tracing::warn!("couldn't install the new Soloist build: {e}"),
-        }
-        if let Err(e) = update::ensure(&builds, &url).await {
-            status(&ev_tx, EngineStatus::Failed { message: format!("couldn't download Soloist: {e}") }).await;
+        if let Err(e) = runner.prepare().await {
+            status(&ev_tx, EngineStatus::Failed { message: e.to_string() }).await;
             if !wait_or_refuse(&mut cmd_rx, &ev_tx, backoff, "Soloist isn't available").await {
                 return;
             }
@@ -403,12 +406,11 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
         }
         // there's a build: from now on keep it current
         if updater.is_none() {
-            let (days, staged, ev) = (upd.days.clone(), upd.staged.clone(), ev_tx.clone());
-            let (b, u) = (builds.clone(), url.clone());
-            updater = Some(keep_checking("the Soloist update checker", ev, move || keep_current(b.clone(), u.clone(), days.subscribe(), staged.clone())));
+            let (days, staged, ev, r) = (upd.days.clone(), upd.staged.clone(), ev_tx.clone(), runner.clone());
+            updater = Some(keep_checking("the Soloist update checker", ev, move || r.keep_current(days.subscribe(), staged.clone())));
         }
         let started = std::time::Instant::now();
-        match run_once(&engine, &key, &mut cmd_rx, &ev_tx, &mut upd).await {
+        match run_once(&engine, runner, &key, &mut cmd_rx, &ev_tx, &mut upd).await {
             Ok(Exit::Quit) => {
                 if let Some(u) = updater {
                     u.abort();
@@ -423,9 +425,7 @@ async fn supervise(engine: SoloistEngine, mut cmd_rx: mpsc::Receiver<Command>, e
             Ok(Exit::Expired) => {
                 // (it shouldn't come to this: updates land well before)
                 status(&ev_tx, EngineStatus::Failed { message: "this Soloist build has expired; updating".into() }).await;
-                if builds.ready().is_none() {
-                    let _ = std::fs::remove_dir_all(builds.current());
-                }
+                runner.expired();
                 backoff = Duration::from_secs(2);
             }
             Ok(Exit::Died) => {}
@@ -479,31 +479,6 @@ async fn wait_or_refuse(cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Send
     }
 }
 
-/// Check the CDN now and then; when a new build is staged, say so.
-async fn keep_current(builds: Builds, url: String, days: watch::Receiver<Option<u32>>, staged: Arc<Notify>) {
-    let (mut failures, mut told) = (0, None);
-    loop {
-        match update::check(&builds, &url).await {
-            Ok(Checked::UpToDate) => failures = 0,
-            Ok(Checked::Staged(b)) => {
-                failures = 0;
-                if told.as_ref() != Some(&b) {
-                    tracing::info!("new Soloist build staged: {}", b.version);
-                    staged.notify_one();
-                    told = Some(b);
-                }
-            }
-            Err(e) => {
-                failures += 1;
-                tracing::warn!("Soloist update check failed (keeping the current build): {e}");
-            }
-        }
-        // SINGULARITY_SOLOIST_CHECK_SECS: a short interval for the pty harness
-        let wait = std::env::var("SINGULARITY_SOLOIST_CHECK_SECS").ok().and_then(|s| s.parse().ok()).map(Duration::from_secs).unwrap_or_else(|| update::next_check(failures, *days.borrow()));
-        tokio::time::sleep(wait).await;
-    }
-}
-
 /// The same, for the build inside the Soloist VM (the guest asks the CDN itself).
 #[cfg(target_os = "macos")]
 async fn keep_current_in_vm(v: Arc<crate::soloist_vm::VmHost>, days: watch::Receiver<Option<u32>>, staged: Arc<Notify>) {
@@ -521,7 +496,7 @@ async fn keep_current_in_vm(v: Arc<crate::soloist_vm::VmHost>, days: watch::Rece
                 tracing::warn!("Soloist update check in the VM failed (keeping the current build): {e}");
             }
         }
-        let wait = std::env::var("SINGULARITY_SOLOIST_CHECK_SECS").ok().and_then(|s| s.parse().ok()).map(Duration::from_secs).unwrap_or_else(|| update::next_check(failures, *days.borrow()));
+        let wait = std::env::var("SINGULARITY_SOLOIST_CHECK_SECS").ok().and_then(|s| s.parse().ok()).map(Duration::from_secs).unwrap_or_else(|| crate::update::next_check(failures, *days.borrow()));
         tokio::time::sleep(wait).await;
     }
 }
@@ -560,13 +535,6 @@ enum Exit {
     Update,
 }
 
-/// Is a Soloist already running on this state directory? (Its pid file names a live `soloist` process.)
-pub fn running_soloist(state: &std::path::Path) -> Option<u32> {
-    let pid: u32 = std::fs::read_to_string(state.join("data/soloist.pid")).ok()?.trim().parse().ok()?;
-    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
-    (comm.trim() == "soloist").then_some(pid)
-}
-
 /// A Soloist that has been started, before its WebSocket is up.
 struct Started {
     child: Child,
@@ -582,16 +550,13 @@ struct Started {
 }
 
 /// Start Soloist, its output parsed for news and written on to the log.
-async fn start(engine: &SoloistEngine, key: &str) -> anyhow::Result<Started> {
+async fn start(engine: &SoloistEngine, runner: &impl Runner, key: &str) -> anyhow::Result<Started> {
     let state = engine.state_dir();
     // another Daemon's Soloist owns these files: touch nothing (its port file, its log)
-    if engine.vm().is_none()
-        && let Some(pid) = running_soloist(&state)
-    {
-        anyhow::bail!("Soloist is already running (pid {pid}) with Singularity's data: is a second singularityd running?");
+    if engine.vm().is_none() {
+        runner.check_free()?;
     }
     private_state_dirs(&state)?;
-    let _ = tokio::fs::remove_file(state.join("data/ws.port")).await;
     let mut log = open_log(&state)?;
     #[allow(unused_mut, unused_assignments)]
     let mut session_stdin: Option<tokio::process::ChildStdin> = None;
@@ -608,29 +573,7 @@ async fn start(engine: &SoloistEngine, key: &str) -> anyhow::Result<Started> {
         }
         #[allow(unreachable_patterns)]
         Some(_) => unreachable!(),
-        None => {
-            let mut cmd = crate::programs::tokio_command(engine.binary());
-            cmd.args(["--device-name", &engine.device_name, "--api-key", key, "--ws", "127.0.0.1:0", "--verbose"])
-                .args(engine.saved_volume().map(|v| ["--initial-volume".to_string(), v.to_string()]).into_iter().flatten())
-                .arg("--data-dir")
-                .arg(state.join("data"))
-                .arg("--cache-dir")
-                .arg(state.join("cache"))
-                .args(["--cache-size", &engine.cache_mb.to_string()])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .kill_on_drop(true);
-            // Soloist must never outlive the Daemon, even if the Daemon is SIGKILLed: ask the kernel to
-            // SIGTERM it when its parent dies. (Linux-only, like Soloist itself.)
-            #[cfg(target_os = "linux")]
-            unsafe {
-                cmd.pre_exec(|| {
-                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-                    Ok(())
-                });
-            }
-            cmd.spawn()?
-        }
+        None => runner.launch(key, &engine.device_name, engine.saved_volume()).await?,
     };
     // Soloist's output: parsed for news, then written on to the log
     let (news_tx, news_rx) = mpsc::channel::<LogNews>(16);
@@ -663,10 +606,10 @@ async fn start(engine: &SoloistEngine, key: &str) -> anyhow::Result<Started> {
     #[cfg(target_os = "macos")]
     let version = match &in_vm {
         Some(v) => v.version().await,
-        None => crate::programs::tokio_command(engine.binary()).arg("--version").output().await.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default(),
+        None => runner.version().await,
     };
     #[cfg(not(target_os = "macos"))]
-    let version = crate::programs::tokio_command(engine.binary()).arg("--version").output().await.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let version = runner.version().await;
     // the VM's Soloist: its WebSocket through the forwarded port
     #[cfg(target_os = "macos")]
     let vm_ws = in_vm.as_ref().map(|v| format!("ws://127.0.0.1:{}", v.ws_port));
@@ -685,10 +628,10 @@ async fn start(engine: &SoloistEngine, key: &str) -> anyhow::Result<Started> {
 
 /// One run of Soloist: started, then its process, its log, its WebSocket, our commands and the update side pumped
 /// through a [`Session`]. What the run leaves for the next one goes back into `upd`.
-async fn run_once(engine: &SoloistEngine, key: &str, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<EngineEvent>, upd: &mut Updates) -> anyhow::Result<Exit> {
-    let mut run = start(engine, key).await?;
+async fn run_once(engine: &SoloistEngine, runner: &impl Runner, key: &str, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<EngineEvent>, upd: &mut Updates) -> anyhow::Result<Exit> {
+    let mut run = start(engine, runner, key).await?;
     let mut s = Session::new(engine.device_name.clone(), run.version.clone(), engine.saved_volume(), std::mem::take(&mut upd.handover));
-    let exit = pump(engine, &mut run, &mut s, cmd_rx, ev_tx, upd).await;
+    let exit = pump(engine, runner, &mut run, &mut s, cmd_rx, ev_tx, upd).await;
     upd.handover = s.into_handover();
     exit
 }
@@ -748,8 +691,7 @@ async fn stopped(child: &mut Child, s: Stop) -> anyhow::Result<Exit> {
 /// session's deadline in; what the session asks for out.
 // (the ZeroConf port is only used on macOS, to announce the VM's Soloist for pairing)
 #[cfg_attr(not(target_os = "macos"), allow(unused_assignments, unused_variables))]
-async fn pump(engine: &SoloistEngine, run: &mut Started, s: &mut Session, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<EngineEvent>, upd: &Updates) -> anyhow::Result<Exit> {
-    let state = engine.state_dir();
+async fn pump(engine: &SoloistEngine, runner: &impl Runner, run: &mut Started, s: &mut Session, cmd_rx: &mut mpsc::Receiver<Command>, ev_tx: &mpsc::Sender<EngineEvent>, upd: &Updates) -> anyhow::Result<Exit> {
     let (child, news_rx) = (&mut run.child, &mut run.news);
     // what the session doesn't need from the log: the build's days left go to the update checker, the ZeroConf port
     // to pairing
@@ -784,8 +726,8 @@ async fn pump(engine: &SoloistEngine, run: &mut Started, s: &mut Session, cmd_rx
                 addr = Some(a.clone());
                 break;
             }
-        } else if let (Ok(p), Ok(a)) = (std::fs::read_to_string(state.join("data/ws.port")), std::fs::read_to_string(state.join("data/ws.addr"))) {
-            addr = Some(format!("ws://{}:{}", a.trim(), p.trim()));
+        } else if let Some(a) = runner.ws_addr().await {
+            addr = Some(a);
             break;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;

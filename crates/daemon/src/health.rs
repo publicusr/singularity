@@ -96,7 +96,7 @@ pub fn report(kind: singularity_proto::EngineKind) -> Health {
         spotify_login: location("spotify", None),
         audio_output: engine_output(kind),
         engine_expires_in_days: None,
-        engine_build: crate::update::Builds { root: crate::soloist::SoloistEngine::from_env().data_dir }.installed().and_then(|b| b.date()),
+        engine_build: crate::update::Builds { root: crate::soloist::SoloistEngine::from_env().data_dir().to_path_buf() }.installed().and_then(|b| b.date()),
         missing_tools: missing_tools(kind),
         // filled in by the Daemon, which knows which of its tasks are running
         stopped_tasks: vec![],
