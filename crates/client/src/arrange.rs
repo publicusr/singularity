@@ -218,7 +218,9 @@ impl App {
     /// focus stays on the Widget it was on.
     pub fn set_layout(&mut self, tree: impl Into<Arrangement>) {
         let was = self.focused();
+        let tray = self.layout.tray().to_vec();
         self.layout = tree.into();
+        self.settle_tray_focus(&tray);
         self.focus = was.and_then(|w| self.layout.pane_of(w));
         if self.arranging.is_some() && self.focus.is_none() {
             self.focus = fallback_pane(&self.layout);
@@ -518,7 +520,9 @@ impl App {
     /// Show `tree` as the layout and treat it as an edit (one undo step).
     /// `tree` replaces the layout as the rest of the last edit (a split's pick): one undo takes both back.
     pub(crate) fn amend_layout(&mut self, tree: Arrangement) {
+        let tray = self.layout.tray().to_vec();
         self.layout = tree;
+        self.settle_tray_focus(&tray);
         self.undo_offer = Some((Instant::now(), Action::UndoLayout));
         self.want_widget_data();
         self.edited();
@@ -526,7 +530,9 @@ impl App {
 
     pub(crate) fn commit_layout(&mut self, tree: Arrangement) {
         let was = self.snapshot();
+        let tray = self.layout.tray().to_vec();
         self.layout = tree;
+        self.settle_tray_focus(&tray);
         self.remember(was);
         self.want_widget_data();
         self.edited();
@@ -794,7 +800,8 @@ impl App {
     /// focus between Panes, Enter picks up the focused Widget, `t` sends it to the Tray, `s` then an arrow splits its
     /// Pane that way, `x` closes it, `+` (or `=`) `-` move its border left or right of it, `]` `[` the one above or
     /// below it, `w` opens "+ Widget"'s picker, Esc (or `m`, the key that came in, Q70) is Done. With a Widget picked
-    /// up, arrows aim, Enter drops and Esc (or `m`) puts it back. The playback keys these don't take work as ever (the
+    /// up, arrows aim, Enter drops and Esc (or `m`) puts it back. On a Widget in the Tray, `x` (or Delete, Backspace)
+    /// removes it. The playback keys these don't take work as ever (the
     /// player bar stays).
     pub fn arrange_key(&mut self, k: KeyEvent) {
         use ratatui::crossterm::event::KeyModifiers;
@@ -830,7 +837,12 @@ impl App {
             KeyCode::Down => Some(Side::Bottom),
             _ => None,
         };
-        let arrange_key = bare && (arrow.is_some() || matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('t' | 's' | 'x' | '+' | '=' | '-' | ']' | '[' | 'w')));
+        // (Delete and Backspace only with the focus on a Widget in the Tray: they remove it, as `x` does there)
+        let on_widget = matches!(on_tray, Some(TrayStop::Widget(_)));
+        let arrange_key = bare
+            && (arrow.is_some()
+                || matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('t' | 's' | 'x' | '+' | '=' | '-' | ']' | '[' | 'w'))
+                || on_widget && matches!(k.code, KeyCode::Delete | KeyCode::Backspace));
         if !arrange_key {
             return self.playback_key(k);
         }
@@ -851,7 +863,7 @@ impl App {
             return;
         }
         // the focus in the Tray: ← → move along it, ↑ goes back up into the Panes, Enter picks a Widget up (or, on
-        // "+ Widget", opens the Widget picker for the Tray)
+        // "+ Widget", opens the Widget picker for the Tray), `x` (or Delete, Backspace) removes the Widget, as its `×`
         if let Some(stop) = on_tray {
             return match (k.code, arrow) {
                 (_, Some(side @ (Side::Left | Side::Right))) => self.tray_focus_step(stop, side == Side::Right),
@@ -860,9 +872,13 @@ impl App {
                     TrayStop::Widget(w) => self.pick_up_from_tray(w),
                     TrayStop::Add => self.open_tray_picker(),
                 },
+                (KeyCode::Char('x') | KeyCode::Delete | KeyCode::Backspace, _) => match stop {
+                    TrayStop::Widget(w) => self.tray_remove_focused(w),
+                    TrayStop::Add => {}
+                },
                 (KeyCode::Char('w'), _) => self.open_tray_picker(),
                 (KeyCode::Esc, _) => self.arrange_esc(),
-                // (the keys for a Pane have none here)
+                // (the other keys for a Pane have none here)
                 _ => {}
             };
         }
@@ -918,6 +934,45 @@ impl App {
         match self.layout.remove_from_tray(w) {
             Ok(a) => self.commit_layout(a),
             Err(e) => self.refused(e),
+        }
+    }
+
+    /// `x` (or Delete, Backspace) on Widget `w` focused in the Tray: removed as by its `×` (Home is refused the same
+    /// way); the focus goes to the next Widget in the Tray, else the one before, else back up to the Panes.
+    fn tray_remove_focused(&mut self, w: Widget) {
+        let x = self.tray_chip_x(w);
+        self.tray_remove(w);
+        // (the edit moved the focus on: `settle_tray_focus`; back in the Panes, onto the one above the chip)
+        if !self.layout.tray().contains(&w) && self.arranging.as_ref().is_some_and(|a| a.tray_focus.is_none()) {
+            self.focus = self.pane_above_tray(x).or_else(|| fallback_pane(&self.layout));
+        }
+    }
+
+    /// After the layout changed (an edit, an undo or redo, the mouse's `×` in the Tray): a keyboard focus on a Widget
+    /// that has left the Tray (`old` was the Tray before) moves to the next Widget still there, else the one before,
+    /// else back to the Panes.
+    fn settle_tray_focus(&mut self, old: &[Widget]) {
+        let Some(TrayStop::Widget(w)) = self.arranging.as_ref().and_then(|a| a.tray_focus) else { return };
+        let tray = self.layout.tray().to_vec();
+        if tray.contains(&w) {
+            return;
+        }
+        let i = old.iter().position(|t| *t == w).unwrap_or(old.len());
+        let after = old.iter().skip(i + 1);
+        let before = old.iter().take(i).rev();
+        let next = after.chain(before).find(|t| tray.contains(t)).copied();
+        if let Some(a) = self.arranging.as_mut() {
+            a.tray_focus = next.map(TrayStop::Widget);
+        }
+        match next {
+            Some(n) => {
+                self.tray_chip_x(n);
+            }
+            None => {
+                if !self.focus.is_some_and(|p| self.layout.contains(p)) {
+                    self.focus = fallback_pane(&self.layout);
+                }
+            }
         }
     }
 
@@ -1571,7 +1626,10 @@ pub fn draw_legend(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     } else if app.arranging.as_ref().is_some_and(|a| a.split_next) {
         vec![(9, "←↑↓→ split that way".into())]
     } else {
-        let mut parts = vec![(1, "drag a title onto a Pane or the Tray".to_string()), (8, "←↑↓→ Enter pick up".into()), (6, "t Tray".into()), (5, "⊞ s+arrow split".into()), (5, "× x close".into()), (4, "+−[]size".into()), (0, "w + Widget".into())];
+        // (the focus on a Widget in the Tray: `x` removes it instead of closing a Pane)
+        let on_widget = app.arranging.as_ref().is_some_and(|a| matches!(a.tray_focus, Some(TrayStop::Widget(w)) if app.layout.tray().contains(&w)));
+        let x = if on_widget { "x remove" } else { "× x close" };
+        let mut parts = vec![(1, "drag a title onto a Pane or the Tray".to_string()), (8, "←↑↓→ Enter pick up".into()), (6, "t Tray".into()), (5, "⊞ s+arrow split".into()), (5, x.into()), (4, "+−[]size".into()), (0, "w + Widget".into())];
         for (a, what) in [(Action::UndoLayout, "undo"), (Action::RedoLayout, "redo")] {
             let k = key(a);
             if !k.is_empty() {

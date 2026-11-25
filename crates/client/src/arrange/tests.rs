@@ -897,7 +897,7 @@ fn the_keyboard_takes_widgets_out_of_the_tray() {
     assert_eq!(other[1].1.bg, a.theme.chip(a.theme.accent2).bg, "the others as before");
     // the keys for a Pane do nothing here
     let before = a.layout.clone();
-    for c in ['t', 'x', 's', '+', '-'] {
+    for c in ['t', 's', '+', '-'] {
         key(&mut a, KeyCode::Char(c));
     }
     assert_eq!(a.layout, before);
@@ -2270,6 +2270,133 @@ fn a_new_designs_name_never_takes_an_edited_copys_file_or_makes_no_file_name() {
         }
     }
     assert!(crate::layouts::load_dir(&dir.path().join("layouts")).0.is_empty(), "nothing written");
+}
+
+/// Owner re-test (#57): with a Widget focused in the Tray, `x`, Delete or Backspace removes it, as its `×` does
+/// (Home, which has no `×`, is refused as the Tray refuses it); the focus goes to the next Widget, else the one before, else back to the Panes.
+/// The legend says `x remove` meanwhile.
+#[test]
+fn x_delete_or_backspace_removes_the_focused_widget_from_the_tray() {
+    use crate::arrange::TrayStop;
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    for w in [Widget::Fft, Widget::Loudness, Widget::Lyrics] {
+        a.focus_on(w);
+        key(&mut a, KeyCode::Char('t'));
+    }
+    assert_eq!(a.layout.tray(), &[Widget::Fft, Widget::Loudness, Widget::Lyrics]);
+    let stop = |a: &App| a.arranging.as_ref().unwrap().tray_focus;
+    a.focus_on(Widget::Queue);
+    render(&mut a, W, H);
+    key(&mut a, KeyCode::Down);
+    while stop(&a) != Some(TrayStop::Widget(Widget::Fft)) {
+        key(&mut a, KeyCode::Left);
+    }
+    key(&mut a, KeyCode::Right);
+    assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Loudness)));
+    assert!(render(&mut a, W, H).contains("x remove"), "the legend says so");
+    // `x`: gone, the focus on the next one
+    key(&mut a, KeyCode::Char('x'));
+    assert_eq!(a.layout.tray(), &[Widget::Fft, Widget::Lyrics]);
+    assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Lyrics)));
+    // Delete on the last one: the one before
+    key(&mut a, KeyCode::Delete);
+    assert_eq!(a.layout.tray(), &[Widget::Fft]);
+    assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Fft)));
+    // Backspace on the only one: back to the Panes
+    key(&mut a, KeyCode::Backspace);
+    assert!(a.layout.tray().is_empty() && stop(&a).is_none() && a.focused().is_some());
+    assert!(!render(&mut a, W, H).contains("x remove"), "the Panes' legend again");
+    // an undo brings it back, as for the `×`
+    a.run(Action::UndoLayout);
+    assert_eq!(a.layout.tray(), &[Widget::Fft]);
+    // on a Pane, Delete and Backspace do nothing
+    let before = a.layout.clone();
+    key(&mut a, KeyCode::Delete);
+    key(&mut a, KeyCode::Backspace);
+    assert_eq!(a.layout, before);
+    assert!(a.arranging.is_some());
+    // Home cannot be removed (it has no `×`): refused with the words a removal of it gets, the focus stays on it
+    let mut a = app();
+    a.run(Action::NewDesign);
+    render(&mut a, W, H);
+    key(&mut a, KeyCode::Down);
+    assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Home)));
+    for k in [KeyCode::Char('x'), KeyCode::Delete, KeyCode::Backspace] {
+        a.toast = None;
+        key(&mut a, k);
+        assert_eq!(a.layout.tray(), &[Widget::Home]);
+        assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Home)));
+        assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("never removed")), "{:?}", a.toast);
+    }
+}
+
+/// Review of #83: a layout change that takes the focused Widget out of the Tray (Ctrl+Z undoing its `t`, the mouse's
+/// `×` on its chip) moves the focus on as `x` does, so the legend never says `x remove` while `x` would close a Pane.
+#[test]
+fn the_trays_focus_follows_an_undo_or_the_mouse_taking_its_widget_away() {
+    use crate::arrange::TrayStop;
+    let stop = |a: &App| a.arranging.as_ref().unwrap().tray_focus;
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    for w in [Widget::Fft, Widget::Loudness] {
+        a.focus_on(w);
+        key(&mut a, KeyCode::Char('t'));
+    }
+    a.focus_on(Widget::Queue);
+    render(&mut a, W, H);
+    key(&mut a, KeyCode::Down);
+    while stop(&a) != Some(TrayStop::Widget(Widget::Loudness)) {
+        key(&mut a, KeyCode::Right);
+    }
+    // Ctrl+Z undoes the last `t`: Loudness is back in its Pane, the focus on the one before it in the Tray
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout.tray(), &[Widget::Fft]);
+    assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Fft)));
+    assert!(render(&mut a, W, H).contains("x remove"));
+    let panes = a.layout.panes().len();
+    key(&mut a, KeyCode::Char('x'));
+    assert!(a.layout.tray().is_empty() && a.layout.panes().len() == panes, "x removed it from the Tray, no Pane closed");
+    // the removal undone, then Fft's own `t` undone with the focus on it: nothing left in the Tray, so the focus is
+    // back in the Panes and the legend says so
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout.tray(), &[Widget::Fft]);
+    render(&mut a, W, H);
+    key(&mut a, KeyCode::Down);
+    while stop(&a) != Some(TrayStop::Widget(Widget::Fft)) {
+        key(&mut a, KeyCode::Left);
+    }
+    ctrl(&mut a, 'z');
+    assert!(a.layout.tray().is_empty() && stop(&a).is_none() && a.focused().is_some());
+    let s = render(&mut a, W, H);
+    assert!(!s.contains("x remove") && s.contains("× x close"), "the Panes' legend");
+    // the mouse's × on the focused chip: the focus goes on as well
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    for w in [Widget::Fft, Widget::Loudness] {
+        a.focus_on(w);
+        key(&mut a, KeyCode::Char('t'));
+    }
+    a.focus_on(Widget::Queue);
+    render(&mut a, W, H);
+    key(&mut a, KeyCode::Down);
+    while stop(&a) != Some(TrayStop::Widget(Widget::Fft)) {
+        key(&mut a, KeyCode::Left);
+    }
+    render(&mut a, W, H);
+    let x = a.hit_rect(&Hit::TrayRemove(Widget::Fft)).unwrap();
+    click!(&mut a, (x.x, x.y));
+    assert_eq!(a.layout.tray(), &[Widget::Loudness]);
+    assert!(stop(&a).is_none_or(|s| s == TrayStop::Widget(Widget::Loudness)), "{:?}", stop(&a));
+    let s = render(&mut a, W, H);
+    let panes = a.layout.panes().len();
+    let says_remove = s.contains("x remove");
+    key(&mut a, KeyCode::Char('x'));
+    if says_remove {
+        assert!(a.layout.tray().is_empty() && a.layout.panes().len() == panes, "the legend said remove: x removed");
+    } else {
+        assert_eq!(a.layout.tray(), &[Widget::Loudness], "the legend said close: the Tray stays");
+    }
 }
 
 /// Review of #42 (full keyboard): "+ Widget" is the Tray's last focus stop: → past the last Widget, or ↓ from a bottom
