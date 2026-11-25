@@ -2194,6 +2194,39 @@ fn close_pane_while_a_divider_is_held_records_the_move_first() {
     assert_eq!(a.layout, start, "and no step more");
 }
 
+/// Discard on a New design… while a divider is held: the build is thrown away with its move, and no file is written
+/// (the move isn't kept as an edit of the Design that comes back).
+#[test]
+fn discarding_a_new_design_while_a_divider_is_held_writes_nothing() {
+    use crate::layout::{Axis, Size};
+    let (mut a, _dir) = with_dirs();
+    let before = a.layout.clone();
+    let files = |a: &App| a.shown.saved().iter().map(|s| (s.id.clone(), s.edited, s.arrangement())).collect::<Vec<_>>();
+    let saved = files(&a);
+    a.run(Action::NewDesign);
+    render(&mut a, W, H);
+    a.commit_layout(Node::split(Axis::Horizontal, Size::Ratio(0.5), Node::pane(Widget::Home), Node::pane(Widget::Queue)).into());
+    render(&mut a, W, H);
+    hold_a_divider(&mut a);
+    a.run(Action::DiscardNewDesign);
+    render(&mut a, W, H);
+    assert!(!a.building() && a.gesture.is_none());
+    assert_eq!(a.layout, before, "the Design that was on screen, as it was");
+    assert_eq!(files(&a), saved, "no file written");
+    assert!(!a.shown.on_edited_copy());
+}
+
+/// New design… started while a divider is held: the move is kept first, in the old Design's file.
+#[test]
+fn a_new_design_started_while_a_divider_is_held_keeps_the_move_in_the_old_designs_file() {
+    let (mut a, _dir) = with_dirs();
+    hold_a_divider(&mut a);
+    let moved = a.layout.clone();
+    a.run(Action::NewDesign);
+    assert!(a.building() && a.gesture.is_none());
+    assert_eq!(kept_edit(&a), moved, "the old Design's edit has the move");
+}
+
 /// Quitting (Ctrl+C) while a divider is held keeps the move.
 #[test]
 fn quitting_while_a_divider_is_held_keeps_the_move() {

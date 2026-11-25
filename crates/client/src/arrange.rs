@@ -398,6 +398,8 @@ impl App {
 
     /// "New design…" (#42).
     pub fn new_design(&mut self) {
+        // a divider held meanwhile is let go first, on the Design it moved, so its file keeps the move (Q103)
+        self.gesture_interrupted();
         let theme = self.theme.id.clone();
         arrange!(self, new_design, &theme)
     }

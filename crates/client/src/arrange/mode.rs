@@ -960,9 +960,9 @@ impl Arrange {
         let _ = self.note_edit();
     }
 
-    /// Before any layout write but a held divider's own move (an edit, a New design… begun or thrown away): a divider
-    /// held meanwhile is let go first, its move one undo step of its own (Q103). (Undo and redo end what is held with
-    /// `interrupted_in`; the App's own writes go through `App::gesture_interrupted`.)
+    /// Before any layout write but a held divider's own move (an edit, a New design… begun): a divider held meanwhile
+    /// is let go first, its move one undo step of its own (Q103). (Undo and redo end what is held with `interrupted_in`;
+    /// the App's own writes go through `App::gesture_interrupted`; a New design… thrown away drops it unrecorded.)
     fn before_edit(&mut self, w: &mut Work) {
         if w.g.divider().is_some() {
             self.divider_released(w);
@@ -999,8 +999,9 @@ impl Arrange {
     }
 
     fn cancel_new_in(&mut self, w: &mut Work) {
+        // a divider held meanwhile is let go unrecorded: the build it moved is thrown away
         if self.building() {
-            self.before_edit(w);
+            w.g.take_divider();
         }
         let Some(f) = self.on.take().and_then(|a| a.fresh) else { return };
         let Fresh { before, history, theme } = *f;
