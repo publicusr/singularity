@@ -7,15 +7,11 @@ use crate::layout::{Node, Widget};
 use serde::Deserialize;
 use std::path::Path;
 
-/// Widgets that can take each other's place. Panes outside these (Home, the library, the black hole) keep theirs.
-const GROUPS: [&[Widget]; 2] = {
-    use Widget::*;
-    [&[Fft, Loudness, Levels, Scope, Rain, Starfield], &[Lyrics, Karaoke, Queue, NowPlaying, Stream, Top, Listening, Today, TopWeek, Marquee, Glow]]
-};
-
-/// What a Pane showing `widget` can show instead (itself included), if anything.
-pub fn options(widget: Widget) -> &'static [Widget] {
-    GROUPS.iter().find(|g| g.contains(&widget)).copied().unwrap_or(&[])
+/// What a Pane showing `widget` can show instead (itself included), if anything: its swap group in the Widget
+/// catalogue, in `Widget::ALL`'s order. Panes outside a group (Home, the library, the black hole) keep theirs.
+pub fn options(widget: Widget) -> Vec<Widget> {
+    let Some(group) = crate::widget_catalogue::facts(widget).group else { return vec![] };
+    Widget::ALL.iter().copied().filter(|w| crate::widget_catalogue::facts(*w).group == Some(group)).collect()
 }
 
 /// The next Widget for the Pane showing `widget`, skipping what's already on screen (`shown`).
@@ -95,11 +91,6 @@ pub fn write(dir: &Path, id: &str, name: &str, design: &str, theme: &str, a: &Ar
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     singularity_config::write_atomic(&dir.join(format!("{id}.toml")), &text).map_err(|e| e.to_string())?;
     Ok(saved)
-}
-
-/// All the Widgets a new Pane can show (before leaving out what's on screen).
-pub fn all_widgets() -> impl Iterator<Item = Widget> {
-    GROUPS.iter().flat_map(|g| g.iter().copied())
 }
 
 /// The tree as TOML, one split per line (inline tables may span lines since TOML 1.1).

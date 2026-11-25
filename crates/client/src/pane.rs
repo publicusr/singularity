@@ -10,8 +10,9 @@ macro_rules! widgets {
     ($($(#[$doc:meta])* $v:ident = $name:literal,)*) => {
         /// What a Pane shows.
         ///
-        /// Adding a Widget? Add it here; the compiler then asks for its arm in `App::pane_wheel` (what the wheel does
-        /// over it), in `ui::slot_info` (its title) and in the wheel test's fixture (something that overflows it).
+        /// Adding a Widget? Add it here; the compiler then asks for its arm in `widget_catalogue::facts` (its title,
+        /// smallest size, swap group, how it is drawn…), in `App::pane_wheel` (what the wheel does over it) and in the
+        /// wheel test's fixture (something that overflows it).
         #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
         pub enum Widget {
             $($(#[$doc])* $v,)*
@@ -21,8 +22,7 @@ macro_rules! widgets {
         }
 
         impl Widget {
-            /// Every Widget this build has.
-            #[cfg_attr(not(test), allow(dead_code))]
+            /// Every Widget this build has, in the Widget picker's order (a swap group's ◂ ▸ follow it too).
             pub const ALL: &[Widget] = &[$(Widget::$v),*];
 
             /// The name a saved Design uses for it (and its dim label in the Widget picker).
@@ -44,27 +44,29 @@ macro_rules! widgets {
     };
 }
 
+// in the Widget picker's order, which ◂ ▸ also cycle through within a swap group: the instruments, the side Widgets,
+// then the rest
 widgets! {
-    Library = "library",
-    /// the main Pane: what the wheel does depends on its page (`App::page_wheel`)
-    Home = "home",
-    Queue = "queue",
-    Lyrics = "lyrics",
-    Karaoke = "karaoke",
-    Stream = "stream",
-    NowPlaying = "nowplaying",
-    Top = "top",
-    Listening = "listening",
-    Today = "today",
-    TopWeek = "topweek",
-    Marquee = "marquee",
-    Glow = "glow",
     Fft = "fft",
     Loudness = "loudness",
     Levels = "levels",
     Scope = "scope",
     Rain = "rain",
     Starfield = "starfield",
+    Lyrics = "lyrics",
+    Karaoke = "karaoke",
+    Queue = "queue",
+    NowPlaying = "nowplaying",
+    Stream = "stream",
+    Top = "top",
+    Listening = "listening",
+    Today = "today",
+    TopWeek = "topweek",
+    Marquee = "marquee",
+    Glow = "glow",
+    Library = "library",
+    /// the main Pane: what the wheel does depends on its page (`App::page_wheel`)
+    Home = "home",
     Well = "well",
     Hole = "hole",
 }

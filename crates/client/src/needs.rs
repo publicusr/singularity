@@ -4,41 +4,14 @@
 //! shows only its frame, the Widget's name in its title. Every drop is allowed, so this is what a Widget in
 //! too small a Pane looks like. Picked from the size contact sheet (`tools/pty`'s `contact-sheet`).
 
-use crate::layout::{MIN_H, MIN_W, WELL_ASPECT};
 use crate::pane::Widget;
 use crate::theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-/// The black hole's (the gravity well's and Event Horizon's) smallest size, its shape rule: four rows inside the frame
-/// (with three the picture is a bare ring), and as wide as `WELL_ASPECT` (4:3 in pixels, cells twice as tall as wide)
-/// over them.
-const HOLE: (u16, u16) = {
-    let h = 6;
-    let rows = (h - 2) as f64;
-    ((rows * 2.0 * WELL_ASPECT + 0.5) as u16 + 2, h)
-};
-
-/// The smallest Pane (columns × rows, frame included) Widget `widget` is usable in. Every Widget has its arm, so a new
-/// one is asked for its own.
+/// The smallest Pane (columns × rows, frame included) Widget `widget` is usable in: its fact in the Widget catalogue.
 pub fn smallest(widget: Widget) -> (u16, u16) {
-    use Widget::*;
-    match widget {
-        Well | Hole => HOLE,
-        // a line has to wrap to be read: in one row only its middle shows
-        Karaoke => (20, 6),
-        // a Card's name beside its cover (Classic gives Home 20 columns in a half-screen laptop window)
-        Home => (16, 6),
-        // the artists' names beside their minutes
-        TopWeek => (20, 4),
-        // the bitrate under the badges
-        Stream => (16, 5),
-        Lyrics | Library | Queue | NowPlaying | Top | Listening | Today | Marquee | Glow => (16, 4),
-        // the meters and the ambient Visuals still read in the smallest Pane with two rows inside
-        Fft | Loudness | Levels | Scope | Rain | Starfield => (MIN_W, MIN_H + 1),
-        // one this build hasn't got draws nothing anyway
-        Unknown(_) => (MIN_W, MIN_H),
-    }
+    crate::widget_catalogue::facts(widget).smallest
 }
 
 /// Whether a Pane of `rect` is too small for `widget`.
@@ -110,7 +83,7 @@ mod tests {
         for w in [Widget::Well, Widget::Hole] {
             let (sw, sh) = smallest(w);
             let shape = (sw - 2) as f64 / ((sh - 2) as f64 * 2.0);
-            assert!((shape - WELL_ASPECT).abs() < 0.15, "{w}: {sw}×{sh} is {shape:.2} wide, not the well's 4:3");
+            assert!((shape - crate::layout::WELL_ASPECT).abs() < 0.15, "{w}: {sw}×{sh} is {shape:.2} wide, not the well's 4:3");
         }
     }
 

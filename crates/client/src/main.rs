@@ -50,6 +50,7 @@ mod tracks;
 mod ui;
 mod visual;
 mod wheel;
+mod widget_catalogue;
 mod widgets;
 
 use app::App;

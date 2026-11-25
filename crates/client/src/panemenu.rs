@@ -51,7 +51,7 @@ const ROWS: usize = 16;
 impl App {
     /// Whether Pane `id` offers Replace widget… (Home's doesn't: the main Pane keeps Home).
     pub fn can_replace(&self, id: PaneId) -> bool {
-        self.layout.get(id).is_some_and(|p| p.widget != Some(Widget::Home))
+        self.layout.get(id).is_some_and(|p| !crate::arrangement::required(p.widget))
     }
 
     /// Open the Widget picker on Pane `id` (Home's says why not).
@@ -193,16 +193,10 @@ impl App {
     }
 }
 
-/// Every Widget a picker can offer, once each, in its order (the black holes only if `hole_free`).
+/// Every Widget a picker can offer (the Widget catalogue's fact), once each, in its order (`Widget::ALL`'s; the black
+/// holes only if `hole_free`).
 fn offered(hole_free: bool) -> Vec<Widget> {
-    let extra = [Widget::Library, Widget::Queue, Widget::Lyrics].into_iter().chain(if hole_free { vec![Widget::Well, Widget::Hole] } else { vec![] });
-    let mut out: Vec<Widget> = vec![];
-    for w in crate::layouts::all_widgets().chain(extra) {
-        if !out.contains(&w) {
-            out.push(w);
-        }
-    }
-    out
+    Widget::ALL.iter().copied().filter(|w| crate::widget_catalogue::facts(*w).offered && (hole_free || !is_hole(Some(*w)))).collect()
 }
 
 /// The rows the list draws: each choice, and the line before the first on-screen one (where there are both).
