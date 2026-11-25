@@ -169,6 +169,11 @@ The Daemon's private data under `$XDG_DATA_HOME/singularity/`: the listening log
 files, no network.
 _Avoid_: database, cache (caches can be thrown away; this can't)
 
+**Page**:
+What the main Pane shows, one at a time: Home, a Track list (a playlist, album, Liked Songs, a Show or Book page), an
+artist page, Search, the Stats page or the Settings page. Back and forward step through the pages you opened (D88).
+_Avoid_: view, screen, tab
+
 **Stats page**:
 A page in the main Pane that sums up the listening log for a calendar period (this week, month, year, all time): top
 artists, tracks and albums by minutes, minutes and plays, streaks, a 24-hour clock. A live "Wrapped".
