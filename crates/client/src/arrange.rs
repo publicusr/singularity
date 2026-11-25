@@ -1686,3 +1686,5 @@ impl Side {
 mod tests;
 #[cfg(test)]
 mod paths;
+#[cfg(test)]
+mod legend;
