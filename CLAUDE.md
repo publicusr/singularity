@@ -19,6 +19,7 @@
 - Helper briefs point at `docs/agents/helper-brief.md` (the rules every build agent follows); review briefs point at
   `CODING_STANDARDS.md` (anything beyond the ticket is a finding for the owner; "nothing else changes" is checked on
   the drawn buffer).
+- Owner app tests and re-tests follow `docs/agents/owner-test.md`.
 - Spotify's platform rules change often. Re-verify facts in `docs/research/` that are more than ~3 months old before
   building on them.
 - Never commit secrets (Soloist API key, tokens).

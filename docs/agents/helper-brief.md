@@ -16,8 +16,9 @@ it names first.
 
 ## Branch and PR
 
-- Branch `d87-<name>` (a `d87/…` prefix can't be pushed next to `d87`), started from `origin/<integration branch>`.
-- PR base is the integration branch (now `d87`), never `main`. Draft until `run-hidden tools/check.sh` is green.
+- Branch `<integration branch>-<name>` (a `<integration branch>/…` prefix can't be pushed next to it), started from
+  `origin/<integration branch>`; the brief names the integration branch.
+- PR base is the integration branch, never `main`. Draft until `run-hidden tools/check.sh` is green.
 - Commit messages say what changed for the user; end them with the attribution line from the session. No `Closes #N`
   on an integration branch (the issue closes when it reaches `main`); write `Part of #N`.
 - **Keep the PR body current**: done, left to do, judgement calls, questions for the owner, before/after images
@@ -35,6 +36,8 @@ it names first.
   `-k done` after, `-k fault` at once on any crash, GPU error, OOM or hang.
 - **Never run `cargo fmt`**: the repo isn't rustfmt-clean. Match the surrounding style; `git add` only your files.
 - Kill only processes you started.
+- Your files (PR body drafts, shots, dumps, logs) go in `$TMPDIR/<your branch>/`. The session's scratchpad is shared
+  with other agents.
 
 ## Data
 

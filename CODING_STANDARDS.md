@@ -14,6 +14,7 @@ The owner decides what the app does. Helpers fill gaps with their own product ch
   (`file:line`), and whether it can simply be removed. The owner answers each one; until then it doesn't merge.
 - This includes changes to an existing look: a Widget's layout, spacing, alignment or font at a size the ticket didn't
   mark. Established looks stay unless the ticket names them.
+- It also includes a change to a fake, fixture or pty scenario: list what else uses it and run those scenarios.
 
 ## 2. "Nothing else changes" is checked on the drawn buffer
 
@@ -24,7 +25,15 @@ looks the same"), check it on what is **drawn**, not on rects or layout values.
   the text inside it moved, was centred, or lost a row.
 - Report which cells were compared; a claim without a frame diff is a finding.
 
-## 3. The repo's own rules
+## 3. Remembered state and every way in
+
+- Every piece of remembered UI state the change adds or touches (a highlight, a focus, a scroll position, a
+  remembered row or label) is checked against every path that changes what it points at: undo/redo, an update from
+  the Daemon or a phone, the mouse, a resize, a focus change, a popup opening. A stale one is a finding.
+- A bug fix lists every way into the reported bug (each starting point, each input device, each mode); check each
+  one, not only the one the report names.
+
+## 4. The repo's own rules
 
 - `CLAUDE.md` working agreements (Popup/Modal arms, `wheel::Widget`/`app::Page` arms, platform seams, no personal
   data, test Daemons pinned and in scratch dirs).
