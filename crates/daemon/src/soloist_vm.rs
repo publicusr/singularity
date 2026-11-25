@@ -47,8 +47,11 @@ impl Guest for Mac {
         c
     }
 
-    async fn expose(&self, local: &str, port: u16) -> anyhow::Result<()> {
-        self.vm.expose(local, port).await
+    async fn expose(&self, port: u16) -> anyhow::Result<u16> {
+        // gvproxy binds it, so it is picked here, just before
+        let local = vm::free_port().ok_or_else(|| anyhow::anyhow!("no free port"))?;
+        self.vm.expose(&format!("127.0.0.1:{local}"), port).await?;
+        Ok(local)
     }
 
     async fn publish(&self, port: u16, name: &str) -> anyhow::Result<Announcement> {
