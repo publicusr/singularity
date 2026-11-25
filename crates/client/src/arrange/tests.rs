@@ -2051,3 +2051,26 @@ fn the_keys_wait_while_the_mouse_holds_a_divider() {
     ctrl(&mut a, 'z');
     assert_eq!(a.layout, start, "the move was recorded");
 }
+
+/// The palette's Close pane (Ctrl+K) and Replace widget… while a Widget is picked up with Enter put it back.
+#[test]
+fn the_palettes_close_pane_or_replace_widget_puts_a_picked_up_widget_back() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    a.focus_on(Widget::Fft);
+    key(&mut a, KeyCode::Enter);
+    // Close pane, on the focused (picked-up) Pane
+    a.run(Action::ClosePane);
+    render(&mut a, W, H);
+    assert!(a.arrange.tile.is_none() && a.drag_marks().is_none());
+    // Replace widget…: the picker opens, and the pick-up is gone with it
+    a.focus_on(Widget::Loudness);
+    key(&mut a, KeyCode::Enter);
+    assert!(a.arrange.carrying());
+    a.run(Action::ReplaceWidget);
+    let i = a.widget_choices().iter().position(|c| c.widget == Widget::Scope).unwrap();
+    a.widget_picked(i);
+    render(&mut a, W, H);
+    assert!(a.arrange.tile.is_none());
+    assert!(a.layout.has(Widget::Scope) && a.arrange.is_on());
+}

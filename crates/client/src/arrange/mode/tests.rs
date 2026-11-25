@@ -1115,7 +1115,7 @@ fn a_pick_up_ends_when_something_else_edits_the_layout_even_with_no_frame_betwee
     b.key(KeyCode::Up);
     assert!(b.a.tile.is_none(), "the next key found the pick-up gone");
     // an edit with no frame in between: the next key finds the pick-up gone, and drops nothing
-    b.key(KeyCode::Esc);
+    assert!(b.a.is_on(), "still arranging");
     b.focus_on(Widget::Queue);
     b.key(KeyCode::Enter);
     b.key(KeyCode::Up);
@@ -1447,6 +1447,7 @@ fn every_edit_is_one_of_adr_0005s_closed_set() {
                 let commits = b.commits;
                 let Some(kind) = random_input(&mut b, &mut rng) else { continue };
                 let what = format!("design {d} seed {seed} step {step} ({kind:?})");
+                assert!(b.layout.fits(b.body) || !before.fits(b.body), "{what}: the floor plan isn't valid");
                 assert!(b.a.tile.is_none() || b.a.carrying(), "{what}: a Widget left held by the pointer");
                 assert!(b.a.divider.is_none(), "{what}: a divider left held");
                 if b.layout == before {
