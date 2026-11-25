@@ -1,5 +1,7 @@
 //! Seam 1 for MPRIS (#21): a Daemon with the FakeEngine on a private D-Bus, driven the way playerctl and KDE's media
 //! widget do. The bus has no service activation, so nothing on the machine is started by it.
+//! Linux only: on macOS OS media integration is Now Playing, even with a `dbus-daemon` installed.
+#![cfg(not(target_os = "macos"))]
 
 mod common;
 

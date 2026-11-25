@@ -163,6 +163,13 @@ mod tests {
     }
 
     #[test]
+    fn this_oss_adapter_keeps_or_drops_its_entry_for_the_app_as_today() {
+        let wanted = Options::wanted(|_| None, false, true, Default::default()).is_some();
+        // Linux: MPRIS stays next to the app's own entry; macOS: Now Playing leaves the media keys to the app
+        assert_eq!(wanted, !cfg!(target_os = "macos"));
+    }
+
+    #[test]
     fn the_app_as_engine_keeps_the_one_entry_an_os_has_for_everyone() {
         assert_eq!(run(&[], false, true, true), None, "Now Playing: the app's own entry has the media keys");
         assert_eq!(run(&[], false, true, false), Some(None), "MPRIS lists every player");
