@@ -32,6 +32,7 @@ mod cover;
 mod playlists;
 mod queue;
 mod scroll;
+mod screen_plan;
 mod scrub;
 mod saved;
 mod search;
@@ -144,7 +145,7 @@ async fn main() -> anyhow::Result<()> {
             let mut built = Duration::ZERO;
             tui.draw(|f| {
                 let t = Instant::now();
-                ui::draw(f, &mut app);
+                ui::frame(f, &mut app);
                 built = t.elapsed();
             })?;
             let drawn = start.elapsed();

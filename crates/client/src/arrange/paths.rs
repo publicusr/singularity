@@ -146,7 +146,7 @@ impl Replay {
 
     fn render(&mut self) {
         let mut t = Terminal::new(TestBackend::new(self.size.0, self.size.1)).unwrap();
-        t.draw(|f| crate::ui::draw(f, &mut self.a)).unwrap();
+        t.draw(|f| crate::ui::frame(f, &mut self.a)).unwrap();
         self.drawn = Some(self.a.layout.clone());
     }
 
@@ -173,7 +173,7 @@ impl Replay {
         let fits = self.a.layout.fits(area);
         // drawn this frame: the Panes' own hit boxes say where; else where the layout puts them
         let mut rects: Vec<(PaneId, Rect)> = if self.draw {
-            self.a.hits.iter().filter_map(|(r, h)| if let Hit::Focus(p) = h { Some((*p, *r)) } else { None }).collect()
+            self.a.all_hits().iter().filter_map(|(r, h)| if let Hit::Focus(p) = h { Some((*p, *r)) } else { None }).collect()
         } else {
             self.a.layout.compute(area).panes.into_iter().map(|(p, r)| (p.id, r)).collect()
         };
@@ -757,7 +757,7 @@ fn a_right_click_mid_drag_does_not_drop_the_widget() {
 
 /// The cell of divider `i`'s grip nearest its middle that a press really grabs (not a title or a button on it).
 fn grip(r: &Replay, i: usize) -> Option<(u16, u16)> {
-    let d = r.a.dividers.get(i)?;
+    let d = r.a.dividers().get(i)?.clone();
     let mut cells: Vec<(u16, u16)> = (d.grip.y..d.grip.bottom()).flat_map(|y| (d.grip.x..d.grip.right()).map(move |x| (x, y))).filter(|&(x, y)| r.a.hit_at(x, y) == Some(Hit::Divider(i))).collect();
     cells.sort_by_key(|&(x, y)| x.abs_diff(d.grip.x + d.grip.width / 2) + y.abs_diff(d.grip.y + d.grip.height / 2));
     cells.first().copied()
@@ -765,12 +765,12 @@ fn grip(r: &Replay, i: usize) -> Option<(u16, u16)> {
 
 /// Every divider of every Design dragged by `shape(hand, the grip, whether it moves left and right)`.
 fn every_divider(name: &str, shape: impl Fn(&mut Hand, (u16, u16), bool)) -> Vec<(String, Replay)> {
-    let most = (0..DESIGNS.len()).map(|d| Replay::new(d, 60, true).a.dividers.len()).max().unwrap();
+    let most = (0..DESIGNS.len()).map(|d| Replay::new(d, 60, true).a.dividers().len()).max().unwrap();
     let mut out = vec![];
     for i in 0..most {
         for (what, r) in every_way(&format!("{name}, divider {i}"), |r, h| {
             if let Some(at) = grip(r, i) {
-                shape(h, at, r.a.dividers[i].axis == crate::layout::Axis::Horizontal);
+                shape(h, at, r.a.dividers()[i].axis == crate::layout::Axis::Horizontal);
             }
         }) {
             assert!(!r.frames.iter().any(|f| f.held), "{what}: a press on a divider picked up a Widget");

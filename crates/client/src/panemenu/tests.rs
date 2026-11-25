@@ -11,14 +11,14 @@ const H: u16 = 48;
 
 fn render(app: &mut App) -> String {
     let mut t = Terminal::new(TestBackend::new(W, H)).unwrap();
-    t.draw(|f| crate::ui::draw(f, app)).unwrap();
+    t.draw(|f| crate::ui::frame(f, app)).unwrap();
     let buf = t.backend().buffer().clone();
     (0..H).map(|y| (0..W).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
 }
 
 fn buffer(app: &mut App) -> Buffer {
     let mut t = Terminal::new(TestBackend::new(W, H)).unwrap();
-    t.draw(|f| crate::ui::draw(f, app)).unwrap();
+    t.draw(|f| crate::ui::frame(f, app)).unwrap();
     t.backend().buffer().clone()
 }
 
@@ -56,7 +56,7 @@ fn pid(a: &App, w: Widget) -> PaneId {
 /// Pane `w`'s rectangle in the last frame.
 fn pane(a: &App, w: Widget) -> Rect {
     let id = pid(a, w);
-    a.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if *p == id).then_some(*r)).unwrap()
+    a.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if *p == id).then_some(*r)).unwrap()
 }
 /// The Widget's name in Pane `w`'s title.
 fn name_spot(a: &App, w: Widget) -> (u16, u16) {
@@ -136,7 +136,7 @@ fn right_clicking_a_body_opens_the_pane_menu_where_the_body_has_none_of_its_own(
     key(&mut a, KeyCode::Esc);
     // a border between two Panes is no Pane's
     render(&mut a);
-    let d = a.dividers.first().expect("a divider").grip;
+    let d = a.dividers().first().expect("a divider").grip;
     right_click(&mut a, d.x, d.y + d.height / 2);
     assert!(a.menu().is_none());
 }
@@ -367,7 +367,7 @@ const SIDES: [Side; 4] = [Side::Left, Side::Right, Side::Top, Side::Bottom];
 
 /// Pane `id`'s rectangle in the last frame.
 fn rect_of(a: &App, id: PaneId) -> Rect {
-    a.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if *p == id).then_some(*r)).unwrap_or_else(|| panic!("{id:?} isn't drawn"))
+    a.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if *p == id).then_some(*r)).unwrap_or_else(|| panic!("{id:?} isn't drawn"))
 }
 /// Whether `new` is on `side` of `old`, sharing that whole edge (the room `old` gave it).
 fn beside(new: Rect, old: Rect, side: Side) -> bool {
@@ -624,7 +624,7 @@ fn a_split_that_would_squash_a_pane_is_refused_with_the_reason() {
     // the smallest screen with Panes (the mini-player's limit): four columns of 12 fill its 50 columns
     let draw = |a: &mut App| {
         let mut t = Terminal::new(TestBackend::new(crate::mini::MIN_W, crate::mini::MIN_H)).unwrap();
-        t.draw(|f| crate::ui::draw(f, a)).unwrap();
+        t.draw(|f| crate::ui::frame(f, a)).unwrap();
     };
     let columns = |first: Node| {
         let rest = Node::split(Axis::Horizontal, Size::Cells(MIN_W), Node::pane(Widget::Queue), Node::pane(Widget::Lyrics));

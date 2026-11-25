@@ -954,7 +954,7 @@ mod tests {
         sent(&mut rx);
         let draw = |app: &mut App| {
             let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 40)).unwrap();
-            t.draw(|f| crate::ui::draw(f, app)).unwrap();
+            t.draw(|f| crate::ui::frame(f, app)).unwrap();
             t.backend().buffer().clone()
         };
         let uids = |app: &App| app.open.list("spotify:playlist:mine").unwrap().rows().iter().map(|r| r.uid.clone().unwrap()).collect::<Vec<_>>();

@@ -50,7 +50,7 @@
 pub mod history;
 pub mod mode;
 
-pub use mode::{Arrange, Out, Scene, Snapshot, TrayStop, done_blocked, fallback_pane, tray_layout};
+pub use mode::{Arrange, Out, Scene, Snapshot, TrayLayout, TrayStop, done_blocked, fallback_pane, tray_layout};
 #[cfg(test)]
 pub use mode::{CHIP_MAX, TileDrag};
 #[cfg(test)]
@@ -114,7 +114,7 @@ macro_rules! scene {
             focus: $app.focus,
             window: $app.window,
             body: $app.body,
-            dividers: &$app.dividers,
+            dividers: &$app.dividers(),
             aspect: crate::arrange::mode::aspect($app.cell_px),
             design: $app.shown.design(),
             keymap: &$app.keymap,
@@ -234,11 +234,6 @@ impl App {
         self.arrange.chip_rect(&scene!(self), area, text)
     }
 
-    /// Where the label of target `id` (at `r`) goes this frame, clear of the chip (`Arrange::place_label`).
-    pub fn place_label(&mut self, id: PaneId, r: Rect, label: &str, chip: Option<Rect>) -> Option<Rect> {
-        self.arrange.place_label(id, r, label, chip)
-    }
-
     /// The row target `id`'s label was drawn on last.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn label_row(&self, id: PaneId) -> Option<u16> {
@@ -263,7 +258,7 @@ impl App {
     /// The mouse pointer's shape for the terminal (OSC 22: kitty, Ghostty, foot…; others ignore it): a resize arrow
     /// over a border that can be dragged, else the terminal's own ("").
     pub fn pointer_shape(&self) -> &'static str {
-        match self.grip_lit().and_then(|i| self.dividers.get(i)) {
+        match self.grip_lit().and_then(|i| self.dividers().get(i).cloned()) {
             Some(d) if d.axis == crate::layout::Axis::Horizontal => "ew-resize",
             Some(_) => "ns-resize",
             None => "",
@@ -302,8 +297,8 @@ impl App {
                 Out::OpenTrayPicker => self.open_tray_picker(),
                 Out::OpenPaneMenu { pane, at } => self.open_pane_menu(pane, Some(at)),
                 Out::TitleClick { pane, at, widget } => {
-                    // a click on the Widget's name: the Widget picker (D87)
-                    if self.hit_at(at.0, at.1) == Some(Hit::TitleName(pane)) {
+                    // a click on the Widget's name (where the Screen plan has it now): the Widget picker (D87)
+                    if self.plan().title_hit(at.0, at.1) == Some(Hit::TitleName(pane)) {
                         self.open_widget_picker(pane);
                     // a click elsewhere on the title: the focus moved at the press; the hole's Pane also changes its
                     // look
@@ -483,7 +478,7 @@ impl App {
     }
 
     /// A mouse event that is Arrange mode's, once `App::pointer`'s own gates let it through (`Arrange::route`), with
-    /// what the last frame drew under it.
+    /// what is under it (`App::hit_at`: the Screen plan's Panes, titles and dividers, the Widgets' last frame).
     pub(crate) fn arrange_route(&mut self, m: MouseEvent, coarse: bool) {
         let hit = self.hit_at(m.column, m.row);
         arrange!(self, route, m, hit, coarse)
@@ -576,8 +571,8 @@ impl App {
 
 // ── drawing ───────────────────────────────────────────────────────────
 
-/// The Pane a release would drop on: its frame lit in the accent, and a label saying what happens at `at` (from
-/// `App::place_label`: in its middle, clear of the chip).
+/// The Pane a release would drop on: its frame lit in the accent, and a label saying what happens at `at` (the Screen
+/// plan's `label_rect`: in its middle, clear of the chip).
 pub fn draw_target(buf: &mut Buffer, r: Rect, label: &str, at: Option<Rect>, th: &Theme) {
     let lit = th.s(th.accent).add_modifier(Modifier::BOLD);
     let (right, bottom) = (r.right().saturating_sub(1), r.bottom().saturating_sub(1));
@@ -629,20 +624,14 @@ pub fn draw_chip(buf: &mut Buffer, r: Rect, label: &str, th: &Theme) {
     text(buf, r.x, r.y, r.width, &fit(label, r.width), th.chip(th.accent2));
 }
 
-/// The Tray strip (Arrange mode, under the player bar): what waits there, each with its ×, Clear Tray, and while a
-/// Pane's Widget is held over it, lit with what a release does.
-pub fn draw_tray(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
+/// The Tray strip (Arrange mode, under the player bar) at `r`, its parts where `l` (the Screen plan's) has them: what
+/// waits there, each with its ×, Clear Tray, and while a Pane's Widget is held over it, lit with what a release does.
+pub fn draw_tray(buf: &mut Buffer, r: Rect, l: &TrayLayout, app: &mut App, th: &Theme) {
     use ratatui::widgets::{Block, Borders, Widget as _};
-    if r.height < 3 || r.width < 20 {
-        return;
-    }
     let lit = app.arrange.tray_lit();
     let border = if lit { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.border) };
     Block::default().borders(Borders::ALL).border_set(th.borders).border_style(border).title(ratatui::text::Span::styled(mode::TRAY_TITLE, th.s(th.accent))).style(th.base()).render(r, buf);
     let design = app.shown.design();
-    let first = app.arrange.tray_first().unwrap_or(0);
-    let l = tray_layout(app.layout.tray(), design, app.arrange.tray_reserve(design), r, first);
-    app.arrange.tray_drawn_from(l.first);
     let tray = app.layout.tray().to_vec();
     // (a Widget aimed here with the keys shows where it lands, in its place)
     let landing = app.arrange.landing_in_tray();

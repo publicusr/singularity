@@ -142,7 +142,7 @@ fn app(items: usize) -> App {
 fn render(app: &mut App) -> String {
     let (w, h) = (160, 48);
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-    t.draw(|f| crate::ui::draw(f, app)).unwrap();
+    t.draw(|f| crate::ui::frame(f, app)).unwrap();
     let buf = t.backend().buffer().clone();
     (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
 }

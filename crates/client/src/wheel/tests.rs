@@ -29,7 +29,7 @@ fn app() -> App {
 
 fn render(app: &mut App) -> Buffer {
     let mut t = Terminal::new(TestBackend::new(W, H)).unwrap();
-    t.draw(|f| crate::ui::draw(f, app)).unwrap();
+    t.draw(|f| crate::ui::frame(f, app)).unwrap();
     t.backend().buffer().clone()
 }
 
@@ -45,7 +45,7 @@ fn cells(buf: &Buffer, r: Rect) -> Vec<Cell> {
 
 fn pane(app: &App, w: Widget) -> Rect {
     let id = app.layout.pane_of(w);
-    app.hits.iter().rev().find_map(|(r, h)| matches!(h, Hit::Focus(p) if Some(*p) == id).then_some(*r)).unwrap_or_else(|| panic!("no Pane shows {w}"))
+    app.all_hits().iter().rev().find_map(|(r, h)| matches!(h, Hit::Focus(p) if Some(*p) == id).then_some(*r)).unwrap_or_else(|| panic!("no Pane shows {w}"))
 }
 
 fn wheel(app: &mut App, kind: MouseEventKind, x: u16, y: u16, notches: usize) {
@@ -327,7 +327,7 @@ fn a_big_queues_two_row_songs_take_the_pointer_and_the_wheel_song_by_song() {
     let (w, h) = (200, 48);
     let draw = |app: &mut App| {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-        t.draw(|f| crate::ui::draw(f, app)).unwrap();
+        t.draw(|f| crate::ui::frame(f, app)).unwrap();
         t.backend().buffer().clone()
     };
     let mut app = app();
