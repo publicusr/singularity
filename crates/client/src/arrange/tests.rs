@@ -64,7 +64,7 @@ fn arranged_floor(app: &App) -> Vec<(PaneId, Rect)> {
 }
 /// Every Pane's rectangle where it belongs now (arranging or not).
 fn laid_out(app: &App) -> Vec<(PaneId, Rect)> {
-    floor_in(app, app.arranging.is_some())
+    floor_in(app, app.arrange.on.is_some())
 }
 fn floor_in(app: &App, arranging: bool) -> Vec<(PaneId, Rect)> {
     let body = crate::ui::rows(app.window, arranging)[1];
@@ -103,18 +103,6 @@ fn with_dirs() -> (App, tempfile::TempDir) {
 }
 
 #[test]
-fn a_title_press_without_movement_is_a_click() {
-    let mut a = app();
-    let before = a.layout.clone();
-    let (x, y) = title_spot(&a, Widget::Queue);
-    press(&mut a, x, y);
-    release(&mut a, x + 1, y);
-    assert_eq!(a.focused(), Some(Widget::Queue));
-    assert_eq!(a.layout, before);
-    assert!(a.tile.is_none() && a.naming().is_none());
-}
-
-#[test]
 fn dragging_a_title_onto_another_pane_swaps_their_widgets_and_nothing_moves_meanwhile() {
     let mut a = app();
     let (stream, queue) = (pid(&a, Widget::Stream), pid(&a, Widget::Queue));
@@ -135,11 +123,11 @@ fn dragging_a_title_onto_another_pane_swaps_their_widgets_and_nothing_moves_mean
         assert!(shot.contains("⠿ stream"), "the chip follows the pointer");
         assert_eq!(a.layout, before, "nothing is committed yet");
     }
-    assert_eq!(a.tile.as_ref().unwrap().over, Some(queue));
+    assert_eq!(a.arrange.tile.as_ref().unwrap().over, Some(queue));
     let shot = render(&mut a, W, H);
     assert!(shot.contains(" swap with queue "), "{shot}");
     release(&mut a, cx, cy);
-    assert!(a.tile.is_none());
+    assert!(a.arrange.tile.is_none());
     // the contents moved, the Panes stayed
     assert_eq!((a.layout.widget_in(queue), a.layout.widget_in(stream)), (Some(Widget::Stream), Some(Widget::Queue)));
     assert_eq!(crate::arrangement::outline(a.layout.plan()), crate::arrangement::outline(before.plan()));
@@ -147,83 +135,6 @@ fn dragging_a_title_onto_another_pane_swaps_their_widgets_and_nothing_moves_mean
     let after = render(&mut a, W, H);
     assert_eq!(drawn_panes(&a), floor);
     assert!(!after.contains('⠿') && !after.contains("swap with"), "it is down");
-}
-
-#[test]
-fn a_drop_on_an_empty_pane_fills_it_and_leaves_its_own_empty() {
-    let mut a = app();
-    let area = a.pane_area();
-    a.layout = a.layout.split(pid(&a, Widget::Queue), Side::Right, None, area).unwrap();
-    render(&mut a, W, H);
-    let empty = a.layout.panes().into_iter().find(|p| p.widget.is_none()).unwrap().id;
-    let fft = pid(&a, Widget::Fft);
-    let r = drawn_panes(&a).into_iter().find(|(p, _)| *p == empty).unwrap().1;
-    let (x, y) = title_spot(&a, Widget::Fft);
-    press(&mut a, x, y);
-    drag(&mut a, centre(r).0, centre(r).1);
-    assert!(render(&mut a, W, H).contains(" put here "));
-    release(&mut a, centre(r).0, centre(r).1);
-    assert_eq!((a.layout.widget_in(empty), a.layout.widget_in(fft)), (Some(Widget::Fft), None));
-    // an empty Pane's title carries nothing: pressing and dragging it is no drag
-    render(&mut a, W, H);
-    let f = drawn_panes(&a).into_iter().find(|(p, _)| *p == fft).unwrap().1;
-    let before = a.layout.clone();
-    press(&mut a, f.x + 3, f.y);
-    drag(&mut a, centre(r).0, centre(r).1);
-    assert!(!a.tile.as_ref().is_some_and(|t| t.live));
-    release(&mut a, centre(r).0, centre(r).1);
-    assert_eq!(a.layout, before);
-}
-
-
-#[test]
-fn esc_or_a_drop_on_its_own_pane_or_off_the_panes_leaves_the_layout_alone() {
-    let mut a = app();
-    let before = a.layout.clone();
-    let q = pane(&a, Widget::Queue);
-    let (x, y) = title_spot(&a, Widget::Stream);
-    press(&mut a, x, y);
-    drag(&mut a, centre(q).0, centre(q).1);
-    assert!(a.tile.as_ref().unwrap().over.is_some());
-    key(&mut a, KeyCode::Esc);
-    assert!(a.tile.is_none());
-    release(&mut a, centre(q).0, centre(q).1);
-    assert_eq!(a.layout, before);
-    // over its own Pane: nothing highlighted, and a release there is no drop
-    press(&mut a, x, y);
-    drag(&mut a, x + 5, y + 4);
-    assert!(a.tile.as_ref().unwrap().over.is_none());
-    let shot = render(&mut a, W, H);
-    assert!(!shot.contains("swap with") && shot.contains("⠿ stream"), "{shot}");
-    release(&mut a, x + 5, y + 4);
-    assert_eq!(a.layout, before);
-    // over the top bar or the legend: no Pane, no drop
-    for out in [0, H - 1] {
-        press(&mut a, x, y);
-        drag(&mut a, centre(q).0, centre(q).1);
-        drag(&mut a, centre(q).0, out);
-        release(&mut a, centre(q).0, out);
-        assert_eq!(a.layout, before, "let go at row {out}");
-    }
-    assert!(a.naming().is_none() && !a.history.can_undo());
-}
-
-#[test]
-fn every_drop_is_allowed_even_into_a_pane_smaller_than_the_widget_likes() {
-    let mut a = app();
-    let before = a.layout.clone();
-    // the gravity well (it asks for a shape and 5 rows) onto the small fft Pane: swapped, the floor plan untouched
-    let (well, fft) = (pid(&a, Widget::Well), pid(&a, Widget::Fft));
-    let f = pane(&a, Widget::Fft);
-    let (x, y) = title_spot(&a, Widget::Well);
-    press(&mut a, x, y);
-    drag(&mut a, centre(f).0, centre(f).1);
-    assert_eq!(a.tile.as_ref().unwrap().over, Some(fft));
-    release(&mut a, centre(f).0, centre(f).1);
-    assert_eq!((a.layout.widget_in(fft), a.layout.widget_in(well)), (Some(Widget::Well), Some(Widget::Fft)));
-    assert_eq!(crate::arrangement::outline(a.layout.plan()), crate::arrangement::outline(before.plan()));
-    assert!(a.layout.fits(a.pane_area()));
-    render(&mut a, W, H);
 }
 
 #[test]
@@ -280,19 +191,6 @@ fn splitting_makes_an_empty_pane_and_the_picker_fills_it() {
 }
 
 #[test]
-fn a_split_with_no_room_says_so() {
-    let mut a = App::new(None);
-    render(&mut a, 50, 14);
-    a.focus_on(Widget::Library);
-    let before = a.layout.clone();
-    // 50 columns: Singularity's four columns of 12 take 48 of them, no room for a fifth
-    a.run(Action::SplitRight);
-    assert!(a.widget_picker().is_none(), "no picker");
-    assert_eq!(a.layout, before, "nothing changed");
-    assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("No room for a new Pane right of")), "{:?}", a.toast);
-}
-
-#[test]
 fn right_clicking_a_title_offers_replace_split_close_and_move() {
     let mut a = app();
     let (x, y) = title_spot(&a, Widget::Stream);
@@ -326,13 +224,13 @@ fn edits_to_a_built_in_design_are_kept_as_edited_and_done_asks_for_a_name() {
     drag(&mut a, centre(q).0, centre(q).1);
     release(&mut a, centre(q).0, centre(q).1);
     // never asked while editing (Q33): kept at once as the unnamed "(edited)", the built-in untouched
-    assert!(a.naming().is_none() && a.arranging.is_some());
+    assert!(a.naming().is_none() && a.arrange.on.is_some());
     let saved = crate::layouts::load_dir(&layouts).0;
     assert!(saved.len() == 1 && saved[0].edited && saved[0].name == "Singularity (edited)" && saved[0].arrangement() == a.layout, "{saved:?}");
     assert_eq!(a.shown.file(), Some("singularity-edited"));
     // Done asks for a name, since something changed
     key(&mut a, KeyCode::Esc);
-    assert!(a.arranging.is_none());
+    assert!(a.arrange.on.is_none());
     let n = a.naming().cloned().expect("the naming prompt");
     assert_eq!((n.text.as_str(), n.purpose), ("Singularity 2", crate::app::NameFor::Fork));
     let shot = render(&mut a, W, H);
@@ -360,7 +258,7 @@ fn edits_to_a_built_in_design_are_kept_as_edited_and_done_asks_for_a_name() {
     drag(&mut a, centre(lyrics).0, centre(lyrics).1);
     release(&mut a, centre(lyrics).0, centre(lyrics).1);
     key(&mut a, KeyCode::Esc);
-    assert!(a.naming().is_none() && a.arranging.is_none());
+    assert!(a.naming().is_none() && a.arrange.on.is_none());
     let on_disk = crate::layouts::load_dir(&dir.path().join("layouts")).0;
     assert_eq!(on_disk.len(), 1);
     assert_eq!(on_disk[0].arrangement(), a.layout);
@@ -378,8 +276,7 @@ fn a_name_already_taken_is_refused_and_suggestions_count_up() {
     a.save_layout("Singularity 2");
     a.reset_design();
     a.enter_arrange();
-    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
-    a.edited();
+    a.commit_layout(swapped(Node::singularity(), Widget::Stream, Widget::Queue));
     a.arrange_done();
     assert_eq!(a.naming().unwrap().text, "Singularity 3", "2 is taken");
     for _ in 0..13 {
@@ -399,8 +296,7 @@ fn a_name_already_taken_is_refused_and_suggestions_count_up() {
 fn quick_edits_are_kept_as_one_unnamed_edit_per_design_that_later_edits_overwrite() {
     let (mut a, dir) = with_dirs();
     let layouts = dir.path().join("layouts");
-    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
-    a.edited();
+    a.commit_layout(swapped(Node::singularity(), Widget::Stream, Widget::Queue));
     assert!(a.naming().is_none(), "never asked outside Arrange mode");
     assert!(a.toast.as_ref().is_some_and(|(t, _)| t == "Kept as Singularity (edited)"), "{:?}", a.toast);
     assert_eq!(a.shown.file(), Some("singularity-edited"));
@@ -408,8 +304,7 @@ fn quick_edits_are_kept_as_one_unnamed_edit_per_design_that_later_edits_overwrit
     assert_eq!(saved.len(), 1);
     assert!(saved[0].edited && saved[0].name == "Singularity (edited)" && saved[0].arrangement() == a.layout);
     // more edits overwrite it, never a pile
-    a.layout = swapped(a.layout.clone(), Widget::Home, Widget::Lyrics);
-    a.edited();
+    a.commit_layout(swapped(a.layout.clone(), Widget::Home, Widget::Lyrics));
     assert!(a.naming().is_none());
     let saved = crate::layouts::load_dir(&layouts).0;
     assert_eq!(saved.len(), 1);
@@ -423,15 +318,13 @@ fn quick_edits_are_kept_as_one_unnamed_edit_per_design_that_later_edits_overwrit
     assert_eq!(again.layout, a.layout);
     // from the built-in Design again, an unnamed edit replaces it
     a.set_design(0);
-    a.layout = swapped(Node::singularity(), Widget::Fft, Widget::Loudness);
-    a.edited();
+    a.commit_layout(swapped(Node::singularity(), Widget::Fft, Widget::Loudness));
     let saved = crate::layouts::load_dir(&layouts).0;
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].arrangement(), a.layout);
     // another Design has its own
     a.set_design(3);
-    a.layout = swapped(Node::cockpit(), Widget::Fft, Widget::Loudness);
-    a.edited();
+    a.commit_layout(swapped(Node::cockpit(), Widget::Fft, Widget::Loudness));
     assert_eq!(crate::layouts::load_dir(&layouts).0.len(), 2);
 }
 
@@ -439,8 +332,7 @@ fn quick_edits_are_kept_as_one_unnamed_edit_per_design_that_later_edits_overwrit
 fn reset_design_goes_back_to_the_built_in_one() {
     let (mut a, dir) = with_dirs();
     let layouts = dir.path().join("layouts");
-    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
-    a.edited();
+    a.commit_layout(swapped(Node::singularity(), Widget::Stream, Widget::Queue));
     a.run(Action::ResetLayout);
     assert_eq!(a.layout, Node::singularity());
     assert_eq!(a.shown.file(), None);
@@ -448,8 +340,7 @@ fn reset_design_goes_back_to_the_built_in_one() {
     // a Design of your own stays where it was saved
     a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
     a.save_layout("Mine");
-    a.layout = swapped(a.layout.clone(), Widget::Home, Widget::Lyrics);
-    a.edited();
+    a.commit_layout(swapped(a.layout.clone(), Widget::Home, Widget::Lyrics));
     a.run(Action::ResetLayout);
     assert_eq!(a.layout, Node::singularity());
     assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("Mine") && t.contains("picker")), "{:?}", a.toast);
@@ -495,35 +386,6 @@ fn shift(app: &mut App, code: KeyCode) {
 }
 
 #[test]
-fn m_enters_arrange_mode_and_arrows_move_the_focus_between_panes() {
-    let mut a = app();
-    key(&mut a, KeyCode::Char('m'));
-    assert_eq!(a.modal(), Some(Modal::Arrange), "m enters Arrange mode");
-    let before = a.layout.clone();
-    // the queue sits under home
-    a.focus_on(Widget::Queue);
-    key(&mut a, KeyCode::Up);
-    assert!(a.is_focused(Widget::Home));
-    key(&mut a, KeyCode::Down);
-    assert!(a.is_focused(Widget::Queue));
-    // nothing that way: the focus stays
-    a.focus_on(Widget::Lyrics);
-    key(&mut a, KeyCode::Right);
-    assert!(a.is_focused(Widget::Lyrics));
-    // nothing focused: the arrows start from Home's Pane
-    a.focus = None;
-    key(&mut a, KeyCode::Down);
-    assert!(a.is_focused(Widget::Queue));
-    assert_eq!(a.layout, before, "arrows only move the focus");
-    // the legend shows the keys
-    let shot = render(&mut a, W, H);
-    let legend = shot.lines().last().unwrap();
-    for k in ["←↑↓→ Enter pick up", "t Tray", "s+arrow split", "x close", "+−[]size", "Esc done"] {
-        assert!(legend.contains(k), "{k:?} in {legend:?}");
-    }
-}
-
-#[test]
 fn enter_picks_up_arrows_aim_and_enter_swaps_while_nothing_moves() {
     let mut a = app();
     key(&mut a, KeyCode::Char('m'));
@@ -546,117 +408,10 @@ fn enter_picks_up_arrows_aim_and_enter_swaps_while_nothing_moves() {
     key(&mut a, KeyCode::Enter);
     render(&mut a, W, H);
     assert_eq!((pane(&a, Widget::Queue), pane(&a, Widget::Home)), (h, q));
-    assert!(a.tile.is_none() && a.is_focused(Widget::Queue) && a.arranging.is_some());
+    assert!(a.arrange.tile.is_none() && a.is_focused(Widget::Queue) && a.arrange.on.is_some());
     // one undo step
     ctrl(&mut a, 'z');
     assert_eq!(a.layout, before);
-}
-
-#[test]
-fn esc_puts_a_picked_up_widget_back_and_with_nothing_picked_up_is_done() {
-    let mut a = app();
-    key(&mut a, KeyCode::Char('m'));
-    a.focus_on(Widget::Queue);
-    let before = a.layout.clone();
-    key(&mut a, KeyCode::Enter);
-    key(&mut a, KeyCode::Up);
-    key(&mut a, KeyCode::Esc);
-    assert!(a.tile.is_none() && a.arranging.is_some(), "Esc ends the pick-up, not Arrange mode");
-    assert_eq!(a.layout, before);
-    // aimed back at its own Pane: nothing lit, and Enter puts it back
-    key(&mut a, KeyCode::Enter);
-    key(&mut a, KeyCode::Up);
-    key(&mut a, KeyCode::Down);
-    assert!(a.drag_marks().is_some_and(|(target, _)| target.is_none()));
-    key(&mut a, KeyCode::Enter);
-    assert!(a.tile.is_none());
-    assert_eq!(a.layout, before);
-    // an empty Pane has nothing to pick up
-    let mut e = app();
-    key(&mut e, KeyCode::Char('m'));
-    e.focus_on(Widget::Fft);
-    key(&mut e, KeyCode::Char('t'));
-    key(&mut e, KeyCode::Enter);
-    assert!(e.tile.is_none());
-    // Esc is Done
-    key(&mut a, KeyCode::Esc);
-    assert!(a.arranging.is_none() && a.modal().is_none());
-}
-
-#[test]
-fn t_sends_the_focused_widget_to_the_tray_and_a_picked_up_one_fills_the_empty_pane() {
-    let mut a = app();
-    key(&mut a, KeyCode::Char('m'));
-    a.focus_on(Widget::Queue);
-    let spot = pid(&a, Widget::Queue);
-    key(&mut a, KeyCode::Char('t'));
-    assert!(a.layout.tray().contains(&Widget::Queue) && a.layout.widget_in(spot).is_none());
-    // Home picked up and dropped on the empty Pane below it: "put here", and it fills it
-    key(&mut a, KeyCode::Up);
-    assert!(a.is_focused(Widget::Home));
-    let was = pid(&a, Widget::Home);
-    key(&mut a, KeyCode::Enter);
-    key(&mut a, KeyCode::Down);
-    let shot = render(&mut a, W, H);
-    assert!(shot.contains("put here"), "{shot}");
-    key(&mut a, KeyCode::Enter);
-    assert_eq!(a.layout.pane_of(Widget::Home), Some(spot));
-    assert!(a.layout.widget_in(was).is_none() && a.focus == Some(spot));
-}
-
-#[test]
-fn s_then_an_arrow_splits_x_closes_and_plus_minus_move_the_line() {
-    let mut a = app();
-    key(&mut a, KeyCode::Char('m'));
-    a.focus_on(Widget::Queue);
-    render(&mut a, W, H);
-    // + (or =) grows, - shrinks: by its border left or right of it (2 columns); ] taller, [ shorter: by the one above
-    // or below it (a row; the queue's Pane is in a stack)
-    let (w0, h0) = (pane(&a, Widget::Queue).width, pane(&a, Widget::Queue).height);
-    let size = |a: &mut App| {
-        render(a, W, H);
-        (pane(a, Widget::Queue).width, pane(a, Widget::Queue).height)
-    };
-    key(&mut a, KeyCode::Char('-'));
-    assert_eq!(size(&mut a), (w0 - 2, h0));
-    key(&mut a, KeyCode::Char('+'));
-    key(&mut a, KeyCode::Char('='));
-    assert_eq!(size(&mut a), (w0 + 2, h0));
-    key(&mut a, KeyCode::Char('['));
-    assert_eq!(size(&mut a), (w0 + 2, h0 - 1));
-    key(&mut a, KeyCode::Char(']'));
-    key(&mut a, KeyCode::Char(']'));
-    assert_eq!(size(&mut a), (w0 + 2, h0 + 1));
-    // s waits for the arrow (the legend says so); ↓ splits below: a new empty Pane and the Widget picker on it
-    let (q, n) = (pane(&a, Widget::Queue), a.layout.panes().len());
-    key(&mut a, KeyCode::Char('s'));
-    assert_eq!(a.layout.panes().len(), n);
-    let shot = render(&mut a, W, H);
-    assert!(shot.lines().last().unwrap().contains("←↑↓→ split that way"));
-    key(&mut a, KeyCode::Down);
-    assert_eq!(a.layout.panes().len(), n + 1);
-    let new = a.widget_picker().map(|p| p.target).unwrap();
-    key(&mut a, KeyCode::Esc);
-    assert!(a.widget_picker().is_none() && a.layout.widget_in(new).is_none() && a.arranging.is_some());
-    render(&mut a, W, H);
-    let r = a.layout.compute(a.pane_area()).rect(new).unwrap();
-    assert!(r.y > pane(&a, Widget::Queue).y && r.x == q.x, "below the queue");
-    // any other key after s ends the wait and does nothing else
-    let before = a.layout.clone();
-    a.focus_on(Widget::Fft);
-    key(&mut a, KeyCode::Char('s'));
-    key(&mut a, KeyCode::Char('x'));
-    assert_eq!(a.layout, before);
-    key(&mut a, KeyCode::Left);
-    assert_eq!(a.layout, before, "the wait is over: an arrow moves the focus again");
-    // x closes the focused Pane: its Widget goes to the Tray; Home's never closes
-    a.focus_on(Widget::Fft);
-    key(&mut a, KeyCode::Char('x'));
-    assert!(!a.layout.panes().iter().any(|p| p.widget == Some(Widget::Fft)) && a.layout.tray().contains(&Widget::Fft));
-    a.focus_on(Widget::Home);
-    key(&mut a, KeyCode::Char('x'));
-    assert!(a.layout.pane_of(Widget::Home).is_some());
-    assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("never closed")), "{:?}", a.toast);
 }
 
 /// The cells of `s` where it is drawn in `b`, with their styles.
@@ -729,34 +484,7 @@ fn the_playback_keys_the_arrange_keys_leave_free_work_while_arranging() {
     }
     shift(&mut a, KeyCode::Right);
     assert_ne!(a.display_position(0), pos, "Shift+→ seeks");
-    assert!(a.arranging.is_some());
-}
-
-/// With Home set aside and the focused Pane closed, the focus never names a Pane that isn't there: the keys go on
-/// working from a real Pane (undo too).
-#[test]
-fn the_focus_always_lands_on_a_real_pane() {
-    let mut a = app();
-    key(&mut a, KeyCode::Char('m'));
-    a.focus_on(Widget::Home);
-    key(&mut a, KeyCode::Char('t'));
-    assert!(a.layout.tray().contains(&Widget::Home));
-    a.focus_on(Widget::Fft);
-    key(&mut a, KeyCode::Char('x'));
-    assert!(a.focus.is_some_and(|p| a.layout.contains(p)), "{:?}", a.focus);
-    for code in [KeyCode::Up, KeyCode::Down, KeyCode::Left] {
-        key(&mut a, code);
-        assert!(a.focus.is_some_and(|p| a.layout.contains(p)));
-    }
-    // a focus left on a Pane that's gone (another path): the next key acts from a real one
-    a.focus = Some(PaneId::UNSET);
-    key(&mut a, KeyCode::Enter);
-    assert!(a.tile.as_ref().is_some_and(|t| a.layout.contains(t.pane.id)), "picked up from a real Pane");
-    key(&mut a, KeyCode::Esc);
-    // undo back past the close: still a real Pane
-    ctrl(&mut a, 'z');
-    ctrl(&mut a, 'z');
-    assert!(a.focus.is_some_and(|p| a.layout.contains(p)));
+    assert!(a.arrange.on.is_some());
 }
 
 /// The legend drops what doesn't fit from the mouse's gesture and undo / redo first: the keys stay longest.
@@ -775,87 +503,6 @@ fn the_legend_keeps_the_keys_on_small_screens() {
     }
 }
 
-/// Anything else that edits the layout while a Widget is picked up with Enter puts it back.
-#[test]
-fn a_pick_up_ends_when_something_else_edits_the_layout() {
-    let mut a = app();
-    key(&mut a, KeyCode::Char('m'));
-    a.focus_on(Widget::Fft);
-    key(&mut a, KeyCode::Enter);
-    // Ctrl+K → Close pane, on the focused (picked-up) Pane
-    a.run(Action::ClosePane);
-    render(&mut a, W, H);
-    assert!(a.tile.is_none() && a.drag_marks().is_none());
-    // Replace widget… from the palette: the picker opens, and the pick-up is gone with it
-    a.focus_on(Widget::Loudness);
-    key(&mut a, KeyCode::Enter);
-    a.run(Action::ReplaceWidget);
-    let i = a.widget_choices().iter().position(|c| c.widget == Widget::Scope).unwrap();
-    a.widget_picked(i);
-    render(&mut a, W, H);
-    assert!(a.tile.is_none());
-    // an edit with no frame in between: the next key finds the pick-up gone, and drops nothing
-    a.focus_on(Widget::Queue);
-    key(&mut a, KeyCode::Enter);
-    key(&mut a, KeyCode::Up);
-    let id = pid(&a, Widget::Stream);
-    a.close_pane(id);
-    let after = a.layout.clone();
-    key(&mut a, KeyCode::Enter);
-    assert_eq!(a.layout, after, "the old pick-up didn't drop");
-    assert!(a.tile.as_ref().is_some_and(|t| t.on.as_ref() == Some(&a.layout)), "Enter picked up afresh");
-}
-
-/// While the mouse holds a divider the arrange keys wait: Enter picks nothing up, and the release records the move.
-#[test]
-fn the_keys_wait_while_the_mouse_holds_a_divider() {
-    let mut a = app();
-    key(&mut a, KeyCode::Char('m'));
-    render(&mut a, W, H);
-    let start = a.layout.clone();
-    let grip = a.dividers[0].grip;
-    press(&mut a, grip.x, grip.y + 5);
-    drag(&mut a, grip.x + 6, grip.y + 5);
-    key(&mut a, KeyCode::Enter);
-    key(&mut a, KeyCode::Char('x'));
-    assert!(a.tile.is_none() && a.drag.is_some(), "still the divider's");
-    drag(&mut a, grip.x + 8, grip.y + 5);
-    release(&mut a, grip.x + 8, grip.y + 5);
-    assert!(a.drag.is_none() && a.layout != start);
-    ctrl(&mut a, 'z');
-    assert_eq!(a.layout, start, "the move was recorded");
-}
-
-/// Only the bare keys arrange: Ctrl+X doesn't close, Alt+T doesn't set aside, Ctrl+Enter picks nothing up, Ctrl+=
-/// doesn't grow; `s` waits for its arrow until a mouse press.
-#[test]
-fn only_the_bare_keys_arrange() {
-    let mut a = app();
-    key(&mut a, KeyCode::Char('m'));
-    a.focus_on(Widget::Fft);
-    render(&mut a, W, H);
-    let before = a.layout.clone();
-    a.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
-    a.key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT));
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
-    a.key(KeyEvent::new(KeyCode::Char('='), KeyModifiers::CONTROL));
-    assert_eq!(a.layout, before);
-    assert!(a.tile.is_none());
-    // `+` as the terminal may send it, with its Shift: grows
-    a.focus_on(Widget::Queue);
-    shift(&mut a, KeyCode::Char('+'));
-    assert_ne!(a.layout, before);
-    // s, then a click: the wait is over, and → moves the focus instead of splitting
-    let n = a.layout.panes().len();
-    key(&mut a, KeyCode::Char('s'));
-    let (x, y) = centre(pane(&a, Widget::Queue));
-    press(&mut a, x, y);
-    release(&mut a, x, y);
-    key(&mut a, KeyCode::Right);
-    assert_eq!(a.layout.panes().len(), n);
-    assert!(a.widget_picker().is_none());
-}
-
 /// The Tray by keyboard (owner, Q50): ↓ from a bottom Pane onto the Tray, ← → along it, Enter picks a Widget up
 /// (the chip), ↑ aims into the Panes, Enter drops there; ↑ with nothing picked up goes back to the Panes.
 #[test]
@@ -865,9 +512,9 @@ fn the_keyboard_takes_widgets_out_of_the_tray() {
     // an empty Tray: ↓ from a bottom Pane goes to its "+ Widget" (#42), ↑ back
     a.focus_on(Widget::Queue);
     key(&mut a, KeyCode::Down);
-    assert!(a.focus.is_none() && a.arranging.as_ref().unwrap().tray_focus == Some(crate::arrange::TrayStop::Add));
+    assert!(a.focus.is_none() && a.arrange.on.as_ref().unwrap().tray_focus == Some(crate::arrange::TrayStop::Add));
     key(&mut a, KeyCode::Up);
-    assert!(a.focused().is_some() && a.arranging.as_ref().unwrap().tray_focus.is_none());
+    assert!(a.focused().is_some() && a.arrange.on.as_ref().unwrap().tray_focus.is_none());
     for w in [Widget::Fft, Widget::Loudness] {
         a.focus_on(w);
         key(&mut a, KeyCode::Char('t'));
@@ -876,7 +523,7 @@ fn the_keyboard_takes_widgets_out_of_the_tray() {
     // ↓ from the queue: onto the Tray (its nearest Widget), lit; no Pane focused meanwhile
     a.focus_on(Widget::Queue);
     key(&mut a, KeyCode::Down);
-    let on = |a: &App| match a.arranging.as_ref().unwrap().tray_focus {
+    let on = |a: &App| match a.arrange.on.as_ref().unwrap().tray_focus {
         Some(crate::arrange::TrayStop::Widget(w)) => Some(w),
         _ => None,
     };
@@ -903,11 +550,11 @@ fn the_keyboard_takes_widgets_out_of_the_tray() {
     key(&mut a, KeyCode::Enter);
     assert!(render(&mut a, W, H).contains(&format!("⠿ {name}")));
     key(&mut a, KeyCode::Esc);
-    assert!(a.tile.is_none() && on(&a) == Some(Widget::Loudness) && a.arranging.is_some());
+    assert!(a.arrange.tile.is_none() && on(&a) == Some(Widget::Loudness) && a.arrange.on.is_some());
     // picked up again, ↑ aims at the Pane above it, Enter puts it there: that Pane's Widget goes into the Tray
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Up);
-    let to = a.tile.as_ref().and_then(|t| t.over).expect("aimed at a Pane");
+    let to = a.arrange.tile.as_ref().and_then(|t| t.over).expect("aimed at a Pane");
     let was = a.layout.widget_in(to);
     let label = match was {
         Some(w) => format!("swap with {}", crate::ui::pane_name(a.shown.design(), w)),
@@ -917,7 +564,7 @@ fn the_keyboard_takes_widgets_out_of_the_tray() {
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.layout.widget_in(to), Some(Widget::Loudness));
     assert!(was.is_none_or(|w| a.layout.tray().contains(&w)) && !a.layout.tray().contains(&Widget::Loudness));
-    assert!(a.focus == Some(to) && on(&a).is_none() && a.tile.is_none());
+    assert!(a.focus == Some(to) && on(&a).is_none() && a.arrange.tile.is_none());
     // ↓ to the Tray and ↑ back: the focus is on a bottom Pane again
     key(&mut a, KeyCode::Down);
     assert!(on(&a).is_some());
@@ -925,51 +572,11 @@ fn the_keyboard_takes_widgets_out_of_the_tray() {
     assert!(on(&a).is_none() && a.focus.is_some_and(|p| a.layout.contains(p)));
 }
 
-/// A Pane's Widget picked up and aimed down past the bottom Pane: the Tray lights up, and Enter sets it aside there.
-#[test]
-fn a_picked_up_widget_aimed_down_onto_the_tray_waits_there() {
-    let mut a = app();
-    key(&mut a, KeyCode::Char('m'));
-    a.focus_on(Widget::Queue);
-    let spot = pid(&a, Widget::Queue);
-    key(&mut a, KeyCode::Enter);
-    key(&mut a, KeyCode::Down);
-    assert!(a.tile.as_ref().is_some_and(|t| t.tray && t.over.is_none()));
-    assert!(render(&mut a, W, H).contains("set aside here"));
-    // ↑ aims back into the Panes, ↓ at the Tray again
-    key(&mut a, KeyCode::Up);
-    assert!(a.tile.as_ref().is_some_and(|t| !t.tray));
-    key(&mut a, KeyCode::Down);
-    key(&mut a, KeyCode::Enter);
-    assert!(a.layout.tray().contains(&Widget::Queue) && a.layout.widget_in(spot).is_none());
-    assert!(a.tile.is_none() && a.focus == Some(spot));
-}
-
 /// `move_pane` in keys.toml still binds: it is another name for `arrange` (owner, Q51).
 #[test]
 fn move_pane_is_another_name_for_arrange() {
     assert_eq!(Action::from_id("move_pane"), Some(Action::Arrange));
     assert_eq!(Action::from_id("arrange"), Some(Action::Arrange));
-}
-
-/// A Widget picked up with Enter isn't the pointer's: a bare move leaves it be, a release doesn't drop it, a press
-/// puts it back (and does what it does).
-#[test]
-fn the_pointer_leaves_a_picked_up_widget_alone_until_a_press() {
-    let mut a = app();
-    key(&mut a, KeyCode::Char('m'));
-    a.focus_on(Widget::Queue);
-    let before = a.layout.clone();
-    key(&mut a, KeyCode::Enter);
-    key(&mut a, KeyCode::Up);
-    let (x, y) = centre(pane(&a, Widget::Lyrics));
-    mouse(&mut a, MouseEventKind::Moved, x, y);
-    release(&mut a, x, y);
-    assert!(a.tile.as_ref().is_some_and(|t| t.aim.is_some()), "still picked up");
-    assert!(!a.moving_now(), "nothing follows the pointer");
-    press(&mut a, x, y);
-    assert!(a.tile.is_none() && a.is_focused(Widget::Lyrics));
-    assert_eq!(a.layout, before);
 }
 
 /// Random mouse and key gestures on every Design at several sizes: whatever happens, the layout on screen stays
@@ -1015,8 +622,8 @@ fn random_gestures_leave_every_design_valid() {
                             render(&mut a, w, h);
                             let now = drawn_panes(&a);
                             assert_eq!(now, laid_out(&a), "{} {w}x{h}: the Panes aren't the floor plan in their area", design.id);
-                            if a.tile.as_ref().is_some_and(|t| t.live) {
-                                assert!(a.arranging.is_some());
+                            if a.arrange.tile.as_ref().is_some_and(|t| t.live) {
+                                assert!(a.arrange.on.is_some());
                                 assert_eq!(floor.get_or_insert_with(|| now.clone()), &now, "{} {w}x{h}: a Pane moved mid-drag", design.id);
                             } else {
                                 assert_eq!(now, unpressed, "{} {w}x{h}: a press without a drag moved a Pane", design.id);
@@ -1060,8 +667,8 @@ fn random_gestures_leave_every_design_valid() {
                 let tree = a.layout.clone();
                 assert!(tree.fits(a.pane_area()), "{} {w}x{h}: {tree:?}", design.id);
                 // (Home may wait in the Tray, while Arrange mode is on)
-                assert!(crate::arrangement::required_widgets().all(|c| tree.has(c) || tree.tray().contains(&c) && a.arranging.is_some()));
-                assert!(a.tile.is_none() && a.widget_picker().is_none());
+                assert!(crate::arrangement::required_widgets().all(|c| tree.has(c) || tree.tray().contains(&c) && a.arrange.on.is_some()));
+                assert!(a.arrange.tile.is_none() && a.widget_picker().is_none());
             }
         }
     }
@@ -1299,73 +906,7 @@ fn undo_in_a_design_of_your_own_rewrites_its_file() {
     assert!(a.toast.as_ref().is_some_and(|(t, _)| t == "Nothing to undo"), "{:?}", a.toast);
 }
 
-#[test]
-fn an_undo_that_would_not_fit_the_window_is_refused() {
-    // Home split twice: three columns where Singularity has one; one closed, the window shrinks, and the undo back
-    // to three wouldn't fit
-    let mut a = app();
-    let area = a.pane_area();
-    let home = pid(&a, Widget::Home);
-    a.layout = a.layout.split(home, Side::Right, Some(Widget::Scope), area).unwrap().split(home, Side::Right, Some(Widget::Rain), area).unwrap();
-    let three = a.layout.clone();
-    a.close_pane(pid(&a, Widget::Rain));
-    let two = a.layout.clone();
-    let (w, h) = (50..160u16).map(|w| (w, 30u16)).find(|&(w, h)| {
-        let body = Rect::new(0, 1, w, h - 5);
-        !three.fits(body) && two.fits(body)
-    }).expect("such a size");
-    render(&mut a, w, h);
-    ctrl(&mut a, 'z');
-    assert_eq!(a.layout, two);
-    assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("doesn't fit this window")), "{:?}", a.toast);
-    // back at a size it fits, it goes
-    render(&mut a, W, H);
-    ctrl(&mut a, 'z');
-    assert_eq!(a.layout, three);
-}
-
-
 // ── fast drags (owner, 2026-11-01: "it looks a bit like teleporting") ──
-
-/// No dwell: a sweep across Panes highlights each the moment the pointer is over it, rearranges nothing, and a
-/// release drops on the one under the pointer then.
-#[test]
-fn a_fast_sweep_highlights_each_pane_at_once_and_drops_on_the_last() {
-    // (arranging already, so the Panes are where they stay for the whole drag)
-    let arranging = || {
-        let mut a = app();
-        a.run(Action::Arrange);
-        render(&mut a, W, H);
-        a
-    };
-    let mut a = arranging();
-    let before = a.layout.clone();
-    let floor = drawn_panes(&a);
-    let (x, y) = title_spot(&a, Widget::Stream);
-    press(&mut a, x, y);
-    let names = [Widget::Queue, Widget::Home, Widget::Library, Widget::Lyrics, Widget::Fft];
-    let spots: Vec<(u16, u16)> = names.iter().map(|s| centre(pane(&a, *s))).collect();
-    for (i, &(px, py)) in spots.iter().enumerate() {
-        drag(&mut a, px, py);
-        assert_eq!(a.tile.as_ref().unwrap().over, Some(pid(&a, names[i])), "{}", names[i]);
-        let shot = render(&mut a, W, H);
-        assert_eq!(drawn_panes(&a), floor, "nothing rearranges");
-        assert!(shot.contains(&format!(" swap with {} ", crate::ui::pane_name(0, names[i]))), "{}", names[i]);
-    }
-    // a flick on to the queue and let go there at once: the queue it is
-    let q = spots[0];
-    drag(&mut a, q.0, q.1);
-    release(&mut a, q.0, q.1);
-    assert_eq!(a.layout, swapped(before.clone(), Widget::Stream, Widget::Queue));
-    // a release on another cell than the last move (a finger slipping as it lifts): the Pane under the release
-    let mut b = arranging();
-    let (x, y) = title_spot(&b, Widget::Stream);
-    press(&mut b, x, y);
-    drag(&mut b, q.0, q.1);
-    let l = centre(pane(&b, Widget::Library));
-    release(&mut b, l.0, l.1);
-    assert_eq!(b.layout, swapped(before, Widget::Stream, Widget::Library));
-}
 
 #[test]
 fn the_frame_rate_is_the_motion_rate_while_anything_moves() {
@@ -1392,34 +933,6 @@ fn the_frame_rate_is_the_motion_rate_while_anything_moves() {
     assert_eq!(a.frame_rate(true), 240);
     release(&mut a, grip.x, grip.y);
     assert_eq!(a.frame_rate(true), 30);
-}
-
-#[test]
-fn a_short_wide_pane_is_swapped_with_wherever_the_pointer_is_on_it() {
-    // the instruments in a short row under Home: fft dropped anywhere on loudness swaps the two
-    use crate::layout::{Axis::*, Size::*};
-    let mut a = app();
-    let s = Node::pane;
-    let row = Node::split(Horizontal, Ratio(0.5), s(Widget::Fft), s(Widget::Loudness));
-    a.layout = Node::split(Horizontal, Cells(30), s(Widget::Library), Node::split(Vertical, Ratio(0.7), Node::split(Vertical, Ratio(0.6), s(Widget::Home), s(Widget::Queue)), Node::split(Horizontal, Ratio(0.8), row, s(Widget::Lyrics)))).into();
-    // (arranging already, so the Panes are where they stay for every drag)
-    a.run(Action::Arrange);
-    render(&mut a, W, H);
-    let before = a.layout.clone();
-    let l = pane(&a, Widget::Loudness);
-    for (px, py) in [(l.x, l.y), (l.x + l.width / 2, l.bottom() - 1), (l.right() - 1, l.y + l.height / 2)] {
-        let (x, y) = title_spot(&a, Widget::Fft);
-        press(&mut a, x, y);
-        drag(&mut a, px, py);
-        assert_eq!(a.tile.as_ref().unwrap().over, Some(pid(&a, Widget::Loudness)), "({px}, {py}) in {l:?}");
-        key(&mut a, KeyCode::Esc);
-        release(&mut a, px, py);
-    }
-    let (x, y) = title_spot(&a, Widget::Fft);
-    press(&mut a, x, y);
-    drag(&mut a, l.x + l.width / 2, l.y);
-    release(&mut a, l.x + l.width / 2, l.y);
-    assert_eq!(a.layout, swapped(before.clone(), Widget::Fft, Widget::Loudness));
 }
 
 /// The owner (2026-11-02): "I can't drag the lyrics pane to take up a bit of Home, it snaps right back". Sizes are
@@ -1515,7 +1028,7 @@ fn an_empty_pane_has_nothing_to_move() {
     a.focus = Some(empty);
     key(&mut a, KeyCode::Char('m'));
     key(&mut a, KeyCode::Enter);
-    assert!(a.tile.is_none());
+    assert!(a.arrange.tile.is_none());
     a.open_pane_menu(empty, None);
     assert!(!a.menu().unwrap().items.iter().any(|(l, _)| l == "Move pane"));
 }
@@ -1528,9 +1041,9 @@ fn a_popup_opening_mid_drag_lets_the_widget_go() {
     press(&mut a, x, y);
     let q = centre(pane(&a, Widget::Queue));
     drag(&mut a, q.0, q.1);
-    assert!(a.tile.as_ref().is_some_and(|t| t.live));
+    assert!(a.arrange.tile.as_ref().is_some_and(|t| t.live));
     a.run(Action::Palette);
-    assert!(a.tile.is_none());
+    assert!(a.arrange.tile.is_none());
     let shot = render(&mut a, W, H);
     assert!(!shot.contains("⠿ stream") && !shot.contains("swap with"), "{shot}");
     key(&mut a, KeyCode::Esc);
@@ -1540,10 +1053,10 @@ fn a_popup_opening_mid_drag_lets_the_widget_go() {
     let q = centre(pane(&a, Widget::Queue));
     press(&mut a, x, y);
     drag(&mut a, q.0, q.1);
-    assert!(a.tile.as_ref().is_some_and(|t| t.live));
+    assert!(a.arrange.tile.as_ref().is_some_and(|t| t.live));
     a.hear(singularity_proto::Event::Catalogue(singularity_proto::CatalogueStatus::LoginPending { url: "u".into(), code: "ABCD".into() }));
     let shot = render(&mut a, W, H);
-    assert!(a.tile.is_none() && !shot.contains("⠿ stream"));
+    assert!(a.arrange.tile.is_none() && !shot.contains("⠿ stream"));
     release(&mut a, q.0, q.1);
 }
 
@@ -1593,7 +1106,7 @@ fn a_title_drag_turns_arrange_mode_on_and_a_drop_on_the_tray_sets_the_widget_asi
     let (x, y) = title_spot(&a, Widget::Stream);
     press(&mut a, x, y);
     drag(&mut a, x + 4, y + 2);
-    assert!(a.arranging.is_some(), "the drag turned it on");
+    assert!(a.arrange.on.is_some(), "the drag turned it on");
     let shot = render(&mut a, W, H);
     // the Panes made room for the Tray, by the floor plan's own rule, and stay put from then on
     let floor = arranged_floor(&a);
@@ -1601,46 +1114,16 @@ fn a_title_drag_turns_arrange_mode_on_and_a_drop_on_the_tray_sets_the_widget_asi
     assert!(shot.contains(" Tray ") && shot.contains("ARRANGE") && shot.contains(" Done "), "{shot}");
     let (tx, ty) = tray_spot(&a);
     drag(&mut a, tx, ty);
-    assert!(a.tile.as_ref().is_some_and(|t| t.tray && t.over.is_none()), "the Tray is highlighted");
+    assert!(a.arrange.tile.as_ref().is_some_and(|t| t.tray && t.over.is_none()), "the Tray is highlighted");
     assert!(render(&mut a, W, H).contains(" set aside here "));
     assert_eq!(drawn_panes(&a), floor);
     release(&mut a, tx, ty);
     assert_eq!(a.layout.tray(), [Widget::Stream]);
     assert_eq!(a.layout.widget_in(stream), None, "its Pane is left empty");
     assert_eq!(crate::arrangement::outline(a.layout.plan()), crate::arrangement::outline(before.plan()));
-    assert!(a.arranging.is_some(), "still arranging after the drop");
+    assert!(a.arrange.on.is_some(), "still arranging after the drop");
     let shot = render(&mut a, W, H);
     assert!(shot.contains("⠿ stream") && shot.contains("empty"), "{shot}");
-}
-
-#[test]
-fn a_widget_from_the_tray_fills_an_empty_pane_or_swaps_with_what_is_there() {
-    let mut a = app();
-    let (stream, queue) = (pid(&a, Widget::Stream), pid(&a, Widget::Queue));
-    drag_to!(&mut a, title_spot(&a, Widget::Stream), tray_spot(&a));
-    // onto the queue: the queue goes into the Tray in its place
-    let to = centre(pane(&a, Widget::Queue));
-    let from = tray_item(&a, 0);
-    press(&mut a, from.0, from.1);
-    drag(&mut a, from.0 + 3, from.1 - 3);
-    drag(&mut a, to.0, to.1);
-    assert!(render(&mut a, W, H).contains(" swap with queue "));
-    release(&mut a, to.0, to.1);
-    assert_eq!((a.layout.widget_in(queue), a.layout.tray()), (Some(Widget::Stream), &[Widget::Queue][..]));
-    render(&mut a, W, H);
-    // onto the empty Pane: it fills it, and the Tray is empty
-    let to = centre(drawn_panes(&a).into_iter().find(|(p, _)| *p == stream).unwrap().1);
-    drag_to!(&mut a, tray_item(&a, 0), to);
-    assert_eq!(a.layout.widget_in(stream), Some(Widget::Queue));
-    assert!(a.layout.tray().is_empty());
-    assert!(render(&mut a, W, H).contains("drop a Widget here to set it aside"));
-    // a click on a Widget in the Tray, or a drop back on the Tray, changes nothing
-    drag_to!(&mut a, title_spot(&a, Widget::Fft), tray_spot(&a));
-    let now = a.layout.clone();
-    click!(&mut a, tray_item(&a, 0));
-    let (tx, ty) = tray_spot(&a);
-    drag_to!(&mut a, tray_item(&a, 0), (tx + 20, ty));
-    assert_eq!(a.layout, now);
 }
 
 #[test]
@@ -1664,7 +1147,7 @@ fn closing_sends_the_widget_to_the_tray_and_clear_tray_never_removes_home() {
     key(&mut a, KeyCode::Esc);
     let done = a.hit_rect(&Hit::ArrangeDone).unwrap();
     click!(&mut a, (done.x + 1, done.y));
-    assert!(a.arranging.is_some(), "neither Esc nor Done ends it");
+    assert!(a.arrange.on.is_some(), "neither Esc nor Done ends it");
     // Home has no × in the Tray; Clear Tray removes the rest
     assert!(a.hit_rect(&Hit::TrayRemove(Widget::Home)).is_none() && a.hit_rect(&Hit::TrayRemove(Widget::Fft)).is_some());
     let c = a.hit_rect(&Hit::ClearTray).unwrap();
@@ -1677,32 +1160,9 @@ fn closing_sends_the_widget_to_the_tray_and_clear_tray_never_removes_home() {
     let to = centre(drawn_panes(&a).into_iter().find(|(p, _)| *p == empty).unwrap().1);
     drag_to!(&mut a, tray_item(&a, 0), to);
     key(&mut a, KeyCode::Esc);
-    assert!(a.arranging.is_none() && a.layout.has(Widget::Home));
+    assert!(a.arrange.on.is_none() && a.layout.has(Widget::Home));
     let shot = render(&mut a, W, H);
     assert!(!shot.contains(" Tray ") && !shot.contains("ARRANGE") && !shot.contains('⊞'), "{shot}");
-}
-
-#[test]
-fn the_x_on_one_widget_in_the_tray_removes_it_and_undo_redo_cover_tray_edits() {
-    let mut a = app();
-    let start = a.layout.clone();
-    drag_to!(&mut a, title_spot(&a, Widget::Stream), tray_spot(&a));
-    drag_to!(&mut a, title_spot(&a, Widget::Fft), tray_spot(&a));
-    let two = a.layout.clone();
-    let x = a.hit_rect(&Hit::TrayRemove(Widget::Stream)).unwrap();
-    click!(&mut a, (x.x, x.y));
-    // a second click in the same burst (no frame between) lands on the same spot: nothing more goes
-    click!(&mut a, (x.x, x.y));
-    assert_eq!(a.layout.tray(), [Widget::Fft], "only that one went");
-    assert!(!a.layout.has(Widget::Stream));
-    ctrl(&mut a, 'z');
-    assert_eq!(a.layout, two);
-    ctrl(&mut a, 'z');
-    ctrl(&mut a, 'z');
-    assert_eq!(a.layout, start);
-    ctrl(&mut a, 'y');
-    assert_eq!(a.layout.tray(), [Widget::Stream]);
-    assert!(a.arranging.is_some(), "undo and redo work in Arrange mode");
 }
 
 #[test]
@@ -1771,7 +1231,7 @@ fn the_tray_is_saved_with_the_design_and_survives_a_restart() {
     assert_eq!(again.layout, a.layout);
     assert_eq!(again.layout.tray(), [Widget::Stream]);
     let shot = render(&mut again, W, H);
-    assert!(again.arranging.is_none() && !shot.contains(" Tray "), "the Tray only shows in Arrange mode");
+    assert!(again.arrange.on.is_none() && !shot.contains(" Tray "), "the Tray only shows in Arrange mode");
     // a Design left with Home in the Tray comes back in Arrange mode, where Done waits for it
     drag_to!(&mut a, title_spot(&a, Widget::Home), tray_spot(&a));
     let mut again = App::new(None);
@@ -1812,16 +1272,16 @@ fn previewing_designs_neither_starts_arrange_mode_nor_counts_as_an_edit() {
         render(a, W, H);
     };
     pick(&mut a, "Parked");
-    assert!(a.arranging.is_none(), "not while it's only previewed");
+    assert!(a.arrange.on.is_none(), "not while it's only previewed");
     key(&mut a, KeyCode::Esc);
     render(&mut a, W, H);
-    assert!(a.arranging.is_none() && a.modal().is_none() && a.layout.has(Widget::Home));
+    assert!(a.arrange.on.is_none() && a.modal().is_none() && a.layout.has(Widget::Home));
     // arranging on the unnamed edit: previews and a kept pick aren't edits
     a.run(Action::Arrange);
     pick(&mut a, "Other");
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Esc);
-    assert!(a.naming().is_none() && a.arranging.is_none(), "{:?}", a.modal());
+    assert!(a.naming().is_none() && a.arrange.on.is_none(), "{:?}", a.modal());
 }
 
 /// ◂ ▸ skip a Widget waiting in the Tray: they aren't a recorded edit, so they mustn't take it out.
@@ -1845,7 +1305,7 @@ fn arrange_mode_keeps_the_panes_keys() {
     // (`w` is Arrange mode's: "+ Widget", not the Pane's Replace widget…)
     key(&mut a, KeyCode::Char('w'));
     assert!(a.widget_picker().is_some_and(|p| p.tray), "the Tray's picker");
-    assert!(a.arranging.is_some());
+    assert!(a.arrange.on.is_some());
 }
 
 // ── the player bar stays, the Tray goes under it (#69, Q39) ────────────
@@ -1905,7 +1365,7 @@ fn in_arrange_mode_the_player_bar_stays_and_its_buttons_seek_bar_and_keys_work()
     key(&mut a, KeyCode::Char(' '));
     assert_eq!(sent(&mut rx), vec![Command::Pause]);
     assert_eq!(a.modal(), Some(Modal::Arrange), "still arranging");
-    assert!(a.tile.is_none() && !a.history.can_undo());
+    assert!(a.arrange.tile.is_none() && !a.arrange.history.can_undo());
 }
 
 #[test]
@@ -1931,48 +1391,14 @@ fn the_panes_make_room_for_the_tray_by_one_rule_and_done_gives_it_back() {
         // Done: the room back, every Pane where it was, nothing written and nothing to undo
         key(&mut a, KeyCode::Esc);
         render(&mut a, W, H);
-        assert!(a.arranging.is_none() && a.naming().is_none());
+        assert!(a.arrange.on.is_none() && a.naming().is_none());
         assert_eq!((a.pane_area(), drawn_panes(&a)), (body, plain.clone()));
         assert_eq!(a.layout, before);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), saved, "the saved floor plan is the same");
     }
-    assert!(a.history.can_undo());
+    assert!(a.arrange.history.can_undo());
     a.run(Action::UndoLayout);
     assert!(a.layout.has(Widget::Fft), "the one undo step is the close");
-}
-
-/// A drag that turns Arrange mode on makes the Panes shorter at once, before any frame is drawn: a release in the
-/// same batch of input, on the queue where it is now (a cell that was another Pane's, where there is one), swaps with
-/// the queue. Every Design that has a queue.
-#[test]
-fn a_drag_that_turns_arrange_mode_on_drops_on_the_pane_where_it_now_is() {
-    let mut tried = 0;
-    for (d, design) in DESIGNS.iter().enumerate() {
-        let mut a = App::new(None);
-        a.set_design(d);
-        render(&mut a, W, H);
-        if !a.layout.has(Widget::Queue) || a.arranging.is_some() {
-            continue;
-        }
-        tried += 1;
-        let before = a.layout.clone();
-        let held = before.widgets().into_iter().find(|w| *w != Widget::Queue).unwrap();
-        let old = pane(&a, Widget::Queue);
-        let (x, y) = title_spot(&a, held);
-        press(&mut a, x, y);
-        drag(&mut a, x + 4, y + 2);
-        assert!(a.arranging.is_some(), "{}: the drag turned Arrange mode on", design.id);
-        assert_eq!(a.pane_area(), crate::ui::rows(a.window, true)[1], "{}: the Panes' area is shorter at once", design.id);
-        let new = a.layout.compute(a.pane_area()).rect_of(Widget::Queue).unwrap();
-        assert!(new.height < old.height || new.y < old.y, "{}: the queue moved up or shrank", design.id);
-        // a cell of the queue now that wasn't before, if any; else its middle
-        let inside = |r: Rect, (cx, cy): (u16, u16)| cx >= r.x && cx < r.right() && cy >= r.y && cy < r.bottom();
-        let spot = (new.y..new.bottom()).map(|cy| (new.x + new.width / 2, cy)).find(|c| !inside(old, *c)).unwrap_or(centre(new));
-        drag(&mut a, spot.0, spot.1);
-        release(&mut a, spot.0, spot.1);
-        assert_eq!(a.layout, swapped(before, held, Widget::Queue), "{}: released at {spot:?} on the queue's new {new:?}", design.id);
-    }
-    assert!(tried >= 3, "Designs with a queue: {tried}");
 }
 
 // ── New design… (#42) ─────────────────────────────────────────────────
@@ -2033,7 +1459,7 @@ fn a_new_design_is_built_from_one_empty_pane_and_done_saves_it_under_a_name() {
     assert!(shot.contains("Choose a widget") && shot.contains("Enter puts it in the Tray"), "{shot}");
     typed(&mut a, "queue");
     key(&mut a, KeyCode::Enter);
-    assert!(a.widget_picker().is_none() && a.arranging.is_some());
+    assert!(a.widget_picker().is_none() && a.arrange.on.is_some());
     assert_eq!(a.layout.tray(), [Widget::Home, Widget::Queue]);
     // the floor plan first: the Pane's ⊞ splits it, and Esc in the picker leaves the new Pane empty
     render(&mut a, W, H);
@@ -2060,7 +1486,7 @@ fn a_new_design_is_built_from_one_empty_pane_and_done_saves_it_under_a_name() {
     assert!(render(&mut a, W, H).contains("Save design as"));
     typed(&mut a, "Built");
     key(&mut a, KeyCode::Enter);
-    assert!(a.naming().is_none() && a.arranging.is_none());
+    assert!(a.naming().is_none() && a.arrange.on.is_none());
     assert_eq!(a.shown.file(), Some("built"));
     let text = std::fs::read_to_string(dir.path().join("layouts/built.toml")).unwrap();
     assert!(text.contains("name = \"Built\"") && text.contains(&format!("theme = \"{theme}\"")) && !text.contains("edited"), "{text}");
@@ -2081,7 +1507,7 @@ fn esc_on_a_new_design_before_anything_is_placed_leaves_the_design_untouched() {
     a.close_pane(pid(&a, Widget::Fft));
     // (the bar's passing notes aside)
     a.toast = None;
-    a.undo_offer = None;
+    a.arrange.undo_offer = None;
     let plain = render(&mut a, W, H);
     let (layout, name, on_disk) = (a.layout.clone(), a.shown.file().map(String::from), files(dir.path()));
     assert!(name.is_some() && on_disk.iter().any(|(p, _)| p.ends_with("layouts/singularity-edited.toml")), "{on_disk:?}");
@@ -2089,7 +1515,7 @@ fn esc_on_a_new_design_before_anything_is_placed_leaves_the_design_untouched() {
     render(&mut a, W, H);
     assert_eq!(a.layout.tray(), [Widget::Home]);
     key(&mut a, KeyCode::Esc);
-    assert!(a.arranging.is_none() && a.modal().is_none());
+    assert!(a.arrange.on.is_none() && a.modal().is_none());
     assert_eq!((a.layout.clone(), a.shown.file().map(String::from), files(dir.path())), (layout.clone(), name.clone(), on_disk.clone()));
     assert_eq!(render(&mut a, W, H), plain, "the app as before");
     // a Widget added: Esc is Done, which waits for Home; nothing is written meanwhile
@@ -2099,13 +1525,13 @@ fn esc_on_a_new_design_before_anything_is_placed_leaves_the_design_untouched() {
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.layout.tray().len(), 2);
     key(&mut a, KeyCode::Esc);
-    assert!(a.arranging.is_some() && a.naming().is_none());
+    assert!(a.arrange.on.is_some() && a.naming().is_none());
     assert_eq!(files(dir.path()), on_disk);
     // undone back to the blank start: Esc leaves, and the close from before the build is still undoable
     ctrl(&mut a, 'z');
     assert_eq!(a.layout.tray(), [Widget::Home]);
     key(&mut a, KeyCode::Esc);
-    assert!(a.arranging.is_none());
+    assert!(a.arrange.on.is_none());
     assert_eq!((a.layout.clone(), a.shown.file().map(String::from), files(dir.path())), (layout, name, on_disk));
     ctrl(&mut a, 'z');
     assert!(a.layout.has(Widget::Fft));
@@ -2119,7 +1545,7 @@ fn ctrl_d_on_a_new_designs_name_prompt_throws_it_away() {
     let (mut a, dir) = with_dirs();
     a.close_pane(pid(&a, Widget::Fft));
     a.toast = None;
-    a.undo_offer = None;
+    a.arrange.undo_offer = None;
     let plain = render(&mut a, W, H);
     let (layout, name, on_disk) = (a.layout.clone(), a.shown.file().map(String::from), files(dir.path()));
     a.run(Action::NewDesign);
@@ -2132,7 +1558,7 @@ fn ctrl_d_on_a_new_designs_name_prompt_throws_it_away() {
     assert!(shot.contains("Enter save · Esc keep building · Ctrl+D discard it") && shot.contains("find it in Ctrl+K → Pick a design"), "{shot}");
     typed(&mut a, "Half");
     ctrl(&mut a, 'd');
-    assert!(a.naming().is_none() && a.arranging.is_none() && a.modal().is_none());
+    assert!(a.naming().is_none() && a.arrange.on.is_none() && a.modal().is_none());
     assert!(a.toast.as_ref().is_some_and(|t| t.0 == "New design discarded"), "{:?}", a.toast);
     a.toast = None;
     assert_eq!((a.layout.clone(), a.shown.file().map(String::from), files(dir.path())), (layout, name, on_disk));
@@ -2165,7 +1591,7 @@ fn the_palettes_discard_new_design_puts_the_theme_back_too() {
     assert_eq!(a.palette_items().first(), Some(&Action::DiscardNewDesign));
     assert!(render(&mut a, W, H).contains("Discard new design"));
     key(&mut a, KeyCode::Enter);
-    assert!(a.arranging.is_none() && a.modal().is_none());
+    assert!(a.arrange.on.is_none() && a.modal().is_none());
     assert_eq!((a.layout.clone(), a.theme.id.clone()), (layout, theme.clone()));
     assert!(a.toast.as_ref().is_some_and(|t| t.0 == "New design discarded"), "{:?}", a.toast);
     let mut again = App::new(None);
@@ -2199,12 +1625,12 @@ fn a_new_designs_name_is_never_one_taken_and_esc_on_it_keeps_building() {
     key(&mut a, KeyCode::Esc);
     assert_eq!(a.naming().map(|n| n.purpose), Some(crate::app::NameFor::NewDesign));
     key(&mut a, KeyCode::Esc);
-    assert!(a.naming().is_none() && a.arranging.is_some());
+    assert!(a.naming().is_none() && a.arrange.on.is_some());
     assert_eq!(a.layout, built);
     key(&mut a, KeyCode::Esc);
     typed(&mut a, "Mine");
     key(&mut a, KeyCode::Enter);
-    assert!(a.naming().is_some() && a.arranging.is_some(), "refused: the prompt stays");
+    assert!(a.naming().is_some() && a.arrange.on.is_some(), "refused: the prompt stays");
     assert!(a.toast.as_ref().is_some_and(|t| t.0.contains("There is already a design called \"Mine\"")), "{:?}", a.toast);
     assert_eq!(a.layout, built);
 }
@@ -2270,71 +1696,12 @@ fn a_new_designs_name_never_takes_an_edited_copys_file_or_makes_no_file_name() {
     assert!(crate::layouts::load_dir(&dir.path().join("layouts")).0.is_empty(), "nothing written");
 }
 
-/// Owner re-test (#57): with a Widget focused in the Tray, `x`, Delete or Backspace removes it, as its `×` does
-/// (Home, which has no `×`, is refused as the Tray refuses it); the focus goes to the next Widget, else the one before, else back to the Panes.
-/// The legend says `x remove` meanwhile.
-#[test]
-fn x_delete_or_backspace_removes_the_focused_widget_from_the_tray() {
-    use crate::arrange::TrayStop;
-    let mut a = app();
-    key(&mut a, KeyCode::Char('m'));
-    for w in [Widget::Fft, Widget::Loudness, Widget::Lyrics] {
-        a.focus_on(w);
-        key(&mut a, KeyCode::Char('t'));
-    }
-    assert_eq!(a.layout.tray(), &[Widget::Fft, Widget::Loudness, Widget::Lyrics]);
-    let stop = |a: &App| a.arranging.as_ref().unwrap().tray_focus;
-    a.focus_on(Widget::Queue);
-    render(&mut a, W, H);
-    key(&mut a, KeyCode::Down);
-    while stop(&a) != Some(TrayStop::Widget(Widget::Fft)) {
-        key(&mut a, KeyCode::Left);
-    }
-    key(&mut a, KeyCode::Right);
-    assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Loudness)));
-    assert!(render(&mut a, W, H).contains("x remove"), "the legend says so");
-    // `x`: gone, the focus on the next one
-    key(&mut a, KeyCode::Char('x'));
-    assert_eq!(a.layout.tray(), &[Widget::Fft, Widget::Lyrics]);
-    assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Lyrics)));
-    // Delete on the last one: the one before
-    key(&mut a, KeyCode::Delete);
-    assert_eq!(a.layout.tray(), &[Widget::Fft]);
-    assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Fft)));
-    // Backspace on the only one: back to the Panes
-    key(&mut a, KeyCode::Backspace);
-    assert!(a.layout.tray().is_empty() && stop(&a).is_none() && a.focused().is_some());
-    assert!(!render(&mut a, W, H).contains("x remove"), "the Panes' legend again");
-    // an undo brings it back, as for the `×`
-    a.run(Action::UndoLayout);
-    assert_eq!(a.layout.tray(), &[Widget::Fft]);
-    // on a Pane, Delete and Backspace do nothing
-    let before = a.layout.clone();
-    key(&mut a, KeyCode::Delete);
-    key(&mut a, KeyCode::Backspace);
-    assert_eq!(a.layout, before);
-    assert!(a.arranging.is_some());
-    // Home cannot be removed (it has no `×`): refused with the words a removal of it gets, the focus stays on it
-    let mut a = app();
-    a.run(Action::NewDesign);
-    render(&mut a, W, H);
-    key(&mut a, KeyCode::Down);
-    assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Home)));
-    for k in [KeyCode::Char('x'), KeyCode::Delete, KeyCode::Backspace] {
-        a.toast = None;
-        key(&mut a, k);
-        assert_eq!(a.layout.tray(), &[Widget::Home]);
-        assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Home)));
-        assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("never removed")), "{:?}", a.toast);
-    }
-}
-
 /// Review of #83: a layout change that takes the focused Widget out of the Tray (Ctrl+Z undoing its `t`, the mouse's
 /// `×` on its chip) moves the focus on as `x` does, so the legend never says `x remove` while `x` would close a Pane.
 #[test]
 fn the_trays_focus_follows_an_undo_or_the_mouse_taking_its_widget_away() {
     use crate::arrange::TrayStop;
-    let stop = |a: &App| a.arranging.as_ref().unwrap().tray_focus;
+    let stop = |a: &App| a.arrange.on.as_ref().unwrap().tray_focus;
     let mut a = app();
     key(&mut a, KeyCode::Char('m'));
     for w in [Widget::Fft, Widget::Loudness] {
@@ -2406,7 +1773,7 @@ fn the_keyboard_reaches_plus_widget_on_the_tray_even_when_it_is_empty() {
     let mut a = app();
     a.run(Action::NewDesign);
     render(&mut a, W, H);
-    let stop = |a: &App| a.arranging.as_ref().unwrap().tray_focus;
+    let stop = |a: &App| a.arrange.on.as_ref().unwrap().tray_focus;
     // Home waits: ↓ lands on it, → goes on to "+ Widget"
     key(&mut a, KeyCode::Down);
     assert_eq!(stop(&a), Some(TrayStop::Widget(Widget::Home)));
@@ -2501,7 +1868,7 @@ fn a_widget_carried_into_the_tray_with_the_keys_is_shown_in_the_tray() {
     let own = pane(&a, Widget::Queue);
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Down);
-    assert!(a.tile.as_ref().is_some_and(|t| t.tray), "aimed at the Tray");
+    assert!(a.arrange.tile.as_ref().is_some_and(|t| t.tray), "aimed at the Tray");
     let buf = render_buf(&mut a, W, H);
     let tray = a.tray_rect();
     let chip = spot(&buf, "⠿ queue").expect("the chip");
@@ -2532,69 +1899,6 @@ fn a_widget_carried_into_the_tray_with_the_keys_is_shown_in_the_tray() {
     assert_eq!(e.layout.tray(), [Widget::Queue]);
 }
 
-/// Owner, Q70: `m`, which came into Arrange mode, leaves it as Esc does: a Widget picked up is put back first, `s`'s
-/// wait for its arrow ends, and with nothing picked up it is Done (asking for a name if anything changed).
-#[test]
-fn m_leaves_arrange_mode_as_esc_does() {
-    let mut a = app();
-    key(&mut a, KeyCode::Char('m'));
-    assert!(a.arranging.is_some());
-    key(&mut a, KeyCode::Char('m'));
-    assert!(a.arranging.is_none() && a.modal().is_none(), "nothing changed: Done, no prompt");
-    // a Widget picked up: put back, still arranging
-    key(&mut a, KeyCode::Char('m'));
-    a.focus_on(Widget::Queue);
-    let before = a.layout.clone();
-    key(&mut a, KeyCode::Enter);
-    key(&mut a, KeyCode::Up);
-    key(&mut a, KeyCode::Char('m'));
-    assert!(a.tile.is_none() && a.arranging.is_some() && a.layout == before);
-    // `s` waiting: the wait ends, nothing else
-    key(&mut a, KeyCode::Char('s'));
-    key(&mut a, KeyCode::Char('m'));
-    assert!(a.arranging.as_ref().is_some_and(|r| !r.split_next));
-    // from the Tray's focus too
-    key(&mut a, KeyCode::Down);
-    assert!(a.arranging.as_ref().unwrap().tray_focus.is_some());
-    key(&mut a, KeyCode::Char('m'));
-    assert!(a.arranging.is_none());
-    // with a change: Done asks for its name, as Esc does
-    let (mut a, _dir) = with_dirs();
-    key(&mut a, KeyCode::Char('m'));
-    a.focus_on(Widget::Fft);
-    key(&mut a, KeyCode::Char('x'));
-    key(&mut a, KeyCode::Char('m'));
-    assert!(a.arranging.is_none() && a.naming().is_some());
-}
-
-/// Owner, Q71: `w` opens "+ Widget"'s picker from anywhere in Arrange mode (a Pane or the Tray focused); a pick goes
-/// into the Tray. While a Widget is carried the keys aim it, and `w` does nothing.
-#[test]
-fn w_opens_the_trays_widget_picker_anywhere_in_arrange_mode() {
-    let mut a = app();
-    key(&mut a, KeyCode::Char('m'));
-    a.focus_on(Widget::Fft);
-    key(&mut a, KeyCode::Char('x'));
-    a.focus_on(Widget::Queue);
-    key(&mut a, KeyCode::Char('w'));
-    assert!(a.widget_picker().is_some_and(|p| p.tray));
-    key(&mut a, KeyCode::Esc);
-    assert!(a.widget_picker().is_none() && a.arranging.is_some());
-    // from the Tray's focus
-    key(&mut a, KeyCode::Down);
-    assert!(a.arranging.as_ref().unwrap().tray_focus.is_some());
-    key(&mut a, KeyCode::Char('w'));
-    assert!(a.widget_picker().is_some_and(|p| p.tray));
-    typed(&mut a, "starfield");
-    key(&mut a, KeyCode::Enter);
-    assert!(a.layout.tray().contains(&Widget::Starfield));
-    // carrying: nothing
-    a.focus_on(Widget::Queue);
-    key(&mut a, KeyCode::Enter);
-    key(&mut a, KeyCode::Char('w'));
-    assert!(a.widget_picker().is_none() && a.tile.is_some());
-}
-
 /// A Widget picked up from the Tray with Enter, aimed at the Tray (where it is): its chip is on its own place in the
 /// Tray's row, never on the Tray's frame (where it covered "Tray" or "+ Widget"); nothing else on screen changes
 /// but the Tray and the legend.
@@ -2609,7 +1913,7 @@ fn a_widget_picked_up_from_the_tray_is_shown_in_its_place_there() {
     a.focus_on(Widget::Queue);
     key(&mut a, KeyCode::Down);
     key(&mut a, KeyCode::Left);
-    assert_eq!(a.arranging.as_ref().unwrap().tray_focus, Some(crate::arrange::TrayStop::Widget(Widget::Fft)));
+    assert_eq!(a.arrange.on.as_ref().unwrap().tray_focus, Some(crate::arrange::TrayStop::Widget(Widget::Fft)));
     let before = render_buf(&mut a, W, H);
     let tray = a.tray_rect();
     let name = crate::ui::pane_name(a.shown.design(), Widget::Fft);
@@ -2651,7 +1955,7 @@ fn a_widget_aimed_at_a_full_tray_shows_its_end() {
         key(&mut a, KeyCode::Enter);
     }
     render(&mut a, 100, 40);
-    if let Some(r) = a.arranging.as_mut() {
+    if let Some(r) = a.arrange.on.as_mut() {
         r.tray_first = 0;
     }
     let buf = render_buf(&mut a, 100, 40);
@@ -2660,7 +1964,7 @@ fn a_widget_aimed_at_a_full_tray_shows_its_end() {
     assert!(spot(&buf, &format!(" ⠿ {last_name} ")).is_none(), "the strip doesn't show its end yet");
     a.focus_on(Widget::Queue);
     key(&mut a, KeyCode::Enter);
-    while !a.tile.as_ref().is_some_and(|t| t.tray) {
+    while !a.arrange.tile.as_ref().is_some_and(|t| t.tray) {
         key(&mut a, KeyCode::Down);
     }
     let buf = render_buf(&mut a, 100, 40);
@@ -2686,12 +1990,87 @@ fn arrange_bound_with_ctrl_leaves_arrange_mode_too() {
     a.keymap = crate::keymap::Keymap::from_keys(&Keys { bindings: [("arrange".to_string(), OneOrMany::One("ctrl+e".into()))].into(), ..Default::default() });
     assert!(a.keymap.problems.is_empty(), "{:?}", a.keymap.problems);
     ctrl(&mut a, 'e');
-    assert!(a.arranging.is_some());
+    assert!(a.arrange.on.is_some());
     // a Widget picked up: put back first
     a.focus_on(Widget::Queue);
     key(&mut a, KeyCode::Enter);
     ctrl(&mut a, 'e');
-    assert!(a.tile.is_none() && a.arranging.is_some());
+    assert!(a.arrange.tile.is_none() && a.arrange.on.is_some());
     ctrl(&mut a, 'e');
-    assert!(a.arranging.is_none());
+    assert!(a.arrange.on.is_none());
+}
+
+#[test]
+fn esc_or_a_drop_on_its_own_pane_or_off_the_panes_leaves_the_layout_alone() {
+    let mut a = app();
+    let before = a.layout.clone();
+    let q = pane(&a, Widget::Queue);
+    let (x, y) = title_spot(&a, Widget::Stream);
+    press(&mut a, x, y);
+    drag(&mut a, centre(q).0, centre(q).1);
+    assert!(a.arrange.tile.as_ref().unwrap().over.is_some());
+    key(&mut a, KeyCode::Esc);
+    assert!(a.arrange.tile.is_none());
+    release(&mut a, centre(q).0, centre(q).1);
+    assert_eq!(a.layout, before);
+    // over its own Pane: nothing highlighted, and a release there is no drop
+    press(&mut a, x, y);
+    drag(&mut a, x + 5, y + 4);
+    assert!(a.arrange.tile.as_ref().unwrap().over.is_none());
+    let shot = render(&mut a, W, H);
+    assert!(!shot.contains("swap with") && shot.contains("⠿ stream"), "{shot}");
+    release(&mut a, x + 5, y + 4);
+    assert_eq!(a.layout, before);
+    // over the top bar or the legend: no Pane, no drop
+    for out in [0, H - 1] {
+        press(&mut a, x, y);
+        drag(&mut a, centre(q).0, centre(q).1);
+        drag(&mut a, centre(q).0, out);
+        release(&mut a, centre(q).0, out);
+        assert_eq!(a.layout, before, "let go at row {out}");
+    }
+    assert!(a.naming().is_none() && !a.arrange.history.can_undo());
+}
+
+/// While the mouse holds a divider the arrange keys wait: Enter picks nothing up, and the release records the move.
+#[test]
+fn the_keys_wait_while_the_mouse_holds_a_divider() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    render(&mut a, W, H);
+    let start = a.layout.clone();
+    let grip = a.dividers[0].grip;
+    press(&mut a, grip.x, grip.y + 5);
+    drag(&mut a, grip.x + 6, grip.y + 5);
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('x'));
+    assert!(a.arrange.tile.is_none() && a.arrange.divider.is_some(), "still the divider's");
+    drag(&mut a, grip.x + 8, grip.y + 5);
+    release(&mut a, grip.x + 8, grip.y + 5);
+    assert!(a.arrange.divider.is_none() && a.layout != start);
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout, start, "the move was recorded");
+}
+
+/// The palette's Close pane (Ctrl+K) and Replace widget… while a Widget is picked up with Enter put it back.
+#[test]
+fn the_palettes_close_pane_or_replace_widget_puts_a_picked_up_widget_back() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('m'));
+    a.focus_on(Widget::Fft);
+    key(&mut a, KeyCode::Enter);
+    // Close pane, on the focused (picked-up) Pane
+    a.run(Action::ClosePane);
+    render(&mut a, W, H);
+    assert!(a.arrange.tile.is_none() && a.drag_marks().is_none());
+    // Replace widget…: the picker opens, and the pick-up is gone with it
+    a.focus_on(Widget::Loudness);
+    key(&mut a, KeyCode::Enter);
+    assert!(a.arrange.carrying());
+    a.run(Action::ReplaceWidget);
+    let i = a.widget_choices().iter().position(|c| c.widget == Widget::Scope).unwrap();
+    a.widget_picked(i);
+    render(&mut a, W, H);
+    assert!(a.arrange.tile.is_none());
+    assert!(a.layout.has(Widget::Scope) && a.arrange.is_on());
 }

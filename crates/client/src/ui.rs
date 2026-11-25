@@ -81,7 +81,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         return;
     }
-    let [top, body, player, tray, hints] = rows(area, app.arranging.is_some());
+    let [top, body, player, tray, hints] = rows(area, app.arrange.is_on());
     // a held Widget: the Pane under the pointer is highlighted with a label, a chip follows the pointer. Neither
     // changes how anything under it is drawn (no step down a tier: that flickered): images are placed around them
     // something drawn on top now (the login code, the wizard): a held Widget is let go, its chip would cover it
@@ -120,14 +120,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     crate::visual::idle::draw(f.buffer_mut(), body, app, &th);
     // the player bar stays in Arrange mode, the Tray goes under it and the legend and Done where the hints were (Q39)
     player_bar(f, player, app, &th);
-    if app.arranging.is_some() {
+    if app.arrange.is_on() {
         crate::arrange::draw_tray(f.buffer_mut(), tray, app, &th);
     }
-    match app.arranging.is_some() {
+    match app.arrange.is_on() {
         true => crate::arrange::draw_legend(f.buffer_mut(), hints, app, &th),
         false => hint_bar(f.buffer_mut(), hints, &th, &app.keymap),
     }
-    if app.arranging.is_none() {
+    if !app.arrange.is_on() {
         crate::arrange::draw_undo_chip(f.buffer_mut(), hints, app, &th);
     }
     // the bottom first, so the one on top is drawn last
@@ -501,11 +501,11 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     let mut spans = vec![Span::styled(format!(" {number}"), title_st)];
     // the main Pane: ← → through the pages seen, while there are any, at the right end of its title like every
     // Pane's arrows (D44); dim when there's nowhere to go that way
-    let history = w == Some(Widget::Home) && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20 && app.arranging.is_none();
+    let history = w == Some(Widget::Home) && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20 && !app.arrange.is_on();
     // a Pane whose Widget can give way to others always keeps its ◂ ▸ (7 cells at the right): a long title gives way
     let can_swap = w.is_some_and(|w| crate::widget_catalogue::facts(w).group.is_some()) || history;
     // Arrange mode (D87): a split button before the ×, and no ◂ ▸ (what a Pane shows changes by dragging there)
-    let split_btn = app.arranging.is_some() && rect.width >= 14;
+    let split_btn = app.arrange.is_on() && rect.width >= 14;
     let can_swap = can_swap && !split_btn;
     // the ◂ ▸ keep their place whether or not the Widget shown can close: cycling onto the queue (no ×) moved them
     // three cells, and the next click on ▸ landed on ◂, so the Pane went back and forth between two Widgets
@@ -3807,7 +3807,7 @@ mod tests {
             Modal::Menu => app.menu().map(|m| m.selected),
             Modal::Help => app.text_scroll(m).map(|s| s.offset()),
             Modal::Naming | Modal::Cover | Modal::Login => None,
-            Modal::Arrange => app.arranging.as_ref().map(|a| a.tray_first),
+            Modal::Arrange => app.arrange.tray_first(),
         }
     }
 

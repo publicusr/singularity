@@ -154,7 +154,7 @@ impl Replay {
     /// the player bar).
     fn under(&self, x: u16, y: u16, own: PaneId) -> Option<Spot> {
         let t = self.a.tray_rect();
-        if self.a.arranging.is_some() && own != PaneId::UNSET && x < t.right() && y >= t.y && y < t.bottom() {
+        if self.a.arrange.on.is_some() && own != PaneId::UNSET && x < t.right() && y >= t.y && y < t.bottom() {
             return Some(Spot::Tray);
         }
         let c = self.a.layout.compute(self.a.pane_area());
@@ -166,7 +166,7 @@ impl Replay {
         if let Some((at, ev)) = self.moves.flush() {
             self.handle(at, ev);
         }
-        if self.draw || self.a.pane_area() != body(self.size, self.a.arranging.is_some()) || self.drawn.as_ref() != Some(&self.a.layout) {
+        if self.draw || self.a.pane_area() != body(self.size, self.a.arrange.on.is_some()) || self.drawn.as_ref() != Some(&self.a.layout) {
             self.render();
         }
         let area = self.a.pane_area();
@@ -178,7 +178,7 @@ impl Replay {
             self.a.layout.compute(area).panes.into_iter().map(|(p, r)| (p.id, r)).collect()
         };
         rects.sort_by_key(|(p, _)| *p);
-        let t = self.a.tile.as_ref().filter(|t| t.live);
+        let t = self.a.arrange.tile.as_ref().filter(|t| t.live);
         let under = t.and_then(|t| self.under(t.at.0, t.at.1, t.pane.id));
         let ms = self.ms(due);
         self.frames.push(Frame { t: ms, held: t.is_some(), over: t.and_then(Spot::of), under, rects, body: area, fits });
@@ -200,7 +200,7 @@ impl Replay {
     /// One event handled, as `main.rs`'s `handle` does; a hold it ends is recorded with how it ended.
     fn handle(&mut self, at: Instant, ev: Event) {
         self.a.input_at = Some(at);
-        let held = self.a.tile.as_ref().filter(|t| t.live).map(|t| (t.pane.id, Spot::of(t), t.pane.widget.filter(|_| t.from_tray)));
+        let held = self.a.arrange.tile.as_ref().filter(|t| t.live).map(|t| (t.pane.id, Spot::of(t), t.pane.widget.filter(|_| t.from_tray)));
         let before = self.a.layout.clone();
         match ev {
             Event::Mouse(m) => {
@@ -211,10 +211,10 @@ impl Replay {
                     self.last_drag = Some((m.column, m.row));
                 }
                 self.a.mouse(m);
-                if let (MouseEventKind::Down(MouseButton::Left), Some(Hit::Divider(i))) = (m.kind, &self.a.drag) {
-                    self.divider = Some(*i);
+                if let (MouseEventKind::Down(MouseButton::Left), Some(i)) = (m.kind, self.a.arrange.divider_held()) {
+                    self.divider = Some(i);
                 }
-                if let Some((own, _, from_tray)) = held.filter(|_| self.a.tile.is_none()) {
+                if let Some((own, _, from_tray)) = held.filter(|_| self.a.arrange.tile.is_none()) {
                     self.drops.push(Drop { before, released, shown, held: own, from_tray, after: self.a.layout.clone() });
                 }
             }
@@ -284,8 +284,8 @@ impl Replay {
         let area = self.a.pane_area();
         assert!(self.a.layout.fits(area), "{what}: the floor plan isn't valid: {:?}", self.a.layout);
         // nothing is left held once the button is up (every path ends with it up)
-        assert!(self.a.tile.is_none(), "{what}: a Widget is still held");
-        assert!(self.a.drag.is_none() && self.a.divider_from.is_none(), "{what}: a divider is still held");
+        assert!(self.a.arrange.tile.is_none(), "{what}: a Widget is still held");
+        assert!(self.a.arrange.divider.is_none(), "{what}: a divider is still held");
         assert!(!self.a.moving_now(), "{what}: still moving after the path");
         // a release drops on the Pane under it, which is the one highlighted at release: the two Widgets swap and the
         // floor plan stays; a hold that ended any other way (Esc, unheard, on its own Pane, off the Panes) changes nothing

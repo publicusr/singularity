@@ -340,7 +340,7 @@ impl App {
         if let Some(p) = self.take_picker() {
             // another Design: the layout undo history was the last one's
             if p.before.0 != self.shown.design() || p.before.2 != self.layout || p.before.3.file() != self.shown.file() {
-                self.history.clear();
+                self.arrange.forget_history();
             }
             self.save_ui();
         }
