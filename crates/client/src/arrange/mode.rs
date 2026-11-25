@@ -692,6 +692,32 @@ impl Arrange {
         w.done()
     }
 
+    /// A mouse event routed as `App::pointer` routes Arrange mode's gestures (no popup open, not the player bar's),
+    /// after `unheard` (whose outcomes the caller carries out first, as the App does): Arrange mode's own pointer
+    /// while it is on, a held Widget's, a press on a title, a × or a divider, a held divider's drag and release. The
+    /// tests (and the pointer-path replayer) drive the module through it, without an App.
+    #[cfg(test)]
+    pub fn route(&mut self, sc: &Scene, m: MouseEvent, hit: Option<Hit>) -> Vec<Out> {
+        let mut out = vec![];
+        if self.on.is_some() {
+            out.extend(self.pointer(sc, m, hit, false));
+            return out;
+        }
+        if self.tile.is_some() {
+            out.extend(self.tile_pointer(sc, m));
+            return out;
+        }
+        match (m.kind, hit) {
+            (MouseEventKind::Down(MouseButton::Left), Some(Hit::Title(p) | Hit::TitleName(p))) => out.extend(self.title_down(sc, p, m.column, m.row)),
+            (MouseEventKind::Down(MouseButton::Left), Some(Hit::Close(p))) => out.extend(self.close_pane(sc, p)),
+            (MouseEventKind::Down(MouseButton::Left), Some(Hit::Divider(i))) => self.grab_divider(sc, i, m.column, m.row),
+            (MouseEventKind::Drag(MouseButton::Left), _) if self.divider.is_some() => out.extend(self.divider_to(sc, m.column, m.row)),
+            (MouseEventKind::Up(_), _) => out.extend(self.divider_up(sc)),
+            _ => {}
+        }
+        out
+    }
+
     // ── drawing ───────────────────────────────────────────────────────
 
     /// While a Widget is held over another Pane: that Pane, what its label says ("swap with queue", "put here"), and
