@@ -46,11 +46,19 @@ impl Bench {
 
     /// `f` with the Scene as it stands, and what came out carried out.
     fn run(&mut self, f: impl FnOnce(&mut Arrange, &Scene) -> Vec<Out>) {
+        let outs = self.call(f);
+        self.apply(outs);
+    }
+
+    /// `f` with the Scene as it stands.
+    fn call(&mut self, f: impl FnOnce(&mut Arrange, &Scene) -> Vec<Out>) -> Vec<Out> {
         let dividers = self.dividers();
-        let outs = {
-            let sc = Scene { layout: &self.layout, focus: self.focus, window: self.window, body: self.body, dividers: &dividers, aspect: 2.0, design: self.design, keymap: &self.keymap, mark: Default::default() };
-            f(&mut self.a, &sc)
-        };
+        let sc = Scene { layout: &self.layout, focus: self.focus, window: self.window, body: self.body, dividers: &dividers, aspect: 2.0, design: self.design, keymap: &self.keymap, mark: Default::default() };
+        f(&mut self.a, &sc)
+    }
+
+    /// What came out, carried out as the App does (plainly).
+    fn apply(&mut self, outs: Vec<Out>) {
         for o in outs {
             match o {
                 Out::Commit { tree, note } => {
@@ -65,7 +73,11 @@ impl Bench {
                 Out::Say(s) => self.said.push(s),
                 Out::Body(r) => self.body = r,
                 Out::Restore { snap, said } => {
+                    // (as `App::restore`: the layout replaced, so the Tray's focus settles, then the focus it had)
+                    let (old, was) = (self.layout.tray().to_vec(), self.focused());
                     self.layout = snap.tree;
+                    let more = self.call(|a, sc| a.layout_replaced(sc, &old, was));
+                    self.apply(more);
                     self.focus = snap.focus.filter(|p| self.layout.contains(*p)).or_else(|| fallback_pane(&self.layout));
                     self.said.push(said);
                 }
@@ -605,6 +617,648 @@ fn a_new_design_starts_from_one_empty_pane_and_esc_before_anything_is_placed_goe
     assert!(b.a.building() && matches!(b.asked.last(), Some(Out::AskNewName)));
     b.run(|a, sc| a.new_design_saved(sc));
     assert!(!b.a.is_on() && !b.a.history.can_undo(), "the new Design starts its own history");
+}
+
+// ── moved from the App's tests (D89): what Arrange mode itself does ───
+
+impl Bench {
+    /// The window takes a new size (the Panes' area follows, arranging or not).
+    fn resize(&mut self, w: u16, h: u16) {
+        self.window = Rect::new(0, 0, w, h);
+        self.run(|a, sc| a.resized(sc));
+    }
+
+    fn split(&mut self, side: Side) {
+        self.run(|a, sc| a.split_pane(sc, None, side));
+    }
+
+    fn close(&mut self, w: Widget) {
+        let id = self.pid(w);
+        self.run(|a, sc| a.close_pane(sc, id));
+    }
+
+    /// Where Pane `w`'s title can be grabbed, and what is drawn there.
+    fn title(&self, w: Widget) -> ((u16, u16), Option<Hit>) {
+        let r = self.rect(w);
+        ((r.x + 3, r.y), Some(Hit::Title(self.pid(w))))
+    }
+
+    fn opened_picker(&self) -> bool {
+        self.asked.iter().any(|o| matches!(o, Out::OpenWidgetPicker { .. }))
+    }
+}
+
+#[test]
+fn a_split_with_no_room_says_so() {
+    let mut b = Bench::new();
+    b.resize(50, 14);
+    b.focus_on(Widget::Library);
+    let before = b.layout.clone();
+    // 50 columns: Singularity's four columns of 12 take 48 of them, no room for a fifth
+    b.split(Side::Right);
+    assert!(!b.opened_picker(), "no picker");
+    assert_eq!(b.layout, before, "nothing changed");
+    assert!(b.said.last().is_some_and(|t| t.contains("No room for a new Pane right of")), "{:?}", b.said);
+}
+
+#[test]
+fn the_focus_always_lands_on_a_real_pane() {
+    let mut b = Bench::new();
+    b.enter();
+    b.focus_on(Widget::Home);
+    b.key(KeyCode::Char('t'));
+    assert!(b.layout.tray().contains(&Widget::Home));
+    b.focus_on(Widget::Fft);
+    b.key(KeyCode::Char('x'));
+    assert!(b.focus.is_some_and(|p| b.layout.contains(p)), "{:?}", b.focus);
+    for code in [KeyCode::Up, KeyCode::Down, KeyCode::Left] {
+        b.key(code);
+        assert!(b.focus.is_some_and(|p| b.layout.contains(p)));
+    }
+    // a focus left on a Pane that's gone (another path): the next key acts from a real one
+    b.focus = Some(PaneId::UNSET);
+    b.key(KeyCode::Enter);
+    assert!(b.a.tile.as_ref().is_some_and(|t| b.layout.contains(t.pane.id)), "picked up from a real Pane");
+    b.key(KeyCode::Esc);
+    // undo back past the close: still a real Pane
+    b.undo(true);
+    b.undo(true);
+    assert!(b.focus.is_some_and(|p| b.layout.contains(p)));
+}
+
+#[test]
+fn the_pointer_leaves_a_picked_up_widget_alone_until_a_press() {
+    let mut b = Bench::new();
+    b.enter();
+    b.focus_on(Widget::Queue);
+    let before = b.layout.clone();
+    b.key(KeyCode::Enter);
+    b.key(KeyCode::Up);
+    let (x, y) = centre(b.rect(Widget::Lyrics));
+    b.mouse(MouseEventKind::Moved, x, y, None);
+    b.release((x, y));
+    assert!(b.a.carrying(), "still picked up");
+    assert!(!b.a.moving_now(), "nothing follows the pointer");
+    b.press((x, y), None);
+    assert!(b.a.tile.is_none() && b.focused() == Some(Widget::Lyrics));
+    assert_eq!(b.layout, before);
+}
+
+#[test]
+fn a_short_wide_pane_is_swapped_with_wherever_the_pointer_is_on_it() {
+    // the instruments in a short row under Home: fft dropped anywhere on loudness swaps the two
+    use crate::layout::{Axis::*, Size::*};
+    let mut b = Bench::new();
+    let s = Node::pane;
+    let row = Node::split(Horizontal, Ratio(0.5), s(Widget::Fft), s(Widget::Loudness));
+    b.layout = Node::split(Horizontal, Cells(30), s(Widget::Library), Node::split(Vertical, Ratio(0.7), Node::split(Vertical, Ratio(0.6), s(Widget::Home), s(Widget::Queue)), Node::split(Horizontal, Ratio(0.8), row, s(Widget::Lyrics)))).into();
+    // (arranging already, so the Panes are where they stay for every drag)
+    b.enter();
+    let before = b.layout.clone();
+    let l = b.rect(Widget::Loudness);
+    let loudness = b.pid(Widget::Loudness);
+    for p in [(l.x, l.y), (l.x + l.width / 2, l.bottom() - 1), (l.right() - 1, l.y + l.height / 2)] {
+        let (at, hit) = b.title(Widget::Fft);
+        b.press(at, hit);
+        b.drag(p);
+        assert_eq!(b.a.tile.as_ref().unwrap().over, Some(loudness), "{p:?} in {l:?}");
+        b.key(KeyCode::Esc);
+        b.release(p);
+    }
+    b.title_drag(Widget::Fft, (l.x + l.width / 2, l.y));
+    assert_eq!(b.layout, before.swap(b.pid(Widget::Loudness), b.pid(Widget::Fft)).unwrap());
+}
+
+#[test]
+fn a_picked_up_widget_aimed_down_onto_the_tray_waits_there() {
+    let mut b = Bench::new();
+    b.enter();
+    b.focus_on(Widget::Queue);
+    let spot = b.pid(Widget::Queue);
+    b.key(KeyCode::Enter);
+    b.key(KeyCode::Down);
+    assert!(b.a.tile.as_ref().is_some_and(|t| t.tray && t.over.is_none()) && b.a.tray_lit());
+    // ↑ aims back into the Panes, ↓ at the Tray again
+    b.key(KeyCode::Up);
+    assert!(b.a.tile.as_ref().is_some_and(|t| !t.tray));
+    b.key(KeyCode::Down);
+    b.key(KeyCode::Enter);
+    assert!(b.layout.tray().contains(&Widget::Queue) && b.layout.widget_in(spot).is_none());
+    assert!(b.a.tile.is_none() && b.focus == Some(spot));
+}
+
+#[test]
+fn the_x_on_one_widget_in_the_tray_removes_it_and_undo_redo_cover_tray_edits() {
+    let mut b = Bench::new();
+    let start = b.layout.clone();
+    let t = b.tray_rect();
+    let tray = (t.x + t.width / 2, t.y + 1);
+    b.title_drag(Widget::Stream, tray);
+    b.title_drag(Widget::Fft, tray);
+    let two = b.layout.clone();
+    b.press((0, 0), Some(Hit::TrayRemove(Widget::Stream)));
+    // a second click in the same burst (no frame between) lands on the same spot: nothing more goes
+    b.press((0, 0), Some(Hit::TrayRemove(Widget::Stream)));
+    assert_eq!(b.layout.tray(), [Widget::Fft], "only that one went");
+    assert!(!b.layout.has(Widget::Stream));
+    b.undo(true);
+    assert_eq!(b.layout, two);
+    b.undo(true);
+    b.undo(true);
+    assert_eq!(b.layout, start);
+    b.undo(false);
+    assert_eq!(b.layout.tray(), [Widget::Stream]);
+    assert!(b.a.is_on(), "undo and redo work in Arrange mode");
+}
+
+#[test]
+fn closing_sends_the_widget_to_the_tray_and_clear_tray_never_removes_home() {
+    let mut b = Bench::new();
+    b.enter();
+    let fft = b.pid(Widget::Fft);
+    b.press((0, 0), Some(Hit::Close(fft)));
+    assert!(!b.layout.contains(fft), "the neighbour took the room");
+    assert_eq!(b.layout.tray(), [Widget::Fft]);
+    // Home into the Tray: Done is unavailable
+    let t = b.tray_rect();
+    b.title_drag(Widget::Home, (t.x + t.width / 2, t.y + 1));
+    assert_eq!(b.layout.tray(), [Widget::Fft, Widget::Home]);
+    b.key(KeyCode::Esc);
+    b.press((0, 0), Some(Hit::ArrangeDone));
+    assert!(b.a.is_on(), "neither Esc nor Done ends it");
+    // Clear Tray removes the rest, never Home; nor does Home's own removal
+    b.press((0, 0), Some(Hit::TrayRemove(Widget::Home)));
+    assert_eq!(b.layout.tray(), [Widget::Fft, Widget::Home]);
+    b.press((0, 0), Some(Hit::ClearTray));
+    assert_eq!(b.layout.tray(), [Widget::Home]);
+    // Home back into its (empty) Pane: Done ends Arrange mode
+    let empty = b.layout.panes().into_iter().find(|p| p.widget.is_none()).unwrap().id;
+    let to = centre(b.layout.compute(b.body).rect(empty).unwrap());
+    b.press((t.x + 3, t.y + 1), Some(Hit::TrayItem(Widget::Home)));
+    b.drag(to);
+    b.release(to);
+    b.key(KeyCode::Esc);
+    assert!(!b.a.is_on() && b.layout.has(Widget::Home));
+}
+
+#[test]
+fn a_widget_from_the_tray_fills_an_empty_pane_or_swaps_with_what_is_there() {
+    let mut b = Bench::new();
+    let (stream, queue) = (b.pid(Widget::Stream), b.pid(Widget::Queue));
+    let t = b.tray_rect();
+    let tray = (t.x + t.width / 2, t.y + 1);
+    b.title_drag(Widget::Stream, tray);
+    // onto the queue: the queue goes into the Tray in its place
+    let to = centre(b.rect(Widget::Queue));
+    let from = (t.x + 4, t.y + 1);
+    b.press(from, Some(Hit::TrayItem(Widget::Stream)));
+    b.drag((from.0 + 3, from.1 - 3));
+    b.drag(to);
+    assert_eq!(b.a.drag_marks(&b.layout, 0).unwrap().0.map(|(_, l)| l), Some("swap with queue".into()));
+    b.release(to);
+    assert_eq!((b.layout.widget_in(queue), b.layout.tray()), (Some(Widget::Stream), &[Widget::Queue][..]));
+    // onto the empty Pane: it fills it, and the Tray is empty
+    let to = centre(b.layout.compute(b.body).rect(stream).unwrap());
+    b.press(from, Some(Hit::TrayItem(Widget::Queue)));
+    b.drag(to);
+    b.release(to);
+    assert_eq!(b.layout.widget_in(stream), Some(Widget::Queue));
+    assert!(b.layout.tray().is_empty());
+    // a click on a Widget in the Tray, or a drop back on the Tray, changes nothing
+    b.title_drag(Widget::Fft, tray);
+    let now = b.layout.clone();
+    b.press(from, Some(Hit::TrayItem(Widget::Fft)));
+    b.release(from);
+    b.press(from, Some(Hit::TrayItem(Widget::Fft)));
+    b.drag((from.0 + 20, from.1));
+    b.release((from.0 + 20, from.1));
+    assert_eq!(b.layout, now);
+    assert!(!b.asked.iter().any(|o| matches!(o, Out::TitleClick { .. })), "a Tray click is no title click");
+}
+
+/// ↓ onto the Tray from the queue, then ← (or →) until the focus is on `w`.
+fn to_tray_widget(b: &mut Bench, w: Widget) {
+    b.focus_on(Widget::Queue);
+    for _ in 0..10 {
+        if b.a.tray_focus().is_some() {
+            break;
+        }
+        b.key(KeyCode::Down);
+    }
+    for _ in 0..6 {
+        if b.a.tray_focus() == Some(TrayStop::Widget(w)) {
+            return;
+        }
+        let i = b.layout.tray().iter().position(|x| *x == w).unwrap();
+        let at = match b.a.tray_focus() {
+            Some(TrayStop::Widget(x)) => b.layout.tray().iter().position(|y| *y == x).unwrap(),
+            _ => usize::MAX,
+        };
+        b.key(if i < at { KeyCode::Left } else { KeyCode::Right });
+    }
+    assert_eq!(b.a.tray_focus(), Some(TrayStop::Widget(w)), "the focus reached it");
+}
+
+#[test]
+fn x_delete_or_backspace_removes_the_focused_widget_from_the_tray() {
+    let mut b = Bench::new();
+    b.enter();
+    for w in [Widget::Fft, Widget::Loudness, Widget::Lyrics] {
+        b.focus_on(w);
+        b.key(KeyCode::Char('t'));
+    }
+    assert_eq!(b.layout.tray(), &[Widget::Fft, Widget::Loudness, Widget::Lyrics]);
+    to_tray_widget(&mut b, Widget::Loudness);
+    // `x`: gone, the focus on the next one
+    b.key(KeyCode::Char('x'));
+    assert_eq!(b.layout.tray(), &[Widget::Fft, Widget::Lyrics]);
+    assert_eq!(b.a.tray_focus(), Some(TrayStop::Widget(Widget::Lyrics)));
+    // Delete on the last one: the one before
+    b.key(KeyCode::Delete);
+    assert_eq!(b.layout.tray(), &[Widget::Fft]);
+    assert_eq!(b.a.tray_focus(), Some(TrayStop::Widget(Widget::Fft)));
+    // Backspace on the only one: back to the Panes
+    b.key(KeyCode::Backspace);
+    assert!(b.layout.tray().is_empty() && b.a.tray_focus().is_none() && b.focused().is_some());
+    // an undo brings it back, as for the `×`
+    b.undo(true);
+    assert_eq!(b.layout.tray(), &[Widget::Fft]);
+    // on a Pane, Delete and Backspace do nothing
+    let before = b.layout.clone();
+    b.key(KeyCode::Delete);
+    b.key(KeyCode::Backspace);
+    assert_eq!(b.layout, before);
+    assert!(b.a.is_on());
+    // Home cannot be removed (it has no `×`): refused with the words a removal of it gets, the focus stays on it
+    let mut b = Bench::new();
+    b.run(|a, sc| a.new_design(sc, "theme"));
+    b.key(KeyCode::Down);
+    assert_eq!(b.a.tray_focus(), Some(TrayStop::Widget(Widget::Home)));
+    for k in [KeyCode::Char('x'), KeyCode::Delete, KeyCode::Backspace] {
+        b.said.clear();
+        b.key(k);
+        assert_eq!(b.layout.tray(), &[Widget::Home]);
+        assert_eq!(b.a.tray_focus(), Some(TrayStop::Widget(Widget::Home)));
+        assert!(b.said.last().is_some_and(|t| t.contains("never removed")), "{:?}", b.said);
+    }
+}
+
+#[test]
+fn the_trays_focus_follows_an_undo_or_the_mouse_taking_its_widget_away() {
+    let mut b = Bench::new();
+    b.enter();
+    for w in [Widget::Fft, Widget::Loudness] {
+        b.focus_on(w);
+        b.key(KeyCode::Char('t'));
+    }
+    to_tray_widget(&mut b, Widget::Loudness);
+    // undo of the last `t`: Loudness is back in its Pane, the focus on the one before it in the Tray
+    b.undo(true);
+    assert_eq!(b.layout.tray(), &[Widget::Fft]);
+    assert_eq!(b.a.tray_focus(), Some(TrayStop::Widget(Widget::Fft)));
+    let panes = b.layout.panes().len();
+    b.key(KeyCode::Char('x'));
+    assert!(b.layout.tray().is_empty() && b.layout.panes().len() == panes, "x removed it from the Tray, no Pane closed");
+    // the removal undone, then Fft's own `t` undone with the focus on it: the focus is back in the Panes
+    b.undo(true);
+    assert_eq!(b.layout.tray(), &[Widget::Fft]);
+    to_tray_widget(&mut b, Widget::Fft);
+    b.undo(true);
+    assert!(b.layout.tray().is_empty() && b.a.tray_focus().is_none() && b.focused().is_some());
+    // the mouse's × on the focused chip: the focus goes on to what's left (or back to the Panes)
+    let mut b = Bench::new();
+    b.enter();
+    for w in [Widget::Fft, Widget::Loudness] {
+        b.focus_on(w);
+        b.key(KeyCode::Char('t'));
+    }
+    to_tray_widget(&mut b, Widget::Fft);
+    b.run(|a, sc| a.route(sc, MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: 0, row: 0, modifiers: KeyModifiers::NONE }, Some(Hit::TrayRemove(Widget::Fft)), false));
+    assert_eq!(b.layout.tray(), &[Widget::Loudness]);
+    assert!(b.a.tray_focus().is_none(), "a press ends the keyboard's focus in the Tray");
+}
+
+#[test]
+fn the_keyboard_reaches_plus_widget_on_the_tray_even_when_it_is_empty() {
+    let mut b = Bench::new();
+    b.run(|a, sc| a.new_design(sc, "theme"));
+    // Home waits: ↓ lands on it, → goes on to "+ Widget"
+    b.key(KeyCode::Down);
+    assert_eq!(b.a.tray_focus(), Some(TrayStop::Widget(Widget::Home)));
+    b.key(KeyCode::Right);
+    assert_eq!(b.a.tray_focus(), Some(TrayStop::Add));
+    b.key(KeyCode::Right);
+    assert_eq!(b.a.tray_focus(), Some(TrayStop::Add), "nothing after it");
+    b.key(KeyCode::Left);
+    assert_eq!(b.a.tray_focus(), Some(TrayStop::Widget(Widget::Home)));
+    // Home into the Pane: Enter, ↑, Enter; the Tray is empty now
+    b.key(KeyCode::Enter);
+    b.key(KeyCode::Up);
+    b.key(KeyCode::Enter);
+    assert!(b.layout.tray().is_empty() && b.focused() == Some(Widget::Home));
+    // ↓ from the bottom Pane: "+ Widget" (the only stop); Enter opens the picker for the Tray
+    b.key(KeyCode::Down);
+    assert_eq!(b.a.tray_focus(), Some(TrayStop::Add));
+    b.key(KeyCode::Enter);
+    assert!(matches!(b.asked.last(), Some(Out::OpenTrayPicker)));
+    // a pick joins the Tray (the App commits it): the focus stays on "+ Widget"
+    let tree = b.layout.add_to_tray(Widget::Queue).unwrap();
+    b.run(|a, sc| a.commit(sc, tree));
+    assert_eq!((b.layout.tray(), b.a.tray_focus()), (&[Widget::Queue][..], Some(TrayStop::Add)));
+    // ↑: back to the Pane above
+    b.key(KeyCode::Up);
+    assert!(b.a.tray_focus().is_none() && b.focused() == Some(Widget::Home));
+}
+
+#[test]
+fn the_keyboard_takes_widgets_out_of_the_tray_and_the_panes_keys_do_nothing_there() {
+    let mut b = Bench::new();
+    b.enter();
+    // an empty Tray: ↓ from a bottom Pane goes to its "+ Widget" (#42), ↑ back
+    b.focus_on(Widget::Queue);
+    b.key(KeyCode::Down);
+    assert!(b.focus.is_none() && b.a.tray_focus() == Some(TrayStop::Add));
+    b.key(KeyCode::Up);
+    assert!(b.focused().is_some() && b.a.tray_focus().is_none());
+    for w in [Widget::Fft, Widget::Loudness] {
+        b.focus_on(w);
+        b.key(KeyCode::Char('t'));
+    }
+    to_tray_widget(&mut b, Widget::Fft);
+    b.key(KeyCode::Left);
+    assert_eq!(b.a.tray_focus(), Some(TrayStop::Widget(Widget::Fft)), "nothing before it");
+    b.key(KeyCode::Right);
+    // the keys for a Pane do nothing here
+    let before = b.layout.clone();
+    for c in ['t', 's', '+', '-'] {
+        b.key(KeyCode::Char(c));
+    }
+    assert_eq!(b.layout, before);
+    // Enter picks it up, Esc puts it back and the focus stays in the Tray
+    b.key(KeyCode::Enter);
+    assert!(b.a.carrying());
+    b.key(KeyCode::Esc);
+    assert!(b.a.tile.is_none() && b.a.tray_focus() == Some(TrayStop::Widget(Widget::Loudness)) && b.a.is_on());
+    // picked up again, ↑ aims at the Pane above it, Enter puts it there: that Pane's Widget goes into the Tray
+    b.key(KeyCode::Enter);
+    b.key(KeyCode::Up);
+    let to = b.a.tile.as_ref().and_then(|t| t.over).expect("aimed at a Pane");
+    let was = b.layout.widget_in(to);
+    b.key(KeyCode::Enter);
+    assert_eq!(b.layout.widget_in(to), Some(Widget::Loudness));
+    assert!(was.is_none_or(|w| b.layout.tray().contains(&w)) && !b.layout.tray().contains(&Widget::Loudness));
+    // ↓ to the Tray and ↑ back: the focus is on a bottom Pane again
+    b.key(KeyCode::Down);
+    assert!(b.a.tray_focus().is_some());
+    b.key(KeyCode::Up);
+    assert!(b.a.tray_focus().is_none() && b.focus.is_some_and(|p| b.layout.contains(p)));
+}
+
+#[test]
+fn only_the_bare_keys_arrange_and_a_press_ends_s_waiting() {
+    let mut b = Bench::new();
+    b.enter();
+    b.focus_on(Widget::Fft);
+    let before = b.layout.clone();
+    for (c, m) in [(KeyCode::Char('x'), KeyModifiers::CONTROL), (KeyCode::Char('t'), KeyModifiers::ALT), (KeyCode::Enter, KeyModifiers::CONTROL), (KeyCode::Char('='), KeyModifiers::CONTROL)] {
+        b.run(|a, sc| a.key(sc, KeyEvent::new(c, m)));
+    }
+    assert_eq!(b.layout, before);
+    assert!(b.a.tile.is_none());
+    // `+` as the terminal may send it, with its Shift: grows
+    b.focus_on(Widget::Queue);
+    b.run(|a, sc| a.key(sc, KeyEvent::new(KeyCode::Char('+'), KeyModifiers::SHIFT)));
+    assert_ne!(b.layout, before);
+    // s, then a click: the wait is over, and → moves the focus instead of splitting
+    let n = b.layout.panes().len();
+    b.key(KeyCode::Char('s'));
+    let c = centre(b.rect(Widget::Queue));
+    b.press(c, None);
+    b.release(c);
+    b.key(KeyCode::Right);
+    assert_eq!(b.layout.panes().len(), n);
+    assert!(!b.opened_picker());
+}
+
+#[test]
+fn an_undo_that_would_not_fit_the_window_is_refused() {
+    // Home split twice: three columns where Singularity has one; one closed, the window shrinks, and the undo back
+    // to three wouldn't fit
+    let mut b = Bench::new();
+    let home = b.pid(Widget::Home);
+    b.layout = b.layout.split(home, Side::Right, Some(Widget::Scope), b.body).unwrap().split(home, Side::Right, Some(Widget::Rain), b.body).unwrap();
+    let three = b.layout.clone();
+    b.close(Widget::Rain);
+    let two = b.layout.clone();
+    let (w, h) = (50..160u16).map(|w| (w, 30u16)).find(|&(w, h)| {
+        let body = Rect::new(0, 1, w, h - 5);
+        !three.fits(body) && two.fits(body)
+    }).expect("such a size");
+    b.resize(w, h);
+    b.undo(true);
+    assert_eq!(b.layout, two);
+    assert!(b.said.last().is_some_and(|t| t.contains("doesn't fit this window")), "{:?}", b.said);
+    // back at a size it fits, it goes
+    b.resize(W, H);
+    b.undo(true);
+    assert_eq!(b.layout, three);
+}
+
+#[test]
+fn a_drag_that_turns_arrange_mode_on_drops_on_the_pane_where_it_now_is() {
+    let mut tried = 0;
+    for (d, design) in DESIGNS.iter().enumerate() {
+        let mut b = Bench::design(d);
+        if !b.layout.has(Widget::Queue) || b.layout.unplaced().is_some() {
+            continue;
+        }
+        tried += 1;
+        let before = b.layout.clone();
+        let held = before.widgets().into_iter().find(|w| *w != Widget::Queue).unwrap();
+        let old = b.rect(Widget::Queue);
+        let (at, hit) = b.title(held);
+        b.press(at, hit);
+        b.drag((at.0 + 4, at.1 + 2));
+        assert!(b.a.is_on(), "{}: the drag turned Arrange mode on", design.id);
+        assert_eq!(b.body, crate::ui::rows(b.window, true)[1], "{}: the Panes' area is shorter at once", design.id);
+        let new = b.rect(Widget::Queue);
+        assert!(new.height < old.height || new.y < old.y, "{}: the queue moved up or shrank", design.id);
+        // a cell of the queue now that wasn't before, if any; else its middle
+        let inside = |r: Rect, (cx, cy): (u16, u16)| cx >= r.x && cx < r.right() && cy >= r.y && cy < r.bottom();
+        let spot = (new.y..new.bottom()).map(|cy| (new.x + new.width / 2, cy)).find(|c| !inside(old, *c)).unwrap_or(centre(new));
+        b.drag(spot);
+        b.release(spot);
+        let want = before.swap(before.pane_of(held).unwrap(), before.pane_of(Widget::Queue).unwrap()).unwrap();
+        assert_eq!(b.layout, want, "{}: released at {spot:?} on the queue's new {new:?}", design.id);
+    }
+    assert!(tried >= 3, "Designs with a queue: {tried}");
+}
+
+#[test]
+fn a_pick_up_ends_when_something_else_edits_the_layout_even_with_no_frame_between() {
+    let mut b = Bench::new();
+    b.enter();
+    // Close pane on the focused (picked-up) Pane: the pick-up is gone
+    b.focus_on(Widget::Fft);
+    b.key(KeyCode::Enter);
+    b.close(Widget::Fft);
+    b.run(|a, sc| {
+        a.pick_up_check(sc.layout);
+        vec![]
+    });
+    assert!(b.a.tile.is_none() && b.a.drag_marks(&b.layout, 0).is_none());
+    // a pick elsewhere (the Widget picker's, committed by the App): gone too
+    b.focus_on(Widget::Loudness);
+    b.key(KeyCode::Enter);
+    let tree = b.layout.replace(b.pid(Widget::Loudness), Widget::Scope).unwrap();
+    b.run(|a, sc| a.commit(sc, tree));
+    b.key(KeyCode::Up);
+    assert!(b.a.tile.is_none(), "the next key found the pick-up gone");
+    // an edit with no frame in between: the next key finds the pick-up gone, and drops nothing
+    b.key(KeyCode::Esc);
+    b.focus_on(Widget::Queue);
+    b.key(KeyCode::Enter);
+    b.key(KeyCode::Up);
+    b.close(Widget::Stream);
+    let after = b.layout.clone();
+    b.key(KeyCode::Enter);
+    assert_eq!(b.layout, after, "the old pick-up didn't drop");
+    assert!(b.a.tile.as_ref().is_some_and(|t| t.on.as_ref() == Some(&b.layout)), "Enter picked up afresh");
+}
+
+#[test]
+fn m_leaves_arrange_mode_as_esc_does() {
+    let mut b = Bench::new();
+    b.enter();
+    b.key(KeyCode::Char('m'));
+    assert!(!b.a.is_on() && b.asked.is_empty(), "nothing changed: Done, no prompt");
+    // a Widget picked up: put back, still arranging
+    b.enter();
+    b.focus_on(Widget::Queue);
+    let before = b.layout.clone();
+    b.key(KeyCode::Enter);
+    b.key(KeyCode::Up);
+    b.key(KeyCode::Char('m'));
+    assert!(b.a.tile.is_none() && b.a.is_on() && b.layout == before);
+    // `s` waiting: the wait ends, nothing else
+    b.key(KeyCode::Char('s'));
+    b.key(KeyCode::Char('m'));
+    assert!(b.a.is_on() && !b.a.split_waiting());
+    // from the Tray's focus too
+    b.key(KeyCode::Down);
+    assert!(b.a.tray_focus().is_some());
+    b.key(KeyCode::Char('m'));
+    assert!(!b.a.is_on());
+    // with a change: Done asks for its name, as Esc does; the `arrange` action does the same
+    b.enter();
+    b.focus_on(Widget::Fft);
+    b.key(KeyCode::Char('x'));
+    b.run(|a, sc| a.arrange_action(sc));
+    assert!(!b.a.is_on() && matches!(b.asked.last(), Some(Out::AskForkName)));
+}
+
+#[test]
+fn w_opens_the_trays_widget_picker_anywhere_in_arrange_mode_but_not_while_carrying() {
+    let mut b = Bench::new();
+    b.enter();
+    b.focus_on(Widget::Fft);
+    b.key(KeyCode::Char('x'));
+    b.focus_on(Widget::Queue);
+    b.key(KeyCode::Char('w'));
+    assert!(matches!(b.asked.pop(), Some(Out::OpenTrayPicker)));
+    b.key(KeyCode::Down);
+    assert!(b.a.tray_focus().is_some());
+    b.key(KeyCode::Char('w'));
+    assert!(matches!(b.asked.pop(), Some(Out::OpenTrayPicker)));
+    b.focus_on(Widget::Queue);
+    b.key(KeyCode::Up);
+    b.key(KeyCode::Enter);
+    assert!(b.a.carrying());
+    b.key(KeyCode::Char('w'));
+    assert!(!b.asked.iter().any(|o| matches!(o, Out::OpenTrayPicker)) && b.a.tile.is_some());
+}
+
+#[test]
+fn every_kind_of_edit_is_one_undo_step() {
+    let mut b = Bench::new();
+    let start = b.layout.clone();
+    let mut trees = vec![start.clone()];
+    // close
+    b.close(Widget::Fft);
+    trees.push(b.layout.clone());
+    // split (an empty Pane) and the Widget picked for it (amended in): one step
+    b.focus_on(Widget::Loudness);
+    b.split(Side::Right);
+    let new = b.layout.panes().into_iter().find(|p| p.widget.is_none()).unwrap().id;
+    let tree = b.layout.replace(new, Widget::Scope).unwrap();
+    b.run(|a, sc| a.amend(sc, tree));
+    trees.push(b.layout.clone());
+    // Arrange mode's keys: a pick-up dropped, a size step, to the Tray
+    b.focus_on(Widget::Queue);
+    b.enter();
+    b.key(KeyCode::Enter);
+    b.key(KeyCode::Up);
+    b.key(KeyCode::Enter);
+    trees.push(b.layout.clone());
+    b.key(KeyCode::Char('-'));
+    trees.push(b.layout.clone());
+    b.key(KeyCode::Char('t'));
+    trees.push(b.layout.clone());
+    b.key(KeyCode::Esc);
+    // a divider dragged and let go
+    let g = b.dividers()[0].grip;
+    b.press((g.x, g.y + 5), Some(Hit::Divider(0)));
+    b.drag((g.x + 6, g.y + 5));
+    b.drag((g.x + 8, g.y + 5));
+    b.release((g.x + 8, g.y + 5));
+    trees.push(b.layout.clone());
+    for (n, t) in trees.windows(2).rev().enumerate() {
+        assert_ne!(t[0], t[1], "step {n} changed something");
+        b.undo(true);
+        assert_eq!(b.layout, t[0], "undo {n}");
+    }
+    b.undo(true);
+    assert_eq!(b.said.last().map(String::as_str), Some("Nothing to undo"));
+    for t in &trees[1..] {
+        b.undo(false);
+        assert_eq!(&b.layout, t);
+    }
+}
+
+#[test]
+fn a_fast_sweep_highlights_each_pane_at_once_and_drops_on_the_last() {
+    // (arranging already, so the Panes are where they stay for the whole drag)
+    let arranging = || {
+        let mut b = Bench::new();
+        b.enter();
+        b
+    };
+    let mut b = arranging();
+    let before = b.layout.clone();
+    let floor = b.layout.compute(b.body).panes;
+    let (at, hit) = b.title(Widget::Stream);
+    b.press(at, hit);
+    let names = [Widget::Queue, Widget::Home, Widget::Library, Widget::Lyrics, Widget::Fft];
+    let spots: Vec<(u16, u16)> = names.iter().map(|s| centre(b.rect(*s))).collect();
+    for (i, &p) in spots.iter().enumerate() {
+        b.drag(p);
+        assert_eq!(b.a.tile.as_ref().unwrap().over, Some(b.pid(names[i])), "{}", names[i]);
+        assert_eq!(b.layout.compute(b.body).panes, floor, "nothing rearranges");
+    }
+    // a flick on to the queue and let go there at once: the queue it is
+    let q = spots[0];
+    b.drag(q);
+    b.release(q);
+    let swap = |l: &Arrangement, x: Widget, y: Widget| l.swap(l.pane_of(x).unwrap(), l.pane_of(y).unwrap()).unwrap();
+    assert_eq!(b.layout, swap(&before, Widget::Stream, Widget::Queue));
+    // a release on another cell than the last move (a finger slipping as it lifts): the Pane under the release
+    let mut c = arranging();
+    let (at, hit) = c.title(Widget::Stream);
+    c.press(at, hit);
+    c.drag(q);
+    let l = centre(c.rect(Widget::Library));
+    c.release(l);
+    assert_eq!(c.layout, swap(&before, Widget::Stream, Widget::Library));
 }
 
 // ── ADR 0005: the closed set of edits ─────────────────────────────────
