@@ -43,6 +43,44 @@ One of the few places where Linux and macOS have their own code (Engine, AudioTa
 autostart, process lookup). Everything else is shared (D49); `docs/PLATFORMS.md` lists them.
 _Avoid_: port, backend
 
+**Soloist runner**:
+Where Soloist runs and how it is kept alive: on Linux a local process that dies with the Daemon, on macOS the Soloist
+VM. It starts Soloist, says its version and WebSocket address, keeps its build current, announces it for pairing, and
+stops it with the Daemon. The Soloist session (one run's state machine) talks to Soloist through it (D89).
+_Avoid_: VM host, launcher
+
+**Host**:
+What the Daemon and the Client know about this computer, asked in one place: its OS and CPU, its name, whether a
+process runs and how to stop it, how to open a link, which CPUs Soloist has builds for, the memory page size. Engine
+assembly decides from it; tests pass a made-up Host (D77, widened by D89).
+_Avoid_: platform, system info
+
+**App folders**:
+Where Singularity keeps its files: config, data, state, cache, downloads and the socket's folder, by the XDG rule on
+both OSes (D50). One place decides them; with `HOME` unset the app stops and says so (D89).
+_Avoid_: dirs, paths (in prose)
+
+**Shown Design**:
+The Design on screen: a built-in one or one of yours, its saved file, its "(edited)" copy, and what undo and Reset
+bring back. Editing a built-in Design keeps the edit as "<Design> (edited)"; the built-in never changes (D87 Q33, D89).
+_Avoid_: current layout, active design
+
+**Screen plan**:
+Where everything is on screen this frame, worked out before drawing: the rows, each Pane's rectangle and its title
+(text, buttons and their boxes), the dividers and the Panes too small for their Widget. Drawing paints it; clicks, the
+wheel and Arrange mode look things up in it (D89).
+_Avoid_: hit map, layout (that's the Arrangement)
+
+**Widget catalogue**:
+Every Widget's fixed facts in one place: its title, smallest size, swap group, whether the Widget picker offers it,
+whether it is Required, whether it is the black hole, whether it draws its own frame, and how it is drawn (D89).
+_Avoid_: registry
+
+**Gesture**:
+The one press or drag in progress, if any: seeking, a volume drag, a queued song or list row being dragged, a divider,
+a Widget carried in Arrange mode. One at a time; a release the Client never heard ends it (D89).
+_Avoid_: drag state
+
 **Engine assembly**:
 The Daemon's choice, at start, of which Engine runs, the device name it shows on Connect, where the AudioTap's audio
 comes from and the Catalogue, made in one step from the config, the command line and the computer. A bad config value
