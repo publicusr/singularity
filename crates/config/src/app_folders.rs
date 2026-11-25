@@ -43,6 +43,19 @@ impl std::fmt::Display for NoHome {
 
 impl std::error::Error for NoHome {}
 
+/// Nothing says where the Downloads folder is: no `XDG_DOWNLOAD_DIR` (or `user-dirs.dirs` entry) that doesn't need
+/// `HOME`, and no `HOME`. Only an export asks, so the Daemon runs without one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoDownloads;
+
+impl std::fmt::Display for NoDownloads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("no Downloads folder: set HOME or XDG_DOWNLOAD_DIR")
+    }
+}
+
+impl std::error::Error for NoDownloads {}
+
 /// `$<var>`, else `$HOME/<under_home>`.
 fn base(env: &impl Fn(&str) -> Option<OsString>, home: Option<&Path>, var: &str, under_home: &str) -> Result<PathBuf, NoHome> {
     env(var).map(PathBuf::from).or_else(|| home.map(|h| h.join(under_home))).ok_or(NoHome)
@@ -79,13 +92,13 @@ impl AppFolders {
 
     /// The Downloads folder, for exports: `$XDG_DOWNLOAD_DIR`, else `user-dirs.dirs`'s, else `~/Downloads` (or home if
     /// that's missing). `$HOME` in either is expanded. Reads the disk, so it's asked when needed.
-    pub fn downloads(&self) -> Result<PathBuf, NoHome> {
-        let expand = |v: &str| -> Result<PathBuf, NoHome> {
+    pub fn downloads(&self) -> Result<PathBuf, NoDownloads> {
+        let expand = |v: &str| -> Result<PathBuf, NoDownloads> {
             let v = v.trim_matches('"');
             if !v.contains("$HOME") {
                 return Ok(PathBuf::from(v));
             }
-            let home = self.home.as_ref().ok_or(NoHome)?;
+            let home = self.home.as_ref().ok_or(NoDownloads)?;
             Ok(PathBuf::from(v.replace("$HOME", &home.to_string_lossy())))
         };
         if let Some(v) = &self.download_dir {
@@ -96,7 +109,7 @@ impl AppFolders {
         {
             return expand(v);
         }
-        let home = self.home.clone().ok_or(NoHome)?;
+        let home = self.home.clone().ok_or(NoDownloads)?;
         Ok(Some(home.join("Downloads")).filter(|d| d.is_dir()).unwrap_or(home))
     }
 }

@@ -73,18 +73,22 @@ impl Old<'_> {
 
 const XDG: [&str; 4] = ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"];
 
-/// Every mix of the four `XDG_*` variables unset, set or set empty, with `home` as `HOME`.
+/// Every mix of the four `XDG_*` variables unset, set (absolute, with a trailing slash, relative) or set empty, with
+/// `home` as `HOME`.
 fn every_mix(home: Option<&str>) -> Vec<Env> {
+    const KINDS: usize = 5;
     let mut out = vec![];
-    for n in 0..3usize.pow(XDG.len() as u32) {
+    for n in 0..KINDS.pow(XDG.len() as u32) {
         let mut env = Env::new();
         if let Some(h) = home {
             env.insert("HOME", h.into());
         }
         for (i, var) in XDG.iter().enumerate() {
-            match n / 3usize.pow(i as u32) % 3 {
+            match n / KINDS.pow(i as u32) % KINDS {
                 0 => {}
                 1 => drop(env.insert(var, format!("/x/{var}").into())),
+                2 => drop(env.insert(var, format!("/x/{var}/").into())),
+                3 => drop(env.insert(var, format!("rel/{var}").into())),
                 _ => drop(env.insert(var, "".into())),
             }
         }
@@ -95,7 +99,7 @@ fn every_mix(home: Option<&str>) -> Vec<Env> {
 
 #[test]
 fn every_folder_is_where_it_was_with_home_set() {
-    for home in ["/home/someone", ""] {
+    for home in ["/home/someone", "/home/someone/", "rel-home", ""] {
         for env in every_mix(Some(home)) {
             let old = Old(&env);
             let new = AppFolders::from_lookup(lookup(&env)).unwrap();
@@ -197,7 +201,10 @@ fn downloads_are_where_they_were() {
 
     // without HOME, only a folder that doesn't need it
     let mut no_home: Env = XDG.iter().map(|v| (*v, config.as_os_str().to_owned())).collect();
-    assert_eq!(at(&no_home), Err(NoHome), "user-dirs.dirs says $HOME/Fetched");
+    assert_eq!(at(&no_home), Err(NoDownloads), "user-dirs.dirs says $HOME/Fetched");
+    std::fs::remove_file(config.join("user-dirs.dirs")).unwrap();
+    assert_eq!(at(&no_home), Err(NoDownloads), "nothing names it");
+    assert_eq!(NoDownloads.to_string(), "no Downloads folder: set HOME or XDG_DOWNLOAD_DIR");
     no_home.insert("XDG_DOWNLOAD_DIR", "/somewhere/plain".into());
     assert_eq!(at(&no_home), Ok(PathBuf::from("/somewhere/plain")));
 }

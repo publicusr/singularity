@@ -27,5 +27,6 @@ fn without_home_the_client_stops_and_says_so() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "{err}");
     assert!(err.contains("singularity: HOME isn't set"), "{err}");
+    assert!(out.stdout.is_empty(), "the terminal was written to: {:?}", String::from_utf8_lossy(&out.stdout));
     assert!(!socket.exists(), "a Daemon was started");
 }
