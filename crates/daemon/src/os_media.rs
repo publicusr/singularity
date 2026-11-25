@@ -28,7 +28,7 @@ use now_playing as adapter;
 #[derive(Clone, Debug, Default)]
 pub struct Options {
     /// a D-Bus address for MPRIS (`SINGULARITY_DBUS=<address>`; tests use a private bus); `None` is the session bus.
-    /// Now Playing has no bus and ignores it.
+    /// Always `None` for Now Playing (no bus).
     pub address: Option<String>,
     /// a notification on each new track (`notifications.track_change`, changed live)
     pub notify: Arc<AtomicBool>,
@@ -38,24 +38,36 @@ impl Options {
     /// Whether the Daemon runs OS media integration, from the environment (`env`), whether the Engine is a fake one
     /// (tests, pty) and whether it is the Spotify app:
     ///
-    /// - `SINGULARITY_NOWPLAYING=off` (or the older `SINGULARITY_DBUS=off`): none
-    /// - `SINGULARITY_NOWPLAYING=on`, or `SINGULARITY_DBUS=<address>`: on, a fake Engine too
+    /// - `SINGULARITY_NOWPLAYING=off` (or the older `SINGULARITY_DBUS=off`): none; off wins over on (Q99)
+    /// - `SINGULARITY_NOWPLAYING=on`: on, a fake Engine too (Q98)
+    /// - `SINGULARITY_DBUS=<address>`: on, on that bus, a fake Engine too, only where the adapter is on a bus (MPRIS);
+    ///   Now Playing ignores it (Q99)
     /// - otherwise none for a fake Engine, so test Daemons never show up in the desktop's media controls
     /// - and none where the OS has one entry for everyone and the Spotify app, as the Engine, already has its own
-    ///   (Now Playing: a second entry would fight it for the media keys; MPRIS lists every player)
+    ///   (Now Playing: a second entry would fight it for the media keys; MPRIS lists every player, Q100)
     pub fn wanted(env: impl Fn(&str) -> Option<String>, fake: bool, app_is_engine: bool, notify: Arc<AtomicBool>) -> Option<Options> {
-        choose(env, fake, app_is_engine, adapter::ONE_ENTRY, notify)
+        choose(env, fake, app_is_engine, Adapter { one_entry: adapter::ONE_ENTRY, on_a_bus: adapter::ON_A_BUS }, notify)
     }
 }
 
-/// [`Options::wanted`] for an adapter whose OS does (`one_entry`) or doesn't keep one media entry for everyone.
-fn choose(env: impl Fn(&str) -> Option<String>, fake: bool, app_is_engine: bool, one_entry: bool, notify: Arc<AtomicBool>) -> Option<Options> {
+/// What the policy needs to know about this OS's adapter.
+#[derive(Clone, Copy, Debug)]
+struct Adapter {
+    /// the OS keeps one media entry for everyone (Now Playing), not one per player (MPRIS)
+    one_entry: bool,
+    /// it runs on a D-Bus, so `SINGULARITY_DBUS=<address>` means something to it (MPRIS)
+    on_a_bus: bool,
+}
+
+/// [`Options::wanted`] for `adapter`.
+fn choose(env: impl Fn(&str) -> Option<String>, fake: bool, app_is_engine: bool, adapter: Adapter, notify: Arc<AtomicBool>) -> Option<Options> {
     let var = |k: &str| env(k).filter(|v| !v.is_empty());
     let (switch, dbus) = (var("SINGULARITY_NOWPLAYING"), var("SINGULARITY_DBUS"));
     if switch.as_deref() == Some("off") || dbus.as_deref() == Some("off") {
         return None;
     }
-    let address = dbus;
+    let address = dbus.filter(|_| adapter.on_a_bus);
+    let one_entry = adapter.one_entry;
     let asked = switch.as_deref() == Some("on") || address.is_some();
     if !asked && (fake || (app_is_engine && one_entry)) {
         return None;
@@ -147,19 +159,38 @@ mod tests {
         assert!(n.news(&playing("t:4", 0), true).is_some());
     }
 
+    /// Linux's adapter and macOS's, as the policy sees them
+    const MPRIS: Adapter = Adapter { one_entry: false, on_a_bus: true };
+    const NOW_PLAYING: Adapter = Adapter { one_entry: true, on_a_bus: false };
+
     /// `choose` with these environment variables; `Some(address)` when it runs.
-    fn run(vars: &[(&str, &str)], fake: bool, app: bool, one_entry: bool) -> Option<Option<String>> {
+    fn run(vars: &[(&str, &str)], fake: bool, app: bool, adapter: Adapter) -> Option<Option<String>> {
         let env = |k: &str| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string());
-        choose(env, fake, app, one_entry, Default::default()).map(|o| o.address)
+        choose(env, fake, app, adapter, Default::default()).map(|o| o.address)
+    }
+
+    #[test]
+    fn the_adapters_are_what_the_policy_tests_assume() {
+        let this = if cfg!(target_os = "macos") { NOW_PLAYING } else { MPRIS };
+        assert_eq!((adapter::ONE_ENTRY, adapter::ON_A_BUS), (this.one_entry, this.on_a_bus));
     }
 
     #[test]
     fn it_runs_for_a_real_engine_and_not_for_a_fake_one() {
-        for one_entry in [false, true] {
-            assert_eq!(run(&[], false, false, one_entry), Some(None), "the session bus / Now Playing");
-            assert_eq!(run(&[], true, false, one_entry), None, "test Daemons stay out of the desktop's media controls");
-            assert_eq!(run(&[("SINGULARITY_NOWPLAYING", "")], true, false, one_entry), None, "empty is unset");
+        for a in [MPRIS, NOW_PLAYING] {
+            assert_eq!(run(&[], false, false, a), Some(None), "the session bus / Now Playing");
+            assert_eq!(run(&[], true, false, a), None, "test Daemons stay out of the desktop's media controls");
+            assert_eq!(run(&[("SINGULARITY_NOWPLAYING", "")], true, false, a), None, "empty is unset");
         }
+    }
+
+    #[test]
+    fn a_bus_address_never_turns_now_playing_on() {
+        let bus = ("SINGULARITY_DBUS", "unix:path=/x");
+        assert_eq!(run(&[bus], true, false, NOW_PLAYING), None, "a fake Engine");
+        assert_eq!(run(&[bus], false, true, NOW_PLAYING), None, "the app as Engine");
+        assert_eq!(run(&[bus], false, false, NOW_PLAYING), Some(None), "a real Engine: on as without it, no address");
+        assert_eq!(run(&[bus, ("SINGULARITY_NOWPLAYING", "on")], true, false, NOW_PLAYING), Some(None), "asked by its own name");
     }
 
     #[test]
@@ -171,21 +202,21 @@ mod tests {
 
     #[test]
     fn the_app_as_engine_keeps_the_one_entry_an_os_has_for_everyone() {
-        assert_eq!(run(&[], false, true, true), None, "Now Playing: the app's own entry has the media keys");
-        assert_eq!(run(&[], false, true, false), Some(None), "MPRIS lists every player");
-        assert_eq!(run(&[("SINGULARITY_NOWPLAYING", "on")], false, true, true), Some(None), "unless asked");
+        assert_eq!(run(&[], false, true, NOW_PLAYING), None, "Now Playing: the app's own entry has the media keys");
+        assert_eq!(run(&[], false, true, MPRIS), Some(None), "MPRIS lists every player");
+        assert_eq!(run(&[("SINGULARITY_NOWPLAYING", "on")], false, true, NOW_PLAYING), Some(None), "unless asked");
     }
 
     #[test]
     fn both_switch_names_turn_it_off_and_on() {
-        for one_entry in [false, true] {
+        for a in [MPRIS, NOW_PLAYING] {
             for off in [("SINGULARITY_NOWPLAYING", "off"), ("SINGULARITY_DBUS", "off")] {
-                assert_eq!(run(&[off], false, false, one_entry), None, "{off:?}");
+                assert_eq!(run(&[off], false, false, a), None, "{off:?}");
             }
-            assert_eq!(run(&[("SINGULARITY_NOWPLAYING", "on")], true, false, one_entry), Some(None), "a fake Engine, asked for");
-            assert_eq!(run(&[("SINGULARITY_DBUS", "unix:path=/x")], true, false, one_entry), Some(Some("unix:path=/x".into())), "a bus picked: on, on that bus");
-            assert_eq!(run(&[("SINGULARITY_DBUS", "off"), ("SINGULARITY_NOWPLAYING", "on")], false, false, one_entry), None, "off wins");
-            assert_eq!(run(&[("SINGULARITY_NOWPLAYING", "off"), ("SINGULARITY_DBUS", "unix:path=/x")], false, false, one_entry), None, "off wins");
+            assert_eq!(run(&[("SINGULARITY_NOWPLAYING", "on")], true, false, a), Some(None), "a fake Engine, asked for");
+            assert_eq!(run(&[("SINGULARITY_DBUS", "off"), ("SINGULARITY_NOWPLAYING", "on")], false, false, a), None, "off wins");
+            assert_eq!(run(&[("SINGULARITY_NOWPLAYING", "off"), ("SINGULARITY_DBUS", "unix:path=/x")], false, false, a), None, "off wins");
         }
+        assert_eq!(run(&[("SINGULARITY_DBUS", "unix:path=/x")], true, false, MPRIS), Some(Some("unix:path=/x".into())), "a bus picked: on, on that bus");
     }
 }

@@ -14,6 +14,9 @@ pub const NAME: &str = "Now Playing";
 /// Now Playing is one entry for the whole system: the app that has it gets the media keys.
 pub const ONE_ENTRY: bool = true;
 
+/// No D-Bus: `SINGULARITY_DBUS=<address>` means nothing here (only `=off` does).
+pub const ON_A_BUS: bool = false;
+
 /// `osascript`'s arguments for a notification. The title and body are data from Spotify (a podcast's episode titles
 /// come straight from its publisher's feed), so they go after `--`: a title like `-e…` would otherwise be read as
 /// one more line of AppleScript (a `property` initialiser runs `do shell script` at compile time).

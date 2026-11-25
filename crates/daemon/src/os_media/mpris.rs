@@ -22,6 +22,9 @@ pub const NAME: &str = "MPRIS";
 /// MPRIS lists every player: the Spotify app's own entry sits next to ours.
 pub const ONE_ENTRY: bool = false;
 
+/// It runs on a D-Bus (`SINGULARITY_DBUS=<address>` picks which).
+pub const ON_A_BUS: bool = true;
+
 /// Nothing to tell when the Daemon runs without it.
 pub fn not_wanted() {}
 
