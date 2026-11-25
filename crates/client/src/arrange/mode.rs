@@ -14,9 +14,9 @@
 //! behaviour is described in `arrange.rs`.
 
 use super::history::History;
-use crate::gesture::{Gesture, Held};
 use crate::app::{Action, Hit};
 use crate::arrangement::{Arrangement, Refused};
+use crate::gesture::{Gesture, Held};
 use crate::keymap::Keymap;
 use crate::layout::{Axis, Divider, Node, Pane, PaneId, Widget};
 use crate::tiling::{Side, neighbour};
@@ -523,6 +523,7 @@ impl Arrange {
     /// `tree` replaces the layout as the rest of the last edit (a split's pick): one undo takes both back.
     pub fn amend(&mut self, sc: &Scene, g: &mut Option<Gesture>, tree: Arrangement) -> Vec<Out> {
         let mut w = Work::new(sc, g);
+        self.before_edit(&mut w);
         let old = w.layout.tray().to_vec();
         w.layout = Cow::Owned(tree.clone());
         w.out.push(Out::Commit { tree: Some(tree), note: None });
@@ -618,6 +619,7 @@ impl Arrange {
         if self.building() {
             return w.done();
         }
+        self.before_edit(&mut w);
         let before = w.snapshot();
         let history = std::mem::take(&mut self.history);
         // (from Arrange mode: what was arranged is kept as it is, and the build starts from the blank one)
@@ -948,6 +950,7 @@ impl Arrange {
 
     /// `tree` replaces the layout as an edit (one undo step); `note` is the bar's line for it.
     fn commit_in(&mut self, w: &mut Work, tree: Arrangement, note: Option<String>) {
+        self.before_edit(w);
         let was = w.snapshot();
         let old = w.layout.tray().to_vec();
         w.layout = Cow::Owned(tree.clone());
@@ -955,6 +958,15 @@ impl Arrange {
         self.settle_tray_focus(w, &old);
         self.remember(was);
         let _ = self.note_edit();
+    }
+
+    /// Before any layout write but a held divider's own move (an edit, a New design… begun or thrown away): a divider
+    /// held meanwhile is let go first, its move one undo step of its own (Q103). (Undo and redo end what is held with
+    /// `interrupted_in`; the App's own writes go through `App::gesture_interrupted`.)
+    fn before_edit(&mut self, w: &mut Work) {
+        if w.g.divider().is_some() {
+            self.divider_released(w);
+        }
     }
 
     fn interrupted_in(&mut self, w: &mut Work) {
@@ -987,6 +999,9 @@ impl Arrange {
     }
 
     fn cancel_new_in(&mut self, w: &mut Work) {
+        if self.building() {
+            self.before_edit(w);
+        }
         let Some(f) = self.on.take().and_then(|a| a.fresh) else { return };
         let Fresh { before, history, theme } = *f;
         w.g.take_carry();
@@ -1378,6 +1393,10 @@ impl Arrange {
     /// Enter on Widget `wd` in the Tray: it is picked up (the chip), aimed at the Tray (where it is) until ↑ aims into
     /// the Panes.
     fn pick_up_from_tray(&mut self, w: &mut Work, wd: Widget) {
+        // (keys wait while something else is held: a seek-bar drag in Arrange mode stays the bar's, D84)
+        if w.g.is_some() {
+            return;
+        }
         let x = self.tray_chip_x(w, wd);
         let pane = Pane { id: PaneId::UNSET, widget: Some(wd) };
         let on = Some(w.layout.clone().into_owned());
@@ -1387,6 +1406,10 @@ impl Arrange {
     /// Enter on Pane `id`: its Widget is picked up (lit, with the chip), aimed at its own Pane until an arrow says
     /// otherwise. An empty Pane has nothing to pick up.
     fn pick_up(&mut self, w: &mut Work, id: PaneId) {
+        // (keys wait while something else is held: a seek-bar drag in Arrange mode stays the bar's, D84)
+        if w.g.is_some() {
+            return;
+        }
         let Some(pane) = w.layout.get(id).filter(|p| p.widget.is_some()) else { return };
         let on = Some(w.layout.clone().into_owned());
         *w.g = Some(Gesture::Carry(TileDrag { pane, from: (0, 0), at: (0, 0), live: true, over: None, tray: false, from_tray: false, aim: Some(Aim::Pane(id)), on, label: None }));

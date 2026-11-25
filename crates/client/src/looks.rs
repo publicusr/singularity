@@ -310,6 +310,8 @@ impl App {
         let mut taken = self.layout.widgets();
         taken.extend(self.layout.tray());
         let Some(to) = crate::layouts::next(from, &taken, dir) else { return false };
+        // a divider held meanwhile is let go first: the swap isn't part of its move (Q103)
+        self.gesture_interrupted();
         match self.layout.replace(id, to) {
             Ok(a) => self.layout = a,
             Err(_) => return false,

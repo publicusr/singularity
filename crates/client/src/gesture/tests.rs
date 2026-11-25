@@ -103,6 +103,49 @@ fn a_list_row_drag_whose_release_was_missed_lets_go() {
     assert_eq!(uids, ["u0", "u1", "u2", "u3", "u4"]);
 }
 
+fn seek_bar(a: &App) -> ratatui::layout::Rect {
+    a.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Bar(Bar::Seek, _)).then_some(*r)).expect("the seek bar")
+}
+
+fn key(a: &mut App, code: ratatui::crossterm::event::KeyCode, m: KeyModifiers) {
+    a.key(ratatui::crossterm::event::KeyEvent::new(code, m));
+}
+
+/// In Arrange mode, Enter while the seek bar is dragged picks nothing up (keys wait while something is held, D84):
+/// the release seeks as ever.
+#[test]
+fn enter_while_seeking_in_arrange_mode_picks_nothing_up() {
+    use ratatui::crossterm::event::KeyCode;
+    let (mut a, mut rx) = app();
+    key(&mut a, KeyCode::Char('m'), KeyModifiers::NONE);
+    render(&mut a);
+    assert!(a.arrange.is_on());
+    let bar = seek_bar(&a);
+    mouse(&mut a, MouseEventKind::Down(MouseButton::Left), bar.x + 10, bar.y);
+    mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), bar.x + 20, bar.y);
+    key(&mut a, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(a.gesture.as_ref().is_some_and(|g| matches!(g, crate::gesture::Gesture::Scrub(_))), "still the seek bar's");
+    mouse(&mut a, MouseEventKind::Up(MouseButton::Left), bar.x + 20, bar.y);
+    assert!(!held(&a));
+    assert!(matches!(sent(&mut rx)[..], [Command::Seek { .. }]), "the release seeks");
+}
+
+/// A seek-bar drag under a popup (Ctrl+K opened mid-drag) whose release was missed ends unsent, as a release heard
+/// there does.
+#[test]
+fn a_seek_drag_under_a_popup_whose_release_was_missed_ends_unsent() {
+    use ratatui::crossterm::event::KeyCode;
+    let (mut a, mut rx) = app();
+    let bar = seek_bar(&a);
+    mouse(&mut a, MouseEventKind::Down(MouseButton::Left), bar.x + 10, bar.y);
+    mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), bar.x + 15, bar.y);
+    key(&mut a, KeyCode::Char('k'), KeyModifiers::CONTROL);
+    assert!(a.is_open(crate::app::Modal::Palette));
+    mouse(&mut a, MouseEventKind::Moved, bar.x + 30, bar.y - 4);
+    assert!(!held(&a));
+    assert!(sent(&mut rx).iter().all(|c| !matches!(c, Command::Seek { .. })), "no seek");
+}
+
 /// A double click is known by what was clicked: the same thing twice soon after is one, the same place in another
 /// list isn't (the old shared index kept them apart with offsets), and a third click starts again.
 #[test]

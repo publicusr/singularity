@@ -393,7 +393,8 @@ impl App {
         self.mini = crate::mini::wanted(area);
         if self.mini {
             self.overlays.clear();
-            self.tile_cancel();
+            // (what is held ends: a Widget goes back, a divider's move is kept, Q103)
+            self.gesture_interrupted();
             if let Some(k) = self.kitty.as_mut() {
                 k.holes.clear();
             }

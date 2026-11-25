@@ -6,8 +6,8 @@
 //! once and put back where it was if Spotify refuses. Reorder (#55): drag a row (or Alt+↑↓) in the playlist's own
 //! order; the preview follows the pointer, the drop sends one move anchored to a neighbour's uid.
 
-use crate::gesture::{Gesture, Held, RowPress};
 use crate::app::{App, Hit, MenuAct, Naming, Page, PageName, Target};
+use crate::gesture::{Gesture, Held, RowPress};
 use crate::theme::Theme;
 use crate::ui::{text, blank};
 use ratatui::buffer::Buffer;

@@ -2151,3 +2151,67 @@ fn another_design_shown_while_a_divider_is_held_ends_the_drag_first() {
     assert_eq!(kept[0].0, DESIGNS[was].id, "the old Design's");
     assert_ne!(kept[0].1, start, "with the move");
 }
+
+/// The edit kept as the built-in Design's "(edited)" copy.
+fn kept_edit(a: &App) -> Arrangement {
+    a.shown.saved().iter().find(|s| s.edited).map(|s| s.arrangement()).expect("an edit kept")
+}
+
+/// `v` (the focused Pane's next Widget) while a divider is held: the move is kept first, without the swap in it, and
+/// the release records nothing more.
+#[test]
+fn v_while_a_divider_is_held_keeps_the_move_apart_from_the_swap() {
+    let (mut a, _dir) = with_dirs();
+    a.focus_on(Widget::Stream);
+    hold_a_divider(&mut a);
+    let moved = a.layout.clone();
+    key(&mut a, KeyCode::Char('v'));
+    assert_ne!(a.layout, moved, "the focused Pane shows another Widget");
+    let swapped = a.layout.clone();
+    let grip = a.dividers()[0].grip;
+    release(&mut a, grip.x + 3, grip.y + 5);
+    assert_eq!(a.layout, swapped, "the release changes nothing");
+    assert_eq!(kept_edit(&a), moved, "the move is the edit, the swap isn't part of it");
+}
+
+/// Close pane (from a key bound to it) while a divider is held: the move is one undo step, the close another, and the
+/// release records nothing more.
+#[test]
+fn close_pane_while_a_divider_is_held_records_the_move_first() {
+    let (mut a, _dir) = with_dirs();
+    a.focus_on(Widget::Fft);
+    let start = hold_a_divider(&mut a);
+    let moved = a.layout.clone();
+    a.run(Action::ClosePane);
+    assert!(!a.layout.has(Widget::Fft), "closed");
+    let grip = a.dividers()[0].grip;
+    release(&mut a, grip.x + 3, grip.y + 5);
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout, moved, "undo takes back the close");
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout, start, "then the move");
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout, start, "and no step more");
+}
+
+/// Quitting (Ctrl+C) while a divider is held keeps the move.
+#[test]
+fn quitting_while_a_divider_is_held_keeps_the_move() {
+    let (mut a, _dir) = with_dirs();
+    hold_a_divider(&mut a);
+    let moved = a.layout.clone();
+    ctrl(&mut a, 'c');
+    assert!(a.quit && a.gesture.is_none());
+    assert_eq!(kept_edit(&a), moved);
+}
+
+/// The window shrinking to the mini player while a divider is held keeps the move and leaves nothing held.
+#[test]
+fn the_mini_player_while_a_divider_is_held_keeps_the_move() {
+    let (mut a, _dir) = with_dirs();
+    hold_a_divider(&mut a);
+    let moved = a.layout.clone();
+    render(&mut a, 30, 6);
+    assert!(a.mini && a.gesture.is_none(), "nothing held behind the mini player");
+    assert_eq!(kept_edit(&a), moved);
+}

@@ -1,8 +1,8 @@
 //! The Pane menu and the Widget picker, driven through the App with real clicks and keys (D87).
 
 use super::*;
-use crate::gesture::Held;
 use crate::app::{Action, Target};
+use crate::gesture::Held;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
@@ -160,7 +160,7 @@ fn the_name_the_key_and_the_palette_open_the_picker() {
     mouse(&mut a, MouseEventKind::Down(MouseButton::Left), x, y);
     mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), x + 10, y + 6);
     assert!(a.gesture.carry().is_some_and(|t| t.live), "a drag from the name lifts the Pane");
-    a.tile_cancel();
+    crate::arrange::Arrange::drop_held(&mut a.gesture);
     // (the drag turned Arrange mode on)
     a.arrange_done();
     render(&mut a);

@@ -51,7 +51,6 @@ pub mod history;
 pub mod mode;
 
 pub use mode::{Arrange, Out, Scene, Snapshot, TrayLayout, TrayStop, done_blocked, fallback_pane, tray_layout};
-use crate::gesture::Held;
 #[cfg(test)]
 pub use mode::{CHIP_MAX, TileDrag};
 #[cfg(test)]
@@ -61,6 +60,7 @@ use std::time::Instant;
 
 use crate::app::{Action, App, Hit, Menu, MenuAct, Modal, NameFor, Naming, Target};
 use crate::arrangement::{Arrangement, Refused};
+use crate::gesture::Held;
 use crate::layout::{Pane, PaneId, Widget, is_hole};
 use crate::theme::Theme;
 use crate::tiling::Side;
@@ -207,11 +207,6 @@ impl App {
     /// a release in the same batch of input finds the Pane under it where the next frame draws it.
     fn relayout(&mut self) {
         arrange!(self, resized)
-    }
-
-    /// Esc while a Widget is held: nothing changes.
-    pub fn tile_cancel(&mut self) {
-        Arrange::drop_held(&mut self.gesture);
     }
 
     /// The terminal took a new size (`w` × `h`): the Panes' area is known at once, so a release in the same batch of

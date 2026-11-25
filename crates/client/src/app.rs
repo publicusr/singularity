@@ -2,13 +2,13 @@
 //! Every interactive element registers a hit-box while drawing, so the mouse works everywhere.
 
 use crate::covers::Covers;
+use crate::gesture::{Clicked, Gesture, Held};
 use crate::gfx::Kitty;
 use crate::home::{CardId, CardRef, HomeView};
 use crate::layout::{Node, PaneId, Widget};
 use crate::meters::Meters;
 use crate::visual::BlackHole;
 use crate::visual::well::Hole;
-use crate::gesture::{Clicked, Gesture, Held};
 use crate::scrub::{Bar, Scrub};
 use crate::sidebar::Sidebar;
 use crate::tracks::{Col, TrackView};
@@ -1349,7 +1349,7 @@ impl App {
             Action::RedoLayout => self.redo_layout(),
             Action::Palette => self.open_popup(Popup::Palette(Palette { query: String::new(), selected: 0 })),
             Action::Help => self.open_popup(Popup::Help { scroll: Default::default() }),
-            Action::Quit => self.quit = true,
+            Action::Quit => self.quit_now(),
         }
     }
 
@@ -1376,7 +1376,7 @@ impl App {
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && k.code == KeyCode::Char('c') {
-            self.quit = true;
+            self.quit_now();
             return;
         }
         // the vim preset's movement keys (j is ↓), unless typing

@@ -4,8 +4,8 @@
 //! themselves, context songs among themselves or up into your queue, where they become queued songs (#50, D42). The
 //! list shows the result while dragging. Autoplay is Spotify's to choose.
 
-use crate::gesture::Held;
 use crate::app::{App, Hit};
+use crate::gesture::Held;
 use singularity_proto::QueueEntry;
 use crate::theme::Theme;
 use crate::ui::{text, blank};

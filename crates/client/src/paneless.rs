@@ -4,8 +4,8 @@
 //! and the same keys. Liked Songs and playlists open from the library into Home's Pane, as a click in the library Pane
 //! does; the queue's songs are seen, dragged into a new order and removed.
 
-use crate::gesture::Held;
 use crate::app::{App, Modal, Popup};
+use crate::gesture::Held;
 use crate::layout::Widget;
 use crate::theme::Theme;
 use crate::ui::{centered, popup, text};

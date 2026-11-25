@@ -12,12 +12,16 @@
 //!
 //! | kind | the release | a release never heard (a bare move, a fresh press) | interrupted (a popup, undo, another layout) |
 //! |---|---|---|---|
-//! | seek, volume | sent at the bar's value | the same, at the last value heard | kept; a release in a popup ends it unsent |
+//! | seek, volume | sent at the bar's value | the same, at the last value heard (under a popup: unsent, as heard) | kept; a release in a popup ends it unsent |
 //! | queued song, list row | dropped where shown | let go: nothing moves | kept; a release in a popup ends it unmoved |
 //! | divider | the move is one undo step | the same | the same, before the interruption |
 //! | carried Widget | dropped where shown | back where it was (one picked up with Enter: a press only) | back where it was |
 //!
-//! `App::release_unheard` and `App::gesture_interrupted` are the two doors for the last two columns.
+//! `App::release_unheard` and `App::gesture_interrupted` are the two doors for the last two columns. An interruption
+//! is anything else that writes the layout while a divider is held: a popup, undo or redo, another Design or layout,
+//! an edit (a key's Close pane or New design…, `v`'s Widget swap), the mini player, quitting. Inside Arrange mode every
+//! layout write but the divider's own move ends it first (`before_edit`); the App's own writes call the door. A
+//! keyboard pick-up waits while any other Gesture is held.
 
 use crate::app::App;
 use crate::arrange::mode::{DividerDrag, TileDrag};
@@ -156,7 +160,10 @@ impl App {
         if !matches!(kind, MouseEventKind::Moved | MouseEventKind::Down(MouseButton::Left)) {
             return;
         }
+        // (under a popup a release ends a scrub unsent, heard or not)
+        let popup = self.modal().is_some_and(|m| m != crate::app::Modal::Arrange);
         match self.gesture.take() {
+            Some(Gesture::Scrub(_)) if popup => {}
             Some(Gesture::Scrub(s)) => match s.bar {
                 Bar::Seek => self.seek_to(s.value),
                 Bar::Volume => self.set_volume(s.value as u8),
@@ -177,6 +184,12 @@ impl App {
         if self.gesture.divider().is_some() || self.gesture.carry().is_some() {
             self.arrange_interrupted();
         }
+    }
+
+    /// The Client quits (`q`, Ctrl+C, Quit): a divider held is let go first, so its move is kept (Q103).
+    pub(crate) fn quit_now(&mut self) {
+        self.gesture_interrupted();
+        self.quit = true;
     }
 
     /// The release in a popup of a press begun before it opened: whatever it held ends without doing anything (a
