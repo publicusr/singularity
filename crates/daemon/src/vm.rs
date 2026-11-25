@@ -28,8 +28,7 @@ const IMAGE: &str = "debian-13-genericcloud-arm64.tar.xz";
 /// gvproxy's DHCP gives this MAC the guest address below
 const MAC: &str = "5a:94:ef:e4:0c:ee";
 pub const GUEST: &str = "192.168.127.2";
-/// Soloist's WebSocket inside the guest, and the vsock port its audio comes to the Mac on
-pub const GUEST_WS: u16 = 7700;
+/// The vsock port Soloist's audio comes to the Mac on (its WebSocket: `soloist::runner::vm::GUEST_WS`)
 pub const GUEST_PCM: u16 = 5005;
 /// bump when the guest's setup changes: a new instance id makes cloud-init run again (2: the pipe sink over vsock,
 /// and #S7's size caps on the guest's `curl`: 3, the pinned host key: 4)
