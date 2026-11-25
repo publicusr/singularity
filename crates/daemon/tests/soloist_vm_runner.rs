@@ -282,13 +282,17 @@ async fn pairing_forwards_the_zeroconf_port_and_announces_it_until_dropped() {
 async fn a_vm_that_went_away_is_seen_and_brought_up_again() {
     let dir = tempfile::tempdir().unwrap();
     let (vm, fake) = runner(dir.path());
+    fake.answers_ws.store(true, Ordering::SeqCst);
     prepare(&vm).await.0.unwrap();
     assert!(vm.alive().await);
+    assert!(vm.ws_addr().await.is_some());
     // the VM dies under Soloist
     fake.on.store(false, Ordering::SeqCst);
     assert!(!vm.alive().await);
     vm.down().await;
     assert_eq!(fake.seen(|s| s.power_offs), 1);
+    // (the fake's old forward still answers: the runner mustn't look there)
+    assert_eq!(vm.ws_addr().await, None, "a VM taken down has no WebSocket forward");
     prepare(&vm).await.0.unwrap();
     assert_eq!(fake.seen(|s| s.boots), 2, "the next round boots it again");
     assert_eq!(vm.version().await, "Soloist 1.0.0");

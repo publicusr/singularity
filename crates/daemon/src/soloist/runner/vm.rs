@@ -219,6 +219,9 @@ impl<G: Guest> Runner for InVm<G> {
 
     async fn down(&self) {
         self.0.guest.power_off().await;
-        *self.0.up.lock().await = false;
+        let mut up = self.0.up.lock().await;
+        *up = false;
+        // its forward went with it
+        self.0.ws_port.store(0, Ordering::Relaxed);
     }
 }
