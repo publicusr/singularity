@@ -503,7 +503,7 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     // Pane's arrows (D44); dim when there's nowhere to go that way
     let history = w == Some(Widget::Home) && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20 && app.arranging.is_none();
     // a Pane whose Widget can give way to others always keeps its ◂ ▸ (7 cells at the right): a long title gives way
-    let can_swap = w.is_some_and(|w| crate::widget_catalogue::facts(w).group.is_some() && w != Widget::Well) || history;
+    let can_swap = w.is_some_and(|w| crate::widget_catalogue::facts(w).group.is_some()) || history;
     // Arrange mode (D87): a split button before the ×, and no ◂ ▸ (what a Pane shows changes by dragging there)
     let split_btn = app.arranging.is_some() && rect.width >= 14;
     let can_swap = can_swap && !split_btn;
@@ -630,6 +630,8 @@ pub fn main_page(buf: &mut Buffer, inner: Rect, app: &mut App, th: &Theme) {
         Page::Home => home_page(buf, inner, app, th),
     }
 }
+
+
 
 /// Home in the main Pane: the search bar on top, the feed under it.
 fn home_page(buf: &mut Buffer, inner: Rect, app: &mut App, th: &Theme) {
@@ -2009,7 +2011,6 @@ mod tests {
         assert!(region(pane(Widget::Fft)).contains('█'), "{}", region(pane(Widget::Fft)));
         let loud = region(pane(Widget::Loudness));
         assert!(loud.starts_with("L ▬") && loud.contains('█'), "{loud}");
-        assert!(!s.contains("arrives with #15"));
         // the loudness Pane follows the real output level, not the gained one
         app.meters = Default::default();
         app.meters.push(singularity_proto::SpectrumFrame { bands: vec![200; 64], level: 230, vu: [230, 230], out_vu: [20, 20], ..Default::default() });
@@ -3032,11 +3033,10 @@ mod tests {
         assert_eq!(r.height, 2);
     }
 
-    /// Every Widget a Slot can show (and the library and Home), as `widget` draws them in a Pane.
-    const EVERY_WIDGET: [Widget; 19] = {
-        use Widget::*;
-        [Lyrics, Queue, NowPlaying, Stream, Top, Listening, Today, TopWeek, Marquee, Glow, Fft, Loudness, Levels, Scope, Rain, Starfield, Library, Home, Karaoke]
-    };
+    /// Every Widget but the black holes, as the Widget catalogue draws them in a Pane.
+    fn every_widget() -> impl Iterator<Item = Widget> {
+        Widget::ALL.iter().copied().filter(|w| !crate::layout::is_hole(Some(*w)))
+    }
 
     /// `widget_app` playing a song with a cover, a long queue, long synced lyrics (30 s in), the meters moving and a
     /// library: something for every Widget to show.
@@ -3075,7 +3075,7 @@ mod tests {
         let mut bad: Vec<(Widget, String)> = vec![];
         for w in widths {
             for &h in &heights {
-                for slot in EVERY_WIDGET {
+                for slot in every_widget() {
                     if bad.iter().any(|(s, _)| *s == slot) {
                         continue;
                     }

@@ -49,8 +49,8 @@ mod tracks;
 mod ui;
 mod visual;
 mod wheel;
-mod widgets;
 mod widget_catalogue;
+mod widgets;
 
 use app::App;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event as TermEvent, KeyEventKind, MouseEventKind};

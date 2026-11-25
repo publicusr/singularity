@@ -51,7 +51,7 @@ const ROWS: usize = 16;
 impl App {
     /// Whether Pane `id` offers Replace widget… (Home's doesn't: the main Pane keeps Home).
     pub fn can_replace(&self, id: PaneId) -> bool {
-        self.layout.get(id).is_some_and(|p| p.widget != Some(Widget::Home))
+        self.layout.get(id).is_some_and(|p| !crate::arrangement::required(p.widget))
     }
 
     /// Open the Widget picker on Pane `id` (Home's says why not).
