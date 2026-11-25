@@ -794,10 +794,11 @@ pub fn socket_path() -> PathBuf {
     base.join("singularity").join("daemon.sock")
 }
 
+/// `$UID`, else the Host's user id. A Mac's folder has always been `singularity-user` (this read `/proc`, which macOS
+/// lacks): renaming it would strand a running Daemon on the old path, so it keeps that name.
 fn uid() -> String {
-    std::env::var("UID").unwrap_or_else(|_| {
-        std::fs::metadata("/proc/self").map(|m| std::os::unix::fs::MetadataExt::uid(&m).to_string()).unwrap_or_else(|_| "user".into())
-    })
+    use singularity_config::host;
+    std::env::var("UID").unwrap_or_else(|_| if host::MACOS { "user".into() } else { host::uid().to_string() })
 }
 
 pub fn now_ms() -> u64 {

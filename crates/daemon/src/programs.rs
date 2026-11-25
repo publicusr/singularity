@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 /// The one variable the Daemon reads a secret from (`soloist.rs::api_key`). Children have no use for it (S10).
-pub const SECRET_ENV: &str = "SOLOIST_API_KEY";
+pub use singularity_config::host::SECRET_ENV;
 
 /// A program the Daemon runs, or one the Client starts for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,13 +29,8 @@ pub enum Tool {
     Open,
     /// the Spotify app's own binary (Linux; on macOS the app is a bundle in /Applications)
     Spotify,
-    /// macOS: reads the app's `Info.plist` and this Mac's name
+    /// macOS: reads the app's `Info.plist`
     Defaults,
-    Scutil,
-    /// Linux: this computer's name, when `/etc/hostname` doesn't say it
-    Hostname,
-    /// Linux: the Client's browser opener for the Spotify login page
-    XdgOpen,
 }
 
 impl Tool {
@@ -56,17 +51,13 @@ impl Tool {
             Tool::Open => "open",
             Tool::Spotify => "spotify",
             Tool::Defaults => "defaults",
-            Tool::Scutil => "scutil",
-            Tool::Hostname => "hostname",
-            Tool::XdgOpen => "xdg-open",
         }
     }
 
-    /// Where this tool is looked for. Most are in [`Tool::DIRS`]; `scutil` is in `/usr/sbin`, and a Linux Spotify is
-    /// also installed by snap (still a fixed, root-owned location, not a user's `PATH`).
+    /// Where this tool is looked for. Most are in [`Tool::DIRS`]; a Linux Spotify is also installed by snap (still a
+    /// fixed, root-owned location, not a user's `PATH`).
     pub fn dirs(self) -> &'static [&'static str] {
         match self {
-            Tool::Scutil => &["/usr/sbin"],
             Tool::Spotify if !cfg!(target_os = "macos") => LINUX_SPOTIFY_DIRS,
             _ => Self::DIRS,
         }
@@ -153,13 +144,11 @@ mod tests {
     /// S3: the rest of the programs are fixed locations too, and none of them is a bare name.
     #[test]
     fn the_new_programs_have_fixed_locations() {
-        for t in [Tool::Open, Tool::Spotify, Tool::Defaults, Tool::Scutil, Tool::Hostname, Tool::XdgOpen] {
+        for t in [Tool::Open, Tool::Spotify, Tool::Defaults] {
             assert!(t.dirs().iter().all(|d| d.starts_with('/')), "{} is looked up in {:?}", t.name(), t.dirs());
             assert!(t.find().is_none_or(|p| p.is_absolute()));
         }
-        if cfg!(target_os = "macos") {
-            assert_eq!(Tool::Scutil.dirs(), ["/usr/sbin"]);
-        } else {
+        if !cfg!(target_os = "macos") {
             assert!(Tool::Spotify.dirs().contains(&"/snap/bin"));
         }
     }

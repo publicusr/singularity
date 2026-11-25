@@ -15,7 +15,8 @@ use singularity_config::{Config, EngineKind, Read};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
-/// The machine the Daemon runs on, as far as choosing an Engine goes. Lookups run only when the choice needs them.
+/// The machine the Daemon runs on, as far as choosing an Engine goes: the [Host](singularity_config::host::Host)'s
+/// answers, and the installed app's version. Lookups run only when the choice needs them.
 pub struct Host<'a> {
     pub macos: bool,
     /// a CPU Spotify ships Soloist for (x86_64, arm64: D73)
@@ -30,9 +31,9 @@ impl Host<'static> {
     /// This machine.
     pub fn this() -> Host<'static> {
         Host {
-            macos: cfg!(target_os = "macos"),
-            soloist_cpu: cfg!(any(target_arch = "x86_64", target_arch = "aarch64")),
-            computer: &crate::app_engine::this_computer,
+            macos: singularity_config::host::MACOS,
+            soloist_cpu: singularity_config::host::Host::this().soloist_cpu(),
+            computer: &|| singularity_config::host::Host::this().computer(),
             app_version: &|| crate::app_engine::installed().map(|a| a.version).unwrap_or_default(),
         }
     }

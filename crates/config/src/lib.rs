@@ -13,6 +13,8 @@ use std::time::SystemTime;
 pub use toml_edit;
 use toml_edit::{DocumentMut, Item, Value};
 
+pub mod host;
+
 /// The `config.toml` schema this build writes and reads.
 pub const CONFIG_SCHEMA: i64 = 7;
 /// The `keys.toml` schema.
@@ -101,7 +103,7 @@ pub enum EngineKind {
 impl EngineKind {
     /// What `Auto` means here.
     pub fn resolved(self) -> EngineKind {
-        self.resolved_on(cfg!(target_os = "macos"), cfg!(any(target_arch = "x86_64", target_arch = "aarch64")))
+        self.resolved_on(host::MACOS, host::Host::this().soloist_cpu())
     }
 
     /// What `Auto` means on macOS or not, on a CPU Spotify ships Soloist for or not.

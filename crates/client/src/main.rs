@@ -222,20 +222,10 @@ fn handle(app: &mut App, ev: TermEvent, at: Instant, focused: &mut bool, units: 
     Ok(())
 }
 
-/// Open the pairing page in the user's browser (the code is also shown in the UI): a fixed system location, never a
-/// `PATH` lookup (audit S3), and without the Daemon's secret (S10).
+/// Open the pairing page in the user's browser (the code is also shown in the UI): the Host's opener, from a fixed
+/// system location, never a `PATH` lookup (audit S3), and without the Daemon's secret (S10).
 fn open_in_browser(url: &str) {
-    if let Some(opener) = opener() {
-        let mut cmd = std::process::Command::new(opener);
-        cmd.env_remove(conn::SECRET_ENV).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        let _ = cmd.spawn();
-    }
-}
-
-/// The browser opener at a fixed system location: `open` on a Mac, `xdg-open` on Linux.
-fn opener() -> Option<std::path::PathBuf> {
-    let name = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    ["/usr/bin", "/bin", "/usr/local/bin"].iter().map(|d| std::path::Path::new(d).join(name)).find(|p| p.is_file())
+    singularity_config::host::Host::this().open(url);
 }
 
 fn cache_dir() -> std::path::PathBuf {

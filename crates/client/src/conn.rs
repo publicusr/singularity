@@ -1,9 +1,9 @@
 //! Connection to the Daemon: start it if needed, handshake, forward messages, reconnect forever.
 
-/// The variable the Daemon reads the Soloist key from. The Daemon itself is started with it (it is the one program
-/// that needs it); no other child of the Client inherits it (audit S10).
-pub const SECRET_ENV: &str = "SOLOIST_API_KEY";
+// The Daemon is started with the Soloist key's variable (it is the one program that needs it); the Host's link opener
+// starts without it (audit S10).
 
+use singularity_config::host::Host;
 use singularity_proto::{self as proto, ClientMsg, Command, DaemonMsg, PROTOCOL_VERSION};
 use std::time::Duration;
 use tokio::net::UnixStream;
@@ -51,7 +51,7 @@ async fn run(mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>
             }
         };
         // only a Daemon of our own user's (another user's process could be listening on a path we expect)
-        let me = unsafe { libc::getuid() }; // SAFETY: getuid has no preconditions and can't fail
+        let me = singularity_config::host::uid();
         if !stream.peer_cred().is_ok_and(|c| c.uid() == me) {
             let _ = ev_tx.send(ConnEvent::Incompatible(format!("{} belongs to another user: not connecting", path.display()))).await;
             tokio::time::sleep(Duration::from_secs(3)).await;
@@ -181,20 +181,9 @@ fn is_daemon(pid: i32) -> bool {
     exe_name(pid).is_some_and(|n| n.starts_with("singularityd"))
 }
 
-/// The file name of the binary process `pid` runs (Linux: `/proc/<pid>/exe`).
-#[cfg(target_os = "linux")]
+/// The file name of the binary process `pid` runs, as the Host tells it.
 fn exe_name(pid: i32) -> Option<String> {
-    std::fs::read_link(format!("/proc/{pid}/exe")).ok()?.file_name().map(|n| n.to_string_lossy().into_owned())
-}
-
-/// The name process `pid` was started under (macOS: `proc_name`; `proc_pidpath` fails once the binary is deleted,
-/// which is the case after a rebuild).
-#[cfg(target_os = "macos")]
-fn exe_name(pid: i32) -> Option<String> {
-    let mut buf = [0u8; 64];
-    // SAFETY: the buffer is as long as we say; proc_name writes at most that much
-    let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
-    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+    Host::this().exe_name(u32::try_from(pid).ok()?)
 }
 
 /// SIGTERM the Daemon `pid`, SIGKILL if it's still there 2 s later. Anything that isn't a singularityd is left alone.
@@ -202,15 +191,15 @@ async fn stop_daemon(pid: i32) {
     if pid <= 1 || !is_daemon(pid) {
         return;
     }
-    // SAFETY: kill only sends a signal
-    unsafe { libc::kill(pid, libc::SIGTERM) };
+    let host = Host::this();
+    host.stop(pid as u32, false);
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if !is_daemon(pid) {
             return;
         }
     }
-    unsafe { libc::kill(pid, libc::SIGKILL) };
+    host.stop(pid as u32, true);
 }
 
 /// The `singularityd` next to this binary, if there is one.
