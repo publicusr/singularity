@@ -13,9 +13,10 @@ impl App {
             ConnEvent::Connecting => {}
             ConnEvent::Updating => self.say("Updating singularityd…"),
             ConnEvent::Disconnected => self.link = Link::Connecting,
-            ConnEvent::Connected { daemon_version, engine } => {
+            ConnEvent::Connected { daemon_version, engine, soloist_in_vm } => {
                 self.link = Link::Connected { version: daemon_version };
                 self.engine_kind = engine;
+                self.soloist_in_vm = soloist_in_vm;
                 self.on_connected();
             }
             ConnEvent::Incompatible(m) => {
@@ -107,9 +108,12 @@ mod tests {
     fn connecting_and_losing_the_daemon_shows_on_the_link() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let mut app = App::new(Some(tx));
-        app.receive(ConnEvent::Connected { daemon_version: "1.2.3".into(), engine: EngineKind::Librespot });
+        app.receive(ConnEvent::Connected { daemon_version: "1.2.3".into(), engine: EngineKind::Librespot, soloist_in_vm: false });
         assert_eq!(app.link, Link::Connected { version: "1.2.3".into() });
         assert_eq!(app.engine_kind, EngineKind::Librespot);
+        assert!(!app.soloist_in_vm);
+        app.receive(ConnEvent::Connected { daemon_version: "1.2.3".into(), engine: EngineKind::Soloist, soloist_in_vm: true });
+        assert!(app.soloist_in_vm, "the Daemon's word on the Soloist VM (Q94)");
         assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|c| c == Command::GetListening), "connected: asks for the listening log");
         app.receive(ConnEvent::Disconnected);
         assert_eq!(app.link, Link::Connecting);

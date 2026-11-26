@@ -68,10 +68,18 @@ async fn main() -> anyhow::Result<()> {
         println!("singularity {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    // nowhere to keep settings and data without HOME: stop and say so (Q93), before a Daemon is started
+    let folders = match singularity_config::app_folders::AppFolders::from_env() {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("singularity: {e}");
+            std::process::exit(1);
+        }
+    };
     let (cmd_tx, mut conn_rx) = conn::spawn();
     let mut app = App::new(Some(cmd_tx));
     app.search = search::Search::with_recent(search::load_recent());
-    app.covers = covers::Covers::spawn(cache_dir().join("covers"));
+    app.covers = covers::Covers::spawn(folders.cache.join("covers"));
     app.cell_px = term::cell_px();
     app.hole.allow_gpu = true;
     app.load_config();
@@ -226,23 +234,8 @@ fn handle(app: &mut App, ev: TermEvent, at: Instant, focused: &mut bool, units: 
     Ok(())
 }
 
-/// Open the pairing page in the user's browser (the code is also shown in the UI): a fixed system location, never a
-/// `PATH` lookup (audit S3), and without the Daemon's secret (S10).
+/// Open the pairing page in the user's browser (the code is also shown in the UI): the Host's opener, from a fixed
+/// system location, never a `PATH` lookup (audit S3), and without the Daemon's secret (S10).
 fn open_in_browser(url: &str) {
-    if let Some(opener) = opener() {
-        let mut cmd = std::process::Command::new(opener);
-        cmd.env_remove(conn::SECRET_ENV).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        let _ = cmd.spawn();
-    }
-}
-
-/// The browser opener at a fixed system location: `open` on a Mac, `xdg-open` on Linux.
-fn opener() -> Option<std::path::PathBuf> {
-    let name = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    ["/usr/bin", "/bin", "/usr/local/bin"].iter().map(|d| std::path::Path::new(d).join(name)).find(|p| p.is_file())
-}
-
-fn cache_dir() -> std::path::PathBuf {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".cache")).join("singularity")
+    singularity_config::host::Host::this().open(url);
 }

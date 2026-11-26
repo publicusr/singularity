@@ -1,9 +1,9 @@
 //! Connection to the Daemon: start it if needed, handshake, forward messages, reconnect forever.
 
-/// The variable the Daemon reads the Soloist key from. The Daemon itself is started with it (it is the one program
-/// that needs it); no other child of the Client inherits it (audit S10).
-pub const SECRET_ENV: &str = "SOLOIST_API_KEY";
+// The Daemon is started with the Soloist key's variable (it is the one program that needs it); the Host's link opener
+// starts without it (audit S10).
 
+use singularity_config::host::Host;
 use singularity_proto::{self as proto, ClientMsg, Command, DaemonMsg, PROTOCOL_VERSION};
 use std::time::Duration;
 use tokio::net::UnixStream;
@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 pub enum ConnEvent {
     Connecting,
-    Connected { daemon_version: String, engine: proto::EngineKind },
+    Connected { daemon_version: String, engine: proto::EngineKind, soloist_in_vm: bool },
     /// the running Daemon is older than the `singularityd` on disk; it's being replaced
     Updating,
     Incompatible(String),
@@ -30,8 +30,12 @@ pub fn spawn() -> (mpsc::Sender<Command>, mpsc::Receiver<ConnEvent>) {
     (cmd_tx, ev_rx)
 }
 
-async fn run(mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>) {
-    let path = proto::socket_path();
+async fn run(cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>) {
+    run_at(proto::socket_path(), cmd_rx, ev_tx).await
+}
+
+/// The connection to the Daemon on `path`.
+async fn run_at(path: std::path::PathBuf, mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>) {
     let mut started_daemon = false;
     let mut replaced = false;
     loop {
@@ -51,7 +55,7 @@ async fn run(mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>
             }
         };
         // only a Daemon of our own user's (another user's process could be listening on a path we expect)
-        let me = unsafe { libc::getuid() }; // SAFETY: getuid has no preconditions and can't fail
+        let me = singularity_config::host::uid();
         if !stream.peer_cred().is_ok_and(|c| c.uid() == me) {
             let _ = ev_tx.send(ConnEvent::Incompatible(format!("{} belongs to another user: not connecting", path.display()))).await;
             tokio::time::sleep(Duration::from_secs(3)).await;
@@ -65,7 +69,7 @@ async fn run(mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>
             continue;
         }
         match proto::read_msg::<_, DaemonMsg>(&mut rd).await {
-            Ok(Some(DaemonMsg::Welcome { daemon_version, started_unix_ms, engine, .. })) => {
+            Ok(Some(DaemonMsg::Welcome { daemon_version, started_unix_ms, engine, soloist_in_vm, .. })) => {
                 // after a rebuild the old Daemon keeps running; ask it to make way for the new binary (once)
                 if !replaced && daemon_binary().is_some_and(|b| built_after(&b, started_unix_ms)) {
                     replaced = true;
@@ -83,7 +87,7 @@ async fn run(mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>
                     started_daemon = false;
                     continue;
                 }
-                let _ = ev_tx.send(ConnEvent::Connected { daemon_version, engine }).await;
+                let _ = ev_tx.send(ConnEvent::Connected { daemon_version, engine, soloist_in_vm }).await;
             }
             Ok(Some(DaemonMsg::Incompatible { message, .. })) => {
                 let _ = ev_tx.send(ConnEvent::Incompatible(message)).await;
@@ -181,20 +185,9 @@ fn is_daemon(pid: i32) -> bool {
     exe_name(pid).is_some_and(|n| n.starts_with("singularityd"))
 }
 
-/// The file name of the binary process `pid` runs (Linux: `/proc/<pid>/exe`).
-#[cfg(target_os = "linux")]
+/// The file name of the binary process `pid` runs, as the Host tells it.
 fn exe_name(pid: i32) -> Option<String> {
-    std::fs::read_link(format!("/proc/{pid}/exe")).ok()?.file_name().map(|n| n.to_string_lossy().into_owned())
-}
-
-/// The name process `pid` was started under (macOS: `proc_name`; `proc_pidpath` fails once the binary is deleted,
-/// which is the case after a rebuild).
-#[cfg(target_os = "macos")]
-fn exe_name(pid: i32) -> Option<String> {
-    let mut buf = [0u8; 64];
-    // SAFETY: the buffer is as long as we say; proc_name writes at most that much
-    let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
-    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+    Host::this().exe_name(u32::try_from(pid).ok()?)
 }
 
 /// SIGTERM the Daemon `pid`, SIGKILL if it's still there 2 s later. Anything that isn't a singularityd is left alone.
@@ -202,15 +195,15 @@ async fn stop_daemon(pid: i32) {
     if pid <= 1 || !is_daemon(pid) {
         return;
     }
-    // SAFETY: kill only sends a signal
-    unsafe { libc::kill(pid, libc::SIGTERM) };
+    let host = Host::this();
+    host.stop(pid as u32, false);
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if !is_daemon(pid) {
             return;
         }
     }
-    unsafe { libc::kill(pid, libc::SIGKILL) };
+    host.stop(pid as u32, true);
 }
 
 /// The `singularityd` next to this binary, if there is one.
@@ -233,11 +226,7 @@ fn start_daemon() -> Result<(), String> {
     let Some(exe) = daemon_binary() else {
         return Err(format!("can't find `singularityd` next to {}: install or build both together", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "singularity".into())));
     };
-    let log_dir = std::env::var_os("XDG_STATE_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/state")))
-        .unwrap_or_else(std::env::temp_dir)
-        .join("singularity");
+    let log_dir = singularity_config::app_folders::AppFolders::from_env().map_err(|e| e.to_string())?.state;
     let _ = std::fs::create_dir_all(&log_dir);
     // owner-only: the log names the account and what plays
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -260,6 +249,42 @@ fn start_daemon() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Q94 end to end: a real Daemon whose Soloist runs in the Soloist VM says so in its welcome, and the App takes it.
+    #[tokio::test]
+    async fn the_daemons_word_on_the_soloist_vm_reaches_the_app() {
+        /// An Engine that says its Soloist runs in the VM, and does nothing else.
+        struct SoloistInVm;
+        impl singularityd::engine::Engine for SoloistInVm {
+            fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<singularityd::engine::EngineEvent>) {
+                let ((cmd_tx, cmd_rx), (ev_tx, ev_rx)) = (mpsc::channel(8), mpsc::channel(8));
+                // kept for the test's length: a closed Engine would be reported, not the point here
+                std::mem::forget((cmd_rx, ev_tx));
+                (cmd_tx, ev_rx)
+            }
+            fn soloist_in_vm(&self) -> bool {
+                true
+            }
+        }
+        let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let path = dir.path().join("s").join("daemon.sock");
+        let listener = singularityd::bind(&path).unwrap();
+        tokio::spawn(singularityd::serve(listener, Box::new(SoloistInVm), None, None));
+        let (_cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel(64);
+        tokio::spawn(run_at(path, cmd_rx, ev_tx));
+        let mut app = crate::app::App::new(None);
+        assert!(!app.soloist_in_vm);
+        loop {
+            let ev = tokio::time::timeout(Duration::from_secs(10), ev_rx.recv()).await.expect("connected").expect("the connection runs");
+            let connected = matches!(ev, ConnEvent::Connected { .. });
+            app.receive(ev);
+            if connected {
+                break;
+            }
+        }
+        assert!(app.soloist_in_vm, "the setup wizard words the Soloist step for the VM");
+    }
 
     /// The pump (D82): a frame used to be read inside the `select!`, so a command sent while a frame was half
     /// in threw the half away, and the stream fell out of step ("frame too large", garbage, then a reconnect).

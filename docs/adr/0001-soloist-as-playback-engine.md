@@ -24,3 +24,9 @@ handled by auto-updating from Spotify's public CDN.
 Pairing, control, push events and the audio tap all worked. Streaming quality is a **per-Connect-device setting**
 (phone → device picker → Change quality settings). Once set to Lossless, Soloist streamed FLAC (≈1.7 Mbit/s average).
 librespot also reportedly won't play on accounts created since Dec 2024, which is one more reason for this decision.
+
+## Note (2026-11-25, D89)
+
+"Linux only" is still true of Soloist itself, but no longer of Singularity: on macOS, Soloist runs in the Soloist VM
+(D55), behind the same Soloist runner as the local Linux process (D89), and the macOS default Engine is librespot
+(D54). The decision above stands.

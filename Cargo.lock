@@ -3883,6 +3883,7 @@ dependencies = [
  "serde_json",
  "singularity-config",
  "singularity-proto",
+ "singularityd",
  "tempfile",
  "tokio",
  "unicode-width",
@@ -3893,6 +3894,7 @@ dependencies = [
 name = "singularity-config"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "serde",
  "tempfile",
  "toml_edit",
@@ -3904,6 +3906,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "singularity-config",
  "tokio",
 ]
 

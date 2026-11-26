@@ -677,6 +677,8 @@ pub struct App {
     pub engine: Option<EngineStatus>,
     /// which Engine the Daemon runs (Soloist, the Spotify app): the setup wizard and health view follow it
     pub engine_kind: singularity_proto::EngineKind,
+    /// the Daemon's Soloist runs in the Soloist VM (Q94): the setup wizard says what its first start involves
+    pub soloist_in_vm: bool,
     pub playback: PlaybackState,
     pub catalogue: Option<CatalogueStatus>,
     pub home: Option<HomeFeed>,
@@ -834,6 +836,7 @@ impl App {
             link: Link::Connecting,
             engine: None,
             engine_kind: Default::default(),
+            soloist_in_vm: false,
             playback: PlaybackState::default(),
             catalogue: None,
             home: None,

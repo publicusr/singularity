@@ -184,28 +184,14 @@ pub fn objects_of(pids: &[i32]) -> Vec<AudioObjectID> {
 
 /// The Spotify app's processes ("Spotify", "Spotify Helper (…)"): which of them plays isn't fixed, so all are tapped.
 pub fn spotify_pids() -> Vec<i32> {
-    // SAFETY: libproc fills buffers of the sizes passed; counts are bounds-checked
-    unsafe {
-        let n = libc::proc_listallpids(std::ptr::null_mut(), 0);
-        if n <= 0 {
-            return vec![];
-        }
-        let mut pids = vec![0i32; n as usize + 64];
-        let n = libc::proc_listallpids(pids.as_mut_ptr().cast(), (pids.len() * 4) as i32);
-        pids.truncate(n.max(0) as usize);
-        let mut out: Vec<i32> = pids
-            .into_iter()
-            .filter(|p| *p > 0)
-            .filter(|p| {
-                let mut buf = [0u8; 64];
-                let len = libc::proc_name(*p, buf.as_mut_ptr().cast(), buf.len() as u32);
-                let name = String::from_utf8_lossy(&buf[..len.max(0) as usize]).into_owned();
-                name == "Spotify" || name.starts_with("Spotify Helper")
-            })
-            .collect();
-        out.sort_unstable();
-        out
-    }
+    let mut out: Vec<i32> = singularity_config::host::Host::this()
+        .processes()
+        .into_iter()
+        .filter(|p| p.name == "Spotify" || p.name.starts_with("Spotify Helper"))
+        .filter_map(|p| i32::try_from(p.pid).ok())
+        .collect();
+    out.sort_unstable();
+    out
 }
 
 /// While the AudioTap wants samples and the Spotify app runs, keep a tap on it feeding `feed` (resampled to
