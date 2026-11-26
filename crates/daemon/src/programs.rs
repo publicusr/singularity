@@ -2,23 +2,20 @@
 //! started without the secrets the Daemon read from its own environment.
 //!
 //! `PATH` belongs to whoever started the Daemon (a shell with the user's `~/bin` first, a wrapper script, an
-//! editor's terminal): `pkill -x spotify` or `tar -xzf` must not run a program from there. The directories below
+//! editor's terminal): `secret-tool lookup` or `tar -xJf` must not run a program from there. The directories below
 //! come before anything a user installed; on macOS Homebrew's are searched last, for the tools a stock Mac doesn't
 //! ship (a pkg-installed `pulseaudio` puts `pactl`/`parec` there).
 
 use std::path::{Path, PathBuf};
 
 /// The one variable the Daemon reads a secret from (`soloist.rs::api_key`). Children have no use for it (S10).
-pub const SECRET_ENV: &str = "SOLOIST_API_KEY";
+pub use singularity_config::host::SECRET_ENV;
+use singularity_config::host::MACOS;
 
 /// A program the Daemon runs, or one the Client starts for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
-    /// looks a process up by name (the Spotify app's)
-    Pgrep,
-    /// ends it ("Restart the player")
-    Pkill,
-    /// unpacks Soloist's build
+    /// macOS: unpacks the Soloist VM's image (Soloist's own builds are unpacked by the `tar` crate)
     Tar,
     /// the Secret Service client behind the Linux keyring
     SecretTool,
@@ -29,26 +26,22 @@ pub enum Tool {
     Open,
     /// the Spotify app's own binary (Linux; on macOS the app is a bundle in /Applications)
     Spotify,
-    /// macOS: reads the app's `Info.plist` and this Mac's name
+    /// macOS: reads the app's `Info.plist`
     Defaults,
-    Scutil,
-    /// Linux: this computer's name, when `/etc/hostname` doesn't say it
-    Hostname,
-    /// Linux: the Client's browser opener for the Spotify login page
-    XdgOpen,
 }
 
 impl Tool {
     /// Where programs are looked for, in order. `/bin` is a symlink to `/usr/bin` on most systems but not all.
-    pub const DIRS: &'static [&'static str] = if cfg!(target_os = "macos") { &["/usr/bin", "/bin", "/opt/homebrew/bin", "/usr/local/bin"] } else { &["/usr/bin", "/bin", "/usr/local/bin"] };
+    pub const DIRS: &'static [&'static str] = if MACOS { &["/usr/bin", "/bin", "/opt/homebrew/bin", "/usr/local/bin"] } else { &["/usr/bin", "/bin", "/usr/local/bin"] };
 
-    /// The tools this OS's Daemon uses; the health check names the ones it can't find.
-    pub const REQUIRED: &'static [Tool] = if cfg!(target_os = "macos") { &[Tool::Pgrep, Tool::Pkill, Tool::Tar] } else { &[Tool::Pgrep, Tool::Pkill, Tool::Tar, Tool::SecretTool, Tool::Pactl, Tool::Parec] };
+    /// The tools the Daemon uses on macOS (`macos`) or Linux, whatever the Engine; the health check names the ones it
+    /// can't find. Processes are found and stopped through the Host, not `pgrep`/`pkill` (Q102).
+    pub fn required(macos: bool) -> &'static [Tool] {
+        if macos { &[Tool::Tar] } else { &[Tool::SecretTool, Tool::Pactl, Tool::Parec] }
+    }
 
     pub fn name(self) -> &'static str {
         match self {
-            Tool::Pgrep => "pgrep",
-            Tool::Pkill => "pkill",
             Tool::Tar => "tar",
             Tool::SecretTool => "secret-tool",
             Tool::Pactl => "pactl",
@@ -56,18 +49,14 @@ impl Tool {
             Tool::Open => "open",
             Tool::Spotify => "spotify",
             Tool::Defaults => "defaults",
-            Tool::Scutil => "scutil",
-            Tool::Hostname => "hostname",
-            Tool::XdgOpen => "xdg-open",
         }
     }
 
-    /// Where this tool is looked for. Most are in [`Tool::DIRS`]; `scutil` is in `/usr/sbin`, and a Linux Spotify is
-    /// also installed by snap (still a fixed, root-owned location, not a user's `PATH`).
+    /// Where this tool is looked for. Most are in [`Tool::DIRS`]; a Linux Spotify is also installed by snap (still a
+    /// fixed, root-owned location, not a user's `PATH`).
     pub fn dirs(self) -> &'static [&'static str] {
         match self {
-            Tool::Scutil => &["/usr/sbin"],
-            Tool::Spotify if !cfg!(target_os = "macos") => LINUX_SPOTIFY_DIRS,
+            Tool::Spotify if !MACOS => LINUX_SPOTIFY_DIRS,
             _ => Self::DIRS,
         }
     }
@@ -96,9 +85,10 @@ impl Tool {
 /// Linux: the system locations a Spotify install uses (a `.deb`/`.rpm` puts it in `/usr/bin`, snap in `/snap/bin`).
 const LINUX_SPOTIFY_DIRS: &[&str] = &["/usr/bin", "/bin", "/usr/local/bin", "/snap/bin"];
 
-/// The engine-specific tool the health view should name when it's missing: the app's own launcher.
-pub fn app_tool() -> Tool {
-    if cfg!(target_os = "macos") { Tool::Open } else { Tool::Spotify }
+/// The engine-specific tool the health view should name when it's missing: the app's own launcher on macOS
+/// (`macos`) or Linux.
+pub fn app_tool(macos: bool) -> Tool {
+    if macos { Tool::Open } else { Tool::Spotify }
 }
 
 /// A child process that never inherits the Daemon's secret (S10: the app, `pactl` and the rest have no use for it).
@@ -127,16 +117,16 @@ mod tests {
     #[test]
     fn fixed_locations_win_over_anything_else() {
         let scratch = tempfile::tempdir().unwrap();
-        let fake = scratch.path().join("pgrep");
+        let fake = scratch.path().join("tar");
         std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let dirs = [scratch.path().to_str().unwrap()];
-        assert_eq!(Tool::Pgrep.find_in(&dirs).as_deref(), Some(fake.as_path()), "a scratch directory is usable when it is searched");
+        assert_eq!(Tool::Tar.find_in(&dirs).as_deref(), Some(fake.as_path()), "a scratch directory is usable when it is searched");
         // the real lookup never looks there: only `Tool::DIRS` is consulted
-        if let Some(found) = Tool::Pgrep.find() {
+        if let Some(found) = Tool::Tar.find() {
             assert_ne!(found, fake, "PATH and a scratch directory are ignored");
-            assert!(Tool::DIRS.iter().any(|d| found == Path::new(d).join("pgrep")), "{} is not a fixed location", found.display());
+            assert!(Tool::DIRS.iter().any(|d| found == Path::new(d).join("tar")), "{} is not a fixed location", found.display());
         }
     }
 
@@ -153,13 +143,11 @@ mod tests {
     /// S3: the rest of the programs are fixed locations too, and none of them is a bare name.
     #[test]
     fn the_new_programs_have_fixed_locations() {
-        for t in [Tool::Open, Tool::Spotify, Tool::Defaults, Tool::Scutil, Tool::Hostname, Tool::XdgOpen] {
+        for t in [Tool::Open, Tool::Spotify, Tool::Defaults] {
             assert!(t.dirs().iter().all(|d| d.starts_with('/')), "{} is looked up in {:?}", t.name(), t.dirs());
             assert!(t.find().is_none_or(|p| p.is_absolute()));
         }
-        if cfg!(target_os = "macos") {
-            assert_eq!(Tool::Scutil.dirs(), ["/usr/sbin"]);
-        } else {
+        if !MACOS {
             assert!(Tool::Spotify.dirs().contains(&"/snap/bin"));
         }
     }

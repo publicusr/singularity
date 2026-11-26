@@ -14,14 +14,9 @@ use std::time::Duration;
 /// Spotify publishes Soloist for x86_64 and arm64 Linux side by side (D73: Linux on ARM runs the arm64 build).
 pub const CDN: &str = "https://soloist-builds.spotifycdn.com/soloist_release_";
 
-/// This machine's build: `None` on a CPU Spotify ships no Soloist for.
+/// This machine's build: `None` on a CPU Spotify ships no Soloist for (the Host knows which).
 pub fn cdn_for(arch: &str) -> Option<String> {
-    let name = match arch {
-        "x86_64" => "x86_64",
-        "aarch64" => "arm64",
-        _ => return None,
-    };
-    Some(format!("{CDN}{name}.tar.gz"))
+    singularity_config::host::soloist_build(arch).map(|name| format!("{CDN}{name}.tar.gz"))
 }
 
 /// The CDN to use (`SINGULARITY_SOLOIST_CDN` points tests and the pty harness at a fake one). On a CPU without a

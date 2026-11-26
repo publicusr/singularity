@@ -1,6 +1,6 @@
 //! `singularityd` binary: parse flags, pick the Engine, serve the socket.
 
-use singularityd::assembly::{CatalogueMode, Host, Plan, assemble};
+use singularityd::assembly::{AssemblyFacts, CatalogueMode, Plan, assemble};
 
 /// The log names the account and what plays: whoever opened it (a Client, launchd, a shell), it's owner-only.
 fn private_log() {
@@ -14,15 +14,8 @@ fn private_log() {
 }
 
 fn main() {
-    // macOS delivers media-key and Control Centre commands on the main thread's run loop (#68): the Daemon runs on
-    // another thread and the main thread serves those, until the Daemon ends the process
-    #[cfg(target_os = "macos")]
-    {
-        std::thread::spawn(|| std::process::exit(daemon()));
-        singularityd::nowplaying::main_thread();
-    }
-    #[cfg(not(target_os = "macos"))]
-    std::process::exit(daemon());
+    // OS media integration may need the main thread (macOS's run loop, #68): the Daemon runs where it says
+    singularityd::os_media::main_thread(daemon);
 }
 
 /// Run the Daemon; its exit code.
@@ -51,6 +44,11 @@ async fn run() -> anyhow::Result<i32> {
         println!("singularityd {}", singularityd::VERSION);
         return Ok(0);
     }
+    // nowhere to keep settings and data without HOME: stop and say so (Q93), before taking the socket
+    if let Err(e) = singularity_config::app_folders::AppFolders::from_env() {
+        eprintln!("singularityd: {e}");
+        return Ok(1);
+    }
     let path = singularityd::default_socket();
     let listener = match singularityd::bind(&path) {
         Ok(l) => l,
@@ -65,7 +63,7 @@ async fn run() -> anyhow::Result<i32> {
     // (--fake-engine, --no-catalogue, --fake-catalogue <home.json>): see `assembly`
     let args: Vec<String> = std::env::args().collect();
     let config = singularity_config::load_config(&singularity_config::config_path());
-    let assembly = assemble(config, &args, |k| std::env::var(k).ok(), &Host::this());
+    let assembly = assemble(config, &args, |k| std::env::var(k).ok(), &AssemblyFacts::this());
     // the Client reads the same config.toml and shows its problems (a toast, the Settings page); here they're logged
     for p in &assembly.problems {
         tracing::warn!("{p}");
@@ -77,15 +75,10 @@ async fn run() -> anyhow::Result<i32> {
         CatalogueMode::Off => None,
     };
     let (engine, tap) = assembly.build(catalogue.as_ref().map(|(tx, _)| tx.clone()));
-    // MPRIS on the session bus (SINGULARITY_DBUS=<address> picks another bus, =off none). A fake Engine stays off the
-    // session bus unless asked, so test Daemons never show up in the desktop's media controls.
+    // OS media integration (MPRIS, Now Playing): SINGULARITY_NOWPLAYING=off|on; a fake Engine only when asked, so test
+    // Daemons never show up in the desktop's media controls
     let notify = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let mpris = match std::env::var("SINGULARITY_DBUS").ok().filter(|v| !v.is_empty()) {
-        Some(v) if v == "off" => None,
-        Some(address) => Some(singularityd::mpris::Options { address: Some(address), notify: notify.clone() }),
-        None if fake => None,
-        None => Some(singularityd::mpris::Options { address: None, notify: notify.clone() }),
-    };
+    let os_media = singularityd::os_media::Options::wanted(|k| std::env::var(k).ok(), fake, matches!(assembly.plan, Plan::SpotifyApp { .. }), notify.clone());
     // the listening log and library backups under $XDG_DATA_HOME/singularity (SINGULARITY_DATA=<dir> elsewhere, =off
     // none). A fake Engine keeps none unless asked, so test Daemons never write into the owner's log.
     let store = match std::env::var("SINGULARITY_DATA").ok().filter(|v| !v.is_empty()) {
@@ -94,21 +87,10 @@ async fn run() -> anyhow::Result<i32> {
         None if fake => None,
         None => Some(singularityd::store::Store::default_dir()),
     };
-    // macOS: Now Playing, media keys and notifications (#68), for an Engine that plays from the Daemon (the Spotify app
-    // has its own Now Playing entry). SINGULARITY_NOWPLAYING=off: none; a fake Engine only with =on (tests, pty).
-    let now_playing = match std::env::var("SINGULARITY_NOWPLAYING").as_deref() {
-        _ if !cfg!(target_os = "macos") => None,
-        Ok("off") => None,
-        Ok("on") => Some(singularityd::nowplaying::Options { notify: notify.clone() }),
-        _ if fake || matches!(assembly.plan, Plan::SpotifyApp { .. }) => None,
-        _ => Some(singularityd::nowplaying::Options { notify: notify.clone() }),
-    };
-    // MPRIS is D-Bus: Linux's (a macOS session has no session bus)
-    let mpris = mpris.filter(|_| !cfg!(target_os = "macos"));
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = tokio::select! {
         // `notify`: the Daemon's config follower keeps notifications.track_change current (A1: supervised like the rest)
-        r = singularityd::serve_with(listener, engine, catalogue, tap, singularityd::Extras { mpris, now_playing, store, notify: Some(notify) }) => r.map(Some),
+        r = singularityd::serve_with(listener, engine, catalogue, tap, singularityd::Extras { os_media, store, notify: Some(notify) }) => r.map(Some),
         _ = tokio::signal::ctrl_c() => Ok(None),
         _ = term.recv() => Ok(None),
     };

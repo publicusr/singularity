@@ -1,5 +1,7 @@
 //! Seam 1 for MPRIS (#21): a Daemon with the FakeEngine on a private D-Bus, driven the way playerctl and KDE's media
 //! widget do. The bus has no service activation, so nothing on the machine is started by it.
+//! Linux only: on macOS OS media integration is Now Playing, even with a `dbus-daemon` installed.
+#![cfg(not(target_os = "macos"))]
 
 mod common;
 
@@ -106,8 +108,8 @@ async fn playerctl_style_control_and_track_notifications() {
     let dir = common::scratch();
     let path = dir.path().join("m.sock");
     let listener = singularityd::bind(&path).unwrap();
-    let opts = singularityd::mpris::Options { address: Some(bus.address.clone()), notify: std::sync::Arc::new(true.into()) };
-    tokio::spawn(singularityd::serve_with(listener, Box::new(FakeEngine), None, None, singularityd::Extras { mpris: Some(opts), ..Default::default() }));
+    let opts = singularityd::os_media::Options { address: Some(bus.address.clone()), notify: std::sync::Arc::new(true.into()) };
+    tokio::spawn(singularityd::serve_with(listener, Box::new(FakeEngine), None, None, singularityd::Extras { os_media: Some(opts), ..Default::default() }));
     let mut s = UnixStream::connect(&path).await.unwrap();
     proto::write_msg(&mut s, &ClientMsg::Hello { protocol: proto::PROTOCOL_VERSION, client: "test".into() }).await.unwrap();
     // drain the socket so the Daemon never blocks on us

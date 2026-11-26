@@ -12,8 +12,7 @@ pub mod health;
 pub mod jam;
 pub mod library;
 pub mod lyrics;
-pub mod mpris;
-pub mod nowplaying;
+pub mod os_media;
 pub mod pcm;
 #[cfg(target_os = "macos")]
 pub mod process_tap;
@@ -24,12 +23,14 @@ pub mod playing;
 pub mod queries;
 pub mod secrets;
 pub mod soloist;
-#[cfg(target_os = "macos")]
 pub mod soloist_vm;
+/// The Spotify app as this OS installs and starts it (a Platform seam; the AppEngine asks it)
+#[cfg_attr(target_os = "macos", path = "app_engine/macos.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "app_engine/linux.rs")]
+pub mod spotify_app;
 pub mod store;
 pub mod tap;
 pub mod update;
-#[cfg(target_os = "macos")]
 pub mod vm;
 
 use catalogue::{CatCmd, CatEvent};
@@ -57,6 +58,8 @@ pub struct Hub {
     pub started_unix_ms: u64,
     /// which Engine this Daemon runs
     pub engine_kind: proto::EngineKind,
+    /// Soloist runs in the Soloist VM (Q94)
+    pub soloist_in_vm: bool,
     /// what is playing and on which device (D80); never held across an await
     pub now: std::sync::Mutex<playing::NowPlaying>,
     pub engine_status: Mutex<Option<proto::EngineStatus>>,
@@ -234,10 +237,8 @@ fn same_user(stream: &UnixStream) -> bool {
 /// What a Daemon runs beyond playback and the Catalogue.
 #[derive(Default)]
 pub struct Extras {
-    /// MPRIS (and notifications) on a D-Bus
-    pub mpris: Option<mpris::Options>,
-    /// Now Playing, media keys and notifications on macOS (#68)
-    pub now_playing: Option<nowplaying::Options>,
+    /// OS media integration: the desktop's media controls, media keys and track notifications
+    pub os_media: Option<os_media::Options>,
     /// the LocalStore's directory: the listening log and nightly library backups
     pub store: Option<PathBuf>,
     /// the desktop-notification flag a background task keeps following `config.toml` (`notifications.track_change`)
@@ -268,6 +269,7 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
     let hub = Arc::new(Hub {
         started_unix_ms: proto::now_ms(),
         engine_kind: engine.kind(),
+        soloist_in_vm: engine.soloist_in_vm(),
         now: Default::default(),
         engine_status: Mutex::new(None),
         catalogue_status: Mutex::new(None),
@@ -307,23 +309,7 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
     if let Some(rx) = cat_rx {
         tokio::spawn(run_catalogue(rx, hub.clone()));
     }
-    if let Some(opts) = extras.mpris {
-        let h = hub.clone();
-        let again = opts.clone();
-        supervise(hub.clone(), "MPRIS", move || mpris::run(h.clone(), again.clone()));
-    }
-    #[cfg(target_os = "macos")]
-    match extras.now_playing {
-        Some(opts) => {
-            let h = hub.clone();
-            let notify = opts.notify.clone();
-            supervise(hub.clone(), "Now Playing", move || {
-                let (h, notify) = (h.clone(), notify.clone());
-                nowplaying::run(h, nowplaying::Options { notify })
-            });
-        }
-        None => nowplaying::not_wanted(),
-    }
+    os_media::start(&hub, extras.os_media);
     loop {
         let stream = tokio::select! {
             r = listener.accept() => r?.0,
@@ -348,7 +334,7 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
 /// Run a background task, and keep it running: when it ends or panics, say so (log, Clients, the health view) and
 /// start it again after a growing pause (A1). `start` builds a fresh future each time: a restarted task keeps none of
 /// the old one's state.
-fn supervise<F, Fut>(hub: Arc<Hub>, name: &'static str, mut start: F) -> tokio::task::JoinHandle<()>
+pub(crate) fn supervise<F, Fut>(hub: Arc<Hub>, name: &'static str, mut start: F) -> tokio::task::JoinHandle<()>
 where
     F: FnMut() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
@@ -606,7 +592,7 @@ async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>) {
                 }
                 (s.stats(period, now).map(Event::Stats), None)
             }
-            Command::ExportLocalData => (s.export(&store::downloads_dir(), now).map(|p| Event::Notice { message: format!("Listening data exported to {}", p.display()) }), None),
+            Command::ExportLocalData => (store::downloads_dir().and_then(|d| s.export(&d, now)).map(|p| Event::Notice { message: format!("Listening data exported to {}", p.display()) }), None),
             _ => match s.delete_all() {
                 Ok(()) => (Ok(Event::Notice { message: "Deleted the listening log and every library backup".into() }), s.summary(now).ok().map(Event::Listening)),
                 Err(e) => (Err(e), None),
@@ -783,8 +769,8 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     match hello {
         Some(ClientMsg::Hello { protocol, client }) if protocol == PROTOCOL_VERSION => {
             tracing::info!("client connected: {client}");
-            proto::write_msg(&mut wr, &DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind })
-                .await?;
+            let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind, soloist_in_vm: hub.soloist_in_vm };
+            proto::write_msg(&mut wr, &welcome).await?;
         }
         Some(ClientMsg::Hello { protocol, .. }) => {
             let message = format!("this singularityd speaks protocol {PROTOCOL_VERSION}, the Client speaks {protocol}. Restart the Daemon ({RESTART}) after updating.");
@@ -1019,6 +1005,7 @@ mod tests {
         Arc::new(Hub {
             started_unix_ms: 0,
             engine_kind: proto::EngineKind::Fake,
+            soloist_in_vm: false,
             now: Default::default(),
             engine_status: Mutex::new(None),
             catalogue_status: Mutex::new(None),

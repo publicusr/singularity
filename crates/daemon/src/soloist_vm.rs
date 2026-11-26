@@ -1,114 +1,63 @@
-//! The SoloistEngine's macOS host (D55): the same Soloist, supervised the same way, but inside the Soloist VM
-//! (`vm.rs`). What differs from Linux lives here: booting the VM, keeping Soloist's build current inside it, starting
-//! Soloist over SSH, the forwarded ports, the audio, and pairing.
+//! The Soloist VM on the Mac (D55): the [`Guest`] the VM's Soloist runner (`soloist/runner/vm.rs`) runs Soloist in.
+//! What's macOS's lives here: booting the VM (`vm.rs`), playing its audio, reaching the guest over SSH and gvproxy's
+//! forwards, and announcing pairing on the LAN. (It builds on any OS; only a Mac can run it: D49's seam.)
 //!
-//! - Soloist is started by an SSH session; its output comes back on it (the same log parsing as on Linux), and the API
-//!   key goes in on its stdin, never on a command line on the Mac. When the session ends (the Daemon stops, or the
-//!   Engine restarts Soloist), the guest stops Soloist.
+//! - Commands in the guest go over SSH, to the guest's pinned host key only.
 //! - Pairing (once, from a phone): Soloist's ZeroConf endpoint is announced on the LAN with `dns-sd` and reached
 //!   through a relay run by Apple's own `python3`: macOS's firewall silently withholds LAN connections from programs
 //!   it doesn't trust, which includes a locally built `singularityd` (spike, 2026-10-20). Only while pairing.
 
+use crate::soloist::runner::Announcement;
+use crate::soloist::runner::vm::Guest;
 use crate::tap::Feed;
 use crate::vm::{self, Vm};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::process::Child;
 
-pub struct VmHost {
-    pub vm: Vm,
+pub struct Mac {
+    vm: Vm,
     /// the AudioTap's side of the VM's audio
-    pub feed: Arc<Feed>,
-    /// Soloist's WebSocket, on the Mac's loopback
-    pub ws_port: u16,
-    /// a newer Soloist build waits in the guest
-    pub staged: AtomicBool,
+    feed: Arc<Feed>,
     audio: std::sync::Mutex<Option<crate::pcm::Player>>,
-    up: tokio::sync::Mutex<bool>,
 }
 
-impl VmHost {
-    pub fn new(data_dir: &std::path::Path, feed: Arc<Feed>) -> VmHost {
-        VmHost {
-            vm: Vm::new(data_dir),
-            feed,
-            ws_port: vm::free_port().unwrap_or(47_700),
-            staged: AtomicBool::new(false),
-            audio: Default::default(),
-            up: Default::default(),
-        }
+impl Mac {
+    /// The VM whose files are under `data_dir`; its audio also goes to `feed`.
+    pub fn new(data_dir: &std::path::Path, feed: Arc<Feed>) -> Mac {
+        Mac { vm: Vm::new(data_dir), feed, audio: Default::default() }
+    }
+}
+
+impl Guest for Mac {
+    async fn boot(&self, say: &(dyn Fn(String) + Sync)) -> anyhow::Result<()> {
+        anyhow::ensure!(cfg!(target_os = "macos"), "it runs on macOS only");
+        self.vm.prepare(say).await?;
+        // listening before the guest's audio service tries to connect
+        *self.audio.lock().expect("audio lock") = Some(crate::pcm::listen(self.vm.pcm_socket(), self.feed.clone())?);
+        self.vm.start(say).await
     }
 
-    /// Make sure the VM is up, its ports forwarded, its audio playing and a Soloist build in it. Progress goes to `say`.
-    pub async fn ensure(&self, say: &(dyn Fn(String) + Sync)) -> anyhow::Result<()> {
-        let mut up = self.up.lock().await;
-        if !*up {
-            self.vm.prepare(say).await?;
-            // listening before the guest's audio service tries to connect
-            *self.audio.lock().expect("audio lock") = Some(crate::pcm::listen(self.vm.pcm_socket(), self.feed.clone())?);
-            self.vm.start(say).await?;
-            self.vm.expose(&format!("127.0.0.1:{}", self.ws_port), vm::GUEST_WS).await?;
-            *up = true;
-        }
-        drop(up);
-        if self.vm.ssh("test -x soloist/soloist && echo ok").await.unwrap_or_default().trim() != "ok" {
-            say("Downloading Soloist from Spotify into the VM…".into());
-        }
-        // a staged build goes in now: Soloist isn't running
-        self.vm.ssh("sgl-soloist install >/dev/null; sgl-soloist ensure").await?;
-        self.staged.store(false, Ordering::Relaxed);
-        Ok(())
-    }
-
-    /// Is the VM still running? (If it died, the next `ensure` boots it again.)
-    pub async fn alive(&self) -> bool {
-        self.vm.ssh("true").await.is_ok()
-    }
-
-    pub async fn down(&self) {
+    async fn power_off(&self) {
         *self.audio.lock().expect("audio lock") = None;
         self.vm.stop().await;
-        *self.up.lock().await = false;
     }
 
-    /// The installed build's version line.
-    pub async fn version(&self) -> String {
-        self.vm.ssh("cat soloist/version").await.unwrap_or_default().trim().to_string()
+    fn command(&self, script: &str) -> tokio::process::Command {
+        let mut c = self.vm.ssh_command();
+        c.arg(script);
+        c
     }
 
-    /// Ask the CDN for a newer build; stage it in the guest. True if one is waiting.
-    pub async fn check(&self) -> anyhow::Result<bool> {
-        let out = self.vm.ssh("sgl-soloist check").await?;
-        let staged = out.trim() == "staged" || self.staged.load(Ordering::Relaxed);
-        self.staged.store(staged, Ordering::Relaxed);
-        Ok(staged)
-    }
-
-    /// Start Soloist in the guest as `name`: the SSH session is the process (its output is Soloist's). The key and
-    /// name go in on its stdin, which the caller keeps open: closing it (or ending the session) stops Soloist.
-    pub async fn launch(&self, key: &str, name: &str, volume: Option<u8>) -> anyhow::Result<(Child, tokio::process::ChildStdin)> {
-        use tokio::io::AsyncWriteExt;
-        // (a background job's stdin is /dev/null in a script: the watcher gets the session's on fd 3 explicitly)
-        const SCRIPT: &str = r#"read -r k; read -r n; read -r v; mkdir -p state/data state/cache
-exec 3<&0
-soloist/soloist --device-name "$n" --api-key "$k" --initial-volume "${v:-40}" --ws 0.0.0.0:7700 --verbose --data-dir state/data --cache-dir state/cache --cache-size 200 </dev/null &
-p=$!
-(cat <&3 >/dev/null; kill $p 2>/dev/null) >/dev/null 2>&1 &
-wait $p"#;
-        let mut child = self.vm.ssh_command().arg(SCRIPT).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn()?;
-        let mut stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("no stdin for Soloist's session"))?;
-        stdin.write_all(format!("{key}\n{}\n{}\n", name.replace('\n', " "), volume.unwrap_or(40)).as_bytes()).await?;
-        stdin.flush().await?;
-        Ok((child, stdin))
-    }
-
-    /// Announce Soloist's ZeroConf endpoint (guest `port`) on the LAN as `name`, for pairing from a phone.
-    pub async fn announce(&self, port: u16, name: &str) -> anyhow::Result<Announcement> {
+    async fn expose(&self, port: u16) -> anyhow::Result<u16> {
+        // gvproxy binds it, so it is picked here, just before
         let local = vm::free_port().ok_or_else(|| anyhow::anyhow!("no free port"))?;
         self.vm.expose(&format!("127.0.0.1:{local}"), port).await?;
+        Ok(local)
+    }
+
+    async fn publish(&self, port: u16, name: &str) -> anyhow::Result<Announcement> {
         let lan_port = vm::free_port().ok_or_else(|| anyhow::anyhow!("no free port"))?;
         let ip = lan_ip().await.ok_or_else(|| anyhow::anyhow!("this Mac isn't on a network (wifi or ethernet)"))?;
-        let relay = crate::programs::tokio_command("/usr/bin/python3").args(["-c", RELAY, &lan_port.to_string(), &local.to_string()]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true).spawn()?;
+        let relay = crate::programs::tokio_command("/usr/bin/python3").args(["-c", RELAY, &lan_port.to_string(), &port.to_string()]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true).spawn()?;
         let host = format!("singularity-{}.local", std::process::id());
         let dns = crate::programs::tokio_command("/usr/bin/dns-sd")
             .args(["-P", name, "_spotify-connect._tcp", "local", &lan_port.to_string(), &host, &ip, "CPath=/zc", "VERSION=1.0", "Stack=SP"])
@@ -117,13 +66,8 @@ wait $p"#;
             .kill_on_drop(true)
             .spawn()?;
         tracing::info!("pairing: {name:?} announced on {ip}:{lan_port}");
-        Ok(Announcement { _children: vec![relay, dns] })
+        Ok(Announcement::held(vec![relay, dns]))
     }
-}
-
-/// Soloist announced for pairing, until dropped.
-pub struct Announcement {
-    _children: Vec<Child>,
 }
 
 /// The Mac's address on its LAN (wifi or ethernet; a VPN's tunnel can be the default route, so not that).

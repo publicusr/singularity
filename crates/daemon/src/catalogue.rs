@@ -213,10 +213,8 @@ pub struct Dirs {
 
 impl Dirs {
     pub fn from_env() -> Dirs {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-        let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".local/share"));
-        let cache = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".cache"));
-        Dirs { credentials: data.join("singularity/catalogue"), queries: cache.join("singularity/pathfinder-queries.json") }
+        let f = singularity_config::app_folders::AppFolders::this();
+        Dirs { credentials: f.data.join("catalogue"), queries: f.cache.join("pathfinder-queries.json") }
     }
 }
 
