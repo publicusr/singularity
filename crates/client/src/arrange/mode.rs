@@ -8,12 +8,15 @@
 //! Design-file effects are the Shown Design's: the App runs them for an `Out::Commit`.
 //!
 //! The module holds Arrange mode itself (`on`: since when, whether anything was edited, the Tray's scroll and focus,
-//! `s` waiting for its arrow, a New design… being built), the Widget held (by the mouse or picked up with Enter), the
-//! divider held, and layout undo. Its behaviour is described in `arrange.rs`.
+//! `s` waiting for its arrow, a New design… being built) and layout undo. The Widget held (by the mouse or picked up
+//! with Enter) and the divider held are two kinds of the App's one Gesture (`crate::gesture`, D89): their data
+//! ([`TileDrag`], [`DividerDrag`]) is defined here, and each input lends this module the Gesture with its Scene. Its
+//! behaviour is described in `arrange.rs`.
 
 use super::history::History;
 use crate::app::{Action, Hit};
 use crate::arrangement::{Arrangement, Refused};
+use crate::gesture::{Gesture, Held};
 use crate::keymap::Keymap;
 use crate::layout::{Axis, Divider, Node, Pane, PaneId, Widget};
 use crate::tiling::{Side, neighbour};
@@ -161,12 +164,11 @@ pub enum Out {
     Resume { snap: Snapshot, theme: String },
 }
 
-/// Layout undo, the Widget held, the divider held and Arrange mode itself.
+/// Layout undo and Arrange mode itself. (The Widget held and the divider held are the App's one Gesture, lent with each
+/// input: `crate::gesture`.)
 #[derive(Default)]
 pub struct Arrange {
     pub(crate) on: Option<Arranging>,
-    pub(crate) tile: Option<TileDrag>,
-    pub(crate) divider: Option<DividerDrag>,
     pub(crate) history: History<Snapshot>,
     pub(crate) undo_offer: Option<(Instant, Action)>,
 }
@@ -286,6 +288,8 @@ pub fn tray_layout(tray: &[Widget], design: usize, reserve: u16, r: Rect, first:
 /// leave them (an edit committed mid-way is what the rest of the input sees).
 struct Work<'s, 'a> {
     sc: &'s Scene<'a>,
+    /// the Gesture held (Arrange mode's own kinds are the ones it changes)
+    g: &'s mut Option<Gesture>,
     layout: Cow<'s, Arrangement>,
     focus: Option<PaneId>,
     body: Rect,
@@ -293,8 +297,8 @@ struct Work<'s, 'a> {
 }
 
 impl<'s, 'a> Work<'s, 'a> {
-    fn new(sc: &'s Scene<'a>) -> Self {
-        Work { sc, layout: Cow::Borrowed(sc.layout), focus: sc.focus, body: sc.body, out: vec![] }
+    fn new(sc: &'s Scene<'a>, g: &'s mut Option<Gesture>) -> Self {
+        Work { sc, g, layout: Cow::Borrowed(sc.layout), focus: sc.focus, body: sc.body, out: vec![] }
     }
 
     /// Where the Panes are laid out, or a roomy guess before the first frame.
@@ -371,34 +375,28 @@ impl Arrange {
     }
 
     /// The Pane whose Widget is being moved (held by the mouse, or picked up with Enter): drawn highlighted.
-    pub fn moving(&self) -> Option<PaneId> {
-        self.tile.as_ref().filter(|t| t.live).map(|t| t.pane.id)
+    pub fn moving(g: &Option<Gesture>) -> Option<PaneId> {
+        g.carry().filter(|t| t.live).map(|t| t.pane.id)
     }
 
     /// Whether something on screen moves with the pointer (a Widget picked up with Enter moves with the keys only).
-    pub fn moving_now(&self) -> bool {
-        self.tile.as_ref().is_some_and(|t| t.live && t.aim.is_none()) || self.divider.is_some()
+    pub fn moving_now(g: &Option<Gesture>) -> bool {
+        g.carry().is_some_and(|t| t.live && t.aim.is_none()) || g.divider().is_some()
     }
 
-    /// Whether anything is held: a Widget (either way) or a divider.
-    pub fn holding(&self) -> bool {
-        self.tile.is_some() || self.divider.is_some()
+    /// Whether anything of Arrange mode's is held: a Widget (either way) or a divider.
+    pub fn holding(g: &Option<Gesture>) -> bool {
+        g.carry().is_some() || g.divider().is_some()
     }
 
     /// The divider held by the mouse, if one is.
-    pub fn divider_held(&self) -> Option<usize> {
-        self.divider.as_ref().map(|d| d.i)
+    pub fn divider_held(g: &Option<Gesture>) -> Option<usize> {
+        g.divider().map(|d| d.i)
     }
 
     /// A held Widget is let go, and nothing changes (Esc, a popup opening, the mini player).
-    pub fn drop_held(&mut self) {
-        self.tile = None;
-    }
-
-    /// A release that came while a popup was open: what was held ends without doing anything.
-    pub fn let_go(&mut self) {
-        self.tile = None;
-        self.divider = None;
+    pub fn drop_held(g: &mut Option<Gesture>) {
+        g.take_carry();
     }
 
     /// Another Design is shown: the undo history was the last one's.
@@ -429,27 +427,27 @@ impl Arrange {
     }
 
     /// Whether a Widget is picked up with Enter (the legend shows the keys for it).
-    pub fn carrying(&self) -> bool {
-        self.tile.as_ref().is_some_and(|t| t.aim.is_some())
+    pub fn carrying(g: &Option<Gesture>) -> bool {
+        g.carry().is_some_and(|t| t.aim.is_some())
     }
 
     /// Whether the Tray is lit: a Pane's Widget is held over it.
-    pub fn tray_lit(&self) -> bool {
-        self.tile.as_ref().is_some_and(|t| t.live && t.tray)
+    pub fn tray_lit(g: &Option<Gesture>) -> bool {
+        g.carry().is_some_and(|t| t.live && t.tray)
     }
 
     /// Whether a Pane's Widget is aimed at the Tray with the keys (it is shown where it lands).
-    pub fn landing_in_tray(&self) -> bool {
-        self.tile.as_ref().is_some_and(|t| t.live && t.tray && t.aim.is_some())
+    pub fn landing_in_tray(g: &Option<Gesture>) -> bool {
+        g.carry().is_some_and(|t| t.live && t.tray && t.aim.is_some())
     }
 
     /// The columns the Tray keeps after its last Widget for a Pane's Widget aimed there with the keys.
-    pub fn tray_reserve(&self, design: usize) -> u16 {
-        self.tile.as_ref().filter(|t| t.live && t.tray && t.aim.is_some()).and_then(|t| t.pane.widget).map_or(0, |w| (crate::ui::pane_name(design, w).chars().count() as u16 + 4).min(CHIP_MAX) + 1)
+    pub fn tray_reserve(g: &Option<Gesture>, design: usize) -> u16 {
+        g.carry().filter(|t| t.live && t.tray && t.aim.is_some()).and_then(|t| t.pane.widget).map_or(0, |w| (crate::ui::pane_name(design, w).chars().count() as u16 + 4).min(CHIP_MAX) + 1)
     }
 
     fn tray_layout_in(&self, w: &Work, first: usize) -> TrayLayout {
-        tray_layout(w.layout.tray(), w.sc.design, self.tray_reserve(w.sc.design), w.tray_rect(), first)
+        tray_layout(w.layout.tray(), w.sc.design, Self::tray_reserve(w.g, w.sc.design), w.tray_rect(), first)
     }
 
     /// The bar's offer to undo (or redo) the last edit: since when, and which.
@@ -468,8 +466,8 @@ impl Arrange {
     // ── what the App asks of it ───────────────────────────────────────
 
     /// Arrange mode on (the palette's and the Pane menu's "Arrange", a title drag, Esc in a split's picker).
-    pub fn enter(&mut self, sc: &Scene) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn enter(&mut self, sc: &Scene, g: &mut Option<Gesture>) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         self.enter_in(&mut w);
         w.done()
     }
@@ -477,8 +475,8 @@ impl Arrange {
     /// Before each frame: Home always has a Pane outside Arrange mode. A Design whose Home waits in the Tray (one left
     /// that way when the app quit) comes up in Arrange mode, where Done waits for it (not while the Design picker
     /// previews one: a preview isn't a Design you have).
-    pub fn homeless(&mut self, sc: &Scene, previewing: bool) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn homeless(&mut self, sc: &Scene, g: &mut Option<Gesture>, previewing: bool) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         if self.on.is_none() && !previewing && w.layout.unplaced().is_some() {
             self.enter_in(&mut w);
         }
@@ -487,24 +485,24 @@ impl Arrange {
 
     /// The Panes' area changed (a new window size, Arrange mode on or off): the Pane under a held Widget is found
     /// again (#21: a release dropped on a Pane of the old window).
-    pub fn resized(&mut self, sc: &Scene) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn resized(&mut self, sc: &Scene, g: &mut Option<Gesture>) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         self.relayout(&mut w);
         w.done()
     }
 
     /// A Widget picked up with Enter is put back once anything else edits the layout (Ctrl+K Close pane, Replace
     /// widget…, a Design change…): its Pane, or what that Pane holds, may be gone.
-    pub fn pick_up_check(&mut self, layout: &Arrangement) {
-        if self.tile.as_ref().is_some_and(|t| t.on.as_ref().is_some_and(|on| on != layout)) {
-            self.tile = None;
+    pub fn pick_up_check(g: &mut Option<Gesture>, layout: &Arrangement) {
+        if g.carry().is_some_and(|t| t.on.as_ref().is_some_and(|on| on != layout)) {
+            g.take_carry();
         }
     }
 
     /// The layout was replaced from outside (a Design, an undo): a keyboard focus on a Widget that left the Tray
     /// (`old` was the Tray before) moves on.
-    pub fn layout_replaced(&mut self, sc: &Scene, old: &[Widget], was: Option<Widget>) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn layout_replaced(&mut self, sc: &Scene, g: &mut Option<Gesture>, old: &[Widget], was: Option<Widget>) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         self.settle_tray_focus(&mut w, old);
         // the Panes of another tree are other Panes: the focus stays on the Widget it was on (arranging, on a real Pane)
         let mut f = was.and_then(|x| w.layout.pane_of(x));
@@ -516,15 +514,16 @@ impl Arrange {
     }
 
     /// `tree` replaces the layout as an edit (one undo step): the Widget picker's pick, a Tray pick.
-    pub fn commit(&mut self, sc: &Scene, tree: Arrangement) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn commit(&mut self, sc: &Scene, g: &mut Option<Gesture>, tree: Arrangement) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         self.commit_in(&mut w, tree, None);
         w.done()
     }
 
     /// `tree` replaces the layout as the rest of the last edit (a split's pick): one undo takes both back.
-    pub fn amend(&mut self, sc: &Scene, tree: Arrangement) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn amend(&mut self, sc: &Scene, g: &mut Option<Gesture>, tree: Arrangement) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
+        self.before_edit(&mut w);
         let old = w.layout.tray().to_vec();
         w.layout = Cow::Owned(tree.clone());
         w.out.push(Out::Commit { tree: Some(tree), note: None });
@@ -536,7 +535,7 @@ impl Arrange {
 
     /// What's on screen now, for undo to come back to (Reset design takes it before it resets).
     pub fn snapshot(&self, sc: &Scene) -> Snapshot {
-        Work::new(sc).snapshot()
+        Work::new(sc, &mut None).snapshot()
     }
 
     /// Reset design replaced `before` with `now`: one undo step, if it changed the layout or left a file.
@@ -548,19 +547,19 @@ impl Arrange {
 
     /// A key while a Widget is held by the pointer (or any held Widget behind the mini player): Esc lets it go and
     /// nothing changes; every other key waits for the release. True: the key was taken.
-    pub fn holds_keys(&mut self, k: KeyEvent, mini: bool) -> bool {
-        if !self.tile.as_ref().is_some_and(|t| t.aim.is_none() || mini) {
+    pub fn holds_keys(g: &mut Option<Gesture>, k: KeyEvent, mini: bool) -> bool {
+        if !g.carry().is_some_and(|t| t.aim.is_none() || mini) {
             return false;
         }
         if k.code == KeyCode::Esc {
-            self.tile = None;
+            g.take_carry();
         }
         true
     }
 
     /// The `arrange` action (its key, also one bound with Ctrl or Alt) while arranging: it leaves as Esc does (Q70).
-    pub fn arrange_action(&mut self, sc: &Scene) -> Vec<Out> {
-        self.key(sc, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+    pub fn arrange_action(&mut self, sc: &Scene, g: &mut Option<Gesture>) -> Vec<Out> {
+        self.key(sc, g, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
     }
 
     /// An edit was made: Done will ask about it, and `s` stops waiting for its arrow. False while a New design… is
@@ -576,15 +575,15 @@ impl Arrange {
         true
     }
 
-    pub fn close_pane(&mut self, sc: &Scene, id: PaneId) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn close_pane(&mut self, sc: &Scene, g: &mut Option<Gesture>, id: PaneId) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         self.close_in(&mut w, id);
         w.done()
     }
 
     /// A new empty Pane on `side` of Pane `target` (or the focused one), and the Widget picker on it at once.
-    pub fn split_pane(&mut self, sc: &Scene, target: Option<PaneId>, side: Side) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn split_pane(&mut self, sc: &Scene, g: &mut Option<Gesture>, target: Option<PaneId>, side: Side) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         if let Some(t) = target.or_else(|| w.focused_pane()) {
             self.split_in(&mut w, t, side);
         }
@@ -594,20 +593,20 @@ impl Arrange {
     /// The side a split of Pane `id` takes unless told otherwise: along its longer side in real proportions (wider than
     /// tall: to the right, else below), or the other way if only that one has room.
     pub fn default_split(&self, sc: &Scene, id: PaneId) -> Side {
-        default_split_in(&Work::new(sc), id)
+        default_split_in(&Work::new(sc, &mut None), id)
     }
 
     /// Undo (`back`) or redo.
-    pub fn undo(&mut self, sc: &Scene, back: bool) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn undo(&mut self, sc: &Scene, g: &mut Option<Gesture>, back: bool) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         self.step_history(&mut w, back);
         w.done()
     }
 
     /// Done (or Esc).
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn done(&mut self, sc: &Scene) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn done(&mut self, sc: &Scene, g: &mut Option<Gesture>) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         self.done_in(&mut w);
         w.done()
     }
@@ -615,16 +614,17 @@ impl Arrange {
     /// "New design…" (#42): Arrange mode from one empty Pane filling the screen, with Home waiting in the Tray. The
     /// Design on screen stays as it is (in its file too) until Done names the new one; Esc before anything is placed
     /// goes back to it. `theme` is the Theme on screen.
-    pub fn new_design(&mut self, sc: &Scene, theme: &str) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn new_design(&mut self, sc: &Scene, g: &mut Option<Gesture>, theme: &str) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         if self.building() {
             return w.done();
         }
+        self.before_edit(&mut w);
         let before = w.snapshot();
         let history = std::mem::take(&mut self.history);
         // (from Arrange mode: what was arranged is kept as it is, and the build starts from the blank one)
         self.on = None;
-        self.tile = None;
+        w.g.take_carry();
         self.undo_offer = None;
         let blank = Arrangement::new(Node::empty(), vec![]);
         w.layout = Cow::Owned(blank.clone());
@@ -641,17 +641,17 @@ impl Arrange {
 
     /// Esc on a New design… before anything is placed, or Discard: the Design that was on screen, as it was, with its
     /// Theme and its undo history.
-    pub fn cancel_new(&mut self, sc: &Scene) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn cancel_new(&mut self, sc: &Scene, g: &mut Option<Gesture>) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         self.cancel_new_in(&mut w);
         w.done()
     }
 
     /// A New design… was saved under its name: Arrange mode ends, and the new Design starts its own undo history.
-    pub fn new_design_saved(&mut self, sc: &Scene) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn new_design_saved(&mut self, sc: &Scene, g: &mut Option<Gesture>) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         self.on = None;
-        self.tile = None;
+        w.g.take_carry();
         self.history = Default::default();
         self.undo_offer = None;
         self.relayout(&mut w);
@@ -659,8 +659,8 @@ impl Arrange {
     }
 
     /// The Tray strip scrolled `by` Widgets (the wheel, its ‹ ›).
-    pub fn tray_scroll(&mut self, sc: &Scene, by: i32) {
-        let w = Work::new(sc);
+    pub fn tray_scroll(&mut self, sc: &Scene, g: &mut Option<Gesture>, by: i32) {
+        let w = Work::new(sc, g);
         self.tray_scroll_in(&w, by);
     }
 
@@ -670,18 +670,27 @@ impl Arrange {
     /// window, after the focus moved) and was never heard (#21: the Pane stayed held and swallowed every click). A held
     /// Widget stays where it was; a divider is let go where it is. (A Widget picked up with Enter was never the
     /// pointer's: a bare move leaves it be, a press puts it back.)
-    pub fn unheard(&mut self, sc: &Scene, kind: MouseEventKind) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn unheard(&mut self, sc: &Scene, g: &mut Option<Gesture>, kind: MouseEventKind) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         if !matches!(kind, MouseEventKind::Moved | MouseEventKind::Down(MouseButton::Left)) {
             return w.done();
         }
-        if kind == MouseEventKind::Moved && self.tile.as_ref().is_some_and(|t| t.aim.is_some()) {
+        if kind == MouseEventKind::Moved && w.g.carry().is_some_and(|t| t.aim.is_some()) {
             return w.done();
         }
-        self.tile = None;
-        if self.divider.is_some() {
+        w.g.take_carry();
+        if w.g.divider().is_some() {
             self.divider_released(&mut w);
         }
+        w.done()
+    }
+
+    /// Something else happens while a divider or a Widget is held: a popup opens, a layout is undone or redone,
+    /// another layout replaces it (Q103). A divider is let go where it is, as a release would (the move so far is one
+    /// undo step); a Widget goes back.
+    pub fn interrupted(&mut self, sc: &Scene, g: &mut Option<Gesture>) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
+        self.interrupted_in(&mut w);
         w.done()
     }
 
@@ -691,8 +700,8 @@ impl Arrange {
     /// below it, `w` opens "+ Widget"'s picker, Esc (or `m`, the key that came in, Q70) is Done. With a Widget picked
     /// up, arrows aim, Enter drops and Esc (or `m`) puts it back. On a Widget in the Tray, `x` (or Delete, Backspace)
     /// removes it. The playback keys these don't take work as ever (the player bar stays).
-    pub fn key(&mut self, sc: &Scene, k: KeyEvent) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn key(&mut self, sc: &Scene, g: &mut Option<Gesture>, k: KeyEvent) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         self.key_in(&mut w, k);
         w.done()
     }
@@ -701,20 +710,20 @@ impl Arrange {
     /// bar, a wake, a scrub: `App::pointer`), with what is at its cell (`App::hit_at`): Arrange mode's own pointer
     /// while it is on, a held Widget's, and outside Arrange mode a press on a title, a × or a divider, a held
     /// divider's drag and the release. (`unheard` comes first, before the App's gates.)
-    pub fn route(&mut self, sc: &Scene, m: MouseEvent, hit: Option<Hit>, coarse: bool) -> Vec<Out> {
-        let mut w = Work::new(sc);
+    pub fn route(&mut self, sc: &Scene, g: &mut Option<Gesture>, m: MouseEvent, hit: Option<Hit>, coarse: bool) -> Vec<Out> {
+        let mut w = Work::new(sc, g);
         if self.on.is_some() {
             self.pointer_in(&mut w, m, hit, coarse);
-        } else if self.tile.is_some() {
+        } else if w.g.carry().is_some() {
             self.tile_pointer_in(&mut w, m);
         } else {
             let (x, y) = (m.column, m.row);
             match (m.kind, hit) {
                 (MouseEventKind::Down(MouseButton::Left), Some(Hit::Title(p) | Hit::TitleName(p))) => self.tile_down(&mut w, p, x, y),
                 (MouseEventKind::Down(MouseButton::Left), Some(Hit::Close(p))) => self.close_in(&mut w, p),
-                (MouseEventKind::Down(MouseButton::Left), Some(Hit::Divider(i))) => self.grab_divider(&w, i, x, y),
+                (MouseEventKind::Down(MouseButton::Left), Some(Hit::Divider(i))) => self.grab_divider(&mut w, i, x, y),
                 (MouseEventKind::Drag(MouseButton::Left), _) => self.divider_move(&mut w, x, y),
-                (MouseEventKind::Up(_), _) if self.divider.is_some() => self.divider_released(&mut w),
+                (MouseEventKind::Up(_), _) if w.g.divider().is_some() => self.divider_released(&mut w),
                 _ => {}
             }
         }
@@ -725,8 +734,8 @@ impl Arrange {
 
     /// While a Widget is held over another Pane: that Pane, what its label says ("swap with queue", "put here"), and
     /// the chip's text ("⠿ stream"). Over its own Pane or none: the chip alone.
-    pub fn drag_marks(&self, layout: &Arrangement, design: usize) -> Option<(Option<(PaneId, String)>, String)> {
-        let t = self.tile.as_ref().filter(|t| t.live)?;
+    pub fn drag_marks(g: &Option<Gesture>, layout: &Arrangement, design: usize) -> Option<(Option<(PaneId, String)>, String)> {
+        let t = g.carry().filter(|t| t.live)?;
         let w = t.pane.widget?;
         let target = t.over.map(|o| {
             let label = match layout.widget_in(o) {
@@ -743,16 +752,17 @@ impl Arrange {
     /// there flipped it back and forth). Picked up with Enter: in the Pane aimed at, under its middle (where a target's
     /// label goes); aimed at the Tray, in the Tray's row (never on its frame): a Pane's Widget after what waits there
     /// (where it would land), one picked up from the Tray on its own place there.
-    pub fn chip_rect(&self, sc: &Scene, area: Rect, text: &str) -> Option<Rect> {
-        let wk = Work::new(sc);
-        let t = self.tile.as_ref().filter(|t| t.live)?;
+    pub fn chip_rect(&self, sc: &Scene, g: &Option<Gesture>, area: Rect, text: &str) -> Option<Rect> {
+        let mut none = None;
+        let wk = Work::new(sc, &mut none);
+        let t = g.carry().filter(|t| t.live)?;
         let w = (text.chars().count() as u16 + 2).min(CHIP_MAX).min(area.width);
         if let Some(Aim::Tray(x)) = t.aim {
             let r = wk.tray_rect();
             let (x0, x1) = (r.x + 2, r.right().saturating_sub(2));
             let w = w.min(x1.saturating_sub(x0));
             let first = self.on.as_ref().map_or(0, |a| a.tray_first);
-            let l = self.tray_layout_in(&wk, first);
+            let l = tray_layout(wk.layout.tray(), sc.design, Self::tray_reserve(g, sc.design), wk.tray_rect(), first);
             let at = match (t.from_tray, t.pane.widget) {
                 // over its own chip in the strip (the column it was picked up at, if that has scrolled away)
                 (true, Some(me)) => {
@@ -778,15 +788,15 @@ impl Arrange {
     /// The label of target `id` goes at `at` this frame (`label_rect`, worked out by the Screen plan), remembered: it
     /// stays on its row while the chip leaves that free, so a pointer moving a row up and down doesn't make it hop
     /// round the chip.
-    pub fn label_placed(&mut self, id: PaneId, at: Option<Rect>) {
-        if let Some(t) = self.tile.as_mut() {
+    pub fn label_placed(g: &mut Option<Gesture>, id: PaneId, at: Option<Rect>) {
+        if let Some(t) = g.carry_mut() {
             t.label = at.map(|l| (id, l.y));
         }
     }
 
     /// The row target `id`'s label was drawn on last.
-    pub fn label_row(&self, id: PaneId) -> Option<u16> {
-        self.tile.as_ref()?.label.filter(|(p, _)| *p == id).map(|(_, y)| y)
+    pub fn label_row(g: &Option<Gesture>, id: PaneId) -> Option<u16> {
+        g.carry()?.label.filter(|(p, _)| *p == id).map(|(_, y)| y)
     }
 
     // ── inside ────────────────────────────────────────────────────────
@@ -809,7 +819,7 @@ impl Arrange {
     }
 
     /// A press on divider `i`'s grip at (x, y): it follows the pointer until the release.
-    fn grab_divider(&mut self, w: &Work, i: usize, x: u16, y: u16) {
+    fn grab_divider(&mut self, w: &mut Work, i: usize, x: u16, y: u16) {
         let offset = w.sc.dividers.get(i).map_or(0, |d| {
             let (boundary, grab) = match d.axis {
                 Axis::Horizontal => (d.grip.x + 1, x),
@@ -817,22 +827,22 @@ impl Arrange {
             };
             boundary as i32 - grab as i32
         });
-        self.divider = Some(DividerDrag { i, offset, from: w.layout.clone().into_owned() });
+        *w.g = Some(Gesture::Divider(DividerDrag { i, offset, from: w.layout.clone().into_owned() }));
     }
 
     fn tile_down(&mut self, w: &mut Work, id: PaneId, x: u16, y: u16) {
         w.focus_to(Some(id));
         let pane = w.layout.get(id).unwrap_or(Pane { id, widget: None });
-        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: false, aim: None, on: None, label: None });
+        *w.g = Some(Gesture::Carry(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: false, aim: None, on: None, label: None }));
     }
 
     /// A press on Widget `wd` in the Tray: a drag takes it onto a Pane.
-    fn tray_down(&mut self, w: &Work, wd: Widget, x: u16, y: u16) {
+    fn tray_down(&mut self, w: &mut Work, wd: Widget, x: u16, y: u16) {
         if !w.layout.tray().contains(&wd) {
             return;
         }
         let pane = Pane { id: PaneId::UNSET, widget: Some(wd) };
-        self.tile = Some(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: true, aim: None, on: None, label: None });
+        *w.g = Some(Gesture::Carry(TileDrag { pane, from: (x, y), at: (x, y), live: false, over: None, tray: false, from_tray: true, aim: None, on: None, label: None }));
     }
 
     /// What a release at (x, y) would drop on, for a Widget held from Pane `own` (or the Tray): the Pane under it
@@ -846,7 +856,7 @@ impl Arrange {
     }
 
     fn tile_pointer_in(&mut self, w: &mut Work, m: MouseEvent) {
-        if self.tile.as_ref().is_some_and(|t| t.aim.is_some()) {
+        if w.g.carry().is_some_and(|t| t.aim.is_some()) {
             return;
         }
         match m.kind {
@@ -859,7 +869,7 @@ impl Arrange {
     /// The pointer at (x, y) with the button down: past a few cells it is a drag (an empty Pane has nothing to carry),
     /// which turns Arrange mode on, and what is under it is the one highlighted, at once.
     fn tile_move(&mut self, w: &mut Work, x: u16, y: u16) {
-        let Some(t) = self.tile.as_ref() else { return };
+        let Some(t) = w.g.carry() else { return };
         if !t.live && (x.abs_diff(t.from.0) < 3 && y.abs_diff(t.from.1) < 2 || t.pane.widget.is_none()) {
             return;
         }
@@ -867,7 +877,7 @@ impl Arrange {
         // on while the Widget is held, and after the drop: a quick swap stays one gesture (D87)
         self.enter_in(w);
         let (over, tray) = self.aim(w, x, y, own, from_tray);
-        if let Some(t) = self.tile.as_mut() {
+        if let Some(t) = w.g.carry_mut() {
             t.live = true;
             t.at = (x, y);
             t.over = over;
@@ -876,9 +886,9 @@ impl Arrange {
     }
 
     fn tile_resized(&mut self, w: &mut Work) {
-        let Some((own, from_tray, (x, y))) = self.tile.as_ref().filter(|t| t.live && t.aim.is_none()).map(|t| (t.pane.id, t.from_tray, t.at)) else { return };
+        let Some((own, from_tray, (x, y))) = w.g.carry().filter(|t| t.live && t.aim.is_none()).map(|t| (t.pane.id, t.from_tray, t.at)) else { return };
         let (over, tray) = self.aim(w, x, y, own, from_tray);
-        if let Some(t) = self.tile.as_mut() {
+        if let Some(t) = w.g.carry_mut() {
             t.over = over;
             t.tray = tray;
         }
@@ -887,10 +897,10 @@ impl Arrange {
     /// Let go at (x, y): on another Pane the two Widgets swap (an empty one is filled); on the Tray the Widget waits
     /// there; from the Tray onto a Pane it takes the Pane (its Widget goes into the Tray). Anywhere else nothing changes.
     fn tile_up(&mut self, w: &mut Work, x: u16, y: u16) {
-        let Some(t) = self.tile.as_ref() else { return };
+        let Some(t) = w.g.carry() else { return };
         if !t.live {
             let (id, from, wd, from_tray) = (t.pane.id, t.from, t.pane.widget, t.from_tray);
-            self.tile = None;
+            w.g.take_carry();
             // a click on a Widget in the Tray does nothing
             if !from_tray {
                 w.out.push(Out::TitleClick { pane: id, at: from, widget: wd });
@@ -899,7 +909,7 @@ impl Arrange {
         }
         // the release's own cell is the last word (a finger slips as it lifts; moves can come combined)
         self.tile_move(w, x, y);
-        let Some(t) = self.tile.take() else { return };
+        let Some(t) = w.g.take_carry() else { return };
         let edit = match (t.from_tray, t.pane.widget, t.over) {
             (true, Some(wd), Some(to)) => w.layout.out_of_tray(wd, to).map(|a| (a, Some(to))),
             (false, _, _) if t.tray => w.layout.to_tray(t.pane.id).map(|a| (a, None)),
@@ -918,7 +928,7 @@ impl Arrange {
     }
 
     fn divider_move(&mut self, w: &mut Work, x: u16, y: u16) {
-        let Some(dd) = self.divider.as_ref() else { return };
+        let Some(dd) = w.g.divider() else { return };
         let Some(d) = w.sc.dividers.get(dd.i) else { return };
         let pos = if d.axis == Axis::Vertical { y } else { x };
         let pos = (pos as i32 + dd.offset).max(0) as u16;
@@ -929,7 +939,7 @@ impl Arrange {
 
     /// A divider let go: a layout that changed is an edit.
     fn divider_released(&mut self, w: &mut Work) {
-        if let Some(dd) = self.divider.take().filter(|d| d.from != *w.layout) {
+        if let Some(dd) = w.g.take_divider().filter(|d| d.from != *w.layout) {
             let mut was = w.snapshot();
             was.tree = dd.from;
             self.remember(was);
@@ -940,6 +950,7 @@ impl Arrange {
 
     /// `tree` replaces the layout as an edit (one undo step); `note` is the bar's line for it.
     fn commit_in(&mut self, w: &mut Work, tree: Arrangement, note: Option<String>) {
+        self.before_edit(w);
         let was = w.snapshot();
         let old = w.layout.tray().to_vec();
         w.layout = Cow::Owned(tree.clone());
@@ -949,10 +960,26 @@ impl Arrange {
         let _ = self.note_edit();
     }
 
+    /// Before any layout write but a held divider's own move (an edit, a New design… begun): a divider held meanwhile
+    /// is let go first, its move one undo step of its own (Q103). (Undo and redo end what is held with `interrupted_in`;
+    /// the App's own writes go through `App::gesture_interrupted`; a New design… thrown away drops it unrecorded.)
+    fn before_edit(&mut self, w: &mut Work) {
+        if w.g.divider().is_some() {
+            self.divider_released(w);
+        }
+    }
+
+    fn interrupted_in(&mut self, w: &mut Work) {
+        w.g.take_carry();
+        if w.g.divider().is_some() {
+            self.divider_released(w);
+        }
+    }
+
     fn step_history(&mut self, w: &mut Work, back: bool) {
-        // a held Widget is let go first (one picked up with Enter: Ctrl+Z gets here; the mouse and the bar never do
-        // mid-drag, but be sure)
-        self.tile = None;
+        // what is held ends first (a Widget picked up with Enter, a divider the mouse holds: Ctrl+Z gets here; the
+        // mouse and the bar never do mid-drag): a divider's move is recorded, so the undo takes back that move (Q103)
+        self.interrupted_in(w);
         let area = w.area();
         let now = w.snapshot();
         let fits = |s: &Snapshot| s.tree.fits(area);
@@ -972,9 +999,13 @@ impl Arrange {
     }
 
     fn cancel_new_in(&mut self, w: &mut Work) {
+        // a divider held meanwhile is let go unrecorded: the build it moved is thrown away
+        if self.building() {
+            w.g.take_divider();
+        }
         let Some(f) = self.on.take().and_then(|a| a.fresh) else { return };
         let Fresh { before, history, theme } = *f;
-        self.tile = None;
+        w.g.take_carry();
         self.undo_offer = None;
         self.history = history;
         w.layout = Cow::Owned(before.tree.clone());
@@ -1003,7 +1034,7 @@ impl Arrange {
             return;
         }
         let Some(a) = self.on.take() else { return };
-        self.tile = None;
+        w.g.take_carry();
         self.relayout(w);
         if a.edited && a.since != *w.layout {
             w.out.push(Out::AskForkName);
@@ -1012,12 +1043,12 @@ impl Arrange {
 
     fn key_in(&mut self, w: &mut Work, k: KeyEvent) {
         // a divider held by the mouse: the release ends it (and records it); no arrange key meanwhile
-        if self.divider.is_some() {
+        if w.g.divider().is_some() {
             return;
         }
         // the key that came into Arrange mode leaves it: it does what Esc does (Q70)
         let k = if w.sc.keymap.action(k) == Some(Action::Arrange) { KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE) } else { k };
-        self.pick_up_check(&w.layout.clone());
+        Self::pick_up_check(w.g, &w.layout.clone());
         // (a focus on a Widget that left the Tray, or on no Pane of this layout: the keys act from a real Pane)
         let tray = w.layout.tray().to_vec();
         let add = self.tray_add_x(w).is_some();
@@ -1053,11 +1084,11 @@ impl Arrange {
         if !arrange_key {
             return playback_key(w, k);
         }
-        if self.tile.is_some() {
+        if w.g.carry().is_some() {
             return match (k.code, arrow) {
                 (_, Some(side)) => self.aim_step(w, side),
                 (KeyCode::Enter, _) => self.key_drop(w),
-                (KeyCode::Esc, _) => self.drop_held(),
+                (KeyCode::Esc, _) => Self::drop_held(w.g),
                 _ => {}
             };
         }
@@ -1190,7 +1221,7 @@ impl Arrange {
             a.split_next = false;
             a.tray_focus = None;
         }
-        if self.tile.is_some() {
+        if w.g.carry().is_some() {
             return self.tile_pointer_in(w, m);
         }
         let (x, y) = (m.column, m.row);
@@ -1223,7 +1254,7 @@ impl Arrange {
             }
             MouseEventKind::Drag(MouseButton::Left) => self.divider_move(w, x, y),
             MouseEventKind::Up(_) => {
-                if self.divider.is_some() {
+                if w.g.divider().is_some() {
                     self.divider_released(w);
                 }
             }
@@ -1363,25 +1394,33 @@ impl Arrange {
     /// Enter on Widget `wd` in the Tray: it is picked up (the chip), aimed at the Tray (where it is) until ↑ aims into
     /// the Panes.
     fn pick_up_from_tray(&mut self, w: &mut Work, wd: Widget) {
+        // (keys wait while something else is held: a seek-bar drag in Arrange mode stays the bar's, D84)
+        if w.g.is_some() {
+            return;
+        }
         let x = self.tray_chip_x(w, wd);
         let pane = Pane { id: PaneId::UNSET, widget: Some(wd) };
         let on = Some(w.layout.clone().into_owned());
-        self.tile = Some(TileDrag { pane, from: (0, 0), at: (0, 0), live: true, over: None, tray: false, from_tray: true, aim: Some(Aim::Tray(x)), on, label: None });
+        *w.g = Some(Gesture::Carry(TileDrag { pane, from: (0, 0), at: (0, 0), live: true, over: None, tray: false, from_tray: true, aim: Some(Aim::Tray(x)), on, label: None }));
     }
 
     /// Enter on Pane `id`: its Widget is picked up (lit, with the chip), aimed at its own Pane until an arrow says
     /// otherwise. An empty Pane has nothing to pick up.
     fn pick_up(&mut self, w: &mut Work, id: PaneId) {
+        // (keys wait while something else is held: a seek-bar drag in Arrange mode stays the bar's, D84)
+        if w.g.is_some() {
+            return;
+        }
         let Some(pane) = w.layout.get(id).filter(|p| p.widget.is_some()) else { return };
         let on = Some(w.layout.clone().into_owned());
-        self.tile = Some(TileDrag { pane, from: (0, 0), at: (0, 0), live: true, over: None, tray: false, from_tray: false, aim: Some(Aim::Pane(id)), on, label: None });
+        *w.g = Some(Gesture::Carry(TileDrag { pane, from: (0, 0), at: (0, 0), live: true, over: None, tray: false, from_tray: false, aim: Some(Aim::Pane(id)), on, label: None }));
     }
 
     /// An arrow with a Widget picked up: the aim goes to the next Pane that way, lit with what Enter would do (back on
     /// its own Pane: nothing lit). ↓ from a bottom Pane aims at the Tray (lit for a Pane's Widget, as for the mouse);
     /// ↑ from the Tray aims at the Pane above.
     fn aim_step(&mut self, w: &mut Work, dir: Side) {
-        let Some((own, from_tray, at)) = self.tile.as_ref().and_then(|t| Some((t.pane.id, t.from_tray, t.aim?))) else { return };
+        let Some((own, from_tray, at)) = w.g.carry().and_then(|t| Some((t.pane.id, t.from_tray, t.aim?))) else { return };
         let area = w.area();
         let panes = w.layout.compute(area).panes;
         let to = match at {
@@ -1396,7 +1435,7 @@ impl Arrange {
             },
             Aim::Tray(_) => return,
         };
-        if let Some(t) = self.tile.as_mut() {
+        if let Some(t) = w.g.carry_mut() {
             t.aim = Some(to);
             t.over = match to {
                 Aim::Pane(n) => (n != own).then_some(n),
@@ -1415,7 +1454,7 @@ impl Arrange {
     /// focus goes with it; from the Tray, it takes the Pane (its Widget goes into the Tray in its place). A Pane's
     /// Widget aimed at the Tray waits there, its Pane left empty. Aimed where it came from: it is put back.
     fn key_drop(&mut self, w: &mut Work) {
-        let Some(t) = self.tile.take() else { return };
+        let Some(t) = w.g.take_carry() else { return };
         let edit = match (t.from_tray, t.pane.widget, t.aim, t.over) {
             (true, Some(wd), _, Some(to)) => w.layout.out_of_tray(wd, to).map(|a| (a, Some(to))),
             (false, _, Some(Aim::Tray(_)), _) => w.layout.to_tray(t.pane.id).map(|a| (a, None)),

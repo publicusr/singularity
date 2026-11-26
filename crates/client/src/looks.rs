@@ -56,6 +56,8 @@ fn stamp(dir: &std::path::Path) -> Option<(SystemTime, usize)> {
 impl App {
     /// Switch design: its layout, its own palette (unless `theme` says otherwise), its Disk look.
     pub fn set_design(&mut self, d: usize) {
+        // a divider held meanwhile is let go first, on the Design it moved (Q103)
+        self.gesture_interrupted();
         self.shown.show_built_in(d);
         let d = self.shown.built_in();
         self.set_layout((d.layout)());
@@ -186,6 +188,8 @@ impl App {
 
     /// Put saved layout `s` on screen (with the colours it was saved with, or its design's).
     pub fn use_layout(&mut self, s: &crate::layouts::Saved) {
+        // a divider held meanwhile is let go first, on the Design it moved (Q103)
+        self.gesture_interrupted();
         let d = crate::design::by_id(&s.design).unwrap_or(self.shown.design());
         if d != self.shown.design() {
             self.set_design(d);
@@ -306,6 +310,8 @@ impl App {
         let mut taken = self.layout.widgets();
         taken.extend(self.layout.tray());
         let Some(to) = crate::layouts::next(from, &taken, dir) else { return false };
+        // a divider held meanwhile is let go first: the swap isn't part of its move (Q103)
+        self.gesture_interrupted();
         match self.layout.replace(id, to) {
             Ok(a) => self.layout = a,
             Err(_) => return false,

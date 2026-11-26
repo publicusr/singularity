@@ -60,6 +60,7 @@ use std::time::Instant;
 
 use crate::app::{Action, App, Hit, Menu, MenuAct, Modal, NameFor, Naming, Target};
 use crate::arrangement::{Arrangement, Refused};
+use crate::gesture::Held;
 use crate::layout::{Pane, PaneId, Widget, is_hole};
 use crate::theme::Theme;
 use crate::tiling::Side;
@@ -123,12 +124,12 @@ macro_rules! scene {
     };
 }
 
-/// Arrange mode's `method` with the App's Scene (and `args`), and what came out carried out.
+/// Arrange mode's `method` with the App's Scene and Gesture (and `args`), and what came out carried out.
 macro_rules! arrange {
     ($app:expr, $m:ident $(, $arg:expr)*) => {{
         let o = {
             let sc = scene!($app);
-            $app.arrange.$m(&sc $(, $arg)*)
+            $app.arrange.$m(&sc, &mut $app.gesture $(, $arg)*)
         };
         $app.arrange_did(o)
     }};
@@ -173,6 +174,8 @@ impl App {
     /// Show `tree` in place of the whole layout (a Design, an undo): the Panes of another tree are other Panes, so the
     /// focus stays on the Widget it was on.
     pub fn set_layout(&mut self, tree: impl Into<Arrangement>) {
+        // a divider held meanwhile is let go first, on the layout it moved (Q103)
+        self.gesture_interrupted();
         let was = self.focused();
         let tray = self.layout.tray().to_vec();
         self.layout = tree.into();
@@ -181,7 +184,7 @@ impl App {
 
     /// The Pane whose Widget is being moved (held by the mouse, or picked up with Enter): drawn highlighted.
     pub fn moving(&self) -> Option<PaneId> {
-        self.arrange.moving()
+        Arrange::moving(&self.gesture)
     }
 
     /// Where the Tray strip is in Arrange mode: under the player bar, which is under the Panes (Q39).
@@ -206,11 +209,6 @@ impl App {
         arrange!(self, resized)
     }
 
-    /// Esc while a Widget is held: nothing changes.
-    pub fn tile_cancel(&mut self) {
-        self.arrange.drop_held();
-    }
-
     /// The terminal took a new size (`w` × `h`): the Panes' area is known at once, so a release in the same batch of
     /// input finds the Pane under it in the new window, not the old (#40 review).
     pub fn window_resized(&mut self, w: u16, h: u16) {
@@ -227,25 +225,25 @@ impl App {
 
     /// While a Widget is held over another Pane: that Pane, what its label says, and the chip's text.
     pub fn drag_marks(&self) -> Option<(Option<(PaneId, String)>, String)> {
-        self.arrange.drag_marks(&self.layout, self.shown.design())
+        Arrange::drag_marks(&self.gesture, &self.layout, self.shown.design())
     }
 
     /// The chip by the pointer for `text` (`Arrange::chip_rect`).
     pub fn chip_rect(&self, area: Rect, text: &str) -> Option<Rect> {
-        self.arrange.chip_rect(&scene!(self), area, text)
+        self.arrange.chip_rect(&scene!(self), &self.gesture, area, text)
     }
 
     /// The row target `id`'s label was drawn on last.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn label_row(&self, id: PaneId) -> Option<u16> {
-        self.arrange.label_row(id)
+        Arrange::label_row(&self.gesture, id)
     }
 
     /// The divider to light up: the one being dragged, else the one under the pointer.
     pub fn grip_lit(&self) -> Option<usize> {
-        match self.arrange.divider_held() {
+        match Arrange::divider_held(&self.gesture) {
             Some(i) => Some(i),
-            _ if self.arrange.tile.is_none() && matches!(self.modal(), None | Some(Modal::Arrange)) => self.grip_hover,
+            _ if self.gesture.carry().is_none() && matches!(self.modal(), None | Some(Modal::Arrange)) => self.grip_hover,
             _ => None,
         }
     }
@@ -400,6 +398,8 @@ impl App {
 
     /// "New design…" (#42).
     pub fn new_design(&mut self) {
+        // a divider held meanwhile is let go first, on the Design it moved, so its file keeps the move (Q103)
+        self.gesture_interrupted();
         let theme = self.theme.id.clone();
         arrange!(self, new_design, &theme)
     }
@@ -448,7 +448,7 @@ impl App {
 
     /// A Widget picked up with Enter is put back once anything else edits the layout (`Arrange::pick_up_check`).
     pub fn pick_up_check(&mut self) {
-        self.arrange.pick_up_check(&self.layout);
+        Arrange::pick_up_check(&mut self.gesture, &self.layout);
     }
 
     /// What keeps Done unavailable: "Home still needs a Pane", while it waits in the Tray.
@@ -470,12 +470,19 @@ impl App {
     /// The Tray strip scrolled `by` Widgets (the wheel, its ‹ ›).
     pub fn tray_scroll(&mut self, by: i32) {
         let sc = scene!(self);
-        self.arrange.tray_scroll(&sc, by);
+        self.arrange.tray_scroll(&sc, &mut self.gesture, by);
     }
 
-    /// A bare move or a fresh press while something is held: its release was never heard (`Arrange::unheard`).
-    pub fn release_unheard(&mut self, kind: ratatui::crossterm::event::MouseEventKind) {
+    /// A bare move or a fresh press while a divider or a Widget is held: its release was never heard
+    /// (`Arrange::unheard`; `App::release_unheard` is the door).
+    pub(crate) fn arrange_unheard(&mut self, kind: ratatui::crossterm::event::MouseEventKind) {
         arrange!(self, unheard, kind)
+    }
+
+    /// Something else happens while a divider or a Widget is held (`Arrange::interrupted`; `App::gesture_interrupted`
+    /// is the door).
+    pub(crate) fn arrange_interrupted(&mut self) {
+        arrange!(self, interrupted)
     }
 
     /// A mouse event that is Arrange mode's, once `App::pointer`'s own gates let it through (`Arrange::route`), with
@@ -499,6 +506,8 @@ impl App {
     /// "Reset design": the built-in Design's own layout again. A Design of the user's stays in the picker as it was
     /// last saved (its file isn't touched); the unnamed edit of a built-in one is dropped.
     pub fn reset_design(&mut self) {
+        // a divider held meanwhile is let go first, on the Design it moved (Q103)
+        self.gesture_interrupted();
         let before = self.arrange.snapshot(&scene!(self));
         let theme = self.theme.id.clone();
         let o = self.shown.reset();
@@ -630,13 +639,13 @@ pub fn draw_chip(buf: &mut Buffer, r: Rect, label: &str, th: &Theme) {
 /// waits there, each with its ×, Clear Tray, and while a Pane's Widget is held over it, lit with what a release does.
 pub fn draw_tray(buf: &mut Buffer, r: Rect, l: &TrayLayout, app: &mut App, th: &Theme) {
     use ratatui::widgets::{Block, Borders, Widget as _};
-    let lit = app.arrange.tray_lit();
+    let lit = Arrange::tray_lit(&app.gesture);
     let border = if lit { th.s(th.accent).add_modifier(Modifier::BOLD) } else { th.s(th.border) };
     Block::default().borders(Borders::ALL).border_set(th.borders).border_style(border).title(ratatui::text::Span::styled(mode::TRAY_TITLE, th.s(th.accent))).style(th.base()).render(r, buf);
     let design = app.shown.design();
     let tray = app.layout.tray().to_vec();
     // (a Widget aimed here with the keys shows where it lands, in its place)
-    let landing = app.arrange.landing_in_tray();
+    let landing = Arrange::landing_in_tray(&app.gesture);
     if tray.is_empty() && !landing {
         let s = "drop a Widget here to set it aside";
         text(buf, r.x + 2, r.y + 1, r.width.saturating_sub(4), s, th.s(th.dim));
@@ -702,7 +711,7 @@ pub fn draw_legend(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     app.hit(Rect::new(dx, r.y, dw, 1), Hit::ArrangeDone);
     let key = |a| app.keymap.label(a);
     // the keys of the moment: a Widget picked up, `s` waiting for its arrow, or the lot
-    let held = app.arrange.carrying();
+    let held = Arrange::carrying(&app.gesture);
     // each with how long it stays when the line is short: `w` goes first, then the mouse's gesture, then undo / redo,
     // then the keys (the arrows and Enter last)
     let mut parts: Vec<(u8, String)> = if held {

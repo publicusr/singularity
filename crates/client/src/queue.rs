@@ -5,6 +5,7 @@
 //! list shows the result while dragging. Autoplay is Spotify's to choose.
 
 use crate::app::{App, Hit};
+use crate::gesture::Held;
 use singularity_proto::QueueEntry;
 use crate::theme::Theme;
 use crate::ui::{text, blank};
@@ -309,7 +310,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         }
     }
     // while dragging, the list as it would be after the drop
-    let q = preview(&app.playback.queue, app.queue_drag.clone());
+    let q = preview(&app.playback.queue, app.gesture.queue().cloned());
     let all = lines_of(&q, app.playback.context_name.as_deref());
     if all.is_empty() {
         // the hint, by words, on the rows there are
@@ -352,8 +353,8 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             Line::Heading(h) => text(buf, x, y, w, &clip(h, w as usize), th.s(th.dim).add_modifier(Modifier::BOLD)),
             Line::Entry(i) => {
                 let e = &q[*i];
-                let dragged = app.queue_drag.as_ref().is_some_and(|d| d.to == *i);
-                let selected = (focused && *i == view.sel && app.queue_drag.is_none()) || dragged;
+                let dragged = app.gesture.queue().is_some_and(|d| d.to == *i);
+                let selected = (focused && *i == view.sel && app.gesture.queue().is_none()) || dragged;
                 let bg = if selected { th.selection.color() } else { th.bg.color() };
                 for k in 0..h {
                     blank(buf, x, y + k, w, th.base().bg(bg));
@@ -491,7 +492,7 @@ mod tests {
             None => text(buf, x, y, w, "nothing playing", th.s(th.dim)),
         }
         y += 2;
-        let q = preview(&app.playback.queue, app.queue_drag.clone());
+        let q = preview(&app.playback.queue, app.gesture.queue().cloned());
         let all = lines_of(&q, app.playback.context_name.as_deref());
         if all.is_empty() {
             for row in crate::lyrics::wrap_indented("nothing queued · right-click a track → Add to queue", w as usize, 0) {
@@ -523,8 +524,8 @@ mod tests {
                 Line::Heading(h) => text(buf, x, y, w, &clip(h, w as usize), th.s(th.dim).add_modifier(Modifier::BOLD)),
                 Line::Entry(i) => {
                     let e = &q[*i];
-                    let dragged = app.queue_drag.as_ref().is_some_and(|d| d.to == *i);
-                    let selected = (focused && *i == view.sel && app.queue_drag.is_none()) || dragged;
+                    let dragged = app.gesture.queue().is_some_and(|d| d.to == *i);
+                    let selected = (focused && *i == view.sel && app.gesture.queue().is_none()) || dragged;
                     let bg = if selected { th.selection.color() } else { th.bg.color() };
                     blank(buf, x, y, w, th.base().bg(bg));
                     let auto = e.source == "autoplay";
@@ -599,7 +600,7 @@ mod tests {
                         app.playback.item = None;
                     }
                     if drag {
-                        app.queue_drag = QueueDrag::start(app, 12).map(|d| QueueDrag { to: 14, ..d });
+                        app.gesture = QueueDrag::start(app, 12).map(|d| crate::gesture::Gesture::Queue(QueueDrag { to: 14, ..d }));
                     }
                 }
                 (a, b)

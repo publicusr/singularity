@@ -46,7 +46,7 @@ fn state(name: &str, w: u16) -> App {
             key(&mut a, KeyCode::Char('m'));
             a.focus_on(Widget::Queue);
             key(&mut a, KeyCode::Enter);
-            assert!(a.arrange.tile.as_ref().is_some_and(|t| t.aim.is_some()), "{w}: Enter picked it up");
+            assert!(a.gesture.carry().is_some_and(|t| t.aim.is_some()), "{w}: Enter picked it up");
         }
         "s waiting for its arrow" => {
             key(&mut a, KeyCode::Char('m'));

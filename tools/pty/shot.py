@@ -1936,6 +1936,58 @@ def mini(t, out):
     t.send(b"q", 0.5)
 
 
+def gesture(t, out):
+    """D89/#104: a seek-bar drag whose release is never heard (a bare move: it lets go, seeking where it was let go of),
+    a divider held while Ctrl+K opens the palette (the move is kept: Ctrl+Z takes it back, Q103 a), and Ctrl+Z while a
+    divider is held (it takes back that drag, not the edit before it, Q103 b)."""
+    t.pump(1.0)
+    t.send(b" ", 1.0)
+
+    def dump(name):
+        t.shot(f"{out}/{name}.png")
+        with open(f"{out}/{name}.txt", "w") as f:
+            f.write("\n".join(t.screen.display))
+
+    def grip():
+        return t.screen.display[5].index("││") + 1
+
+    # Q103 (a): Ctrl+K while a divider is held, the release in the palette, Esc, Ctrl+Z
+    gx = grip()
+    mouse(t, 0, gx, 12); mouse(t, 32, gx + 4, 12); mouse(t, 32, gx + 8, 12, wait=0.3)
+    t.send(b"\x0b", 0.5)
+    dump("02-palette-over-held-divider")
+    mouse(t, 0, gx + 8, 12, release=True, wait=0.3)
+    t.send(b"\x1b", 0.5)
+    dump("03-palette-closed")
+    t.send(b"\x1a", 0.6)
+    dump("04-ctrl-z")
+    # Q103 (b): one divider move let go, then a second held while Ctrl+Z, then its release
+    gx = grip()
+    mouse(t, 0, gx, 12); mouse(t, 32, gx + 6, 12); mouse(t, 0, gx + 6, 12, release=True, wait=0.5)
+    dump("05-first-move")
+    gx = grip()
+    mouse(t, 0, gx, 12); mouse(t, 32, gx + 5, 12); mouse(t, 32, gx + 10, 12, wait=0.3)
+    dump("06-second-held")
+    t.send(b"\x1a", 0.6)
+    dump("07-ctrl-z-while-held")
+    mouse(t, 0, gx + 10, 12, release=True, wait=0.5)
+    dump("08-released")
+    t.send(b"\x1a", 0.6)
+    dump("09-ctrl-z-again")
+    # last (on main a seek drag left held swallows the next press): the seek bar, the player row's run of ━╸─
+    y = max(i for i, l in enumerate(t.screen.display) if re.search(r"\d:\d\d  [━╸─]", l))
+    x = re.search(r"\d:\d\d  ([━╸─])", t.screen.display[y]).start(1)
+    mouse(t, 0, x + 6, y); mouse(t, 32, x + 20, y); mouse(t, 32, x + 40, y, wait=0.4)
+    dump("10-seek-mid-drag")
+    # the release went to another window: the next we hear is a bare move
+    mouse(t, 35, x + 10, y - 12, wait=0.8)
+    dump("11-seek-unheard-move")
+    # a click on a Pane's body afterwards
+    mouse(t, 0, x + 10, y - 12); mouse(t, 0, x + 10, y - 12, release=True, wait=0.8)
+    dump("12-click-after")
+    t.send(b"q", 0.5)
+
+
 def layouts(t, out, env):
     """#19: swap Widgets (v, ◂ ▸), drag a divider, save the layout, and find it again in a new Client."""
     t.pump(1.0)
@@ -2738,7 +2790,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "gesture", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-fast", "tiling-paths", "resize", "karaoke", "arrange-fixes") else "0"
@@ -2854,6 +2906,8 @@ def main():
             return queue_wheel(t, out)
         if scenario == "queue-lift":
             return queue_lift(t, out)
+        if scenario == "gesture":
+            return gesture(t, out)
         if scenario == "playlists":
             return playlists(t, out)
         if scenario == "playlist-cover":

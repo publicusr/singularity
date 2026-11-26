@@ -13,6 +13,7 @@ mod ambient;
 mod balance;
 mod covers;
 mod design;
+mod gesture;
 mod gfx;
 mod home;
 mod jam;
