@@ -16,7 +16,7 @@ if [ -e "$wt" ]; then echo "integrate: $wt exists; remove it (git worktree remov
 git -C "$repo" worktree add -q --detach "$wt" "origin/$into"
 cd "$wt"
 
-title=$(gh pr list --head "$branch" --base "$into" --state all --json number,title -q '.[0] | "#\(.number): \(.title)"' 2>/dev/null || true)
+title=$(gh pr list --head "$branch" --base "$into" --state all --json number,title -q '.[0] // empty | "#\(.number): \(.title)"' 2>/dev/null || true)
 msg="Merge ${title:-$branch}"
 if ! git merge --no-ff --no-verify -q -m "$msg" "origin/$branch"; then
     echo "integrate: conflict merging $branch into $into; files:" >&2
