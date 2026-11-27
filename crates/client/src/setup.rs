@@ -711,7 +711,7 @@ fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
         rows.push((if h.soloist_key == "keyring" || h.soloist_key.starts_with("environment") { '✓' } else if h.soloist_key == "missing" { '✗' } else { '!' }, "Soloist key", place(&h.soloist_key)));
     }
     rows.push(match &app.catalogue {
-        Some(CatalogueStatus::Ready { username, premium, .. }) => (if *premium { '✓' } else { '!' }, "Catalogue", format!("logged in as {username}{}", if *premium { " · Premium" } else { " · not Premium" })),
+        Some(CatalogueStatus::Ready { username, premium, .. }) => (if *premium { '✓' } else { '!' }, "Catalogue", format!("logged in{}{}", if username.is_empty() { String::new() } else { format!(" as {username}") }, if *premium { " · Premium" } else { " · not Premium" })),
         Some(CatalogueStatus::LoggedOut) => ('!', "Catalogue", "logged out (Ctrl+K → Log in to Spotify)".into()),
         Some(CatalogueStatus::LoginPending { code, .. }) => ('!', "Catalogue", format!("waiting for the code {code}")),
         Some(CatalogueStatus::Connecting) => ('!', "Catalogue", "connecting…".into()),

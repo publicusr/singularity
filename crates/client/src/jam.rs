@@ -87,7 +87,9 @@ pub fn draw(buf: &mut Buffer, inner: Rect, mut y: u16, row: usize, app: &mut App
     let Some(jam) = app.jam.clone() else { return };
     y += 1;
     if let Some(link) = &jam.invite {
-        text(buf, inner.x + 2, y, inner.width.saturating_sub(4), link, th.s(th.dim));
+        // demo mode (D90): the link is a stand-in that leads nowhere, and says so instead of showing itself
+        let shown = if app.demo.is_some() { crate::demo::LINK_HIDDEN } else { link.as_str() };
+        text(buf, inner.x + 2, y, inner.width.saturating_sub(4), shown, th.s(th.dim));
         y += 1;
         let qr = qr_rows(link);
         let room = inner.bottom().saturating_sub(y + 1);

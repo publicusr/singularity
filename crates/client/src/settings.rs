@@ -358,6 +358,8 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         Tab::Config => (app.config_path().map(home).map(|p| format!("{p} · changes apply at once, and so do edits in the file")), &app.config_problems),
         Tab::Keys => (app.keys_path().map(home).map(|p| format!("{p} · {} preset · change keys there: action = \"key\"", app.keymap.preset)), &app.keys_problems),
     };
+    // demo mode (D90): a config folder outside $HOME, or the user's name in it, doesn't show
+    let path = path.map(|p| app.demo.as_ref().map(|d| d.redact(&p)).unwrap_or(p));
     text(buf, tx + 1, y, (x + w).saturating_sub(tx + 1), &path.unwrap_or_default(), th.s(th.border));
     y += 1;
     let problems = problems.clone();
@@ -412,7 +414,9 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                         text(buf, vx, y, 5, if on { " on  " } else { " off " }, st);
                     }
                     (_, None) => {
+                        // demo mode: a device name of the owner's choosing shows as its stand-in
                         let s = shown(app, e);
+                        let s = app.demo.as_ref().map(|d| d.redact(&s)).unwrap_or(s);
                         let n = s.chars().count() as u16;
                         text(buf, vx, y, 2, "◂ ", th.s(th.dim).bg(bg));
                         text(buf, vx + 2, y, vw.saturating_sub(4), &s, th.s(th.accent).bg(bg).add_modifier(Modifier::BOLD));

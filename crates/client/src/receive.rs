@@ -9,6 +9,11 @@ use singularity_proto::{DaemonMsg, EngineStatus, Event};
 impl App {
     /// A Daemon event, or a change in the connection.
     pub fn receive(&mut self, ev: ConnEvent) {
+        // demo mode (D90): what this Client may show, before anything reads it
+        let ev = match (ev, self.demo.as_mut()) {
+            (ConnEvent::Msg(DaemonMsg::Event(e)), Some(d)) => ConnEvent::Msg(DaemonMsg::Event(d.scrub(e))),
+            (ev, _) => ev,
+        };
         match ev {
             ConnEvent::Connecting => {}
             ConnEvent::Updating => self.say("Updating singularityd…"),
@@ -34,8 +39,11 @@ impl App {
                     && !matches!(self.catalogue, Some(singularity_proto::CatalogueStatus::LoginPending { .. }))
                 {
                     self.login_hidden = false;
-                    // the main loop opens the pairing page in the browser
-                    self.open_url = Some(url.clone());
+                    // the main loop opens the pairing page in the browser; not in demo mode, where it would show the
+                    // account's name and picture on the recording (the link and code still show)
+                    if self.demo.is_none() {
+                        self.open_url = Some(url.clone());
+                    }
                 }
                 self.catalogue = Some(c);
             }
@@ -46,8 +54,23 @@ impl App {
                 }
                 self.home = Some(h);
             }
-            ConnEvent::Msg(DaemonMsg::Event(Event::Library(l))) => self.library = Some(l),
-            ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistCreated { uri, name })) => self.playlist_created(&uri, &name),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Library(l))) => {
+                self.library = Some(l);
+                // demo mode: now it's known which playlists are the owner's, Home drops those outside the Demo set
+                if let Some(h) = self.demo.as_mut().and_then(|d| d.home_again()) {
+                    if let Some(old) = &self.home {
+                        self.home_view.refeed(old, &h);
+                    }
+                    self.home = Some(h);
+                }
+            }
+            ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistCreated { uri, name })) => {
+                // demo mode: a playlist made in this session stays in the library
+                if let Some(l) = self.demo.as_mut().and_then(|d| d.library_again()) {
+                    self.library = Some(l);
+                }
+                self.playlist_created(&uri, &name)
+            }
             ConnEvent::Msg(DaemonMsg::Event(Event::AddedToPlaylist { playlist, name, uris, outcome })) => self.added_to_playlist(&playlist, &name, uris, outcome),
             ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistCoverSet { playlist, ok })) => self.cover_set(&playlist, ok),
             ConnEvent::Msg(DaemonMsg::Event(Event::MovedInPlaylist { playlist, uids, ok })) => self.moved_in_playlist(&playlist, &uids, ok),

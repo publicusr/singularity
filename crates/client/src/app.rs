@@ -490,6 +490,8 @@ pub enum MenuAct {
     ChangeCover,
     RemoveCover,
     DeletePlaylist,
+    /// demo mode (D90): an album, artist, podcast or audiobook into `demo.toml`'s Demo set
+    AddToDemo,
     /// the Pane menu (right-click on a title, or a body without a menu of its own)
     ReplaceWidget,
     /// the Split row: ← → ↑ ↓, each clickable; the side is the lit arrow, the one the word Split (and Enter) splits
@@ -832,6 +834,10 @@ pub struct App {
     pub hole_origin: Option<crate::visual::idle::Origin>,
     last_tick: Instant,
     told_backend: bool,
+    /// demo mode (D90): what this Client hides and replaces; None: everything shows
+    pub demo: Option<crate::demo::Demo>,
+    /// `demo.toml`, for "Add to demo" (None in tests)
+    pub demo_file: Option<std::path::PathBuf>,
     commands: Option<mpsc::Sender<Command>>,
 }
 
@@ -929,7 +935,46 @@ impl App {
             hole_origin: None,
             last_tick: Instant::now(),
             told_backend: false,
+            demo: None,
+            demo_file: None,
             commands,
+        }
+    }
+
+    /// "Add to demo" for an album, artist, podcast or audiobook not yet in the Demo set (demo mode only).
+    pub(crate) fn demo_entry(&self, kind: &str, uri: &str) -> Option<(String, MenuAct)> {
+        let d = self.demo.as_ref()?;
+        (matches!(kind, "album" | "artist" | "show") && !d.file.library.iter().any(|u| u == uri)).then(|| ("Add to demo".to_string(), MenuAct::AddToDemo))
+    }
+
+    /// "Add to demo": into `demo.toml`, and into the library at once if it's saved there.
+    pub(crate) fn add_to_demo(&mut self, uri: &str, name: &str) {
+        let Some(path) = self.demo_file.clone() else { return };
+        match crate::demo::add_to_file(&path, uri) {
+            Ok(_) => {
+                if let Some(d) = self.demo.as_mut() {
+                    d.file.library.push(uri.to_string());
+                }
+                if let Some(l) = self.demo.as_mut().and_then(|d| d.library_again()) {
+                    self.library = Some(l);
+                }
+                self.say(format!("Added {name} to demo.toml"));
+            }
+            Err(e) => self.say(format!("Couldn't write demo.toml: {e}")),
+        }
+    }
+
+    /// Demo mode (D90), with the Demo set's allow-list from `file` and the redactor knowing this computer.
+    pub fn start_demo(&mut self, file: std::path::PathBuf) {
+        let (f, problem) = crate::demo::load(&file);
+        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let mut redactor = crate::demo::Redactor::from_env(env("HOME"), env("USER").or_else(|| env("LOGNAME")), Some(singularity_config::host::Host::this().computer()));
+        // a device name of the owner's own choosing, before the Engine reports it
+        redactor.learn(&self.config.engine.device, crate::demo::ENGINE);
+        self.demo = Some(crate::demo::Demo::new(f, redactor));
+        self.demo_file = Some(file);
+        if let Some(p) = problem {
+            self.say(p);
         }
     }
 
@@ -1214,7 +1259,13 @@ impl App {
     }
 
     pub fn say(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
+        let msg = msg.into();
+        // demo mode: whatever it says, nothing personal (D90)
+        let msg = match &self.demo {
+            Some(d) => d.redact(&msg),
+            None => msg,
+        };
+        self.toast = Some((msg, Instant::now()));
     }
 
     pub(crate) fn send(&mut self, c: Command) {
@@ -1691,6 +1742,8 @@ impl App {
         let Some(it) = self.library.as_ref().and_then(|l| l.items.get(row - crate::sidebar::FIXED)).cloned() else { return };
         match it.kind.as_str() {
             "folder" => self.say("Folders are listed with their playlists indented below"),
+            // demo mode's "Make a folder called Demo" row opens nothing
+            "hint" => {}
             _ => self.open(&it.uri, &it.name, &it.subtitle, &it.kind),
         }
     }
@@ -2209,6 +2262,7 @@ impl App {
             items.push(("Go to show".into(), MenuAct::GoTo));
         }
         items.extend(self.save_entry(&uri));
+        items.extend(self.demo_entry(&kind, &uri));
         items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::Card(c)).map(|r| (r.x + 2, r.y + 1))).unwrap_or((0, 0));
         let Some(id) = self.active_feed().and_then(|f| CardId::of(f, c)) else { return };
@@ -2392,6 +2446,7 @@ impl App {
             MenuAct::ChangeCover => self.ask_cover(&uri),
             MenuAct::RemoveCover => self.remove_cover(&uri),
             MenuAct::DeletePlaylist => self.delete_playlist(&uri),
+            MenuAct::AddToDemo => self.add_to_demo(&uri, &name),
             MenuAct::ReplaceWidget | MenuAct::Split(_) | MenuAct::Arrange | MenuAct::ClosePane => {}
         }
     }

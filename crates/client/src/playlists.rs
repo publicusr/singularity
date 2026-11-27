@@ -314,12 +314,15 @@ impl App {
         self.sidebar.sel = row;
         let Some(it) = row.checked_sub(crate::sidebar::FIXED).and_then(|i| self.library.as_ref()?.items.get(i)).cloned() else { return };
         let mut items = vec![];
-        if it.kind != "folder" {
+        // (demo mode's hint row is no playlist either)
+        let plays = !matches!(it.kind.as_str(), "folder" | "hint");
+        if plays {
             items.push(("Play".to_string(), MenuAct::Play));
         }
         items.push(("New playlist…".into(), MenuAct::NewPlaylist));
         items.extend(self.playlist_entries(&it.uri));
-        if it.kind != "folder" {
+        items.extend(self.demo_entry(&it.kind, &it.uri));
+        if plays {
             items.push(("Copy link".into(), MenuAct::CopyLink));
         }
         let at = at.or_else(|| self.hit_rect(&crate::app::Hit::Side(row)).map(|r| (r.x + 2, r.y + 1))).unwrap_or((0, 0));

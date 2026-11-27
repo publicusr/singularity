@@ -95,6 +95,11 @@ pub fn prepare(bytes: &[u8]) -> Result<Prepared, String> {
     Err("Couldn't make it small enough for Spotify (256 KB)".into())
 }
 
+/// The last part of a path: what demo mode shows of a picture's path.
+fn file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
 /// Read and prepare the file at `path`.
 fn load(path: &str) -> Result<Prepared, String> {
     let meta = std::fs::metadata(path).map_err(|_| format!("No file at {path}"))?;
@@ -144,6 +149,7 @@ impl App {
     }
 
     fn load_cover(&mut self) {
+        let demo = self.demo.is_some();
         let Some(f) = self.cover_form_mut() else { return };
         f.path = clean_path(&f.path);
         if f.path.is_empty() {
@@ -159,6 +165,8 @@ impl App {
             }
             Err(e) => {
                 f.ready = None;
+                // demo mode (D90): only the file's name, never the folders it's in
+                let e = if demo { e.replace(&f.path, file_name(&f.path)) } else { e };
                 f.error = Some(e);
             }
         }
@@ -233,7 +241,8 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     let (x, w) = (inner.x + 1, inner.width.saturating_sub(2));
     text(buf, x, inner.y, w, "Picture file (type a path, or drop one here)", th.s(th.dim));
     let pw = w.saturating_sub(3) as usize;
-    let shown: String = f.path.chars().skip(f.path.chars().count().saturating_sub(pw.saturating_sub(1))).collect();
+    let path = if app.demo.is_some() { file_name(&f.path) } else { f.path.as_str() };
+    let shown: String = path.chars().skip(path.chars().count().saturating_sub(pw.saturating_sub(1))).collect();
     text(buf, x, inner.y + 1, w, &format!("› {shown}▏"), th.s(th.fg).add_modifier(Modifier::BOLD));
     let pr = Rect::new(x, inner.y + 3, 22, 11);
     match (&f.ready, &f.error) {

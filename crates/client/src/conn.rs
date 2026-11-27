@@ -64,7 +64,7 @@ async fn run_at(path: std::path::PathBuf, mut cmd_rx: mpsc::Receiver<Command>, e
         // who's on the other end, in case it has to be stopped
         let peer = stream.peer_cred().ok().and_then(|c| c.pid());
         let (mut rd, mut wr) = stream.into_split();
-        let hello = ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: format!("singularity {}", env!("CARGO_PKG_VERSION")) };
+        let hello = ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: format!("singularity {}", env!("CARGO_PKG_VERSION")), demo: crate::demo::on() };
         if proto::write_msg(&mut wr, &hello).await.is_err() {
             continue;
         }
