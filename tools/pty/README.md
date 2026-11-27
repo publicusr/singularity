@@ -39,6 +39,9 @@ under the text, as kitty does with z=-1, at pyte's cursor when the APC arrives, 
 - `app_wizard_test.py out-appw [--engine librespot]` (#66, #70): the wizard and health check with the Spotify app (or
   librespot) as Engine, three Daemons in turn
   (no Catalogue; a real, logged-out one in scratch dirs; the fake one). Never starts the real app (`SINGULARITY_START_APP=0`).
+- Test-only knobs for a slow start (#81): `SINGULARITY_FAKE_DELAY_MS=<ms>` makes the fake Catalogue's Home and library
+  arrive that late, and `SINGULARITY_HOME_CACHE=on` keeps the last Home and library on disk for a fake Catalogue too
+  (it's on only with Spotify's otherwise; `off` turns it off). Use them with scratch `XDG_CACHE_HOME`, never the owner's.
 - Every script pins `SINGULARITY_ENGINE` (so a Daemon a Client starts by itself never drives the real Spotify app on a Mac).
 - `stale_test.py out-stale` (#25): a Daemon that ignores `Shutdown` (`SINGULARITY_IGNORE_SHUTDOWN=1`, playing a build
   from before the replace logic) meets a newer Client, which stops it and starts its own (scratch dirs, no keyring,
