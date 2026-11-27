@@ -3041,6 +3041,56 @@ impl App {
                     self.pane_wheel(w, m.column, m.row, rows, coarse);
                 }
             }
+            MouseEventKind::Moved => self.hover(m.column, m.row),
+            _ => {}
+        }
+    }
+
+    /// The pointer over a list's row in the focused Pane highlights it (D86: the wheel scrolls the view and leaves the
+    /// highlight, so the row to pick is the one under the pointer; a click picks it).
+    fn hover(&mut self, x: u16, y: u16) {
+        let Some(hit) = self.hit_at(x, y) else { return };
+        let home = self.is_focused(Widget::Home);
+        match hit {
+            Hit::Side(row) if self.is_focused(Widget::Library) => self.sidebar.sel = row,
+            Hit::QueueRow(i) if self.is_focused(Widget::Queue) => self.queue_view.place(i),
+            Hit::Track(vi) if home => {
+                if let Some(v) = self.list_view_mut() {
+                    v.sel = vi;
+                }
+            }
+            Hit::StatsRow(i) if home => {
+                if let Some(v) = self.page.stats_mut() {
+                    v.sel = i;
+                }
+            }
+            Hit::TopTrack(i) if home => {
+                if let Some(a) = self.page.artist_mut() {
+                    a.top_sel = i;
+                }
+            }
+            Hit::SearchTrack(i) if home => {
+                if let Some(s) = self.searching_mut() {
+                    s.track_sel = Some(i);
+                    s.shelves.sel = None;
+                }
+            }
+            Hit::Recent(i) if home => {
+                if let Some(s) = self.searching_mut() {
+                    s.recent_sel = i;
+                }
+            }
+            // (not while a number is being typed for a setting)
+            Hit::Setting(i) if home => {
+                if let Some(v) = self.page.settings_mut().filter(|v| v.typing.is_none()) {
+                    (v.sel, v.on_tabs) = (i, false);
+                }
+            }
+            Hit::KeyRow(i) if home => {
+                if let Some(v) = self.page.settings_mut() {
+                    (v.key_sel, v.on_tabs) = (i, false);
+                }
+            }
             _ => {}
         }
     }

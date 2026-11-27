@@ -202,21 +202,23 @@ fn a_big_library_pane_shows_columns_that_keys_the_wheel_and_clicks_cross() {
     render(&mut app);
     assert_eq!((app.sidebar.sel, app.sidebar.top), (rows - 1, 0));
 
-    // the wheel moves the highlight an entry a notch, and the window follows it
+    // the wheel moves the view a column a notch and leaves the highlight where it is (D86)
     let at = entry(&app, 1).unwrap();
-    for _ in 0..80 {
-        app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: at.x + 1, row: at.y, modifiers: KeyModifiers::NONE }, at.x as f64 + 1.5, false);
-    }
+    app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: at.x + 1, row: at.y, modifiers: KeyModifiers::NONE }, at.x as f64 + 1.5, false);
     render(&mut app);
-    assert_eq!(app.sidebar.sel, rows - 1 + 80);
-    assert!(entry(&app, app.sidebar.sel).is_some(), "the highlight is in view");
+    assert_eq!((app.sidebar.sel, app.sidebar.top), (rows - 1, rows));
+    assert!(entry(&app, rows - 1).is_none() && entry(&app, rows).is_some());
     // on to the end, which shows
     for _ in 0..50 {
         app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: at.x + 1, row: at.y, modifiers: KeyModifiers::NONE }, at.x as f64 + 1.5, false);
     }
     render(&mut app);
-    assert_eq!(app.sidebar.sel, 100);
+    assert_eq!(app.sidebar.sel, rows - 1);
     assert!(entry(&app, 100).is_some(), "the end shows");
+    // a key moves the highlight on from where it was, and the view goes back to it
+    key(&mut app, KeyCode::Down);
+    render(&mut app);
+    assert_eq!((app.sidebar.sel, app.sidebar.top), (rows, rows));
 
     // a click on an entry in the third column opens that one
     let row = app.sidebar.top + 2 * rows + 1;

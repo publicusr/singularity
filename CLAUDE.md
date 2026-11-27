@@ -36,8 +36,11 @@
 - The same for everything else the wheel can be over: every Widget is a `pane::Widget` variant
   (`crates/client/src/pane.rs`) and every main-Pane page an `app::Page`; the compiler asks for their arms in
   `App::pane_wheel`/`App::page_wheel` and in the wheel test's cases (`wheel/tests.rs`), which wheels each one, holding
-  more than fits in a short Pane, notch by notch. Anything that can hold more than fits scrolls (a list's window follows
-  its highlight; a view that follows the song is a `scroll::Follow`); pty `wheel-all` shows them all.
+  more than fits in a short Pane, notch by notch. Anything that can hold more than fits scrolls: over a Pane the wheel
+  moves a list's view and leaves its highlight (D86, `scroll::Wheeled`; keys move the highlight and the view follows it,
+  the pointer over a row of a focused list highlights it); a view that follows the song is a `scroll::Follow`; pty
+  `wheel-all` shows them all. Wheel reports become steps in `term::WheelSteps` (a notch's burst is one step, a
+  touchpad's report one each; pty `touchpad`).
 - Verify user-visible changes in a pseudo-terminal (pyte + PIL screenshots) before closing a ticket.
 - Only kill processes you started; test sockets go in `$XDG_RUNTIME_DIR/sgl-*`, on macOS
   `/tmp/sgl-<uid>/` (Unix socket paths must be short).
