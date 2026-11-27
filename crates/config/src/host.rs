@@ -40,6 +40,14 @@ pub fn uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
+/// Wait for a started program on a thread of its own, so that once it quits it doesn't stay behind as a zombie (#143:
+/// the Spotify app the Daemon starts, the Daemon a Client starts). Its exit status is not needed.
+pub fn reap(mut child: std::process::Child) {
+    let _ = std::thread::Builder::new().name("reap".into()).spawn(move || {
+        let _ = child.wait();
+    });
+}
+
 /// A running process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Process {
@@ -94,10 +102,15 @@ impl Host {
         os::computer(self).unwrap_or_else(|| "this computer".into())
     }
 
-    /// The processes running now, with the names they run under. A process that has quit is not listed, even while
-    /// its parent hasn't reaped it yet (a zombie, #143).
+    /// The processes running now, with the names they run under.
     pub fn processes(&self) -> Vec<Process> {
         os::processes(self)
+    }
+
+    /// Has process `pid` quit, though it is still listed (a zombie its parent hasn't reaped yet, #143)? Linux only;
+    /// on macOS, false.
+    pub fn has_quit(&self, pid: u32) -> bool {
+        os::has_quit(self, pid)
     }
 
     /// The name process `pid` runs under, if it runs.
@@ -217,6 +230,22 @@ mod tests {
         // no opener: nothing happens (and nothing panics)
         let empty = tempfile::tempdir().unwrap();
         made_up(empty.path()).open("https://example.invalid/pair");
+    }
+
+    /// #143: a program handed to `reap` is waited for, so once it quits it is gone from the table, not a zombie.
+    #[test]
+    fn a_reaped_program_leaves_no_zombie() {
+        let child = std::process::Command::new("/bin/sh").args(["-c", "exit 0"]).spawn().unwrap();
+        let pid = child.id();
+        reap(child);
+        let h = Host::this();
+        for _ in 0..200 {
+            if h.name_of(pid).is_none() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("pid {pid} is still in the table (a zombie: {})", h.has_quit(pid));
     }
 
     /// A process the test started is stopped by a signal. (Pids 0 and above i32::MAX aren't tried: if the guard

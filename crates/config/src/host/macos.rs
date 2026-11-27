@@ -32,6 +32,12 @@ pub fn name_of(_: &Host, pid: u32) -> Option<String> {
     (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
 }
 
+/// Never: libproc's list has no zombie the Daemon could leave (the Spotify app starts through `open`, and launchd
+/// reaps it), and the Daemon reaps what it starts (#143).
+pub fn has_quit(_: &Host, _: u32) -> bool {
+    false
+}
+
 pub fn exe_name(host: &Host, pid: u32) -> Option<String> {
     name_of(host, pid)
 }

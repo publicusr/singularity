@@ -24,15 +24,14 @@ pub fn processes(host: &Host) -> Vec<Process> {
         .collect()
 }
 
-/// The name `pid` runs under; none for a zombie (#143): a process that has quit but that its parent hasn't reaped yet
-/// stays in `/proc` under its name, and would count as still running (the Spotify app the Daemon started).
 pub fn name_of(host: &Host, pid: u32) -> Option<String> {
-    let dir = host.proc_root.join(pid.to_string());
-    let comm = std::fs::read_to_string(dir.join("comm")).ok()?;
-    if std::fs::read_to_string(dir.join("stat")).is_ok_and(|stat| quit(&stat)) {
-        return None;
-    }
+    let comm = std::fs::read_to_string(host.proc_root.join(pid.to_string()).join("comm")).ok()?;
     Some(comm.trim().to_string())
+}
+
+/// Has `pid` quit, though it is still in the table (a zombie its parent hasn't reaped, #143)?
+pub fn has_quit(host: &Host, pid: u32) -> bool {
+    std::fs::read_to_string(host.proc_root.join(pid.to_string()).join("stat")).is_ok_and(|stat| quit(&stat))
 }
 
 /// Does this `stat` line say the process has quit (`Z` zombie, `X` dead)? The state is the first field after the
@@ -106,10 +105,10 @@ mod tests {
         }
     }
 
-    /// #143: a process that has quit but isn't reaped yet (a zombie) stays in the table under its name; it isn't
-    /// listed, and has no name, so nothing counts it as running.
+    /// #143: a process that has quit but isn't reaped yet (a zombie) stays in the table under its name, and is listed
+    /// as before; the Host can tell it has quit.
     #[test]
-    fn zombies_are_not_listed() {
+    fn a_zombie_is_listed_and_known_to_have_quit() {
         let root = tempfile::tempdir().unwrap();
         process(root.path(), 42, "spotify", 0, 0, 0);
         process(root.path(), 43, "spotify", 0, 0, 0);
@@ -119,15 +118,18 @@ mod tests {
             std::fs::write(root.path().join(format!("{pid}/stat")), stat.replace(") S ", &format!(") {state} "))).unwrap();
         }
         let h = host(root.path(), 4096);
-        assert_eq!(h.processes(), vec![Process { pid: 43, name: "spotify".into() }]);
-        assert_eq!((h.name_of(42), h.name_of(43).as_deref(), h.name_of(44)), (None, Some("spotify"), None));
+        let mut all = h.processes();
+        all.sort_by_key(|p| p.pid);
+        assert_eq!(all.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![42, 43, 44], "the table as it is");
+        assert_eq!(h.name_of(42).as_deref(), Some("spotify"));
+        assert_eq!((h.has_quit(42), h.has_quit(43), h.has_quit(44), h.has_quit(45)), (true, false, true, false));
         // a name ending in ") Z" is a name, not the state
         assert!(!quit("7 (a) Z b) S 1 7 7") && quit("7 (a) S b) Z 1 7 7"));
     }
 
-    /// The real table: a child that has quit and isn't waited for yet is a zombie, and isn't listed.
+    /// The real table: a child that has quit and isn't waited for yet is a zombie, and the Host knows it has quit.
     #[test]
-    fn this_computer_leaves_out_a_real_zombie() {
+    fn this_computer_knows_a_real_zombie_has_quit() {
         let h = Host::this();
         let mut child = std::process::Command::new("/bin/sh").args(["-c", "exit 0"]).spawn().unwrap();
         let pid = child.id();
@@ -139,8 +141,9 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(std::fs::read_to_string(&stat).is_ok_and(|s| quit(&s)), "the child is a zombie by now");
-        assert!(!h.processes().iter().any(|p| p.pid == pid) && h.name_of(pid).is_none());
+        assert!(h.has_quit(pid));
         child.wait().unwrap();
+        assert!(!h.has_quit(std::process::id()), "this process runs");
     }
 
     #[test]

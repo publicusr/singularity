@@ -114,9 +114,10 @@ pub fn installed() -> Option<App> {
     spotify_app::installed()
 }
 
-/// The app's processes, as the Host lists them.
+/// The app's processes, as the Host lists them; one that has quit but isn't reaped yet doesn't count (#143: the Daemon
+/// reaps the app it starts, this is for one it didn't).
 fn app_pids(host: &Host) -> Vec<u32> {
-    host.processes().into_iter().filter(|p| p.name == spotify_app::PROCESS).map(|p| p.pid).collect()
+    host.processes().into_iter().filter(|p| p.name == spotify_app::PROCESS && !host.has_quit(p.pid)).map(|p| p.pid).collect()
 }
 
 /// Is the app running already?
@@ -125,7 +126,7 @@ fn running() -> bool {
 }
 
 /// [`running`] on this Host (tests pass one over a scratch process table). An app that has quit doesn't count, even
-/// while it isn't reaped yet (#143: the Host leaves zombies out).
+/// while it isn't reaped yet (#143).
 fn running_on(host: &Host) -> bool {
     !app_pids(host).is_empty()
 }
