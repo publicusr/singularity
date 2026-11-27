@@ -394,6 +394,25 @@ fn fake_lyrics(uri: &str) -> singularity_proto::Lyrics {
 /// instrumental gap of about 8 s marked by an empty line, and a long line that wraps.
 fn karaoke_lyrics(uri: &str) -> singularity_proto::Lyrics {
     use singularity_proto::{LyricLine, LyricWord};
+    // SINGULARITY_FAKE_LYRICS=scripts: a verse in scripts with separate marks (Thai, Hindi) and a long CJK line whose
+    // words aren't spaced, every word timed (#146)
+    if std::env::var("SINGULARITY_FAKE_LYRICS").is_ok_and(|v| v == "scripts") {
+        let verse: [(u64, &[&str], u64); 4] = [
+            (500, &["สวัสดี ", "ครับ ", "ทุก ", "คน"], 1_000),
+            (5_000, &["नमस्ते ", "दुनिया ", "गाओ ", "साथ"], 1_000),
+            (9_500, &["夜空", "星屑", "光る", "風鈴", "海辺", "雨音", "花火", "月影", "雪国", "桜色"], 700),
+            (17_000, &[], 0),
+        ];
+        let lines = (0..6u64)
+            .flat_map(|round| verse.iter().map(move |(at, words, step)| (round * 20_000 + at, words, step)))
+            .map(|(start_ms, words, step)| LyricLine {
+                start_ms,
+                text: words.concat(),
+                words: words.iter().enumerate().map(|(k, w)| LyricWord { start_ms: start_ms + k as u64 * step, end_ms: None, text: (*w).into() }).collect(),
+            })
+            .collect();
+        return singularity_proto::Lyrics { uri: uri.into(), synced: true, lines, source: "fake".into(), ..Default::default() };
+    }
     // (start in the verse, ms; text; word starts relative to the line, or none: line-timed only)
     let verse: [(u64, &str, &[u64]); 6] = [
         (3_000, "Turn the lights down low", &[0, 450, 800, 1_400, 2_100]),

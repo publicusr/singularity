@@ -34,6 +34,29 @@ BRAILLE = first_font("/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf"
 FONT = first_font("/usr/share/fonts/nerd-fonts/DejaVuSansMono/DejaVuSansMNerdFontMono-Regular.ttf",
                   "~/Library/Fonts/DejaVuSansMNerdFontMono-Regular.ttf", "~/Library/Fonts/HackNerdFontMono-Regular.ttf",
                   "/System/Library/Fonts/Menlo.ttc")
+
+
+def some_font(*paths):
+    """The first of these fonts that exists, or None (scripts the main font lacks: drawn in it, as boxes, without)."""
+    try:
+        return first_font(*paths)
+    except SystemExit:
+        return None
+
+
+# lyrics in other scripts (#146): (first, last code point, font)
+SCRIPTS = [(0x0900, 0x097F, some_font("/usr/share/fonts/google-noto-vf/NotoSansDevanagari[wght].ttf")),
+           (0x0E00, 0x0E7F, some_font("/usr/share/fonts/google-noto-vf/NotoSansThai[wght].ttf")),
+           (0x3000, 0x9FFF, some_font("/usr/share/fonts/google-noto-sans-mono-cjk-vf-fonts/NotoSansMonoCJK-VF.ttc"))]
+
+
+def font_for(ch):
+    o = ord(ch[0])
+    if 0x2800 <= o <= 0x28FF:
+        return BRAILLE
+    return next((f for lo, hi, f in SCRIPTS if f and lo <= o <= hi), FONT)
+
+
 # test sockets (short paths) go here: $XDG_RUNTIME_DIR on Linux, an owner-only dir in /tmp where there is none (macOS)
 RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/sgl-{os.getuid()}"
 os.makedirs(RUNTIME, mode=0o700, exist_ok=True)
@@ -140,7 +163,11 @@ class Term:
         self.pump(wait)
 
     def text(self):
-        return "\n".join(self.screen.display)
+        try:
+            return "\n".join(self.screen.display)
+        except IndexError:
+            # pyte's own trips over an empty cell no wide character covers (a mark drawn over one, #146)
+            return "\n".join("".join(self.screen.buffer[y][x].data for x in range(COLS)) for y in range(ROWS))
 
     def find(self, s):
         for y, line in enumerate(self.screen.display):
@@ -188,7 +215,7 @@ class Term:
                     cells.append((x, y, c.data, fg))
         paste(False)
         for x, y, ch, fg in cells:
-            font = BRAILLE if 0x2800 <= ord(ch[0]) <= 0x28FF else FONT
+            font = font_for(ch)
             try:
                 d.text((x * CW, y * CH + 1), ch, font=font, fill=fg)
             except ValueError:
