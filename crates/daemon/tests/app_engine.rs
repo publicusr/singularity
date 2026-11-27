@@ -54,7 +54,7 @@ fn cluster(active: &str) -> Cluster {
 
 async fn connect(path: &std::path::Path) -> UnixStream {
     let mut s = UnixStream::connect(path).await.unwrap();
-    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() }).await.unwrap();
+    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into(), demo: false }).await.unwrap();
     let _welcome: DaemonMsg = proto::read_msg(&mut s).await.unwrap().unwrap();
     s
 }

@@ -532,7 +532,7 @@ pub fn parse_artist(v: &Value) -> Option<ArtistPage> {
     ]
     .into_iter()
     .filter(|(_, c)| !c.is_empty())
-    .map(|(t, cards)| Shelf { title: t.into(), kind: "shelf".into(), cards })
+    .map(|(t, cards)| Shelf { id: String::new(), title: t.into(), kind: "shelf".into(), cards })
     .collect();
     Some(ArtistPage {
         uri,

@@ -19,7 +19,14 @@ pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ClientMsg {
-    Hello { protocol: u32, client: String },
+    Hello {
+        protocol: u32,
+        client: String,
+        /// a Client in demo mode (D90): its stats come from the demo Listening log. Additive: older Clients leave it
+        /// out, older Daemons ignore it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        demo: bool,
+    },
     Ping { id: u64 },
     Command(Command),
     #[serde(other)]
@@ -44,6 +51,13 @@ pub enum DaemonMsg {
         /// Daemons don't say: false)
         #[serde(default)]
         soloist_in_vm: bool,
+        /// the Client's Hello asked for demo mode and this Daemon runs it so (D90): its stats come from the demo log.
+        /// A demo Client that isn't told (an older Daemon) shows no stats and refuses export and delete.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        demo: bool,
+        /// to a demo Client only: the saved login's username, so it is redacted before the login is ready
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        account: String,
     },
     Incompatible { protocol: u32, message: String },
     Pong { id: u64 },
@@ -391,6 +405,10 @@ pub struct HomeFeed {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Shelf {
+    /// the section's id on Spotify (`spotify:section:…`), when it has one (D90: demo mode hides personal Shelves by
+    /// it). Additive: older Daemons leave it out.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub title: String,
     /// `shortcuts` (the grid at the top), `shelf` (a regular row) or `feed` (the endless tail)
     pub kind: String,
@@ -846,12 +864,12 @@ mod tests {
     #[tokio::test]
     async fn the_welcome_says_whether_soloist_runs_in_a_vm() {
         let (mut a, mut b) = tokio::io::duplex(1024);
-        let msg = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: "1".into(), started_unix_ms: 5, engine: EngineKind::Soloist, soloist_in_vm: true };
+        let msg = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: "1".into(), started_unix_ms: 5, engine: EngineKind::Soloist, soloist_in_vm: true, demo: false, account: String::new() };
         write_msg(&mut a, &msg).await.unwrap();
         let got: DaemonMsg = read_msg(&mut b).await.unwrap().unwrap();
         assert_eq!(got, msg);
         let old: DaemonMsg = serde_json::from_str(r#"{"t":"welcome","protocol":1,"daemon_version":"1","started_unix_ms":5,"engine":"soloist"}"#).unwrap();
-        assert!(matches!(old, DaemonMsg::Welcome { soloist_in_vm: false, .. }), "{old:?}");
+        assert!(matches!(old, DaemonMsg::Welcome { soloist_in_vm: false, demo: false, .. }), "{old:?}: an older Daemon confirms no demo mode");
         #[derive(Deserialize)]
         #[serde(tag = "t", rename_all = "snake_case")]
         #[allow(dead_code)]

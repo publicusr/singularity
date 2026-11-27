@@ -557,6 +557,145 @@ def wheel_all(t, out):
     t.send(b"q", 0.5)
 
 
+# the fake account's made-up personal values (SINGULARITY_FAKE_PERSONAL=1, crates/daemon/src/catalogue/fake.rs), a
+# recent search and a play in the real listening log, and an engine.device of the owner's choosing: demo mode must
+# draw none of them (D90)
+DEMO_SECRETS = ["zq-fakeuser", "Zara Quillfeather", "Quillfeather", "Bodhi Friendly", "zarabox", "Zara's Pixel", "Zara's Kitchen",
+                "Zara's Secret Diary", "Private Stuff", "ZqSecretJamToken42", "socialsession", "zara secret search",
+                "Secretartist Zq", "Zara's Desk"]
+
+
+def demo_secrets():
+    """DEMO_SECRETS, plus this computer's and user's own names (looked up here, never written down)."""
+    found = {s: s for s in DEMO_SECRETS}
+    for label, value in (("the computer's name", open("/etc/hostname").read().strip() if os.path.exists("/etc/hostname") else ""),
+                         ("the user's name", os.environ.get("USER", "")), ("the home folder", os.environ.get("HOME", ""))):
+        if len(value) > 2:
+            found[label] = value
+    return found
+
+
+def demo_check(out):
+    """In demo mode, every screen dump in `out` searched for each secret: prints what showed, and fails if anything did."""
+    if os.environ.get("SINGULARITY_DEMO") != "1" and os.environ.get("PTY_DEMO") != "1":
+        return
+    seen = {}
+    for f in sorted(os.listdir(out)):
+        if f.endswith(".txt"):
+            text = open(f"{out}/{f}").read().lower()
+            for label, s in demo_secrets().items():
+                if s.lower() in text:
+                    seen.setdefault(label, []).append(f)
+    print("demo check:", {k: v[:3] for k, v in seen.items()} or "no secret in any screen")
+    if seen:
+        sys.exit(f"demo mode drew personal values: {sorted(seen)}")
+
+
+def demo_setup(env, out):
+    """The scratch files the demo walk needs: a real recent search, a play by a secret artist in the real log, a
+    device name of the owner's own choosing."""
+    os.makedirs(f"{env['XDG_STATE_HOME']}/singularity", exist_ok=True)
+    open(f"{env['XDG_STATE_HOME']}/singularity/recent-searches.json", "w").write(json.dumps(["zara secret search"]))
+    os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity", exist_ok=True)
+    open(f"{env['XDG_CONFIG_HOME']}/singularity/config.toml", "w").write("schema = 6\n[engine]\ndevice = \"Zara's Desk\"\n")
+    env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
+    seed_listening(env["SINGULARITY_DATA"])
+    import sqlite3
+    db = sqlite3.connect(f"{env['SINGULARITY_DATA']}/listening.db")
+    now = int(time.time() * 1000)
+    db.execute("INSERT INTO plays (started_ms, day, track_uri, name, artists, album, context_uri, duration_ms, played_ms, device) VALUES (?,?,?,?,?,?,?,?,?,?)",
+               (now - 3_600_000, (now - 3_600_000) // 86_400_000, "spotify:track:secret", "Secret Song", json.dumps(["Secretartist Zq"]), "Secret Album", None, 200_000, 9_000_000, "Zara's Pixel"))
+    db.commit()
+    db.close()
+
+
+def demo(t, out, env):
+    """D90: demo mode on the fake account with personal values (`SINGULARITY_FAKE_PERSONAL=1`): Home, the library, a
+    playlist, Search (recent searches, results), the device picker and a Jam, Stats, Settings, the health check, Cockpit's
+    stream Widget, a toast from a refused playlist. Every drawn screen is searched for each secret; prints what showed.
+    `PTY_DEMO=0` runs the same walk without the switch (the secrets must show there)."""
+    secrets = demo_secrets()
+    on = env.get("SINGULARITY_DEMO") == "1"
+    seen = {}
+    n = [0]
+
+    def look(name, wait=0.0):
+        t.pump(wait)
+        t.shot(f"{out}/{n[0]:02}-{name}.png")
+        screen = t.text()
+        for label, s in secrets.items():
+            if s.lower() in screen.lower():
+                seen.setdefault(label, []).append(name)
+        marks = [m for m in ("DEMO", "Premium", "Invite link hidden in demo mode", "Make a folder called Demo", "Guest 1", "you", "a friend") if m in screen]
+        print(f"{n[0]:02} {name}: {', '.join(marks) or '-'}")
+        n[0] += 1
+
+    def palette(what, wait=1.0):
+        t.send(b"\x0b", 0.3)
+        t.send(what.encode(), 0.3)
+        t.send(b"\r", wait)
+
+    t.pump(1.5)
+    look("home")
+    t.send(b"\x1b[B", 0.2)  # a key, so the Home view has a selection; then the shelves below
+    for _ in range(6):
+        t.send(b"\x1b[B", 0.1)
+    look("home-scrolled", 0.5)
+    at = t.find("Fake Mixtape")
+    if at:
+        mouse(t, 0, at[0] + 2, at[1]); mouse(t, 0, at[0] + 2, at[1], release=True, wait=1.0)
+        look("playlist")
+        mouse(t, 2, at[0] + 2, at[1], wait=0.4)
+        look("library-menu")
+        t.send(b"\x1b", 0.2)
+        # an artist page from a row's artist link: its Shelves hold the private playlist too
+        ax = t.find("Nova Drift")
+        if ax:
+            mouse(t, 0, ax[0] + 1, ax[1]); mouse(t, 0, ax[0] + 1, ax[1], release=True, wait=1.2)
+            look("artist")
+            for _ in range(8):
+                t.send(f"\x1b[<65;{ax[0] + 2};{ax[1] + 4}M".encode() * 3, 0.1)
+            look("artist-shelves", 0.4)
+    at = t.find("Road Trip")
+    if at:
+        mouse(t, 0, at[0] + 2, at[1]); mouse(t, 0, at[0] + 2, at[1], release=True, wait=1.0)
+        look("friends-playlist")
+    t.send(b"\x0c", 0.8)  # Ctrl+L: Search, empty
+    look("search-recent")
+    t.send(b"mix", 1.5)
+    look("search-results")
+    t.send(b"\x1b", 0.3); t.send(b"\x1b", 0.3)
+    t.send(b"d", 0.8)
+    look("devices")
+    t.send(b"j", 1.0)
+    look("jam")
+    t.send(b"\x1b", 0.4)
+    look("jam-chip")
+    palette("stats", 2.0)
+    look("stats")
+    palette("settings")
+    look("settings")
+    t.send(b"\x1b", 0.4)
+    palette("health check")
+    look("health", 0.5)
+    t.send(b"\x1b", 0.4)
+    palette("new playlist")
+    t.send(b"failing list", 0.3)
+    t.send(b"\r", 1.0)
+    look("toast")
+    palette("design", 0.6)
+    for _ in range(3):
+        t.send(b"\x1b[B", 0.3)  # Cockpit: the stream and listening Widgets
+    t.send(b"\r", 1.0)
+    t.send(b" ", 2.0)
+    look("cockpit-playing")
+    t.send(b" ", 0.3)
+    print("demo mode" if on else "without the switch", "· secrets drawn:", {k: v[:3] for k, v in seen.items()} or "none")
+    if on and seen:
+        sys.exit(f"demo mode drew personal values: {sorted(seen)}")
+    t.send(b"q", 0.5)
+
+
 def popup_wheel(t, out):
     """Wheel events never reach the Panes behind a popup: Devices and Settings are opened over an open list, and a
     notch (three reports, as Ghostty sends) goes inside the popup, on its border and outside it, over the library,
@@ -2878,7 +3017,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "search-timing", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "gesture", "wheel-burst", "touchpad", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
+    if scenario.startswith("home") or scenario in ("demo", "library", "queue", "lyrics", "artist", "search", "search-recent", "search-timing", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "gesture", "wheel-burst", "touchpad", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-fast", "tiling-paths", "resize", "karaoke", "arrange-fixes") else "0"
@@ -2927,6 +3066,20 @@ def main():
         os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity", exist_ok=True)
         open(f"{env['XDG_CONFIG_HOME']}/singularity/config.toml", "w").write("schema = 6\n[visuals]\nmotion_fps = 240\n")
         env["SINGULARITY_FRAME_LOG"] = f"{os.path.abspath(out)}/frames.log"
+    # demo mode (D90): `demo` walks every page with the switch on (PTY_DEMO=0: off); PTY_DEMO=1 turns it on for any
+    # other scenario (`wheel-all`), both on the fake account with made-up personal values
+    if scenario == "demo" or os.environ.get("PTY_DEMO") == "1":
+        env["SINGULARITY_FAKE_PERSONAL"] = "1"
+        env["SINGULARITY_DEMO"] = "0" if os.environ.get("PTY_DEMO") == "0" else "1"
+    if scenario == "demo":
+        demo_setup(env, out)
+    elif os.environ.get("PTY_DEMO") == "1":
+        # another scenario in demo mode: Liked Songs in the Demo set, and the seeded recent searches in demo mode's file
+        os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity", exist_ok=True)
+        open(f"{env['XDG_CONFIG_HOME']}/singularity/demo.toml", "w").write("liked = true\n")
+        recent = f"{env['XDG_STATE_HOME']}/singularity/recent-searches.json"
+        if os.path.exists(recent):
+            shutil.copy(recent, recent.replace(".json", "-demo.json"))
     bus = None
     if scenario == "mpris":
         bus, addr = private_bus(out)
@@ -3020,7 +3173,10 @@ def main():
         if scenario == "popup-wheel":
             return popup_wheel(t, out)
         if scenario == "wheel-all":
-            return wheel_all(t, out)
+            wheel_all(t, out)
+            return demo_check(out)
+        if scenario == "demo":
+            return demo(t, out, env)
         if scenario == "history":
             return history(t, out)
         if scenario == "meters":

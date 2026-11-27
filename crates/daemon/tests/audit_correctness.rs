@@ -73,7 +73,7 @@ impl Engine for RevivedEngine {
 
 async fn connect(path: &std::path::Path) -> UnixStream {
     let mut s = UnixStream::connect(path).await.unwrap();
-    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "audit".into() }).await.unwrap();
+    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "audit".into(), demo: false }).await.unwrap();
     let _welcome: DaemonMsg = proto::read_msg(&mut s).await.unwrap().unwrap();
     s
 }

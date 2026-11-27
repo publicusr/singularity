@@ -200,6 +200,17 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   Ctrl+K → "Export listening data" / "Delete listening data". Nothing is uploaded.
 - After a rebuild, the next Client notices the running Daemon is older than the installed `singularityd` and replaces
   it by itself ("Updating singularityd…"; the music pauses for a moment).
+- **Demo mode**, for recording videos on your own account: `singularity --demo` (or `SINGULARITY_DEMO=1`). A DEMO chip
+  shows in the top bar, and this Client hides or replaces everything personal: the library shows only the playlists in
+  a Spotify folder called "Demo" (plus albums, artists, podcasts and audiobooks listed in `demo.toml` in the config
+  folder, `library = ["spotify:album:…"]`, `liked = true` for Liked Songs; "Add to demo" in a menu writes there), Home
+  drops its personal Shelves, names become "you", "a friend" and "Guest 1", devices "Singularity", "Phone", "Speaker
+  2", the Jam's link is hidden (its QR leads nowhere), paths and the computer's name are replaced, the Added column is
+  blank, stats come from a separate demo log (plays still count in the real one), and recent searches are kept apart.
+  Music, Widgets and Designs work as usual, and other Clients don't change. It can't be switched on or off while
+  running. Recording checklist: hide the terminal's own title bar (it can show user@host), turn off desktop and track
+  notifications (Ctrl+K → "Track notifications on / off"), don't log in on camera, keep phones off screen. Edits are real:
+  liking, saving, creating or deleting in demo mode changes your account.
 - After a restart of the Daemon, Home and your library show at once as they were last time (kept, owner-only, in
   `~/.cache/singularity/home-and-library.json`, only for the account they belong to, and removed when you log out)
   while the fresh ones load behind.

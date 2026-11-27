@@ -11,6 +11,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 const DB: &str = "listening.db";
+/// Demo mode's own log (D90), beside the real one: what a demo Client's stats show.
+const DEMO_DB: &str = "listening-demo.db";
 const BACKUPS: &str = "backups";
 /// Nightly backups kept as they are; older ones survive only as the first of their month, for a year.
 const KEEP_DAYS: i64 = 14;
@@ -30,13 +32,24 @@ pub struct Play {
 pub struct Store {
     dir: PathBuf,
     db: Connection,
+    /// the demo Listening log (D90): deleting it leaves the library backups alone
+    demo: bool,
 }
 
 impl Store {
     /// Open (or create) the store in `dir` (normally `$XDG_DATA_HOME/singularity`).
     pub fn open(dir: &Path) -> anyhow::Result<Store> {
+        Store::open_named(dir, DB, false)
+    }
+
+    /// The demo Listening log in `dir` (D90): `listening-demo.db`, the same schema.
+    pub fn open_demo(dir: &Path) -> anyhow::Result<Store> {
+        Store::open_named(dir, DEMO_DB, true)
+    }
+
+    fn open_named(dir: &Path, name: &str, demo: bool) -> anyhow::Result<Store> {
         std::fs::create_dir_all(dir)?;
-        let path = dir.join(DB);
+        let path = dir.join(name);
         let db = Connection::open(&path)?;
         // owner-only, also for a file an older run left behind; SQLite's journal copies these permissions
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
@@ -57,7 +70,7 @@ impl Store {
             CREATE INDEX IF NOT EXISTS plays_day ON plays(day);",
         )?;
         migrate(&db)?;
-        Ok(Store { dir: dir.to_path_buf(), db })
+        Ok(Store { dir: dir.to_path_buf(), db, demo })
     }
 
     /// The default place: `$XDG_DATA_HOME/singularity`.
@@ -279,7 +292,8 @@ impl Store {
         let doc = json!({
             "exported_ms": now_ms,
             "plays": self.plays_json()?,
-            "library_backup": self.latest_backup().map(|(_, v)| v),
+            // (the demo log's export holds no library backup: those are the real account's)
+            "library_backup": if self.demo { None } else { self.latest_backup().map(|(_, v)| v) },
         });
         std::fs::create_dir_all(to)?;
         let path = to.join(format!("singularity-listening-{}.json", date(local_day(now_ms))));
@@ -292,6 +306,9 @@ impl Store {
         self.db.execute("DELETE FROM plays", [])?;
         // free the pages too, so nothing lingers in the file
         self.db.execute_batch("VACUUM")?;
+        if self.demo {
+            return Ok(());
+        }
         match std::fs::remove_dir_all(self.dir.join(BACKUPS)) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),

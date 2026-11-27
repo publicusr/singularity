@@ -116,7 +116,9 @@ impl Engine for FakeEngine {
                 .collect();
             let mut idx = 0usize;
             let mut st = PlaybackState { volume: 50, ..Default::default() };
-            let _ = ev_tx.send(EngineEvent::Status(EngineStatus::Ready { device_name: "Fake".into(), active: true, version: "fake".into(), expires_in_days: Some(90) })).await;
+            // (SINGULARITY_FAKE_PERSONAL=1: named after a made-up computer, as librespot names itself; D90's demo check)
+            let name = if std::env::var("SINGULARITY_FAKE_PERSONAL").is_ok_and(|v| v == "1") { "Singularity on zarabox" } else { "Fake" };
+            let _ = ev_tx.send(EngineEvent::Status(EngineStatus::Ready { device_name: name.into(), active: true, version: "fake".into(), expires_in_days: Some(90) })).await;
             // SINGULARITY_FAKE_STALLS=1: a lossless stream on a starving connection, for the stream Pane (#45);
             // =fine: the same stream on a healthy connection whose speed wanders (a measurement a second)
             if let Some(mode) = std::env::var("SINGULARITY_FAKE_STALLS").ok().filter(|v| v == "1" || v == "fine") {
