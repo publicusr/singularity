@@ -121,7 +121,13 @@ fn app_pids(host: &Host) -> Vec<u32> {
 
 /// Is the app running already?
 fn running() -> bool {
-    !app_pids(&Host::this()).is_empty()
+    running_on(&Host::this())
+}
+
+/// [`running`] on this Host (tests pass one over a scratch process table). An app that has quit doesn't count, even
+/// while it isn't reaped yet (#143: the Host leaves zombies out).
+fn running_on(host: &Host) -> bool {
+    !app_pids(host).is_empty()
 }
 
 /// Quit the app (SIGTERM: it shuts down as from its menu), wait up to 5 s for it to go, and start it again hidden.
@@ -137,4 +143,29 @@ async fn restart() -> std::io::Result<()> {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     spotify_app::start()
+}
+
+// (the process table in a folder is the Linux Host's; macOS asks libproc)
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    /// #143: the app the Daemon started has quit and is a zombie, still named `spotify` in the table: it isn't
+    /// running, so the Engine starts it again instead of waiting for it to go.
+    #[test]
+    fn a_spotify_app_that_quit_but_is_not_reaped_is_not_running() {
+        let root = tempfile::tempdir().unwrap();
+        let process = |pid: u32, state: &str| {
+            let dir = root.path().join(pid.to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("comm"), format!("{}\n", spotify_app::PROCESS)).unwrap();
+            std::fs::write(dir.join("stat"), format!("{pid} ({}) {state} 1 {pid} {pid} 0 -1 4194304 100 0 0 0 0 0 0 0 20 0 1 0 1000 0 0\n", spotify_app::PROCESS)).unwrap();
+        };
+        let host = Host { arch: "x86_64", page_size: 4096, proc_root: root.path().into(), bin_dirs: vec![] };
+        process(4242, "Z");
+        assert!(!running_on(&host) && app_pids(&host).is_empty(), "a zombie spotify counts as running");
+        process(4243, "S");
+        assert!(running_on(&host));
+        assert_eq!(app_pids(&host), vec![4243]);
+    }
 }

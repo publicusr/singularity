@@ -94,7 +94,8 @@ impl Host {
         os::computer(self).unwrap_or_else(|| "this computer".into())
     }
 
-    /// The processes running now, with the names they run under.
+    /// The processes running now, with the names they run under. A process that has quit is not listed, even while
+    /// its parent hasn't reaped it yet (a zombie, #143).
     pub fn processes(&self) -> Vec<Process> {
         os::processes(self)
     }
