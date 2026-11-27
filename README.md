@@ -198,7 +198,8 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 - After a rebuild, the next Client notices the running Daemon is older than the installed `singularityd` and replaces
   it by itself ("Updating singularityd…"; the music pauses for a moment).
 - After a restart of the Daemon, Home and your library show at once as they were last time (kept, owner-only, in
-  `~/.cache/singularity/home-and-library.json` and removed when you log out) while the fresh ones load behind.
+  `~/.cache/singularity/home-and-library.json`, only for the account they belong to, and removed when you log out)
+  while the fresh ones load behind.
   `grep timing: ~/.local/state/singularity/daemon.log` shows how long each start step took (login, account type,
   keyring, Home, each library page).
 - Terminals: kitty, Ghostty and WezTerm get the pixel tier (covers, the GPU black hole); every other terminal the cell
@@ -210,7 +211,7 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   `--fake-catalogue crates/client/tests/fixtures/home.json` serves a recorded (anonymised) Home feed (a build with
   `cargo build -p singularityd --features fake`). `SINGULARITY_FAKE_DELAY_MS=<ms>` makes the fake Catalogue's Home and
   library that late, like Spotify's after a fresh start; `SINGULARITY_HOME_CACHE=on` keeps the last ones on disk for a
-  fake Catalogue too (`off`: not even for Spotify's).
+  fake Catalogue too (`off`: not even for Spotify's). Both are for tests (`tools/pty/README.md`).
 - `tools/check.sh` runs what CI runs (tests, clippy, `cargo deny`); on a Mac, `tools/check-linux.sh` type-checks the Linux build, x86_64 and aarch64 (zig, cargo-zigbuild,
   openssl@3: see the script). The pty harness in `tools/pty/` screenshots the real binaries (its README).
 - `git config core.hooksPath tools/hooks` turns on the pre-commit hook, which runs clippy (`SKIP_CLIPPY_HOOK=1` skips it).

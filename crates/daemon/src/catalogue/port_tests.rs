@@ -95,7 +95,7 @@ fn big_library() -> HashMap<String, Vec<(&'static str, String)>> {
 }
 
 /// #81: a fresh Daemon fetched its library one request after another. The pages of a level and the folders of a
-/// depth now go out together (never more than `LIBRARY_PARALLEL`), and the sidebar comes out in the same order.
+/// depth now go out together (never more than `PARALLEL`), and the sidebar comes out in the same order.
 #[tokio::test]
 async fn the_library_pages_and_folders_are_asked_for_together_in_the_same_order() {
     let tree = Arc::new(big_library());
@@ -116,7 +116,7 @@ async fn the_library_pages_and_folders_are_asked_for_together_in_the_same_order(
     // 3 top-level pages, 2 + 1 + 1 for the folders, 1 for the folder inside one
     let asked = f.asked("libraryV3");
     assert_eq!(asked, 8);
-    assert!((2..=LIBRARY_PARALLEL).contains(&f.most_out()), "out at once: {}", f.most_out());
+    assert!((2..=PARALLEL).contains(&f.most_out()), "out at once: {}", f.most_out());
     // one at a time it takes 8 × latency; together, five rounds (top, its pages, the folders, a's second page, a's folder)
     eprintln!("the library: {} ms for {asked} requests of {} ms each (one at a time: {} ms)", took.as_millis(), latency.as_millis(), asked as u128 * latency.as_millis());
     assert!(took < latency * 7, "{took:?}");
@@ -168,7 +168,7 @@ async fn a_library_page_refused_for_the_rate_is_asked_once_more_after_a_pause() 
     let began = std::time::Instant::now();
     tx.send(CatCmd::Library).await.unwrap();
     let lib = next(&mut ev, |e| if let CatEvent::Library(l) = e { Some(l) } else { None }).await;
-    assert!(began.elapsed() >= RATE_BACKOFF, "it waited before asking again");
+    assert!(began.elapsed() >= BACKOFF, "it waited before asking again");
     assert_eq!(lib.items.len(), 5);
     assert_eq!(f.asked("libraryV3"), 3, "the top level twice, then its folder");
     // refused twice: the library fails, asked no more than that
@@ -177,6 +177,47 @@ async fn a_library_page_refused_for_the_rate_is_asked_once_more_after_a_pause() 
     let err = next(&mut ev, |e| if let CatEvent::Error(m) = e { Some(m) } else { None }).await;
     assert!(err.contains("Library unavailable"), "{err}");
     assert_eq!(f.asked("libraryV3"), 5);
+}
+
+/// Spotify's side failing (a 503) on Home: asked once more after a pause, like a 429; a request it got wrong (a 400)
+/// is not asked again.
+#[tokio::test]
+async fn home_failing_on_spotifys_side_is_asked_once_more_and_a_bad_request_is_not() {
+    let fails = Arc::new(std::sync::atomic::AtomicUsize::new(1));
+    let left = fails.clone();
+    let f = Fixtures::new(move |_, _| {
+        if left.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            left.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            return Err(librespot_core::Error::unavailable("Response status code: 503 Service Unavailable").into());
+        }
+        Ok(json!({}))
+    });
+    let (_dir, tx, mut ev) = catalogue(&f);
+    let began = std::time::Instant::now();
+    tx.send(CatCmd::Home).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Home(_)).then_some(())).await;
+    assert!(began.elapsed() >= BACKOFF);
+    assert_eq!(f.asked("home"), 2);
+    let f = Fixtures::new(|_, _| Err(librespot_core::Error::invalid_argument("Response status code: 400 Bad Request").into()));
+    let (_dir, tx, mut ev) = catalogue(&f);
+    tx.send(CatCmd::Home).await.unwrap();
+    let err = next(&mut ev, |e| if let CatEvent::Error(m) = e { Some(m) } else { None }).await;
+    assert!(err.contains("Home feed unavailable"), "{err}");
+    assert_eq!(f.asked("home"), 1);
+}
+
+/// Home and the library share one gate: never more than `PARALLEL` out between them, however big the library.
+#[tokio::test]
+async fn home_and_a_big_library_never_have_more_than_the_gate_out() {
+    // eight pages at the top: seven wanted at once after the first, beside Home
+    let tree = Arc::new(HashMap::from([("".to_string(), (0..400).map(|i| ("playlist", format!("p{i}"))).collect::<Vec<_>>())]));
+    let t = tree.clone();
+    let f = Fixtures::new(move |op, vars| Ok(if op == "libraryV3" { paged_library(&t, vars) } else { json!({}) }))
+        .slow(|op| Duration::from_millis(if op == "home" { 300 } else { 50 }));
+    let (_dir, tx, mut ev) = catalogue(&f);
+    tx.send(CatCmd::HomeAndLibrary).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Library(_)).then_some(())).await;
+    assert_eq!(f.most_out(), PARALLEL, "Home counts against the gate too");
 }
 
 fn fixture(name: &str) -> Value {

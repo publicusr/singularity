@@ -96,6 +96,8 @@ pub enum CatCmd {
 #[derive(Debug, Clone)]
 pub enum CatEvent {
     Status(CatalogueStatus),
+    /// the account the saved login is for, named before Spotify answers (#81: its last Home and library show then)
+    Account(String),
     Home(HomeFeed),
     Library(Library),
     Tracks(TrackPage),
@@ -376,6 +378,9 @@ async fn browse<Q: Fetch + Sync + Clone>(mut st: State<Q>, mut cmds: mpsc::Unbou
     let saved = saved_credentials(&st.dirs);
     timing("keyring read", began);
     if let Some(creds) = saved {
+        if let Some(name) = creds.username.clone() {
+            st.emit(CatEvent::Account(name)).await;
+        }
         if st.connect(Some(creds)).await {
             waiting.extend([CatCmd::Devices, CatCmd::HomeAndLibrary]);
         }
@@ -684,19 +689,20 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
 
     async fn library(&mut self) {
         self.session().await;
-        let walk = Walk::new(self.queries.clone(), self.username(), false);
+        let walk = Walk::new(Paced::new(self.queries.clone()), self.username(), false);
         send_library(&self.ev, walk.items().await).await;
     }
 
-    /// Home and the library side by side (#81), each sent as it's in, every step's time in the log.
+    /// Home and the library side by side (#81), each sent as it's in, every step's time in the log. They share one
+    /// gate: never more than `PARALLEL` requests out between them.
     async fn home_and_library(&mut self) {
         self.session().await;
-        let mut q = self.queries.clone();
-        let walk = Walk::new(self.queries.clone(), self.username(), true);
+        let paced = Paced::new(self.queries.clone());
+        let walk = Walk::new(paced.clone(), self.username(), true);
         let ev = &self.ev;
         let home = async move {
             let began = Instant::now();
-            let feed = home_feed(&mut q).await;
+            let feed = home_feed(&paced).await;
             timing("Home", began);
             send_home(ev, feed).await;
         };
@@ -1213,13 +1219,13 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
 
     async fn home(&mut self) {
         self.session().await;
-        let feed = home_feed(&mut self.queries).await;
+        let feed = home_feed(&Paced::new(self.queries.clone())).await;
         send_home(&self.ev, feed).await;
     }
 }
 
 /// The Home feed, asked through `q`.
-async fn home_feed<Q: Fetch>(q: &mut Q) -> anyhow::Result<HomeFeed> {
+async fn home_feed<Q: Fetch + Sync + Clone>(q: &Paced<Q>) -> anyhow::Result<HomeFeed> {
     let vars = json!({
         "includeHomeChapterVideoCards": false,
         "homeEndUserIntegration": "INTEGRATION_WEB_PLAYER",
@@ -1229,7 +1235,7 @@ async fn home_feed<Q: Fetch>(q: &mut Q) -> anyhow::Result<HomeFeed> {
         "sectionItemsLimit": 12,
         "includeEpisodeContentRatingsV2": false,
     });
-    Ok(parse_home(&q.query("home", vars).await?))
+    Ok(parse_home(&q.ask("home", vars, None).await?))
 }
 
 /// A Home feed for the Daemon, or what went wrong.
@@ -1255,18 +1261,25 @@ async fn send_library(ev: &mpsc::Sender<CatEvent>, items: anyhow::Result<Vec<sin
     };
 }
 
-/// How many library requests are out at once (#81). Spotify documents no limit for these private queries
-/// (`docs/research/2026-10-private-api-risk.md`: human-paced, back off, never retry in a loop); librespot's own guess
-/// is 300 calls per 30 s, and it waits out a 429 that says how long. A library of a few hundred items is a handful of
-/// requests.
-const LIBRARY_PARALLEL: usize = 4;
-/// A library request refused for the rate (a 429 that doesn't say how long, or librespot's own limiter) is asked once
-/// more after this and a jitter of up to as long again; then the library fails (never retried in a loop).
-const RATE_BACKOFF: Duration = Duration::from_secs(2);
+/// How many of Home's and the library's requests are out at once (#81), between them. Spotify documents no limit for
+/// these private queries (`docs/research/2026-10-private-api-risk.md`: human-paced, back off on 429/5xx, never retry
+/// in a loop); librespot's own guess is 300 calls per 30 s, and it waits out a 429 that says how long. A library of a
+/// few hundred items is a handful of requests.
+const PARALLEL: usize = 4;
+/// A request refused for the rate (a 429 that doesn't say how long, or librespot's own limiter) or failed on
+/// Spotify's side (5xx) is asked once more after this and a jitter of up to as long again; then it fails (never
+/// retried in a loop).
+const BACKOFF: Duration = Duration::from_secs(2);
 
-/// Was this query refused for asking too often?
-fn rate_limited(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<librespot_core::Error>().is_some_and(|e| e.kind == librespot_core::error::ErrorKind::ResourceExhausted)
+/// Is this a failure worth one more try after a pause: refused for the rate (429), or Spotify's side failing (5xx: 500
+/// and 503 come back as Unavailable, 502 as an unknown status; a 504 is already asked again by the adapter)?
+fn worth_another_try(e: &anyhow::Error) -> bool {
+    use librespot_core::error::ErrorKind;
+    e.downcast_ref::<librespot_core::Error>().is_some_and(|e| match e.kind {
+        ErrorKind::ResourceExhausted | ErrorKind::Unavailable => true,
+        ErrorKind::Unknown => e.to_string().contains("status code: 5"),
+        _ => false,
+    })
 }
 
 /// Up to `max` more: a cheap jitter, without a random number generator.
@@ -1284,21 +1297,58 @@ fn timing(step: &str, began: Instant) {
     tracing::info!("timing: {step} took {} ms ({at:.1} s after the Catalogue started)", began.elapsed().as_millis());
 }
 
+/// Queries through the port behind one gate (#81): at most `PARALLEL` out among all clones, and one more try after
+/// a pause for a 429 or a 5xx.
+#[derive(Clone)]
+struct Paced<Q> {
+    q: Q,
+    gate: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+impl<Q: Fetch + Sync + Clone> Paced<Q> {
+    fn new(q: Q) -> Paced<Q> {
+        Paced { q, gate: std::sync::Arc::new(tokio::sync::Semaphore::new(PARALLEL)) }
+    }
+
+    /// One query; `what` names it in a `timing:` line.
+    async fn ask(&self, op: &str, vars: Value, what: Option<&str>) -> anyhow::Result<Value> {
+        match self.once(op, vars.clone(), what).await {
+            Err(e) if worth_another_try(&e) => {
+                let wait = BACKOFF + jitter(BACKOFF);
+                tracing::warn!("`{op}`: {e}; asking once more in {} ms", wait.as_millis());
+                // the pause holds no place at the gate
+                tokio::time::sleep(wait).await;
+                self.once(op, vars, what).await
+            }
+            r => r,
+        }
+    }
+
+    async fn once(&self, op: &str, vars: Value, what: Option<&str>) -> anyhow::Result<Value> {
+        let _out = self.gate.acquire().await.expect("the gate is never closed");
+        let began = Instant::now();
+        let r = self.q.clone().query(op, vars).await;
+        if let Some(what) = what {
+            timing(what, began);
+        }
+        r
+    }
+}
+
 /// The library walk (#81): the top level, then every folder's contents spliced in right after it (one level deeper).
-/// Every page of a level after the first, and every folder of one depth, are asked at once (at most `LIBRARY_PARALLEL`
+/// Every page of a level after the first, and every folder of one depth, are asked at once (as many as the gate lets
 /// out); the items come out in the order a walk one request at a time gives.
 struct Walk<Q> {
-    q: Q,
+    q: Paced<Q>,
     me: String,
-    gate: tokio::sync::Semaphore,
     /// each request's time in the log (the walk after a login)
     log: bool,
     requests: std::sync::atomic::AtomicUsize,
 }
 
 impl<Q: Fetch + Sync + Clone> Walk<Q> {
-    fn new(q: Q, me: String, log: bool) -> Walk<Q> {
-        Walk { q, me, gate: tokio::sync::Semaphore::new(LIBRARY_PARALLEL), log, requests: Default::default() }
+    fn new(q: Paced<Q>, me: String, log: bool) -> Walk<Q> {
+        Walk { q, me, log, requests: Default::default() }
     }
 
     async fn items(&self) -> anyhow::Result<Vec<singularity_proto::LibraryItem>> {
@@ -1329,7 +1379,7 @@ impl<Q: Fetch + Sync + Clone> Walk<Q> {
         }
         let offsets = (1..).map(|k| k * library::LIBRARY_PAGE).take_while(|o| *o < total && *o < MAX_TRACKS);
         let name = &name;
-        let mut pages = futures_util::stream::iter(offsets).map(|o| self.page(folder, o, depth, name).map(move |p| (o, p))).buffered(LIBRARY_PARALLEL);
+        let mut pages = futures_util::stream::iter(offsets).map(|o| self.page(folder, o, depth, name).map(move |p| (o, p))).buffered(PARALLEL);
         while let Some((offset, page)) = pages.next().await {
             let page = page?;
             let n = page.items.len();
@@ -1342,27 +1392,10 @@ impl<Q: Fetch + Sync + Clone> Walk<Q> {
     }
 
     async fn page(&self, folder: Option<&str>, offset: u32, depth: u8, name: &str) -> anyhow::Result<library::LibraryPage> {
-        let v = match self.ask(folder, offset, name).await {
-            Err(e) if rate_limited(&e) => {
-                let wait = RATE_BACKOFF + jitter(RATE_BACKOFF);
-                tracing::warn!("the library: Spotify asks to slow down ({e}); asking again in {} ms", wait.as_millis());
-                tokio::time::sleep(wait).await;
-                self.ask(folder, offset, name).await
-            }
-            r => r,
-        }?;
-        Ok(library::parse_library(&v, depth, &self.me))
-    }
-
-    async fn ask(&self, folder: Option<&str>, offset: u32, name: &str) -> anyhow::Result<Value> {
-        let _out = self.gate.acquire().await.expect("the gate is never closed");
         self.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let began = Instant::now();
-        let r = self.q.clone().query("libraryV3", library::library_vars(offset, folder)).await;
-        if self.log {
-            timing(&format!("library page at {offset} of {name}"), began);
-        }
-        r
+        let what = self.log.then(|| format!("library page at {offset} of {name}"));
+        let v = self.q.ask("libraryV3", library::library_vars(offset, folder), what.as_deref()).await?;
+        Ok(library::parse_library(&v, depth, &self.me))
     }
 }
 

@@ -1,24 +1,47 @@
-//! The last Home and library, kept on disk (#81) so a fresh Daemon shows them to the first Client at once while the
-//! Catalogue logs in and fetches them again behind; the fresh ones replace them as they arrive.
+//! The last Home and library, kept on disk (#81) so a fresh Daemon shows them at once while the Catalogue logs in and
+//! fetches them again behind; the fresh ones replace them as they arrive.
 //!
 //! The file is the account's own data: it lives in the user's cache dir (App folders: `~/.cache/singularity`, or
-//! `$XDG_CACHE_HOME/singularity`), owner-only, and goes when the account logs out. A file this build can't read
-//! (an older shape, a broken write) is treated as none.
+//! `$XDG_CACHE_HOME/singularity`), owner-only, names the account it belongs to, and goes when the account logs out.
+//! The copy is shown only once the Catalogue names the account it's logging in as (from the saved login, before
+//! Spotify answers) and that is the file's account; another account's copy is deleted unseen. A file this build
+//! can't read (an older shape, a broken write) is treated as none. Writes happen on a thread of their own, in order.
 
 use singularity_proto::{HomeFeed, Library};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// What the file holds.
-#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Seen {
+    /// the Spotify username Home and the library belong to
+    pub account: Option<String>,
     pub home: Option<HomeFeed>,
     pub library: Option<Library>,
 }
 
-/// The file, and which of the Daemon's Home and library still came from it.
+/// What naming the account did.
+#[derive(Debug, Default, PartialEq)]
+pub struct Claimed {
+    /// the copy from disk, when it is this account's: show it
+    pub seen: Option<Seen>,
+    /// the account changed from another one: what the Daemon holds is that one's, and goes
+    pub switched: bool,
+}
+
+enum Job {
+    Write(Vec<u8>),
+    Remove,
+    Flush(std::sync::mpsc::Sender<()>),
+}
+
 pub struct LastSeen {
+    jobs: std::sync::mpsc::Sender<Job>,
     path: PathBuf,
-    from_disk: std::sync::Mutex<(bool, bool)>,
+    /// the copy read at start, until the account is named
+    waiting: Mutex<Option<Seen>>,
+    /// the account logged in (or logging in), once named
+    account: Mutex<Option<String>>,
 }
 
 impl LastSeen {
@@ -28,44 +51,90 @@ impl LastSeen {
     }
 
     pub fn at(path: PathBuf) -> LastSeen {
-        LastSeen { path, from_disk: Default::default() }
+        let (jobs, rx) = std::sync::mpsc::channel();
+        let file = path.clone();
+        std::thread::Builder::new()
+            .name("last-seen writer".into())
+            .spawn(move || {
+                for job in rx {
+                    match job {
+                        Job::Write(bytes) => {
+                            if let Err(e) = write_private(&file, &bytes) {
+                                tracing::warn!("couldn't keep the Home and library for the next start: {e}");
+                            }
+                        }
+                        Job::Remove => {
+                            let _ = std::fs::remove_file(&file);
+                        }
+                        Job::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            })
+            .expect("a thread for the last-seen file");
+        LastSeen { jobs, path, waiting: Default::default(), account: Default::default() }
     }
 
-    /// What the last Daemon saw; nothing when there's no file or it can't be read.
-    pub fn read(&self) -> Seen {
+    /// Read the last Daemon's copy, to be shown once its account is named ([`LastSeen::claim`]).
+    pub fn read(&self) {
         let began = std::time::Instant::now();
-        let seen: Seen = std::fs::read(&self.path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        *self.from_disk.lock().expect("from_disk lock") = (seen.home.is_some(), seen.library.is_some());
-        if seen.home.is_some() || seen.library.is_some() {
+        let seen: Option<Seen> = std::fs::read(&self.path).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        if seen.is_some() {
             tracing::info!("timing: the last Home and library read from disk in {} ms", began.elapsed().as_millis());
         }
-        seen
+        *self.waiting.lock().expect("waiting lock") = seen;
     }
 
-    /// Keep these as the last seen. A fresh Home or library no longer counts as from disk.
-    pub fn write(&self, seen: &Seen, fresh_home: bool) {
-        {
-            let mut from = self.from_disk.lock().expect("from_disk lock");
-            if fresh_home {
-                from.0 = false;
-            } else {
-                from.1 = false;
+    /// The Catalogue names the account it is logging in as, or has logged in as.
+    pub fn claim(&self, account: &str) -> Claimed {
+        let switched = {
+            let mut current = self.account.lock().expect("account lock");
+            let switched = current.as_deref().is_some_and(|a| a != account);
+            *current = Some(account.to_string());
+            switched
+        };
+        let seen = match self.waiting.lock().expect("waiting lock").take() {
+            Some(s) if s.account.as_deref() == Some(account) => Some(s),
+            Some(_) => {
+                // another account's: never shown
+                let _ = self.jobs.send(Job::Remove);
+                None
             }
-        }
-        if let Err(e) = write_private(&self.path, &serde_json::to_vec(seen).unwrap_or_default()) {
-            tracing::warn!("couldn't keep the Home and library for the next start: {e}");
+            None => None,
+        };
+        Claimed { seen, switched }
+    }
+
+    /// Keep the Daemon's Home and library as the current account's. Nothing is written before an account is named.
+    pub fn write(&self, home: Option<HomeFeed>, library: Option<Library>) {
+        let Some(account) = self.account.lock().expect("account lock").clone() else { return };
+        match serde_json::to_vec(&Seen { account: Some(account), home, library }) {
+            Ok(bytes) => {
+                let _ = self.jobs.send(Job::Write(bytes));
+            }
+            Err(e) => tracing::warn!("couldn't keep the Home and library for the next start: {e}"),
         }
     }
 
-    /// Logged out: the file goes. Returns which of Home and the library the Daemon holds are still the disk copies
-    /// (they belong to the account that left, and go too).
-    pub fn forget(&self) -> (bool, bool) {
-        let _ = std::fs::remove_file(&self.path);
-        std::mem::take(&mut *self.from_disk.lock().expect("from_disk lock"))
+    /// Logged out: the file goes, and nothing is written until an account is named again.
+    pub fn forget(&self) {
+        *self.waiting.lock().expect("waiting lock") = None;
+        *self.account.lock().expect("account lock") = None;
+        let _ = self.jobs.send(Job::Remove);
+    }
+
+    /// Wait until every write and removal asked for so far is done (tests).
+    pub fn flush(&self) {
+        let (done, wait) = std::sync::mpsc::channel();
+        if self.jobs.send(Job::Flush(done)).is_ok() {
+            let _ = wait.recv();
+        }
     }
 }
 
-/// Write `bytes` to `path` owner-only, all at once (a crash mid-write leaves the old file). Not synced: it is a cache.
+/// Write `bytes` to `path` owner-only, all at once: a temp file, synced, then renamed over it (a crash mid-write
+/// leaves the old file).
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -74,6 +143,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("json.part");
     let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&tmp)?;
     f.write_all(bytes)?;
+    f.sync_all()?;
     std::fs::rename(&tmp, path)
 }
 
@@ -82,25 +152,69 @@ mod tests {
     use super::*;
     use singularity_proto::{LibraryItem, Shelf};
 
-    fn seen() -> Seen {
-        let item = LibraryItem { uri: "spotify:playlist:p".into(), name: "Night Drive".into(), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: true, authors: vec![] };
-        Seen { home: Some(HomeFeed { fetched_unix_ms: 1, shelves: vec![Shelf { title: "Made for you".into(), kind: "shelf".into(), cards: vec![] }] }), library: Some(Library { items: vec![item] }) }
+    fn home(t: &str) -> HomeFeed {
+        HomeFeed { fetched_unix_ms: 1, shelves: vec![Shelf { title: t.into(), kind: "shelf".into(), cards: vec![] }] }
+    }
+
+    fn library(n: &str) -> Library {
+        Library { items: vec![LibraryItem { uri: "spotify:playlist:p".into(), name: n.into(), subtitle: String::new(), kind: "playlist".into(), image_url: None, depth: 0, own: true, authors: vec![] }] }
+    }
+
+    fn written(path: &Path) -> Option<Seen> {
+        std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok())
     }
 
     #[test]
-    fn what_is_written_is_read_back_owner_only_and_goes_on_logout() {
+    fn what_is_written_names_its_account_is_owner_only_and_shown_to_that_account() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cache/home-and-library.json");
         let l = LastSeen::at(path.clone());
-        assert!(l.read().home.is_none(), "no file: nothing");
-        l.write(&seen(), true);
+        l.write(Some(home("Mine")), None);
+        l.flush();
+        assert!(!path.exists(), "nothing written before an account is named");
+        l.claim("alice");
+        l.write(Some(home("Mine")), Some(library("Mine")));
+        l.flush();
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
-        let back = LastSeen::at(path.clone()).read();
-        assert_eq!(back.home, seen().home);
-        assert_eq!(back.library, seen().library);
-        l.forget();
+        assert_eq!(written(&path).unwrap().account.as_deref(), Some("alice"));
+        let next = LastSeen::at(path.clone());
+        next.read();
+        let c = next.claim("alice");
+        assert_eq!(c.seen.unwrap().home, Some(home("Mine")));
+        assert!(!c.switched);
+        assert_eq!(next.claim("alice"), Claimed::default(), "shown once");
+    }
+
+    #[test]
+    fn another_accounts_copy_is_never_shown_and_goes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.json");
+        let a = LastSeen::at(path.clone());
+        a.claim("alice");
+        a.write(Some(home("Alice's")), Some(library("Alice's")));
+        a.flush();
+        let b = LastSeen::at(path.clone());
+        b.read();
+        assert_eq!(b.claim("bob").seen, None);
+        b.flush();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_logout_removes_the_file_and_stops_writes_until_the_next_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.json");
+        let l = LastSeen::at(path.clone());
+        l.claim("alice");
+        l.write(Some(home("Alice's")), None);
+        l.forget();
+        l.write(Some(home("late")), None);
+        l.flush();
+        assert!(!path.exists());
+        assert!(!l.claim("bob").switched, "logged out in between: nothing of alice's is held");
+        l.claim("bob");
+        assert!(l.claim("carol").switched);
     }
 
     #[test]
@@ -108,19 +222,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("home-and-library.json");
         std::fs::write(&path, b"{\"home\": 3").unwrap();
-        let s = LastSeen::at(path).read();
-        assert!(s.home.is_none() && s.library.is_none());
-    }
-
-    #[test]
-    fn only_what_is_still_from_disk_goes_with_a_logout() {
-        let dir = tempfile::tempdir().unwrap();
-        let l = LastSeen::at(dir.path().join("f.json"));
-        l.write(&seen(), true);
-        let l = LastSeen::at(dir.path().join("f.json"));
+        let l = LastSeen::at(path);
         l.read();
-        // a fresh Home came in; the library is still the one from disk
-        l.write(&seen(), true);
-        assert_eq!(l.forget(), (false, true));
+        assert_eq!(l.claim("alice").seen, None);
     }
 }
