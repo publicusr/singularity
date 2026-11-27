@@ -104,10 +104,12 @@ impl Fake {
     }
 }
 
+/// A script at `path`, written by a child process (#138). Written by this one, a process another test starts in that
+/// moment would hold a copy of it open for writing until that process runs its own program, and running a file open
+/// for writing fails ("Text file busy").
 fn executable(path: &Path, body: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, body).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let wrote = std::process::Command::new("/bin/sh").args(["-c", "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"", "sh", body]).arg(path).status().unwrap();
+    assert!(wrote.success());
 }
 
 /// Released when dropped: the announcement is withdrawn.

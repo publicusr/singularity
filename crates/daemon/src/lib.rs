@@ -10,6 +10,7 @@ pub mod connect;
 pub mod engine;
 pub mod health;
 pub mod jam;
+pub mod last_seen;
 pub mod library;
 pub mod lyrics;
 pub mod os_media;
@@ -90,6 +91,8 @@ pub struct Hub {
     pub demo_clients: std::sync::atomic::AtomicUsize,
     /// background tasks that stopped and haven't run for a while: the health view names them (A1)
     pub stopped_tasks: Mutex<BTreeSet<String>>,
+    /// the last Home and library on disk (#81); None: off (tests, fake Daemons)
+    pub last_seen: Option<last_seen::LastSeen>,
 }
 
 /// How long a background task has to run before it counts as back (its health row goes).
@@ -248,6 +251,8 @@ pub struct Extras {
     pub store: Option<PathBuf>,
     /// the desktop-notification flag a background task keeps following `config.toml` (`notifications.track_change`)
     pub notify: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// where the last Home and library are kept for the next start (#81)
+    pub last_seen: Option<PathBuf>,
 }
 
 /// Run the Daemon on `listener` with `engine` until the process ends.
@@ -279,6 +284,12 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
         Some((tx, rx)) => (Some(tx), Some(rx)),
         None => (None, None),
     };
+    // without the Catalogue nothing would replace them
+    let last_seen = extras.last_seen.filter(|_| cat_rx.is_some()).map(last_seen::LastSeen::at);
+    // shown once the Catalogue names the account (`claim_last_seen`)
+    if let Some(l) = &last_seen {
+        l.read();
+    }
     let hub = Arc::new(Hub {
         started_unix_ms: proto::now_ms(),
         engine_kind: engine.kind(),
@@ -303,6 +314,7 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
         demo_store,
         demo_clients: Default::default(),
         stopped_tasks: Default::default(),
+        last_seen,
     });
     if hub.store.is_some() {
         let h = hub.clone();
@@ -701,17 +713,32 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                 if matches!(s, proto::CatalogueStatus::LoggedOut | proto::CatalogueStatus::Unavailable { .. }) {
                     hub.feed(|now| now.gone()).await;
                 }
+                // Home and the library were the account's that left (#81), on disk or not: a Client that connects
+                // now isn't shown them, and they aren't written back
+                if matches!(s, proto::CatalogueStatus::LoggedOut) {
+                    *hub.home.lock().await = None;
+                    *hub.library.lock().await = None;
+                    if let Some(l) = &hub.last_seen {
+                        l.forget();
+                    }
+                }
+                if let proto::CatalogueStatus::Ready { username, .. } = &s {
+                    claim_last_seen(&hub, username).await;
+                }
                 *hub.catalogue_status.lock().await = Some(s.clone());
                 let _ = hub.events.send(Event::Catalogue(s));
             }
             CatEvent::Home(h) => {
                 *hub.home.lock().await = Some(h.clone());
                 let _ = hub.events.send(Event::Home(h));
+                keep_last_seen(&hub).await;
             }
             CatEvent::Library(l) => {
                 *hub.library.lock().await = Some(l.clone());
                 let _ = hub.events.send(Event::Library(l));
+                keep_last_seen(&hub).await;
             }
+            CatEvent::Account(name) => claim_last_seen(&hub, &name).await,
             CatEvent::Search(r) => {
                 let _ = hub.events.send(Event::Search(r));
             }
@@ -744,6 +771,39 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
             CatEvent::DescribeFailed(uris) => hub.feed(|now| now.describe_failed(uris)).await,
             // a change the Clients showed early didn't happen: the last real state puts it back
             CatEvent::Resync => hub.feed(|now| now.resync()).await,
+        }
+    }
+}
+
+/// Keep the Hub's Home and library for the next start, as the named account's (#81). A logout empties both, so what
+/// the Hub holds is always the current account's.
+async fn keep_last_seen(hub: &Hub) {
+    let Some(l) = &hub.last_seen else { return };
+    l.write(hub.home.lock().await.clone(), hub.library.lock().await.clone());
+}
+
+/// The Catalogue named its account (#81): the last copy on disk is shown when it is that account's (and nothing fresher
+/// is in yet); another account's Home and library, on disk or held, go.
+async fn claim_last_seen(hub: &Hub, account: &str) {
+    let Some(l) = &hub.last_seen else { return };
+    let claimed = l.claim(account);
+    if claimed.switched {
+        *hub.home.lock().await = None;
+        *hub.library.lock().await = None;
+    }
+    let Some(seen) = claimed.seen else { return };
+    if let Some(h) = seen.home {
+        let mut home = hub.home.lock().await;
+        if home.is_none() {
+            *home = Some(h.clone());
+            let _ = hub.events.send(Event::Home(h));
+        }
+    }
+    if let Some(lib) = seen.library {
+        let mut library = hub.library.lock().await;
+        if library.is_none() {
+            *library = Some(lib.clone());
+            let _ = hub.events.send(Event::Library(lib));
         }
     }
 }
@@ -1089,6 +1149,7 @@ mod tests {
             demo_store: None,
             demo_clients: Default::default(),
             stopped_tasks: Default::default(),
+            last_seen: None,
         })
     }
 

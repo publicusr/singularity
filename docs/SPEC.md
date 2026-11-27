@@ -162,6 +162,11 @@ audio, and looks spectacular.
     automatically on HTTP 412, so rotating hashes never need a release.
   - *OfficialCatalogue*: Web API fallback for library/search when the private source is broken.
   - Rules: metadata only, no crawling, cache with TTLs, back off on 429/5xx, never retry in a loop.
+  - Start (#81): the last Home and library are kept in the user's cache dir (`home-and-library.json`, owner-only,
+    naming its account, removed on logout) and shown to Clients as soon as the saved login names that account, before
+    Spotify answers; another account's copy is deleted unseen. Home and the library are then fetched side by side,
+    the library's pages and folders together, at most 4 requests out between them; a 429 or 5xx is asked once more
+    after a pause. Each step's time is logged (`timing:` lines in `daemon.log`).
 - **ConnectRemote** (D12): device list, transfer, remote control of any device, per-device quality (D17, to verify).
 - **AudioTap** (D16): captures only the Engine's stream (PipeWire on Linux; a Core Audio process tap on the Spotify app
   on macOS; librespot's and the Soloist VM's samples in-process), runs FFT,
