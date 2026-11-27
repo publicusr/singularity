@@ -291,7 +291,7 @@ impl App {
                 *title = name.into();
             }
         }
-        if let Some(mut l) = self.open.edit(uri, self.shows_list(uri)) {
+        if let Some(mut l) = self.open.edit(uri) {
             l.header.get_or_insert_with(Default::default).description = description.into();
         }
     }
@@ -434,7 +434,7 @@ impl App {
         let Some(uid) = row.uid.clone() else {
             return self.say("Spotify didn't say which row this is; open the playlist again");
         };
-        let Some(taken) = self.open.edit(&playlist, self.shows_list(&playlist)).and_then(|mut l| l.take_uid(&uid)) else { return };
+        let Some(taken) = self.open.edit(&playlist).and_then(|mut l| l.take_uid(&uid)) else { return };
         // (the selection settles on the row that took its place)
         self.playlists.removing.insert((playlist.clone(), uid.clone()), taken);
         self.send(Command::RemoveFromPlaylist { playlist, uids: vec![uid] });
@@ -447,12 +447,12 @@ impl App {
             match (self.playlists.removing.remove(&(playlist.to_string(), uid.clone())), ok) {
                 (Some((at, row)), false) => {
                     self.say(format!("Spotify didn't remove {}; it's back", row.name));
-                    if let Some(mut l) = self.open.edit(playlist, self.shows_list(playlist)) {
+                    if let Some(mut l) = self.open.edit(playlist) {
                         l.put_back(at, row);
                     }
                 }
                 (None, true) => {
-                    if let Some(mut l) = self.open.edit(playlist, self.shows_list(playlist)) {
+                    if let Some(mut l) = self.open.edit(playlist) {
                         l.take_uid(uid);
                     }
                 }
@@ -536,7 +536,7 @@ impl App {
     fn move_row(&mut self, from: usize, to: usize) {
         let Some((playlist, top)) = self.list_view().map(|v| (v.uri.clone(), v.top)) else { return };
         let moved = {
-            let Some(mut list) = self.open.edit(&playlist, true) else { return };
+            let Some(mut list) = self.open.edit(&playlist) else { return };
             list.rows().get(from).and_then(|r| r.uid.clone()).map(|uid| {
                 list.move_row(from, to);
                 let before = list.rows().get(to + 1).and_then(|r| r.uid.clone());
@@ -571,7 +571,7 @@ impl App {
             };
             match (mine, ok) {
                 (Some(was), false) => {
-                    if let Some(mut l) = self.open.edit(playlist, self.shows_list(playlist))
+                    if let Some(mut l) = self.open.edit(playlist)
                         && let Some(i) = l.rows().iter().position(|r| r.uid.as_deref() == Some(uid.as_str()))
                     {
                         l.move_row(i, was);
