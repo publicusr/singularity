@@ -35,21 +35,78 @@ async fn run(cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>) {
     run_at(proto::socket_path(), cmd_rx, ev_tx).await
 }
 
+/// How long the Client leaves a replaced Daemon's restart to systemd or launchd (#145). Both start theirs again 2 s
+/// after it quits (`RestartSec=2`, `ThrottleInterval` 2); a Daemon the Client started itself in that time took the
+/// socket, the service manager's copy found it taken and quit cleanly, and the unit stayed inactive.
+const SERVICE_GRACE: Duration = Duration::from_secs(5);
+
 /// The connection to the Daemon on `path`.
-async fn run_at(path: std::path::PathBuf, mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>) {
-    let mut started_daemon = false;
+async fn run_at(path: std::path::PathBuf, cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>) {
+    let launch = Launch { start: Box::new(start_daemon), outdated: Box::new(|started| daemon_binary().is_some_and(|b| built_after(&b, started))), grace: SERVICE_GRACE };
+    run_with(path, cmd_rx, ev_tx, launch).await
+}
+
+/// How the connection starts a Daemon and tells an outdated one (tests stand in for both).
+struct Launch {
+    /// start a Daemon detached
+    start: Box<dyn Fn() -> Result<(), String> + Send>,
+    /// is a Daemon started at these Unix ms older than the `singularityd` on disk?
+    outdated: Box<dyn Fn(u64) -> bool + Send>,
+    /// how long after replacing a Daemon to wait for a service manager to start one ([`SERVICE_GRACE`])
+    grace: Duration,
+}
+
+/// When the Client may start a Daemon itself: once per lost connection, and after replacing one only once the
+/// service manager had its chance ([`SERVICE_GRACE`]).
+#[derive(Debug, Default)]
+struct Starts {
+    started: bool,
+    /// a Daemon was replaced: until then, one that appears on the socket is the service manager's
+    wait_until: Option<tokio::time::Instant>,
+}
+
+impl Starts {
+    /// Should a Daemon be started now (nothing answers on the socket)? True once, until [`Self::again`].
+    fn due(&mut self, now: tokio::time::Instant) -> bool {
+        if self.started || self.wait_until.is_some_and(|t| now < t) {
+            return false;
+        }
+        self.started = true;
+        self.wait_until = None;
+        true
+    }
+
+    /// The connection was lost: the next failed connect may start one.
+    fn again(&mut self) {
+        self.started = false;
+    }
+
+    /// A Daemon was asked to make way at `now`: leave its restart to a service manager for `grace`.
+    fn replaced(&mut self, now: tokio::time::Instant, grace: Duration) {
+        self.started = false;
+        self.wait_until = Some(now + grace);
+    }
+
+    /// Connected: whoever started it, nothing is waited for any more.
+    fn connected(&mut self) {
+        self.wait_until = None;
+    }
+}
+
+/// [`run_at`] with its way of starting a Daemon.
+async fn run_with(path: std::path::PathBuf, mut cmd_rx: mpsc::Receiver<Command>, ev_tx: mpsc::Sender<ConnEvent>, launch: Launch) {
+    let mut starts = Starts::default();
     let mut replaced = false;
     loop {
         let _ = ev_tx.send(ConnEvent::Connecting).await;
         let stream = match UnixStream::connect(&path).await {
             Ok(s) => s,
             Err(_) => {
-                if !started_daemon {
-                    started_daemon = true;
-                    if let Err(message) = start_daemon() {
-                        // say it once, where the UI shows Daemon errors (retried on the next disconnect)
-                        let _ = ev_tx.send(ConnEvent::Msg(DaemonMsg::Event(singularity_proto::Event::Error { message }))).await;
-                    }
+                if starts.due(tokio::time::Instant::now())
+                    && let Err(message) = (launch.start)()
+                {
+                    // say it once, where the UI shows Daemon errors (retried on the next disconnect)
+                    let _ = ev_tx.send(ConnEvent::Msg(DaemonMsg::Event(singularity_proto::Event::Error { message }))).await;
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 continue;
@@ -72,22 +129,24 @@ async fn run_at(path: std::path::PathBuf, mut cmd_rx: mpsc::Receiver<Command>, e
         match proto::read_msg::<_, DaemonMsg>(&mut rd).await {
             Ok(Some(DaemonMsg::Welcome { daemon_version, started_unix_ms, engine, soloist_in_vm, demo, account, .. })) => {
                 // after a rebuild the old Daemon keeps running; ask it to make way for the new binary (once)
-                if !replaced && daemon_binary().is_some_and(|b| built_after(&b, started_unix_ms)) {
+                if !replaced && (launch.outdated)(started_unix_ms) {
                     replaced = true;
                     let _ = ev_tx.send(ConnEvent::Updating).await;
                     let _ = proto::write_msg(&mut wr, &ClientMsg::Command(Command::Shutdown)).await;
                     drop((rd, wr));
-                    // wait for the old one to let go of the socket, then start the new one; a Daemon too old to know
-                    // `Shutdown` is stopped (only the process on the other end of the socket, and only a singularityd)
+                    // wait for the old one to let go of the socket; a Daemon too old to know `Shutdown` is stopped
+                    // (only the process on the other end of the socket, and only a singularityd)
                     if !let_go(&path, 50).await
                         && let Some(pid) = peer
                     {
                         stop_daemon(pid).await;
                         let_go(&path, 30).await;
                     }
-                    started_daemon = false;
+                    // then the new one: systemd's or launchd's if they run the Daemon, else started here
+                    starts.replaced(tokio::time::Instant::now(), launch.grace);
                     continue;
                 }
+                starts.connected();
                 let _ = ev_tx.send(ConnEvent::Connected { daemon_version, engine, soloist_in_vm, demo, account }).await;
             }
             Ok(Some(DaemonMsg::Incompatible { message, .. })) => {
@@ -105,7 +164,7 @@ async fn run_at(path: std::path::PathBuf, mut cmd_rx: mpsc::Receiver<Command>, e
             return;
         }
         let _ = ev_tx.send(ConnEvent::Disconnected).await;
-        started_daemon = false;
+        starts.again();
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
@@ -361,5 +420,106 @@ mod tests {
         if std::env::var_os("SINGULARITY_STAND_IN").is_some() {
             std::thread::sleep(Duration::from_secs(60));
         }
+    }
+
+    /// A stand-in Daemon on `path` that started at `started_unix_ms`: it welcomes one Client, and on `Shutdown` lets
+    /// go of the socket (as a replaced Daemon does) and says when on `gone`.
+    async fn stand_in_daemon(path: std::path::PathBuf, started_unix_ms: u64, gone: Option<tokio::sync::oneshot::Sender<tokio::time::Instant>>) {
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let (s, _) = listener.accept().await.unwrap();
+        let (mut rd, mut wr) = s.into_split();
+        let _hello = proto::read_msg::<_, ClientMsg>(&mut rd).await;
+        let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: "stand-in".into(), started_unix_ms, engine: proto::EngineKind::default(), soloist_in_vm: false, demo: false, account: String::new() };
+        proto::write_msg(&mut wr, &welcome).await.unwrap();
+        while let Ok(Some(m)) = proto::read_msg::<_, ClientMsg>(&mut rd).await {
+            if matches!(m, ClientMsg::Command(Command::Shutdown)) {
+                drop(listener);
+                let _ = std::fs::remove_file(&path);
+                if let Some(g) = gone {
+                    let _ = g.send(tokio::time::Instant::now());
+                }
+                return;
+            }
+        }
+    }
+
+    /// A [`Launch`] whose Daemon started at 0 is outdated, and whose starts are counted (and timed) instead of made.
+    fn counted_launch(grace: Duration) -> (Launch, std::sync::Arc<std::sync::Mutex<Vec<tokio::time::Instant>>>) {
+        let starts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s = starts.clone();
+        let launch = Launch {
+            start: Box::new(move || {
+                s.lock().unwrap().push(tokio::time::Instant::now());
+                Ok(())
+            }),
+            outdated: Box::new(|started| started == 0),
+            grace,
+        };
+        (launch, starts)
+    }
+
+    /// #145: after replacing a Daemon, the Client leaves its restart to systemd or launchd. One that appears on the
+    /// socket within the wait (theirs, 2 s after the old one quit) is connected to, and the Client starts none of
+    /// its own: before, it started one within 0.3 s, and the service manager's copy found the socket taken and quit.
+    #[tokio::test]
+    async fn after_a_replace_the_service_managers_daemon_is_waited_for() {
+        let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let path = dir.path().join("daemon.sock");
+        let (gone_tx, gone_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(stand_in_daemon(path.clone(), 0, Some(gone_tx)));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let (launch, starts) = counted_launch(SERVICE_GRACE);
+        let (_cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel(256);
+        tokio::spawn(run_with(path.clone(), cmd_rx, ev_tx, launch));
+        tokio::time::timeout(Duration::from_secs(10), gone_rx).await.expect("the outdated Daemon is asked to make way").unwrap();
+        // the service manager's restart
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::spawn(stand_in_daemon(path, 1, None));
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), ev_rx.recv()).await.expect("connected to the new Daemon").expect("the connection runs") {
+                ConnEvent::Connected { .. } => break,
+                _ => continue,
+            }
+        }
+        assert!(starts.lock().unwrap().is_empty(), "the Client started a Daemon of its own while the service manager's was coming");
+    }
+
+    /// #145: with no service manager, the Client starts the new Daemon itself, once, when the wait is over.
+    #[tokio::test]
+    async fn after_a_replace_with_no_service_manager_the_client_starts_the_daemon_after_the_wait() {
+        let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let path = dir.path().join("daemon.sock");
+        let (gone_tx, gone_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(stand_in_daemon(path.clone(), 0, Some(gone_tx)));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let grace = Duration::from_millis(1500);
+        let (launch, starts) = counted_launch(grace);
+        let (_cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel(256);
+        tokio::spawn(run_with(path, cmd_rx, ev_tx, launch));
+        tokio::spawn(async move { while ev_rx.recv().await.is_some() {} });
+        let gone = tokio::time::timeout(Duration::from_secs(10), gone_rx).await.expect("the outdated Daemon is asked to make way").unwrap();
+        tokio::time::sleep(grace + Duration::from_secs(1)).await;
+        let starts = starts.lock().unwrap().clone();
+        assert_eq!(starts.len(), 1, "one Daemon started, once the wait is over");
+        assert!(starts[0] >= gone + grace, "started {:?} after the old one went, before the {grace:?} wait was over", starts[0] - gone);
+    }
+
+    #[test]
+    fn a_daemon_is_started_once_per_lost_connection_and_not_during_the_wait() {
+        let t = tokio::time::Instant::now();
+        let mut s = Starts::default();
+        assert!(s.due(t) && !s.due(t), "once");
+        s.again();
+        assert!(s.due(t));
+        s.replaced(t, Duration::from_secs(5));
+        assert!(!s.due(t + Duration::from_secs(1)) && !s.due(t + Duration::from_millis(4999)), "the service manager's turn");
+        assert!(s.due(t + Duration::from_secs(5)) && !s.due(t + Duration::from_secs(6)));
+        // a Daemon answered during the wait: a later lost connection starts one at once again
+        s.replaced(t, Duration::from_secs(5));
+        s.connected();
+        s.again();
+        assert!(s.due(t + Duration::from_secs(1)));
     }
 }
