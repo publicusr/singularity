@@ -134,6 +134,9 @@ async fn a_new_socket_directory_is_owner_only_from_the_start() {
     }
 }
 
+/// The tests that set XDG_DOWNLOAD_DIR (the Daemon exports there) take turns.
+static DOWNLOADS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn connect(path: &std::path::Path) -> UnixStream {
     let mut s = UnixStream::connect(path).await.unwrap();
     proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into(), demo: false }).await.unwrap();
@@ -495,7 +498,8 @@ async fn the_listening_log_sums_up_exports_and_deletes_through_the_protocol() {
             s.record(&Play { started_ms: now - back * 86_400_000, item, context_uri: None, played_ms: 120_000, device: "here".into() }).unwrap();
         }
     }
-    // the export lands in the Downloads folder (only this test reads XDG_DOWNLOAD_DIR)
+    // the export lands in the Downloads folder (XDG_DOWNLOAD_DIR: the tests that export take turns)
+    let _turn = DOWNLOADS.lock().await;
     let downloads = dir.path().join("dl");
     unsafe { std::env::set_var("XDG_DOWNLOAD_DIR", &downloads) };
     let path = dir.path().join("ld.sock");
@@ -716,7 +720,8 @@ async fn a_demo_client_reads_and_deletes_only_the_demo_listening_log() {
     let mut normal = connect(&path).await;
     let mut demo = UnixStream::connect(&path).await.unwrap();
     proto::write_msg(&mut demo, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into(), demo: true }).await.unwrap();
-    let _welcome: DaemonMsg = proto::read_msg(&mut demo).await.unwrap().unwrap();
+    let welcome: DaemonMsg = proto::read_msg(&mut demo).await.unwrap().unwrap();
+    assert!(matches!(welcome, DaemonMsg::Welcome { demo: true, .. }), "the Daemon confirms demo mode: {welcome:?}");
     async fn next(s: &mut UnixStream, want: fn(&Event) -> bool) -> Event {
         loop {
             if let DaemonMsg::Event(e) = proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap()
@@ -736,6 +741,16 @@ async fn a_demo_client_reads_and_deletes_only_the_demo_listening_log() {
     proto::write_msg(&mut normal, &ClientMsg::Command(Command::GetListening)).await.unwrap();
     let Event::Listening(s) = next(&mut normal, listening).await else { unreachable!() };
     assert_eq!((s.plays, s.top_artist.as_deref()), (3, Some("Real Artist")), "the other Client: the real log");
+
+    // export: the demo log, without the real account's library backup
+    let _turn = DOWNLOADS.lock().await;
+    let downloads = dir.path().join("dl-demo");
+    unsafe { std::env::set_var("XDG_DOWNLOAD_DIR", &downloads) };
+    proto::write_msg(&mut demo, &ClientMsg::Command(Command::ExportLocalData)).await.unwrap();
+    let Event::Notice { .. } = next(&mut demo, |e| matches!(e, Event::Notice { .. } | Event::Error { .. })).await else { panic!("export failed") };
+    let file = std::fs::read_dir(&downloads).unwrap().next().unwrap().unwrap().path();
+    let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!((doc["plays"].as_array().unwrap().len(), doc["library_backup"].is_null()), (1, true));
 
     proto::write_msg(&mut demo, &ClientMsg::Command(Command::DeleteLocalData)).await.unwrap();
     let Event::Notice { message } = next(&mut demo, |e| matches!(e, Event::Notice { .. } | Event::Error { .. })).await else { panic!("delete failed") };

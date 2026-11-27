@@ -25,6 +25,10 @@ pub const LINK_HIDDEN: &str = "Invite link hidden in demo mode";
 /// The owner's own name, and other people's.
 pub const YOU: &str = "you";
 pub const FRIEND: &str = "a friend";
+/// A Jam's host that isn't one of the account's devices.
+pub const FRIENDS_DEVICE: &str = "A friend's device";
+/// What a demo Client says when its Daemon didn't confirm demo mode (an older one): no stats, no export or delete.
+pub const TOO_OLD: &str = "This background player is too old for demo mode; restart it";
 /// A context that isn't in the Demo set ("Playing from a playlist").
 pub const SOME_PLAYLIST: &str = "a playlist";
 
@@ -94,12 +98,26 @@ pub fn add_to_file(path: &Path, uri: &str) -> anyhow::Result<bool> {
     Ok(true)
 }
 
-/// Replaces what it has learned is personal, in any text: whole words, ignoring ASCII case (a username in a URL, a
-/// display name in a Shelf title, a device name in an error); a home folder wherever it starts a path.
+/// Replaces what it has learned is personal, each kind where it can be told from ordinary words: the account's
+/// username and display name (and Jam guests) as whole words anywhere, ignoring ASCII case; device and computer names
+/// only as a whole text or in quotes (a device called "Speaker" mustn't eat "Speaker & the Bunnymen"); `$USER` only as
+/// a path's folder, `$HOME` where it starts a path.
 #[derive(Debug, Clone, Default)]
 pub struct Redactor {
-    /// (secret, stand-in, a path prefix rather than a word), longest first
-    secrets: Vec<(String, String, bool)>,
+    /// (secret, stand-in, kind), longest first
+    secrets: Vec<(String, String, Kind)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Kind {
+    /// a whole word anywhere
+    Word,
+    /// the whole text, or in quotes
+    Whole,
+    /// a path's folder: after a `/`
+    Folder,
+    /// the start of a path
+    Prefix,
 }
 
 impl Redactor {
@@ -107,47 +125,54 @@ impl Redactor {
     pub fn from_env(home: Option<String>, user: Option<String>, computer: Option<String>) -> Redactor {
         let mut r = Redactor::default();
         if let Some(h) = home.filter(|h| h.len() > 1) {
-            r.learn_path(h.trim_end_matches('/'), "~");
+            r.add(h.trim_end_matches('/'), "~", Kind::Prefix);
         }
-        for (s, with) in [(user, "user"), (computer, "computer")] {
-            if let Some(s) = s {
-                r.learn(&s, with);
-            }
+        if let Some(u) = user {
+            r.add(u.trim(), "user", Kind::Folder);
+        }
+        if let Some(c) = computer {
+            r.learn_device(&c, "computer");
         }
         r
     }
 
-    /// `secret` (a name) shows as `with` from now on. Names shorter than two characters are left alone (they'd eat
-    /// ordinary words), as is a name that is its own stand-in.
+    /// `secret` (the username, the display name, a guest's name) shows as `with` from now on, wherever it is a whole
+    /// word. Names shorter than two characters are left alone (they'd eat ordinary words), as is a name that is its
+    /// own stand-in.
     pub fn learn(&mut self, secret: &str, with: &str) {
-        self.add(secret.trim(), with, false);
+        self.add(secret.trim(), with, Kind::Word);
     }
 
-    fn learn_path(&mut self, prefix: &str, with: &str) {
-        self.add(prefix, with, true);
+    /// A device's or the computer's name: replaced where it is the whole text, or quoted.
+    pub fn learn_device(&mut self, secret: &str, with: &str) {
+        self.add(secret.trim(), with, Kind::Whole);
     }
 
-    fn add(&mut self, secret: &str, with: &str, path: bool) {
+    fn add(&mut self, secret: &str, with: &str, kind: Kind) {
         if secret.chars().count() < 2 || secret.eq_ignore_ascii_case(with) || self.secrets.iter().any(|(s, ..)| s.eq_ignore_ascii_case(secret)) {
             return;
         }
-        self.secrets.push((secret.to_string(), with.to_string(), path));
+        self.secrets.push((secret.to_string(), with.to_string(), kind));
         // longer first: "Singularity on box" before "box"
         self.secrets.sort_by_key(|(s, ..)| std::cmp::Reverse(s.len()));
     }
 
     pub fn redact(&self, s: &str) -> String {
         let mut out = s.to_string();
-        for (secret, with, path) in &self.secrets {
-            out = replace(&out, secret, with, !path);
+        for (secret, with, kind) in &self.secrets {
+            out = match kind {
+                Kind::Whole if out.trim() == secret => with.clone(),
+                Kind::Whole => [('"', '"'), ('“', '”'), ('\'', '\''), ('‘', '’')].iter().fold(out, |o, (a, b)| o.replace(&format!("{a}{secret}{b}"), &format!("{a}{with}{b}"))),
+                k => replace(&out, secret, with, *k),
+            };
         }
         out
     }
 }
 
-/// `s` with every `secret` (ASCII case ignored) replaced by `with`, where no letter or number follows it; `word`:
-/// none before it either (a path prefix may follow anything).
-fn replace(s: &str, secret: &str, with: &str, word: bool) -> String {
+/// `s` with every `secret` (ASCII case ignored) replaced by `with`, where no letter or number follows it, and before
+/// it: none either (a word), a `/` (a path's folder), anything (a path's start).
+fn replace(s: &str, secret: &str, with: &str, kind: Kind) -> String {
     let n = secret.len();
     let inside = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric());
     let mut out = String::with_capacity(s.len());
@@ -156,7 +181,11 @@ fn replace(s: &str, secret: &str, with: &str, word: bool) -> String {
         let hit = i + n <= s.len()
             && s.is_char_boundary(i + n)
             && s[i..i + n].eq_ignore_ascii_case(secret)
-            && (!word || !inside(s[..i].chars().next_back()))
+            && match kind {
+                Kind::Word => !inside(s[..i].chars().next_back()),
+                Kind::Folder => s[..i].ends_with('/'),
+                _ => true,
+            }
             && !inside(s[i + n..].chars().next());
         if hit {
             out.push_str(with);
@@ -208,6 +237,8 @@ pub struct Demo {
     own_outside: HashSet<String>,
     /// playlists created in this session: they stay in the library
     created: HashSet<String>,
+    /// the Daemon said it runs this Client in demo mode (its Welcome): until then no stats, export or delete
+    pub confirmed: bool,
     /// device id → its neutral name, stable for the session
     devices: HashMap<String, String>,
     /// Jam member id → "Guest N"
@@ -231,11 +262,11 @@ impl Demo {
         use singularity_proto::{CatalogueStatus as C, EngineStatus as E};
         match ev {
             Event::Engine(E::NeedsPairing { device_name }) => {
-                self.redactor.learn(&device_name, ENGINE);
+                self.redactor.learn_device(&device_name, ENGINE);
                 Event::Engine(E::NeedsPairing { device_name: ENGINE.into() })
             }
             Event::Engine(E::Ready { device_name, active, version, expires_in_days }) => {
-                self.redactor.learn(&device_name, ENGINE);
+                self.redactor.learn_device(&device_name, ENGINE);
                 Event::Engine(E::Ready { device_name: ENGINE.into(), active, version, expires_in_days })
             }
             Event::Engine(E::NotConfigured { reason }) => Event::Engine(E::NotConfigured { reason: self.redact(&reason) }),
@@ -270,14 +301,20 @@ impl Demo {
                 h.audio_output = h.audio_output.map(|_| "playing".into());
                 Event::Health(h)
             }
-            Event::PlaylistCreated { uri, name } => {
-                self.created.insert(uri.clone());
-                Event::PlaylistCreated { uri, name }
-            }
             Event::Notice { message } => Event::Notice { message: self.redact(&message) },
             Event::Error { message } => Event::Error { message: self.redact(&message) },
             ev => ev,
         }
+    }
+
+    /// A playlist this Client made in this session: it stays in the library (one made elsewhere doesn't).
+    pub fn created(&mut self, uri: &str) {
+        self.created.insert(uri.to_string());
+    }
+
+    /// The library has come at least once (so the owner's playlists and display name are known).
+    pub fn knows_library(&self) -> bool {
+        self.raw_library.is_some()
     }
 
     /// The library again, after something that decides it changed (a playlist made here): None before the first.
@@ -379,7 +416,8 @@ impl Demo {
         if let Some(h) = p.header.as_mut() {
             if p.uri.starts_with("spotify:playlist:") {
                 let mut parts: Vec<String> = h.subtitle.split(" · ").map(String::from).collect();
-                if parts.len() >= 2 && parts[0] == "Playlist" {
+                // (no owner: the second part is the likes)
+                if parts.len() >= 2 && parts[0] == "Playlist" && !parts[1].ends_with(" likes") {
                     parts[1] = if self.own.contains(&p.uri) { YOU.into() } else if parts[1] == "Spotify" { parts[1].clone() } else { FRIEND.into() };
                 }
                 h.subtitle = parts.join(" · ");
@@ -434,7 +472,7 @@ impl Demo {
             self.devices.insert(d.id.clone(), name.clone());
             name
         };
-        self.redactor.learn(&d.name, &name);
+        self.redactor.learn_device(&d.name, &name);
         d.name = name;
         d
     }
@@ -442,7 +480,8 @@ impl Demo {
     /// The Jam with its host's neutral name, an invite that leads nowhere (as long as the real one, so its QR is as
     /// big) and its guests as "Guest 1", "Guest 2"…
     fn jam(&mut self, mut j: singularity_proto::Jam) -> singularity_proto::Jam {
-        j.host = j.host.map(|h| if j.host_is_engine { ENGINE.to_string() } else { self.redact(&h) });
+        // (a host not among the account's devices is someone else's: its name stays unknown)
+        j.host = j.host.map(|h| if j.host_is_engine { ENGINE.to_string() } else { Some(self.redact(&h)).filter(|r| *r != h).unwrap_or_else(|| FRIENDS_DEVICE.into()) });
         j.invite = j.invite.map(|real| {
             let mut fake = FAKE_INVITE.to_string();
             if real.len() > fake.len() + 1 {

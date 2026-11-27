@@ -611,7 +611,7 @@ fn demo_summary(hub: &Hub) -> Option<Event> {
 /// Answer a LocalStore command (`GetListening`, `GetStats`, `ExportLocalData`, `DeleteLocalData`). A demo Client's
 /// questions and its "delete" go to the demo Listening log (D90).
 async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>, demo: bool) {
-    let store = if demo && !matches!(cmd, Command::ExportLocalData) { hub.demo_store.clone() } else { hub.store.clone() };
+    let store = if demo { hub.demo_store.clone() } else { hub.store.clone() };
     let Some(store) = store else {
         // questions go unanswered (Widgets keep waiting quietly); asking to export or delete is told
         if matches!(cmd, Command::ExportLocalData | Command::DeleteLocalData) {
@@ -866,7 +866,8 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     match hello {
         Some(ClientMsg::Hello { protocol, client, demo: d }) if protocol == PROTOCOL_VERSION => {
             tracing::info!("client connected: {client}{}", if d { " (demo mode)" } else { "" });
-            let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind, soloist_in_vm: hub.soloist_in_vm };
+            let account = if d { demo_account(&hub).await } else { String::new() };
+            let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind, soloist_in_vm: hub.soloist_in_vm, demo: d, account };
             proto::write_msg(&mut wr, &welcome).await?;
         }
         Some(ClientMsg::Hello { protocol, .. }) => {
@@ -1056,6 +1057,17 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     forwarder.abort();
     writer.abort();
     result
+}
+
+/// The account's username for a demo Client to redact (D90): the logged-in one, else the saved login's.
+async fn demo_account(hub: &Hub) -> String {
+    if let Some(proto::CatalogueStatus::Ready { username, .. }) = hub.catalogue_status.lock().await.clone() {
+        return username;
+    }
+    if hub.catalogue.is_none() {
+        return String::new();
+    }
+    tokio::task::spawn_blocking(|| catalogue::saved_credentials(&catalogue::Dirs::from_env()).and_then(|c| c.username)).await.ok().flatten().unwrap_or_default()
 }
 
 /// A demo Client's session, counted while it lasts (D90: plays go to the demo Listening log meanwhile).

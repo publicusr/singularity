@@ -292,7 +292,8 @@ impl Store {
         let doc = json!({
             "exported_ms": now_ms,
             "plays": self.plays_json()?,
-            "library_backup": self.latest_backup().map(|(_, v)| v),
+            // (the demo log's export holds no library backup: those are the real account's)
+            "library_backup": if self.demo { None } else { self.latest_backup().map(|(_, v)| v) },
         });
         std::fs::create_dir_all(to)?;
         let path = to.join(format!("singularity-listening-{}.json", date(local_day(now_ms))));

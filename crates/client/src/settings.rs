@@ -362,7 +362,8 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let path = path.map(|p| app.demo.as_ref().map(|d| d.redact(&p)).unwrap_or(p));
     text(buf, tx + 1, y, (x + w).saturating_sub(tx + 1), &path.unwrap_or_default(), th.s(th.border));
     y += 1;
-    let problems = problems.clone();
+    // (demo mode: a path or name in a problem is redacted)
+    let problems: Vec<String> = problems.iter().map(|p| app.demo.as_ref().map(|d| d.redact(p)).unwrap_or_else(|| p.clone())).collect();
     if view.tab == Tab::Keys {
         y += 1;
         draw_keys(buf, Rect::new(x, y, w, r.bottom().saturating_sub(y)), app, th, &mut view, &problems, &mut hits);

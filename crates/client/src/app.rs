@@ -969,8 +969,7 @@ impl App {
         let (f, problem) = crate::demo::load(&file);
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let mut redactor = crate::demo::Redactor::from_env(env("HOME"), env("USER").or_else(|| env("LOGNAME")), Some(singularity_config::host::Host::this().computer()));
-        // a device name of the owner's own choosing, before the Engine reports it
-        redactor.learn(&self.config.engine.device, crate::demo::ENGINE);
+        redactor.learn_device(&self.config.engine.device, crate::demo::ENGINE);
         self.demo = Some(crate::demo::Demo::new(f, redactor));
         self.demo_file = Some(file);
         if let Some(p) = problem {
@@ -1010,6 +1009,10 @@ impl App {
         }
         let ui = r.value.ui.clone();
         self.config = r.value;
+        // demo mode: a device name of the owner's own choosing, before the Engine reports it
+        if let Some(d) = self.demo.as_mut() {
+            d.redactor.learn_device(&self.config.engine.device, crate::demo::ENGINE);
+        }
         self.apply_ui(&ui);
         self.config_problems = r.problems.clone();
         if !r.problems.is_empty() {
@@ -1269,6 +1272,10 @@ impl App {
     }
 
     pub(crate) fn send(&mut self, c: Command) {
+        // demo mode with a Daemon that didn't confirm it: these would export or delete the real listening log
+        if self.demo.as_ref().is_some_and(|d| !d.confirmed) && matches!(c, Command::ExportLocalData | Command::DeleteLocalData) {
+            return self.say(crate::demo::TOO_OLD);
+        }
         // A full queue is the connection task being busy, not the Daemon being gone: say the true thing, so a Play or
         // Pause isn't thrown away under a message that sends the user to restart a Daemon that runs fine.
         let sent = match (&self.link, &self.commands) {

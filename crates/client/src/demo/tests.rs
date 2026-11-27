@@ -56,16 +56,32 @@ fn the_redactor_replaces_what_it_learned_inside_longer_text() {
     let mut r = redactor();
     r.learn("zedq", "user");
     r.learn("Zed Quill", YOU);
-    r.learn("Singularity on zedbox", ENGINE);
-    r.learn("Zed's Phone", "Phone");
+    r.learn_device("Singularity on zedbox", ENGINE);
+    r.learn_device("Zed's Phone", "Phone");
     assert_eq!(r.redact("Couldn't create the playlist: error sending request for url (https://spclient/user/ZEDQ/rootlist/changes)"), "Couldn't create the playlist: error sending request for url (https://spclient/user/user/rootlist/changes)");
     assert_eq!(r.redact("Made For Zed Quill"), "Made For you");
     assert_eq!(r.redact("\"Singularity on zedbox\" isn't on Connect"), "\"Singularity\" isn't on Connect", "the longer name first");
-    assert_eq!(r.redact("Moving playback to Zed's Phone"), "Moving playback to Phone");
+    assert_eq!(r.redact("Zed's Phone"), "Phone", "a device name as the whole text");
+    assert_eq!(r.redact("Moving playback to 'Zed's Phone'"), "Moving playback to 'Phone'", "or quoted");
     assert_eq!(r.redact("Listening data exported to /home/zed/Downloads/x.json"), "Listening data exported to ~/Downloads/x.json");
-    assert_eq!(r.redact("ping zedbox.local failed"), "ping computer.local failed");
-    assert_eq!(r.redact("the socket in /run/user/zed belongs to zed"), "the socket in /run/user/user belongs to user");
+    assert_eq!(r.redact("zedbox"), "computer");
+    assert_eq!(r.redact("the socket in /run/user/zed belongs to zed"), "the socket in /run/user/user belongs to zed", "$USER only as a path's folder");
     assert_eq!(r.redact("zedboxes and zedq2 are other words"), "zedboxes and zedq2 are other words", "not inside a longer word");
+}
+
+/// Review of #141: names that are also ordinary words stay where they are words (an album, a band, a Shelf).
+#[test]
+fn device_computer_and_user_names_are_not_replaced_as_ordinary_words() {
+    let mut r = Redactor::from_env(Some("/home/richter".into()), Some("richter".into()), Some("echo".into()));
+    r.learn_device("Speaker", "Speaker 2");
+    assert_eq!(r.redact("Album · Max Richter"), "Album · Max Richter");
+    assert_eq!(r.redact("Echo & the Bunnymen"), "Echo & the Bunnymen");
+    assert_eq!(r.redact("Speaker & the Bunnymen"), "Speaker & the Bunnymen");
+    assert_eq!(r.redact("see /data/richter/log"), "see /data/user/log");
+    let mut d = Demo::new(DemoFile::default(), r);
+    let h = HomeFeed { fetched_unix_ms: 1, shelves: vec![shelf("", "Echo & the Bunnymen radio", "shelf", &["spotify:playlist:x"])] };
+    assert_eq!(d.scrub(Event::Library(library())), d.clone().scrub(Event::Library(library())));
+    assert_eq!(d.home(h).shelves.len(), 1, "not dropped as personal");
 }
 
 #[test]
@@ -110,7 +126,7 @@ fn demo_toml_adds_albums_podcasts_and_liked_songs() {
 fn a_playlist_made_in_this_session_stays() {
     let mut d = demo();
     d.scrub(Event::Library(library()));
-    d.scrub(Event::PlaylistCreated { uri: "spotify:playlist:new".into(), name: "Fresh".into() });
+    d.created("spotify:playlist:new");
     let mut l = library();
     l.items.insert(1, item("spotify:playlist:new", "Fresh", "playlist", 0, true, &["Zed Quill"]));
     assert_eq!(names(&d.library(l)), ["Fresh", "Showcase", "Road Trip", "Deep Cuts"]);
@@ -198,6 +214,7 @@ fn lists_lose_their_dates_and_say_whose_they_are() {
     assert_eq!(own.header.unwrap().subtitle, "Playlist · you · 3 likes");
     assert_eq!(d.tracks(page("spotify:playlist:friend", "Playlist · Bo Friend · 9 likes")).header.unwrap().subtitle, "Playlist · a friend · 9 likes");
     assert_eq!(d.tracks(page("spotify:playlist:top50", "Playlist · Spotify · 1 234 likes")).header.unwrap().subtitle, "Playlist · Spotify · 1 234 likes");
+    assert_eq!(d.tracks(page("spotify:playlist:friend", "Playlist · 3 likes")).header.unwrap().subtitle, "Playlist · 3 likes", "no owner: the likes stay");
 }
 
 #[test]
@@ -216,13 +233,13 @@ fn search_drops_the_owners_other_playlists_and_progress() {
     let mut d = demo();
     d.scrub(Event::Library(library()));
     let card = |u: &str| Card { uri: u.into(), name: u.into(), subtitle: "Zed Quill".into(), image_url: None, kind: "playlist".into() };
-    let r = SearchResults { query: "x".into(), top: vec![card("spotify:playlist:diary"), card("spotify:playlist:pub")], playlists: vec![card("spotify:playlist:diary"), card("spotify:playlist:show1")], episodes: vec![row("2025", Some(Progress::default()))], error: Some("failed for zed".into()), ..Default::default() };
+    let r = SearchResults { query: "x".into(), top: vec![card("spotify:playlist:diary"), card("spotify:playlist:pub")], playlists: vec![card("spotify:playlist:diary"), card("spotify:playlist:show1")], episodes: vec![row("2025", Some(Progress::default()))], error: Some("failed: /home/zed/cache".into()), ..Default::default() };
     let r = d.search(r);
     assert_eq!(r.top.iter().map(|c| c.uri.as_str()).collect::<Vec<_>>(), ["spotify:playlist:pub"]);
     assert_eq!(r.playlists.iter().map(|c| c.uri.as_str()).collect::<Vec<_>>(), ["spotify:playlist:show1"]);
     assert_eq!(r.top[0].subtitle, "you");
     assert_eq!(r.episodes[0].progress, None);
-    assert_eq!(r.error.as_deref(), Some("failed for user"));
+    assert_eq!(r.error.as_deref(), Some("failed: ~/cache"));
 }
 
 #[test]
@@ -246,7 +263,7 @@ fn devices_get_neutral_names_by_kind_kept_for_the_session() {
     // again, in another order: the same names
     let Event::Devices { devices } = d.scrub(Event::Devices { devices: list.into_iter().rev().collect() }) else { panic!() };
     assert_eq!(devices.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["TV", "Phone 2", "Speaker", "Phone", "Singularity"]);
-    assert_eq!(d.redact("Moving playback to Zed's Old Phone"), "Moving playback to Phone 2");
+    assert_eq!(d.redact("Zed's Old Phone"), "Phone 2");
     assert_eq!(neutral_name("automobile", 1), "Car");
     assert_eq!(neutral_name("weird", 3), "Device 3");
 }
@@ -277,6 +294,10 @@ fn the_jam_has_a_fake_invite_as_long_as_the_real_one_and_numbered_guests() {
     assert_eq!(j.host.as_deref(), Some("Phone"));
     assert_eq!(j.members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["you", "Guest 1", "Guest 2"]);
     assert_eq!(d.redact("Bo Friend joined"), "Guest 1 joined");
+    // a host that isn't one of the account's devices: someone else's, unnamed
+    let other = Jam { host: Some("Cy's Laptop".into()), host_is_engine: false, ..Default::default() };
+    let Event::Jam { jam: Some(j) } = d.scrub(Event::Jam { jam: Some(other) }) else { panic!() };
+    assert_eq!(j.host.as_deref(), Some(FRIENDS_DEVICE));
 }
 
 #[test]
@@ -353,8 +374,8 @@ fn nothing_personal_is_drawn_in_demo_mode() {
         assert!(screen.contains(s), "{s} missing:\n{screen}");
     }
     assert!(screen.contains('▀') || screen.contains('▄'), "a QR still shows:\n{screen}");
-    app.say("Couldn't reach zedq's rootlist from Zed's Phone");
-    assert_eq!(app.toast.as_ref().unwrap().0, "Couldn't reach user's rootlist from Phone");
+    app.say("Couldn't reach zedq's rootlist from \"Zed's Phone\"");
+    assert_eq!(app.toast.as_ref().unwrap().0, "Couldn't reach user's rootlist from \"Phone\"");
 }
 
 #[test]
@@ -365,6 +386,80 @@ fn without_demo_mode_everything_shows_as_before() {
         assert!(screen.contains(s), "{s} missing:\n{screen}");
     }
     assert!(!screen.contains(" DEMO "));
+}
+
+fn connected(app: &mut crate::app::App, demo: bool, account: &str) {
+    app.receive(crate::conn::ConnEvent::Connected { daemon_version: "1".into(), engine: Default::default(), soloist_in_vm: false, demo, account: account.into() });
+}
+
+/// Review of #141: a Daemon too old to know demo mode would answer with the real log, and delete it: until the
+/// Welcome confirms demo mode no stats show, and export and delete are refused.
+#[test]
+fn without_the_daemons_word_a_demo_client_shows_no_stats_and_refuses_delete() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let mut app = crate::app::App::new(Some(tx));
+    app.demo = Some(demo());
+    connected(&mut app, false, "");
+    app.hear(Event::Listening(Default::default()));
+    app.hear(Event::Stats(Default::default()));
+    assert!(app.listening.is_none() && app.stats.is_empty(), "the real log's answers aren't shown");
+    while rx.try_recv().is_ok() {}
+    for c in [singularity_proto::Command::DeleteLocalData, singularity_proto::Command::ExportLocalData] {
+        app.send(c);
+        assert_eq!(app.toast.as_ref().unwrap().0, TOO_OLD);
+    }
+    assert!(!std::iter::from_fn(|| rx.try_recv().ok()).any(|c| matches!(c, singularity_proto::Command::DeleteLocalData | singularity_proto::Command::ExportLocalData)), "nothing was sent");
+    connected(&mut app, true, "");
+    app.hear(Event::Listening(Default::default()));
+    assert!(app.listening.is_some());
+    app.send(singularity_proto::Command::DeleteLocalData);
+    assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|c| c == singularity_proto::Command::DeleteLocalData));
+}
+
+/// Review of #141: errors before the login is Ready (a failed login) already hide the saved login's name.
+#[test]
+fn the_saved_logins_name_is_redacted_from_the_start() {
+    let mut app = crate::app::App::new(None);
+    app.demo = Some(demo());
+    connected(&mut app, true, "zedq");
+    app.hear(Event::Error { message: "Spotify login failed: bad credentials for zedq".into() });
+    assert_eq!(app.toast.as_ref().unwrap().0, "Spotify login failed: bad credentials for user");
+}
+
+/// Review of #141: Home waits for the library, so the owner's playlists outside the Demo set never flash.
+#[test]
+fn home_waits_for_the_library_in_demo_mode() {
+    let mut app = crate::app::App::new(None);
+    app.demo = Some(demo());
+    app.hear(Event::Home(HomeFeed { fetched_unix_ms: 1, shelves: vec![shelf("", "Charts", "shelf", &["spotify:playlist:top50", "spotify:playlist:diary"])] }));
+    assert!(app.home.is_none());
+    app.hear(Event::Library(library()));
+    assert_eq!(app.home.as_ref().unwrap().shelves[0].cards.len(), 1);
+}
+
+/// Review of #141: a playlist another Client makes during the demo doesn't join the Demo set.
+#[test]
+fn a_playlist_made_by_another_client_stays_out() {
+    let mut app = crate::app::App::new(None);
+    app.demo = Some(demo());
+    app.hear(Event::Library(library()));
+    app.hear(Event::PlaylistCreated { uri: "spotify:playlist:new".into(), name: "Elsewhere".into() });
+    let mut l = library();
+    l.items.insert(1, item("spotify:playlist:new", "Elsewhere", "playlist", 0, true, &["Zed Quill"]));
+    app.hear(Event::Library(l));
+    assert!(!app.library.as_ref().unwrap().items.iter().any(|i| i.name == "Elsewhere"));
+}
+
+/// Review of #141: the redactor is on before the config is read, which teaches it the owner's device name.
+#[test]
+fn the_config_is_read_with_the_redactor_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let (cp, kp) = (dir.path().join("config.toml"), dir.path().join("keys.toml"));
+    std::fs::write(&cp, "schema = 6\n[engine]\ndevice = \"Zed's Desk\"\n").unwrap();
+    let mut app = crate::app::App::new(None);
+    app.start_demo(dir.path().join("demo.toml"));
+    app.load_config_from(cp, kp);
+    assert_eq!(app.demo.as_ref().unwrap().redact("Zed's Desk"), ENGINE);
 }
 
 #[test]

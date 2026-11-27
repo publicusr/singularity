@@ -88,10 +88,11 @@ async fn main() -> anyhow::Result<()> {
     app.covers = covers::Covers::spawn(folders.cache.join("covers"));
     app.cell_px = term::cell_px();
     app.hole.allow_gpu = true;
-    app.load_config();
+    // (demo mode first: what loading the config says is redacted too)
     if demo::on() {
         app.start_demo(demo::file_path());
     }
+    app.load_config();
     if term::kitty_graphics_supported() && app.cell_px.is_some() {
         let mut k = gfx::Kitty::new(term::kitty_shm());
         k.below_backgrounds = term::below_backgrounds();

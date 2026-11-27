@@ -119,6 +119,11 @@ impl App {
     }
 
     /// `Event::PlaylistCreated`: the one we asked for opens (another Client's just shows in the library).
+    /// This Client asked for a playlist called `name` (and its answer hasn't come yet).
+    pub(crate) fn asked_to_create(&self, name: &str) -> bool {
+        self.playlists.creating.as_deref() == Some(name)
+    }
+
     pub fn playlist_created(&mut self, uri: &str, name: &str) {
         if self.playlists.creating.as_deref() != Some(name) {
             return;
