@@ -167,10 +167,13 @@ mod tests {
         Host { arch: "x86_64", page_size: 4096, proc_root: bin.join("no-proc"), bin_dirs: vec![bin.to_path_buf()] }
     }
 
+    /// A shell script at `path`, written by a child process (#125). Written by this one, a process another test
+    /// starts in that moment would hold a copy of it open for writing until that process runs its own program, and
+    /// running a file open for writing fails ("Text file busy"): the opener then never ran.
     fn script(path: &Path, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let script = format!("#!/bin/sh\n{body}\n");
+        let wrote = std::process::Command::new("/bin/sh").args(["-c", "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"", "sh", &script]).arg(path).status().unwrap();
+        assert!(wrote.success());
     }
 
     /// "Which CPUs have Soloist" is answered here only (D73): Rust's names in, Spotify's build names out.

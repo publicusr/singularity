@@ -271,7 +271,7 @@ fn edits_to_a_built_in_design_are_kept_as_edited_and_done_asks_for_a_name() {
 fn a_name_already_taken_is_refused_and_suggestions_count_up() {
     let (mut a, dir) = with_dirs();
     a.save_layout("Singularity 2");
-    a.reset_design();
+    a.set_design(0);
     a.enter_arrange();
     a.commit_layout(swapped(Node::singularity(), Widget::Stream, Widget::Queue));
     a.arrange_done();
@@ -325,25 +325,216 @@ fn quick_edits_are_kept_as_one_unnamed_edit_per_design_that_later_edits_overwrit
     assert_eq!(crate::layouts::load_dir(&layouts).0.len(), 2);
 }
 
+/// #80: Ctrl+K → Delete design… asks yes/no first; deleting an "(edited)" copy goes back to its built-in Design (as
+/// Reset design did, the Theme on screen kept), deleting a Design of your own to the default one with its own Theme.
 #[test]
-fn reset_design_goes_back_to_the_built_in_one() {
+fn delete_design_asks_first_then_deletes_the_design_on_screen() {
     let (mut a, dir) = with_dirs();
-    let layouts = dir.path().join("layouts");
-    a.commit_layout(swapped(Node::singularity(), Widget::Stream, Widget::Queue));
-    a.run(Action::ResetLayout);
+    let files = || crate::layouts::load_dir(&dir.path().join("layouts")).0;
+    let config = || std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    let cockpit = crate::design::by_id("cockpit").unwrap();
+    a.set_design(cockpit);
+    a.set_theme("ember");
+    a.commit_layout(swapped(Node::cockpit(), Widget::Fft, Widget::Loudness));
+    assert_eq!(a.shown.file(), Some("cockpit-edited"));
+    // n, Esc and a click outside keep it
+    a.run(Action::DeleteDesign);
+    assert_eq!(a.modal(), Some(Modal::DeleteDesign));
+    key(&mut a, KeyCode::Char('n'));
+    a.run(Action::DeleteDesign);
+    key(&mut a, KeyCode::Esc);
+    a.run(Action::DeleteDesign);
+    render(&mut a, W, H);
+    press(&mut a, 0, 0);
+    assert!(a.modal().is_none() && a.shown.file() == Some("cockpit-edited") && files().len() == 1);
+    // y deletes it: Cockpit's own layout, the Theme kept, and one undo brings the copy back
+    a.run(Action::DeleteDesign);
+    key(&mut a, KeyCode::Char('y'));
+    assert!(a.modal().is_none());
+    assert_eq!((a.layout.clone(), a.shown.file(), a.shown.design(), a.theme.id.as_str()), (Node::cockpit().into(), None, cockpit, "ember"));
+    assert!(files().is_empty(), "the unnamed edit is gone");
+    assert!(a.toast.as_ref().is_some_and(|(t, _)| t == "Deleted \"Cockpit (edited)\" · back to Cockpit"), "{:?}", a.toast);
+    assert!(config().contains("layout = \"\""));
+    ctrl(&mut a, 'z');
+    assert_eq!(a.shown.file(), Some("cockpit-edited"));
+    assert_eq!(files().len(), 1);
+    // a Design of your own: gone, and the default Design is on screen with its own Theme; the history was its own
+    a.save_layout("Mine");
+    a.run(Action::DeleteDesign);
+    render(&mut a, W, H);
+    let yes = a.all_hits().iter().find(|(_, h)| *h == Hit::DeleteAnswer(true)).map(|(r, _)| *r).expect("a yes to click");
+    press(&mut a, yes.x, yes.y);
+    assert_eq!((a.shown.file(), a.shown.design(), a.theme.id.as_str()), (None, 0, DESIGNS[0].themes[0]));
     assert_eq!(a.layout, Node::singularity());
-    assert_eq!(a.shown.file(), None);
-    assert!(crate::layouts::load_dir(&layouts).0.is_empty(), "the unnamed edit is dropped");
-    // a Design of your own stays where it was saved
+    assert!(files().iter().all(|f| f.id != "mine"), "{:?}", files());
+    assert!(config().contains("design = \"singularity\""));
+    ctrl(&mut a, 'z');
+    assert!(a.toast.as_ref().is_some_and(|(t, _)| t == "Nothing to undo"), "{:?}", a.toast);
+    // a built-in Design has no Delete: not in the palette, and its key says why
+    a.run(Action::Palette);
+    a.palette_mut().unwrap().query = "delete design".into();
+    assert!(!a.palette_items().contains(&Action::DeleteDesign));
+    key(&mut a, KeyCode::Esc);
+    a.run(Action::DeleteDesign);
+    assert!(a.modal().is_none());
+    assert!(a.toast.as_ref().is_some_and(|(t, _)| t == "Singularity is built in: nothing to delete"), "{:?}", a.toast);
+}
+
+/// #80: the Design picker's Delete key (Backspace too: a Mac's delete key) on a Design of your own asks, then the
+/// picker comes back without it, on the Design now on screen; on a built-in Design it does nothing.
+#[test]
+fn the_design_pickers_delete_key_asks_then_the_picker_comes_back_without_it() {
+    let (mut a, dir) = with_dirs();
+    let files = || crate::layouts::load_dir(&dir.path().join("layouts")).0;
     a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
     a.save_layout("Mine");
-    a.commit_layout(swapped(a.layout.clone(), Widget::Home, Widget::Lyrics));
-    a.run(Action::ResetLayout);
-    assert_eq!(a.layout, Node::singularity());
-    assert!(a.toast.as_ref().is_some_and(|(t, _)| t.contains("Mine") && t.contains("picker")), "{:?}", a.toast);
-    let saved = crate::layouts::load_dir(&layouts).0;
-    assert_eq!(saved.len(), 1);
-    assert_ne!(saved[0].arrangement(), Node::singularity());
+    a.set_design(crate::design::by_id("cockpit").unwrap());
+    a.save_layout("Other");
+    a.run(Action::PickDesign);
+    // on a built-in Design: nothing
+    key(&mut a, KeyCode::Home);
+    key(&mut a, KeyCode::Delete);
+    assert_eq!(a.modal(), Some(Modal::Picker));
+    // on "Mine": asked, n puts the picker back as it was
+    let mine = a.picker().unwrap().items.iter().position(|i| i.1 == "Mine").unwrap();
+    a.picker_select(mine);
+    key(&mut a, KeyCode::Delete);
+    assert_eq!(a.modal(), Some(Modal::DeleteDesign));
+    key(&mut a, KeyCode::Char('n'));
+    assert_eq!(a.picker().map(|p| p.sel), Some(mine));
+    assert_eq!(files().len(), 2);
+    // Backspace, y: gone from the folder and the list, the default Design on screen and highlighted
+    key(&mut a, KeyCode::Backspace);
+    key(&mut a, KeyCode::Enter);
+    let p = a.picker().expect("the picker is back");
+    assert!(p.items.iter().all(|i| i.1 != "Mine"));
+    assert_eq!(p.items[p.sel].0, DESIGNS[0].id);
+    assert_eq!(a.shown.file(), None);
+    assert_eq!(files().len(), 1);
+    // Esc goes back to the Design it opened on ("Other"), and config.toml with it
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.shown.file(), Some("other"));
+    assert!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap().contains("layout = \"other\""));
+    // the one it opened on deleted: Esc keeps what's on screen
+    a.run(Action::PickDesign);
+    key(&mut a, KeyCode::Delete);
+    key(&mut a, KeyCode::Char('y'));
+    key(&mut a, KeyCode::Esc);
+    assert_eq!((a.shown.file(), a.shown.design()), (None, 0));
+    assert!(files().is_empty());
+}
+
+/// #80 review: deleting a Design previewed in the picker keeps the undo history of the Design the picker opened on;
+/// deleting the "(edited)" copy it opened on can be undone, as from Ctrl+K.
+#[test]
+fn a_delete_from_the_picker_keeps_the_history_of_the_design_it_opened_on() {
+    let (mut a, _dir) = with_dirs();
+    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
+    a.save_layout("Other");
+    a.set_design(0);
+    a.save_layout("Mine");
+    let saved = a.layout.clone();
+    a.close_pane(pid(&a, Widget::Fft));
+    a.run(Action::PickDesign);
+    let other = a.picker().unwrap().items.iter().position(|i| i.1 == "Other").unwrap();
+    a.picker_select(other);
+    key(&mut a, KeyCode::Delete);
+    key(&mut a, KeyCode::Char('y'));
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.shown.file(), Some("mine"));
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout, saved, "Mine's close undone: {:?}", a.toast);
+    // the "(edited)" copy the picker opened on: deleted, then brought back by one undo
+    a.set_design(0);
+    a.commit_layout(swapped(Node::singularity(), Widget::Fft, Widget::Loudness));
+    a.run(Action::PickDesign);
+    key(&mut a, KeyCode::Delete);
+    key(&mut a, KeyCode::Char('y'));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.shown.file(), None);
+    ctrl(&mut a, 'z');
+    assert_eq!(a.shown.file(), Some("singularity-edited"));
+}
+
+/// #80 review: a layouts folder the file can't be removed from: the bar says so and nothing changes.
+#[cfg(unix)]
+#[test]
+fn a_delete_that_cant_remove_the_file_leaves_the_design_on_screen() {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut a, dir) = with_dirs();
+    let layouts = dir.path().join("layouts");
+    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
+    a.save_layout("Mine");
+    let mine = a.layout.clone();
+    std::fs::set_permissions(&layouts, std::fs::Permissions::from_mode(0o555)).unwrap();
+    a.run(Action::DeleteDesign);
+    key(&mut a, KeyCode::Char('y'));
+    std::fs::set_permissions(&layouts, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(a.toast.as_ref().is_some_and(|(t, _)| t.starts_with("Couldn't delete \"Mine\"")), "{:?}", a.toast);
+    assert_eq!((a.shown.file(), a.layout.clone()), (Some("mine"), mine));
+    assert_eq!(crate::layouts::load_dir(&layouts).0.len(), 1);
+}
+
+/// #80 review: a click in the yes/no's box but on neither answer does nothing; outside it is a no.
+#[test]
+fn a_click_in_the_ask_box_off_the_answers_does_nothing() {
+    let (mut a, _dir) = with_dirs();
+    a.save_layout("Mine");
+    a.run(Action::DeleteDesign);
+    render(&mut a, W, H);
+    let r = a.overlays.first().copied().expect("the box");
+    press(&mut a, r.right() - 3, r.y + 1);
+    assert_eq!(a.modal(), Some(Modal::DeleteDesign));
+    press(&mut a, 0, 0);
+    assert!(a.modal().is_none());
+    assert_eq!(a.shown.file(), Some("mine"));
+}
+
+/// #80 review, on the drawn buffer: the Design picker's hint gets "· Del delete" only on a row of yours; on a built-in
+/// row it is the hint as it was, and nothing else in the picker's box differs between the two.
+#[test]
+fn the_pickers_delete_hint_shows_only_on_your_designs() {
+    let (mut a, _dir) = with_dirs();
+    a.save_layout("Mine");
+    a.set_design(0);
+    a.run(Action::PickDesign);
+    let mine = a.picker().unwrap().items.iter().position(|i| i.1 == "Mine").unwrap();
+    let built_in = render_buf(&mut a, W, H);
+    let r = a.overlays.first().copied().unwrap();
+    let row = |b: &Buffer, y: u16| (r.x..r.right()).map(|x| b[(x, y)].symbol().to_string()).collect::<String>();
+    let hint = r.bottom() - 2;
+    assert_eq!(row(&built_in, hint).trim_matches(|c| c == '│' || c == ' '), "↑↓ preview · Enter keep · Esc put back");
+    a.picker_select(mine);
+    let own = render_buf(&mut a, W, H);
+    assert_eq!(row(&own, hint).trim_matches(|c| c == '│' || c == ' '), "↑↓ preview · Enter keep · Esc put back · Del delete");
+    // the list's rows differ by the highlight; the border, title and swatch don't
+    let n = a.picker().unwrap().items.len() as u16;
+    for y in (r.y..r.bottom()).filter(|&y| y != hint && !(r.y + 1..r.y + 1 + n).contains(&y)) {
+        for x in r.x..r.right() {
+            assert_eq!(own[(x, y)], built_in[(x, y)], "{x},{y}");
+        }
+    }
+    // back on the built-in row: exactly as it was
+    a.picker_select(0);
+    let again = render_buf(&mut a, W, H);
+    for y in r.y..r.bottom() {
+        for x in r.x..r.right() {
+            assert_eq!(again[(x, y)], built_in[(x, y)], "{x},{y}");
+        }
+    }
+}
+
+/// #80: keys.toml's old `reset_layout` (Reset design's) is Delete design now, with the same yes/no.
+#[test]
+fn reset_layout_is_another_name_for_delete_design() {
+    assert_eq!(Action::from_id("reset_layout"), Some(Action::DeleteDesign));
+    assert_eq!(Action::from_id("delete_design"), Some(Action::DeleteDesign));
+    let (mut a, dir) = with_dirs();
+    std::fs::write(dir.path().join("keys.toml"), "schema = 1\n[bindings]\nreset_layout = \"f7\"\n").unwrap();
+    a.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
+    a.save_layout("Mine");
+    key(&mut a, KeyCode::F(7));
+    assert_eq!(a.modal(), Some(Modal::DeleteDesign));
 }
 
 #[test]
@@ -768,7 +959,9 @@ fn ctrl_z_undoes_a_drop_and_ctrl_y_redoes_it_and_the_bar_offers_it() {
 
 #[test]
 fn every_kind_of_edit_is_one_undo_step() {
-    let mut a = app();
+    // (with a config folder: the last step deletes the "(edited)" copy the edits were kept in)
+    let (mut a, _dir) = with_dirs();
+    render(&mut a, W, H);
     let start = a.layout.clone();
     let mut trees = vec![start.clone()];
     // close
@@ -792,6 +985,9 @@ fn every_kind_of_edit_is_one_undo_step() {
     key(&mut a, KeyCode::Char('t'));
     trees.push(a.layout.clone());
     key(&mut a, KeyCode::Esc);
+    // (Done's name prompt: kept unnamed)
+    assert!(a.naming().is_some());
+    key(&mut a, KeyCode::Esc);
     // a divider dragged and let go
     render(&mut a, W, H);
     let grip = a.dividers()[0].grip;
@@ -800,8 +996,9 @@ fn every_kind_of_edit_is_one_undo_step() {
     drag(&mut a, grip.x + 8, grip.y + 5);
     release(&mut a, grip.x + 8, grip.y + 5);
     trees.push(a.layout.clone());
-    // Reset design
-    a.run(Action::ResetLayout);
+    // Delete design… of the "(edited)" copy all that made
+    a.run(Action::DeleteDesign);
+    key(&mut a, KeyCode::Char('y'));
     trees.push(a.layout.clone());
     assert_eq!(a.layout, start);
     for (n, t) in trees.windows(2).rev().enumerate() {
@@ -888,13 +1085,6 @@ fn undo_in_a_design_of_your_own_rewrites_its_file() {
     assert!(f.len() == 1 && f[0].arrangement() == saved && f[0].name == "Mine" && !f[0].edited, "the file is back too");
     ctrl(&mut a, 'y');
     assert_eq!(crate::layouts::load_dir(&layouts).0[0].arrangement(), closed);
-    // undoing a Reset puts the Design of your own back on screen, and its file
-    a.run(Action::ResetLayout);
-    assert!(a.shown.file().is_none());
-    ctrl(&mut a, 'z');
-    assert_eq!(a.shown.file(), Some("mine"));
-    assert_eq!(a.layout, closed);
-    assert!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap().contains("layout = \"mine\""));
     // another Design picked: the history was the last one's
     a.run(Action::PickDesign);
     key(&mut a, KeyCode::Up);
@@ -1632,16 +1822,19 @@ fn a_new_designs_name_is_never_one_taken_and_esc_on_it_keeps_building() {
     assert_eq!(a.layout, built);
 }
 
-/// Review of #42: while a New design… is built, Pick a design, Save design as… and Reset design are not in the palette
-/// and their keys do nothing (each would swap or save the Design under the build); Done names it. Afterwards they're back.
+/// Review of #42: while a New design… is built, Pick a design, Save design as… and Delete design… (Reset design's
+/// successor, #80) are not in the palette and their keys do nothing (each would swap or save the Design under the
+/// build). Done names it. Afterwards they're back.
 #[test]
-fn a_new_design_being_built_hides_pick_save_and_reset_design() {
+fn a_new_design_being_built_hides_pick_save_and_delete_design() {
     let (mut a, dir) = with_dirs();
-    let gone = [Action::PickDesign, Action::SaveLayout, Action::ResetLayout];
+    let gone = [Action::PickDesign, Action::SaveLayout, Action::DeleteDesign];
+    // (from a Design of your own: Delete design… is offered on it)
+    a.save_layout("Mine");
     a.run(Action::NewDesign);
     render(&mut a, W, H);
     a.run(Action::Palette);
-    for word in ["design", "pick a design", "save design", "reset design"] {
+    for word in ["design", "pick a design", "save design", "delete design"] {
         a.palette_mut().unwrap().query = word.into();
         assert!(a.palette_items().iter().all(|i| !gone.contains(i)), "{word}: {:?}", a.palette_items());
     }
@@ -1656,7 +1849,7 @@ fn a_new_design_being_built_hides_pick_save_and_reset_design() {
         assert_eq!(a.layout, blank, "{g:?}");
     }
     assert!(a.building());
-    assert!(crate::layouts::load_dir(&dir.path().join("layouts")).0.is_empty());
+    assert_eq!(crate::layouts::load_dir(&dir.path().join("layouts")).0.len(), 1, "only Mine");
     // Esc leaves the build: they're back
     key(&mut a, KeyCode::Esc);
     assert!(!a.building());

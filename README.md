@@ -170,7 +170,7 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   it), Close pane, Arrange. A split makes a new empty Pane on that side and opens the picker on it: pick what it
   shows, or Esc to leave it empty (it says so) and arrange; a split and its pick are one undo step. A click on the Widget's
   name in a title, `w` on the focused Pane, or Ctrl+K → Replace widget… open the picker too (Home's Pane keeps Home).
-  Ctrl+K also has Split left / right / up / down, Close pane, Arrange and Reset design. In Arrange mode the keyboard
+  Ctrl+K also has Split left / right / up / down, Close pane, Delete design… and Arrange. In Arrange mode the keyboard
   does the same: arrows move between Panes, Enter picks up the focused Widget (the same lit Pane and chip as a drag),
   arrows aim and Enter drops it there (Esc or `m` puts it back); `t` sends the focused Widget to the Tray, `s` then an
   arrow splits its Pane that way, `x` closes it, `+` (or `=`) and `-` move its border left or right of it, `]` and `[`
@@ -185,7 +185,10 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   opens them as a popup, and focuses their Pane where they have one), and no border drag, split or close can leave a Pane too small. An edit never interrupts you and never
   changes a built-in Design: it is kept at once as "Singularity (edited)" (outside Arrange mode the bar says so), and
   Done asks what to call it if you changed something while arranging (Esc keeps it unnamed). Ctrl+K → Save design as…
-  names one any time, Reset design goes back to the built-in one, and a Design of your own saves itself. Ctrl+K →
+  names one any time, and a Design of your own saves itself. Ctrl+K → **Delete design…** (or Delete, or Backspace, on
+  one of yours in Pick a design) asks yes/no, then deletes the Design on screen: deleting "Singularity (edited)" goes
+  back to the built-in Singularity, deleting a Design of your own goes to the default Singularity; the built-in Designs
+  have nothing to delete. In keys.toml, `reset_layout` is another name for `delete_design`. Ctrl+K →
   **New design…** starts from a blank slate: Arrange mode with one empty Pane filling the screen and Home in the Tray;
   split it, fill it from the Tray, and Done asks for a name and saves it with the current Theme (Esc before anything is
   placed, Ctrl+D on the name prompt or Ctrl+K → Discard new design goes back to the Design you had, untouched; Esc on
@@ -197,6 +200,11 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   Ctrl+K → "Export listening data" / "Delete listening data". Nothing is uploaded.
 - After a rebuild, the next Client notices the running Daemon is older than the installed `singularityd` and replaces
   it by itself ("Updating singularityd…"; the music pauses for a moment).
+- After a restart of the Daemon, Home and your library show at once as they were last time (kept, owner-only, in
+  `~/.cache/singularity/home-and-library.json`, only for the account they belong to, and removed when you log out)
+  while the fresh ones load behind.
+  `grep timing: ~/.local/state/singularity/daemon.log` shows how long each start step took (login, account type,
+  keyring, Home, each library page).
 - Terminals: kitty, Ghostty and WezTerm get the pixel tier (covers, the GPU black hole); every other terminal the cell
   tier.
 
@@ -204,7 +212,9 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 
 - `singularityd --fake-engine` runs a pretend player for UI work; `--no-catalogue` skips Spotify browsing;
   `--fake-catalogue crates/client/tests/fixtures/home.json` serves a recorded (anonymised) Home feed (a build with
-  `cargo build -p singularityd --features fake`).
+  `cargo build -p singularityd --features fake`). `SINGULARITY_FAKE_DELAY_MS=<ms>` makes the fake Catalogue's Home and
+  library that late, like Spotify's after a fresh start; `SINGULARITY_HOME_CACHE=on` keeps the last ones on disk for a
+  fake Catalogue too (`off`: not even for Spotify's). Both are for tests (`tools/pty/README.md`).
 - `tools/check.sh` runs what CI runs (tests, clippy, `cargo deny`); on a Mac, `tools/check-linux.sh` type-checks the Linux build, x86_64 and aarch64 (zig, cargo-zigbuild,
   openssl@3: see the script). The pty harness in `tools/pty/` screenshots the real binaries (its README).
 - `git config core.hooksPath tools/hooks` turns on the pre-commit hook, which runs clippy (`SKIP_CLIPPY_HOOK=1` skips it).

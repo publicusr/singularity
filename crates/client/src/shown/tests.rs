@@ -81,7 +81,7 @@ fn undo_into_a_design_whose_write_fails_says_so_and_leaves_things_as_they_are() 
     let a = edit(Node::singularity(), Widget::Stream, Widget::Queue);
     let _ = s.save_as("Mine", &a, THEME);
     let mine = s.mark();
-    let _ = s.reset();
+    s.show_built_in(0);
     mem.fail_next.set(true);
     let o = s.restore(mine, &a, THEME);
     assert_eq!(o.steps(), [Step::Say("Couldn't save the layout: disk full".into())]);
@@ -143,7 +143,7 @@ fn a_name_already_taken_is_refused_and_suggestions_count_up() {
     let (mut s, mem) = shown();
     let a = edit(Node::singularity(), Widget::Stream, Widget::Queue);
     let _ = s.save_as("Singularity 2", &a, THEME);
-    let _ = s.reset();
+    s.show_built_in(0);
     let _ = s.edited(&a, THEME, true);
     assert_eq!(s.suggest_name(), "Singularity 3", "2 is taken");
     let o = s.name_edit(" Singularity 2 ", &a, THEME).unwrap_err();
@@ -153,24 +153,42 @@ fn a_name_already_taken_is_refused_and_suggestions_count_up() {
 }
 
 #[test]
-fn reset_goes_back_to_the_built_in_design() {
+fn delete_removes_the_design_on_screen_and_leaves_a_built_in_one() {
     let (mut s, mem) = shown();
-    // from the built-in one
-    let o = s.reset();
-    assert_eq!((said(&o), o.saves_ui()), (Some("Singularity reset"), true));
-    // from its edited copy: the copy goes
-    let a = edit(Node::singularity(), Widget::Stream, Widget::Queue);
+    // a built-in one: nothing to delete
+    assert_eq!(s.delete(), None);
+    // its edited copy: the copy goes, its built-in Design stays on screen
+    let cockpit = crate::design::by_id("cockpit").unwrap();
+    s.show_built_in(cockpit);
+    let a = edit(Node::cockpit(), Widget::Fft, Widget::Loudness);
     let _ = s.edited(&a, THEME, false);
-    let o = s.reset();
-    assert_eq!(said(&o), Some("Back to Singularity"));
-    assert_eq!(s.file(), None);
-    assert!(files(&mem).is_empty(), "the unnamed edit is dropped");
-    // from a Design of your own: it stays as it was saved
+    let o = s.delete().unwrap().expect("deleted");
+    assert_eq!((said(&o), o.saves_ui()), (Some("Deleted \"Cockpit (edited)\" · back to Cockpit"), true));
+    assert_eq!((s.file(), s.design()), (None, cockpit));
+    assert!(files(&mem).is_empty(), "the unnamed edit is gone");
+    // a Design of your own (made from Cockpit): gone, and the default Design is on screen
     let _ = s.save_as("Mine", &a, THEME);
-    let o = s.reset();
-    assert_eq!(said(&o), Some("Back to Singularity · \"Mine\" is still in the Design picker"));
-    assert_eq!(s.file(), None);
-    assert_eq!(s.find("mine").unwrap().arrangement(), a);
+    let _ = s.save_as("Other", &a, THEME);
+    let o = s.delete().unwrap().expect("deleted");
+    assert_eq!(said(&o), Some("Deleted \"Other\" · back to Singularity"));
+    assert_eq!((s.file(), s.design()), (None, 0));
+    assert_eq!(files(&mem), [("mine".to_string(), "Mine".to_string(), false)], "only the one on screen goes");
+    assert!(s.picker_items().iter().all(|i| i.1 != "Other"), "nor in the picker");
+}
+
+#[test]
+fn a_delete_that_cant_remove_the_file_says_so_and_changes_nothing() {
+    let (mut s, mem) = shown();
+    let cockpit = crate::design::by_id("cockpit").unwrap();
+    s.show_built_in(cockpit);
+    let a = edit(Node::cockpit(), Widget::Fft, Widget::Loudness);
+    let _ = s.save_as("Mine", &a, THEME);
+    mem.fail_next.set(true);
+    let o = s.delete().unwrap().expect_err("not deleted");
+    assert_eq!(o.steps(), [Step::Say("Couldn't delete \"Mine\": read-only folder".into())]);
+    assert_eq!((s.file(), s.design()), (Some("mine"), cockpit), "still on screen");
+    assert_eq!(files(&mem).len(), 1);
+    assert!(s.picker_items().iter().any(|i| i.1 == "Mine"));
 }
 
 #[test]

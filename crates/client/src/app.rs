@@ -93,7 +93,7 @@ pub enum Action {
     Arrange,
     NewDesign,
     DiscardNewDesign,
-    ResetLayout,
+    DeleteDesign,
     UndoLayout,
     RedoLayout,
     Palette,
@@ -104,7 +104,7 @@ pub enum Action {
 impl Action {
     /// Not offered (and their keys do nothing) while a New design… is built (#42): each would swap or save the Design
     /// under the build. Done names it.
-    pub const NOT_WHILE_BUILDING: [Action; 3] = [Action::PickDesign, Action::SaveLayout, Action::ResetLayout];
+    pub const NOT_WHILE_BUILDING: [Action; 3] = [Action::PickDesign, Action::SaveLayout, Action::DeleteDesign];
 
     pub const ALL: [Action; 66] = [
         Action::TogglePlay,
@@ -167,7 +167,7 @@ impl Action {
         Action::Arrange,
         Action::NewDesign,
         Action::DiscardNewDesign,
-        Action::ResetLayout,
+        Action::DeleteDesign,
         Action::UndoLayout,
         Action::RedoLayout,
         Action::Palette,
@@ -236,7 +236,7 @@ impl Action {
             Action::Arrange => "Arrange",
             Action::NewDesign => "New design…",
             Action::DiscardNewDesign => "Discard new design",
-            Action::ResetLayout => "Reset design",
+            Action::DeleteDesign => "Delete design…",
             Action::UndoLayout => "Undo layout",
             Action::RedoLayout => "Redo layout",
             Action::Palette => "Command palette",
@@ -258,7 +258,7 @@ impl Action {
             Action::SplitDown => "tile add pane widget below",
             Action::ClosePane => "tile remove delete widget",
             Action::Arrange => "tray tile move swap drag layout split close pane widget",
-            Action::ResetLayout => "layout tiling undo original default",
+            Action::DeleteDesign => "layout remove reset original",
             Action::UndoLayout => "tiling pane change back revert move drop close split",
             Action::RedoLayout => "tiling pane change again forward",
             Action::EditPlaylist => "name description rename",
@@ -351,7 +351,7 @@ impl Action {
             Action::Arrange => "arrange",
             Action::NewDesign => "new_design",
             Action::DiscardNewDesign => "discard_new_design",
-            Action::ResetLayout => "reset_layout",
+            Action::DeleteDesign => "delete_design",
             Action::UndoLayout => "undo_layout",
             Action::RedoLayout => "redo_layout",
             Action::Palette => "palette",
@@ -360,9 +360,14 @@ impl Action {
         }
     }
 
-    /// (`move_pane`, Move mode's, is another name for `arrange` since Move mode folded into it: #43)
+    /// (`move_pane`, Move mode's, is another name for `arrange` since Move mode folded into it: #43; `reset_layout`,
+    /// Reset design's, for `delete_design` since Delete design replaced it: #80)
     pub fn from_id(id: &str) -> Option<Action> {
-        Action::ALL.into_iter().find(|a| a.id() == id).or_else(|| (id == "move_pane").then_some(Action::Arrange))
+        Action::ALL.into_iter().find(|a| a.id() == id).or(match id {
+            "move_pane" => Some(Action::Arrange),
+            "reset_layout" => Some(Action::DeleteDesign),
+            _ => None,
+        })
     }
 }
 
@@ -431,6 +436,8 @@ pub enum Hit {
     Save(singularity_proto::Link),
     /// a row of the design or theme picker
     PickerItem(usize),
+    /// Delete design's yes (true) or no (#80)
+    DeleteAnswer(bool),
     /// a row of the "Add to playlist" picker (#53)
     AddPick(usize),
     /// a Pane's ◂ ▸: the Pane, and which way to swap its Widget
@@ -1347,7 +1354,7 @@ impl App {
             Action::Arrange => self.enter_arrange(),
             Action::NewDesign => self.new_design(),
             Action::DiscardNewDesign => self.discard_new_design(),
-            Action::ResetLayout => self.reset_design(),
+            Action::DeleteDesign => self.ask_delete_design(),
             Action::UndoLayout => self.undo_layout(),
             Action::RedoLayout => self.redo_layout(),
             Action::Palette => self.open_popup(Popup::Palette(Palette { query: String::new(), selected: 0 })),
@@ -1359,8 +1366,8 @@ impl App {
     pub fn palette_items(&self) -> Vec<Action> {
         let q = self.palette().map(|p| p.query.to_lowercase()).unwrap_or_default();
         let building = self.building();
-        // (Discard new design only while one is built, Q78)
-        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && !(building && Action::NOT_WHILE_BUILDING.contains(a)) && (building || *a != Action::DiscardNewDesign) && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
+        // (Discard new design only while one is built, Q78; Delete design… only on a Design that isn't built in, #80)
+        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && !(building && Action::NOT_WHILE_BUILDING.contains(a)) && (building || *a != Action::DiscardNewDesign) && (*a != Action::DeleteDesign || self.shown.file().is_some()) && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
         // what you typed, as typed: at the start first, then anywhere, then loose matches
         let q = q.trim();
         items.sort_by_key(|a| {
@@ -1391,6 +1398,7 @@ impl App {
         match self.modal() {
             Some(Modal::Palette) => return self.palette_key(k),
             Some(Modal::Picker) => return self.picker_key(k),
+            Some(Modal::DeleteDesign) => return self.delete_ask_key(k),
             Some(Modal::Naming) => return self.naming_key(k),
             Some(Modal::WidgetPicker) => return self.widget_picker_key(k),
             Some(Modal::Library) => return self.library_popup_key(k),
@@ -2960,7 +2968,7 @@ impl App {
                             self.play_top(i);
                         }
                     }
-                    Some(Hit::MenuItem(_) | Hit::MenuSplit(_) | Hit::PickerItem(_) | Hit::AddPick(_)) => {}
+                    Some(Hit::MenuItem(_) | Hit::MenuSplit(_) | Hit::PickerItem(_) | Hit::DeleteAnswer(_) | Hit::AddPick(_)) => {}
                     Some(Hit::Swap(p, d)) => {
                         self.swap_widget(p, d);
                     }
@@ -3121,6 +3129,8 @@ macro_rules! modals {
 modals! {
     Palette,
     Picker,
+    /// Delete design's yes/no (#80)
+    DeleteDesign,
     Naming,
     /// the Widget picker: what a Pane shows (Replace widget…)
     WidgetPicker,
@@ -3148,6 +3158,7 @@ modals! {
 pub(crate) enum Popup {
     Palette(Palette),
     Picker(crate::looks::Picker),
+    DeleteDesign(crate::looks::DeleteAsk),
     Naming(Naming),
     WidgetPicker(crate::panemenu::WidgetPicker),
     /// the library without a Pane (D87): its list, its selection (`App::sidebar`) and its keys
@@ -3170,6 +3181,7 @@ impl Popup {
         match self {
             Popup::Palette(_) => Modal::Palette,
             Popup::Picker(_) => Modal::Picker,
+            Popup::DeleteDesign(_) => Modal::DeleteDesign,
             Popup::Naming(_) => Modal::Naming,
             Popup::WidgetPicker(_) => Modal::WidgetPicker,
             Popup::Library => Modal::Library,
@@ -3230,6 +3242,25 @@ popup_data! {
 }
 
 impl App {
+    /// Delete design's yes/no, while it's open (nothing in it changes in place: no `_mut`).
+    pub(crate) fn delete_ask(&self) -> Option<&crate::looks::DeleteAsk> {
+        match &self.popup {
+            Some(Popup::DeleteDesign(d)) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Close Delete design's yes/no, if it's the one open, and hand back what it held.
+    pub(crate) fn take_delete_ask(&mut self) -> Option<crate::looks::DeleteAsk> {
+        match self.popup.take() {
+            Some(Popup::DeleteDesign(d)) => Some(d),
+            other => {
+                self.popup = other;
+                None
+            }
+        }
+    }
+
     /// Open `p`, replacing the popup open (popups don't nest).
     pub(crate) fn open_popup(&mut self, p: Popup) {
         // a Widget held meanwhile is let go (its chip would be drawn over the popup, #40 review), a divider held is
@@ -3346,8 +3377,8 @@ impl App {
                     d.scroll.by(-rows);
                 }
             }
-            // one line to type in, a short notice: nothing to scroll
-            Modal::Naming | Modal::Cover | Modal::Login => {}
+            // one line to type in, a short notice, a yes/no: nothing to scroll
+            Modal::Naming | Modal::Cover | Modal::Login | Modal::DeleteDesign => {}
         }
     }
 
@@ -3394,6 +3425,12 @@ impl App {
                             self.picker_keep();
                         }
                         _ => self.picker_cancel(),
+                    },
+                    // an answer; outside the box is a no; inside, elsewhere, nothing
+                    Modal::DeleteDesign => match hit {
+                        Some(Hit::DeleteAnswer(yes)) => self.delete_answer(yes),
+                        _ if !inside => self.delete_answer(false),
+                        _ => {}
                     },
                     // a click elsewhere only closes the menu
                     Modal::Menu => match hit {

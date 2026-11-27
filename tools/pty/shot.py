@@ -2081,6 +2081,38 @@ def layouts(t, out, env):
     t2.send(b"\x1b", 0.3); t2.send(b"q", 0.5)
 
 
+def delete_design(t, out, env):
+    """#80: two Designs of your own saved; in the Design picker, Delete on one asks (n keeps it, the picker back as it
+    was), Delete then y deletes it (the picker back without it, on Singularity, whose hint has no Del); Ctrl+K → Delete
+    design… on the other asks, y deletes it. Prints the layouts folder after each step."""
+    files = lambda: sorted(os.listdir(f"{env['XDG_CONFIG_HOME']}/singularity/layouts"))
+    t.pump(1.0)
+    for name in (b"Mine", b"Other"):
+        t.send(b"\x0b", 0.3); t.send(b"save design", 0.3); t.send(b"\r", 0.4)
+        t.send(name, 0.3); t.send(b"\r", 0.6)
+    print("saved:", files())
+    t.send(b"\x0b", 0.3); t.send(b"pick a design", 0.3); t.send(b"\r", 0.6)
+    t.shot(f"{out}/0-picker-on-own.png")
+    t.send(b"\x1b[3~", 0.5)
+    t.shot(f"{out}/1-asks.png")
+    t.send(b"n", 0.5)
+    t.shot(f"{out}/2-kept.png")
+    print("after n:", files())
+    t.send(b"\x1b[3~", 0.5); t.send(b"y", 0.8)
+    t.shot(f"{out}/3-deleted-picker-back.png")
+    print("after y:", files())
+    t.send(b"\x1b[F", 0.6)  # End: "Mine", the last
+    t.send(b"\r", 0.5)
+    t.send(b"\x0b", 0.3); t.send(b"delete design", 0.3)
+    t.shot(f"{out}/4-palette.png")
+    t.send(b"\r", 0.5)
+    t.shot(f"{out}/5-palette-asks.png")
+    t.send(b"y", 0.8)
+    t.shot(f"{out}/6-deleted.png")
+    print("after the palette's:", files())
+    t.send(b"q", 0.5)
+
+
 def tiling(t, out, env):
     """D87, a drag moves contents: drag a Pane's title onto another Pane (a shot while the pointer is still down:
     nothing has moved, the Pane under the pointer is lit with "swap with …" and the Widget's chip follows the pointer;
@@ -2846,7 +2878,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "gesture", "wheel-burst", "touchpad", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "search-timing", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "gesture", "wheel-burst", "touchpad", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-fast", "tiling-paths", "resize", "karaoke", "arrange-fixes") else "0"
@@ -3003,6 +3035,8 @@ def main():
             return readme(t, out)
         if scenario == "layouts":
             return layouts(t, out, env)
+        if scenario == "delete-design":
+            return delete_design(t, out, env)
         if scenario == "tiling":
             return tiling(t, out, env)
         if scenario == "paneless":
@@ -3038,6 +3072,27 @@ def main():
             t.send(b"mix", 1.2)
             t.shot(f"{out}/0-search.png")
             t.send(b"q", 0.1)
+            t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.3)
+            t.send(b"q", 0.5)
+            return
+        if scenario == "search-timing":
+            # #126: the Client's share of a search (the fake Catalogue answers at once): last key to results drawn
+            t.pump(1.0)
+            t.send(b"\x0c", 0.3)  # Ctrl+L
+            times = []
+            for i, q in enumerate((b"mix", b"orbit", b"nova")):
+                if i:
+                    t.send(b"\x1b", 0.5)  # Esc: an empty query
+                for c in q[:-1]:
+                    t.send(bytes([c]), 0.08)
+                began = time.time()
+                t.send(q[-1:], 0)
+                want = f"{q.decode()} song 1"
+                while not t.find(want) and time.time() - began < 5:
+                    t.pump(0.005)
+                times.append(round((time.time() - began) * 1000))
+                print(f"“{q.decode()}”: results on screen {times[-1]} ms after the last key")
+            t.shot(f"{out}/0-search.png")
             t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.3)
             t.send(b"q", 0.5)
             return
