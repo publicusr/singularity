@@ -54,6 +54,14 @@ pub const RESTART: &str = if cfg!(target_os = "macos") {
     "`systemctl --user restart singularityd`"
 };
 
+/// Does this Daemon run under the OS's service manager (#145)? It says so in its welcome, so that when it goes away
+/// Clients leave the next one to the service manager. systemd sets `INVOCATION_ID` for every unit it starts; launchd
+/// sets `XPC_SERVICE_NAME` to the job's label (a shell started from Terminal has it as "0"). `env` reads a variable.
+pub fn run_by_service(env: impl Fn(&str) -> Option<String>) -> bool {
+    let var = if cfg!(target_os = "macos") { "XPC_SERVICE_NAME" } else { "INVOCATION_ID" };
+    env(var).is_some_and(|v| !v.is_empty() && v != "0")
+}
+
 /// Shared Daemon state that every connection reads.
 pub struct Hub {
     pub started_unix_ms: u64,
@@ -867,7 +875,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
         Some(ClientMsg::Hello { protocol, client, demo: d }) if protocol == PROTOCOL_VERSION => {
             tracing::info!("client connected: {client}{}", if d { " (demo mode)" } else { "" });
             let account = if d { demo_account(&hub).await } else { String::new() };
-            let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind, soloist_in_vm: hub.soloist_in_vm, demo: d, account };
+            let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind, soloist_in_vm: hub.soloist_in_vm, demo: d, account, service: run_by_service(|k| std::env::var(k).ok()) };
             proto::write_msg(&mut wr, &welcome).await?;
         }
         Some(ClientMsg::Hello { protocol, .. }) => {
@@ -1133,6 +1141,16 @@ pub fn default_socket() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #145: the Daemon knows it runs under the service manager from what systemd or launchd put in its environment.
+    #[test]
+    fn a_daemon_under_the_service_manager_knows_it() {
+        let var = if cfg!(target_os = "macos") { "XPC_SERVICE_NAME" } else { "INVOCATION_ID" };
+        let value = if cfg!(target_os = "macos") { "io.github.publicusr.singularityd" } else { "0f3b6c1d9a2e4b5c8d7e6f5a4b3c2d1e" };
+        assert!(run_by_service(|k| (k == var).then(|| value.to_string())));
+        assert!(!run_by_service(|_| None), "started by a Client or a shell");
+        assert!(!run_by_service(|k| (k == var).then(|| "0".to_string())) && !run_by_service(|k| (k == var).then(String::new)));
+    }
 
     fn test_hub() -> Arc<Hub> {
         let (events, _) = broadcast::channel(8);

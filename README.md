@@ -199,8 +199,8 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   Liked Songs and your own playlists are backed up there nightly. Cockpit's listening Pane and the Stats page show it;
   Ctrl+K → "Export listening data" / "Delete listening data". Nothing is uploaded.
 - After a rebuild, the next Client notices the running Daemon is older than the installed `singularityd` and replaces
-  it by itself ("Updating singularityd…"; the music pauses for a moment). It first gives systemd or launchd
-  5 s to start the new one, so a Daemon run by the service stays under it; without one it starts it itself after that.
+  it by itself ("Updating singularityd…"; the music pauses for a moment). If systemd or launchd ran the
+  old one, every Client gives them 5 s to start the new one, so the Daemon stays under the service.
 - **Demo mode**, for recording videos on your own account: `singularity --demo` (or `SINGULARITY_DEMO=1`). A DEMO chip
   shows in the top bar, and this Client hides or replaces everything personal: the library shows only the playlists in
   a Spotify folder called "Demo" (plus albums, artists, podcasts and audiobooks listed in `demo.toml` in the config
