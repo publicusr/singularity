@@ -1998,9 +1998,17 @@ impl App {
         self.send(cmd);
     }
 
+    /// Highlight Card `c` in the Shelves shown; on Search the song highlight goes, so only one is ever live (#82).
+    fn pick_card(&mut self, c: CardRef) {
+        self.feed_view().sel = Some(c);
+        if matches!(self.page, Page::Search) {
+            self.search.track_sel = None;
+        }
+    }
+
     /// Open a Home Card (clicking never plays it: the list opens, with ▶ Play there).
     fn open_card(&mut self, c: CardRef) {
-        self.feed_view().sel = Some(c);
+        self.pick_card(c);
         // opening a result is what makes a search worth remembering
         if let Some(s) = self.searching_mut() {
             s.remember();
@@ -2210,7 +2218,7 @@ impl App {
         items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::Card(c)).map(|r| (r.x + 2, r.y + 1))).unwrap_or((0, 0));
         let Some(id) = self.active_feed().and_then(|f| CardId::of(f, c)) else { return };
-        self.feed_view().sel = Some(c);
+        self.pick_card(c);
         self.open_popup(Popup::Menu(Menu { at, target: Target::Card(id), items, selected: 0 }));
     }
 

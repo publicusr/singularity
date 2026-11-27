@@ -3494,6 +3494,39 @@ mod tests {
         assert!(app.searching().is_some_and(|s| s.shelves.sel.is_some()));
     }
 
+    /// #82 review: a right-click on a Card while a song is highlighted gave the Card its highlight beside the song's;
+    /// after Esc both showed and Enter played the song. The Card's menu takes the highlight from the song.
+    #[test]
+    fn a_cards_menu_takes_the_highlight_from_the_search_song() {
+        use crate::layout::{Axis, Node, Size, Widget};
+        use singularity_proto::{Card, Command, SearchResults, TrackRow};
+        let (mut app, mut rx) = playing_app(1);
+        app.layout = Node::split(Axis::Vertical, Size::Cells(20), Node::pane(Widget::Home), Node::pane(Widget::Queue)).into();
+        app.focus = app.layout.pane_of(Widget::Home);
+        render(&mut app, 100, 30);
+        app.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        for c in "nova".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let tracks = (1..=3).map(|i| TrackRow { uri: format!("spotify:track:t{i}"), name: format!("S{i}"), duration_ms: 60_000, ..Default::default() }).collect();
+        let artists = vec![Card { uri: "spotify:artist:a".into(), name: "Arty".into(), subtitle: String::new(), image_url: None, kind: "artist".into() }];
+        receive_search(&mut app, SearchResults { query: "nova".into(), tracks, artists, ..Default::default() });
+        render(&mut app, 100, 30);
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        render(&mut app, 100, 30);
+        assert_eq!(app.searching().map(|s| (s.track_sel, s.shelves.sel.is_some())), Some((Some(0), false)));
+        let card = app.hits.iter().find_map(|(r, h)| matches!(h, crate::app::Hit::Card(_)).then_some(*r)).expect("a Card");
+        app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column: card.x + 1, row: card.y + 1, modifiers: KeyModifiers::NONE });
+        assert!(app.popup.is_some(), "the Card's menu");
+        assert_eq!(app.searching().map(|s| (s.track_sel, s.shelves.sel.is_some())), Some((None, true)), "the Card's highlight only");
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        render(&mut app, 100, 30);
+        assert_eq!(app.searching().map(|s| (s.track_sel, s.shelves.sel.is_some())), Some((None, true)));
+        sent(&mut rx);
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!sent(&mut rx).iter().any(|c| matches!(c, Command::Play { uri: Some(u) } if u.starts_with("spotify:track:"))), "Enter doesn't play the song");
+    }
+
     #[test]
     fn picking_the_recent_search_just_cleared_runs_it_again() {
         // #8: Esc cleared the query but the Client still thought "nova" was sent, so picking it sent nothing
