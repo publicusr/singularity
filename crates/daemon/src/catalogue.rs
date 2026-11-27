@@ -268,19 +268,23 @@ async fn supervise<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, make: impl Fn(
     }
 }
 
-/// The commands that arrived behind a search: the newest search replaces this one, everything else waits its turn.
-/// (A2/C4: they used to be sent back into the channel this task alone reads, which deadlocked it when it was full
-/// and ran them after the search in any case.)
-fn drain_for_search(mut q: String, cmds: &mut mpsc::UnboundedReceiver<CatCmd>) -> (String, VecDeque<CatCmd>) {
-    let mut later = VecDeque::new();
-    while let Ok(c) = cmds.try_recv() {
-        match c {
-            CatCmd::Search(n) => q = n,
-            other => later.push_back(other),
-        }
-    }
-    (q, later)
+/// The newest search not made yet, and when it came (#126). Searches don't queue with the rest of browsing: while
+/// typing only the newest matters, it goes ahead of the browsing work waiting, and long work (a track list's pages,
+/// naming a queue) makes it between two of its requests.
+type PendingSearch = std::sync::Arc<tokio::sync::watch::Sender<Option<(String, Instant)>>>;
+
+/// A login or logout changes what every query after it gets: a search doesn't go ahead of one.
+fn changes_session(cmd: &CatCmd) -> bool {
+    matches!(cmd, CatCmd::Login | CatCmd::Logout | CatCmd::Reconnect)
 }
+
+/// A command's name for the log (its variant, none of what it carries).
+fn cmd_name(cmd: &CatCmd) -> String {
+    format!("{cmd:?}").split(|c: char| !c.is_alphanumeric()).next().unwrap_or_default().to_string()
+}
+
+/// Browsing work this long is logged, with its name: it is what a search (or anything else) waited behind.
+const SLOW_BROWSING: Duration = Duration::from_secs(1);
 
 struct State<Q> {
     dirs: Dirs,
@@ -306,6 +310,10 @@ struct State<Q> {
     word_tried: HashMap<String, ()>,
     artists: HashMap<String, (Instant, singularity_proto::ArtistPage)>,
     searches: HashMap<String, (Instant, singularity_proto::SearchResults)>,
+    /// the newest search not made yet (#126)
+    pending: PendingSearch,
+    /// the browsing command running or last run, by name (the log says what a search waited behind)
+    busy: Option<String>,
 }
 
 /// Which loop runs a command (D79): Connect's, or browsing's.
@@ -347,15 +355,21 @@ fn is_connect(cmd: &CatCmd) -> bool {
 }
 
 /// Browsing and Connect side by side in this one task, so a panic in either is caught by `supervise` and a wait in
-/// one never holds up the other. Commands are passed on as they arrive, so a search still sees the ones behind it.
+/// one never holds up the other. Commands are passed on as they arrive; a search is put where browsing takes it next.
 async fn run<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, q: Q, slot: SessionSlot, cmds: &mut mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
     let (browse_tx, browse_rx) = mpsc::unbounded_channel();
     let (connect_tx, connect_rx) = mpsc::unbounded_channel();
     let logging_in = std::sync::Arc::new(tokio::sync::watch::Sender::new(false));
     let connect = connect::Connect::new(engine.clone(), slot.clone(), logging_in.clone(), ev.clone(), browse_tx.downgrade());
-    let st = State { dirs, session: None, slot, queries: q, ev, to_connect: connect_tx.clone(), logging_in, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new() };
+    let st = State { dirs, session: None, slot, queries: q, ev, to_connect: connect_tx.clone(), logging_in, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), pending: Default::default(), busy: Some("Login".into()) };
+    let pending = st.pending.clone();
     let pass_on = async move {
         while let Some(c) = cmds.recv().await {
+            if let CatCmd::Search(q) = c {
+                // replaces one not made yet: while typing only the newest matters
+                pending.send_replace(Some((q, Instant::now())));
+                continue;
+            }
             let to = if is_connect(&c) { &connect_tx } else { &browse_tx };
             let _ = to.send(c);
         }
@@ -365,8 +379,9 @@ async fn run<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, q: Q, slot: SessionS
 }
 
 async fn browse<Q: Fetch + Sync>(mut st: State<Q>, mut cmds: mpsc::UnboundedReceiver<CatCmd>) {
-    // commands drained from behind a search, in their original order, and the follow-ups of commands already run
+    // commands that came, in their order, and the follow-ups of commands already run
     let mut waiting: VecDeque<CatCmd> = VecDeque::new();
+    let mut searched = st.pending.subscribe();
     // resume a previous login
     if saved_credentials(&st.dirs).is_some() {
         if st.connect(None).await {
@@ -376,21 +391,29 @@ async fn browse<Q: Fetch + Sync>(mut st: State<Q>, mut cmds: mpsc::UnboundedRece
         st.status(CatalogueStatus::LoggedOut).await;
     }
     loop {
-        let cmd = match waiting.pop_front() {
-            Some(c) => c,
-            None => match cmds.recv().await {
-                Some(c) => c,
-                None => return,
-            },
-        };
-        if let CatCmd::Search(q) = cmd {
-            // while typing, only the newest search matters; whatever else waited ran before the search was asked for
-            let (q, later) = drain_for_search(q, &mut cmds);
-            st.search(q).await;
-            waiting.extend(later);
+        while let Ok(c) = cmds.try_recv() {
+            waiting.push_back(c);
+        }
+        // a search goes ahead of what waits (#126), unless that logs in or out
+        if !waiting.iter().any(changes_session) && st.search_between().await {
             continue;
         }
+        let cmd = match waiting.pop_front() {
+            Some(c) => c,
+            None => tokio::select! {
+                c = cmds.recv() => match c {
+                    Some(c) => c,
+                    None => return,
+                },
+                _ = searched.changed() => continue,
+            },
+        };
+        let (name, began) = (cmd_name(&cmd), Instant::now());
+        st.busy = Some(name.clone());
         handle(&mut st, cmd, &mut waiting).await;
+        if began.elapsed() >= SLOW_BROWSING {
+            tracing::info!("browsing: {name} took {} ms", began.elapsed().as_millis());
+        }
     }
 }
 
@@ -455,8 +478,8 @@ async fn handle<Q: Fetch + Sync>(st: &mut State<Q>, cmd: CatCmd, next: &mut VecD
         CatCmd::Query { op, vars, reply } => {
             let _ = reply.send(st.query(&op, vars).await);
         }
-        // handled by `browse` itself (it drains what came behind a search)
-        CatCmd::Search(_) => {}
+        // (searches come through `PendingSearch`, not here)
+        CatCmd::Search(q) => st.search(q, Instant::now()).await,
         // the rest is Connect's (`is_connect`): a follow-up such as the device list after a login
         other => {
             let _ = st.to_connect.send(other);
@@ -791,6 +814,7 @@ impl<Q: Fetch + Sync> State<Q> {
             let page = TrackPage { uri: uri.to_string(), offset, total, tracks, header };
             let _ = self.ev.send(CatEvent::Tracks(page.clone())).await;
             pages.push(page);
+            self.search_between().await;
             offset += page_len;
             if offset >= total.min(until) {
                 return Some(pages);
@@ -987,6 +1011,7 @@ impl<Q: Fetch + Sync> State<Q> {
                 Ok(v) => {
                     let flags = library::parse_saved(chunk, &v);
                     let _ = self.ev.send(CatEvent::Saved(flags)).await;
+                    self.search_between().await;
                 }
                 Err(e) => {
                     tracing::debug!("areEntitiesInLibrary: {e}");
@@ -1029,6 +1054,7 @@ impl<Q: Fetch + Sync> State<Q> {
                     failed.push(uri);
                 }
             }
+            self.search_between().await;
         }
         trim_ages(&mut self.describe_failed, DESCRIBE_RETRY, MAX_DESCRIBED);
         if !out.is_empty() {
@@ -1056,7 +1082,24 @@ impl<Q: Fetch + Sync> State<Q> {
         }
     }
 
-    async fn search(&mut self, query: String) {
+    /// The search that came while browsing was busy, if one did: made now. True if there was one.
+    async fn search_between(&mut self) -> bool {
+        // taken quietly: an empty slot wakes no one
+        let mut taken = None;
+        self.pending.send_if_modified(|p| {
+            taken = p.take();
+            false
+        });
+        let Some((query, came)) = taken else { return false };
+        self.search(query, came).await;
+        true
+    }
+
+    /// `came`: when the Client's search reached the Catalogue. The log says where its time went (#126), without the
+    /// words (what you search for is personal).
+    async fn search(&mut self, query: String, came: Instant) {
+        let waited = came.elapsed();
+        let behind = self.busy.as_deref().filter(|_| waited >= Duration::from_millis(100)).map(|b| format!(" behind {b}")).unwrap_or_default();
         let key = query.trim().to_lowercase();
         if let Some((at, r)) = self.searches.get(&key)
             && at.elapsed() < SEARCH_TTL
@@ -1064,19 +1107,28 @@ impl<Q: Fetch + Sync> State<Q> {
             let mut r = r.clone();
             r.query = query;
             let _ = self.ev.send(CatEvent::Search(r)).await;
+            tracing::info!("search: waited {} ms{behind}, answered from what was kept", waited.as_millis());
             return;
         }
-        match self.query("searchDesktop", library::search_vars(query.trim())).await {
+        let asked = Instant::now();
+        let answer = self.query("searchDesktop", library::search_vars(query.trim())).await;
+        let spotify = asked.elapsed();
+        match answer {
             Ok(v) => {
+                let read = Instant::now();
                 let r = library::parse_search(&query, &v);
+                let read = read.elapsed();
+                let found = r.tracks.len() + r.episodes.len() + r.top.len() + r.artists.len() + r.albums.len() + r.playlists.len() + r.podcasts.len() + r.audiobooks.len();
                 trim_timed(&mut self.searches, SEARCH_TTL, MAX_PAGES);
                 self.searches.insert(key, (Instant::now(), r.clone()));
                 let _ = self.ev.send(CatEvent::Search(r)).await;
+                tracing::info!("search: waited {} ms{behind}, Spotify {} ms, read {} ms, {found} results; {} ms in all", waited.as_millis(), spotify.as_millis(), read.as_millis(), came.elapsed().as_millis());
             }
             Err(e) => {
                 // with the search, so the Client stops waiting on "searching…"
                 let r = singularity_proto::SearchResults { query, error: Some(e.to_string()), ..Default::default() };
                 let _ = self.ev.send(CatEvent::Search(r)).await;
+                tracing::info!("search: waited {} ms{behind}, Spotify failed after {} ms: {e}", waited.as_millis(), spotify.as_millis());
             }
         }
     }
@@ -1171,6 +1223,8 @@ impl<Q: Fetch + Sync> State<Q> {
         };
         let mut lrclib = Outcome::Nothing;
         if found.is_none() {
+            // LRCLIB can take seconds
+            self.search_between().await;
             // LRCLIB answered here: its word timing, if any, is already in it
             self.word_tried.insert(uri.clone(), ());
             lrclib = match self.lyrics_meta(&uri, meta.clone()).await {
@@ -1408,21 +1462,12 @@ mod tests {
         assert!(!library_page_continues(50, 10_000, u32::MAX, super::MAX_TRACKS as usize), "the cap stops a lying totalCount");
     }
 
-    /// A2/C4: commands that arrived behind a search are kept, in order, and run after it — not sent back into this
-    /// task's own full channel (a deadlock) and not lost.
-    #[tokio::test]
-    async fn a_search_drains_the_commands_behind_it_in_order() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        for c in [CatCmd::Search("a".into()), CatCmd::Library, CatCmd::Devices, CatCmd::Search("b".into())] {
-            tx.send(c).unwrap();
-        }
-        let first = match rx.recv().await.unwrap() {
-            CatCmd::Search(q) => q,
-            other => panic!("unexpected {other:?}"),
-        };
-        let (q, later) = drain_for_search(first, &mut rx);
-        assert_eq!(q, "b", "only the newest of a burst of searches is made");
-        assert!(matches!(later.iter().collect::<Vec<_>>().as_slice(), [CatCmd::Library, CatCmd::Devices]), "the others wait their turn, in order: {later:?}");
+    /// #126: the log names what a search waited behind by the command alone, none of what it carries.
+    #[test]
+    fn a_command_is_logged_by_its_name_alone() {
+        assert_eq!(cmd_name(&CatCmd::Tracks("spotify:playlist:p".into())), "Tracks");
+        assert_eq!(cmd_name(&CatCmd::Lyrics { uri: "spotify:track:t".into(), meta: None, words: true }), "Lyrics");
+        assert_eq!(cmd_name(&CatCmd::Library), "Library");
     }
 
     #[test]

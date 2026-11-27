@@ -14,21 +14,37 @@ type Answer = Arc<dyn Fn(&str, &Value) -> anyhow::Result<Value> + Send + Sync>;
 struct Fixtures {
     answer: Answer,
     asked: Arc<Mutex<Vec<(String, Value)>>>,
+    /// how long each answer takes (Spotify's latency, for the ordering tests)
+    latency: Duration,
 }
 
 impl Fixtures {
     fn new(answer: impl Fn(&str, &Value) -> anyhow::Result<Value> + Send + Sync + 'static) -> Fixtures {
-        Fixtures { answer: Arc::new(answer), asked: Default::default() }
+        Fixtures { answer: Arc::new(answer), asked: Default::default(), latency: Duration::ZERO }
+    }
+
+    /// Every answer takes `latency`.
+    fn slow(mut self, latency: Duration) -> Fixtures {
+        self.latency = latency;
+        self
     }
 
     fn asked(&self, op: &str) -> usize {
         self.asked.lock().unwrap().iter().filter(|(o, _)| o == op).count()
+    }
+
+    /// The operations asked for, in order, a search with its words.
+    fn order(&self) -> Vec<String> {
+        self.asked.lock().unwrap().iter().map(|(op, v)| format!("{op} {}", v["searchTerm"].as_str().unwrap_or("")).trim_end().to_string()).collect()
     }
 }
 
 impl Fetch for Fixtures {
     async fn query(&mut self, op: &str, vars: Value) -> anyhow::Result<Value> {
         self.asked.lock().unwrap().push((op.into(), vars.clone()));
+        if !self.latency.is_zero() {
+            tokio::time::sleep(self.latency).await;
+        }
         (self.answer)(op, &vars)
     }
 }
@@ -153,8 +169,8 @@ async fn a_long_track_list_comes_page_by_page() {
     assert_eq!(asked, [0, 100, 200]);
 }
 
-/// While typing, only the newest search matters: the ones it replaces aren't asked for, and what waited behind
-/// them runs after it, in the order it was asked for.
+/// While typing, only the newest search matters: the ones it replaces aren't asked for. It goes ahead of the browsing
+/// work waiting (#126), and what waited runs after it, in the order it was asked for.
 #[tokio::test]
 async fn the_newest_search_goes_first_and_the_rest_keep_their_order() {
     let f = Fixtures::new(|op, _| Ok(if op == "libraryV3" { fixture("library.json") } else { json!({}) }));
@@ -164,9 +180,42 @@ async fn the_newest_search_goes_first_and_the_rest_keep_their_order() {
         tx.send(c).await.unwrap();
     }
     next(&mut ev, |e| matches!(e, CatEvent::Library(_)).then_some(())).await;
-    let asked: Vec<String> = f.asked.lock().unwrap().iter().map(|(op, v)| format!("{op} {}", v["searchTerm"].as_str().unwrap_or(""))).collect();
-    let asked: Vec<&str> = asked.iter().map(|s| s.trim_end()).collect();
-    assert_eq!(asked[..3], ["fetchPlaylist", "searchDesktop nova", "libraryV3"]);
+    assert_eq!(f.order()[..3], ["searchDesktop nova", "fetchPlaylist", "libraryV3"]);
+}
+
+/// #126: a search typed while a long track list loads is made between two of its pages, not after the last.
+#[tokio::test]
+async fn a_search_is_made_between_the_pages_of_a_long_track_list() {
+    let f = Fixtures::new(|op, _| {
+        let mut v = fixture("playlist.json");
+        v["data"]["playlistV2"]["content"]["totalCount"] = json!(1000);
+        Ok(if op == "searchDesktop" { json!({}) } else { v })
+    })
+    .slow(Duration::from_millis(20));
+    let (_dir, tx, mut ev) = catalogue(&f);
+    tx.send(CatCmd::Tracks("spotify:playlist:p".into())).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Tracks(_)).then_some(())).await;
+    tx.send(CatCmd::Search("nova".into())).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Search(_)).then_some(())).await;
+    let order = f.order();
+    let at = order.iter().position(|o| o == "searchDesktop nova").unwrap();
+    assert!(at <= 2, "the search waited for the whole list: {order:?}");
+    assert!(next(&mut ev, |e| if let CatEvent::Tracks(p) = e { Some(p.offset) } else { None }).await > 0, "and the list carries on where it was");
+}
+
+/// #126: naming a whole queue (a `getTrack` each) lets a search through between two tracks.
+#[tokio::test]
+async fn a_search_is_made_between_the_tracks_of_a_queue_being_named() {
+    let f = Fixtures::new(|_, _| Ok(json!({}))).slow(Duration::from_millis(20));
+    let (_dir, tx, mut ev) = catalogue(&f);
+    tx.send(CatCmd::Describe((0..30).map(|i| format!("spotify:track:t{i}")).collect())).await.unwrap();
+    tx.send(CatCmd::Search("nova".into())).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Search(_)).then_some(())).await;
+    let order = f.order();
+    let at = order.iter().position(|o| o == "searchDesktop nova").unwrap();
+    assert!(at <= 1, "the search waited for the whole queue: {order:?}");
+    next(&mut ev, |e| matches!(e, CatEvent::DescribeFailed(_)).then_some(())).await;
+    assert_eq!(f.asked("getTrack"), 30, "and the queue is still named, every track");
 }
 
 /// #8: a search waited behind Connect work in the Catalogue's one loop, here the resume after an update, which
