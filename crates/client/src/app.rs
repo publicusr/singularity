@@ -1971,9 +1971,19 @@ impl App {
             }
             // nothing highlighted and no answer for these words yet: they go out now, without waiting for a pause
             KeyCode::Enter if s.shelves.sel.is_none() && !s.answered() => s.submit(),
-            // a short Pane shows the songs or the Shelves, never both: while a song is highlighted (↑ on the first one
-            // too) the Shelves' moves wait
-            KeyCode::Up | KeyCode::Left | KeyCode::Right | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End if s.short && s.track_sel.is_some() => {}
+            // with a song highlighted the keys stay in the songs, the only highlight (#82, owner Q136): PgUp PgDn page
+            // through them (by the songs shown), Home End go to the first and last; ↑ on the first song, ← and → do
+            // nothing
+            KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End if s.track_sel.is_some() => {
+                let (i, page, last) = (s.track_sel.unwrap_or(0), s.song_rows.max(1), songs.saturating_sub(1));
+                s.track_sel = Some(match k.code {
+                    KeyCode::PageUp => i.saturating_sub(page),
+                    KeyCode::PageDown => (i + page).min(last),
+                    KeyCode::Home => 0,
+                    _ => last,
+                });
+            }
+            KeyCode::Up | KeyCode::Left | KeyCode::Right if s.track_sel.is_some() => {}
             _ => {
                 // the Shelves take arrows and Enter like Home's
                 return self.home_key(k);
@@ -2063,9 +2073,17 @@ impl App {
         self.send(cmd);
     }
 
+    /// Highlight Card `c` in the Shelves shown; on Search the song highlight goes, so only one is ever live (#82).
+    fn pick_card(&mut self, c: CardRef) {
+        self.feed_view().sel = Some(c);
+        if matches!(self.page, Page::Search) {
+            self.search.track_sel = None;
+        }
+    }
+
     /// Open a Home Card (clicking never plays it: the list opens, with ▶ Play there).
     fn open_card(&mut self, c: CardRef) {
-        self.feed_view().sel = Some(c);
+        self.pick_card(c);
         // opening a result is what makes a search worth remembering
         if let Some(s) = self.searching_mut() {
             s.remember();
@@ -2276,7 +2294,7 @@ impl App {
         items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::Card(c)).map(|r| (r.x + 2, r.y + 1))).unwrap_or((0, 0));
         let Some(id) = self.active_feed().and_then(|f| CardId::of(f, c)) else { return };
-        self.feed_view().sel = Some(c);
+        self.pick_card(c);
         self.open_popup(Popup::Menu(Menu { at, target: Target::Card(id), items, selected: 0 }));
     }
 

@@ -335,7 +335,10 @@ fn start_daemon() -> Result<(), String> {
     // the service manager's marks of the terminal this Client runs in aren't the Daemon's (#145: the Daemon tells
     // Clients whether systemd or launchd runs it)
     cmd.env_remove("INVOCATION_ID").env_remove("XPC_SERVICE_NAME");
-    cmd.spawn().map(|_| ()).map_err(|e| format!("couldn't start {}: {e}", exe.display()))
+    // reaped when it quits (replaced, crashed), or it stays behind as a zombie for as long as this Client runs (#143)
+    let child = cmd.spawn().map_err(|e| format!("couldn't start {}: {e}", exe.display()))?;
+    singularity_config::host::reap(child);
+    Ok(())
 }
 
 #[cfg(test)]

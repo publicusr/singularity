@@ -12,8 +12,8 @@ use ratatui::style::Modifier;
 use singularity_proto::{HomeFeed, SearchResults, Shelf};
 use std::time::{Duration, Instant};
 
-/// Typing pauses this long before a search goes out.
-pub const DEBOUNCE: Duration = Duration::from_millis(300);
+/// Typing pauses this long before a search goes out (300 ms until the owner's Q127).
+pub const DEBOUNCE: Duration = Duration::from_millis(200);
 pub const CHIPS: [&str; 7] = ["All", "Songs", "Artists", "Albums", "Playlists", "Podcasts", "Audiobooks"];
 const RECENT_MAX: usize = 12;
 
@@ -59,6 +59,8 @@ pub struct Search {
     pub shelves_shown: Option<bool>,
     /// the Pane was short last frame (under `SHORT_H` rows): the songs and the Shelves take turns under the chips
     pub short: bool,
+    /// how many song rows showed last frame: a PgUp or PgDn's step
+    pub song_rows: usize,
 }
 
 /// How queries are matched, as the Daemon matches them.
@@ -413,6 +415,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         } else {
             v.songs().min(room + 1)
         };
+        v.song_rows = n;
         // (the Shelves hidden behind the songs: laid out all the same, so ↓ and the wheel can go into them)
         if v.short && n > 0 {
             let aspect = app.cell_px.map(|(cw, ch)| ch / cw).unwrap_or(2.0);
@@ -525,6 +528,16 @@ mod tests {
         s.type_text(q);
         assert_eq!(s.due_at(Instant::now() + DEBOUNCE).as_deref(), Some(q));
         s.receive(answer(q));
+    }
+
+    #[test]
+    fn a_search_goes_out_after_a_fifth_of_a_second_of_quiet() {
+        // owner, Q127: 200 ms (it was 300)
+        let mut s = Search::default();
+        s.type_text("nova");
+        let typed = Instant::now();
+        assert_eq!(s.due_at(typed + Duration::from_millis(150)), None);
+        assert_eq!(s.due_at(typed + Duration::from_millis(201)).as_deref(), Some("nova"));
     }
 
     #[test]

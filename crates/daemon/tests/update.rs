@@ -215,3 +215,70 @@ async fn a_build_is_verified_while_other_threads_start_processes() {
     }
     assert_eq!(failed, None);
 }
+
+/// Serve `body` (with its Content-Length) in pieces of `piece` bytes, `gap` apart; after `stall_after` bytes (if any)
+/// it sends nothing more and keeps the connection open. Returns the URL.
+async fn trickling_cdn(body: Vec<u8>, piece: usize, gap: std::time::Duration, stall_after: Option<usize>) -> String {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/soloist_release_x86_64.tar.gz", l.local_addr().unwrap());
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = l.accept().await {
+            let body = body.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let hdr = format!("HTTP/1.1 200 OK\r\nETag: \"slow\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = s.write_all(hdr.as_bytes()).await;
+                let mut sent = 0;
+                for chunk in body.chunks(piece) {
+                    if stall_after.is_some_and(|n| sent >= n) {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        return;
+                    }
+                    tokio::time::sleep(gap).await;
+                    if s.write_all(chunk).await.is_err() {
+                        return;
+                    }
+                    sent += chunk.len();
+                }
+            });
+        }
+    });
+    url
+}
+
+/// #142: a download has no deadline as a whole, only a pace (the real one: 1 KB/s over 30 s; here 20 bytes a second
+/// over 0.5 s). A build that trickles in at that pace for many windows finishes; one that stops arriving, or arrives
+/// slower than the pace (a byte now and then, never long enough apart to look stalled), is given up after about one
+/// window, and leaves nothing staged.
+#[tokio::test]
+async fn a_slow_download_finishes_and_a_stalled_or_too_slow_one_is_given_up() {
+    use std::time::{Duration, Instant};
+    let pace = update::Pace { window: Duration::from_millis(500), min_rate: 20 };
+    let body = tarball("soloist slow", false);
+    let piece = body.len().div_ceil(16);
+    assert!(piece * 3 > 10, "a window holds more than the pace asks for");
+    let root = tempfile::tempdir().unwrap();
+    let builds = Builds { root: root.path().into() };
+
+    // 16 pieces 150 ms apart: about 2.4 s in all, almost five windows
+    let url = trickling_cdn(body.clone(), piece, Duration::from_millis(150), None).await;
+    let start = Instant::now();
+    let build = update::download_with(&builds, &url, 1 << 20, pace).await.unwrap();
+    assert!(start.elapsed() > pace.window * 4, "the download took {:?}, not long enough to prove anything", start.elapsed());
+    assert_eq!(build.version, "soloist slow");
+    assert!(builds.ready().is_some());
+
+    // nothing more after half of it; one byte every 300 ms (2 or 3 bytes a second)
+    for (name, url) in [
+        ("stalled", trickling_cdn(body.clone(), piece, Duration::from_millis(50), Some(piece * 8)).await),
+        ("too slow", trickling_cdn(body.clone(), 1, Duration::from_millis(300), None).await),
+    ] {
+        let start = Instant::now();
+        let r = tokio::time::timeout(Duration::from_secs(10), update::download_with(&builds, &url, 1 << 20, pace)).await;
+        let waited = start.elapsed();
+        assert!(r.expect("a stalled download must not wait forever").is_err(), "{name}");
+        assert!(waited >= pace.window && waited < pace.window * 4, "{name}: given up after {waited:?}, the window is {:?}", pace.window);
+        assert!(!builds.staged().exists() && builds.ready().is_none(), "{name}: leaves nothing staged");
+    }
+}
