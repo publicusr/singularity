@@ -1659,7 +1659,7 @@ impl App {
         if p.uri == crate::tracks::LIKED {
             self.seed_liked(&p.tracks);
         }
-        self.open.add_page(&p, self.page.list() == Some(p.uri.as_str()));
+        self.open.add_page(&p);
         self.fetched.insert(p.uri.clone(), Instant::now());
         self.details_arrived(&p.uri);
         self.forget_old();

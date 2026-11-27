@@ -271,13 +271,9 @@ fn fmt_ms(ms: u64) -> String {
     format!("{}:{:02}", ms / 60_000, ms / 1000 % 60)
 }
 
+/// `s` cut to `w` cells, by display width: a wide title keeps its `…` (#75).
 fn clip(s: &str, w: usize) -> String {
-    if s.chars().count() <= w {
-        return s.to_string();
-    }
-    let mut o: String = s.chars().take(w.saturating_sub(1)).collect();
-    o.push('…');
-    o
+    crate::sidebar::clip(s, w.min(u16::MAX as usize) as u16)
 }
 
 /// The cover beside a song in a big queue, and the one of what's playing above it (cells: about square).
@@ -391,8 +387,10 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                     let left = if artists.is_empty() { name.clone() } else { format!("{name} · {artists}") };
                     text(buf, x, y, lw as u16, &clip(&left, lw), name_st.bg(bg));
                 }
-                // (a length wider than a narrow Pane goes where a release build always put it, not to a debug panic)
-                text(buf, (x + w).wrapping_sub(rw), y, rw, &right, th.s(if auto { th.border } else { th.dim }).bg(bg));
+                // (a length wider than a narrow Pane is left out, not drawn over its frame and the next Pane: #75)
+                if rw <= w {
+                    text(buf, x + w - rw, y, rw, &right, th.s(if auto { th.border } else { th.dim }).bg(bg));
+                }
                 hits.push((Rect::new(x, y, w, h), Hit::QueueRow(*i)));
             }
         }
@@ -484,8 +482,18 @@ mod tests {
         assert_eq!(d.index_in(&gone), None);
     }
 
+    /// The cut the small queue had before #75: by characters, so a wide title ran past its cells and lost its `…`.
+    fn clip_by_chars(s: &str, w: usize) -> String {
+        if s.chars().count() <= w {
+            return s.to_string();
+        }
+        let mut o: String = s.chars().take(w.saturating_sub(1)).collect();
+        o.push('…');
+        o
+    }
+
     /// The queue as it was drawn before the big look (#59), kept as it was: every size under the gate must still draw
-    /// exactly this.
+    /// exactly this, but for the two rows #75 fixed (`same_but_the_75_rows`).
     fn draw_before_59(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let (x, w) = (r.x + 1, r.width.saturating_sub(2));
         if r.height == 0 || w < 8 {
@@ -496,7 +504,7 @@ mod tests {
             Some(i) => {
                 text(buf, x, y, 2, "♪", th.s(th.accent));
                 let line = format!("{} — {}", i.name, i.artists.join(", "));
-                text(buf, x + 2, y, w.saturating_sub(2), &clip(&line, w.saturating_sub(2) as usize), th.s(th.accent).add_modifier(Modifier::BOLD));
+                text(buf, x + 2, y, w.saturating_sub(2), &clip_by_chars(&line, w.saturating_sub(2) as usize), th.s(th.accent).add_modifier(Modifier::BOLD));
             }
             None => text(buf, x, y, w, "nothing playing", th.s(th.dim)),
         }
@@ -530,7 +538,7 @@ mod tests {
         let mut hits = vec![];
         for line in all.iter().skip(view.top).take(body) {
             match line {
-                Line::Heading(h) => text(buf, x, y, w, &clip(h, w as usize), th.s(th.dim).add_modifier(Modifier::BOLD)),
+                Line::Heading(h) => text(buf, x, y, w, &clip_by_chars(h, w as usize), th.s(th.dim).add_modifier(Modifier::BOLD)),
                 Line::Entry(i) => {
                     let e = &q[*i];
                     let dragged = app.gesture.queue().is_some_and(|d| d.to == *i);
@@ -547,7 +555,7 @@ mod tests {
                     let artists = e.item.artists.join(", ");
                     let left = if artists.is_empty() { name.clone() } else { format!("{name} · {artists}") };
                     let name_st = if dragged { th.s(th.accent).add_modifier(Modifier::BOLD) } else if e.source == "queue" { th.s(th.fg).add_modifier(Modifier::BOLD) } else if auto { th.s(th.dim).add_modifier(Modifier::ITALIC) } else { th.s(th.fg) };
-                    text(buf, x, y, lw as u16, &clip(&left, lw), name_st.bg(bg));
+                    text(buf, x, y, lw as u16, &clip_by_chars(&left, lw), name_st.bg(bg));
                     text(buf, (x + w).wrapping_sub(rw), y, rw, &right, th.s(if auto { th.border } else { th.dim }).bg(bg));
                     hits.push((Rect::new(x, y, w, 1), Hit::QueueRow(*i)));
                 }
@@ -596,7 +604,7 @@ mod tests {
     fn every_size_under_the_gate_draws_as_before_cell_for_cell() {
         // the whole range of widths and heights a Pane can give it, but the big ones; a selection at the start, in the
         // middle and at the end (scrolled), something playing or not, a song held in a drag
-        let mut sizes = 0;
+        let (mut sizes, mut fixed) = (0, 0);
         // (selection, something playing, a song held in a drag), each an App for the new drawing and one for the old
         let setups = [(0, true, false), (9, false, false), (26, true, false), (9, true, true)];
         let mut apps: Vec<(App, App)> = setups
@@ -628,20 +636,139 @@ mod tests {
                     for _ in 0..2 {
                         let new = drawn(r, a, draw);
                         let old = drawn(r, b, draw_before_59);
-                        assert!(new == old, "{w}×{h}, {setup:?}: drawn differently");
+                        assert!(same_but_the_75_rows(&new, &old, a), "{w}×{h}, {setup:?}: drawn differently");
+                        fixed += usize::from(new.0 != old.0);
                     }
                 }
                 sizes += 1;
             }
         }
         assert!(sizes > 5900, "{sizes}");
+        assert!(fixed > 1000, "the wide titles and narrow lengths are drawn (and so fixed) often: {fixed}");
         // the gate's edge: one column or row short of it is still the old look
         for (w, h) in [(BIG.0 - 1, BIG.1), (BIG.0, BIG.1 - 1), (BIG.0 - 1, 60), (200, BIG.1 - 1)] {
             let r = Rect::new(0, 0, w, h);
             assert!(!is_big(r));
-            assert!(drawn(r, &mut full_app(27), draw).0 == drawn(r, &mut full_app(27), draw_before_59).0, "{w}×{h}");
+            let mut app = full_app(27);
+            let new = drawn(r, &mut app, draw);
+            assert!(same_but_the_75_rows(&new, &drawn(r, &mut full_app(27), draw_before_59), &app), "{w}×{h}");
         }
         assert!(is_big(Rect::new(0, 0, BIG.0, BIG.1)));
+    }
+
+    /// Whether two drawings of the small queue match: the same hits and place in the list, every cell the same but on
+    /// the rows #75 fixed: a song with a wide title (cut by its width now), one whose length is wider than the Pane
+    /// (left out now).
+    fn same_but_the_75_rows(new: &Drawn, old: &Drawn, app: &App) -> bool {
+        use unicode_width::UnicodeWidthStr;
+        if new.1 != old.1 || new.2 != old.2 {
+            return false;
+        }
+        let q = preview(&app.playback.queue, app.gesture.queue().cloned());
+        let area = new.0.area;
+        let w = area.width.saturating_sub(2) as usize;
+        let fixed = |y: u16| {
+            new.1.iter().any(|(rr, h)| match h {
+                Hit::QueueRow(i) if rr.y == y => {
+                    let e = &q[*i];
+                    let wide = e.item.name.width() != e.item.name.chars().count();
+                    let right = format!("autoplay {:>5}", fmt_ms(e.item.duration_ms));
+                    wide || (e.source == "autoplay" && right.len() > w)
+                }
+                _ => false,
+            })
+        };
+        // on those rows only the words may differ: every cell keeps its background (the highlight), and a cell
+        // showing the same character (a space aside: only its background shows) keeps its style; the cell a wide
+        // character covers has none of its own
+        let covered = |b: &Buffer, p: ratatui::layout::Position| p.x > area.x && b[(p.x - 1, p.y)].symbol().width() > 1;
+        area.positions().all(|p| {
+            let (n, o) = (&new.0[p], &old.0[p]);
+            // (a length spilled left of the Pane, over its frame column: that cell is the fix, and stays empty now)
+            let spilled = p.x == area.x && *n == ratatui::buffer::Cell::EMPTY;
+            n == o || (fixed(p.y) && (spilled || covered(&new.0, p) || covered(&old.0, p) || (n.bg == o.bg && (n.symbol() != o.symbol() || n.symbol() == " " || n.style() == o.style()))))
+        })
+    }
+
+    #[test]
+    fn a_big_queue_changes_only_its_wide_headings() {
+        // the heading's cut is shared with the big queue (#75): there only a heading wider than the Pane in wide
+        // characters draws differently from the cut by characters, which lost its `…`
+        let wide = "夜明けのオーケストラと長い長い日本語のプレイリストの名前、夜明けのオーケストラと長い長い日本語のプレイリスト";
+        use unicode_width::UnicodeWidthStr;
+        let th = Theme::singularity();
+        let mut changes = 0;
+        for (w, h) in [(BIG.0, BIG.1), (BIG.0 + 1, BIG.1 + 7), (140, 50)] {
+            let r = Rect::new(0, 0, w, h);
+            for name in ["Night Drive", wide] {
+                let mut app = full_app(27);
+                app.playback.context_name = Some(name.into());
+                let (new, hits, (top, _, list_y)) = drawn(r, &mut app, draw);
+                assert!(is_big(r) && top == 0);
+                // the old frame: every heading row drawn again with the old cut
+                let mut old = new.clone();
+                let headings = lines_of(&app.playback.queue, Some(name)).into_iter().filter_map(|l| match l {
+                    Line::Heading(h) => Some(h),
+                    Line::Entry(_) => None,
+                });
+                let rows = (list_y..r.bottom()).filter(|&y| !hits.iter().any(|(rr, _)| rr.y <= y && y < rr.bottom()) && !row_text(&new, 0, w, y).trim().is_empty());
+                let mut changed = vec![];
+                for (y, heading) in rows.zip(headings) {
+                    for x in 1..w - 1 {
+                        old[(x, y)] = ratatui::buffer::Cell::EMPTY;
+                    }
+                    text(&mut old, 1, y, w - 2, &clip_by_chars(&heading, (w - 2) as usize), th.s(th.dim).add_modifier(Modifier::BOLD));
+                    if (0..w).any(|x| new[(x, y)] != old[(x, y)]) {
+                        changed.push(y);
+                        assert!(heading.contains('夜') && row_text(&new, 1, w - 1, y).trim_end().ends_with('…'), "{w}×{h}: {heading:?}");
+                    }
+                }
+                // every other cell as before; only the wide heading ("Next from …"), when wider than the Pane, changed
+                assert!(r.positions().all(|p| new[p] == old[p] || changed.contains(&p.y)), "{w}×{h}, {name}");
+                let cut = name == wide && format!("Next from {name}").width() > (w - 2) as usize;
+                assert_eq!(changed.len(), usize::from(cut), "{w}×{h}, {name}");
+                changes += changed.len();
+            }
+        }
+        assert_eq!(changes, 2, "the wide heading is cut at the two narrower sizes");
+    }
+
+    #[test]
+    fn small_queue_titles_are_cut_by_their_width_and_lengths_stay_in_the_pane() {
+        // a Pane well to the right, in a screen wider than it: nothing may be drawn outside it, or on its frame columns
+        for pw in 10..=30u16 {
+            let r = Rect::new(40, 1, pw, 30);
+            let screen = Rect::new(0, 0, 100, 32);
+            let mut app = full_app(27);
+            let th = Theme::singularity();
+            let mut buf = Buffer::empty(screen);
+            app.hits.clear();
+            draw(&mut buf, r, &mut app, &th);
+            let (x, w) = (r.x + 1, r.width - 2);
+            for p in screen.positions() {
+                if p.x < x || p.x >= x + w || p.y < r.y || p.y >= r.bottom() {
+                    assert_eq!(buf[p], ratatui::buffer::Cell::EMPTY, "{pw}: drawn outside the Pane at {p:?}");
+                }
+            }
+            let q = &app.playback.queue;
+            for (rr, h) in app.hits.clone() {
+                let Hit::QueueRow(i) = h else { continue };
+                let row = row_text(&buf, x, x + w, rr.y);
+                let e = &q[i];
+                let dur = fmt_ms(e.item.duration_ms);
+                let rw = if e.source == "autoplay" { 9 + 5 } else { 5 };
+                if rw <= w {
+                    assert!(row.trim_end().ends_with(&dur), "{pw}, {i}: the length fits and shows: {row:?}");
+                } else {
+                    assert!(!row.contains(&dur) && !row.contains("autoplay"), "{pw}, {i}: a length wider than the Pane is left out: {row:?}");
+                }
+                // a long title, wide or not, cut with its ellipsis in the cells left of the length
+                if i % 5 >= 3 && w > rw + 2 {
+                    let title = row_text(&buf, x, x + w - rw - 1, rr.y);
+                    assert!(title.trim_end().ends_with('…'), "{pw}, {i}: {title:?}");
+                }
+            }
+        }
     }
 
     fn row_text(buf: &Buffer, x0: u16, x1: u16, y: u16) -> String {
