@@ -51,6 +51,8 @@ pub struct Search {
     pub recent_sel: usize,
     /// the Pane was short last frame (under `SHORT_H` rows): the songs and the Shelves take turns under the chips
     pub short: bool,
+    /// how many song rows showed last frame: a PgUp or PgDn's step
+    pub song_rows: usize,
 }
 
 /// How queries are matched, as the Daemon matches them.
@@ -384,6 +386,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         } else {
             v.songs().min(room + 1)
         };
+        v.song_rows = n;
         // (the Shelves hidden behind the songs: laid out all the same, so ↓ and the wheel can go into them)
         if v.short && n > 0 {
             let aspect = app.cell_px.map(|(cw, ch)| ch / cw).unwrap_or(2.0);

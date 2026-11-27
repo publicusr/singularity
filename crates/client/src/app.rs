@@ -1900,9 +1900,15 @@ impl App {
             }
             // nothing highlighted and no answer for these words yet: they go out now, without waiting for a pause
             KeyCode::Enter if s.shelves.sel.is_none() && !s.answered() => s.submit(),
-            // a short Pane shows the songs or the Shelves, never both: while a song is highlighted (↑ on the first one
-            // too) the Shelves' moves wait
-            KeyCode::Up | KeyCode::Left | KeyCode::Right | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End if s.short && s.track_sel.is_some() => {}
+            // PgUp PgDn page through the songs (a Pane with room: a short one keeps them still, below)
+            KeyCode::PageUp | KeyCode::PageDown if !s.short && s.track_sel.is_some() => {
+                let (i, page) = (s.track_sel.unwrap_or(0), s.song_rows.max(1));
+                let to = if k.code == KeyCode::PageUp { i.saturating_sub(page) } else { (i + page).min(songs.saturating_sub(1)) };
+                s.track_sel = Some(to);
+            }
+            // one highlight at a time (#82): while a song is highlighted (↑ on the first one too) the Shelves' moves
+            // wait, in a short Pane (which shows the songs or the Shelves, never both) and one with room alike
+            KeyCode::Up | KeyCode::Left | KeyCode::Right | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End if s.track_sel.is_some() => {}
             _ => {
                 // the Shelves take arrows and Enter like Home's
                 return self.home_key(k);

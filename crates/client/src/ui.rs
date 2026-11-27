@@ -3436,6 +3436,64 @@ mod tests {
         assert!(s.contains("Songs") && s.contains("S1"), "{s}");
     }
 
+    /// #82: in a Search Pane with room, a highlighted song is the only highlight: ↑ on the first song, ← → Home End
+    /// leave the Shelves alone (they gave a Shelf a second highlight, and Enter still played the song), and PgUp PgDn
+    /// page through the songs.
+    #[test]
+    fn a_search_with_room_keeps_one_highlight_and_pages_through_its_songs() {
+        use crate::layout::{Axis, Node, Size, Widget};
+        use singularity_proto::{Card, SearchResults, TrackRow};
+        let (mut app, _rx) = playing_app(1);
+        app.layout = Node::split(Axis::Vertical, Size::Cells(20), Node::pane(Widget::Home), Node::pane(Widget::Queue)).into();
+        app.focus = app.layout.pane_of(Widget::Home);
+        render(&mut app, 100, 30);
+        app.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        for c in "nova".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let tracks = (1..=30).map(|i| TrackRow { uri: format!("spotify:track:t{i}"), name: format!("S{i}"), duration_ms: 60_000, ..Default::default() }).collect();
+        let artists = vec![Card { uri: "spotify:artist:a".into(), name: "Arty".into(), subtitle: String::new(), image_url: None, kind: "artist".into() }];
+        receive_search(&mut app, SearchResults { query: "nova".into(), tracks, artists, ..Default::default() });
+        render(&mut app, 100, 30);
+        assert!(app.searching().is_some_and(|s| !s.short && s.shelves.sel.is_none()));
+        let key = |app: &mut App, code: KeyCode| {
+            app.key(KeyEvent::new(code, KeyModifiers::NONE));
+            render(app, 100, 30);
+            app.searching().map(|s| (s.track_sel, s.shelves.sel.is_some())).unwrap()
+        };
+        assert_eq!(key(&mut app, KeyCode::Down), (Some(0), false), "the first song");
+        for code in [KeyCode::Up, KeyCode::Left, KeyCode::Right, KeyCode::Home, KeyCode::End, KeyCode::PageUp, KeyCode::Up] {
+            assert_eq!(key(&mut app, code), (Some(0), false), "{code:?}: the first song stays the only highlight");
+        }
+        // Songs: all thirty, more than show; PgDn and PgUp move a window's worth, and stop at the ends
+        assert_eq!(key(&mut app, KeyCode::Tab), (None, false));
+        assert_eq!(key(&mut app, KeyCode::Down), (Some(0), false));
+        let page = app.searching().map(|s| s.song_rows).unwrap();
+        assert!(page > 1 && page < 30, "{page}");
+        assert_eq!(key(&mut app, KeyCode::PageDown), (Some(page), false));
+        for _ in 0..30 / page + 1 {
+            key(&mut app, KeyCode::PageDown);
+        }
+        assert_eq!(key(&mut app, KeyCode::PageDown), (Some(29), false), "the last song");
+        assert_eq!(key(&mut app, KeyCode::PageUp), (Some(29 - page), false));
+        for code in [KeyCode::Left, KeyCode::Right, KeyCode::Home, KeyCode::End] {
+            assert_eq!(key(&mut app, code), (Some(29 - page), false), "{code:?}");
+        }
+        for _ in 0..30 / page + 1 {
+            key(&mut app, KeyCode::PageUp);
+        }
+        assert_eq!(key(&mut app, KeyCode::PageUp), (Some(0), false), "the first song");
+        // ↓ past the last song still goes into the Shelves (under All, where there are some): one highlight there
+        assert_eq!(key(&mut app, KeyCode::BackTab), (None, false));
+        assert_eq!(key(&mut app, KeyCode::Down), (Some(0), false));
+        let songs = app.searching().map(|s| s.songs()).unwrap();
+        for _ in 0..songs - 1 {
+            key(&mut app, KeyCode::Down);
+        }
+        assert_eq!(key(&mut app, KeyCode::Down).0, None);
+        assert!(app.searching().is_some_and(|s| s.shelves.sel.is_some()));
+    }
+
     #[test]
     fn picking_the_recent_search_just_cleared_runs_it_again() {
         // #8: Esc cleared the query but the Client still thought "nova" was sent, so picking it sent nothing
