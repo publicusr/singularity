@@ -1,7 +1,9 @@
 //! Nightly library backups (#23, D20): Liked Songs and every playlist the account owns, in full; playlists it only
 //! follows as name + link. One private-API request at a time, a second apart, through the Catalogue's queue (so
 //! browsing isn't held up); a playlist whose revision hasn't changed is copied from the previous backup instead of
-//! fetched again. Written by `store.rs`, never sent anywhere.
+//! fetched again. A list that doesn't come back whole (a page with errors, or fewer tracks than Spotify says it has)
+//! keeps its last whole copy, or without one is saved marked `incomplete` (#144). Written by `store.rs`, never sent
+//! anywhere.
 
 use crate::Hub;
 use crate::catalogue::CatCmd;
@@ -47,19 +49,42 @@ fn row(t: &TrackRow) -> Value {
     json!({ "uri": t.uri, "name": t.name, "artists": t.artists, "album": t.album, "added_at": t.added_at })
 }
 
-/// Every track of a list, page by page.
-async fn tracks(f: &mut impl Fetch, uri: &str) -> anyhow::Result<Vec<Value>> {
+/// A list as fetched tonight: its rows, the length Spotify gave it, and why it isn't whole (if it isn't).
+struct Listed {
+    rows: Vec<Value>,
+    total: u32,
+    short: Option<String>,
+}
+
+/// Every track of a list, page by page. A page that comes back with errors, or not shaped like a list, or a list that
+/// ends before its total, makes a short list, not a finished one (#144).
+async fn tracks(f: &mut impl Fetch, uri: &str) -> anyhow::Result<Listed> {
     let mut rows = vec![];
     let mut offset = 0;
+    let mut total = 0;
     loop {
         let Some((op, vars)) = library::tracks_query(uri, offset) else { anyhow::bail!("can't list {uri}") };
-        let (page, total) = library::parse_tracks(uri, &f.query(op, vars).await?);
+        let v = f.query(op, vars).await?;
+        if v.get("errors").is_some() || library::stated_total(uri, &v).is_none() {
+            let why = v["errors"][0]["message"].as_str().unwrap_or("not a track list");
+            return Ok(Listed { rows, total, short: Some(format!("the page at {offset} came back with an error ({why})")) });
+        }
+        let (page, n) = library::parse_tracks(uri, &v);
+        total = n;
         rows.extend(page.iter().map(row));
         offset += library::TRACK_PAGE;
-        if page.is_empty() || offset >= total.min(MAX_TRACKS) {
-            return Ok(rows);
+        let want = total.min(MAX_TRACKS);
+        if page.is_empty() || offset >= want {
+            let short = (rows.len() < want as usize).then(|| format!("only {} of its {want} tracks came back", rows.len()));
+            return Ok(Listed { rows, total, short });
         }
     }
+}
+
+/// Can a list from an earlier backup stand in for tonight's? Not if it was marked incomplete, or doesn't hold as many
+/// tracks as Spotify said it had (a backup from before #144 doesn't say, so it's fetched again).
+fn whole(tracks: &Value, total: &Value, incomplete: &Value) -> bool {
+    incomplete.is_null() && tracks.as_array().zip(total.as_u64()).is_some_and(|(t, n)| t.len() as u64 == n.min(MAX_TRACKS as u64))
 }
 
 /// Take a backup of `username`'s library. `previous`: the last backup, whose unchanged playlists are reused.
@@ -85,13 +110,29 @@ pub async fn take(f: &mut impl Fetch, username: &str, previous: Option<&Value>, 
             }
         }
     }
-    let liked = tracks(f, LIKED).await?;
-    // last night's playlists by URI: revision and tracks
-    let before: HashMap<&str, (&Value, &Value)> = previous
+    // Liked Songs: tonight's, or when that comes back short the last whole copy, or else the short one, marked
+    let mut liked = tracks(f, LIKED).await?;
+    let (mut liked_total, mut liked_incomplete) = (json!(liked.total), Value::Null);
+    if let Some(why) = liked.short.take() {
+        match previous.filter(|p| whole(&p["liked"], &p["liked_total"], &p["liked_incomplete"])) {
+            Some(p) => {
+                tracing::warn!("library backup: Liked Songs: {why}; keeping the copy from the last backup");
+                liked.rows = p["liked"].as_array().cloned().unwrap_or_default();
+                liked_total = p["liked_total"].clone();
+            }
+            None => {
+                tracing::warn!("library backup: Liked Songs: {why}; backed up as incomplete");
+                liked_incomplete = json!(why);
+            }
+        }
+    }
+    // the last backup's whole playlists by URI
+    let before: HashMap<&str, &Value> = previous
         .and_then(|p| p["playlists"].as_array())
         .into_iter()
         .flatten()
-        .filter_map(|p| Some((p["uri"].as_str()?, (&p["revision"], &p["tracks"]))))
+        .filter(|p| whole(&p["tracks"], &p["total"], &p["incomplete"]))
+        .filter_map(|p| Some((p["uri"].as_str()?, p)))
         .collect();
     let (mut owned, mut followed) = (vec![], vec![]);
     let mut seen = std::collections::HashSet::new();
@@ -103,13 +144,33 @@ pub async fn take(f: &mut impl Fetch, username: &str, previous: Option<&Value>, 
             followed.push(json!({ "uri": p.uri, "name": p.name, "owner": p.owner }));
             continue;
         }
-        let tracks = match before.get(p.uri.as_str()) {
-            Some((rev, t)) if p.revision.is_some() && rev.as_str() == p.revision.as_deref() => (*t).clone(),
-            _ => Value::Array(tracks(f, &p.uri).await?),
-        };
-        owned.push(json!({ "uri": p.uri, "name": p.name, "revision": p.revision, "tracks": tracks }));
+        let last = before.get(p.uri.as_str());
+        let entry = |revision: &Value, total: &Value, tracks: Value| json!({ "uri": p.uri, "name": p.name, "revision": revision, "total": total, "tracks": tracks });
+        if let Some(e) = last.filter(|e| p.revision.is_some() && e["revision"].as_str() == p.revision.as_deref()) {
+            owned.push(entry(&e["revision"], &e["total"], e["tracks"].clone()));
+            continue;
+        }
+        let l = tracks(f, &p.uri).await?;
+        owned.push(match (l.short, last) {
+            (None, _) => entry(&json!(p.revision), &json!(l.total), Value::Array(l.rows)),
+            // the last whole copy, under its own revision, so the next backup tries again
+            (Some(why), Some(e)) => {
+                tracing::warn!("library backup: {}: {why}; keeping the copy from the last backup", p.uri);
+                entry(&e["revision"], &e["total"], e["tracks"].clone())
+            }
+            (Some(why), None) => {
+                tracing::warn!("library backup: {}: {why}; backed up as incomplete", p.uri);
+                let mut e = entry(&json!(p.revision), &json!(l.total), Value::Array(l.rows));
+                e["incomplete"] = json!(why);
+                e
+            }
+        });
     }
-    Ok(json!({ "schema": 1, "taken_ms": now_ms, "liked": liked, "playlists": owned, "followed": followed }))
+    let mut b = json!({ "schema": 1, "taken_ms": now_ms, "liked": liked.rows, "liked_total": liked_total, "playlists": owned, "followed": followed });
+    if !liked_incomplete.is_null() {
+        b["liked_incomplete"] = liked_incomplete;
+    }
+    Ok(b)
 }
 
 /// Keep the backups coming: whenever the Catalogue is logged in and the last backup is a day old (checked at start
@@ -152,6 +213,16 @@ mod tests {
     struct Fake {
         asked: Vec<String>,
         revision: &'static str,
+        /// What "mine"'s second page comes back as instead of its last 50 tracks.
+        trouble: Option<Trouble>,
+    }
+
+    #[derive(Clone, Copy)]
+    enum Trouble {
+        /// An answer with `errors` and no list.
+        Errors,
+        /// An empty page, as if the list ended there.
+        Empty,
     }
 
     fn track_page(items: Vec<Value>, total: usize) -> Value {
@@ -187,7 +258,11 @@ mod tests {
                 // "mine" has 150 tracks: two pages
                 ("fetchPlaylist", _, Some("spotify:playlist:mine")) => {
                     let o = vars["offset"].as_u64().unwrap() as usize;
-                    track_page((o..(o + 100).min(150)).map(track).collect(), 150)
+                    match self.trouble.filter(|_| o > 0) {
+                        Some(Trouble::Errors) => json!({ "errors": [{ "message": "Something went wrong" }], "data": null }),
+                        Some(Trouble::Empty) => track_page(vec![], 150),
+                        None => track_page((o..(o + 100).min(150)).map(track).collect(), 150),
+                    }
                 }
                 ("fetchPlaylist", ..) => track_page(vec![track(900)], 1),
                 _ => anyhow::bail!("unexpected {op}"),
@@ -197,7 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn backs_up_owned_playlists_in_full_and_followed_ones_by_name() {
-        let mut f = Fake { asked: vec![], revision: "r1" };
+        let mut f = Fake { asked: vec![], revision: "r1", trouble: None };
         let b = take(&mut f, "me", None, 7).await.unwrap();
         assert_eq!(b["liked"].as_array().unwrap().len(), 2);
         let owned: Vec<(&str, usize)> = b["playlists"].as_array().unwrap().iter().map(|p| (p["uri"].as_str().unwrap(), p["tracks"].as_array().unwrap().len())).collect();
@@ -207,12 +282,68 @@ mod tests {
         assert!(!f.asked.iter().any(|a| a.contains("theirs")), "followed playlists aren't fetched: {:?}", f.asked);
 
         // the next night: "mine" unchanged is copied, not fetched; once it changes, it's fetched again
-        let mut again = Fake { asked: vec![], revision: "r1" };
+        let mut again = Fake { asked: vec![], revision: "r1", trouble: None };
         let b2 = take(&mut again, "me", Some(&b), 8).await.unwrap();
         assert_eq!(b2["playlists"], b["playlists"]);
         assert!(!again.asked.iter().any(|a| a.contains("fetchPlaylist spotify:playlist:mine")), "{:?}", again.asked);
-        let mut changed = Fake { asked: vec![], revision: "r2" };
+        let mut changed = Fake { asked: vec![], revision: "r2", trouble: None };
         take(&mut changed, "me", Some(&b), 9).await.unwrap();
         assert_eq!(changed.asked.iter().filter(|a| a.contains("fetchPlaylist spotify:playlist:mine")).count(), 2);
+    }
+
+    fn mine(b: &Value) -> &Value {
+        b["playlists"].as_array().unwrap().iter().find(|p| p["uri"] == "spotify:playlist:mine").unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_page_that_comes_back_wrong_makes_an_incomplete_list_not_a_short_whole_one() {
+        for trouble in [Trouble::Errors, Trouble::Empty] {
+            // no earlier copy: what came back is kept, marked incomplete
+            let mut f = Fake { asked: vec![], revision: "r1", trouble: Some(trouble) };
+            let b = take(&mut f, "me", None, 7).await.unwrap();
+            let m = mine(&b);
+            assert_eq!(m["tracks"].as_array().unwrap().len(), 100);
+            assert!(m["incomplete"].is_string(), "{m}");
+            // the next night, same revision: the marked copy isn't carried forward but fetched again
+            let mut next = Fake { asked: vec![], revision: "r1", trouble: None };
+            let b2 = take(&mut next, "me", Some(&b), 8).await.unwrap();
+            assert_eq!(next.asked.iter().filter(|a| a.contains("fetchPlaylist spotify:playlist:mine")).count(), 2);
+            assert_eq!(mine(&b2)["tracks"].as_array().unwrap().len(), 150);
+            assert!(mine(&b2).get("incomplete").is_none());
+
+            // a whole earlier copy: kept, under its own revision so the next night tries again
+            let mut bad = Fake { asked: vec![], revision: "r2", trouble: Some(trouble) };
+            let b3 = take(&mut bad, "me", Some(&b2), 9).await.unwrap();
+            assert_eq!(mine(&b3), mine(&b2));
+            let mut fine = Fake { asked: vec![], revision: "r2", trouble: None };
+            take(&mut fine, "me", Some(&b3), 10).await.unwrap();
+            assert_eq!(fine.asked.iter().filter(|a| a.contains("fetchPlaylist spotify:playlist:mine")).count(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_short_copy_from_before_isnt_carried_forward() {
+        let mut f = Fake { asked: vec![], revision: "r1", trouble: None };
+        let mut b = take(&mut f, "me", None, 7).await.unwrap();
+        // a backup from before #144 that stopped early: no total, 100 of 150 tracks
+        let m = b["playlists"].as_array_mut().unwrap().iter_mut().find(|p| p["uri"] == "spotify:playlist:mine").unwrap();
+        m.as_object_mut().unwrap().remove("total");
+        m["tracks"].as_array_mut().unwrap().truncate(100);
+        let mut next = Fake { asked: vec![], revision: "r1", trouble: None };
+        let b2 = take(&mut next, "me", Some(&b), 8).await.unwrap();
+        assert_eq!(mine(&b2)["tracks"].as_array().unwrap().len(), 150);
+        // or one whose length doesn't match the count it was saved with
+        let mut b3 = b2.clone();
+        b3["playlists"][0]["tracks"].as_array_mut().unwrap().truncate(100);
+        let mut again = Fake { asked: vec![], revision: "r1", trouble: None };
+        let b4 = take(&mut again, "me", Some(&b3), 9).await.unwrap();
+        assert_eq!(mine(&b4)["tracks"].as_array().unwrap().len(), 150);
+    }
+
+    #[test]
+    fn an_answer_without_a_list_isnt_an_empty_list() {
+        let v = json!({ "errors": [{ "message": "x" }], "data": null });
+        assert_eq!(library::stated_total("spotify:playlist:x", &v), None);
+        assert_eq!(library::stated_total(LIKED, &json!({ "data": { "me": { "library": { "tracks": { "totalCount": 0, "items": [] } } } } })), Some(0));
     }
 }
