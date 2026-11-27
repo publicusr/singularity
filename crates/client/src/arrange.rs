@@ -31,16 +31,17 @@
 //! above or below it, `w` opens "+ Widget"'s picker; Esc (or `m`) with nothing picked up is Done.
 //!
 //! The Design files (owner, Q33): the name prompt never interrupts an edit. An edit to a built-in Design is kept at
-//! once as its one unnamed "<Design> (edited)" (the built-in itself never changes; Reset design goes back): outside
+//! once as its one unnamed "<Design> (edited)" (the built-in itself never changes; deleting the copy goes back): outside
 //! Arrange mode the bar says so ("Kept as …"), and in Arrange mode Done asks for a name, if anything changed. A Design
 //! of the user's own saves itself. Save design as… names one any time.
 //!
 //! Undo (owner, 2026-11-01): every committed edit (a drop, close, split, Tray edit, size step, divider
-//! release, Reset design) can be undone, back to 50 edits, for the session. Undo restores the Arrangement and which
-//! Design it was, and the files follow: a Design of the user's gets the restored tree written to its file (and one
-//! that a Reset dropped comes back). Undoing the first edit of a built-in Design returns to the built-in one: the
-//! unnamed "<Design> (edited)" that edit made is removed again (no orphan), while a Design the user named stays in the
-//! picker as saved (it was a deliberate save, like after Reset design). With Done's name prompt up, undo closes it. A
+//! release, Ctrl+K → Delete design… of an "(edited)" copy) can be undone, back to 50 edits, for the session. Undo
+//! restores the Arrangement and which Design it was, and the files follow: a Design of the user's gets the restored
+//! tree written to its file (and an "(edited)" copy that was deleted comes back). Undoing the first edit of a built-in
+//! Design returns to the built-in one: the unnamed "<Design> (edited)" that edit made is removed again (no orphan),
+//! while a Design the user named stays in the picker as saved (it was a deliberate save). With Done's name prompt up,
+//! undo closes it. A
 //! state whose floor plan no longer fits the window is refused with a notice.
 //!
 //! The state and what input does to it are `mode`'s ([`Arrange`]: keys and pointer moves in, outcomes out, D89); this
@@ -442,7 +443,8 @@ impl App {
 
     /// Before each frame: Home always has a Pane outside Arrange mode (`Arrange::homeless`).
     pub fn arrange_if_homeless(&mut self) {
-        let previewing = self.picker().is_some();
+        // (the picker's Delete asks over it: still previewing)
+        let previewing = self.picker().is_some() || self.delete_ask().is_some_and(|d| d.back.is_some());
         arrange!(self, homeless, previewing)
     }
 
@@ -503,18 +505,26 @@ impl App {
         self.shown_did(o);
     }
 
-    /// "Reset design": the built-in Design's own layout again. A Design of the user's stays in the picker as it was
-    /// last saved (its file isn't touched); the unnamed edit of a built-in one is dropped.
-    pub fn reset_design(&mut self) {
+    /// "Delete design", once it's been answered yes (#80, replacing Reset design): the Design on screen is deleted.
+    /// Its "(edited)" copy gives way to the built-in Design's own layout, keeping the Theme on screen, as Reset design
+    /// did (and, `undoable`, one undo brings the copy back); a Design of the user's gives way to the default Design,
+    /// with its own Theme, and the layout undo history was the deleted Design's. A built-in Design has nothing to
+    /// delete.
+    pub fn delete_design(&mut self, undoable: bool) {
         // a divider held meanwhile is let go first, on the Design it moved (Q103)
         self.gesture_interrupted();
         let before = self.arrange.snapshot(&scene!(self));
-        let theme = self.theme.id.clone();
-        let o = self.shown.reset();
+        let (theme, edited) = (self.theme.id.clone(), self.shown.on_edited_copy());
+        let Some(o) = self.shown.delete() else { return };
         self.set_design(self.shown.design());
-        self.set_theme(&theme);
+        if edited {
+            self.set_theme(&theme);
+        }
         self.shown_did(o);
-        self.arrange.reset_done(before, &self.layout);
+        match edited && undoable {
+            true => self.arrange.reset_done(before, &self.layout),
+            false => self.arrange.forget_history(),
+        }
     }
 
     // ── close and split ───────────────────────────────────────────────

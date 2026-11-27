@@ -176,6 +176,7 @@ pub(crate) fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
         Modal::Health => crate::setup::health_rect(area),
         Modal::Devices => devices_rect(area, app),
         Modal::Picker => crate::looks::picker_rect(area, app.picker()?),
+        Modal::DeleteDesign => crate::looks::delete_ask_rect(area),
         Modal::Naming => naming_rect(area, app),
         Modal::WidgetPicker => {
             // (its Pane gone: drawing it closes it)
@@ -209,6 +210,7 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
         }
         Modal::Devices => devices(f.buffer_mut(), area, app, th),
         Modal::Picker => crate::looks::draw_picker(f.buffer_mut(), area, app, th),
+        Modal::DeleteDesign => crate::looks::draw_delete_ask(f.buffer_mut(), area, app, th),
         Modal::WidgetPicker => crate::panemenu::draw(f.buffer_mut(), area, app, th),
         Modal::Library => crate::paneless::draw_library(f.buffer_mut(), area, app, th),
         Modal::Queue => crate::paneless::draw_queue(f.buffer_mut(), area, app, th),
@@ -3607,6 +3609,9 @@ mod tests {
         match m {
             Modal::Palette => app.run(Action::Palette),
             Modal::Picker => app.open_picker(crate::looks::PickerKind::Theme),
+            Modal::DeleteDesign => {
+                app.open_popup(crate::app::Popup::DeleteDesign(crate::looks::DeleteAsk { file: "mine".into(), name: "Mine".into(), back: None }));
+            }
             Modal::Naming => app.open_popup(crate::app::Popup::Naming(crate::app::Naming::playlist())),
             Modal::WidgetPicker => app.open_widget_picker(app.layout.pane_of(Widget::Stream).unwrap()),
             // a Design without their Panes (D87)
@@ -3667,7 +3672,7 @@ mod tests {
             Modal::Health => app.text_scroll(m).map(|s| s.offset()),
             Modal::Menu => app.menu().map(|m| m.selected),
             Modal::Help => app.text_scroll(m).map(|s| s.offset()),
-            Modal::Naming | Modal::Cover | Modal::Login => None,
+            Modal::Naming | Modal::Cover | Modal::Login | Modal::DeleteDesign => None,
             Modal::Arrange => app.arrange.tray_first(),
         }
     }
@@ -3795,7 +3800,7 @@ mod tests {
             let (mut app, _rx) = over_wizard(m);
             render(&mut app, w, h);
             click(&mut app, 0, 0);
-            let closes = matches!(m, Modal::Palette | Modal::Picker | Modal::WidgetPicker | Modal::Library | Modal::Queue | Modal::Adding | Modal::Devices | Modal::Menu | Modal::Help);
+            let closes = matches!(m, Modal::Palette | Modal::Picker | Modal::DeleteDesign | Modal::WidgetPicker | Modal::Library | Modal::Queue | Modal::Adding | Modal::Devices | Modal::Menu | Modal::Help);
             assert_eq!(app.modal(), Some(if closes { Modal::Wizard } else { m }), "{m:?}: the click");
             // the click on its first row, inside its box: the row is chosen (the popup has done its job and gone)
             let (mut app, _rx) = over_wizard(m);

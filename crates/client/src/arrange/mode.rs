@@ -457,7 +457,7 @@ impl Arrange {
         Some((at, a, can))
     }
 
-    /// Remember `was` as what undo goes back to (Reset design), and offer it.
+    /// Remember `was` as what undo goes back to (an "(edited)" copy deleted), and offer it.
     pub fn remember(&mut self, was: Snapshot) {
         self.history.push(was);
         self.undo_offer = Some((Instant::now(), Action::UndoLayout));
@@ -533,12 +533,12 @@ impl Arrange {
         w.done()
     }
 
-    /// What's on screen now, for undo to come back to (Reset design takes it before it resets).
+    /// What's on screen now, for undo to come back to (Delete design takes it before it deletes).
     pub fn snapshot(&self, sc: &Scene) -> Snapshot {
         Work::new(sc, &mut None).snapshot()
     }
 
-    /// Reset design replaced `before` with `now`: one undo step, if it changed the layout or left a file.
+    /// Delete design replaced `before` with `now`: one undo step, if it changed the layout or left a file.
     pub fn reset_done(&mut self, before: Snapshot, now: &Arrangement) {
         if before.tree != *now || before.shown.file().is_some() {
             self.remember(before);

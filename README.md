@@ -170,7 +170,7 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   it), Close pane, Arrange. A split makes a new empty Pane on that side and opens the picker on it: pick what it
   shows, or Esc to leave it empty (it says so) and arrange; a split and its pick are one undo step. A click on the Widget's
   name in a title, `w` on the focused Pane, or Ctrl+K → Replace widget… open the picker too (Home's Pane keeps Home).
-  Ctrl+K also has Split left / right / up / down, Close pane, Arrange and Reset design. In Arrange mode the keyboard
+  Ctrl+K also has Split left / right / up / down, Close pane, Delete design… and Arrange. In Arrange mode the keyboard
   does the same: arrows move between Panes, Enter picks up the focused Widget (the same lit Pane and chip as a drag),
   arrows aim and Enter drops it there (Esc or `m` puts it back); `t` sends the focused Widget to the Tray, `s` then an
   arrow splits its Pane that way, `x` closes it, `+` (or `=`) and `-` move its border left or right of it, `]` and `[`
@@ -185,7 +185,10 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   opens them as a popup, and focuses their Pane where they have one), and no border drag, split or close can leave a Pane too small. An edit never interrupts you and never
   changes a built-in Design: it is kept at once as "Singularity (edited)" (outside Arrange mode the bar says so), and
   Done asks what to call it if you changed something while arranging (Esc keeps it unnamed). Ctrl+K → Save design as…
-  names one any time, Reset design goes back to the built-in one, and a Design of your own saves itself. Ctrl+K →
+  names one any time, and a Design of your own saves itself. Ctrl+K → **Delete design…** (or Delete, or Backspace, on
+  one of yours in Pick a design) asks yes/no, then deletes the Design on screen: deleting "Singularity (edited)" goes
+  back to the built-in Singularity, deleting a Design of your own goes to the default Singularity; the built-in Designs
+  have nothing to delete. In keys.toml, `reset_layout` is another name for `delete_design`. Ctrl+K →
   **New design…** starts from a blank slate: Arrange mode with one empty Pane filling the screen and Home in the Tray;
   split it, fill it from the Tray, and Done asks for a name and saves it with the current Theme (Esc before anything is
   placed, Ctrl+D on the name prompt or Ctrl+K → Discard new design goes back to the Design you had, untouched; Esc on

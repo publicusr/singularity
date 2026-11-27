@@ -26,6 +26,14 @@ pub struct Picker {
     before: (usize, String, crate::arrangement::Arrangement, crate::shown::Mark),
 }
 
+/// Delete design's yes/no (#80): the Design on screen it asks about (its file and name), and the Design picker it was
+/// asked from, which comes back once it's answered.
+pub struct DeleteAsk {
+    pub file: String,
+    pub name: String,
+    pub back: Option<Picker>,
+}
+
 /// The user's themes folder and what it held last time we looked.
 pub struct ThemeDir {
     pub path: PathBuf,
@@ -362,6 +370,63 @@ impl App {
         self.set_layout(p.before.2);
         self.shown.resume(p.before.3);
         self.want_widget_data();
+        // (a Design deleted meanwhile wrote config.toml: it follows back)
+        let r = self.shown.remembered(&self.theme.id, self.building_from().as_deref());
+        if (&r.design, &r.theme, &r.layout) != (&self.config.ui.design, &self.config.ui.theme, &self.config.ui.layout) {
+            self.save_ui();
+        }
+    }
+
+    /// Ctrl+K → Delete design… (or its key, `reset_layout`'s too): asks about the Design on screen first. A built-in
+    /// Design has nothing to delete.
+    pub fn ask_delete_design(&mut self) {
+        if self.shown.file().is_none() {
+            return self.say(format!("{} is built in: nothing to delete", self.shown.built_in().name));
+        }
+        self.ask_delete(None);
+    }
+
+    /// The yes/no for the Design on screen; `back`, the Design picker it was asked from.
+    fn ask_delete(&mut self, back: Option<Picker>) {
+        let Some(file) = self.shown.file().map(str::to_string) else { return };
+        let name = self.shown.find(&file).map_or(file.clone(), |s| s.name.clone());
+        self.open_popup(crate::app::Popup::DeleteDesign(DeleteAsk { file, name, back }));
+    }
+
+    pub fn delete_ask_key(&mut self, k: KeyEvent) {
+        match k.code {
+            KeyCode::Char('y' | 'Y') | KeyCode::Enter => self.delete_answer(true),
+            KeyCode::Char('n' | 'N' | 'q') | KeyCode::Esc => self.delete_answer(false),
+            _ => {}
+        }
+    }
+
+    /// Delete design answered: yes deletes it (`App::delete_design`). Asked from the Design picker, the picker comes
+    /// back, without it and on the Design now on screen.
+    pub fn delete_answer(&mut self, yes: bool) {
+        let Some(ask) = self.take_delete_ask() else { return };
+        // (still the Design on screen: nothing else can change it while it asks)
+        let yes = yes && self.shown.file() == Some(ask.file.as_str());
+        if yes {
+            self.delete_design(ask.back.is_none());
+        }
+        let Some(mut p) = ask.back else { return };
+        if yes {
+            p.items = self.shown.picker_items();
+            let cur = self.shown.picker_current();
+            p.sel = p.items.iter().position(|i| i.0 == cur).unwrap_or(0);
+            // Esc can't go back to a Design that's gone: it keeps the one now on screen
+            if p.before.3.file() == Some(ask.file.as_str()) {
+                p.before = (self.shown.design(), self.theme.id.clone(), self.layout.clone(), self.shown.mark());
+            }
+        }
+        self.open_popup(crate::app::Popup::Picker(p));
+    }
+
+    /// Whether the picker's highlighted row is a Design of the user's (the one on screen: the picker previews it).
+    fn picker_on_own(&self) -> bool {
+        self.picker().is_some_and(|p| p.kind == PickerKind::Design && p.items.get(p.sel).is_some_and(|i| i.0 == self.shown.picker_current()))
+            && self.shown.file().is_some()
     }
 
     pub fn picker_key(&mut self, k: KeyEvent) {
@@ -374,6 +439,11 @@ impl App {
             KeyCode::End => self.picker_select(n.saturating_sub(1)),
             KeyCode::Enter => self.picker_keep(),
             KeyCode::Esc | KeyCode::Char('q') => self.picker_cancel(),
+            // (a Mac's delete key is Backspace) a built-in Design has none
+            KeyCode::Delete | KeyCode::Backspace if self.picker_on_own() => {
+                let p = self.take_picker();
+                self.ask_delete(p);
+            }
             _ => {}
         }
     }
@@ -422,7 +492,31 @@ pub fn draw_picker(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
         text(buf, x, y, 2, "██", th.s(c));
         x += 2;
     }
-    text(buf, inner.x + 1, inner.bottom().saturating_sub(1), inner.width.saturating_sub(2), "↑↓ preview · Enter keep · Esc put back", th.s(th.dim));
+    let hint = if app.picker_on_own() { "↑↓ preview · Enter keep · Esc put back · Del delete" } else { "↑↓ preview · Enter keep · Esc put back" };
+    text(buf, inner.x + 1, inner.bottom().saturating_sub(1), inner.width.saturating_sub(2), hint, th.s(th.dim));
+}
+
+pub fn delete_ask_rect(area: Rect) -> Rect {
+    centered(area, 64, 4)
+}
+
+/// Delete design's yes/no: which Design, and the two answers (each a click too).
+pub fn draw_delete_ask(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
+    let Some(name) = app.delete_ask().map(|d| d.name.clone()) else { return };
+    let inner = popup(buf, delete_ask_rect(area), th, "Delete design");
+    let w = inner.width.saturating_sub(2);
+    text(buf, inner.x + 1, inner.y, w, &format!("Delete “{name}”?"), th.title());
+    let (yes, no) = ("y / Enter delete", "n / Esc keep");
+    let y = inner.y + 1;
+    let mut x = inner.x + 1;
+    for (i, s) in [yes, " · ", no].into_iter().enumerate() {
+        let n = s.chars().count() as u16;
+        text(buf, x, y, inner.right().saturating_sub(x + 1), s, th.s(th.dim));
+        if i != 1 {
+            app.hit(Rect::new(x, y, n.min(inner.right().saturating_sub(x)), 1), Hit::DeleteAnswer(i == 0));
+        }
+        x += n;
+    }
 }
 
 #[cfg(test)]
