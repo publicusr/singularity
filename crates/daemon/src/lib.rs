@@ -54,12 +54,33 @@ pub const RESTART: &str = if cfg!(target_os = "macos") {
     "`systemctl --user restart singularityd`"
 };
 
-/// Does this Daemon run under the OS's service manager (#145)? It says so in its welcome, so that when it goes away
-/// Clients leave the next one to the service manager. systemd sets `INVOCATION_ID` for every unit it starts; launchd
-/// sets `XPC_SERVICE_NAME` to the job's label (a shell started from Terminal has it as "0"). `env` reads a variable.
-pub fn run_by_service(env: impl Fn(&str) -> Option<String>) -> bool {
-    let var = if cfg!(target_os = "macos") { "XPC_SERVICE_NAME" } else { "INVOCATION_ID" };
-    env(var).is_some_and(|v| !v.is_empty() && v != "0")
+/// The systemd user unit's name (packaging/systemd).
+pub const SYSTEMD_UNIT: &str = "singularityd.service";
+
+/// The LaunchAgent's label (packaging/launchd/singularityd.plist).
+pub const LAUNCHD_LABEL: &str = "io.github.publicusr.singularityd";
+
+/// Does this Daemon run under the OS's service manager, as our own unit (#145)? It says so in its welcome, so that when
+/// it goes away Clients leave the next one to the service manager. Only our unit counts: a Daemon a Client started
+/// from a terminal that itself runs under some unit (a terminal's D-Bus service, `systemd-run`) is not systemd's.
+/// Linux: this process's cgroup is the unit's. macOS: launchd sets `XPC_SERVICE_NAME` to the job's label (a shell in a
+/// terminal app has its own, `application.…`, or "0"; the Client doesn't pass it on, `conn.rs`).
+pub fn run_by_service() -> bool {
+    if cfg!(target_os = "macos") {
+        launchd_job(std::env::var("XPC_SERVICE_NAME").ok().as_deref())
+    } else {
+        std::fs::read_to_string("/proc/self/cgroup").is_ok_and(|c| in_systemd_unit(&c))
+    }
+}
+
+/// Does `/proc/self/cgroup` put this process in [`SYSTEMD_UNIT`] (`0::/user.slice/…/app.slice/singularityd.service`)?
+fn in_systemd_unit(cgroup: &str) -> bool {
+    cgroup.lines().any(|l| l.rsplit_once(':').is_some_and(|(_, path)| path.rsplit('/').next() == Some(SYSTEMD_UNIT)))
+}
+
+/// Is `XPC_SERVICE_NAME` our LaunchAgent's label?
+fn launchd_job(xpc_service_name: Option<&str>) -> bool {
+    xpc_service_name == Some(LAUNCHD_LABEL)
 }
 
 /// Shared Daemon state that every connection reads.
@@ -875,7 +896,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
         Some(ClientMsg::Hello { protocol, client, demo: d }) if protocol == PROTOCOL_VERSION => {
             tracing::info!("client connected: {client}{}", if d { " (demo mode)" } else { "" });
             let account = if d { demo_account(&hub).await } else { String::new() };
-            let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind, soloist_in_vm: hub.soloist_in_vm, demo: d, account, service: run_by_service(|k| std::env::var(k).ok()) };
+            let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind, soloist_in_vm: hub.soloist_in_vm, demo: d, account, service: run_by_service() };
             proto::write_msg(&mut wr, &welcome).await?;
         }
         Some(ClientMsg::Hello { protocol, .. }) => {
@@ -1143,13 +1164,31 @@ mod tests {
     use super::*;
 
     /// #145: the Daemon knows it runs under the service manager from what systemd or launchd put in its environment.
+    /// #145: only our own unit counts, never a unit the terminal (and so the Client) runs under.
     #[test]
-    fn a_daemon_under_the_service_manager_knows_it() {
-        let var = if cfg!(target_os = "macos") { "XPC_SERVICE_NAME" } else { "INVOCATION_ID" };
-        let value = if cfg!(target_os = "macos") { "io.github.publicusr.singularityd" } else { "0f3b6c1d9a2e4b5c8d7e6f5a4b3c2d1e" };
-        assert!(run_by_service(|k| (k == var).then(|| value.to_string())));
-        assert!(!run_by_service(|_| None), "started by a Client or a shell");
-        assert!(!run_by_service(|k| (k == var).then(|| "0".to_string())) && !run_by_service(|k| (k == var).then(String::new)));
+    fn a_daemon_under_its_systemd_unit_knows_it() {
+        assert!(in_systemd_unit("0::/user.slice/user-1000.slice/user@1000.service/app.slice/singularityd.service\n"));
+        assert!(in_systemd_unit("1:name=systemd:/user.slice/user-1000.slice/user@1000.service/app.slice/singularityd.service\n0::/\n"), "cgroup v1");
+        // started by a Client in a terminal: the terminal's scope or service, a systemd-run unit, a login session
+        for other in [
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-ghostty-surface-transient-6202.scope\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome\\x2dterminal\\x2dserver.service\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-u42.service\n",
+            "0::/user.slice/user-1000.slice/session-2.scope\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/not-singularityd.service\n",
+            "",
+        ] {
+            assert!(!in_systemd_unit(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn a_daemon_under_its_launchagent_knows_it() {
+        assert!(launchd_job(Some("io.github.publicusr.singularityd")));
+        // a shell in Terminal, iTerm2 or Ghostty passes on its own value (the Client drops it, but an older one won't)
+        for other in [None, Some("0"), Some(""), Some("application.com.googlecode.iterm2.1234.5678"), Some("application.com.mitchellh.ghostty.1.2")] {
+            assert!(!launchd_job(other), "{other:?}");
+        }
     }
 
     fn test_hub() -> Arc<Hub> {

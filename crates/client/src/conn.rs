@@ -332,6 +332,9 @@ fn start_daemon() -> Result<(), String> {
     };
     // own process group: closing the terminal must not take the Daemon (and the music) with it
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    // the service manager's marks of the terminal this Client runs in aren't the Daemon's (#145: the Daemon tells
+    // Clients whether systemd or launchd runs it)
+    cmd.env_remove("INVOCATION_ID").env_remove("XPC_SERVICE_NAME");
     cmd.spawn().map(|_| ()).map_err(|e| format!("couldn't start {}: {e}", exe.display()))
 }
 
