@@ -23,6 +23,7 @@ use ratatui::style::Modifier;
 use singularity_proto::LyricLine;
 use std::time::{Duration, Instant};
 use timing::{Line, Stage, Word};
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// The ball's Visual id on the pixel tier (the hole is 1, the idle takeover 2, glow 3).
@@ -906,20 +907,20 @@ fn draw_line(buf: &mut Buffer, r: Rect, x0: u16, p: &Plan, line: &Line, pos: u64
         let f = timing::fill(w, pos);
         match p.font {
             Font::Plain => {
-                let n = w.text.chars().count().max(1) as f32;
+                // by grapheme cluster: a mark (Thai, Hindi, Vietnamese) goes into its base's cell (#146)
+                let n = w.text.graphemes(true).count().max(1) as f32;
                 let mut x = x0 + s.x;
-                for (j, c) in w.text.chars().enumerate() {
+                for (j, g) in w.text.graphemes(true).enumerate() {
                     let a = (f * n - j as f32).clamp(0.0, 1.0);
                     let mut st = th.s(waiting.lerp(sung, a));
                     if a >= 1.0 {
                         st = st.add_modifier(Modifier::BOLD);
                     }
-                    let cw = c.width().unwrap_or(0) as u16;
+                    let cw = g.width() as u16;
                     if x + cw > r.right() {
                         break;
                     }
-                    let mut tmp = [0u8; 4];
-                    text(buf, x, y, cw.max(1), c.encode_utf8(&mut tmp), st);
+                    text(buf, x, y, cw.max(1), g, st);
                     x += cw;
                 }
             }
@@ -1013,29 +1014,39 @@ fn tiny(buf: &mut Buffer, r: Rect, lines: &[Line], stage: Stage, pos: u64, th: &
         Stage::Gap { next: None, .. } => return centre(buf, r, r.y, "♪", th.s(th.accent)),
     };
     let line = &lines[i];
-    // the whole line as one row of characters, each with its fill
-    let mut cells: Vec<(char, f32)> = vec![];
+    // the whole line as one row of grapheme clusters (a mark stays with its base, #146), each with its fill
+    let mut cells: Vec<(&str, f32)> = vec![];
+    // the column the word being sung starts at
     let mut now = 0usize;
+    let mut width = 0usize;
     for (k, w) in line.words.iter().enumerate() {
         if k > 0 && !w.glued {
-            cells.push((' ', if w.start <= pos { 1.0 } else { 0.0 }));
+            cells.push((" ", if w.start <= pos { 1.0 } else { 0.0 }));
+            width += 1;
         }
         let f = timing::fill(w, pos);
-        let n = w.text.chars().count().max(1) as f32;
+        let n = w.text.graphemes(true).count().max(1) as f32;
         if w.start <= pos {
-            now = cells.len();
+            now = width;
         }
-        for (j, c) in w.text.chars().enumerate() {
-            cells.push((c, (f * n - j as f32).clamp(0.0, 1.0)));
+        for (j, g) in w.text.graphemes(true).enumerate() {
+            cells.push((g, (f * n - j as f32).clamp(0.0, 1.0)));
+            width += g.width();
         }
     }
-    let width: usize = cells.iter().map(|(c, _)| c.width().unwrap_or(0)).sum();
     let w = r.width as usize;
-    // scrolled so the word being sung sits a third of the way in
-    let skip = if width <= w { 0 } else { now.saturating_sub(w / 3).min(cells.len().saturating_sub(w)) };
+    // scrolled (in columns: a CJK character takes two) so the word being sung sits a third of the way in
+    let skip = if width <= w { 0 } else { now.saturating_sub(w / 3).min(width - w) };
     let mut x = r.x + if width <= w { ((w - width) / 2) as u16 } else { 0 };
-    for (c, a) in cells.iter().skip(skip) {
-        let cw = c.width().unwrap_or(0) as u16;
+    let mut col = 0usize;
+    for (g, a) in &cells {
+        let cw = g.width();
+        col += cw;
+        // whole clusters only: one cut by the left edge is skipped too
+        if col - cw < skip {
+            continue;
+        }
+        let cw = cw as u16;
         if x + cw > r.right() {
             break;
         }
@@ -1043,8 +1054,7 @@ fn tiny(buf: &mut Buffer, r: Rect, lines: &[Line], stage: Stage, pos: u64, th: &
         if *a >= 1.0 {
             st = st.add_modifier(Modifier::BOLD);
         }
-        let mut tmp = [0u8; 4];
-        text(buf, x, r.y, cw.max(1), c.encode_utf8(&mut tmp), st);
+        text(buf, x, r.y, cw.max(1), g, st);
         x += cw;
     }
     if r.height >= 2
@@ -1144,6 +1154,86 @@ mod tests {
         let mut l = app.lyrics.current().unwrap().clone();
         l.lines[3].text = "Ever after".into();
         app.lyrics_event(l);
+    }
+
+    /// An App paused at `pos` in a song of one timed line: `words` a second apart from 1 s.
+    fn app_singing(words: &[&str], pos: u64) -> App {
+        let mut app = App::new(None);
+        app.playback.item = Some(singularity_proto::Item { uri: "spotify:track:m".into(), name: "Song".into(), duration_ms: 60_000, ..Default::default() });
+        app.playback.status = singularity_proto::PlayStatus::Paused;
+        app.playback.position_ms = pos;
+        let timed = words.iter().enumerate().map(|(k, w)| LyricWord { start_ms: 1_000 + k as u64 * 1_000, end_ms: None, text: (*w).into() }).collect();
+        let lines = vec![LyricLine { start_ms: 1_000, text: words.concat(), words: timed }];
+        app.lyrics_event(Lyrics { uri: "spotify:track:m".into(), synced: true, lines, source: "fake".into(), ..Default::default() });
+        app
+    }
+
+    /// The cells of `app` drawn into a `w`×`h` Pane at (0, 0), row by row; the cell a wide character covers is "".
+    fn cells(app: &mut App, w: u16, h: u16) -> Vec<Vec<String>> {
+        let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+        draw(&mut buf, Rect::new(0, 0, w, h), app, &Theme::singularity());
+        (0..h)
+            .map(|y| {
+                let mut covered = 0;
+                (0..w)
+                    .map(|x| {
+                        if covered > 0 {
+                            covered -= 1;
+                            return String::new();
+                        }
+                        let s = buf[(x, y)].symbol();
+                        covered = s.width().saturating_sub(1);
+                        s.to_string()
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn marks_stay_with_their_letters() {
+        // Thai and Hindi with vowel marks that are characters of their own, in a normal and a tiny Pane
+        for (line, marks) in [(["สวัสดี ", "ครับ"], ['\u{e31}', '\u{e35}']), (["नमस्ते ", "दुनिया"], ['\u{94d}', '\u{947}'])] {
+            let whole: String = line.concat();
+            for (w, h) in [(40u16, 9u16), (30, 1)] {
+                let mut app = app_singing(&line, 1_500);
+                let rows = cells(&mut app, w, h);
+                let all: Vec<String> = rows.iter().map(|r| r.concat()).collect();
+                assert!(all.iter().any(|r| r.contains(&whole)), "{w}×{h}: {all:#?}");
+                for m in marks {
+                    assert!(rows.iter().flatten().any(|s| s.contains(m) && s.chars().count() > 1), "{m:?} shares a cell with its letter in {w}×{h}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_cjk_line_in_a_tiny_pane_scrolls_to_the_word_being_sung() {
+        // 20 characters, 40 columns, in a 30-column row: ten words of two
+        let line = ["夜空", "星屑", "光る", "風鈴", "海辺", "雨音", "花火", "月影", "雪国", "桜色"];
+        // singing the fifth word (column 16): it sits a third of the way in, at column 10
+        let mut app = app_singing(&line, 5_500);
+        let row = cells(&mut app, 30, 1).remove(0);
+        assert!(row.concat().starts_with("屑光る風鈴海辺"), "{}", row.concat());
+        assert_eq!(row[10], "海");
+        // singing the last one: scrolled as far as the line goes, the word in view
+        let mut app = app_singing(&line, 10_500);
+        let row = cells(&mut app, 30, 1).remove(0).concat();
+        assert!(row.starts_with("る風鈴") && row.ends_with("桜色"), "{row}");
+        // at the start nothing is skipped
+        let mut app = app_singing(&line, 1_500);
+        assert!(cells(&mut app, 30, 1).remove(0).concat().starts_with("夜空"));
+    }
+
+    #[test]
+    fn a_latin_line_in_a_tiny_pane_scrolls_as_before() {
+        // one cell per letter, the word being sung a third of the way in
+        let line = ["Every ", "echo ", "finds ", "its ", "way ", "back ", "home ", "again"];
+        let mut app = app_singing(&line, 5_500);
+        let row = cells(&mut app, 20, 1).remove(0);
+        assert!(row.iter().all(|s| s.chars().count() == 1));
+        // "way" starts at column 21 of the line; 21 - 20/3 = 15 skipped
+        assert!(row.concat().starts_with("s its way back home"), "{:?}", row.concat());
     }
 
     fn render(app: &mut App, w: u16, h: u16) -> String {

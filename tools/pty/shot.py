@@ -34,6 +34,39 @@ BRAILLE = first_font("/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf"
 FONT = first_font("/usr/share/fonts/nerd-fonts/DejaVuSansMono/DejaVuSansMNerdFontMono-Regular.ttf",
                   "~/Library/Fonts/DejaVuSansMNerdFontMono-Regular.ttf", "~/Library/Fonts/HackNerdFontMono-Regular.ttf",
                   "/System/Library/Fonts/Menlo.ttc")
+
+
+# lyrics in other scripts (#146): (first, last code point, a font that has them). Used only for a character FONT
+# lacks, and only where the file exists (elsewhere it's drawn in FONT, as a box), so other shots stay as they were.
+SCRIPTS = [(0x0900, 0x097F, "/usr/share/fonts/google-noto-vf/NotoSansDevanagari[wght].ttf"),
+           (0x0E00, 0x0E7F, "/usr/share/fonts/google-noto-vf/NotoSansThai[wght].ttf"),
+           (0x3000, 0x9FFF, "/usr/share/fonts/google-noto-sans-mono-cjk-vf-fonts/NotoSansMonoCJK-VF.ttc")]
+LOADED = {}
+
+
+def lacks(ch):
+    """Whether FONT has no glyph for `ch` (it draws the same box as for a code point no font has)."""
+    def drawn(c):
+        im = Image.new("L", (40, 24))
+        ImageDraw.Draw(im).text((0, 0), c, font=FONT, fill=255)
+        return im.tobytes()
+    if "box" not in LOADED:
+        LOADED["box"] = drawn("\U0010FFFD")
+    return drawn(ch) == LOADED["box"]
+
+
+def font_for(ch):
+    o = ord(ch[0])
+    if 0x2800 <= o <= 0x28FF:
+        return BRAILLE
+    for lo, hi, path in SCRIPTS:
+        if lo <= o <= hi and os.path.exists(path) and lacks(ch[0]):
+            if path not in LOADED:
+                LOADED[path] = ImageFont.truetype(path, 16)
+            return LOADED[path]
+    return FONT
+
+
 # test sockets (short paths) go here: $XDG_RUNTIME_DIR on Linux, an owner-only dir in /tmp where there is none (macOS)
 RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/sgl-{os.getuid()}"
 os.makedirs(RUNTIME, mode=0o700, exist_ok=True)
@@ -140,7 +173,11 @@ class Term:
         self.pump(wait)
 
     def text(self):
-        return "\n".join(self.screen.display)
+        try:
+            return "\n".join(self.screen.display)
+        except IndexError:
+            # pyte's own trips over an empty cell no wide character covers (a mark drawn over one, #146)
+            return "\n".join("".join(self.screen.buffer[y][x].data for x in range(COLS)) for y in range(ROWS))
 
     def find(self, s):
         for y, line in enumerate(self.screen.display):
@@ -188,7 +225,7 @@ class Term:
                     cells.append((x, y, c.data, fg))
         paste(False)
         for x, y, ch, fg in cells:
-            font = BRAILLE if 0x2800 <= ord(ch[0]) <= 0x28FF else FONT
+            font = font_for(ch)
             try:
                 d.text((x * CW, y * CH + 1), ch, font=font, fill=fg)
             except ValueError:

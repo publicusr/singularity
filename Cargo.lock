@@ -3886,6 +3886,7 @@ dependencies = [
  "singularityd",
  "tempfile",
  "tokio",
+ "unicode-segmentation",
  "unicode-width",
  "wgpu",
 ]
