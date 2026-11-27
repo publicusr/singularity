@@ -247,32 +247,38 @@ async fn trickling_cdn(body: Vec<u8>, piece: usize, gap: std::time::Duration, st
     url
 }
 
-/// #142: a download has no deadline as a whole, only for silence. A build that trickles in for many times the idle
-/// timeout (as a slow connection does with the real 256 MB cap and 30 s idle timeout) finishes; one that stops
-/// arriving is given up once nothing has come for the idle timeout, and leaves nothing staged.
+/// #142: a download has no deadline as a whole, only a pace (the real one: 1 KB/s over 30 s; here 20 bytes a second
+/// over 0.5 s). A build that trickles in at that pace for many windows finishes; one that stops arriving, or arrives
+/// slower than the pace (a byte now and then, never long enough apart to look stalled), is given up after about one
+/// window, and leaves nothing staged.
 #[tokio::test]
-async fn a_slow_download_finishes_and_a_stalled_one_is_given_up_after_the_idle_timeout() {
+async fn a_slow_download_finishes_and_a_stalled_or_too_slow_one_is_given_up() {
     use std::time::{Duration, Instant};
-    let idle = Duration::from_millis(500);
+    let pace = update::Pace { window: Duration::from_millis(500), min_rate: 20 };
     let body = tarball("soloist slow", false);
     let piece = body.len().div_ceil(16);
+    assert!(piece * 3 > 10, "a window holds more than the pace asks for");
     let root = tempfile::tempdir().unwrap();
     let builds = Builds { root: root.path().into() };
 
-    // 16 pieces 150 ms apart: about 2.4 s in all, almost five idle timeouts, never 500 ms without a byte
+    // 16 pieces 150 ms apart: about 2.4 s in all, almost five windows
     let url = trickling_cdn(body.clone(), piece, Duration::from_millis(150), None).await;
     let start = Instant::now();
-    let build = update::download_with(&builds, &url, 1 << 20, idle).await.unwrap();
-    assert!(start.elapsed() > idle * 4, "the download took {:?}, not long enough to prove anything", start.elapsed());
+    let build = update::download_with(&builds, &url, 1 << 20, pace).await.unwrap();
+    assert!(start.elapsed() > pace.window * 4, "the download took {:?}, not long enough to prove anything", start.elapsed());
     assert_eq!(build.version, "soloist slow");
     assert!(builds.ready().is_some());
 
-    // the same build, but nothing more after half of it
-    let url = trickling_cdn(body, piece, Duration::from_millis(50), Some(piece * 8)).await;
-    let start = Instant::now();
-    let r = tokio::time::timeout(Duration::from_secs(10), update::download_with(&builds, &url, 1 << 20, idle)).await;
-    let waited = start.elapsed();
-    assert!(r.expect("a stalled download must not wait forever").is_err());
-    assert!(waited >= idle && waited < idle * 6, "given up after {waited:?}, the idle timeout is {idle:?}");
-    assert!(!builds.staged().exists() && builds.ready().is_none(), "a stalled download leaves nothing staged");
+    // nothing more after half of it; one byte every 300 ms (2 or 3 bytes a second)
+    for (name, url) in [
+        ("stalled", trickling_cdn(body.clone(), piece, Duration::from_millis(50), Some(piece * 8)).await),
+        ("too slow", trickling_cdn(body.clone(), 1, Duration::from_millis(300), None).await),
+    ] {
+        let start = Instant::now();
+        let r = tokio::time::timeout(Duration::from_secs(10), update::download_with(&builds, &url, 1 << 20, pace)).await;
+        let waited = start.elapsed();
+        assert!(r.expect("a stalled download must not wait forever").is_err(), "{name}");
+        assert!(waited >= pace.window && waited < pace.window * 4, "{name}: given up after {waited:?}, the window is {:?}", pace.window);
+        assert!(!builds.staged().exists() && builds.ready().is_none(), "{name}: leaves nothing staged");
+    }
 }
