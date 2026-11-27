@@ -126,6 +126,18 @@ _Avoid_: server, backend, service
 `singularity`, a terminal window that connects to the Daemon and draws the interface. Several can run at once.
 _Avoid_: frontend, TUI (as a noun for the process)
 
+**Demo mode**:
+A Client started with `--demo` (or `SINGULARITY_DEMO=1`) for recording videos on the owner's own account: it shows a
+DEMO chip and hides or replaces anything personal (account and friends' names, device names, the Jam link, paths,
+the library outside the Demo set, personal Home Shelves, real stats, recent searches) while music, Widgets and
+Designs work as usual. Only that Client changes; the Daemon and other Clients don't (D90).
+_Avoid_: privacy mode, streamer mode, incognito
+
+**Demo set**:
+What the library shows in Demo mode: the playlists in a Spotify folder called "Demo", plus the albums, artists,
+podcasts and audiobooks (and Liked Songs, if turned on) listed in `demo.toml` in the config folder (D90).
+_Avoid_: demo library, allow-list (that's only the `demo.toml` half)
+
 **Now playing**:
 What is playing and on which device (this computer's Engine, or another device Singularity follows over Connect),
 the same for every Client. The Now playing Widget shows it.
