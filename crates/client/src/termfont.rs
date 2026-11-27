@@ -130,7 +130,12 @@ fn unquote(v: &str) -> &str {
 
 /// fontconfig's monospace family, where `fc-match` is installed.
 fn fc_monospace() -> Option<String> {
-    let out = std::process::Command::new("fc-match").args(["-f", "%{family[0]}", "monospace"]).stderr(std::process::Stdio::null()).output().ok()?;
+    fc_family(std::process::Command::new("fc-match"))
+}
+
+/// What `fc` (an `fc-match`) names as the monospace family. It runs without the Soloist key (audit S10).
+fn fc_family(mut fc: std::process::Command) -> Option<String> {
+    let out = fc.env_remove(singularity_config::host::SECRET_ENV).args(["-f", "%{family[0]}", "monospace"]).stderr(std::process::Stdio::null()).output().ok()?;
     let s = String::from_utf8(out.stdout).ok()?;
     (out.status.success() && !s.trim().is_empty()).then(|| s.trim().to_string())
 }
@@ -205,5 +210,28 @@ mod tests {
         assert!(variable(Path::new("NotoSansMono[wght].ttf")));
         assert!(variable(Path::new("NotoSansMonoCJK-VF.ttc")));
         assert!(!variable(Path::new("NotoSansMono-Bold.ttf")));
+    }
+
+    /// #112: `fc-match` is found on `PATH` and never sees the Soloist key (audit S10). The stand-in prints the key it
+    /// was handed, or a family name when it has none.
+    #[test]
+    fn fc_match_runs_without_the_soloist_key() {
+        use singularity_config::host::SECRET_ENV;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("fc-match");
+        // written by a child process, so no other test's child can hold it open for writing when it runs
+        // ("Text file busy")
+        let body = format!("#!/bin/sh\nprintf '%s' \"${{{SECRET_ENV}:-Fake Mono}}\"\n");
+        assert!(std::process::Command::new("/bin/sh").args(["-c", "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"", "sh", &body]).arg(&fake).status().unwrap().success());
+        let fc = |key: bool| {
+            let mut c = std::process::Command::new("fc-match");
+            c.env("PATH", dir.path());
+            if key {
+                c.env(SECRET_ENV, "fake-key");
+            }
+            c
+        };
+        assert_eq!(fc_family(fc(false)), Some("Fake Mono".into()), "the stand-in on the scratch PATH answers");
+        assert_eq!(fc_family(fc(true)), Some("Fake Mono".into()), "a key in the environment is not passed on");
     }
 }
