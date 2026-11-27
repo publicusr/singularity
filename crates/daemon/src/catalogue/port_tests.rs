@@ -14,27 +14,64 @@ type Answer = Arc<dyn Fn(&str, &Value) -> anyhow::Result<Value> + Send + Sync>;
 struct Fixtures {
     answer: Answer,
     asked: Arc<Mutex<Vec<(String, Value)>>>,
+    /// how long each answer takes (Spotify's latency, for the ordering tests)
+    latency: Duration,
 }
 
 impl Fixtures {
     fn new(answer: impl Fn(&str, &Value) -> anyhow::Result<Value> + Send + Sync + 'static) -> Fixtures {
-        Fixtures { answer: Arc::new(answer), asked: Default::default() }
+        Fixtures { answer: Arc::new(answer), asked: Default::default(), latency: Duration::ZERO }
+    }
+
+    /// Every answer takes `latency`.
+    fn slow(mut self, latency: Duration) -> Fixtures {
+        self.latency = latency;
+        self
     }
 
     fn asked(&self, op: &str) -> usize {
         self.asked.lock().unwrap().iter().filter(|(o, _)| o == op).count()
+    }
+
+    /// The operations asked for, in order, a search with its words.
+    fn order(&self) -> Vec<String> {
+        self.asked.lock().unwrap().iter().map(|(op, v)| format!("{op} {}", v["searchTerm"].as_str().unwrap_or("")).trim_end().to_string()).collect()
     }
 }
 
 impl Fetch for Fixtures {
     async fn query(&mut self, op: &str, vars: Value) -> anyhow::Result<Value> {
         self.asked.lock().unwrap().push((op.into(), vars.clone()));
+        if !self.latency.is_zero() {
+            tokio::time::sleep(self.latency).await;
+        }
         (self.answer)(op, &vars)
     }
 }
 
 fn fixture(name: &str) -> Value {
     serde_json::from_str(&std::fs::read_to_string(format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()).unwrap()
+}
+
+/// Until `f` has been asked `op` at least `n` times (the work holding it is under way).
+async fn until_asked(f: &Fixtures, op: &str, n: usize) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while f.asked(op) < n {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("never asked");
+}
+
+/// A raw query as a command (it waits in browsing's queue like any other); its answer is dropped.
+fn query(op: &str) -> CatCmd {
+    CatCmd::Query { op: op.into(), vars: json!({}), reply: tokio::sync::oneshot::channel().0 }
+}
+
+/// Where `what` was asked, among everything asked.
+fn at(order: &[String], what: &str) -> usize {
+    order.iter().position(|o| o == what).unwrap_or_else(|| panic!("{what} wasn't asked: {order:?}"))
 }
 
 /// A Catalogue over `f`, in a scratch dir.
@@ -153,8 +190,8 @@ async fn a_long_track_list_comes_page_by_page() {
     assert_eq!(asked, [0, 100, 200]);
 }
 
-/// While typing, only the newest search matters: the ones it replaces aren't asked for, and what waited behind
-/// them runs after it, in the order it was asked for.
+/// While typing, only the newest search matters: the ones it replaces aren't asked for. It goes ahead of the browsing
+/// work waiting (#126), and what waited runs after it, in the order it was asked for.
 #[tokio::test]
 async fn the_newest_search_goes_first_and_the_rest_keep_their_order() {
     let f = Fixtures::new(|op, _| Ok(if op == "libraryV3" { fixture("library.json") } else { json!({}) }));
@@ -164,9 +201,120 @@ async fn the_newest_search_goes_first_and_the_rest_keep_their_order() {
         tx.send(c).await.unwrap();
     }
     next(&mut ev, |e| matches!(e, CatEvent::Library(_)).then_some(())).await;
-    let asked: Vec<String> = f.asked.lock().unwrap().iter().map(|(op, v)| format!("{op} {}", v["searchTerm"].as_str().unwrap_or(""))).collect();
-    let asked: Vec<&str> = asked.iter().map(|s| s.trim_end()).collect();
-    assert_eq!(asked[..3], ["fetchPlaylist", "searchDesktop nova", "libraryV3"]);
+    assert_eq!(f.order()[..3], ["searchDesktop nova", "fetchPlaylist", "libraryV3"]);
+}
+
+/// #126: a search typed while a long track list loads is made between two of its pages, not after the last.
+#[tokio::test]
+async fn a_search_is_made_between_the_pages_of_a_long_track_list() {
+    let f = Fixtures::new(|op, _| {
+        let mut v = fixture("playlist.json");
+        v["data"]["playlistV2"]["content"]["totalCount"] = json!(1000);
+        Ok(if op == "searchDesktop" { json!({}) } else { v })
+    })
+    .slow(Duration::from_millis(20));
+    let (_dir, tx, mut ev) = catalogue(&f);
+    tx.send(CatCmd::Tracks("spotify:playlist:p".into())).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Tracks(_)).then_some(())).await;
+    tx.send(CatCmd::Search("nova".into())).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Search(_)).then_some(())).await;
+    let order = f.order();
+    let at = order.iter().position(|o| o == "searchDesktop nova").unwrap();
+    assert!(at <= 2, "the search waited for the whole list: {order:?}");
+    assert!(next(&mut ev, |e| if let CatEvent::Tracks(p) = e { Some(p.offset) } else { None }).await > 0, "and the list carries on where it was");
+}
+
+/// #126: naming a whole queue (a `getTrack` each) lets a search through between two tracks.
+#[tokio::test]
+async fn a_search_is_made_between_the_tracks_of_a_queue_being_named() {
+    let f = Fixtures::new(|_, _| Ok(json!({}))).slow(Duration::from_millis(20));
+    let (_dir, tx, mut ev) = catalogue(&f);
+    tx.send(CatCmd::Describe((0..30).map(|i| format!("spotify:track:t{i}")).collect())).await.unwrap();
+    until_asked(&f, "getTrack", 1).await;
+    tx.send(CatCmd::Search("nova".into())).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Search(_)).then_some(())).await;
+    let order = f.order();
+    assert!(at(&order, "searchDesktop nova") <= 2, "the search waited for the whole queue: {order:?}");
+    next(&mut ev, |e| matches!(e, CatEvent::DescribeFailed(_)).then_some(())).await;
+    assert_eq!(f.asked("getTrack"), 30, "and the queue is still named, every track");
+}
+
+/// #126: the ♥ checks a page sends (50 at a time) let a search through between two batches.
+#[tokio::test]
+async fn a_search_is_made_between_two_batches_of_heart_checks() {
+    let f = Fixtures::new(|_, _| Ok(json!({}))).slow(Duration::from_millis(20));
+    let (_dir, tx, mut ev) = catalogue(&f);
+    tx.send(CatCmd::CheckSaved((0..150).map(|i| format!("spotify:track:t{i}")).collect())).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Saved(_)).then_some(())).await;
+    tx.send(CatCmd::Search("nova".into())).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Search(_)).then_some(())).await;
+    let order = f.order();
+    assert!(at(&order, "searchDesktop nova") <= 2, "the search waited for every batch: {order:?}");
+    until_asked(&f, "areEntitiesInLibrary", 3).await;
+}
+
+/// #126 (review): a login or logout queued behind long work isn't jumped by a search made between two of the work's
+/// requests: the search would go out on the old session. (A reconnect stands in for both here: it reaches nothing.)
+#[tokio::test]
+async fn a_search_never_goes_ahead_of_a_queued_session_change() {
+    let f = Fixtures::new(|op, _| {
+        let mut v = fixture("playlist.json");
+        v["data"]["playlistV2"]["content"]["totalCount"] = json!(500);
+        Ok(if op == "fetchPlaylist" { v } else { json!({}) })
+    })
+    .slow(Duration::from_millis(20));
+    let (_dir, tx, mut ev) = catalogue(&f);
+    tx.send(CatCmd::Tracks("spotify:playlist:p".into())).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Tracks(_)).then_some(())).await;
+    tx.send(CatCmd::Reconnect).await.unwrap();
+    tx.send(CatCmd::Search("nova".into())).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Search(_)).then_some(())).await;
+    let order = f.order();
+    assert_eq!(f.asked("fetchPlaylist"), 5, "the list finished first: {order:?}");
+    assert_eq!(order.last().map(String::as_str), Some("searchDesktop nova"));
+}
+
+/// #126 (review): searches go ahead of queued work at most `SEARCHES_IN_A_ROW` times in a row; then a queued command
+/// runs before the next one, so typing can't hold everything else back.
+#[tokio::test]
+async fn a_stream_of_searches_lets_queued_work_through() {
+    let f = Fixtures::new(|_, _| Ok(json!({}))).slow(Duration::from_millis(20));
+    let (_dir, tx, _ev) = catalogue(&f);
+    for c in [query("qA"), query("qB"), CatCmd::Search("s1".into())] {
+        tx.send(c).await.unwrap();
+    }
+    // each next search comes while the one before is with Spotify
+    type_while_searching(&f, &tx, &["s2", "s3", "s4"]).await;
+    until_asked(&f, "qB", 1).await;
+    let order = f.order();
+    let order: Vec<&str> = order.iter().map(|o| o.strip_prefix("searchDesktop ").unwrap_or(o)).collect();
+    assert_eq!(order, ["s1", "s2", "s3", "qA", "s4", "qB"]);
+}
+
+/// Send each of `words` as a search while the one before it is with Spotify.
+async fn type_while_searching(f: &Fixtures, tx: &mpsc::Sender<CatCmd>, words: &[&str]) {
+    for (i, q) in words.iter().enumerate() {
+        until_asked(f, "searchDesktop", i + 1).await;
+        tx.send(CatCmd::Search(q.to_string())).await.unwrap();
+    }
+}
+
+/// #126 (review): a lyrics lookup lets a search through before going to LRCLIB (which can take seconds). Three
+/// searches have just gone ahead, so the lyrics run first and the fourth search comes in the middle of them.
+#[tokio::test]
+async fn a_search_is_made_before_a_lyrics_lookup_goes_to_lrclib() {
+    let f = Fixtures::new(|_, _| Ok(json!({}))).slow(Duration::from_millis(20));
+    let (_dir, tx, mut ev) = catalogue(&f);
+    // no name for the track: it is looked up (`getTrack`), finds none, and LRCLIB is never reached
+    let lyrics = CatCmd::Lyrics { uri: "spotify:track:t".into(), meta: None, words: false };
+    for c in [lyrics, CatCmd::Search("s1".into())] {
+        tx.send(c).await.unwrap();
+    }
+    type_while_searching(&f, &tx, &["s2", "s3", "s4"]).await;
+    next(&mut ev, |e| matches!(e, CatEvent::Lyrics(_)).then_some(())).await;
+    let order = f.order();
+    let order: Vec<&str> = order.iter().map(|o| o.strip_prefix("searchDesktop ").unwrap_or(o)).collect();
+    assert_eq!(order, ["s1", "s2", "s3", "s4", "getTrack"]);
 }
 
 /// #8: a search waited behind Connect work in the Catalogue's one loop, here the resume after an update, which

@@ -2790,7 +2790,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "gesture", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "search-timing", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "gesture", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-fast", "tiling-paths", "resize", "karaoke", "arrange-fixes") else "0"
@@ -2980,6 +2980,27 @@ def main():
             t.send(b"mix", 1.2)
             t.shot(f"{out}/0-search.png")
             t.send(b"q", 0.1)
+            t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.3)
+            t.send(b"q", 0.5)
+            return
+        if scenario == "search-timing":
+            # #126: the Client's share of a search (the fake Catalogue answers at once): last key to results drawn
+            t.pump(1.0)
+            t.send(b"\x0c", 0.3)  # Ctrl+L
+            times = []
+            for i, q in enumerate((b"mix", b"orbit", b"nova")):
+                if i:
+                    t.send(b"\x1b", 0.5)  # Esc: an empty query
+                for c in q[:-1]:
+                    t.send(bytes([c]), 0.08)
+                began = time.time()
+                t.send(q[-1:], 0)
+                want = f"{q.decode()} song 1"
+                while not t.find(want) and time.time() - began < 5:
+                    t.pump(0.005)
+                times.append(round((time.time() - began) * 1000))
+                print(f"“{q.decode()}”: results on screen {times[-1]} ms after the last key")
+            t.shot(f"{out}/0-search.png")
             t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.3)
             t.send(b"q", 0.5)
             return
