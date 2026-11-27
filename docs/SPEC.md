@@ -273,7 +273,12 @@ audio, and looks spectacular.
     queue and lyrics can move but never close. **Built (D66, 2026-10-31):** reopened from the parked state (D59). An edit
     never overwrites a built-in Design: the first one asks for a name (Enter saves a Design of your own, Esc keeps one
     unnamed "<Design> (edited)"); a Design of your own saves itself as you edit; "Reset design" goes back to the
-    built-in one (a Design of your own stays in the picker). **Polished (owner round, 2026-11-01):** a held Pane is
+    built-in one (a Design of your own stays in the picker). **Delete design (#80, owner Q72/Q75, 2026-11-24)**
+    replaces Reset design: Ctrl+K → Delete design… or Delete/Backspace on one of your Designs in Pick a design asks
+    yes/no (`y`/Enter deletes, `n`/Esc keeps), then deletes the Design on screen. Deleting "<Design> (edited)" goes back
+    to that built-in Design (the Theme on screen kept; Ctrl+Z brings the copy back, as it undid a Reset); deleting a
+    Design of your own goes to the default "Singularity" with its own Theme. Built-in Designs have no Delete (the
+    palette leaves it out). keys.toml's `reset_layout` still binds, as `delete_design`, with the same yes/no. **Polished (owner round, 2026-11-01):** a held Pane is
     lifted and floats live under the pointer (its own Widget, at most ~45% of the screen each way, with a shadow)
     while the others ease into place around a dashed "drop here" slot; on release it lands there (Esc: everything
     goes back). A drop that would only change sizes is no drop (it looked like one Pane "just extended 15%"); the
@@ -324,7 +329,7 @@ audio, and looks spectacular.
     and the bar says "New design discarded" (owner, after #42). A New design is saved only on Done (owner
     Q61, 2026-11-24): quitting mid-build loses it, so spec #34's story 73 (empty Panes and the Tray saved, to come back
     halfway) holds for a Design that has a name, not for an unnamed build. While it is built, Pick a design, Save
-    design as… and Reset design are left out of the palette.
+    design as… and Delete design… are left out of the palette.
 86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready. Started 2026-10-19 (D48),
     tickets #63–#70, parity rule D49; the light librespot Engine on both OSes (D52, #70).
 

@@ -2025,6 +2025,38 @@ def layouts(t, out, env):
     t2.send(b"\x1b", 0.3); t2.send(b"q", 0.5)
 
 
+def delete_design(t, out, env):
+    """#80: two Designs of your own saved; in the Design picker, Delete on one asks (n keeps it, the picker back as it
+    was), Delete then y deletes it (the picker back without it, on Singularity, whose hint has no Del); Ctrl+K → Delete
+    design… on the other asks, y deletes it. Prints the layouts folder after each step."""
+    files = lambda: sorted(os.listdir(f"{env['XDG_CONFIG_HOME']}/singularity/layouts"))
+    t.pump(1.0)
+    for name in (b"Mine", b"Other"):
+        t.send(b"\x0b", 0.3); t.send(b"save design", 0.3); t.send(b"\r", 0.4)
+        t.send(name, 0.3); t.send(b"\r", 0.6)
+    print("saved:", files())
+    t.send(b"\x0b", 0.3); t.send(b"pick a design", 0.3); t.send(b"\r", 0.6)
+    t.shot(f"{out}/0-picker-on-own.png")
+    t.send(b"\x1b[3~", 0.5)
+    t.shot(f"{out}/1-asks.png")
+    t.send(b"n", 0.5)
+    t.shot(f"{out}/2-kept.png")
+    print("after n:", files())
+    t.send(b"\x1b[3~", 0.5); t.send(b"y", 0.8)
+    t.shot(f"{out}/3-deleted-picker-back.png")
+    print("after y:", files())
+    t.send(b"\x1b[F", 0.6)  # End: "Mine", the last
+    t.send(b"\r", 0.5)
+    t.send(b"\x0b", 0.3); t.send(b"delete design", 0.3)
+    t.shot(f"{out}/4-palette.png")
+    t.send(b"\r", 0.5)
+    t.shot(f"{out}/5-palette-asks.png")
+    t.send(b"y", 0.8)
+    t.shot(f"{out}/6-deleted.png")
+    print("after the palette's:", files())
+    t.send(b"q", 0.5)
+
+
 def tiling(t, out, env):
     """D87, a drag moves contents: drag a Pane's title onto another Pane (a shot while the pointer is still down:
     nothing has moved, the Pane under the pointer is lit with "swap with …" and the Widget's chip follows the pointer;
@@ -2945,6 +2977,8 @@ def main():
             return readme(t, out)
         if scenario == "layouts":
             return layouts(t, out, env)
+        if scenario == "delete-design":
+            return delete_design(t, out, env)
         if scenario == "tiling":
             return tiling(t, out, env)
         if scenario == "paneless":
