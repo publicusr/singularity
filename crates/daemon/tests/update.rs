@@ -181,3 +181,37 @@ async fn an_install_from_before_tracking_is_adopted_not_downloaded_again() {
     assert_eq!(update::check(&builds, &url).await.unwrap(), Checked::UpToDate);
     assert_eq!(builds.installed().unwrap().version, "soloist old");
 }
+
+/// #16: a build is unpacked by this process and then run (`--version`). A process another thread starts in that
+/// moment briefly holds a copy of the file still open for writing, and running a file open for writing fails with
+/// "Text file busy". The Daemon starts processes on other threads all the time; here four threads do nothing else.
+#[tokio::test]
+async fn a_build_is_verified_while_other_threads_start_processes() {
+    let release = Arc::new(Mutex::new(Release { status: 200, etag: "\"v1\"".into(), body: tarball("soloist 1", false), chunked: false }));
+    let url = fake_cdn(release).await;
+    let root = tempfile::tempdir().unwrap();
+    let builds = Builds { root: root.path().into() };
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let starters: Vec<_> = (0..4)
+        .map(|_| {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = std::process::Command::new("/bin/sh").args(["-c", ":"]).status();
+                }
+            })
+        })
+        .collect();
+    let mut failed = None;
+    for _ in 0..100 {
+        if let Err(e) = update::download_with_cap(&builds, &url, 1 << 20).await {
+            failed = Some(e.to_string());
+            break;
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    for s in starters {
+        s.join().unwrap();
+    }
+    assert_eq!(failed, None);
+}
