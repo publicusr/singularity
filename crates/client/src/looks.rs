@@ -407,11 +407,13 @@ impl App {
         let Some(ask) = self.take_delete_ask() else { return };
         // (still the Design on screen: nothing else can change it while it asks)
         let yes = yes && self.shown.file() == Some(ask.file.as_str());
+        // the undo history is the Design the picker opened on: it goes only if that's the one deleted
+        let opened_on = ask.back.as_ref().is_none_or(|p| p.before.3.file() == Some(ask.file.as_str()));
         if yes {
-            self.delete_design(ask.back.is_none());
+            self.delete_design(opened_on);
         }
         let Some(mut p) = ask.back else { return };
-        if yes {
+        if yes && self.shown.file().is_none() {
             p.items = self.shown.picker_items();
             let cur = self.shown.picker_current();
             p.sel = p.items.iter().position(|i| i.0 == cur).unwrap_or(0);

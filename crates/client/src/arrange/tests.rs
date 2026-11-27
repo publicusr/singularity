@@ -424,6 +424,106 @@ fn the_design_pickers_delete_key_asks_then_the_picker_comes_back_without_it() {
     assert!(files().is_empty());
 }
 
+/// #80 review: deleting a Design previewed in the picker keeps the undo history of the Design the picker opened on;
+/// deleting the "(edited)" copy it opened on can be undone, as from Ctrl+K.
+#[test]
+fn a_delete_from_the_picker_keeps_the_history_of_the_design_it_opened_on() {
+    let (mut a, _dir) = with_dirs();
+    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
+    a.save_layout("Other");
+    a.set_design(0);
+    a.save_layout("Mine");
+    let saved = a.layout.clone();
+    a.close_pane(pid(&a, Widget::Fft));
+    a.run(Action::PickDesign);
+    let other = a.picker().unwrap().items.iter().position(|i| i.1 == "Other").unwrap();
+    a.picker_select(other);
+    key(&mut a, KeyCode::Delete);
+    key(&mut a, KeyCode::Char('y'));
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.shown.file(), Some("mine"));
+    ctrl(&mut a, 'z');
+    assert_eq!(a.layout, saved, "Mine's close undone: {:?}", a.toast);
+    // the "(edited)" copy the picker opened on: deleted, then brought back by one undo
+    a.set_design(0);
+    a.commit_layout(swapped(Node::singularity(), Widget::Fft, Widget::Loudness));
+    a.run(Action::PickDesign);
+    key(&mut a, KeyCode::Delete);
+    key(&mut a, KeyCode::Char('y'));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.shown.file(), None);
+    ctrl(&mut a, 'z');
+    assert_eq!(a.shown.file(), Some("singularity-edited"));
+}
+
+/// #80 review: a layouts folder the file can't be removed from: the bar says so and nothing changes.
+#[cfg(unix)]
+#[test]
+fn a_delete_that_cant_remove_the_file_leaves_the_design_on_screen() {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut a, dir) = with_dirs();
+    let layouts = dir.path().join("layouts");
+    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
+    a.save_layout("Mine");
+    let mine = a.layout.clone();
+    std::fs::set_permissions(&layouts, std::fs::Permissions::from_mode(0o555)).unwrap();
+    a.run(Action::DeleteDesign);
+    key(&mut a, KeyCode::Char('y'));
+    std::fs::set_permissions(&layouts, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(a.toast.as_ref().is_some_and(|(t, _)| t.starts_with("Couldn't delete \"Mine\"")), "{:?}", a.toast);
+    assert_eq!((a.shown.file(), a.layout.clone()), (Some("mine"), mine));
+    assert_eq!(crate::layouts::load_dir(&layouts).0.len(), 1);
+}
+
+/// #80 review: a click in the yes/no's box but on neither answer does nothing; outside it is a no.
+#[test]
+fn a_click_in_the_ask_box_off_the_answers_does_nothing() {
+    let (mut a, _dir) = with_dirs();
+    a.save_layout("Mine");
+    a.run(Action::DeleteDesign);
+    render(&mut a, W, H);
+    let r = a.overlays.first().copied().expect("the box");
+    press(&mut a, r.right() - 3, r.y + 1);
+    assert_eq!(a.modal(), Some(Modal::DeleteDesign));
+    press(&mut a, 0, 0);
+    assert!(a.modal().is_none());
+    assert_eq!(a.shown.file(), Some("mine"));
+}
+
+/// #80 review, on the drawn buffer: the Design picker's hint gets "· Del delete" only on a row of yours; on a built-in
+/// row it is the hint as it was, and nothing else in the picker's box differs between the two.
+#[test]
+fn the_pickers_delete_hint_shows_only_on_your_designs() {
+    let (mut a, _dir) = with_dirs();
+    a.save_layout("Mine");
+    a.set_design(0);
+    a.run(Action::PickDesign);
+    let mine = a.picker().unwrap().items.iter().position(|i| i.1 == "Mine").unwrap();
+    let built_in = render_buf(&mut a, W, H);
+    let r = a.overlays.first().copied().unwrap();
+    let row = |b: &Buffer, y: u16| (r.x..r.right()).map(|x| b[(x, y)].symbol().to_string()).collect::<String>();
+    let hint = r.bottom() - 2;
+    assert_eq!(row(&built_in, hint).trim_matches(|c| c == '│' || c == ' '), "↑↓ preview · Enter keep · Esc put back");
+    a.picker_select(mine);
+    let own = render_buf(&mut a, W, H);
+    assert_eq!(row(&own, hint).trim_matches(|c| c == '│' || c == ' '), "↑↓ preview · Enter keep · Esc put back · Del delete");
+    // the list's rows differ by the highlight; the border, title and swatch don't
+    let n = a.picker().unwrap().items.len() as u16;
+    for y in (r.y..r.bottom()).filter(|&y| y != hint && !(r.y + 1..r.y + 1 + n).contains(&y)) {
+        for x in r.x..r.right() {
+            assert_eq!(own[(x, y)], built_in[(x, y)], "{x},{y}");
+        }
+    }
+    // back on the built-in row: exactly as it was
+    a.picker_select(0);
+    let again = render_buf(&mut a, W, H);
+    for y in r.y..r.bottom() {
+        for x in r.x..r.right() {
+            assert_eq!(again[(x, y)], built_in[(x, y)], "{x},{y}");
+        }
+    }
+}
+
 /// #80: keys.toml's old `reset_layout` (Reset design's) is Delete design now, with the same yes/no.
 #[test]
 fn reset_layout_is_another_name_for_delete_design() {

@@ -162,18 +162,33 @@ fn delete_removes_the_design_on_screen_and_leaves_a_built_in_one() {
     s.show_built_in(cockpit);
     let a = edit(Node::cockpit(), Widget::Fft, Widget::Loudness);
     let _ = s.edited(&a, THEME, false);
-    let o = s.delete().expect("deleted");
+    let o = s.delete().unwrap().expect("deleted");
     assert_eq!((said(&o), o.saves_ui()), (Some("Deleted \"Cockpit (edited)\" · back to Cockpit"), true));
     assert_eq!((s.file(), s.design()), (None, cockpit));
     assert!(files(&mem).is_empty(), "the unnamed edit is gone");
     // a Design of your own (made from Cockpit): gone, and the default Design is on screen
     let _ = s.save_as("Mine", &a, THEME);
     let _ = s.save_as("Other", &a, THEME);
-    let o = s.delete().expect("deleted");
+    let o = s.delete().unwrap().expect("deleted");
     assert_eq!(said(&o), Some("Deleted \"Other\" · back to Singularity"));
     assert_eq!((s.file(), s.design()), (None, 0));
     assert_eq!(files(&mem), [("mine".to_string(), "Mine".to_string(), false)], "only the one on screen goes");
     assert!(s.picker_items().iter().all(|i| i.1 != "Other"), "nor in the picker");
+}
+
+#[test]
+fn a_delete_that_cant_remove_the_file_says_so_and_changes_nothing() {
+    let (mut s, mem) = shown();
+    let cockpit = crate::design::by_id("cockpit").unwrap();
+    s.show_built_in(cockpit);
+    let a = edit(Node::cockpit(), Widget::Fft, Widget::Loudness);
+    let _ = s.save_as("Mine", &a, THEME);
+    mem.fail_next.set(true);
+    let o = s.delete().unwrap().expect_err("not deleted");
+    assert_eq!(o.steps(), [Step::Say("Couldn't delete \"Mine\": read-only folder".into())]);
+    assert_eq!((s.file(), s.design()), (Some("mine"), cockpit), "still on screen");
+    assert_eq!(files(&mem).len(), 1);
+    assert!(s.picker_items().iter().any(|i| i.1 == "Mine"));
 }
 
 #[test]

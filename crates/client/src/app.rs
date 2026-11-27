@@ -3158,8 +3158,6 @@ macro_rules! popup_data {
                         _ => None,
                     }
                 }
-                /// (not every popup is changed in place: Delete design's yes/no isn't)
-                #[allow(dead_code)]
                 pub(crate) fn $get_mut(&mut self) -> Option<&mut $t> {
                     match &mut self.popup {
                         Some(Popup::$v(x)) => Some(x),
@@ -3185,7 +3183,6 @@ macro_rules! popup_data {
 popup_data! {
     palette, palette_mut, take_palette: Palette(Palette);
     picker, picker_mut, take_picker: Picker(crate::looks::Picker);
-    delete_ask, delete_ask_mut, take_delete_ask: DeleteDesign(crate::looks::DeleteAsk);
     naming, naming_mut, take_naming: Naming(Naming);
     widget_picker, widget_picker_mut, take_widget_picker: WidgetPicker(crate::panemenu::WidgetPicker);
     details, details_mut, take_details: Details(crate::playlists::Details);
@@ -3195,6 +3192,25 @@ popup_data! {
 }
 
 impl App {
+    /// Delete design's yes/no, while it's open (nothing in it changes in place: no `_mut`).
+    pub(crate) fn delete_ask(&self) -> Option<&crate::looks::DeleteAsk> {
+        match &self.popup {
+            Some(Popup::DeleteDesign(d)) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Close Delete design's yes/no, if it's the one open, and hand back what it held.
+    pub(crate) fn take_delete_ask(&mut self) -> Option<crate::looks::DeleteAsk> {
+        match self.popup.take() {
+            Some(Popup::DeleteDesign(d)) => Some(d),
+            other => {
+                self.popup = other;
+                None
+            }
+        }
+    }
+
     /// Open `p`, replacing the popup open (popups don't nest).
     pub(crate) fn open_popup(&mut self, p: Popup) {
         // a Widget held meanwhile is let go (its chip would be drawn over the popup, #40 review), a divider held is
@@ -3360,8 +3376,12 @@ impl App {
                         }
                         _ => self.picker_cancel(),
                     },
-                    // a click elsewhere is a no
-                    Modal::DeleteDesign => self.delete_answer(hit == Some(Hit::DeleteAnswer(true))),
+                    // an answer; outside the box is a no; inside, elsewhere, nothing
+                    Modal::DeleteDesign => match hit {
+                        Some(Hit::DeleteAnswer(yes)) => self.delete_answer(yes),
+                        _ if !inside => self.delete_answer(false),
+                        _ => {}
+                    },
                     // a click elsewhere only closes the menu
                     Modal::Menu => match hit {
                         Some(Hit::MenuSplit(side)) => self.menu_split(side),

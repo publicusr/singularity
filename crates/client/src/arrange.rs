@@ -507,23 +507,31 @@ impl App {
 
     /// "Delete design", once it's been answered yes (#80, replacing Reset design): the Design on screen is deleted.
     /// Its "(edited)" copy gives way to the built-in Design's own layout, keeping the Theme on screen, as Reset design
-    /// did (and, `undoable`, one undo brings the copy back); a Design of the user's gives way to the default Design,
-    /// with its own Theme, and the layout undo history was the deleted Design's. A built-in Design has nothing to
-    /// delete.
-    pub fn delete_design(&mut self, undoable: bool) {
+    /// did; a Design of the user's gives way to the default Design, with its own Theme. A built-in Design has nothing
+    /// to delete; a file that can't be removed leaves everything as it was (the bar says why).
+    ///
+    /// `its_history`: the layout undo history is the deleted Design's (not, from the Design picker, the one it opened
+    /// on, whose history stays). Then one undo brings an "(edited)" copy back; a Design of the user's takes its
+    /// history with it.
+    pub fn delete_design(&mut self, its_history: bool) {
         // a divider held meanwhile is let go first, on the Design it moved (Q103)
         self.gesture_interrupted();
         let before = self.arrange.snapshot(&scene!(self));
         let (theme, edited) = (self.theme.id.clone(), self.shown.on_edited_copy());
-        let Some(o) = self.shown.delete() else { return };
+        let o = match self.shown.delete() {
+            None => return,
+            Some(Err(o)) => return self.shown_did(o),
+            Some(Ok(o)) => o,
+        };
         self.set_design(self.shown.design());
         if edited {
             self.set_theme(&theme);
         }
         self.shown_did(o);
-        match edited && undoable {
-            true => self.arrange.reset_done(before, &self.layout),
-            false => self.arrange.forget_history(),
+        match (its_history, edited) {
+            (false, _) => {}
+            (true, true) => self.arrange.reset_done(before, &self.layout),
+            (true, false) => self.arrange.forget_history(),
         }
     }
 
