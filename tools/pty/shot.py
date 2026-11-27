@@ -36,25 +36,35 @@ FONT = first_font("/usr/share/fonts/nerd-fonts/DejaVuSansMono/DejaVuSansMNerdFon
                   "/System/Library/Fonts/Menlo.ttc")
 
 
-def some_font(*paths):
-    """The first of these fonts that exists, or None (scripts the main font lacks: drawn in it, as boxes, without)."""
-    try:
-        return first_font(*paths)
-    except SystemExit:
-        return None
+# lyrics in other scripts (#146): (first, last code point, a font that has them). Used only for a character FONT
+# lacks, and only where the file exists (elsewhere it's drawn in FONT, as a box), so other shots stay as they were.
+SCRIPTS = [(0x0900, 0x097F, "/usr/share/fonts/google-noto-vf/NotoSansDevanagari[wght].ttf"),
+           (0x0E00, 0x0E7F, "/usr/share/fonts/google-noto-vf/NotoSansThai[wght].ttf"),
+           (0x3000, 0x9FFF, "/usr/share/fonts/google-noto-sans-mono-cjk-vf-fonts/NotoSansMonoCJK-VF.ttc")]
+LOADED = {}
 
 
-# lyrics in other scripts (#146): (first, last code point, font)
-SCRIPTS = [(0x0900, 0x097F, some_font("/usr/share/fonts/google-noto-vf/NotoSansDevanagari[wght].ttf")),
-           (0x0E00, 0x0E7F, some_font("/usr/share/fonts/google-noto-vf/NotoSansThai[wght].ttf")),
-           (0x3000, 0x9FFF, some_font("/usr/share/fonts/google-noto-sans-mono-cjk-vf-fonts/NotoSansMonoCJK-VF.ttc"))]
+def lacks(ch):
+    """Whether FONT has no glyph for `ch` (it draws the same box as for a code point no font has)."""
+    def drawn(c):
+        im = Image.new("L", (40, 24))
+        ImageDraw.Draw(im).text((0, 0), c, font=FONT, fill=255)
+        return im.tobytes()
+    if "box" not in LOADED:
+        LOADED["box"] = drawn("\U0010FFFD")
+    return drawn(ch) == LOADED["box"]
 
 
 def font_for(ch):
     o = ord(ch[0])
     if 0x2800 <= o <= 0x28FF:
         return BRAILLE
-    return next((f for lo, hi, f in SCRIPTS if f and lo <= o <= hi), FONT)
+    for lo, hi, path in SCRIPTS:
+        if lo <= o <= hi and os.path.exists(path) and lacks(ch[0]):
+            if path not in LOADED:
+                LOADED[path] = ImageFont.truetype(path, 16)
+            return LOADED[path]
+    return FONT
 
 
 # test sockets (short paths) go here: $XDG_RUNTIME_DIR on Linux, an owner-only dir in /tmp where there is none (macOS)
