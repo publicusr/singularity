@@ -18,12 +18,20 @@ pub struct Sidebar {
     pub visible: usize,
     pub cols: usize,
     pub rows: usize,
+    /// whether the wheel has the view (D86)
+    pub wheeled: crate::scroll::Wheeled,
 }
 
 impl Sidebar {
     pub fn move_sel(&mut self, delta: i64, len: usize) {
         self.sel = crate::scroll::moved(self.sel, delta.clamp(i32::MIN as i64, i32::MAX as i64) as i32, len);
         self.top = first(self.sel, self.top, self.rows, self.cols, len);
+    }
+
+    /// The wheel: the view `lines` on (in columns, a column of entries a line), the highlight where it is (D86).
+    pub fn scroll(&mut self, lines: i64) {
+        let unit = if self.cols > 1 { self.rows.max(1) as i64 } else { 1 };
+        self.wheeled.by(&mut self.top, (lines * unit).clamp(i32::MIN as i64, i32::MAX as i64) as i32, self.sel);
     }
 }
 
@@ -189,7 +197,9 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     // the highlight is on a row there is (a refresh can shorten the library), and the window follows it (the size it
     // was moved with may be another Pane's, or the popup's before its first frame)
     side.sel = side.sel.min(n.saturating_sub(1));
-    side.top = first(side.sel, side.top, side.rows, side.cols, n);
+    // (unless the wheel has the view)
+    let end = first(n.saturating_sub(1), 0, side.rows, side.cols, n);
+    side.top = if side.wheeled.follows(side.sel, end) { first(side.sel, side.top, side.rows, side.cols, n) } else { side.top.min(end) };
     // (its popup, where no Pane shows it, has the keys as a focused Pane has them)
     let focused = app.is_focused(crate::layout::Widget::Library) || app.is_open(crate::app::Modal::Library);
     let open = app.list_view().map(|v| v.uri.clone());

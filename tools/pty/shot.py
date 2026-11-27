@@ -355,7 +355,7 @@ def meters(t, out):
 
 
 def wheel(t, out):
-    """#26: the wheel moves the highlight over a track list (also over artist/album names) and in the library."""
+    """#26, D86: the wheel scrolls a track list (also over artist/album names) and the library; the highlight stays."""
     t.pump(1.0)
     x, y = t.find("♥  Liked Songs")
     mouse(t, 0, x + 2, y)
@@ -378,7 +378,8 @@ def wheel(t, out):
 
 
 def wheel_burst(t, out):
-    """Ghostty sends three wheel reports per notch in one write: each burst moves the highlight one row."""
+    """Ghostty sends three wheel reports per notch in one write: each burst moves the list one row (D86: the
+    highlight stays, so Enter plays the first song)."""
     t.pump(1.0)
     x, y = t.find("♥  Liked Songs")
     mouse(t, 0, x + 2, y)
@@ -388,8 +389,63 @@ def wheel_burst(t, out):
         t.send(f"\x1b[<65;{rx + 3};{ry + 1}M".encode() * 3, 0.1)  # one notch
     t.pump(0.4)
     t.shot(f"{out}/0-two-notches.png")
-    t.send(b"\r", 1.0)  # play the highlighted song: the third
+    t.send(b"\r", 1.0)  # play the highlighted song: the first (the wheel left it there)
     t.shot(f"{out}/1-playing.png")
+    t.send(b" ", 0.3)
+    t.send(b"q", 0.5)
+
+
+def touchpad(t, out):
+    """D86 (#32): touchpad-like bursts of wheel reports against single mouse-wheel notches over Liked Songs. The
+    reports go as Ghostty sends them (the owner's recording, `crates/client/tests/fixtures/wheel-touchpad-ghostty.txt`):
+    five wheel notches (three reports in one write each), a fast flick (eleven reports in 44 ms, some in one write), a
+    slow drag back up (ten reports 30 to 400 ms apart); then the pointer over a row highlights it and a click picks it.
+    Prints the first song shown and the highlighted one after each; `<n>-<what>.png`."""
+    t.pump(1.0)
+    x, y = t.find("♥  Liked Songs")
+    mouse(t, 0, x + 2, y)
+    mouse(t, 0, x + 2, y, release=True, wait=0.8)
+    rx, ry = t.find("Fake Track 001")
+
+    def report(code, k=1):
+        return f"\x1b[<{code};{rx + 3};{ry + 4}M".encode() * k
+
+    def rows():
+        # the songs on screen, top to bottom, and the one whose background differs from the others' (the highlight)
+        shown = [(yy, line) for yy, line in enumerate(t.screen.display) if "Fake Track" in line]
+        bgs = [t.screen.buffer[yy][rx + 2].bg for yy, _ in shown]
+        lit = [line for (yy, line), bg in zip(shown, bgs) if bgs.count(bg) == 1]
+        name = lambda line: line[line.find("Fake Track"):][:14]
+        return name(shown[0][1]) if shown else None, name(lit[0]) if lit else None
+
+    def step(i, what):
+        t.pump(0.4)
+        t.shot(f"{out}/{i}-{what}.png")
+        first, lit = rows()
+        print(f"{i} {what}: first shown {first!r}, highlighted {lit!r}")
+
+    step(0, "start")
+    for _ in range(5):
+        t.send(report(65, 3), 0.04)  # a wheel notch
+    step(1, "five-wheel-notches")
+    # the flick, with its gaps (ms): two at once, three at once, two close together, then four
+    for k, gap in [(2, 23.7), (3, 6.7), (1, 0.1), (1, 12.8), (1, 0.4), (1, 0.1), (2, 0)]:
+        t.send(report(65, k), gap / 1000)
+    step(2, "fast-flick")
+    for gap in [66.9, 49.7, 133.7, 49.6, 34.2, 50.0, 83.3, 116.7, 100.1, 0]:
+        t.send(report(64), gap / 1000)
+    step(3, "slow-drag-up")
+    # the pointer over the sixth row: it lights; a click there picks it (a second click plays it)
+    shown = [yy for yy, line in enumerate(t.screen.display) if "Fake Track" in line]
+    hy = shown[5]
+    t.send(f"\x1b[<35;{rx + 3};{hy + 1}M".encode(), 0.3)
+    step(4, "hover-sixth-row")
+    mouse(t, 0, rx + 2, hy)
+    mouse(t, 0, rx + 2, hy, release=True, wait=0.3)
+    mouse(t, 0, rx + 2, hy)
+    mouse(t, 0, rx + 2, hy, release=True, wait=1.0)
+    step(5, "double-click-plays-it")
+    print("playing:", next((l.strip()[:60] for l in t.screen.display[-4:] if "Fake Track" in l), None))
     t.send(b" ", 0.3)
     t.send(b"q", 0.5)
 
@@ -898,7 +954,7 @@ def book(t, out):
 
 
 def queue_wheel(t, out):
-    """The wheel over the queue moves its highlight one song at a time and the list follows (as in the lists, #26)."""
+    """The wheel over the queue scrolls it one line a notch and leaves its highlight (D86; as in the lists, #26)."""
     t.pump(1.0)
     x, y = t.find("♥  Liked Songs")
     mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
@@ -2822,7 +2878,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "search-timing", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "gesture", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
+    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "search-timing", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "gesture", "wheel-burst", "touchpad", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-fast", "tiling-paths", "resize", "karaoke", "arrange-fixes") else "0"
@@ -2959,6 +3015,8 @@ def main():
             return wheel(t, out)
         if scenario == "wheel-burst":
             return wheel_burst(t, out)
+        if scenario == "touchpad":
+            return touchpad(t, out)
         if scenario == "popup-wheel":
             return popup_wheel(t, out)
         if scenario == "wheel-all":

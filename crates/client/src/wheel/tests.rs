@@ -82,7 +82,8 @@ fn stats(period: StatsPeriod) -> singularity_proto::Stats {
 }
 
 /// One thing to wheel: what it is, how to set it up, and how many notches in a row each move it (0: nothing to
-/// scroll there).
+/// scroll there). A list's view moves a row a notch (D86), so a list moves as many notches as it has rows that don't
+/// fit.
 struct Case {
     what: &'static str,
     set: fn(&mut App),
@@ -204,8 +205,8 @@ fn pages() -> Vec<Case> {
                 let page = singularity_proto::ArtistPage { uri: "spotify:artist:a".into(), name: "Nova Drift".into(), top_tracks: (0..10).map(|i| row(i, "track")).collect(), shelves: (0..8).map(shelf).collect(), ..Default::default() };
                 app.page.artist_mut().unwrap().set_page(page);
             },
-            // ten popular tracks: nine notches from the first to the last
-            moves: 9,
+            // ten popular tracks, four of them shown: six notches to the last
+            moves: 6,
         },
         Case {
             what: "an artist page without Shelves",
@@ -214,19 +215,19 @@ fn pages() -> Vec<Case> {
                 let page = singularity_proto::ArtistPage { uri: "spotify:artist:a".into(), name: "Nova Drift".into(), top_tracks: (0..10).map(|i| row(i, "track")).collect(), ..Default::default() };
                 app.page.artist_mut().unwrap().set_page(page);
             },
-            moves: 9,
+            moves: 6,
         },
         Case {
             what: "search: recent searches",
             set: |app| {
-                app.search = crate::search::Search::with_recent((0..12).map(|i| format!("query {i}")).collect());
+                app.search = crate::search::Search::with_recent((0..30).map(|i| format!("query {i}")).collect());
                 app.run(Action::Search);
             },
-            moves: 11,
+            moves: 19,
         },
-        // five songs above the Shelves
-        Case { what: "search: All", set: |app| search(app, 0), moves: 4 },
-        Case { what: "search: Songs", set: |app| search(app, 1), moves: 20 },
+        // (a few songs above the Shelves)
+        Case { what: "search: All", set: |app| search(app, 0), moves: 3 },
+        Case { what: "search: Songs", set: |app| search(app, 1), moves: 19 },
         Case { what: "search: Artists", set: |app| search(app, 2), moves: 20 },
         Case { what: "search: Albums", set: |app| search(app, 3), moves: 20 },
         Case { what: "search: Playlists", set: |app| search(app, 4), moves: 20 },
@@ -362,22 +363,26 @@ fn a_big_queues_two_row_songs_take_the_pointer_and_the_wheel_song_by_song() {
         _ => panic!("no menu"),
     }
     app.popup = None;
-    // the wheel: one song a notch, the highlighted song always drawn, the list moving once it has to
+    // the wheel: the list one song a notch, to its end, the highlight where it was (D86)
     app.queue_view.sel = 0;
     let mut last = draw(&mut app);
     let (x, y) = (r.x + r.width / 3, r.y + r.height / 2);
-    for n in 1..40 {
+    let mut n = 0;
+    while app.queue_view.top + app.queue_view.visible < 41 {
         wheel(&mut app, MouseEventKind::ScrollDown, x, y, 1);
         let now = draw(&mut app);
-        assert_eq!(app.queue_view.sel, n);
-        assert!(app.hits.iter().any(|(_, h)| *h == Hit::QueueRow(n)), "notch {n}: the highlighted song isn't drawn");
+        n += 1;
+        assert_eq!((app.queue_view.sel, app.queue_view.top), (0, n), "a song a notch");
         assert!(cells(&now, r) != cells(&last, r), "notch {n} moved nothing");
         last = now;
+        assert!(n < 40, "the wheel never reaches the end");
     }
-    assert_eq!(app.queue_view.top + app.queue_view.visible, 41, "at the end, the last song at the bottom");
+    assert!(app.hits.iter().any(|(_, h)| *h == Hit::QueueRow(39)), "at the end, the last song shows");
+    wheel(&mut app, MouseEventKind::ScrollDown, x, y, 1);
+    assert!(cells(&draw(&mut app), r) == cells(&last, r), "past the end");
     wheel(&mut app, MouseEventKind::ScrollUp, x, y, 1);
     assert!(cells(&draw(&mut app), r) != cells(&last, r), "a notch up moved nothing");
-    assert_eq!(app.queue_view.sel, 38);
+    assert_eq!((app.queue_view.sel, app.queue_view.top), (0, n - 1));
 }
 
 /// Every Widget's name in a saved Design reads back as that Widget.
@@ -420,15 +425,16 @@ fn a_short_homes_search_wheels_through_the_songs_and_every_shelf_and_back() {
             if cells(&now, inner) == cells(&last, inner) {
                 break;
             }
-            shelves_seen |= app.searching().unwrap().track_sel.is_none();
+            shelves_seen |= app.searching().unwrap().showing_shelves();
             down += 1;
             last = now;
             assert!(down < 200, "{what}: the wheel never stops");
         }
         // every song, then the Shelves (more than a notch of them: several Shelves of Cards under All)
         assert!(shelves_seen && down > songs + 2, "{what}: {down} notches down\n{}", text(&last, inner));
+        // up: every notch moves something until the first song shows again
         let mut up = 0;
-        while app.searching().unwrap().track_sel != Some(0) {
+        while !text(&last, inner).contains("S0 ") {
             wheel(&mut app, MouseEventKind::ScrollUp, x, y, 1);
             let now = render(&mut app);
             assert!(one(&app), "{what}: two highlights after notch {} up", up + 1);
@@ -437,5 +443,193 @@ fn a_short_homes_search_wheels_through_the_songs_and_every_shelf_and_back() {
             up += 1;
             assert!(up < 200, "{what}: the wheel never gets back to the first song");
         }
+        assert!(up >= down - songs, "{what}: {up} notches up, {down} down");
     }
+}
+
+/// Reports as the terminal sends them (µs after the first, in one direction), through `term::WheelSteps` into the App
+/// over (`x`, `y`), each group settled as the next frame would.
+fn replay(app: &mut App, kind: MouseEventKind, x: u16, y: u16, reports: &[u64]) {
+    use std::time::{Duration, Instant};
+    let (mut steps, t) = (crate::term::WheelSteps::default(), Instant::now());
+    let m = MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
+    let mut out = vec![];
+    for &us in reports {
+        out.extend(steps.push(m, t + Duration::from_micros(us)));
+    }
+    out.extend(steps.settle(t + Duration::from_micros(reports.last().copied().unwrap_or(0)) + crate::term::WheelSteps::TOGETHER));
+    for m in out {
+        app.pointer(m, x as f64 + 0.5, false);
+    }
+}
+
+/// D86 (#32): a touchpad's reports scroll a list a row each, a fast flick as far as its reports go, where a mouse
+/// wheel's notch in Ghostty (three reports at once) stays one row; the highlight stays where it was throughout.
+#[test]
+fn a_touchpad_swipe_scrolls_a_row_a_report_and_a_wheel_notch_one_row() {
+    let mut app = app();
+    app.layout = layout(Widget::Home).into();
+    list(&mut app, "spotify:playlist:p", None);
+    render(&mut app);
+    let r = pane(&app, Widget::Home);
+    let (x, y) = (r.x + r.width / 3, r.y + r.height / 2);
+    let top = |app: &App| app.list_view().unwrap().top;
+    // five notches of a mouse wheel in Ghostty (`discrete:3`), 40 ms apart: five rows
+    let notches: Vec<u64> = (0..5).flat_map(|i| [i * 40_000, i * 40_000 + 1, i * 40_000 + 2]).collect();
+    replay(&mut app, MouseEventKind::ScrollDown, x, y, &notches);
+    render(&mut app);
+    assert_eq!(top(&app), 5);
+    // the owner's fast flick (eleven reports in 44 ms, some at once): eleven rows
+    let flick = [0, 0, 23_700, 23_700, 23_700, 30_400, 30_500, 43_300, 43_700, 43_800, 43_800];
+    replay(&mut app, MouseEventKind::ScrollDown, x, y, &flick);
+    render(&mut app);
+    assert_eq!(top(&app), 16);
+    // a slow drag back up (reports 30 to 400 ms apart): a row each
+    let slow = [0, 66_900, 116_600, 250_300, 299_900, 334_100, 384_100, 467_400, 584_100, 684_200];
+    replay(&mut app, MouseEventKind::ScrollUp, x, y, &slow);
+    render(&mut app);
+    assert_eq!(top(&app), 6);
+    assert_eq!(app.list_view().unwrap().sel, 0, "the highlight stayed");
+}
+
+/// D86: the pointer moving over a row of a focused list highlights it (the row a click would pick); over a Pane that
+/// isn't focused it changes nothing.
+#[test]
+fn the_pointer_over_a_focused_lists_row_highlights_it() {
+    let mut app = app();
+    app.layout = layout(Widget::Queue).into();
+    list(&mut app, "spotify:playlist:p", None);
+    app.playback.queue = (0..40).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:q{i}"), name: format!("Queued {i}"), duration_ms: 150_000, ..Default::default() }, source: "queue".into(), uid: format!("u{i}") }).collect();
+    app.focus_on(Widget::Home);
+    render(&mut app);
+    let at = |app: &App, h: Hit| app.hit_rect(&h).unwrap_or_else(|| panic!("{h:?} isn't drawn"));
+    let hover = |app: &mut App, r: Rect| app.pointer(MouseEvent { kind: MouseEventKind::Moved, column: r.x + 2, row: r.y, modifiers: KeyModifiers::NONE }, r.x as f64 + 2.5, false);
+    // the focused list: the row under the pointer
+    let row = at(&app, Hit::Track(4));
+    hover(&mut app, row);
+    assert_eq!(app.list_view().unwrap().sel, 4);
+    // after the wheel, the row now under the pointer once it moves
+    wheel(&mut app, MouseEventKind::ScrollDown, row.x + 2, row.y, 3);
+    render(&mut app);
+    assert_eq!(app.list_view().unwrap().sel, 4, "the wheel left the highlight");
+    hover(&mut app, row);
+    assert_eq!(app.list_view().unwrap().sel, 7);
+    // the queue isn't focused: nothing changes there
+    let q = at(&app, Hit::QueueRow(3));
+    hover(&mut app, q);
+    assert_eq!((app.queue_view.sel, app.focused()), (0, Some(Widget::Home)));
+    // focused, it lights the row there and changes nothing else (the queue's highlight isn't placed by it)
+    app.focus_on(Widget::Queue);
+    hover(&mut app, q);
+    assert_eq!((app.queue_view.sel, app.queue_view.placed), (3, false));
+}
+
+/// D86: a track list the wheel took stays where it was put while its next pages arrive (a long list loading), the
+/// highlight where it was; one the wheel hasn't taken keeps its highlight on its line, as before.
+#[test]
+fn a_wheeled_list_stays_put_while_its_pages_arrive() {
+    let uri = "spotify:collection";
+    let page = |from: usize, to: usize| TrackPage { uri: uri.into(), offset: from as u32, total: 200, tracks: (from..to).map(|i| row(i, "track")).collect(), header: None };
+    let mut app = app();
+    app.layout = layout(Widget::Home).into();
+    app.open(uri, "Liked Songs", "", "");
+    app.track_page(page(0, 50));
+    render(&mut app);
+    let r = pane(&app, Widget::Home);
+    wheel(&mut app, MouseEventKind::ScrollDown, r.x + r.width / 3, r.y + r.height / 2, 10);
+    render(&mut app);
+    assert_eq!((app.list_view().unwrap().sel, app.list_view().unwrap().top), (0, 10));
+    for from in [50, 100, 150] {
+        app.track_page(page(from, from + 50));
+        render(&mut app);
+        let v = app.list_view().unwrap();
+        assert_eq!((v.sel, v.top), (0, 10), "after the page from {from}");
+    }
+    // a key brings the view back to the highlight: then pages leave it there
+    app.key(ratatui::crossterm::event::KeyEvent::new(ratatui::crossterm::event::KeyCode::Down, KeyModifiers::NONE));
+    render(&mut app);
+    assert_eq!((app.list_view().unwrap().sel, app.list_view().unwrap().top), (1, 0));
+}
+
+/// D86: a key that acts on the highlight brings the view back to it first; Enter on a highlight scrolled off screen
+/// only brings it back (nothing plays unseen), the next Enter acts.
+#[test]
+fn a_key_brings_a_wheeled_view_back_to_the_highlight_first() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let key = |app: &mut App, code| app.key(KeyEvent::new(code, KeyModifiers::NONE));
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4096);
+    let mut app = App::new(Some(tx));
+    app.link = Link::Connected { version: "test".into() };
+    let mut played = move || std::iter::from_fn(|| rx.try_recv().ok()).filter(|c| matches!(c, singularity_proto::Command::PlayFrom { .. })).count();
+    app.layout = layout(Widget::Home).into();
+    list(&mut app, "spotify:playlist:p", None);
+    render(&mut app);
+    let r = pane(&app, Widget::Home);
+    let (x, y) = (r.x + r.width / 3, r.y + r.height / 2);
+    // ↑ on the first row moves nothing, but the view comes back
+    wheel(&mut app, MouseEventKind::ScrollDown, x, y, 30);
+    render(&mut app);
+    assert_eq!(app.list_view().unwrap().top, 30);
+    key(&mut app, KeyCode::Up);
+    render(&mut app);
+    assert_eq!((app.list_view().unwrap().sel, app.list_view().unwrap().top), (0, 0));
+    // Enter with the highlight off screen: only back to it
+    wheel(&mut app, MouseEventKind::ScrollDown, x, y, 30);
+    render(&mut app);
+    played();
+    key(&mut app, KeyCode::Enter);
+    render(&mut app);
+    assert_eq!((app.list_view().unwrap().sel, app.list_view().unwrap().top), (0, 0));
+    assert_eq!(played(), 0, "nothing played unseen");
+    assert!(app.hits.iter().any(|(_, h)| *h == Hit::Track(0)), "the highlight shows");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(played(), 1, "the next Enter plays it");
+    // the library too: the view comes back to its highlight
+    let lib = pane(&app, Widget::Library);
+    app.hear(singularity_proto::Event::Library(singularity_proto::Library { items: (0..60).map(|n| LibraryItem { uri: format!("spotify:playlist:p{n}"), name: format!("Playlist {n}"), subtitle: "Playlist".into(), kind: "playlist".into(), image_url: None, depth: 0, own: false, authors: vec![] }).collect() }));
+    render(&mut app);
+    wheel(&mut app, MouseEventKind::ScrollDown, lib.x + 3, lib.y + 4, 30);
+    render(&mut app);
+    assert!(app.sidebar.top > 0 && app.sidebar.sel == 0);
+    key(&mut app, KeyCode::Up);
+    render(&mut app);
+    assert_eq!((app.sidebar.sel, app.sidebar.top), (0, 0));
+}
+
+/// D86, a short Home's search: with the highlight in the Shelves and the wheel back up on the songs, Enter only brings
+/// the Shelves back (nothing opens unseen); the next Enter opens the highlighted Card.
+#[test]
+fn enter_on_a_short_searchs_hidden_shelf_highlight_only_brings_the_shelves_back() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let key = |app: &mut App, code| app.key(KeyEvent::new(code, KeyModifiers::NONE));
+    let (sw, sh) = crate::needs::smallest(Widget::Home);
+    let mut app = app();
+    app.layout = Node::split(Axis::Vertical, Size::Cells(sh), Node::split(Axis::Horizontal, Size::Cells(sw), Node::pane(Widget::Home), Node::pane(Widget::Library)), Node::pane(Widget::Queue)).into();
+    search(&mut app, 0);
+    render(&mut app);
+    // ↓ through the songs and into the Shelves
+    for _ in 0..40 {
+        key(&mut app, KeyCode::Down);
+        render(&mut app);
+        if app.searching().unwrap().shelves.sel.is_some() {
+            break;
+        }
+    }
+    let s = app.searching().unwrap();
+    assert!(s.short && s.showing_shelves() && s.shelves.sel.is_some());
+    let sel = s.shelves.sel;
+    // the wheel up over the Shelves' top: the songs show, the highlight stays in the Shelves
+    let r = pane(&app, Widget::Home);
+    wheel(&mut app, MouseEventKind::ScrollUp, r.x + 3, r.y + 3, 1);
+    render(&mut app);
+    assert!(!app.searching().unwrap().showing_shelves());
+    // Enter: only the Shelves back, nothing opened
+    key(&mut app, KeyCode::Enter);
+    render(&mut app);
+    assert!(matches!(app.page, Page::Search), "nothing opened unseen");
+    let s = app.searching().unwrap();
+    assert!(s.showing_shelves() && s.shelves.sel == sel);
+    // the next Enter opens the Card
+    key(&mut app, KeyCode::Enter);
+    assert!(!matches!(app.page, Page::Search), "the second Enter opens it");
 }
