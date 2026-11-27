@@ -244,7 +244,10 @@ fn start_daemon() -> Result<(), String> {
     };
     // own process group: closing the terminal must not take the Daemon (and the music) with it
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-    cmd.spawn().map(|_| ()).map_err(|e| format!("couldn't start {}: {e}", exe.display()))
+    // reaped when it quits (replaced, crashed), or it stays behind as a zombie for as long as this Client runs (#143)
+    let child = cmd.spawn().map_err(|e| format!("couldn't start {}: {e}", exe.display()))?;
+    singularity_config::host::reap(child);
+    Ok(())
 }
 
 #[cfg(test)]
