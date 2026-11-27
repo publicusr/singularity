@@ -3145,7 +3145,14 @@ impl App {
                 }
                 Page::Search => {
                     let s = &mut self.search;
+                    // a short Pane the wheel turned to the songs while the highlight is in the Shelves: back to them,
+                    // and Enter or Delete does nothing else
+                    let hidden = s.short && s.shelves.sel.is_some() && s.shelves_shown == Some(false);
                     s.shelves_shown = None;
+                    if hidden {
+                        s.track_wheeled.release();
+                        return acts;
+                    }
                     if s.query().trim().is_empty() {
                         let held = s.recent_wheeled.holds(s.recent_sel);
                         s.recent_wheeled.release();

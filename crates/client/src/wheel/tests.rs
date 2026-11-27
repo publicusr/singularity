@@ -595,3 +595,41 @@ fn a_key_brings_a_wheeled_view_back_to_the_highlight_first() {
     render(&mut app);
     assert_eq!((app.sidebar.sel, app.sidebar.top), (0, 0));
 }
+
+/// D86, a short Home's search: with the highlight in the Shelves and the wheel back up on the songs, Enter only brings
+/// the Shelves back (nothing opens unseen); the next Enter opens the highlighted Card.
+#[test]
+fn enter_on_a_short_searchs_hidden_shelf_highlight_only_brings_the_shelves_back() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let key = |app: &mut App, code| app.key(KeyEvent::new(code, KeyModifiers::NONE));
+    let (sw, sh) = crate::needs::smallest(Widget::Home);
+    let mut app = app();
+    app.layout = Node::split(Axis::Vertical, Size::Cells(sh), Node::split(Axis::Horizontal, Size::Cells(sw), Node::pane(Widget::Home), Node::pane(Widget::Library)), Node::pane(Widget::Queue)).into();
+    search(&mut app, 0);
+    render(&mut app);
+    // ↓ through the songs and into the Shelves
+    for _ in 0..40 {
+        key(&mut app, KeyCode::Down);
+        render(&mut app);
+        if app.searching().unwrap().shelves.sel.is_some() {
+            break;
+        }
+    }
+    let s = app.searching().unwrap();
+    assert!(s.short && s.showing_shelves() && s.shelves.sel.is_some());
+    let sel = s.shelves.sel;
+    // the wheel up over the Shelves' top: the songs show, the highlight stays in the Shelves
+    let r = pane(&app, Widget::Home);
+    wheel(&mut app, MouseEventKind::ScrollUp, r.x + 3, r.y + 3, 1);
+    render(&mut app);
+    assert!(!app.searching().unwrap().showing_shelves());
+    // Enter: only the Shelves back, nothing opened
+    key(&mut app, KeyCode::Enter);
+    render(&mut app);
+    assert!(matches!(app.page, Page::Search), "nothing opened unseen");
+    let s = app.searching().unwrap();
+    assert!(s.showing_shelves() && s.shelves.sel == sel);
+    // the next Enter opens the Card
+    key(&mut app, KeyCode::Enter);
+    assert!(!matches!(app.page, Page::Search), "the second Enter opens it");
+}
