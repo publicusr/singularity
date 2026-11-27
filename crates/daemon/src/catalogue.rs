@@ -44,6 +44,8 @@ pub enum CatCmd {
     Logout,
     Home,
     Library,
+    /// Home and the library at once, each sent as soon as it's in (#81): what a login sets off
+    HomeAndLibrary,
     Tracks(String),
     /// a show's next episodes (#59)
     MoreTracks { uri: String, offset: u32 },
@@ -228,7 +230,8 @@ pub fn spawn(dirs: Dirs, engine: Identity) -> (mpsc::Sender<CatCmd>, mpsc::Recei
 }
 
 /// The Catalogue over the query port `make` builds for each run (D78): Spotify's adapter, or fixtures in tests.
-fn spawn_with<Q: Fetch + Sync + 'static>(dirs: Dirs, engine: Identity, make: impl Fn(SessionSlot) -> Q + Send + 'static) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
+fn spawn_with<Q: Fetch + Sync + Clone + 'static>(dirs: Dirs, engine: Identity, make: impl Fn(SessionSlot) -> Q + Send + 'static) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
+    STARTED.get_or_init(Instant::now);
     let (cmd_tx, cmd_rx) = mpsc::channel(16);
     let (ev_tx, ev_rx) = mpsc::channel(64);
     tokio::spawn(supervise(dirs, engine, make, cmd_rx, ev_tx));
@@ -237,7 +240,7 @@ fn spawn_with<Q: Fetch + Sync + 'static>(dirs: Dirs, engine: Identity, make: imp
 
 /// Run the Catalogue, and keep it running: a panic would otherwise leave a Daemon that browses nothing, says
 /// "logged in" and never answers again (A1/C2). The command channel survives a restart, so Clients keep working.
-async fn supervise<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, make: impl Fn(SessionSlot) -> Q, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
+async fn supervise<Q: Fetch + Sync + Clone>(dirs: Dirs, engine: Identity, make: impl Fn(SessionSlot) -> Q, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
     let mut backoff = Duration::from_secs(2);
     loop {
         let began = Instant::now();
@@ -326,6 +329,7 @@ fn is_connect(cmd: &CatCmd) -> bool {
         | CatCmd::Reconnect
         | CatCmd::Home
         | CatCmd::Library
+        | CatCmd::HomeAndLibrary
         | CatCmd::Tracks(_)
         | CatCmd::MoreTracks { .. }
         | CatCmd::FindShow(_)
@@ -348,7 +352,7 @@ fn is_connect(cmd: &CatCmd) -> bool {
 
 /// Browsing and Connect side by side in this one task, so a panic in either is caught by `supervise` and a wait in
 /// one never holds up the other. Commands are passed on as they arrive, so a search still sees the ones behind it.
-async fn run<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, q: Q, slot: SessionSlot, cmds: &mut mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
+async fn run<Q: Fetch + Sync + Clone>(dirs: Dirs, engine: Identity, q: Q, slot: SessionSlot, cmds: &mut mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
     let (browse_tx, browse_rx) = mpsc::unbounded_channel();
     let (connect_tx, connect_rx) = mpsc::unbounded_channel();
     let logging_in = std::sync::Arc::new(tokio::sync::watch::Sender::new(false));
@@ -364,13 +368,16 @@ async fn run<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, q: Q, slot: SessionS
     futures_util::join!(pass_on, browse(st, browse_rx), connect.run(connect_rx));
 }
 
-async fn browse<Q: Fetch + Sync>(mut st: State<Q>, mut cmds: mpsc::UnboundedReceiver<CatCmd>) {
+async fn browse<Q: Fetch + Sync + Clone>(mut st: State<Q>, mut cmds: mpsc::UnboundedReceiver<CatCmd>) {
     // commands drained from behind a search, in their original order, and the follow-ups of commands already run
     let mut waiting: VecDeque<CatCmd> = VecDeque::new();
-    // resume a previous login
-    if saved_credentials(&st.dirs).is_some() {
-        if st.connect(None).await {
-            waiting.extend([CatCmd::Home, CatCmd::Library, CatCmd::Devices]);
+    // resume a previous login (the keyring is read once: it can be slow)
+    let began = Instant::now();
+    let saved = saved_credentials(&st.dirs);
+    timing("keyring read", began);
+    if let Some(creds) = saved {
+        if st.connect(Some(creds)).await {
+            waiting.extend([CatCmd::Devices, CatCmd::HomeAndLibrary]);
         }
     } else {
         st.status(CatalogueStatus::LoggedOut).await;
@@ -398,7 +405,7 @@ async fn browse<Q: Fetch + Sync>(mut st: State<Q>, mut cmds: mpsc::UnboundedRece
 /// takes before the channel: sending it back into the channel only this task reads deadlocked the Catalogue once 16
 /// commands were waiting (2026-11-20 bug hunt, A2; the pattern Search had already lost in A2/C4), and with it every
 /// Client session and the Engine task waiting to send it something.
-async fn handle<Q: Fetch + Sync>(st: &mut State<Q>, cmd: CatCmd, next: &mut VecDeque<CatCmd>) {
+async fn handle<Q: Fetch + Sync + Clone>(st: &mut State<Q>, cmd: CatCmd, next: &mut VecDeque<CatCmd>) {
     let library = |next: &mut VecDeque<CatCmd>| {
         if !next.iter().any(|c| matches!(c, CatCmd::Library)) {
             next.push_back(CatCmd::Library);
@@ -411,12 +418,13 @@ async fn handle<Q: Fetch + Sync>(st: &mut State<Q>, cmd: CatCmd, next: &mut VecD
         }
         CatCmd::Login => {
             if st.login().await {
-                next.extend([CatCmd::Home, CatCmd::Library, CatCmd::Devices]);
+                next.extend([CatCmd::Devices, CatCmd::HomeAndLibrary]);
             }
         }
         CatCmd::Logout => st.logout().await,
         CatCmd::Home => st.home().await,
         CatCmd::Library => st.library().await,
+        CatCmd::HomeAndLibrary => st.home_and_library().await,
         CatCmd::Tracks(uri) => st.track_list(uri).await,
         CatCmd::MoreTracks { uri, offset } => st.more_tracks(uri, offset).await,
         CatCmd::FindShow(uri) => st.find_show(uri).await,
@@ -545,7 +553,7 @@ fn cache(dirs: &Dirs) -> anyhow::Result<Cache> {
     Ok(Cache::new(Some(&dirs.credentials), None, None, None)?)
 }
 
-impl<Q: Fetch + Sync> State<Q> {
+impl<Q: Fetch + Sync + Clone> State<Q> {
     /// The session changes in one place, so the query port's adapter always asks through the current one.
     fn set_session(&mut self, s: Option<Session>) {
         self.slot.send_replace(s.clone());
@@ -618,11 +626,14 @@ impl<Q: Fetch + Sync> State<Q> {
             return false;
         };
         let session = Session::new(SessionConfig::default(), Some(cache));
+        let began = Instant::now();
         if let Err(e) = session.connect(creds, true).await {
             self.status(CatalogueStatus::Unavailable { message: format!("couldn't reach Spotify: {e}") }).await;
             return false;
         }
+        timing("login", began);
         // the account type and country arrive shortly after login
+        let began = Instant::now();
         let mut product = None;
         for _ in 0..30 {
             product = session.get_user_attribute("type");
@@ -631,8 +642,11 @@ impl<Q: Fetch + Sync> State<Q> {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+        timing("account type", began);
         let premium = product.as_deref() == Some("premium");
+        let began = Instant::now();
         keep_credentials_in_keyring(&self.dirs);
+        timing("keyring save", began);
         let ready = CatalogueStatus::Ready { username: session.username(), country: session.country(), premium };
         // in the slot first: what Ready sets off (librespot starting, an Engine's commands) finds the session there
         self.set_session(Some(session));
@@ -669,44 +683,36 @@ impl<Q: Fetch + Sync> State<Q> {
     }
 
     async fn library(&mut self) {
-        match self.library_items().await {
-            Ok(items) => {
-                let _ = self.ev.send(CatEvent::Library(Library { items })).await;
-            }
-            Err(e) => {
-                self.fail(format!("Library unavailable: {e}")).await;
-            }
-        }
+        self.session().await;
+        let walk = Walk::new(self.queries.clone(), self.username(), false);
+        send_library(&self.ev, walk.items().await).await;
     }
 
-    /// The top level, with each folder's contents spliced in right after it (one level deeper).
-    async fn library_items(&mut self) -> anyhow::Result<Vec<singularity_proto::LibraryItem>> {
-        let mut items = self.library_level(None, 0).await?;
-        let mut i = 0;
-        while i < items.len() {
-            // folders nest a few levels at most; guard anyway
-            if items[i].kind == "folder" && items[i].depth < 4 {
-                let children = self.library_level(Some(&items[i].uri.clone()), items[i].depth + 1).await?;
-                items.splice(i + 1..i + 1, children);
-            }
-            i += 1;
-        }
-        Ok(items)
+    /// Home and the library side by side (#81), each sent as it's in, every step's time in the log.
+    async fn home_and_library(&mut self) {
+        self.session().await;
+        let mut q = self.queries.clone();
+        let walk = Walk::new(self.queries.clone(), self.username(), true);
+        let ev = &self.ev;
+        let home = async move {
+            let began = Instant::now();
+            let feed = home_feed(&mut q).await;
+            timing("Home", began);
+            send_home(ev, feed).await;
+        };
+        let library = async {
+            let began = Instant::now();
+            let items = walk.items().await;
+            let asked = walk.requests.load(std::sync::atomic::Ordering::Relaxed);
+            timing(&format!("library ({asked} requests)"), began);
+            send_library(ev, items).await;
+        };
+        futures_util::join!(home, library);
     }
 
-    async fn library_level(&mut self, folder: Option<&str>, depth: u8) -> anyhow::Result<Vec<singularity_proto::LibraryItem>> {
-        let mut items = vec![];
-        let mut offset = 0;
-        loop {
-            let me = self.session.as_ref().map(|s| s.username()).unwrap_or_default();
-            let page = library::parse_library(&self.query("libraryV3", library::library_vars(offset, folder)).await?, depth, &me);
-            let n = page.items.len();
-            items.extend(page.items);
-            offset = offset.saturating_add(library::LIBRARY_PAGE);
-            if !library_page_continues(n, offset, page.total, items.len()) {
-                return Ok(items);
-            }
-        }
+    /// The logged-in username (playlists it owns are marked `own`).
+    fn username(&self) -> String {
+        self.session.as_ref().map(|s| s.username()).unwrap_or_default()
     }
 
     /// Fetch a track list page by page, sending each as it arrives (so long lists show at once). A show sends its
@@ -1206,27 +1212,157 @@ impl<Q: Fetch + Sync> State<Q> {
     }
 
     async fn home(&mut self) {
-        let vars = json!({
-            "includeHomeChapterVideoCards": false,
-            "homeEndUserIntegration": "INTEGRATION_WEB_PLAYER",
-            "timeZone": local_timezone(),
-            "sp_t": "",
-            "facet": "",
-            "sectionItemsLimit": 12,
-            "includeEpisodeContentRatingsV2": false,
-        });
-        match self.query("home", vars).await {
-            Ok(v) => {
-                let feed = parse_home(&v);
-                if feed.shelves.is_empty() {
-                    self.fail("Spotify answered, but the Home feed had an unexpected shape".into()).await;
-                }
-                let _ = self.ev.send(CatEvent::Home(feed)).await;
+        self.session().await;
+        let feed = home_feed(&mut self.queries).await;
+        send_home(&self.ev, feed).await;
+    }
+}
+
+/// The Home feed, asked through `q`.
+async fn home_feed<Q: Fetch>(q: &mut Q) -> anyhow::Result<HomeFeed> {
+    let vars = json!({
+        "includeHomeChapterVideoCards": false,
+        "homeEndUserIntegration": "INTEGRATION_WEB_PLAYER",
+        "timeZone": local_timezone(),
+        "sp_t": "",
+        "facet": "",
+        "sectionItemsLimit": 12,
+        "includeEpisodeContentRatingsV2": false,
+    });
+    Ok(parse_home(&q.query("home", vars).await?))
+}
+
+/// A Home feed for the Daemon, or what went wrong.
+async fn send_home(ev: &mpsc::Sender<CatEvent>, feed: anyhow::Result<HomeFeed>) {
+    match feed {
+        Ok(feed) => {
+            if feed.shelves.is_empty() {
+                let _ = ev.send(CatEvent::Error("Spotify answered, but the Home feed had an unexpected shape".into())).await;
             }
-            Err(e) => {
-                self.fail(format!("Home feed unavailable: {e}")).await;
+            let _ = ev.send(CatEvent::Home(feed)).await;
+        }
+        Err(e) => {
+            let _ = ev.send(CatEvent::Error(format!("Home feed unavailable: {e}"))).await;
+        }
+    }
+}
+
+/// The library for the Daemon, or what went wrong.
+async fn send_library(ev: &mpsc::Sender<CatEvent>, items: anyhow::Result<Vec<singularity_proto::LibraryItem>>) {
+    let _ = match items {
+        Ok(items) => ev.send(CatEvent::Library(Library { items })).await,
+        Err(e) => ev.send(CatEvent::Error(format!("Library unavailable: {e}"))).await,
+    };
+}
+
+/// How many library requests are out at once (#81). Spotify documents no limit for these private queries
+/// (`docs/research/2026-10-private-api-risk.md`: human-paced, back off, never retry in a loop); librespot's own guess
+/// is 300 calls per 30 s, and it waits out a 429 that says how long. A library of a few hundred items is a handful of
+/// requests.
+const LIBRARY_PARALLEL: usize = 4;
+/// A library request refused for the rate (a 429 that doesn't say how long, or librespot's own limiter) is asked once
+/// more after this and a jitter of up to as long again; then the library fails (never retried in a loop).
+const RATE_BACKOFF: Duration = Duration::from_secs(2);
+
+/// Was this query refused for asking too often?
+fn rate_limited(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<librespot_core::Error>().is_some_and(|e| e.kind == librespot_core::error::ErrorKind::ResourceExhausted)
+}
+
+/// Up to `max` more: a cheap jitter, without a random number generator.
+fn jitter(max: Duration) -> Duration {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    max.mul_f64(nanos as f64 / 1e9)
+}
+
+/// When the Catalogue started: the timings in the log count from here.
+static STARTED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// One step's time in the log (#81): `grep timing: daemon.log` shows where a slow start went.
+fn timing(step: &str, began: Instant) {
+    let at = STARTED.get().map(|s| s.elapsed().as_secs_f64()).unwrap_or(0.0);
+    tracing::info!("timing: {step} took {} ms ({at:.1} s after the Catalogue started)", began.elapsed().as_millis());
+}
+
+/// The library walk (#81): the top level, then every folder's contents spliced in right after it (one level deeper).
+/// Every page of a level after the first, and every folder of one depth, are asked at once (at most `LIBRARY_PARALLEL`
+/// out); the items come out in the order a walk one request at a time gives.
+struct Walk<Q> {
+    q: Q,
+    me: String,
+    gate: tokio::sync::Semaphore,
+    /// each request's time in the log (the walk after a login)
+    log: bool,
+    requests: std::sync::atomic::AtomicUsize,
+}
+
+impl<Q: Fetch + Sync + Clone> Walk<Q> {
+    fn new(q: Q, me: String, log: bool) -> Walk<Q> {
+        Walk { q, me, gate: tokio::sync::Semaphore::new(LIBRARY_PARALLEL), log, requests: Default::default() }
+    }
+
+    async fn items(&self) -> anyhow::Result<Vec<singularity_proto::LibraryItem>> {
+        let mut items = self.level(None, 0, "the top level".into()).await?;
+        // folders nest a few levels at most; guard anyway
+        for depth in 0..4 {
+            let folders: Vec<(usize, String)> = items.iter().enumerate().filter(|(_, it)| it.kind == "folder" && it.depth == depth).map(|(i, it)| (i, it.uri.clone())).collect();
+            if folders.is_empty() {
+                break;
+            }
+            let n = folders.len();
+            let children = futures_util::future::try_join_all(folders.iter().enumerate().map(|(k, (_, uri))| self.level(Some(uri), depth + 1, format!("folder {} of {n} at depth {depth}", k + 1)))).await?;
+            // from the last, so the earlier indices still hold
+            for ((i, _), c) in folders.iter().zip(children).rev() {
+                items.splice(i + 1..i + 1, c);
             }
         }
+        Ok(items)
+    }
+
+    /// One level: its first page says how many there are, the rest are asked at once.
+    async fn level(&self, folder: Option<&str>, depth: u8, name: String) -> anyhow::Result<Vec<singularity_proto::LibraryItem>> {
+        let first = self.page(folder, 0, depth, &name).await?;
+        let total = first.total;
+        let mut items = first.items;
+        if !library_page_continues(items.len(), library::LIBRARY_PAGE, total, items.len()) {
+            return Ok(items);
+        }
+        let offsets = (1..).map(|k| k * library::LIBRARY_PAGE).take_while(|o| *o < total && *o < MAX_TRACKS);
+        let name = &name;
+        let mut pages = futures_util::stream::iter(offsets).map(|o| self.page(folder, o, depth, name).map(move |p| (o, p))).buffered(LIBRARY_PARALLEL);
+        while let Some((offset, page)) = pages.next().await {
+            let page = page?;
+            let n = page.items.len();
+            items.extend(page.items);
+            if !library_page_continues(n, offset.saturating_add(library::LIBRARY_PAGE), total, items.len()) {
+                break;
+            }
+        }
+        Ok(items)
+    }
+
+    async fn page(&self, folder: Option<&str>, offset: u32, depth: u8, name: &str) -> anyhow::Result<library::LibraryPage> {
+        let v = match self.ask(folder, offset, name).await {
+            Err(e) if rate_limited(&e) => {
+                let wait = RATE_BACKOFF + jitter(RATE_BACKOFF);
+                tracing::warn!("the library: Spotify asks to slow down ({e}); asking again in {} ms", wait.as_millis());
+                tokio::time::sleep(wait).await;
+                self.ask(folder, offset, name).await
+            }
+            r => r,
+        }?;
+        Ok(library::parse_library(&v, depth, &self.me))
+    }
+
+    async fn ask(&self, folder: Option<&str>, offset: u32, name: &str) -> anyhow::Result<Value> {
+        let _out = self.gate.acquire().await.expect("the gate is never closed");
+        self.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let began = Instant::now();
+        let r = self.q.clone().query("libraryV3", library::library_vars(offset, folder)).await;
+        if self.log {
+            timing(&format!("library page at {offset} of {name}"), began);
+        }
+        r
     }
 }
 

@@ -87,10 +87,18 @@ async fn run() -> anyhow::Result<i32> {
         None if fake => None,
         None => Some(singularityd::store::Store::default_dir()),
     };
+    // the last Home and library for the next start (#81), in the user's cache dir: with Spotify's Catalogue, unless
+    // SINGULARITY_HOME_CACHE=off; =on keeps one for a fake Catalogue too (in a test's scratch dirs)
+    let last_seen = match std::env::var("SINGULARITY_HOME_CACHE").ok().as_deref() {
+        Some("off") => false,
+        Some("on") => true,
+        _ => matches!(assembly.catalogue, CatalogueMode::Spotify),
+    };
+    let last_seen = last_seen.then(singularityd::last_seen::LastSeen::default_path);
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = tokio::select! {
         // `notify`: the Daemon's config follower keeps notifications.track_change current (A1: supervised like the rest)
-        r = singularityd::serve_with(listener, engine, catalogue, tap, singularityd::Extras { os_media, store, notify: Some(notify) }) => r.map(Some),
+        r = singularityd::serve_with(listener, engine, catalogue, tap, singularityd::Extras { os_media, store, notify: Some(notify), last_seen }) => r.map(Some),
         _ = tokio::signal::ctrl_c() => Ok(None),
         _ = term.recv() => Ok(None),
     };

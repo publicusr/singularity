@@ -10,6 +10,10 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
     tokio::spawn(async move {
         let ready = CatalogueStatus::Ready { username: "fake".into(), country: "SE".into(), premium: true };
         let _ = ev_tx.send(CatEvent::Status(ready.clone())).await;
+        // SINGULARITY_FAKE_DELAY_MS: Home and the library take this long, like Spotify's after a fresh start (#81)
+        if let Some(ms) = std::env::var("SINGULARITY_FAKE_DELAY_MS").ok().and_then(|v| v.parse().ok()) {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+        }
         let _ = ev_tx.send(CatEvent::Home(home.clone())).await;
         let mut lib = fake_library(&home);
         let _ = ev_tx.send(CatEvent::Library(lib.clone())).await;
@@ -33,6 +37,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 CatCmd::Reconnect => vec![],
                 CatCmd::Logout => vec![CatEvent::Status(CatalogueStatus::LoggedOut)],
                 CatCmd::Library => vec![CatEvent::Library(lib.clone())],
+                CatCmd::HomeAndLibrary => vec![CatEvent::Home(home.clone()), CatEvent::Library(lib.clone())],
                 // a name with "fail" in it fails, as does deleting a playlist whose URI has it
                 CatCmd::CreatePlaylist { name, .. } if name.contains("fail") => vec![CatEvent::Error("Couldn't create the playlist (fake failure)".into()), CatEvent::Library(lib.clone())],
                 CatCmd::CreatePlaylist { name, uris } => {

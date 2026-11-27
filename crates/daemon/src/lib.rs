@@ -10,6 +10,7 @@ pub mod connect;
 pub mod engine;
 pub mod health;
 pub mod jam;
+pub mod last_seen;
 pub mod library;
 pub mod lyrics;
 pub mod os_media;
@@ -85,6 +86,8 @@ pub struct Hub {
     pub store: Option<Arc<std::sync::Mutex<store::Store>>>,
     /// background tasks that stopped and haven't run for a while: the health view names them (A1)
     pub stopped_tasks: Mutex<BTreeSet<String>>,
+    /// the last Home and library on disk (#81); None: off (tests, fake Daemons)
+    pub last_seen: Option<last_seen::LastSeen>,
 }
 
 /// How long a background task has to run before it counts as back (its health row goes).
@@ -243,6 +246,8 @@ pub struct Extras {
     pub store: Option<PathBuf>,
     /// the desktop-notification flag a background task keeps following `config.toml` (`notifications.track_change`)
     pub notify: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// where the last Home and library are kept for the next start (#81)
+    pub last_seen: Option<PathBuf>,
 }
 
 /// Run the Daemon on `listener` with `engine` until the process ends.
@@ -266,6 +271,9 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
         Some((tx, rx)) => (Some(tx), Some(rx)),
         None => (None, None),
     };
+    // without the Catalogue nothing would replace them
+    let last_seen = extras.last_seen.filter(|_| cat_rx.is_some()).map(last_seen::LastSeen::at);
+    let seen = last_seen.as_ref().map(|l| l.read()).unwrap_or_default();
     let hub = Arc::new(Hub {
         started_unix_ms: proto::now_ms(),
         engine_kind: engine.kind(),
@@ -273,8 +281,8 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
         now: Default::default(),
         engine_status: Mutex::new(None),
         catalogue_status: Mutex::new(None),
-        home: Mutex::new(None),
-        library: Mutex::new(None),
+        home: Mutex::new(seen.home),
+        library: Mutex::new(seen.library),
         stream: Mutex::new(None),
         delivery: Mutex::new(None),
         devices: Mutex::new(None),
@@ -288,6 +296,7 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
         shutdown: Default::default(),
         store,
         stopped_tasks: Default::default(),
+        last_seen,
     });
     if hub.store.is_some() {
         let h = hub.clone();
@@ -666,16 +675,31 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                 if matches!(s, proto::CatalogueStatus::LoggedOut | proto::CatalogueStatus::Unavailable { .. }) {
                     hub.feed(|now| now.gone()).await;
                 }
+                // the last Home and library on disk were the account's that left (#81); a Client that connects now
+                // isn't shown them
+                if matches!(s, proto::CatalogueStatus::LoggedOut)
+                    && let Some(l) = &hub.last_seen
+                {
+                    let (home, library) = l.forget();
+                    if home {
+                        *hub.home.lock().await = None;
+                    }
+                    if library {
+                        *hub.library.lock().await = None;
+                    }
+                }
                 *hub.catalogue_status.lock().await = Some(s.clone());
                 let _ = hub.events.send(Event::Catalogue(s));
             }
             CatEvent::Home(h) => {
                 *hub.home.lock().await = Some(h.clone());
                 let _ = hub.events.send(Event::Home(h));
+                keep_last_seen(&hub, true).await;
             }
             CatEvent::Library(l) => {
                 *hub.library.lock().await = Some(l.clone());
                 let _ = hub.events.send(Event::Library(l));
+                keep_last_seen(&hub, false).await;
             }
             CatEvent::Search(r) => {
                 let _ = hub.events.send(Event::Search(r));
@@ -711,6 +735,13 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
             CatEvent::Resync => hub.feed(|now| now.resync()).await,
         }
     }
+}
+
+/// Keep the Hub's Home and library for the next start (#81); `home`: the fresh one is Home (else the library).
+async fn keep_last_seen(hub: &Hub, home: bool) {
+    let Some(l) = &hub.last_seen else { return };
+    let seen = last_seen::Seen { home: hub.home.lock().await.clone(), library: hub.library.lock().await.clone() };
+    l.write(&seen, home);
 }
 
 /// Is this playback event older than the snapshot just sent? Such an event is already in the snapshot, so
@@ -1024,6 +1055,7 @@ mod tests {
             shutdown: Default::default(),
             store: None,
             stopped_tasks: Default::default(),
+            last_seen: None,
         })
     }
 

@@ -14,23 +14,169 @@ type Answer = Arc<dyn Fn(&str, &Value) -> anyhow::Result<Value> + Send + Sync>;
 struct Fixtures {
     answer: Answer,
     asked: Arc<Mutex<Vec<(String, Value)>>>,
+    /// how long each operation takes to answer (Spotify's latency, #81)
+    latency: Arc<dyn Fn(&str) -> Duration + Send + Sync>,
+    /// queries out right now, and the most there have been at once
+    out: Arc<std::sync::atomic::AtomicUsize>,
+    most_out: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Fixtures {
     fn new(answer: impl Fn(&str, &Value) -> anyhow::Result<Value> + Send + Sync + 'static) -> Fixtures {
-        Fixtures { answer: Arc::new(answer), asked: Default::default() }
+        Fixtures { answer: Arc::new(answer), asked: Default::default(), latency: Arc::new(|_| Duration::ZERO), out: Default::default(), most_out: Default::default() }
+    }
+
+    /// The same answers, each `latency(op)` late.
+    fn slow(self, latency: impl Fn(&str) -> Duration + Send + Sync + 'static) -> Fixtures {
+        Fixtures { latency: Arc::new(latency), ..self }
     }
 
     fn asked(&self, op: &str) -> usize {
         self.asked.lock().unwrap().iter().filter(|(o, _)| o == op).count()
     }
+
+    fn most_out(&self) -> usize {
+        self.most_out.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 impl Fetch for Fixtures {
     async fn query(&mut self, op: &str, vars: Value) -> anyhow::Result<Value> {
+        use std::sync::atomic::Ordering::SeqCst;
         self.asked.lock().unwrap().push((op.into(), vars.clone()));
+        let now = self.out.fetch_add(1, SeqCst) + 1;
+        self.most_out.fetch_max(now, SeqCst);
+        let wait = (self.latency)(op);
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+        self.out.fetch_sub(1, SeqCst);
         (self.answer)(op, &vars)
     }
+}
+
+/// A library as Spotify pages it (`libraryV3`): each folder's items by its URI ("" the top level), as (kind, name);
+/// a folder's URI is its name.
+fn paged_library(tree: &HashMap<String, Vec<(&'static str, String)>>, vars: &Value) -> Value {
+    let level = tree.get(vars["folderUri"].as_str().unwrap_or("")).cloned().unwrap_or_default();
+    let (offset, limit) = (vars["offset"].as_u64().unwrap() as usize, vars["limit"].as_u64().unwrap() as usize);
+    let items: Vec<Value> = level
+        .iter()
+        .skip(offset)
+        .take(limit)
+        .map(|(kind, name)| match *kind {
+            "folder" => json!({ "item": { "data": { "__typename": "Folder", "name": name, "uri": name } } }),
+            _ => json!({ "item": { "data": { "__typename": "Playlist", "name": name, "uri": format!("spotify:playlist:{name}") } } }),
+        })
+        .collect();
+    json!({ "data": { "me": { "libraryV3": { "totalCount": level.len(), "items": items } } } })
+}
+
+/// The library as a walk one request at a time gives it: each folder's contents right after it.
+fn walked(tree: &HashMap<String, Vec<(&'static str, String)>>, folder: &str, out: &mut Vec<String>) {
+    for (kind, name) in tree.get(folder).cloned().unwrap_or_default() {
+        out.push(name.clone());
+        if kind == "folder" {
+            walked(tree, &name, out);
+        }
+    }
+}
+
+/// A top level of three pages with three folders: one of two pages holding a folder, one small, one empty.
+fn big_library() -> HashMap<String, Vec<(&'static str, String)>> {
+    let pl = |prefix: &str, n: usize| (0..n).map(|i| ("playlist", format!("{prefix}{i}"))).collect::<Vec<_>>();
+    let mut top = pl("top", 120);
+    top[10] = ("folder", "spotify:folder:a".into());
+    top[70] = ("folder", "spotify:folder:b".into());
+    top[110] = ("folder", "spotify:folder:c".into());
+    let mut a = pl("a", 60);
+    a[55] = ("folder", "spotify:folder:a-inner".into());
+    HashMap::from([("".into(), top), ("spotify:folder:a".into(), a), ("spotify:folder:b".into(), pl("b", 5)), ("spotify:folder:c".into(), vec![]), ("spotify:folder:a-inner".into(), pl("inner", 3))])
+}
+
+/// #81: a fresh Daemon fetched its library one request after another. The pages of a level and the folders of a
+/// depth now go out together (never more than `LIBRARY_PARALLEL`), and the sidebar comes out in the same order.
+#[tokio::test]
+async fn the_library_pages_and_folders_are_asked_for_together_in_the_same_order() {
+    let tree = Arc::new(big_library());
+    let t = tree.clone();
+    let latency = Duration::from_millis(200);
+    let f = Fixtures::new(move |_, vars| Ok(paged_library(&t, vars))).slow(move |_| latency);
+    let (_dir, tx, mut ev) = catalogue(&f);
+    let began = std::time::Instant::now();
+    tx.send(CatCmd::Library).await.unwrap();
+    let lib = next(&mut ev, |e| if let CatEvent::Library(l) = e { Some(l) } else { None }).await;
+    let took = began.elapsed();
+    let mut want = vec![];
+    walked(&tree, "", &mut want);
+    let got: Vec<String> = lib.items.iter().map(|i| i.name.clone()).collect();
+    assert_eq!(got, want, "the same order as one request at a time");
+    let inner = lib.items.iter().find(|i| i.name == "inner0").unwrap();
+    assert_eq!(inner.depth, 2, "a folder's folder is one level deeper still");
+    // 3 top-level pages, 2 + 1 + 1 for the folders, 1 for the folder inside one
+    let asked = f.asked("libraryV3");
+    assert_eq!(asked, 8);
+    assert!((2..=LIBRARY_PARALLEL).contains(&f.most_out()), "out at once: {}", f.most_out());
+    // one at a time it takes 8 × latency; together, five rounds (top, its pages, the folders, a's second page, a's folder)
+    eprintln!("the library: {} ms for {asked} requests of {} ms each (one at a time: {} ms)", took.as_millis(), latency.as_millis(), asked as u128 * latency.as_millis());
+    assert!(took < latency * 7, "{took:?}");
+}
+
+/// #81: after a login, Home and the library are asked for at once, each sent as soon as it's in.
+#[tokio::test]
+async fn home_and_the_library_are_fetched_side_by_side() {
+    // the top level as recorded, its folder empty
+    let f = Fixtures::new(|op, vars| Ok(if op == "libraryV3" && !vars["folderUri"].is_string() { fixture("library.json") } else { json!({}) }))
+        .slow(|op| Duration::from_millis(if op == "home" { 400 } else { 100 }));
+    let (_dir, tx, mut ev) = catalogue(&f);
+    let began = std::time::Instant::now();
+    tx.send(CatCmd::HomeAndLibrary).await.unwrap();
+    let mut order = vec![];
+    while order.len() < 2 {
+        let e = next(&mut ev, |e| match e {
+            CatEvent::Home(_) => Some("home"),
+            CatEvent::Library(_) => Some("library"),
+            _ => None,
+        })
+        .await;
+        order.push(e);
+    }
+    let took = began.elapsed();
+    assert_eq!(order, ["library", "home"], "the library didn't wait for the slower Home");
+    // Home 400 ms alongside the library's two requests of 100 ms each (top level, then its folder)
+    eprintln!("Home and the library: {} ms (one after the other: 600 ms)", took.as_millis());
+    assert!(took < Duration::from_millis(580), "{took:?}");
+}
+
+/// Spotify asking to slow down (a 429, or librespot's own limiter): the page is asked once more after a pause, and
+/// a second refusal fails the library instead of asking again and again.
+#[tokio::test]
+async fn a_library_page_refused_for_the_rate_is_asked_once_more_after_a_pause() {
+    let refusals = Arc::new(std::sync::atomic::AtomicUsize::new(1));
+    let left = refusals.clone();
+    let f = Fixtures::new(move |_, vars| {
+        if vars["folderUri"].is_string() {
+            return Ok(json!({}));
+        }
+        if left.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            left.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            return Err(librespot_core::Error::resource_exhausted("rate limited for at least another 3 seconds").into());
+        }
+        Ok(fixture("library.json"))
+    });
+    let (_dir, tx, mut ev) = catalogue(&f);
+    let began = std::time::Instant::now();
+    tx.send(CatCmd::Library).await.unwrap();
+    let lib = next(&mut ev, |e| if let CatEvent::Library(l) = e { Some(l) } else { None }).await;
+    assert!(began.elapsed() >= RATE_BACKOFF, "it waited before asking again");
+    assert_eq!(lib.items.len(), 5);
+    assert_eq!(f.asked("libraryV3"), 3, "the top level twice, then its folder");
+    // refused twice: the library fails, asked no more than that
+    refusals.store(2, std::sync::atomic::Ordering::SeqCst);
+    tx.send(CatCmd::Library).await.unwrap();
+    let err = next(&mut ev, |e| if let CatEvent::Error(m) = e { Some(m) } else { None }).await;
+    assert!(err.contains("Library unavailable"), "{err}");
+    assert_eq!(f.asked("libraryV3"), 5);
 }
 
 fn fixture(name: &str) -> Value {
@@ -189,7 +335,7 @@ fn connect_work_goes_to_connect_and_browsing_stays() {
     for c in [CatCmd::Devices, CatCmd::Transfer("d".into()), CatCmd::StartJam, CatCmd::EndJam, CatCmd::Remote(Command::Next), CatCmd::Engine(Command::Pause), CatCmd::Queue(QueueEdit::Clear), play_from, CatCmd::Resume(resume)] {
         assert!(is_connect(&c), "{c:?}");
     }
-    for c in [CatCmd::Search("x".into()), CatCmd::Library, CatCmd::Home, CatCmd::Describe(vec![]), CatCmd::Login, CatCmd::Logout, CatCmd::Reconnect] {
+    for c in [CatCmd::Search("x".into()), CatCmd::Library, CatCmd::Home, CatCmd::HomeAndLibrary, CatCmd::Describe(vec![]), CatCmd::Login, CatCmd::Logout, CatCmd::Reconnect] {
         assert!(!is_connect(&c), "{c:?}");
     }
 }
