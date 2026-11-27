@@ -164,8 +164,9 @@ make its socket on a Mac. A new release is needed first.
   macOS keeps it, `termfont.rs`).
 - [ ] Free tiling and Arrange mode (D66, D84, D87): mouse, touchpad and keyboard at the Mac's sizes; the Tray, the
   Widget picker, New design…, Delete design (#80); every Widget at the Mac's Pane sizes (#6).
-- [ ] The wheel and the touchpad in Ghostty: one notch moves one step (2026-10-23), every list and every popup scrolls
-  under the pointer (popups own the wheel since 2026-11-01; pty `wheel-all` shows them all).
+- [ ] The wheel and the touchpad in Ghostty: one notch moves one step (2026-10-23), a touchpad a row a report (D86,
+  #32), every list and every popup scrolls under the pointer (popups own the wheel since 2026-11-01; pty `wheel-all`
+  shows them all); over a Pane the wheel scrolls a list's view, the pointer highlights a row, a click picks it (D86).
 - [ ] The resize pointer appears on a Pane border and goes back to the normal pointer off it, in Ghostty too
   (2026-11-05).
 - [ ] Open a song's or a Card's menu and wait while Home or the list refreshes, then pick Play or Add to playlist: it

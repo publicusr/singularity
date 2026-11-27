@@ -18,11 +18,14 @@ pub struct ArtistView {
     pub feed: HomeFeed,
     pub shelves: HomeView,
     pub top_sel: usize,
+    /// the first popular track shown, and whether the wheel has that view (D86)
+    pub top_first: usize,
+    pub top_wheeled: crate::scroll::Wheeled,
 }
 
 impl ArtistView {
     pub fn new(uri: &str, name: &str) -> ArtistView {
-        ArtistView { uri: uri.into(), name: name.into(), page: None, feed: HomeFeed::default(), shelves: HomeView::default(), top_sel: 0 }
+        ArtistView { uri: uri.into(), name: name.into(), page: None, feed: HomeFeed::default(), shelves: HomeView::default(), top_sel: 0, top_first: 0, top_wheeled: Default::default() }
     }
 
     pub fn set_page(&mut self, p: ArtistPage) {
@@ -81,8 +84,10 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         y += 1;
         let focused = app.is_focused(crate::layout::Widget::Home);
         let playing = app.playback.item.as_ref().map(|i| i.uri.clone());
-        // the rows that fit, a window that follows the highlight (wheel, clicks)
-        let skip = crate::scroll::window(v.top_sel, n, page.top_tracks.len());
+        // the rows that fit, a window that follows the highlight (keys, clicks), or where the wheel put it
+        let end = page.top_tracks.len().saturating_sub(n);
+        let skip = if v.top_wheeled.follows(v.top_sel, end) { crate::scroll::window(v.top_sel, n, page.top_tracks.len()) } else { v.top_first.min(end) };
+        v.top_first = skip;
         app.want_saved(page.top_tracks.iter().skip(skip).take(n).map(|t| t.uri.as_str()), n);
         for (i, t) in page.top_tracks.iter().enumerate().skip(skip).take(n) {
             let selected = focused && i == v.top_sel;

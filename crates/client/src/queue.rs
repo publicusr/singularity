@@ -25,14 +25,22 @@ pub struct QueueView {
     pub list_y: u16,
     /// whether it was last drawn big (#59): a song two rows tall, its cover beside it
     pub big: bool,
-    /// whether the user put the highlight where it is (a key, the wheel, a click, a menu, a drop): only then does it
-    /// follow its song when the queue changes; one never placed stays on the first slot. An empty queue unplaces it.
+    /// whether the user put the highlight where it is (a key, a click, the pointer over it, a menu, a drop): only then
+    /// does it follow its song when the queue changes; one never placed stays on the first slot. An empty queue unplaces
+    /// it.
     pub placed: bool,
+    /// whether the wheel has the view (D86)
+    pub wheeled: crate::scroll::Wheeled,
 }
 
 impl QueueView {
     pub fn move_sel(&mut self, delta: i64, len: usize) {
         self.place((self.sel as i64 + delta).clamp(0, len.saturating_sub(1) as i64) as usize);
+    }
+
+    /// The wheel: the view `lines` on, the highlight where it is (D86).
+    pub fn scroll(&mut self, lines: i32) {
+        self.wheeled.by(&mut self.top, lines, self.sel);
     }
 
     /// The user put the highlight on entry `i`.
@@ -326,9 +334,12 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     view.sel = view.sel.min(app.playback.queue.len().saturating_sub(1));
     // (its popup, where no Pane shows it, has the keys as a focused Pane has them)
     let focused = app.is_focused(crate::layout::Widget::Queue) || app.is_open(crate::app::Modal::Queue);
+    // no empty rows under the list's end
+    let last_top = (0..all.len()).find(|&t| fitting(&all, t, rows, big) == all.len() - t).unwrap_or(all.len());
     // keep the selection in view while it shows: an unfocused queue keeps its place while its highlight follows its
-    // song, and scrolls to it when it gets the focus
-    if focused && let Some(at) = all.iter().position(|l| *l == Line::Entry(view.sel)) {
+    // song, and scrolls to it when it gets the focus (not while the wheel has the view)
+    let follows = view.wheeled.follows(view.sel, last_top);
+    if focused && follows && let Some(at) = all.iter().position(|l| *l == Line::Entry(view.sel)) {
         if at < view.top {
             view.top = at.saturating_sub(1);
         } else {
@@ -337,8 +348,6 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             }
         }
     }
-    // no empty rows under the list's end
-    let last_top = (0..all.len()).find(|&t| fitting(&all, t, rows, big) == all.len() - t).unwrap_or(all.len());
     view.top = view.top.min(last_top);
     view.visible = if big { fitting(&all, view.top, rows, big).max(1) } else { rows };
     let mut hits = vec![];

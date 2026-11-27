@@ -1519,6 +1519,9 @@ impl App {
         }
         // a focused Pane showing its needs line has no keys of its own: they'd act on what it hides (#36)
         let shown = !self.focus.is_some_and(|p| self.pane_is_short(p));
+        if shown && self.back_to_highlight(k) {
+            return;
+        }
         if shown && self.is_focused(Widget::Home) && self.page_key(k, shift) {
             return;
         }
@@ -3111,8 +3114,137 @@ impl App {
                     self.pane_wheel(w, m.column, m.row, rows, coarse);
                 }
             }
+            MouseEventKind::Moved => self.hover(m.column, m.row),
             _ => {}
         }
+    }
+
+    /// The pointer over a list's row in the focused Pane highlights it (D86: the wheel scrolls the view and leaves the
+    /// highlight, so the row to pick is the one under the pointer; a click picks it). It moves the highlight and
+    /// nothing else: the queue's highlight isn't placed (it keeps following as it did), the Settings tabs and a number
+    /// being typed keep the keys, and a highlight in search's Shelves stays there.
+    fn hover(&mut self, x: u16, y: u16) {
+        let Some(hit) = self.hit_at(x, y) else { return };
+        let home = self.is_focused(Widget::Home);
+        match hit {
+            Hit::Side(row) if self.is_focused(Widget::Library) => self.sidebar.sel = row,
+            Hit::QueueRow(i) if self.is_focused(Widget::Queue) => self.queue_view.sel = i,
+            Hit::Track(vi) if home => {
+                if let Some(v) = self.list_view_mut() {
+                    v.sel = vi;
+                }
+            }
+            Hit::StatsRow(i) if home => {
+                if let Some(v) = self.page.stats_mut() {
+                    v.sel = i;
+                }
+            }
+            Hit::TopTrack(i) if home => {
+                if let Some(a) = self.page.artist_mut() {
+                    a.top_sel = i;
+                }
+            }
+            Hit::SearchTrack(i) if home => {
+                if let Some(s) = self.searching_mut().filter(|s| s.shelves.sel.is_none()) {
+                    s.track_sel = Some(i);
+                }
+            }
+            Hit::Recent(i) if home => {
+                if let Some(s) = self.searching_mut() {
+                    s.recent_sel = i;
+                }
+            }
+            // (not while a number is being typed for a setting)
+            Hit::Setting(i) if home => {
+                if let Some(v) = self.page.settings_mut().filter(|v| v.typing.is_none() && !v.on_tabs) {
+                    v.sel = i;
+                }
+            }
+            Hit::KeyRow(i) if home => {
+                if let Some(v) = self.page.settings_mut().filter(|v| !v.on_tabs) {
+                    v.key_sel = i;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// D86: a key that acts on the focused list's highlight brings a view the wheel took back to it first. A movement
+    /// key moves from the highlight and the view follows (a no-op one, ↑ on the first row, just brings it back);
+    /// Enter or Delete on a highlight that isn't on screen only brings it back (true: the key is used up), so nothing
+    /// acts on a row unseen.
+    fn back_to_highlight(&mut self, k: KeyEvent) -> bool {
+        use KeyCode::*;
+        let moves = matches!(k.code, Up | Down | PageUp | PageDown | Home | End);
+        let acts = matches!(k.code, Enter | Delete);
+        if !(moves || acts) || self.settings_typing() {
+            return false;
+        }
+        let held = if self.is_focused(Widget::Library) {
+            let s = &mut self.sidebar;
+            let held = s.wheeled.holds(s.sel);
+            s.wheeled.release();
+            held.then_some(Hit::Side(s.sel))
+        } else if self.is_focused(Widget::Queue) {
+            let q = &mut self.queue_view;
+            let held = q.wheeled.holds(q.sel);
+            q.wheeled.release();
+            held.then_some(Hit::QueueRow(q.sel))
+        } else if self.is_focused(Widget::Home) {
+            match &mut self.page {
+                Page::List { uri, .. } => self.open.view_mut(uri).and_then(|v| {
+                    let held = v.wheeled.holds(v.sel);
+                    v.wheeled.release();
+                    held.then(|| {
+                        v.reveal();
+                        Hit::Track(v.sel)
+                    })
+                }),
+                Page::Artist(a) => {
+                    let held = a.top_wheeled.holds(a.top_sel);
+                    a.top_wheeled.release();
+                    held.then_some(Hit::TopTrack(a.top_sel))
+                }
+                Page::Search => {
+                    let s = &mut self.search;
+                    // a short Pane the wheel turned to the songs while the highlight is in the Shelves: back to them,
+                    // and Enter or Delete does nothing else
+                    let hidden = s.short && s.shelves.sel.is_some() && s.shelves_shown == Some(false);
+                    s.shelves_shown = None;
+                    if hidden {
+                        s.track_wheeled.release();
+                        return acts;
+                    }
+                    if s.query().trim().is_empty() {
+                        let held = s.recent_wheeled.holds(s.recent_sel);
+                        s.recent_wheeled.release();
+                        held.then_some(Hit::Recent(s.recent_sel))
+                    } else {
+                        let (key, held) = (s.track_key(), s.track_wheeled.holds(s.track_key()));
+                        s.track_wheeled.release();
+                        s.track_sel.filter(|_| held && key != usize::MAX).map(Hit::SearchTrack)
+                    }
+                }
+                Page::Stats(v) => {
+                    let held = v.wheeled.holds(v.sel);
+                    v.wheeled.release();
+                    held.then_some(Hit::StatsRow(v.sel))
+                }
+                Page::Settings(v) => {
+                    let (held, hit) = match v.tab {
+                        crate::settings::Tab::Config => (v.wheeled.holds(v.sel), Hit::Setting(v.sel)),
+                        crate::settings::Tab::Keys => (v.key_wheeled.holds(v.key_sel), Hit::KeyRow(v.key_sel)),
+                    };
+                    v.wheeled.release();
+                    v.key_wheeled.release();
+                    (held && !v.on_tabs).then_some(hit)
+                }
+                Page::Home => None,
+            }
+        } else {
+            None
+        };
+        acts && held.is_some_and(|h| !self.hits.iter().any(|(_, x)| *x == h))
     }
 }
 

@@ -121,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
-    let mut wheel = term::WheelBursts::default();
+    let mut wheel = term::WheelSteps::default();
     let mut pacer = pace::Pacer::new(Instant::now());
     // `SINGULARITY_FRAME_LOG=<file>`: a line per frame (when it started, its rate, how long its parts took)
     let mut log = std::env::var_os("SINGULARITY_FRAME_LOG").and_then(|p| std::fs::File::create(p).ok()).map(std::io::BufWriter::new);
@@ -134,9 +134,18 @@ async fn main() -> anyhow::Result<()> {
             let (due, fps) = loop {
                 let fps = app.frame_rate(focused);
                 let due = pacer.due(fps);
-                let Some(wait) = due.checked_duration_since(Instant::now()).filter(|w| !w.is_zero()) else { break (due, fps) };
-                let (at, ev) = match input.recv_timeout(wait) {
+                let now = Instant::now();
+                let Some(wait) = due.checked_duration_since(now).filter(|w| !w.is_zero()) else { break (due, fps) };
+                // a group of wheel reports under way ends when no report has come in its time (judged by when the
+                // reports came, not by when they're handled: a slow frame mustn't split a notch's three)
+                let group = wheel.deadline().map(|d| d.saturating_duration_since(now));
+                let (at, ev) = match input.recv_timeout(group.map_or(wait, |g| g.min(wait))) {
                     Ok(x) => x,
+                    Err(mpsc::RecvTimeoutError::Timeout) if group.is_some_and(|g| g < wait) => {
+                        // the steps it held back (a touchpad's), now
+                        steps(&mut app, wheel.end(), Instant::now(), &units);
+                        continue;
+                    }
                     Err(mpsc::RecvTimeoutError::Timeout) => break (due, fps),
                     Err(mpsc::RecvTimeoutError::Disconnected) => anyhow::bail!("the terminal input closed"),
                 };
@@ -209,16 +218,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// One input event, handled at once (`at`: when it arrived).
-fn handle(app: &mut App, ev: TermEvent, at: Instant, focused: &mut bool, units: &mut term::MouseUnits, wheel: &mut term::WheelBursts) -> anyhow::Result<()> {
+fn handle(app: &mut App, ev: TermEvent, at: Instant, focused: &mut bool, units: &mut term::MouseUnits, wheel: &mut term::WheelSteps) -> anyhow::Result<()> {
     app.input_at = Some(at);
     match ev {
         TermEvent::Key(k) if k.kind != KeyEventKind::Release => app.key(k),
-        TermEvent::Mouse(m) => {
-            if wheel.keep(m.kind, at) {
-                let (m, fx, precise) = units.to_cells(m);
-                app.pointer(m, fx, precise);
-            }
-        }
+        TermEvent::Mouse(m) => steps(app, wheel.push(m, at), at, units),
         TermEvent::Paste(s) => app.paste(&s),
         TermEvent::FocusLost => {
             *focused = false;
@@ -242,6 +246,16 @@ fn handle(app: &mut App, ev: TermEvent, at: Instant, focused: &mut bool, units: 
     }
     app.input_at = None;
     Ok(())
+}
+
+/// Mouse events to act on (a wheel report can be none, or come after steps held back, `term::WheelSteps`).
+fn steps(app: &mut App, events: Vec<ratatui::crossterm::event::MouseEvent>, at: Instant, units: &term::MouseUnits) {
+    for m in events {
+        app.input_at = Some(at);
+        let (m, fx, precise) = units.to_cells(m);
+        app.pointer(m, fx, precise);
+        app.input_at = None;
+    }
 }
 
 /// Open the pairing page in the user's browser (the code is also shown in the UI): the Host's opener, from a fixed

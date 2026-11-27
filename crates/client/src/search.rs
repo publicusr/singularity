@@ -3,6 +3,7 @@
 
 use crate::app::{App, Hit};
 use crate::home::HomeView;
+use crate::scroll::Wheeled;
 use crate::theme::Theme;
 use crate::ui::{text, blank};
 use ratatui::buffer::Buffer;
@@ -49,6 +50,13 @@ pub struct Search {
     /// selected song row (None: the selection is in the Shelves)
     pub track_sel: Option<usize>,
     pub recent_sel: usize,
+    /// the first song and recent search shown, and whether the wheel has those views (D86)
+    pub track_first: usize,
+    pub track_wheeled: Wheeled,
+    pub recent_first: usize,
+    pub recent_wheeled: Wheeled,
+    /// a short Pane: the wheel showed the Shelves (true) or the songs (false); None: where the highlight is
+    pub shelves_shown: Option<bool>,
     /// the Pane was short last frame (under `SHORT_H` rows): the songs and the Shelves take turns under the chips
     pub short: bool,
 }
@@ -133,7 +141,7 @@ impl Search {
     fn edited(&mut self) {
         self.failed = None;
         self.typed_at = Some(Instant::now());
-        self.track_sel = None;
+        self.songs_from_top();
         self.skip_pause = false;
         if key(&self.query) != key(&self.sent) {
             self.sent.clear();
@@ -201,7 +209,7 @@ impl Search {
         if current && self.results.as_ref() != Some(&r) {
             self.failed = None;
             self.results = Some(r);
-            self.track_sel = None;
+            self.songs_from_top();
             self.rebuild();
         }
     }
@@ -218,9 +226,25 @@ impl Search {
         save_recent(&self.recent);
     }
 
+    /// Other songs: no highlight, shown from the first.
+    fn songs_from_top(&mut self) {
+        self.track_sel = None;
+        (self.track_first, self.track_wheeled, self.shelves_shown) = (0, Wheeled::default(), None);
+    }
+
+    /// A short Pane shows the Shelves (not the songs): where the wheel took it, else where the highlight is.
+    pub fn showing_shelves(&self) -> bool {
+        self.shelves_shown.unwrap_or(self.shelves.sel.is_some())
+    }
+
+    /// The highlight among the songs, as the songs' view knows it (None: in the Shelves).
+    pub fn track_key(&self) -> usize {
+        self.track_sel.unwrap_or(usize::MAX)
+    }
+
     pub fn set_chip(&mut self, chip: usize) {
         self.chip = chip % CHIPS.len();
-        self.track_sel = None;
+        self.songs_from_top();
         self.rebuild();
     }
 
@@ -351,7 +375,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         cx += lw + 1;
     }
     // a short Pane (the smallest Homes, #55): no blank rows or headings, what was found right under the chips; the
-    // songs, or the Shelves once the highlight is in them (owner: in a tiny Home the results didn't show)
+    // songs, or the Shelves once the highlight or the wheel is in them (owner: in a tiny Home the results didn't show)
     v.short = r.height < SHORT_H;
     let mut y = r.y + if v.short { 2 } else { 3 };
     if v.query().trim().is_empty() {
@@ -362,8 +386,11 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                 text(buf, x, y, w, "Recent searches", th.s(th.accent).add_modifier(Modifier::BOLD));
                 y += 1;
             }
-            // a short Pane shows a window that follows the highlight (wheel, ↑ ↓)
-            let first = crate::scroll::window(v.recent_sel, r.bottom().saturating_sub(y) as usize, v.recent().len());
+            // a short Pane shows a window that follows the highlight (↑ ↓), or where the wheel put it
+            let (rows, len) = (r.bottom().saturating_sub(y) as usize, v.recent().len());
+            let end = len.saturating_sub(rows);
+            let first = if v.recent_wheeled.follows(v.recent_sel, end) { crate::scroll::window(v.recent_sel, rows, len) } else { v.recent_first.min(end) };
+            v.recent_first = first;
             for (i, q) in v.recent().iter().enumerate().skip(first) {
                 if y >= r.bottom() {
                     break;
@@ -380,7 +407,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let room = r.bottom().saturating_sub(y + 2) as usize;
         // (with no Shelves below, the songs take the Pane)
         let n = if v.short {
-            if v.shelves.sel.is_none() || v.feed.shelves.is_empty() { v.songs().min(r.bottom().saturating_sub(y) as usize) } else { 0 }
+            if !v.showing_shelves() || v.feed.shelves.is_empty() { v.songs().min(r.bottom().saturating_sub(y) as usize) } else { 0 }
         } else if !v.feed.shelves.is_empty() {
             v.songs().min(room.saturating_sub(10)).max(v.songs().min(2))
         } else {
@@ -399,8 +426,10 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                 y += 1;
             }
             let playing = app.playback.item.as_ref().map(|i| i.uri.clone());
-            // more songs than fit: a window that follows the highlight (wheel, ↑ ↓)
-            let skip = crate::scroll::window(v.track_sel.unwrap_or(0), n, v.songs());
+            // more songs than fit: a window that follows the highlight (↑ ↓), or where the wheel put it
+            let end = v.songs().saturating_sub(n);
+            let skip = if v.track_wheeled.follows(v.track_key(), end) { crate::scroll::window(v.track_sel.unwrap_or(0), n, v.songs()) } else { v.track_first.min(end) };
+            v.track_first = skip;
             if !episodes {
                 app.want_saved(rows.iter().skip(skip).take(n).map(|t| t.uri.as_str()), n);
             }
