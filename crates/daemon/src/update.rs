@@ -277,7 +277,21 @@ async fn version_of(exe: &Path) -> anyhow::Result<String> {
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::symlink_metadata(exe)?;
     anyhow::ensure!(meta.is_file() && meta.uid() == unsafe { libc::getuid() }, "the build's soloist is not a regular file of ours");
-    let out = tokio::time::timeout(Duration::from_secs(15), crate::programs::tokio_command(exe).arg("--version").kill_on_drop(true).output()).await??;
+    let run = || tokio::time::timeout(Duration::from_secs(15), crate::programs::tokio_command(exe).arg("--version").kill_on_drop(true).output());
+    // "Text file busy" (#16): the build was just written by this process, and a process another thread started in
+    // that moment holds a copy of the file open for writing until it has started its own program (a few ms). The
+    // kernel refuses to run a file open for writing; no fd of ours is open by now, so it passes once that copy closes.
+    let mut out = run().await?;
+    for _ in 0..100 {
+        match &out {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                out = run().await?;
+            }
+            _ => break,
+        }
+    }
+    let out = out?;
     let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
     anyhow::ensure!(out.status.success() && !v.is_empty(), "the new build doesn't run (`--version` failed)");
     Ok(v)
