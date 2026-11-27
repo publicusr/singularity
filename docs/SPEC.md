@@ -123,6 +123,9 @@ audio, and looks spectacular.
 61. As a user, I want a private local listening log (never uploaded, owner-only permissions, exportable, deletable), so that stats widgets can show my "live Wrapped".
 62. As a user, I want nightly local backups of my playlists and liked songs, so that my library survives anything.
 63. As a user, I want my Soloist key and Spotify tokens in the system keyring, so that no secret sits in a plain file.
+88. As the owner recording videos, I want a demo mode (`--demo`, D90) that hides everything personal on my own account
+    (library outside the Demo set, names, devices, the Jam link, paths, real stats, recent searches), so that a
+    recording shows nothing private.
 
 ### Robustness
 64. As a user, I want the UI to stay responsive while data loads (skeletons, never freezes), so that it feels fast.
