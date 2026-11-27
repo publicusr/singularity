@@ -75,8 +75,9 @@ says so (D89).
 _Avoid_: dirs, paths (in prose)
 
 **Shown Design**:
-The Design on screen: a built-in one or one of yours, its saved file, its "(edited)" copy, and what undo and Reset
-bring back. Editing a built-in Design keeps the edit as "<Design> (edited)"; the built-in never changes (D87 Q33, D89).
+The Design on screen: a built-in one or one of yours, its saved file, its "(edited)" copy, what undo brings back and
+what Delete design leaves. Editing a built-in Design keeps the edit as "<Design> (edited)"; the built-in never changes
+(D87 Q33, D89).
 _Avoid_: current layout, active design
 
 **Screen plan**:
@@ -354,6 +355,12 @@ A Layout preset shipped together with the Themes made for it: Singularity (defau
 Terminal, Karaoke. Picking a Design sets the layout, its own Theme and its Disk look; its Palette variants are a `t` away.
 A layout you saved ("Save design as…") is a Design of your own: it remembers the Theme it was saved with.
 _Avoid_: skin, mode, look (that's the Disk look)
+
+**Delete design**:
+Deleting the Design on screen, after a yes/no (Ctrl+K, or Delete in the Design picker): "<Design> (edited)" gives way
+to its built-in Design, a Design of your own to the default Singularity. Built-in Designs have none. It replaced
+"Reset design" (#80, Q72/Q75).
+_Avoid_: reset design, remove layout
 
 **Free tiling**:
 Rearranging a Design by hand, in two separate kinds of edit: the *contents* (drag a Pane's title onto another Pane to

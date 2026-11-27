@@ -1,6 +1,6 @@
 //! The Shown Design (D89): which Design is on screen (a built-in one, or one of yours with its saved file), the
-//! "(edited)" copy an edit of a built-in Design is kept as (D87 Q33), what undo and Reset bring back, and what goes to
-//! config.toml. It writes through a `Store` over the layouts folder (tests use an in-memory one).
+//! "(edited)" copy an edit of a built-in Design is kept as (D87 Q33), what undo brings back and Delete leaves, and what
+//! goes to config.toml. It writes through a `Store` over the layouts folder (tests use an in-memory one).
 //!
 //! The layout itself and the Theme on screen stay the App's: each edit hands them in, and what the bar should say
 //! and whether config.toml should follow come back as an `Outcome`.
@@ -16,8 +16,8 @@ pub trait Store {
     fn read(&self) -> (Vec<Saved>, Vec<String>);
     /// Write `s` as `<s.id>`, replacing what was there.
     fn write(&mut self, s: &Saved) -> Result<(), String>;
-    /// Forget Design `id` (gone already: nothing happens).
-    fn remove(&mut self, id: &str);
+    /// Forget Design `id` (gone already: nothing happens). Err: why it couldn't be removed.
+    fn remove(&mut self, id: &str) -> Result<(), String>;
 }
 
 /// The layouts folder: one `<id>.toml` per Design.
@@ -32,8 +32,11 @@ impl Store for Folder {
         crate::layouts::write(&self.0, &s.id, &s.name, &s.design, s.theme.as_deref().unwrap_or(""), &s.arrangement(), s.edited).map(|_| ())
     }
 
-    fn remove(&mut self, id: &str) {
-        let _ = std::fs::remove_file(self.0.join(format!("{id}.toml")));
+    fn remove(&mut self, id: &str) -> Result<(), String> {
+        match std::fs::remove_file(self.0.join(format!("{id}.toml"))) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -342,24 +345,26 @@ impl ShownDesign {
         }
     }
 
-    /// "Reset design": the built-in Design again (the App puts its layout back). A Design of the user's stays in the
-    /// picker as it was last saved; the unnamed edit of a built-in one is dropped.
-    pub fn reset(&mut self) -> Outcome {
+    /// "Delete design" (#80, replacing Reset design): the Design on screen goes from the folder and the picker, and a
+    /// built-in one is shown (the App puts its layout on screen): the "(edited)" copy's own, or the default
+    /// (Singularity) for a Design of the user's. None: a built-in Design is on screen (nothing to delete). Err: its
+    /// file couldn't be removed; nothing changed (it stays on screen), the bar says why.
+    pub fn delete(&mut self) -> Option<Result<Outcome, Outcome>> {
+        let id = self.file.clone()?;
+        let (name, edited) = self.find(&id).map_or((id.clone(), false), |s| (s.name.clone(), s.edited));
         let mut out = Outcome::default();
-        out.save_ui();
-        let name = self.built_in().name;
-        let was = self.own().cloned();
-        self.file = None;
-        match was {
-            Some(s) if s.edited => {
-                self.remove(&s.id);
-                self.reread(&mut out);
-                out.say(format!("Back to {name}"));
-            }
-            Some(s) => out.say(format!("Back to {name} · \"{}\" is still in the Design picker", s.name)),
-            None => out.say(format!("{name} reset")),
+        if let Some(Err(e)) = self.store.as_mut().map(|st| st.remove(&id)) {
+            out.say(format!("Couldn't delete \"{name}\": {e}"));
+            return Some(Err(out));
         }
-        out
+        self.file = None;
+        if !edited {
+            self.design = 0;
+        }
+        self.reread(&mut out);
+        out.save_ui();
+        out.say(format!("Deleted \"{name}\" · back to {}", self.built_in().name));
+        Some(Ok(out))
     }
 
     /// Undo or redo put `a` back on screen: `m`'s Design comes back with it, its file saying `a` again. Back to the
@@ -416,9 +421,10 @@ impl ShownDesign {
         self.store.as_mut().map_or(Ok(()), |st| st.write(s))
     }
 
+    /// (an "(edited)" copy that is no longer needed: one left behind does no harm)
     fn remove(&mut self, id: &str) {
         if let Some(st) = self.store.as_mut() {
-            st.remove(id);
+            let _ = st.remove(id);
         }
     }
 }
@@ -439,7 +445,7 @@ fn taken(name: &str) -> Outcome {
 #[derive(Clone, Default)]
 pub struct Memory {
     pub files: std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<String, Saved>>>,
-    /// the next write fails (as a full disk would)
+    /// the next write fails (as a full disk would), or the next remove (as a read-only folder would)
     pub fail_next: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
@@ -459,8 +465,12 @@ impl Store for Memory {
         Ok(())
     }
 
-    fn remove(&mut self, id: &str) {
+    fn remove(&mut self, id: &str) -> Result<(), String> {
+        if self.fail_next.replace(false) {
+            return Err("read-only folder".into());
+        }
         self.files.borrow_mut().remove(id);
+        Ok(())
     }
 }
 

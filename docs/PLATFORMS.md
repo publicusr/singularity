@@ -93,6 +93,7 @@ place, and callers outside these files carry no `cfg`, with **one exception, the
 | Programs the Daemon runs (`programs.rs`; singularity-archive#77, audit S3). Processes are found and stopped through the Host, not `pgrep`/`pkill`; Soloist's Linux builds are unpacked in-process, not by `tar` (#98, Q102) | fixed locations (`/usr/bin`, `/bin`, `/usr/local/bin`; Spotify also `/snap/bin`), never `PATH`; the health check asks for `secret-tool` (while the keyring is on), `pactl`, `parec` | `/usr/bin`, `/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, in that order; the health check asks only for `tar` (the Soloist VM's image) | 🔶 #98, not yet run on the Mac |
 | Audio output name (health, `health.rs`) | `pactl` (the Engine's stream → its sink) | cpal's default output device | 🔶 (✅ by 2026-10-20) |
 | The Client starting the Daemon | `singularityd` next to the Client (never `PATH`) | the same | 🔶 (✅ by 2026-10-20) |
+| The last Home and library (#81, `daemon/src/last_seen.rs`): `home-and-library.json` in the App folders cache dir, owner-only, naming its account, removed on logout | `$XDG_CACHE_HOME/singularity/`, else `~/.cache/singularity/` | the same | 🔶 Linux: tests and a pty run with the fake Catalogue, not yet timed on the real account; not yet run on a Mac |
 | Socket dir (App folders, `config/src/app_folders.rs`, D89) | `$XDG_RUNTIME_DIR/singularity/` | `$TMPDIR/singularity-<uid>/singularity/` (per-user `$TMPDIR`; the uid part reads "user", #3) | 🔶 a Mac couldn't make its socket from 2026-10-25 until `b2c8d15` (2026-11-20), which no Mac has run; #97 not yet run there either |
 
 ## Not yet run on macOS
@@ -162,8 +163,9 @@ make its socket on a Mac. A new release is needed first.
   macOS keeps it, `termfont.rs`).
 - [ ] Free tiling and Arrange mode (D66, D84, D87): mouse, touchpad and keyboard at the Mac's sizes; the Tray, the
   Widget picker, New design…, Delete design (#80); every Widget at the Mac's Pane sizes (#6).
-- [ ] The wheel and the touchpad in Ghostty: one notch moves one step (2026-10-23), every list and every popup scrolls
-  under the pointer (popups own the wheel since 2026-11-01; pty `wheel-all` shows them all).
+- [ ] The wheel and the touchpad in Ghostty: one notch moves one step (2026-10-23), a touchpad a row a report (D86,
+  #32), every list and every popup scrolls under the pointer (popups own the wheel since 2026-11-01; pty `wheel-all`
+  shows them all); over a Pane the wheel scrolls a list's view, the pointer highlights a row, a click picks it (D86).
 - [ ] The resize pointer appears on a Pane border and goes back to the normal pointer off it, in Ghostty too
   (2026-11-05).
 - [ ] Open a song's or a Card's menu and wait while Home or the list refreshes, then pick Play or Add to playlist: it

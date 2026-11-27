@@ -176,6 +176,7 @@ pub(crate) fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
         Modal::Health => crate::setup::health_rect(area),
         Modal::Devices => devices_rect(area, app),
         Modal::Picker => crate::looks::picker_rect(area, app.picker()?),
+        Modal::DeleteDesign => crate::looks::delete_ask_rect(area),
         Modal::Naming => naming_rect(area, app),
         Modal::WidgetPicker => {
             // (its Pane gone: drawing it closes it)
@@ -209,6 +210,7 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
         }
         Modal::Devices => devices(f.buffer_mut(), area, app, th),
         Modal::Picker => crate::looks::draw_picker(f.buffer_mut(), area, app, th),
+        Modal::DeleteDesign => crate::looks::draw_delete_ask(f.buffer_mut(), area, app, th),
         Modal::WidgetPicker => crate::panemenu::draw(f.buffer_mut(), area, app, th),
         Modal::Library => crate::paneless::draw_library(f.buffer_mut(), area, app, th),
         Modal::Queue => crate::paneless::draw_queue(f.buffer_mut(), area, app, th),
@@ -1926,7 +1928,7 @@ mod tests {
     }
 
     #[test]
-    fn the_wheel_moves_the_highlight_anywhere_over_a_list_and_the_library() {
+    fn the_wheel_scrolls_a_list_and_the_library_anywhere_over_them() {
         let mut app = App::new(None);
         app.open.put_view(crate::tracks::TrackView::new("spotify:playlist:p", "P"));
         app.page = Page::List { uri: "spotify:playlist:p".into(), title: "P".into(), subtitle: String::new() };
@@ -1949,28 +1951,34 @@ mod tests {
         render(&mut app, 160, 48);
         // over an artist link, where the wheel used to do nothing
         let link = app.all_hits().iter().find(|(_, h)| matches!(h, Hit::Link(l) if l.uri == "spotify:artist:n")).unwrap().0;
+        // the list moves a row a notch; the highlight stays (D86)
         for _ in 0..3 {
             mouse(&mut app, MouseEventKind::ScrollDown, link.x as f64 + 0.5, link.y, false);
         }
-        assert_eq!(app.list_view().unwrap().sel, 3);
+        assert_eq!((app.list_view().unwrap().sel, app.list_view().unwrap().top), (0, 3));
         mouse(&mut app, MouseEventKind::ScrollUp, link.x as f64 + 0.5, link.y, false);
-        assert_eq!(app.list_view().unwrap().sel, 2);
-        // Shift: a page; the list follows the highlight
+        assert_eq!((app.list_view().unwrap().sel, app.list_view().unwrap().top), (0, 2));
+        // Shift: a page, to the end at most
         let vis = app.list_view().unwrap().visible;
+        app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: link.x, row: link.y, modifiers: KeyModifiers::SHIFT }, link.x as f64 + 0.5, false);
+        assert_eq!(app.list_view().unwrap().top, 2 + vis);
         for _ in 0..3 {
             app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: link.x, row: link.y, modifiers: KeyModifiers::SHIFT }, link.x as f64 + 0.5, false);
         }
         let v = app.list_view().unwrap();
-        assert_eq!(v.sel, 2 + 3 * vis);
-        assert!(v.sel >= v.top && v.sel < v.top + v.visible, "the highlight stays in view");
+        assert_eq!((v.sel, v.top), (0, 80 - vis));
+        // a key moves the highlight from where it is, and the list goes back to it
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let v = app.list_view().unwrap();
+        assert_eq!((v.sel, v.top), (1, 0));
         // the library sidebar
         let lib = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).rect_of(Widget::Library).unwrap();
         for _ in 0..50 {
             mouse(&mut app, MouseEventKind::ScrollDown, lib.x as f64 + 3.5, lib.y + 3, false);
         }
         render(&mut app, 160, 48);
-        assert_eq!(app.sidebar.sel, 50);
-        assert!(app.sidebar.sel >= app.sidebar.top && app.sidebar.sel < app.sidebar.top + app.sidebar.visible);
+        let side = app.sidebar;
+        assert_eq!((side.sel, side.top), (0, 61 - side.visible), "to the end, the highlight where it was");
     }
 
     #[test]
@@ -2157,7 +2165,7 @@ mod tests {
     }
 
     #[test]
-    fn the_wheel_moves_the_queues_highlight_and_the_list_follows() {
+    fn the_wheel_scrolls_the_queue_and_leaves_its_highlight() {
         use singularity_proto::{Item, QueueEntry};
         let (mut app, _rx) = playing_app(200_000);
         let e = |i: usize| QueueEntry { item: Item { uri: format!("spotify:track:{i}"), name: format!("Song {i}"), ..Default::default() }, source: if i < 5 { "queue" } else { "context" }.into(), uid: format!("u{i}") };
@@ -2165,20 +2173,28 @@ mod tests {
         render(&mut app, 160, 48);
         let pane = app.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if Some(*p) == app.layout.pane_of(Widget::Queue)).then_some(*r)).unwrap();
         // over a heading, a row or "now playing": anywhere in the Pane
+        // (a line a notch, the highlight staying: D86)
         for _ in 0..7 {
             mouse(&mut app, MouseEventKind::ScrollDown, pane.x as f64 + 3.5, pane.y + 1, false);
         }
-        assert_eq!((app.queue_view.sel, app.focused()), (7, Some(Widget::Queue)));
+        render(&mut app, 160, 48);
+        assert_eq!((app.queue_view.sel, app.queue_view.top, app.focused()), (0, 7, Some(Widget::Queue)));
         mouse(&mut app, MouseEventKind::ScrollUp, pane.x as f64 + 3.5, pane.y + 1, false);
-        assert_eq!(app.queue_view.sel, 6);
-        // Shift: a page; the list follows the highlight, which stays on screen
+        render(&mut app, 160, 48);
+        assert_eq!((app.queue_view.sel, app.queue_view.top), (0, 6));
+        // Shift: a page
         for _ in 0..4 {
             app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: pane.x + 3, row: pane.y + 1, modifiers: KeyModifiers::SHIFT }, pane.x as f64 + 3.5, false);
             render(&mut app, 160, 48);
         }
-        let sel = app.queue_view.sel;
-        assert!(sel > 6 + 3 * app.queue_view.visible, "{sel}");
-        assert!(app.all_hits().iter().any(|(_, h)| *h == Hit::QueueRow(sel)), "the highlighted row is drawn");
+        let top = app.queue_view.top;
+        assert!(top >= 6 + 4 * app.queue_view.visible, "{top}");
+        assert!(!app.all_hits().iter().any(|(_, h)| *h == Hit::QueueRow(0)), "the highlight stayed where it was, off screen");
+        // a key moves it from there, and the list goes back to it
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        render(&mut app, 160, 48);
+        assert_eq!(app.queue_view.sel, 1);
+        assert!(app.all_hits().iter().any(|(_, h)| *h == Hit::QueueRow(1)), "the highlighted row is drawn");
     }
 
     #[test]
@@ -2245,7 +2261,7 @@ mod tests {
     }
 
     #[test]
-    fn the_wheel_moves_through_recent_searches_and_a_short_pane_follows() {
+    fn the_wheel_scrolls_recent_searches_in_a_short_pane() {
         let (mut app, _rx) = playing_app(200_000);
         app.search = crate::search::Search::with_recent((0..12).map(|i| format!("query {i}")).collect());
         app.run(Action::Search);
@@ -2254,11 +2270,13 @@ mod tests {
         for _ in 0..11 {
             mouse(&mut app, MouseEventKind::ScrollDown, home.x as f64 + 3.5, home.y + 5, false);
         }
-        assert_eq!(app.searching().unwrap().recent_sel, 11);
         let s = render(&mut app, 120, 24);
-        assert!(s.contains("query 11"), "the highlight stays in view\n{s}");
+        assert_eq!(app.searching().unwrap().recent_sel, 0, "the highlight stays (D86)");
+        assert!(s.contains("query 11") && !s.contains("query 0"), "the list's end shows\n{s}");
+        let first = app.searching().unwrap().recent_first;
         mouse(&mut app, MouseEventKind::ScrollUp, home.x as f64 + 3.5, home.y + 5, false);
-        assert_eq!(app.searching().unwrap().recent_sel, 10);
+        render(&mut app, 120, 24);
+        assert_eq!(app.searching().unwrap().recent_first, first - 1);
     }
 
     #[test]
@@ -3024,11 +3042,14 @@ mod tests {
         app.artist_page(page);
         render(&mut app, 200, 48);
         let wheel = |app: &mut App, x: u16, y: u16| mouse(app, MouseEventKind::ScrollDown, x as f64 + 0.5, y, false);
-        // over a popular track's album name (a link of its own): the highlight moves
+        // over a popular track's album name (a link of its own): the songs' list moves a row, the highlight stays
+        // (D86), and the Shelves don't move
         let row = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::TopTrack(2)).then_some(*r)).unwrap();
         let link = app.all_hits().iter().find_map(|(r, h)| (matches!(h, Hit::Link(_)) && r.y == row.y).then_some(*r)).expect("a name link on the row");
         wheel(&mut app, link.x + 1, link.y);
-        assert_eq!(app.page.artist().unwrap().top_sel, 1);
+        render(&mut app, 200, 48);
+        let a = app.page.artist().unwrap();
+        assert_eq!((a.top_sel, a.top_first, a.shelves.offset), (0, 1, 0));
         // below the songs, over the Shelves (Cards or not): the page scrolls by lines
         let home = app.layout.compute(Rect::new(0, 1, 200, 48 - 5)).rect_of(Widget::Home).unwrap();
         wheel(&mut app, home.right() - 3, home.bottom() - 3);
@@ -3414,11 +3435,13 @@ mod tests {
             // the wheel: over the last song down into the Shelves, and up again
             let y = render(&mut app, 100, 30).lines().position(|r| r.contains('⌕')).unwrap() as u16 + 3;
             let wheel = |app: &mut App, kind: MouseEventKind| app.mouse(MouseEvent { kind, column: 3, row: y, modifiers: KeyModifiers::NONE });
+            // (the highlight stays on the last song throughout, D86)
             wheel(&mut app, MouseEventKind::ScrollDown);
-            assert!(app.searching().is_some_and(|s| s.track_sel.is_none() && s.shelves.sel.is_some()));
-            inside(&mut app);
+            assert!(app.searching().is_some_and(|s| s.showing_shelves() && s.track_sel == Some(3) && s.shelves.sel.is_none()));
+            assert!(!inside(&mut app).iter().any(|r| r.contains("S4")));
             wheel(&mut app, MouseEventKind::ScrollUp);
-            assert_eq!(app.searching().and_then(|s| s.track_sel), Some(3));
+            assert!(app.searching().is_some_and(|s| !s.showing_shelves() && s.track_sel == Some(3)));
+            assert!(inside(&mut app)[3].contains("S4"));
             app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
             app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         }
@@ -3688,7 +3711,7 @@ mod tests {
         mouse(&mut app, MouseEventKind::ScrollDown, 1.5, 10, false);
         assert_eq!(app.sidebar.sel, 0);
         let v = app.page.settings().unwrap();
-        assert!(v.sel > 0 || v.on_tabs, "the Settings page scrolled");
+        assert!(v.top > 0, "the Settings page scrolled");
     }
 
     /// Open popup `m` with more in it than fits (a list longer than its box, text taller than a short screen).
@@ -3698,6 +3721,9 @@ mod tests {
         match m {
             Modal::Palette => app.run(Action::Palette),
             Modal::Picker => app.open_picker(crate::looks::PickerKind::Theme),
+            Modal::DeleteDesign => {
+                app.open_popup(crate::app::Popup::DeleteDesign(crate::looks::DeleteAsk { file: "mine".into(), name: "Mine".into(), back: None }));
+            }
             Modal::Naming => app.open_popup(crate::app::Popup::Naming(crate::app::Naming::playlist())),
             Modal::WidgetPicker => app.open_widget_picker(app.layout.pane_of(Widget::Stream).unwrap()),
             // a Design without their Panes (D87)
@@ -3758,7 +3784,7 @@ mod tests {
             Modal::Health => app.text_scroll(m).map(|s| s.offset()),
             Modal::Menu => app.menu().map(|m| m.selected),
             Modal::Help => app.text_scroll(m).map(|s| s.offset()),
-            Modal::Naming | Modal::Cover | Modal::Login => None,
+            Modal::Naming | Modal::Cover | Modal::Login | Modal::DeleteDesign => None,
             Modal::Arrange => app.arrange.tray_first(),
         }
     }
@@ -3787,15 +3813,18 @@ mod tests {
                 // the popup's box (Arrange mode has none: the Panes are the thing)
                 let r = app.overlays.first().copied().unwrap_or(Rect::new(w / 4, h / 4, w / 2, h / 2));
                 let points = [(r.x + r.width / 2, r.y + r.height / 2), (r.x, r.y + r.height / 2), (r.right().saturating_sub(1), r.y), (0, 0), (w - 1, h - 1)];
-                let (mut wheel, mut t) = (crate::term::WheelBursts::default(), Instant::now());
+                let (mut wheel, mut t) = (crate::term::WheelSteps::default(), Instant::now());
                 // one notch: three reports a microsecond apart, as the terminal sends them
                 let mut notch = |app: &mut App, kind: MouseEventKind, n: usize| {
                     let (x, y) = points[n % points.len()];
                     t += Duration::from_millis(40);
+                    let mut steps = vec![];
                     for i in 0..3 {
-                        if wheel.keep(kind, t + Duration::from_micros(i)) {
-                            app.pointer(MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE }, x as f64 + 0.5, false);
-                        }
+                        steps.extend(wheel.push(MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE }, t + Duration::from_micros(i)));
+                    }
+                    steps.extend(wheel.settle(t + Duration::from_millis(5)));
+                    for m in steps {
+                        app.pointer(m, x as f64 + 0.5, false);
                     }
                 };
                 let mut spin = |app: &mut App, kind: MouseEventKind, notches: std::ops::Range<usize>| {
@@ -3886,7 +3915,7 @@ mod tests {
             let (mut app, _rx) = over_wizard(m);
             render(&mut app, w, h);
             click(&mut app, 0, 0);
-            let closes = matches!(m, Modal::Palette | Modal::Picker | Modal::WidgetPicker | Modal::Library | Modal::Queue | Modal::Adding | Modal::Devices | Modal::Menu | Modal::Help);
+            let closes = matches!(m, Modal::Palette | Modal::Picker | Modal::DeleteDesign | Modal::WidgetPicker | Modal::Library | Modal::Queue | Modal::Adding | Modal::Devices | Modal::Menu | Modal::Help);
             assert_eq!(app.modal(), Some(if closes { Modal::Wizard } else { m }), "{m:?}: the click");
             // the click on its first row, inside its box: the row is chosen (the popup has done its job and gone)
             let (mut app, _rx) = over_wizard(m);

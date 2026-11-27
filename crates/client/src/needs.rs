@@ -132,13 +132,13 @@ mod tests {
         for _ in 0..3 {
             app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: x, row: y, modifiers: KeyModifiers::NONE }, x as f64 + 0.5, false);
         }
-        assert_eq!(app.queue_view.sel, 0, "the wheel moved a hidden highlight");
+        assert_eq!((app.queue_view.sel, app.queue_view.top), (0, 0), "the wheel moved a hidden list");
         app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.queue_view.sel, 0, "a key moved a hidden highlight");
-        // big enough again: the same wheel moves it
+        // big enough again: the same wheel moves it (its view, D86)
         screen(&mut app, Widget::Queue, sw.max(20), sh + 4);
         app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: x, row: y, modifiers: KeyModifiers::NONE }, x as f64 + 0.5, false);
-        assert_eq!(app.queue_view.sel, 1, "a Pane big enough takes the wheel");
+        assert_eq!((app.queue_view.sel, app.queue_view.top), (0, 1), "a Pane big enough takes the wheel");
         // top this week's title is its switch only while its list shows
         let mut app = App::new(None);
         let (sw, sh) = smallest(Widget::TopWeek);

@@ -140,6 +140,8 @@ pub struct TrackView {
     pub reveal_uri: Option<String>,
     /// a show's rows when its next episodes were last asked for (#59)
     pub more_for: Option<usize>,
+    /// whether the wheel has the view (D86)
+    pub wheeled: crate::scroll::Wheeled,
     order: OrderCache,
 }
 
@@ -165,7 +167,7 @@ impl std::fmt::Debug for OrderCache {
 
 impl TrackView {
     pub fn new(uri: &str, title: &str) -> TrackView {
-        TrackView { uri: uri.into(), title: title.into(), subtitle: String::new(), sort: None, filter: String::new(), filtering: false, sel: 0, top: 0, visible: 1, reveal_uri: None, more_for: None, order: OrderCache::default() }
+        TrackView { uri: uri.into(), title: title.into(), subtitle: String::new(), sort: None, filter: String::new(), filtering: false, sel: 0, top: 0, visible: 1, reveal_uri: None, more_for: None, wheeled: Default::default(), order: OrderCache::default() }
     }
 
     /// Indexes into `list`'s rows in display order (cached until the list, the filter or the sort changes).
@@ -446,7 +448,9 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let body = Rect::new(x0, hy + 2, w, r.bottom().saturating_sub(hy + 2));
     view.visible = body.height.max(1) as usize;
     view.sel = view.sel.min(order.len().saturating_sub(1));
-    view.top = view.top.min(order.len().saturating_sub(view.visible));
+    let end = order.len().saturating_sub(view.visible);
+    view.wheeled.follows(view.sel, end);
+    view.top = view.top.min(end);
     let playing = app.playback.item.as_ref().map(|i| i.uri.clone());
     for (vi, &ri) in order.iter().enumerate().skip(view.top).take(view.visible) {
         let y = body.y + (vi - view.top) as u16;

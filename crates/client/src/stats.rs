@@ -56,6 +56,8 @@ pub struct StatsView {
     /// first line shown
     pub top: usize,
     pub visible: usize,
+    /// whether the wheel has the view (D86)
+    pub wheeled: crate::scroll::Wheeled,
 }
 
 /// The selectable rows in order: (section, index in it).
@@ -221,7 +223,9 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let all = entries(&s);
     view.sel = view.sel.min(all.len().saturating_sub(1));
     view.visible = body.height as usize;
-    if let Some(&(sec, i)) = all.get(view.sel)
+    let end = lines.len().saturating_sub(view.visible);
+    if view.wheeled.follows(view.sel, end)
+        && let Some(&(sec, i)) = all.get(view.sel)
         && let Some(at) = lines.iter().position(|l| *l == Line::Row(sec, i) || (*l == Line::Columns(i) && w >= COLUMNS_FROM))
     {
         if at < view.top {

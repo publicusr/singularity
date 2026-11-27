@@ -1,7 +1,8 @@
 //! Scrolling, wherever there's more than fits. Every popup is an `app::Modal` and `App::modal_scroll` says what the
 //! wheel does in it; every Widget is a `pane::Widget` and every main-Pane page an `app::Page`, and `App::pane_wheel`
-//! says what it does over them. A list moves its selection with [`moved`] and shows a [`window`] that follows it, text
-//! taller than its box scrolls with a [`TextScroll`], and a view that follows the song (lyrics) is a [`Follow`].
+//! says what it does over them. A list moves its selection with [`moved`] and shows a [`window`] that follows it (over
+//! a Pane the wheel scrolls a list's view instead, [`Wheeled`], D86), text taller than its box scrolls with a
+//! [`TextScroll`], and a view that follows the song (lyrics) is a [`Follow`].
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -70,6 +71,59 @@ impl TextScroll {
     }
 }
 
+/// A list's view under the wheel (D86): the wheel and the touchpad scroll the view and leave the highlight where it
+/// is; keys, a click or the pointer moving over a row move the highlight, and the view follows it again (the list's
+/// own reveal or [`window`]). The list keeps its first row shown itself; this says which of the two has the view.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Wheeled {
+    /// the highlight when the wheel last moved the view (None: the view follows the highlight)
+    held: Option<usize>,
+    /// the last first row there is, as the last frame had it
+    end: usize,
+}
+
+impl Wheeled {
+    /// The wheel: the view's first row `top` moves `rows` on (negative: up), within what the last frame showed there
+    /// is, and the highlight `sel` stays.
+    pub fn by(&mut self, top: &mut usize, rows: i32, sel: usize) {
+        *top = (*top as i64 + rows as i64).clamp(0, self.end as i64) as usize;
+        self.held = Some(sel);
+    }
+
+    /// Whether the wheel has the view while the highlight is on `sel`.
+    pub fn holds(&self, sel: usize) -> bool {
+        self.held == Some(sel)
+    }
+
+    /// The view follows the highlight again (a key that acts on it).
+    pub fn release(&mut self) {
+        self.held = None;
+    }
+
+    /// The list changed under a view the wheel has, and the highlight's row is at `sel` now: the wheel keeps it.
+    pub fn keep(&mut self, sel: usize) {
+        if self.held.is_some() {
+            self.held = Some(sel);
+        }
+    }
+
+    /// Whether a view whose first row is `top` shows the list's end (as the last frame had it).
+    pub fn at_end(&self, top: usize) -> bool {
+        top >= self.end
+    }
+
+    /// Drawing: whether the view follows the highlight `sel` this frame (not while it is where the wheel left it);
+    /// `end` is the last first row there is.
+    pub fn follows(&mut self, sel: usize, end: usize) -> bool {
+        self.end = end;
+        if self.held == Some(sel) {
+            return false;
+        }
+        self.held = None;
+        true
+    }
+}
+
 /// How long a view that follows the song stays where the wheel left it before it follows again.
 pub const HOLD: Duration = Duration::from_secs(5);
 
@@ -132,6 +186,21 @@ mod tests {
         f.held.set(Some((20, Instant::now() - HOLD)));
         assert_eq!(f.first(9, 20), 9);
         assert!(!f.held());
+    }
+
+    #[test]
+    fn the_wheel_takes_a_lists_view_until_the_highlight_moves() {
+        let (mut w, mut top) = (Wheeled::default(), 0);
+        assert!(w.follows(2, 10), "following the highlight");
+        w.by(&mut top, 4, 2);
+        assert_eq!(top, 4);
+        assert!(!w.follows(2, 10), "the wheel has the view while the highlight stays");
+        w.by(&mut top, 100, 2);
+        assert_eq!(top, 10, "and stops at the end");
+        w.by(&mut top, -100, 2);
+        assert_eq!(top, 0, "and at the top");
+        assert!(w.follows(3, 10), "the highlight moved: the view follows it again");
+        assert!(w.follows(3, 10));
     }
 
     #[test]

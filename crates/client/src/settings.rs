@@ -41,6 +41,9 @@ pub struct SettingsView {
     pub visible: usize,
     /// a number being typed, for the selected setting
     pub typing: Option<String>,
+    /// whether the wheel has the view, on each tab (D86)
+    pub wheeled: crate::scroll::Wheeled,
+    pub key_wheeled: crate::scroll::Wheeled,
 }
 
 /// One line of the page.
@@ -300,16 +303,16 @@ impl App {
         }
     }
 
-    /// The wheel over the page moves the highlight (Shift: a page).
+    /// The wheel over the page scrolls it by lines (Shift: a page), the highlight where it is (D86).
     pub fn settings_wheel(&mut self, d: i64, coarse: bool) {
         let Some(v) = self.page.settings_mut() else { return };
-        v.on_tabs = false;
         let step = if coarse { v.visible.max(1) as i64 } else { 1 };
-        let (sel, n) = match v.tab {
-            Tab::Config => (&mut v.sel, singularity_config::SETTINGS.len()),
-            Tab::Keys => (&mut v.key_sel, Action::ALL.len()),
-        };
-        *sel = (*sel as i64 + d * step).clamp(0, n.saturating_sub(1) as i64) as usize;
+        // the view, by lines; the highlight stays (D86)
+        let rows = (d * step).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        match v.tab {
+            Tab::Config => v.wheeled.by(&mut v.top, rows, v.sel),
+            Tab::Keys => v.key_wheeled.by(&mut v.key_top, rows, v.key_sel),
+        }
     }
 }
 
@@ -381,7 +384,8 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let all = lines(&es, w.saturating_sub(NAME_W) as usize);
     view.visible = r.bottom().saturating_sub(y).max(1) as usize;
     view.sel = view.sel.min(es.len().saturating_sub(1));
-    view.top = scrolled(&all, view.sel, view.top, view.visible);
+    let end = all.len().saturating_sub(view.visible);
+    view.top = if view.wheeled.follows(view.sel, end) { scrolled(&all, view.sel, view.top, view.visible) } else { view.top.min(end) };
     let vx = x + NAME_W;
     let vw = w.saturating_sub(NAME_W);
     for line in all.iter().skip(view.top).take(view.visible) {
@@ -448,10 +452,12 @@ fn draw_keys(buf: &mut Buffer, r: Rect, app: &App, th: &Theme, view: &mut Settin
     let n = Action::ALL.len();
     view.visible = r.bottom().saturating_sub(y).max(1) as usize;
     view.key_sel = view.key_sel.min(n - 1);
-    if view.key_sel < view.key_top {
-        view.key_top = view.key_sel;
-    } else if view.key_sel >= view.key_top + view.visible {
-        view.key_top = view.key_sel + 1 - view.visible;
+    if view.key_wheeled.follows(view.key_sel, n.saturating_sub(view.visible)) {
+        if view.key_sel < view.key_top {
+            view.key_top = view.key_sel;
+        } else if view.key_sel >= view.key_top + view.visible {
+            view.key_top = view.key_sel + 1 - view.visible;
+        }
     }
     view.key_top = view.key_top.min(n.saturating_sub(view.visible));
     let focused = app.is_focused(crate::layout::Widget::Home);

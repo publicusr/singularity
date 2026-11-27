@@ -93,7 +93,7 @@ pub enum Action {
     Arrange,
     NewDesign,
     DiscardNewDesign,
-    ResetLayout,
+    DeleteDesign,
     UndoLayout,
     RedoLayout,
     Palette,
@@ -104,7 +104,7 @@ pub enum Action {
 impl Action {
     /// Not offered (and their keys do nothing) while a New design… is built (#42): each would swap or save the Design
     /// under the build. Done names it.
-    pub const NOT_WHILE_BUILDING: [Action; 3] = [Action::PickDesign, Action::SaveLayout, Action::ResetLayout];
+    pub const NOT_WHILE_BUILDING: [Action; 3] = [Action::PickDesign, Action::SaveLayout, Action::DeleteDesign];
 
     pub const ALL: [Action; 66] = [
         Action::TogglePlay,
@@ -167,7 +167,7 @@ impl Action {
         Action::Arrange,
         Action::NewDesign,
         Action::DiscardNewDesign,
-        Action::ResetLayout,
+        Action::DeleteDesign,
         Action::UndoLayout,
         Action::RedoLayout,
         Action::Palette,
@@ -236,7 +236,7 @@ impl Action {
             Action::Arrange => "Arrange",
             Action::NewDesign => "New design…",
             Action::DiscardNewDesign => "Discard new design",
-            Action::ResetLayout => "Reset design",
+            Action::DeleteDesign => "Delete design…",
             Action::UndoLayout => "Undo layout",
             Action::RedoLayout => "Redo layout",
             Action::Palette => "Command palette",
@@ -258,7 +258,7 @@ impl Action {
             Action::SplitDown => "tile add pane widget below",
             Action::ClosePane => "tile remove delete widget",
             Action::Arrange => "tray tile move swap drag layout split close pane widget",
-            Action::ResetLayout => "layout tiling undo original default",
+            Action::DeleteDesign => "layout remove reset original",
             Action::UndoLayout => "tiling pane change back revert move drop close split",
             Action::RedoLayout => "tiling pane change again forward",
             Action::EditPlaylist => "name description rename",
@@ -351,7 +351,7 @@ impl Action {
             Action::Arrange => "arrange",
             Action::NewDesign => "new_design",
             Action::DiscardNewDesign => "discard_new_design",
-            Action::ResetLayout => "reset_layout",
+            Action::DeleteDesign => "delete_design",
             Action::UndoLayout => "undo_layout",
             Action::RedoLayout => "redo_layout",
             Action::Palette => "palette",
@@ -360,9 +360,14 @@ impl Action {
         }
     }
 
-    /// (`move_pane`, Move mode's, is another name for `arrange` since Move mode folded into it: #43)
+    /// (`move_pane`, Move mode's, is another name for `arrange` since Move mode folded into it: #43; `reset_layout`,
+    /// Reset design's, for `delete_design` since Delete design replaced it: #80)
     pub fn from_id(id: &str) -> Option<Action> {
-        Action::ALL.into_iter().find(|a| a.id() == id).or_else(|| (id == "move_pane").then_some(Action::Arrange))
+        Action::ALL.into_iter().find(|a| a.id() == id).or(match id {
+            "move_pane" => Some(Action::Arrange),
+            "reset_layout" => Some(Action::DeleteDesign),
+            _ => None,
+        })
     }
 }
 
@@ -431,6 +436,8 @@ pub enum Hit {
     Save(singularity_proto::Link),
     /// a row of the design or theme picker
     PickerItem(usize),
+    /// Delete design's yes (true) or no (#80)
+    DeleteAnswer(bool),
     /// a row of the "Add to playlist" picker (#53)
     AddPick(usize),
     /// a Pane's ◂ ▸: the Pane, and which way to swap its Widget
@@ -1347,7 +1354,7 @@ impl App {
             Action::Arrange => self.enter_arrange(),
             Action::NewDesign => self.new_design(),
             Action::DiscardNewDesign => self.discard_new_design(),
-            Action::ResetLayout => self.reset_design(),
+            Action::DeleteDesign => self.ask_delete_design(),
             Action::UndoLayout => self.undo_layout(),
             Action::RedoLayout => self.redo_layout(),
             Action::Palette => self.open_popup(Popup::Palette(Palette { query: String::new(), selected: 0 })),
@@ -1359,8 +1366,8 @@ impl App {
     pub fn palette_items(&self) -> Vec<Action> {
         let q = self.palette().map(|p| p.query.to_lowercase()).unwrap_or_default();
         let building = self.building();
-        // (Discard new design only while one is built, Q78)
-        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && !(building && Action::NOT_WHILE_BUILDING.contains(a)) && (building || *a != Action::DiscardNewDesign) && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
+        // (Discard new design only while one is built, Q78; Delete design… only on a Design that isn't built in, #80)
+        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && !(building && Action::NOT_WHILE_BUILDING.contains(a)) && (building || *a != Action::DiscardNewDesign) && (*a != Action::DeleteDesign || self.shown.file().is_some()) && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
         // what you typed, as typed: at the start first, then anywhere, then loose matches
         let q = q.trim();
         items.sort_by_key(|a| {
@@ -1391,6 +1398,7 @@ impl App {
         match self.modal() {
             Some(Modal::Palette) => return self.palette_key(k),
             Some(Modal::Picker) => return self.picker_key(k),
+            Some(Modal::DeleteDesign) => return self.delete_ask_key(k),
             Some(Modal::Naming) => return self.naming_key(k),
             Some(Modal::WidgetPicker) => return self.widget_picker_key(k),
             Some(Modal::Library) => return self.library_popup_key(k),
@@ -1453,6 +1461,9 @@ impl App {
         }
         // a focused Pane showing its needs line has no keys of its own: they'd act on what it hides (#36)
         let shown = !self.focus.is_some_and(|p| self.pane_is_short(p));
+        if shown && self.back_to_highlight(k) {
+            return;
+        }
         if shown && self.is_focused(Widget::Home) && self.page_key(k, shift) {
             return;
         }
@@ -1648,7 +1659,7 @@ impl App {
         if p.uri == crate::tracks::LIKED {
             self.seed_liked(&p.tracks);
         }
-        self.open.add_page(&p, self.page.list() == Some(p.uri.as_str()));
+        self.open.add_page(&p);
         self.fetched.insert(p.uri.clone(), Instant::now());
         self.details_arrived(&p.uri);
         self.forget_old();
@@ -2974,7 +2985,7 @@ impl App {
                             self.play_top(i);
                         }
                     }
-                    Some(Hit::MenuItem(_) | Hit::MenuSplit(_) | Hit::PickerItem(_) | Hit::AddPick(_)) => {}
+                    Some(Hit::MenuItem(_) | Hit::MenuSplit(_) | Hit::PickerItem(_) | Hit::DeleteAnswer(_) | Hit::AddPick(_)) => {}
                     Some(Hit::Swap(p, d)) => {
                         self.swap_widget(p, d);
                     }
@@ -3055,8 +3066,137 @@ impl App {
                     self.pane_wheel(w, m.column, m.row, rows, coarse);
                 }
             }
+            MouseEventKind::Moved => self.hover(m.column, m.row),
             _ => {}
         }
+    }
+
+    /// The pointer over a list's row in the focused Pane highlights it (D86: the wheel scrolls the view and leaves the
+    /// highlight, so the row to pick is the one under the pointer; a click picks it). It moves the highlight and
+    /// nothing else: the queue's highlight isn't placed (it keeps following as it did), the Settings tabs and a number
+    /// being typed keep the keys, and a highlight in search's Shelves stays there.
+    fn hover(&mut self, x: u16, y: u16) {
+        let Some(hit) = self.hit_at(x, y) else { return };
+        let home = self.is_focused(Widget::Home);
+        match hit {
+            Hit::Side(row) if self.is_focused(Widget::Library) => self.sidebar.sel = row,
+            Hit::QueueRow(i) if self.is_focused(Widget::Queue) => self.queue_view.sel = i,
+            Hit::Track(vi) if home => {
+                if let Some(v) = self.list_view_mut() {
+                    v.sel = vi;
+                }
+            }
+            Hit::StatsRow(i) if home => {
+                if let Some(v) = self.page.stats_mut() {
+                    v.sel = i;
+                }
+            }
+            Hit::TopTrack(i) if home => {
+                if let Some(a) = self.page.artist_mut() {
+                    a.top_sel = i;
+                }
+            }
+            Hit::SearchTrack(i) if home => {
+                if let Some(s) = self.searching_mut().filter(|s| s.shelves.sel.is_none()) {
+                    s.track_sel = Some(i);
+                }
+            }
+            Hit::Recent(i) if home => {
+                if let Some(s) = self.searching_mut() {
+                    s.recent_sel = i;
+                }
+            }
+            // (not while a number is being typed for a setting)
+            Hit::Setting(i) if home => {
+                if let Some(v) = self.page.settings_mut().filter(|v| v.typing.is_none() && !v.on_tabs) {
+                    v.sel = i;
+                }
+            }
+            Hit::KeyRow(i) if home => {
+                if let Some(v) = self.page.settings_mut().filter(|v| !v.on_tabs) {
+                    v.key_sel = i;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// D86: a key that acts on the focused list's highlight brings a view the wheel took back to it first. A movement
+    /// key moves from the highlight and the view follows (a no-op one, ↑ on the first row, just brings it back);
+    /// Enter or Delete on a highlight that isn't on screen only brings it back (true: the key is used up), so nothing
+    /// acts on a row unseen.
+    fn back_to_highlight(&mut self, k: KeyEvent) -> bool {
+        use KeyCode::*;
+        let moves = matches!(k.code, Up | Down | PageUp | PageDown | Home | End);
+        let acts = matches!(k.code, Enter | Delete);
+        if !(moves || acts) || self.settings_typing() {
+            return false;
+        }
+        let held = if self.is_focused(Widget::Library) {
+            let s = &mut self.sidebar;
+            let held = s.wheeled.holds(s.sel);
+            s.wheeled.release();
+            held.then_some(Hit::Side(s.sel))
+        } else if self.is_focused(Widget::Queue) {
+            let q = &mut self.queue_view;
+            let held = q.wheeled.holds(q.sel);
+            q.wheeled.release();
+            held.then_some(Hit::QueueRow(q.sel))
+        } else if self.is_focused(Widget::Home) {
+            match &mut self.page {
+                Page::List { uri, .. } => self.open.view_mut(uri).and_then(|v| {
+                    let held = v.wheeled.holds(v.sel);
+                    v.wheeled.release();
+                    held.then(|| {
+                        v.reveal();
+                        Hit::Track(v.sel)
+                    })
+                }),
+                Page::Artist(a) => {
+                    let held = a.top_wheeled.holds(a.top_sel);
+                    a.top_wheeled.release();
+                    held.then_some(Hit::TopTrack(a.top_sel))
+                }
+                Page::Search => {
+                    let s = &mut self.search;
+                    // a short Pane the wheel turned to the songs while the highlight is in the Shelves: back to them,
+                    // and Enter or Delete does nothing else
+                    let hidden = s.short && s.shelves.sel.is_some() && s.shelves_shown == Some(false);
+                    s.shelves_shown = None;
+                    if hidden {
+                        s.track_wheeled.release();
+                        return acts;
+                    }
+                    if s.query().trim().is_empty() {
+                        let held = s.recent_wheeled.holds(s.recent_sel);
+                        s.recent_wheeled.release();
+                        held.then_some(Hit::Recent(s.recent_sel))
+                    } else {
+                        let (key, held) = (s.track_key(), s.track_wheeled.holds(s.track_key()));
+                        s.track_wheeled.release();
+                        s.track_sel.filter(|_| held && key != usize::MAX).map(Hit::SearchTrack)
+                    }
+                }
+                Page::Stats(v) => {
+                    let held = v.wheeled.holds(v.sel);
+                    v.wheeled.release();
+                    held.then_some(Hit::StatsRow(v.sel))
+                }
+                Page::Settings(v) => {
+                    let (held, hit) = match v.tab {
+                        crate::settings::Tab::Config => (v.wheeled.holds(v.sel), Hit::Setting(v.sel)),
+                        crate::settings::Tab::Keys => (v.key_wheeled.holds(v.key_sel), Hit::KeyRow(v.key_sel)),
+                    };
+                    v.wheeled.release();
+                    v.key_wheeled.release();
+                    (held && !v.on_tabs).then_some(hit)
+                }
+                Page::Home => None,
+            }
+        } else {
+            None
+        };
+        acts && held.is_some_and(|h| !self.hits.iter().any(|(_, x)| *x == h))
     }
 }
 
@@ -3085,6 +3225,8 @@ macro_rules! modals {
 modals! {
     Palette,
     Picker,
+    /// Delete design's yes/no (#80)
+    DeleteDesign,
     Naming,
     /// the Widget picker: what a Pane shows (Replace widget…)
     WidgetPicker,
@@ -3112,6 +3254,7 @@ modals! {
 pub(crate) enum Popup {
     Palette(Palette),
     Picker(crate::looks::Picker),
+    DeleteDesign(crate::looks::DeleteAsk),
     Naming(Naming),
     WidgetPicker(crate::panemenu::WidgetPicker),
     /// the library without a Pane (D87): its list, its selection (`App::sidebar`) and its keys
@@ -3134,6 +3277,7 @@ impl Popup {
         match self {
             Popup::Palette(_) => Modal::Palette,
             Popup::Picker(_) => Modal::Picker,
+            Popup::DeleteDesign(_) => Modal::DeleteDesign,
             Popup::Naming(_) => Modal::Naming,
             Popup::WidgetPicker(_) => Modal::WidgetPicker,
             Popup::Library => Modal::Library,
@@ -3194,6 +3338,25 @@ popup_data! {
 }
 
 impl App {
+    /// Delete design's yes/no, while it's open (nothing in it changes in place: no `_mut`).
+    pub(crate) fn delete_ask(&self) -> Option<&crate::looks::DeleteAsk> {
+        match &self.popup {
+            Some(Popup::DeleteDesign(d)) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Close Delete design's yes/no, if it's the one open, and hand back what it held.
+    pub(crate) fn take_delete_ask(&mut self) -> Option<crate::looks::DeleteAsk> {
+        match self.popup.take() {
+            Some(Popup::DeleteDesign(d)) => Some(d),
+            other => {
+                self.popup = other;
+                None
+            }
+        }
+    }
+
     /// Open `p`, replacing the popup open (popups don't nest).
     pub(crate) fn open_popup(&mut self, p: Popup) {
         // a Widget held meanwhile is let go (its chip would be drawn over the popup, #40 review), a divider held is
@@ -3310,8 +3473,8 @@ impl App {
                     d.scroll.by(-rows);
                 }
             }
-            // one line to type in, a short notice: nothing to scroll
-            Modal::Naming | Modal::Cover | Modal::Login => {}
+            // one line to type in, a short notice, a yes/no: nothing to scroll
+            Modal::Naming | Modal::Cover | Modal::Login | Modal::DeleteDesign => {}
         }
     }
 
@@ -3358,6 +3521,12 @@ impl App {
                             self.picker_keep();
                         }
                         _ => self.picker_cancel(),
+                    },
+                    // an answer; outside the box is a no; inside, elsewhere, nothing
+                    Modal::DeleteDesign => match hit {
+                        Some(Hit::DeleteAnswer(yes)) => self.delete_answer(yes),
+                        _ if !inside => self.delete_answer(false),
+                        _ => {}
                     },
                     // a click elsewhere only closes the menu
                     Modal::Menu => match hit {

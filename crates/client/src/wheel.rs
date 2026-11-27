@@ -3,12 +3,13 @@
 //! with no catch-all arm. A new Widget or page can't be added without saying what the wheel does over it, and the test
 //! in `wheel/tests.rs` wheels every one of them at a size where it holds more than fits and checks that it moved.
 //!
-//! Lists move their highlight (`scroll::moved`; Shift: a page) and show a window that follows it (`scroll::window`),
-//! text scrolls (`scroll::TextScroll`), a view that follows the song is held for a while (`scroll::Follow`). Wheeling a
-//! Pane that scrolls focuses it, as a click does, so its highlight shows.
+//! The wheel and the touchpad scroll a list's **view** and leave its highlight where it is (D86, `scroll::Wheeled`;
+//! Shift: a page); the pointer moving over a row highlights it, a click picks it, and keys move the highlight as
+//! before (`scroll::moved`), the view following it again (`scroll::window`). Text scrolls (`scroll::TextScroll`), a
+//! view that follows the song is held for a while (`scroll::Follow`). Wheeling a Pane that scrolls focuses it, as a
+//! click does, so its highlight shows.
 
 use crate::app::{App, Hit, Page};
-use crate::scroll::moved;
 
 pub(crate) use crate::pane::Widget;
 
@@ -27,15 +28,16 @@ impl App {
             }
             Widget::Library => {
                 self.focus_on(Widget::Library);
-                let n = crate::sidebar::len(self);
-                let step = if coarse { self.sidebar.visible.max(1) as i64 } else { 1 };
-                self.sidebar.move_sel(rows as i64 * step, n);
+                // (in columns, a line is a column of entries)
+                let s = &mut self.sidebar;
+                let page = if s.cols > 1 { s.cols } else { s.visible };
+                let step = if coarse { page.max(1) as i64 } else { 1 };
+                s.scroll(rows as i64 * step);
             }
             Widget::Queue => {
                 self.focus_on(Widget::Queue);
-                let n = self.playback.queue.len();
-                let step = if coarse { self.queue_view.visible.max(1) as i64 } else { 1 };
-                self.queue_view.move_sel(rows as i64 * step, n);
+                let step = if coarse { self.queue_view.visible.max(1) as i32 } else { 1 };
+                self.queue_view.scroll(rows * step);
             }
             // three rows a notch; synced lyrics are held where the wheel puts them for a while, then follow the song
             // again; unsynced ones stay where the reader took them
@@ -70,20 +72,18 @@ impl App {
         match &mut self.page {
             // Shelves scroll by lines (Shift over a Shelf: sideways, a Card at a time)
             Page::Home => self.shelves_wheel(x, y, rows, coarse),
-            // track lists, Show and Book pages: the highlight, and the list follows it
+            // track lists, Show and Book pages: the list (the highlight stays; keys bring the list back to it)
             Page::List { uri, .. } => {
-                let len = self.open.order(uri).len();
                 if let Some(v) = self.open.view_mut(uri) {
                     let step = if coarse { v.visible.max(1) as i32 } else { 1 };
-                    v.sel = moved(v.sel, rows * step, len);
-                    v.reveal();
+                    v.wheeled.by(&mut v.top, rows * step, v.sel);
                 }
             }
-            // popular tracks on top, Shelves below: over a track (or with no Shelves) the highlight, else the Shelves
+            // popular tracks on top, Shelves below: over a track (or with no Shelves) the tracks, else the Shelves
             Page::Artist(a) => {
                 let n = a.page.as_ref().map_or(0, |p| p.top_tracks.len());
                 if n > 0 && (on_song || a.feed.shelves.is_empty()) {
-                    a.top_sel = moved(a.top_sel, rows * if coarse { 5 } else { 1 }, n);
+                    a.top_wheeled.by(&mut a.top_first, rows * if coarse { 5 } else { 1 }, a.top_sel);
                 } else {
                     self.shelves_wheel(x, y, rows, coarse);
                 }
@@ -94,30 +94,32 @@ impl App {
                 let recent = s.recent().len();
                 let step = rows * if coarse { 5 } else { 1 };
                 if s.query().trim().is_empty() {
-                    s.recent_sel = moved(s.recent_sel, step, recent);
+                    if recent > 0 {
+                        s.recent_wheeled.by(&mut s.recent_first, step, s.recent_sel);
+                    }
                     return;
                 }
                 let n = s.songs();
-                // a short Pane shows the songs or the Shelves: the wheel goes on from the last song into the Shelves,
-                // and back up from their top
+                // a short Pane shows the songs or the Shelves: the wheel goes on from the last songs into the Shelves,
+                // and back up from their top to the last songs, the highlight where it is
                 let shelves = !s.feed.shelves.is_empty();
-                if s.short && shelves && step > 0 && on_song && s.track_sel.is_some_and(|i| i + 1 >= n) {
-                    s.track_sel = None;
-                    s.shelves.move_sel(0, 0);
-                } else if s.short && n > 0 && step < 0 && s.shelves.sel.is_some() && s.shelves.offset == 0 {
-                    s.shelves.sel = None;
-                    s.track_sel = Some(n - 1);
+                if s.short && shelves && step > 0 && on_song && s.track_wheeled.at_end(s.track_first) {
+                    s.shelves_shown = Some(true);
+                    s.shelves.offset = 0;
+                } else if s.short && n > 0 && step < 0 && s.showing_shelves() && s.shelves.offset == 0 {
+                    s.shelves_shown = Some(false);
+                    let key = s.track_key();
+                    s.track_wheeled.by(&mut s.track_first, i32::MAX, key);
                 } else if n > 0 && (on_song || s.feed.shelves.is_empty()) {
-                    s.track_sel = Some(s.track_sel.map_or(0, |i| moved(i, step, n)));
-                    s.shelves.sel = None;
+                    let key = s.track_key();
+                    s.track_wheeled.by(&mut s.track_first, step, key);
                 } else {
                     self.shelves_wheel(x, y, rows, coarse);
                 }
             }
             Page::Stats(v) => {
-                let n = self.stats.get(&v.period).map_or(0, |s| crate::stats::entries(s).len());
                 let step = if coarse { v.visible.max(1) as i32 } else { 1 };
-                v.sel = moved(v.sel, rows * step, n);
+                v.wheeled.by(&mut v.top, rows * step, v.sel);
             }
             Page::Settings(_) => self.settings_wheel(rows as i64, coarse),
         }

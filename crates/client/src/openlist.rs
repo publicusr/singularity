@@ -50,19 +50,19 @@ impl OpenList {
         self.lists.values().flat_map(|l| l.rows().iter())
     }
 
-    /// Change a list's rows; when the list is `shown`, its view keeps its selected row when the edit ends.
-    pub fn edit(&mut self, uri: &str, shown: bool) -> Option<Edit<'_>> {
+    /// Change a list's rows; its view, shown or left (#90), keeps its selected row when the edit ends.
+    pub fn edit(&mut self, uri: &str) -> Option<Edit<'_>> {
         if !self.lists.contains_key(uri) {
             return None;
         }
-        let before = if shown { self.anchor(uri) } else { None };
+        let before = self.anchor(uri);
         Some(Edit { open: self, uri: uri.to_string(), before })
     }
 
     /// A page from the Daemon (the list is made when its first page comes).
-    pub fn add_page(&mut self, p: &TrackPage, shown: bool) {
+    pub fn add_page(&mut self, p: &TrackPage) {
         self.lists.entry(p.uri.clone()).or_default();
-        if let Some(mut l) = self.edit(&p.uri, shown) {
+        if let Some(mut l) = self.edit(&p.uri) {
             l.add(p);
         }
     }
@@ -150,24 +150,31 @@ impl OpenList {
         v.order(l).iter().enumerate().find(|(_, ri)| RowId::of(&rows[**ri]) == *id).map(|(vi, ri)| (vi, &rows[*ri]))
     }
 
-    /// The selected row of `uri`'s view and its line on screen.
-    fn anchor(&self, uri: &str) -> Option<(RowId, usize)> {
+    /// The selected row of `uri`'s view and its line on screen, and the first row shown when the wheel has the view.
+    fn anchor(&self, uri: &str) -> Option<Anchor> {
         let v = self.views.get(uri)?;
-        Some((self.id_at(uri, v.sel)?, v.sel.saturating_sub(v.top)))
+        let top = if v.wheeled.holds(v.sel) { self.id_at(uri, v.top) } else { None };
+        Some(Anchor { sel: self.id_at(uri, v.sel)?, line: v.sel.saturating_sub(v.top), top })
     }
 
-    /// After an edit: the selection back on its row, on the same line; else on the row that took its place.
-    fn settle(&mut self, uri: &str, before: Option<(RowId, usize)>) {
-        let Some((id, line)) = before else { return };
-        let found = self.find(uri, &id).map(|(vi, _)| vi);
+    /// After an edit: the selection back on its row, on the same line; else on the row that took its place. A view the
+    /// wheel has keeps its first row instead (D86: pages arriving while a long list loads don't pull it back).
+    fn settle(&mut self, uri: &str, before: Option<Anchor>) {
+        let Some(a) = before else { return };
+        let found = self.find(uri, &a.sel).map(|(vi, _)| vi);
+        let top = a.top.and_then(|id| self.find(uri, &id)).map(|(vi, _)| vi);
         let len = self.order(uri).len();
         let Some(v) = self.views.get_mut(uri) else { return };
-        match found {
-            Some(vi) => {
-                v.sel = vi;
-                v.top = vi.saturating_sub(line);
+        match (found, top) {
+            (Some(vi), Some(t)) => {
+                (v.sel, v.top) = (vi, t);
+                v.wheeled.keep(vi);
             }
-            None => {
+            (Some(vi), None) => {
+                v.sel = vi;
+                v.top = vi.saturating_sub(a.line);
+            }
+            (None, _) => {
                 v.sel = v.sel.min(len.saturating_sub(1));
                 v.reveal();
             }
@@ -175,11 +182,19 @@ impl OpenList {
     }
 }
 
-/// A list being changed: its view, when shown, settles on its row again when this goes.
+/// Where a view was before an edit: its selected row and that row's line on screen, and its first row while the wheel
+/// has it.
+pub struct Anchor {
+    sel: RowId,
+    line: usize,
+    top: Option<RowId>,
+}
+
+/// A list being changed: its view (shown or left) settles on its row again when this goes.
 pub struct Edit<'a> {
     open: &'a mut OpenList,
     uri: String,
-    before: Option<(RowId, usize)>,
+    before: Option<Anchor>,
 }
 
 impl std::ops::Deref for Edit<'_> {
@@ -221,7 +236,7 @@ mod tests {
     /// "spotify:playlist:p" open, sorted by title, with `names` arrived of `total`.
     fn open_sorted(names: &[&str], total: u32) -> OpenList {
         let mut o = OpenList::default();
-        o.add_page(&page(0, total, names.iter().enumerate().map(|(i, n)| row(n, &format!("u{i}"))).collect()), true);
+        o.add_page(&page(0, total, names.iter().enumerate().map(|(i, n)| row(n, &format!("u{i}"))).collect()));
         o.open("spotify:playlist:p", || TrackView::new("spotify:playlist:p", "P"));
         o.view_mut(P).unwrap().cycle_sort(Col::Title);
         o
@@ -238,7 +253,7 @@ mod tests {
         let v = o.view_mut(P).unwrap();
         v.sel = 1;
         v.top = 1;
-        o.add_page(&page(3, 6, vec![row("a", "u3"), row("c", "u4"), row("e", "u5")]), true);
+        o.add_page(&page(3, 6, vec![row("a", "u3"), row("c", "u4"), row("e", "u5")]));
         // shown a b c d e f: d moved from 1 to 3
         assert_eq!(selected(&o), "d", "the same song stays selected");
         let v = o.view(P).unwrap();
@@ -249,9 +264,9 @@ mod tests {
     fn when_the_selected_row_goes_the_one_that_took_its_place_is_selected() {
         let mut o = open_sorted(&["a", "b", "c"], 3);
         o.view_mut(P).unwrap().sel = 1;
-        o.edit(P, true).unwrap().take_uid("u1");
+        o.edit(P).unwrap().take_uid("u1");
         assert_eq!(selected(&o), "c");
-        o.edit(P, true).unwrap().take_uid("u2");
+        o.edit(P).unwrap().take_uid("u2");
         assert_eq!(selected(&o), "a", "the last row went: the one now last");
     }
 
@@ -277,7 +292,7 @@ mod tests {
         assert_eq!(o.find(P, &id).map(|(vi, r)| (vi, r.name.clone())), Some((0, "a".into())));
         o.view_mut(P).unwrap().cycle_sort(Col::Title); // descending: b a
         assert_eq!(o.find(P, &id).map(|(vi, _)| vi), Some(1));
-        o.edit(P, true).unwrap().take_uid("u1");
+        o.edit(P).unwrap().take_uid("u1");
         assert_eq!(o.find(P, &id), None, "gone");
     }
 
@@ -288,5 +303,47 @@ mod tests {
         o.open("spotify:album:x", || TrackView::new("spotify:album:x", "X"));
         o.open(P, || unreachable!("remembered"));
         assert_eq!(o.view(P).unwrap().sel, 1);
+    }
+
+    /// "spotify:playlist:p" opened sorted, `sel` and `top` set, then left for another list.
+    fn left_at(names: &[&str], total: u32, sel: usize, top: usize) -> OpenList {
+        let mut o = open_sorted(names, total);
+        let v = o.view_mut(P).unwrap();
+        (v.sel, v.top) = (sel, top);
+        o.open("spotify:album:x", || TrackView::new("spotify:album:x", "X"));
+        o
+    }
+
+    fn back_to_p(o: &mut OpenList) -> (String, usize, usize) {
+        let v = o.open(P, || unreachable!("remembered"));
+        let (sel, top) = (v.sel, v.top);
+        (selected(o), sel, top)
+    }
+
+    #[test]
+    fn a_page_arriving_into_a_list_youve_left_keeps_its_highlight_on_its_song() {
+        // shown b d f; d selected on the first line, then left while the rest comes
+        let mut o = left_at(&["d", "b", "f"], 6, 1, 1);
+        o.add_page(&page(3, 6, vec![row("a", "u3"), row("c", "u4"), row("e", "u5")]));
+        // a b c d e f: d moved from 1 to 3, and is still on the first line when you come back
+        let (song, sel, top) = back_to_p(&mut o);
+        assert_eq!((song.as_str(), sel, sel - top), ("d", 3, 0));
+    }
+
+    #[test]
+    fn a_song_added_or_removed_in_a_list_youve_left_keeps_the_highlight_on_its_song() {
+        // shown a b c; c selected
+        let mut o = left_at(&["a", "b", "c"], 3, 2, 0);
+        // a song that sorts before it comes in (another Client, Liked Songs…)
+        o.edit(P).unwrap().insert(0, row("aa", "u9"));
+        assert_eq!(back_to_p(&mut o).0, "c", "a aa b c: still c");
+        o.open("spotify:album:x", || unreachable!("remembered"));
+        // one before it goes
+        o.edit(P).unwrap().take_uid("u0");
+        assert_eq!(back_to_p(&mut o).0, "c", "aa b c: still c");
+        o.open("spotify:album:x", || unreachable!("remembered"));
+        // and then c itself: the row that took its place (the one now last)
+        o.edit(P).unwrap().take_uid("u2");
+        assert_eq!(back_to_p(&mut o).0, "b");
     }
 }
