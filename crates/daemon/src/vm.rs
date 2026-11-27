@@ -31,8 +31,9 @@ pub const GUEST: &str = "192.168.127.2";
 /// The vsock port Soloist's audio comes to the Mac on (its WebSocket: `soloist::runner::vm::GUEST_WS`)
 pub const GUEST_PCM: u16 = 5005;
 /// bump when the guest's setup changes: a new instance id makes cloud-init run again (2: the pipe sink over vsock,
-/// and #S7's size caps on the guest's `curl`: 3, the pinned host key: 4)
-const SETUP_VERSION: u32 = 4;
+/// and #S7's size caps on the guest's `curl`: 3, the pinned host key: 4, an idle timeout for its Soloist download
+/// instead of a total one: 5)
+const SETUP_VERSION: u32 = 5;
 /// The name the guest's host key is pinned under (`HostKeyAlias`): its port changes with every Daemon.
 const HOST_ALIAS: &str = "singularity-vm";
 
@@ -266,19 +267,20 @@ pub fn free_port() -> Option<u16> {
     std::net::TcpListener::bind("127.0.0.1:0").ok()?.local_addr().ok().map(|a| a.port())
 }
 
-/// An HTTP client with timeouts (a stalled answer must not wait forever).
-fn http() -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder().timeout(Duration::from_secs(600)).connect_timeout(Duration::from_secs(15)).user_agent(concat!("singularityd/", env!("CARGO_PKG_VERSION"))).build()?)
+/// Stream `url` to `to`, giving up past `cap` bytes and leaving no partial file behind (audit S7: before this, a
+/// broken answer could fill the disk and the checksum was only compared afterwards). A slow download keeps going; one
+/// that stalls for [`crate::update::IDLE`] is given up (#142).
+async fn download(url: &str, to: &Path, cap: u64) -> anyhow::Result<()> {
+    download_with(url, to, cap, crate::update::IDLE).await
 }
 
-/// Stream `url` to `to`, giving up past `cap` bytes and leaving no partial file behind (audit S7: before this, a
-/// broken answer could fill the disk and the checksum was only compared afterwards).
-async fn download(url: &str, to: &Path, cap: u64) -> anyhow::Result<()> {
+/// [`download`] with an explicit idle timeout (tests stall for less).
+async fn download_with(url: &str, to: &Path, cap: u64, idle: Duration) -> anyhow::Result<()> {
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
     let r = async {
         const MB: u64 = 1024 * 1024;
-        let resp = http()?.get(url).send().await?.error_for_status()?;
+        let resp = crate::update::download_client(idle)?.get(url).send().await?.error_for_status()?;
         if let Some(len) = resp.content_length() {
             anyhow::ensure!(len <= cap, "the download is {} MB, over the {} MB cap", len.div_ceil(MB), cap.div_ceil(MB));
         }
@@ -304,7 +306,7 @@ async fn download(url: &str, to: &Path, cap: u64) -> anyhow::Result<()> {
 /// A small text answer (Debian's `SHA512SUMS`), capped too.
 async fn fetch_text(url: &str) -> anyhow::Result<String> {
     use futures_util::StreamExt;
-    let resp = http()?.get(url).send().await?.error_for_status()?;
+    let resp = crate::update::download_client(crate::update::IDLE)?.get(url).timeout(crate::update::SHORT).send().await?.error_for_status()?;
     let mut body = resp.bytes_stream();
     let mut buf = Vec::new();
     while let Some(chunk) = body.next().await {
@@ -418,8 +420,9 @@ write_files:
         etag=$(curl -sfI "$url" | tr -d '\r' | awk 'tolower($1)=="etag:"{{print $2}}')
         [ -n "$etag" ] && [ "$etag" = "$(cat soloist/etag 2>/dev/null)" ] && {{ echo current; return; }}
         rm -rf soloist.new && mkdir soloist.new
-        # capped like the Daemon's update (update.rs): a broken or hostile CDN answer must not fill the guest's disk
-        curl -sf --max-filesize 268435456 --max-time 900 "$url" | tar -xz -C soloist.new
+        # capped like the Daemon's update (update.rs): a broken or hostile CDN answer must not fill the guest's disk, and
+        # a slow download goes on as long as bytes keep coming (given up after 30 s without any, #142)
+        curl -sf --max-filesize 268435456 --connect-timeout 15 --speed-limit 1 --speed-time 30 "$url" | tar -xz -C soloist.new
         # a regular executable and a build-sized tree, never a link or a bomb
         [ -f soloist.new/soloist ] && [ ! -L soloist.new/soloist ] || {{ rm -rf soloist.new; return 1; }}
         [ "$(du -sb soloist.new | cut -f1)" -le 536870912 ] || {{ rm -rf soloist.new; return 1; }}
@@ -494,18 +497,60 @@ mod tests {
         }
     }
 
+    /// #142: the VM's image has no deadline as a whole (it was 600 s), only for silence: a slow answer finishes, a
+    /// stalled one is given up after the idle timeout and leaves no partial file.
+    #[tokio::test]
+    async fn a_slow_download_finishes_and_a_stalled_one_is_given_up() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let idle = Duration::from_millis(400);
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/x", l.local_addr().unwrap());
+        let stall = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let st = stall.clone();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                let stall = st.load(std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = s.read(&mut buf).await;
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n").await;
+                    // ten pieces 150 ms apart (1.5 s, almost four idle timeouts); stalled, only the first five
+                    for i in 0..10 {
+                        if stall && i == 5 {
+                            tokio::time::sleep(Duration::from_secs(60)).await;
+                        }
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                        let _ = s.write_all(&[7u8; 100]).await;
+                    }
+                });
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("slow");
+        download_with(&url, &to, 4096, idle).await.unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), vec![7u8; 1000]);
+
+        stall.store(true, std::sync::atomic::Ordering::SeqCst);
+        let to = dir.path().join("stalled");
+        let start = std::time::Instant::now();
+        let r = tokio::time::timeout(Duration::from_secs(10), download_with(&url, &to, 4096, idle)).await;
+        assert!(r.expect("a stalled download must not wait forever").is_err());
+        assert!(start.elapsed() < Duration::from_secs(3), "given up after {:?}", start.elapsed());
+        assert!(!to.exists(), "a partial file is left behind");
+    }
+
     #[test]
     fn the_setup_names_the_ports_the_daemon_uses() {
         let host = HostKey { private: "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaA\n-----END OPENSSH PRIVATE KEY-----\n".into(), public: "ssh-ed25519 AAAAhost singularity-vm\n".into() };
         let u = user_data("ssh-ed25519 AAAA test", &host);
         // the host key the Mac pins, as cloud-init wants it (a block under ed25519_private), and nothing generated
         assert!(u.contains("ssh_keys:\n  ed25519_private: |\n    -----BEGIN OPENSSH PRIVATE KEY-----\n    b3BlbnNzaA\n    -----END OPENSSH PRIVATE KEY-----\n  ed25519_public: ssh-ed25519 AAAAhost singularity-vm\nusers:"), "{u}");
-        assert!(u.contains("ssh_genkeytypes: []") && u.contains("touch /var/lib/singularity-ready-4"));
+        assert!(u.contains("ssh_genkeytypes: []") && u.contains("touch /var/lib/singularity-ready-5"));
         assert_eq!(known_hosts("ssh-ed25519 AAAAhost singularity-vm\n"), "singularity-vm ssh-ed25519 AAAAhost\n");
         assert!(u.starts_with("#cloud-config\n") && u.contains("ssh-ed25519 AAAA test") && u.contains("VSOCK-CONNECT:2:5005") && u.contains("module-pipe-sink") && u.contains("soloist_release_arm64"));
         assert!(!u.contains("{{") && !u.contains("}}"), "format escapes resolved");
         // S4/S7: the guest's own download is capped and its tar output checked
-        assert!(u.contains("--max-filesize") && u.contains("--max-time") && u.contains("[ ! -L soloist.new/soloist ]"), "the guest script caps what it downloads and unpacks");
+        assert!(u.contains("--max-filesize") && u.contains("--speed-time 30") && !u.contains("--max-time") && u.contains("[ ! -L soloist.new/soloist ]"), "the guest script caps what it downloads and unpacks");
     }
 
     /// The guest's update script answers what the VM's Soloist runner (`soloist/runner/vm.rs`) asks and reads: its

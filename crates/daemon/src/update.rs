@@ -108,8 +108,17 @@ pub enum Checked {
     Staged(Build),
 }
 
-fn http() -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder().timeout(Duration::from_secs(300)).connect_timeout(Duration::from_secs(15)).user_agent(concat!("singularityd/", env!("CARGO_PKG_VERSION"))).build()?)
+/// How long a download may go without a single byte arriving before it is given up (#142). There is no deadline for
+/// the whole download: on a slow connection a build takes as long as it takes, as long as it keeps moving.
+pub const IDLE: Duration = Duration::from_secs(30);
+
+/// The deadline for a short answer (a HEAD, a checksum list), which has no reason to take long.
+pub const SHORT: Duration = Duration::from_secs(30);
+
+/// The client for big downloads (Soloist builds, the macOS VM's image): a connect timeout and an `idle` read timeout,
+/// no total one. Short requests on it set their own deadline ([`SHORT`]).
+pub fn download_client(idle: Duration) -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder().read_timeout(idle).connect_timeout(Duration::from_secs(15)).user_agent(concat!("singularityd/", env!("CARGO_PKG_VERSION"))).build()?)
 }
 
 fn header(r: &reqwest::Response, name: &str) -> Option<String> {
@@ -118,7 +127,7 @@ fn header(r: &reqwest::Response, name: &str) -> Option<String> {
 
 /// Ask the CDN whether there's a newer build than the installed one, and stage it if so.
 pub async fn check(builds: &Builds, url: &str) -> anyhow::Result<Checked> {
-    let head = http()?.head(url).send().await?.error_for_status()?;
+    let head = download_client(IDLE)?.head(url).timeout(SHORT).send().await?.error_for_status()?;
     let (etag, modified) = (header(&head, "etag"), header(&head, "last-modified"));
     if let Some(b) = builds.installed() {
         if b.same_as(&etag, &modified) {
@@ -155,11 +164,16 @@ pub async fn download(builds: &Builds, url: &str) -> anyhow::Result<Build> {
 
 /// [`download`] with an explicit cap (tests serve a small one).
 pub async fn download_with_cap(builds: &Builds, url: &str, cap: u64) -> anyhow::Result<Build> {
+    download_with(builds, url, cap, IDLE).await
+}
+
+/// [`download_with_cap`] with an explicit idle timeout (tests stall for less than [`IDLE`]).
+pub async fn download_with(builds: &Builds, url: &str, cap: u64, idle: Duration) -> anyhow::Result<Build> {
     let dir = builds.staged();
     let _ = tokio::fs::remove_dir_all(&dir).await;
     tokio::fs::create_dir_all(&dir).await?;
     let r = async {
-        let resp = http()?.get(url).send().await?.error_for_status()?;
+        let resp = download_client(idle)?.get(url).send().await?.error_for_status()?;
         let (etag, last_modified) = (header(&resp, "etag"), header(&resp, "last-modified"));
         let tgz = dir.join("soloist.tar.gz");
         save_archive(resp, &tgz, cap).await?;

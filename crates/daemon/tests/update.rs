@@ -215,3 +215,64 @@ async fn a_build_is_verified_while_other_threads_start_processes() {
     }
     assert_eq!(failed, None);
 }
+
+/// Serve `body` (with its Content-Length) in pieces of `piece` bytes, `gap` apart; after `stall_after` bytes (if any)
+/// it sends nothing more and keeps the connection open. Returns the URL.
+async fn trickling_cdn(body: Vec<u8>, piece: usize, gap: std::time::Duration, stall_after: Option<usize>) -> String {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/soloist_release_x86_64.tar.gz", l.local_addr().unwrap());
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = l.accept().await {
+            let body = body.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let hdr = format!("HTTP/1.1 200 OK\r\nETag: \"slow\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = s.write_all(hdr.as_bytes()).await;
+                let mut sent = 0;
+                for chunk in body.chunks(piece) {
+                    if stall_after.is_some_and(|n| sent >= n) {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        return;
+                    }
+                    tokio::time::sleep(gap).await;
+                    if s.write_all(chunk).await.is_err() {
+                        return;
+                    }
+                    sent += chunk.len();
+                }
+            });
+        }
+    });
+    url
+}
+
+/// #142: a download has no deadline as a whole, only for silence. A build that trickles in for many times the idle
+/// timeout (as a slow connection does with the real 256 MB cap and 30 s idle timeout) finishes; one that stops
+/// arriving is given up once nothing has come for the idle timeout, and leaves nothing staged.
+#[tokio::test]
+async fn a_slow_download_finishes_and_a_stalled_one_is_given_up_after_the_idle_timeout() {
+    use std::time::{Duration, Instant};
+    let idle = Duration::from_millis(500);
+    let body = tarball("soloist slow", false);
+    let piece = body.len().div_ceil(16);
+    let root = tempfile::tempdir().unwrap();
+    let builds = Builds { root: root.path().into() };
+
+    // 16 pieces 150 ms apart: about 2.4 s in all, almost five idle timeouts, never 500 ms without a byte
+    let url = trickling_cdn(body.clone(), piece, Duration::from_millis(150), None).await;
+    let start = Instant::now();
+    let build = update::download_with(&builds, &url, 1 << 20, idle).await.unwrap();
+    assert!(start.elapsed() > idle * 4, "the download took {:?}, not long enough to prove anything", start.elapsed());
+    assert_eq!(build.version, "soloist slow");
+    assert!(builds.ready().is_some());
+
+    // the same build, but nothing more after half of it
+    let url = trickling_cdn(body, piece, Duration::from_millis(50), Some(piece * 8)).await;
+    let start = Instant::now();
+    let r = tokio::time::timeout(Duration::from_secs(10), update::download_with(&builds, &url, 1 << 20, idle)).await;
+    let waited = start.elapsed();
+    assert!(r.expect("a stalled download must not wait forever").is_err());
+    assert!(waited >= idle && waited < idle * 6, "given up after {waited:?}, the idle timeout is {idle:?}");
+    assert!(!builds.staged().exists() && builds.ready().is_none(), "a stalled download leaves nothing staged");
+}
