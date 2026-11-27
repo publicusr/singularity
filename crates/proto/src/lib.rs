@@ -19,7 +19,14 @@ pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ClientMsg {
-    Hello { protocol: u32, client: String },
+    Hello {
+        protocol: u32,
+        client: String,
+        /// a Client in demo mode (D90): its stats come from the demo Listening log. Additive: older Clients leave it
+        /// out, older Daemons ignore it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        demo: bool,
+    },
     Ping { id: u64 },
     Command(Command),
     #[serde(other)]
@@ -391,6 +398,10 @@ pub struct HomeFeed {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Shelf {
+    /// the section's id on Spotify (`spotify:section:…`), when it has one (D90: demo mode hides personal Shelves by
+    /// it). Additive: older Daemons leave it out.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub title: String,
     /// `shortcuts` (the grid at the top), `shelf` (a regular row) or `feed` (the endless tail)
     pub kind: String,

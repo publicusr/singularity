@@ -18,7 +18,7 @@ async fn start() -> (tempfile::TempDir, std::path::PathBuf) {
 async fn handshake_ping_and_initial_snapshot() {
     let (_dir, path) = start().await;
     let mut s = UnixStream::connect(&path).await.unwrap();
-    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() }).await.unwrap();
+    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into(), demo: false }).await.unwrap();
     let welcome: DaemonMsg = proto::read_msg(&mut s).await.unwrap().unwrap();
     assert!(matches!(welcome, DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, soloist_in_vm: false, .. }));
     // engine status + playback snapshot arrive without asking
@@ -41,7 +41,7 @@ async fn handshake_ping_and_initial_snapshot() {
 async fn incompatible_protocol_gets_a_clear_message() {
     let (_dir, path) = start().await;
     let mut s = UnixStream::connect(&path).await.unwrap();
-    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION + 1, client: "future".into() }).await.unwrap();
+    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION + 1, client: "future".into(), demo: false }).await.unwrap();
     match proto::read_msg::<_, DaemonMsg>(&mut s).await.unwrap().unwrap() {
         DaemonMsg::Incompatible { message, .. } => assert!(message.contains("protocol")),
         other => panic!("unexpected {other:?}"),
@@ -136,7 +136,7 @@ async fn a_new_socket_directory_is_owner_only_from_the_start() {
 
 async fn connect(path: &std::path::Path) -> UnixStream {
     let mut s = UnixStream::connect(path).await.unwrap();
-    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() }).await.unwrap();
+    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into(), demo: false }).await.unwrap();
     let _welcome: DaemonMsg = proto::read_msg(&mut s).await.unwrap().unwrap();
     s
 }
@@ -689,4 +689,62 @@ async fn a_cover_is_set_put_back_and_refused_when_it_isnt_a_jpeg() {
             break;
         }
     }
+}
+
+/// D90: a demo Client (its Hello says so) gets its stats from the demo Listening log, and its "delete" empties only
+/// that one; a normal Client beside it keeps the real log, and the library backups stay.
+#[tokio::test]
+async fn a_demo_client_reads_and_deletes_only_the_demo_listening_log() {
+    use singularity_proto::{Command, Item, StatsPeriod};
+    use singularityd::store::{Play, Store};
+    let dir = common::scratch();
+    let data = dir.path().join("data");
+    let now = proto::now_ms();
+    let play = |i: usize, artist: &str| Play { started_ms: now, item: Item { uri: format!("spotify:track:{i}"), name: "T".into(), artists: vec![artist.into()], duration_ms: 600_000, ..Default::default() }, context_uri: None, played_ms: 120_000, device: "here".into() };
+    {
+        let real = Store::open(&data).unwrap();
+        for i in 0..3 {
+            real.record(&play(i, "Real Artist")).unwrap();
+        }
+        real.write_backup(now, &serde_json::json!({ "library": [] })).unwrap();
+        Store::open_demo(&data).unwrap().record(&play(9, "Demo Artist")).unwrap();
+    }
+    let path = dir.path().join("demo.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    let extras = singularityd::Extras { store: Some(data.clone()), ..Default::default() };
+    tokio::spawn(singularityd::serve_with(listener, Box::new(NoEngine { reason: "test".into() }), None, None, extras));
+    let mut normal = connect(&path).await;
+    let mut demo = UnixStream::connect(&path).await.unwrap();
+    proto::write_msg(&mut demo, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into(), demo: true }).await.unwrap();
+    let _welcome: DaemonMsg = proto::read_msg(&mut demo).await.unwrap().unwrap();
+    async fn next(s: &mut UnixStream, want: fn(&Event) -> bool) -> Event {
+        loop {
+            if let DaemonMsg::Event(e) = proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap()
+                && want(&e)
+            {
+                return e;
+            }
+        }
+    }
+    let listening = |e: &Event| matches!(e, Event::Listening(_));
+    proto::write_msg(&mut demo, &ClientMsg::Command(Command::GetListening)).await.unwrap();
+    let Event::Listening(s) = next(&mut demo, listening).await else { unreachable!() };
+    assert_eq!((s.plays, s.top_artist.as_deref()), (1, Some("Demo Artist")));
+    proto::write_msg(&mut demo, &ClientMsg::Command(Command::GetStats { period: StatsPeriod::All })).await.unwrap();
+    let Event::Stats(st) = next(&mut demo, |e| matches!(e, Event::Stats(_))).await else { unreachable!() };
+    assert_eq!((st.plays, st.top_artists[0].name.as_str()), (1, "Demo Artist"));
+    proto::write_msg(&mut normal, &ClientMsg::Command(Command::GetListening)).await.unwrap();
+    let Event::Listening(s) = next(&mut normal, listening).await else { unreachable!() };
+    assert_eq!((s.plays, s.top_artist.as_deref()), (3, Some("Real Artist")), "the other Client: the real log");
+
+    proto::write_msg(&mut demo, &ClientMsg::Command(Command::DeleteLocalData)).await.unwrap();
+    let Event::Notice { message } = next(&mut demo, |e| matches!(e, Event::Notice { .. } | Event::Error { .. })).await else { panic!("delete failed") };
+    assert_eq!(message, "Deleted the demo listening log");
+    let Event::Listening(s) = next(&mut demo, listening).await else { unreachable!() };
+    assert_eq!(s.plays, 0, "the demo Client is told its log is empty");
+    let Event::Listening(s) = next(&mut normal, listening).await else { unreachable!() };
+    assert_eq!(s.plays, 3, "the real log is untouched");
+    assert_eq!(Store::open(&data).unwrap().summary(now).unwrap().plays, 3);
+    assert!(Store::open(&data).unwrap().latest_backup().is_some(), "the backups stay");
+    assert_eq!(Store::open_demo(&data).unwrap().summary(now).unwrap().plays, 0);
 }

@@ -24,7 +24,7 @@ async fn an_export_without_a_downloads_folder_says_what_to_set() {
     let extras = singularityd::Extras { store: Some(dir.path().join("data")), ..Default::default() };
     tokio::spawn(singularityd::serve_with(listener, Box::new(NoEngine { reason: "test".into() }), None, None, extras));
     let mut s = tokio::net::UnixStream::connect(&path).await.unwrap();
-    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() }).await.unwrap();
+    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into(), demo: false }).await.unwrap();
     proto::write_msg(&mut s, &ClientMsg::Command(Command::ExportLocalData)).await.unwrap();
     let message = loop {
         match proto::read_msg::<_, DaemonMsg>(&mut s).await.unwrap().unwrap() {
