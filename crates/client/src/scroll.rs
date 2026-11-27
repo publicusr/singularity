@@ -90,6 +90,23 @@ impl Wheeled {
         self.held = Some(sel);
     }
 
+    /// Whether the wheel has the view while the highlight is on `sel`.
+    pub fn holds(&self, sel: usize) -> bool {
+        self.held == Some(sel)
+    }
+
+    /// The view follows the highlight again (a key that acts on it).
+    pub fn release(&mut self) {
+        self.held = None;
+    }
+
+    /// The list changed under a view the wheel has, and the highlight's row is at `sel` now: the wheel keeps it.
+    pub fn keep(&mut self, sel: usize) {
+        if self.held.is_some() {
+            self.held = Some(sel);
+        }
+    }
+
     /// Whether a view whose first row is `top` shows the list's end (as the last frame had it).
     pub fn at_end(&self, top: usize) -> bool {
         top >= self.end

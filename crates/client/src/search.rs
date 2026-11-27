@@ -55,6 +55,8 @@ pub struct Search {
     pub track_wheeled: Wheeled,
     pub recent_first: usize,
     pub recent_wheeled: Wheeled,
+    /// a short Pane: the wheel showed the Shelves (true) or the songs (false); None: where the highlight is
+    pub shelves_shown: Option<bool>,
     /// the Pane was short last frame (under `SHORT_H` rows): the songs and the Shelves take turns under the chips
     pub short: bool,
 }
@@ -227,7 +229,12 @@ impl Search {
     /// Other songs: no highlight, shown from the first.
     fn songs_from_top(&mut self) {
         self.track_sel = None;
-        (self.track_first, self.track_wheeled) = (0, Wheeled::default());
+        (self.track_first, self.track_wheeled, self.shelves_shown) = (0, Wheeled::default(), None);
+    }
+
+    /// A short Pane shows the Shelves (not the songs): where the wheel took it, else where the highlight is.
+    pub fn showing_shelves(&self) -> bool {
+        self.shelves_shown.unwrap_or(self.shelves.sel.is_some())
     }
 
     /// The highlight among the songs, as the songs' view knows it (None: in the Shelves).
@@ -366,7 +373,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         cx += lw + 1;
     }
     // a short Pane (the smallest Homes, #55): no blank rows or headings, what was found right under the chips; the
-    // songs, or the Shelves once the highlight is in them (owner: in a tiny Home the results didn't show)
+    // songs, or the Shelves once the highlight or the wheel is in them (owner: in a tiny Home the results didn't show)
     v.short = r.height < SHORT_H;
     let mut y = r.y + if v.short { 2 } else { 3 };
     if v.query().trim().is_empty() {
@@ -398,7 +405,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         let room = r.bottom().saturating_sub(y + 2) as usize;
         // (with no Shelves below, the songs take the Pane)
         let n = if v.short {
-            if v.shelves.sel.is_none() || v.feed.shelves.is_empty() { v.songs().min(r.bottom().saturating_sub(y) as usize) } else { 0 }
+            if !v.showing_shelves() || v.feed.shelves.is_empty() { v.songs().min(r.bottom().saturating_sub(y) as usize) } else { 0 }
         } else if !v.feed.shelves.is_empty() {
             v.songs().min(room.saturating_sub(10)).max(v.songs().min(2))
         } else {

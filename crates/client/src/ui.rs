@@ -1970,7 +1970,7 @@ mod tests {
         // a key moves the highlight from where it is, and the list goes back to it
         app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         let v = app.list_view().unwrap();
-        assert_eq!((v.sel, v.top), (1, 1));
+        assert_eq!((v.sel, v.top), (1, 0));
         // the library sidebar
         let lib = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).rect_of(Widget::Library).unwrap();
         for _ in 0..50 {
@@ -3435,12 +3435,12 @@ mod tests {
             // the wheel: over the last song down into the Shelves, and up again
             let y = render(&mut app, 100, 30).lines().position(|r| r.contains('⌕')).unwrap() as u16 + 3;
             let wheel = |app: &mut App, kind: MouseEventKind| app.mouse(MouseEvent { kind, column: 3, row: y, modifiers: KeyModifiers::NONE });
+            // (the highlight stays on the last song throughout, D86)
             wheel(&mut app, MouseEventKind::ScrollDown);
-            assert!(app.searching().is_some_and(|s| s.track_sel.is_none() && s.shelves.sel.is_some()));
-            inside(&mut app);
-            // (back to the last songs, with no highlight: the wheel doesn't place one, D86)
+            assert!(app.searching().is_some_and(|s| s.showing_shelves() && s.track_sel == Some(3) && s.shelves.sel.is_none()));
+            assert!(!inside(&mut app).iter().any(|r| r.contains("S4")));
             wheel(&mut app, MouseEventKind::ScrollUp);
-            assert!(app.searching().is_some_and(|s| s.track_sel.is_none() && s.shelves.sel.is_none()));
+            assert!(app.searching().is_some_and(|s| !s.showing_shelves() && s.track_sel == Some(3)));
             assert!(inside(&mut app)[3].contains("S4"));
             app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
             app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

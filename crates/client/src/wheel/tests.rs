@@ -425,7 +425,7 @@ fn a_short_homes_search_wheels_through_the_songs_and_every_shelf_and_back() {
             if cells(&now, inner) == cells(&last, inner) {
                 break;
             }
-            shelves_seen |= app.searching().unwrap().track_sel.is_none();
+            shelves_seen |= app.searching().unwrap().showing_shelves();
             down += 1;
             last = now;
             assert!(down < 200, "{what}: the wheel never stops");
@@ -518,4 +518,80 @@ fn the_pointer_over_a_focused_lists_row_highlights_it() {
     let q = at(&app, Hit::QueueRow(3));
     hover(&mut app, q);
     assert_eq!((app.queue_view.sel, app.focused()), (0, Some(Widget::Home)));
+    // focused, it lights the row there and changes nothing else (the queue's highlight isn't placed by it)
+    app.focus_on(Widget::Queue);
+    hover(&mut app, q);
+    assert_eq!((app.queue_view.sel, app.queue_view.placed), (3, false));
+}
+
+/// D86: a track list the wheel took stays where it was put while its next pages arrive (a long list loading), the
+/// highlight where it was; one the wheel hasn't taken keeps its highlight on its line, as before.
+#[test]
+fn a_wheeled_list_stays_put_while_its_pages_arrive() {
+    let uri = "spotify:collection";
+    let page = |from: usize, to: usize| TrackPage { uri: uri.into(), offset: from as u32, total: 200, tracks: (from..to).map(|i| row(i, "track")).collect(), header: None };
+    let mut app = app();
+    app.layout = layout(Widget::Home).into();
+    app.open(uri, "Liked Songs", "", "");
+    app.track_page(page(0, 50));
+    render(&mut app);
+    let r = pane(&app, Widget::Home);
+    wheel(&mut app, MouseEventKind::ScrollDown, r.x + r.width / 3, r.y + r.height / 2, 10);
+    render(&mut app);
+    assert_eq!((app.list_view().unwrap().sel, app.list_view().unwrap().top), (0, 10));
+    for from in [50, 100, 150] {
+        app.track_page(page(from, from + 50));
+        render(&mut app);
+        let v = app.list_view().unwrap();
+        assert_eq!((v.sel, v.top), (0, 10), "after the page from {from}");
+    }
+    // a key brings the view back to the highlight: then pages leave it there
+    app.key(ratatui::crossterm::event::KeyEvent::new(ratatui::crossterm::event::KeyCode::Down, KeyModifiers::NONE));
+    render(&mut app);
+    assert_eq!((app.list_view().unwrap().sel, app.list_view().unwrap().top), (1, 0));
+}
+
+/// D86: a key that acts on the highlight brings the view back to it first; Enter on a highlight scrolled off screen
+/// only brings it back (nothing plays unseen), the next Enter acts.
+#[test]
+fn a_key_brings_a_wheeled_view_back_to_the_highlight_first() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let key = |app: &mut App, code| app.key(KeyEvent::new(code, KeyModifiers::NONE));
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4096);
+    let mut app = App::new(Some(tx));
+    app.link = Link::Connected { version: "test".into() };
+    let mut played = move || std::iter::from_fn(|| rx.try_recv().ok()).filter(|c| matches!(c, singularity_proto::Command::PlayFrom { .. })).count();
+    app.layout = layout(Widget::Home).into();
+    list(&mut app, "spotify:playlist:p", None);
+    render(&mut app);
+    let r = pane(&app, Widget::Home);
+    let (x, y) = (r.x + r.width / 3, r.y + r.height / 2);
+    // ↑ on the first row moves nothing, but the view comes back
+    wheel(&mut app, MouseEventKind::ScrollDown, x, y, 30);
+    render(&mut app);
+    assert_eq!(app.list_view().unwrap().top, 30);
+    key(&mut app, KeyCode::Up);
+    render(&mut app);
+    assert_eq!((app.list_view().unwrap().sel, app.list_view().unwrap().top), (0, 0));
+    // Enter with the highlight off screen: only back to it
+    wheel(&mut app, MouseEventKind::ScrollDown, x, y, 30);
+    render(&mut app);
+    played();
+    key(&mut app, KeyCode::Enter);
+    render(&mut app);
+    assert_eq!((app.list_view().unwrap().sel, app.list_view().unwrap().top), (0, 0));
+    assert_eq!(played(), 0, "nothing played unseen");
+    assert!(app.hits.iter().any(|(_, h)| *h == Hit::Track(0)), "the highlight shows");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(played(), 1, "the next Enter plays it");
+    // the library too: the view comes back to its highlight
+    let lib = pane(&app, Widget::Library);
+    app.hear(singularity_proto::Event::Library(singularity_proto::Library { items: (0..60).map(|n| LibraryItem { uri: format!("spotify:playlist:p{n}"), name: format!("Playlist {n}"), subtitle: "Playlist".into(), kind: "playlist".into(), image_url: None, depth: 0, own: false, authors: vec![] }).collect() }));
+    render(&mut app);
+    wheel(&mut app, MouseEventKind::ScrollDown, lib.x + 3, lib.y + 4, 30);
+    render(&mut app);
+    assert!(app.sidebar.top > 0 && app.sidebar.sel == 0);
+    key(&mut app, KeyCode::Up);
+    render(&mut app);
+    assert_eq!((app.sidebar.sel, app.sidebar.top), (0, 0));
 }

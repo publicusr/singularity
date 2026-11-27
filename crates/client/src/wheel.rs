@@ -74,10 +74,9 @@ impl App {
             Page::Home => self.shelves_wheel(x, y, rows, coarse),
             // track lists, Show and Book pages: the list (the highlight stays; keys bring the list back to it)
             Page::List { uri, .. } => {
-                let len = self.open.order(uri).len();
                 if let Some(v) = self.open.view_mut(uri) {
-                    let step = if coarse { v.visible.max(1) as i64 } else { 1 };
-                    v.top = (v.top as i64 + rows as i64 * step).clamp(0, len.saturating_sub(v.visible) as i64) as usize;
+                    let step = if coarse { v.visible.max(1) as i32 } else { 1 };
+                    v.wheeled.by(&mut v.top, rows * step, v.sel);
                 }
             }
             // popular tracks on top, Shelves below: over a track (or with no Shelves) the tracks, else the Shelves
@@ -101,14 +100,14 @@ impl App {
                     return;
                 }
                 let n = s.songs();
-                // a short Pane shows the songs or the Shelves: the wheel goes on from the last songs into the Shelves
-                // (they show once the highlight is in them), and back up from their top to the last songs
+                // a short Pane shows the songs or the Shelves: the wheel goes on from the last songs into the Shelves,
+                // and back up from their top to the last songs, the highlight where it is
                 let shelves = !s.feed.shelves.is_empty();
                 if s.short && shelves && step > 0 && on_song && s.track_wheeled.at_end(s.track_first) {
-                    s.track_sel = None;
-                    s.shelves.move_sel(0, 0);
-                } else if s.short && n > 0 && step < 0 && s.shelves.sel.is_some() && s.shelves.offset == 0 {
-                    s.shelves.sel = None;
+                    s.shelves_shown = Some(true);
+                    s.shelves.offset = 0;
+                } else if s.short && n > 0 && step < 0 && s.showing_shelves() && s.shelves.offset == 0 {
+                    s.shelves_shown = Some(false);
                     let key = s.track_key();
                     s.track_wheeled.by(&mut s.track_first, i32::MAX, key);
                 } else if n > 0 && (on_song || s.feed.shelves.is_empty()) {

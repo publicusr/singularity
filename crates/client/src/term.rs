@@ -114,31 +114,26 @@ impl MouseUnits {
 }
 
 /// Wheel reports into steps (D86, #32). A terminal reports a mouse wheel and a touchpad alike, as up or down with no
-/// distance, so they are told apart by how the reports come:
+/// distance:
 ///
 /// - Ghostty sends one wheel notch as `mouse-scroll-multiplier` reports at once (3 by default): one step;
 /// - a touchpad sends a report for every row it travels, at uneven gaps, a few at once on a fast flick: a step each
 ///   (dropping the ones close together made a fast flick move fewer rows than a slow drag).
 ///
-/// Reports in one direction within [`Self::TOGETHER`] of the first are a group. Its first report is a step at once,
-/// and so is every third after it, so a notch's three stay one step. A group whose size isn't a multiple of three came
-/// from a touchpad: the steps it held back are given when it ends, and every report counts until the reports stop for
-/// [`Self::PAUSE`].
+/// Reports in one direction within [`Self::TOGETHER`] of the first are a group, decided on its own: exactly three are
+/// a notch, one step; any other number, a step each. The first report is a step at once; the next two wait to see
+/// whether a fourth comes (then they are steps too) or the group ends at three.
 #[derive(Default)]
 pub struct WheelSteps {
     /// the group under way: its first report, when it came, how many there are
     group: Option<(MouseEvent, Instant, usize)>,
-    /// the last wheel report, and whether the reports since the last pause are a touchpad's
-    last: Option<Instant>,
-    touch: bool,
 }
 
 impl WheelSteps {
     pub const TOGETHER: Duration = Duration::from_millis(8);
-    pub const PAUSE: Duration = Duration::from_millis(500);
 
-    /// The events to act on for `m`, which came at `at`: anything but the wheel as it is; a wheel report as no step or
-    /// one, after the steps the group before it held back.
+    /// The events to act on for `m`, which came at `at`: anything but the wheel as it is; a wheel report as its steps,
+    /// after the ones the group before it held back.
     pub fn push(&mut self, m: MouseEvent, at: Instant) -> Vec<MouseEvent> {
         use MouseEventKind::*;
         if !matches!(m.kind, ScrollUp | ScrollDown | ScrollLeft | ScrollRight) {
@@ -146,19 +141,15 @@ impl WheelSteps {
         }
         let same = self.group.is_some_and(|(g, t, _)| g.kind == m.kind && at.saturating_duration_since(t) < Self::TOGETHER);
         let mut out = if same { vec![] } else { self.end() };
-        if self.last.is_some_and(|t| at.saturating_duration_since(t) >= Self::PAUSE) {
-            self.touch = false;
-        }
-        self.last = Some(at);
-        if self.touch {
-            out.push(m);
-            return out;
-        }
         let (_, _, n) = self.group.get_or_insert((m, at, 0));
-        if *n % 3 == 0 {
-            out.push(m);
-        }
         *n += 1;
+        match *n {
+            1 => out.push(m),
+            // not a notch: the two held back, and this one
+            4 => out.extend([m; 3]),
+            2 | 3 => {}
+            _ => out.push(m),
+        }
         out
     }
 
@@ -167,7 +158,7 @@ impl WheelSteps {
         self.group.map(|(_, t, _)| t + Self::TOGETHER)
     }
 
-    /// The group under way, if it has ended by `now`: the steps it held back (none for a wheel's notch).
+    /// The group under way, if it has ended by `now`: the steps it held back (none for a notch).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn settle(&mut self, now: Instant) -> Vec<MouseEvent> {
         match self.deadline() {
@@ -176,13 +167,10 @@ impl WheelSteps {
         }
     }
 
-    /// The group under way ends (no report came in its time): the steps it held back.
+    /// The group under way ends (no report came in its time): the steps it held back (two reports: the second).
     pub fn end(&mut self) -> Vec<MouseEvent> {
         match self.group.take() {
-            Some((m, _, n)) if n % 3 != 0 => {
-                self.touch = true;
-                vec![m; n - n.div_ceil(3)]
-            }
+            Some((m, _, 2)) => vec![m],
             _ => vec![],
         }
     }
@@ -244,7 +232,9 @@ mod tests {
     }
 
     /// The owner's touchpad in Ghostty (`tests/fixtures/wheel-touchpad-ghostty.txt`): every report is a step, so a fast
-    /// flick moves as far as its reports say, where dropping the close ones made it move less than a slow drag.
+    /// flick moves as far as its reports say, where dropping the close ones made it move less than a slow drag. The one
+    /// exception: three reports at the same instant can't be told from a wheel's notch, and are one step (once in the
+    /// recording, in "mixed").
     #[test]
     fn a_touchpad_moves_a_step_a_report() {
         let fixture = include_str!("../tests/fixtures/wheel-touchpad-ghostty.txt");
@@ -259,14 +249,15 @@ mod tests {
             }
         }
         assert_eq!(phases.iter().map(|p| p.0).collect::<Vec<_>>(), ["slow", "flick", "nudges", "mixed"]);
-        for (phase, reports) in phases {
+        for ((phase, reports), lost) in phases.into_iter().zip([0, 0, 0, 2]) {
             // each phase after a pause, as it was recorded
             let mut w = WheelSteps::default();
-            assert_eq!(steps(&mut w, Instant::now(), &reports), reports.len(), "{phase}: a step a report");
+            assert_eq!(steps(&mut w, Instant::now(), &reports), reports.len() - lost, "{phase}: a step a report");
         }
     }
 
-    /// The steps a touchpad's first group held back come when it ends, not later; then it is a touchpad's until a pause.
+    /// The steps a group of two held back come when it ends; each group is decided on its own, so a notch right after a
+    /// swipe is still one step, and a fourth report releases the two held back at once.
     #[test]
     fn a_touchpads_held_steps_come_when_its_group_ends() {
         use MouseEventKind::*;
@@ -278,11 +269,16 @@ mod tests {
         assert!(w.settle(t + Duration::from_millis(1)).is_empty(), "not yet");
         assert_eq!(w.settle(t + WheelSteps::TOGETHER).len(), 1);
         assert_eq!(w.deadline(), None);
-        // from then on: three at once are three steps
+        // right after: three at once are a notch, one step (nothing sticks from the swipe)
         let soon = t + Duration::from_millis(20);
-        assert_eq!((0..3).map(|i| w.push(wheel(ScrollUp), soon + Duration::from_micros(i)).len()).sum::<usize>(), 3);
-        // after a pause, three at once are a wheel's notch again
-        let later = t + Duration::from_secs(2);
-        assert_eq!((0..3).map(|i| w.push(wheel(ScrollUp), later + Duration::from_micros(i)).len()).sum::<usize>(), 1);
+        assert_eq!((0..3).map(|i| w.push(wheel(ScrollUp), soon + Duration::from_micros(i)).len()).sum::<usize>(), 1);
+        // four together: the fourth brings the two held back with it
+        let later = t + Duration::from_millis(60);
+        let got: Vec<usize> = (0..4).map(|i| w.push(wheel(ScrollUp), later + Duration::from_micros(i)).len()).collect();
+        assert_eq!(got, [1, 0, 0, 3]);
+        // and the next notch is one step again
+        let next = t + Duration::from_millis(100);
+        assert_eq!((0..3).map(|i| w.push(wheel(ScrollUp), next + Duration::from_micros(i)).len()).sum::<usize>(), 1);
+        assert!(w.settle(next + WheelSteps::TOGETHER).is_empty());
     }
 }

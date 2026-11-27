@@ -150,24 +150,31 @@ impl OpenList {
         v.order(l).iter().enumerate().find(|(_, ri)| RowId::of(&rows[**ri]) == *id).map(|(vi, ri)| (vi, &rows[*ri]))
     }
 
-    /// The selected row of `uri`'s view and its line on screen.
-    fn anchor(&self, uri: &str) -> Option<(RowId, usize)> {
+    /// The selected row of `uri`'s view and its line on screen, and the first row shown when the wheel has the view.
+    fn anchor(&self, uri: &str) -> Option<Anchor> {
         let v = self.views.get(uri)?;
-        Some((self.id_at(uri, v.sel)?, v.sel.saturating_sub(v.top)))
+        let top = if v.wheeled.holds(v.sel) { self.id_at(uri, v.top) } else { None };
+        Some(Anchor { sel: self.id_at(uri, v.sel)?, line: v.sel.saturating_sub(v.top), top })
     }
 
-    /// After an edit: the selection back on its row, on the same line; else on the row that took its place.
-    fn settle(&mut self, uri: &str, before: Option<(RowId, usize)>) {
-        let Some((id, line)) = before else { return };
-        let found = self.find(uri, &id).map(|(vi, _)| vi);
+    /// After an edit: the selection back on its row, on the same line; else on the row that took its place. A view the
+    /// wheel has keeps its first row instead (D86: pages arriving while a long list loads don't pull it back).
+    fn settle(&mut self, uri: &str, before: Option<Anchor>) {
+        let Some(a) = before else { return };
+        let found = self.find(uri, &a.sel).map(|(vi, _)| vi);
+        let top = a.top.and_then(|id| self.find(uri, &id)).map(|(vi, _)| vi);
         let len = self.order(uri).len();
         let Some(v) = self.views.get_mut(uri) else { return };
-        match found {
-            Some(vi) => {
-                v.sel = vi;
-                v.top = vi.saturating_sub(line);
+        match (found, top) {
+            (Some(vi), Some(t)) => {
+                (v.sel, v.top) = (vi, t);
+                v.wheeled.keep(vi);
             }
-            None => {
+            (Some(vi), None) => {
+                v.sel = vi;
+                v.top = vi.saturating_sub(a.line);
+            }
+            (None, _) => {
                 v.sel = v.sel.min(len.saturating_sub(1));
                 v.reveal();
             }
@@ -175,11 +182,19 @@ impl OpenList {
     }
 }
 
+/// Where a view was before an edit: its selected row and that row's line on screen, and its first row while the wheel
+/// has it.
+pub struct Anchor {
+    sel: RowId,
+    line: usize,
+    top: Option<RowId>,
+}
+
 /// A list being changed: its view, when shown, settles on its row again when this goes.
 pub struct Edit<'a> {
     open: &'a mut OpenList,
     uri: String,
-    before: Option<(RowId, usize)>,
+    before: Option<Anchor>,
 }
 
 impl std::ops::Deref for Edit<'_> {
