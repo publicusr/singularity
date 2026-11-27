@@ -246,8 +246,11 @@ fn np_strip(buf: &mut Buffer, r: Rect, item: &singularity_proto::Item, url: &str
     let scales = || [2u16, 1].into_iter().filter(|&s| pixel_rows(s) + 1 + next <= r.height);
     let fit = scales().find_map(|s| pixel_fit(&item.name, iw, pixel_rows(s), s, 1).map(|l| (s, l)));
     // a title too long for one line (#76): as much of it as fits at the biggest scale that keeps six letters, ending in
-    // ".."
+    // ".." (an empty title has nothing to cut: it stays plain text, as before)
     let fit = fit.or_else(|| {
+        if item.name.trim().is_empty() {
+            return None;
+        }
         let s = scales().find(|&s| (iw + s) / (4 * s) >= 6)?;
         let mut line: Vec<char> = item.name.chars().take(((iw + s) / (4 * s)) as usize - 2).collect();
         while line.last() == Some(&' ') {
@@ -1471,6 +1474,29 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 42, 8));
         nowplaying(&mut buf, Rect::new(0, 0, 42, 8), &mut app, &th);
         assert!((0..42).map(|x| buf[(x, 0)].symbol().to_string()).collect::<String>().contains("Golden"));
+    }
+
+    /// An empty title has nothing to cut: no ".." in the pixel font, the strip draws as before #76.
+    #[test]
+    fn a_wide_short_now_playing_with_an_empty_title_draws_no_dots() {
+        let th = Theme::singularity();
+        let mut app = App::new(None);
+        for name in ["", "   "] {
+            app.playback.item = Some(singularity_proto::Item { name: name.into(), artists: vec!["Fake Artist".into()], ..Default::default() });
+            for w in [43u16, 60, 100, 140] {
+                let r = Rect::new(0, 0, w, 8);
+                let mut got = Buffer::empty(r);
+                nowplaying(&mut got, r, &mut app, &th);
+                let pixels = (0..8).flat_map(|y| (0..w).map(move |x| (x, y))).any(|(x, y)| x >= 18 && matches!(got[(x, y)].symbol(), "█" | "▀" | "▄"));
+                assert!(!pixels, "{name:?} {w}: no block letters");
+                // the old wide look: the cover as tall as the Pane, the words beside it
+                let mut want = Buffer::empty(r);
+                crate::home::cover(&mut want, Rect::new(1, 0, 16, 8), "", "♪", &mut app, &th);
+                let item = app.playback.item.clone().unwrap();
+                np_info(&mut want, Rect::new(19, 0, w - 20, 8), None, &item, &app, np_queue(&app), &th);
+                assert_eq!(got, want, "{name:?} {w}");
+            }
+        }
     }
 
     #[test]
