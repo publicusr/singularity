@@ -669,7 +669,59 @@ mod tests {
                 _ => false,
             })
         };
-        area.positions().all(|p| new.0[p] == old.0[p] || fixed(p.y))
+        // on those rows only the words may differ: every cell keeps its background (the highlight), and a cell
+        // showing the same character (a space aside: only its background shows) keeps its style; the cell a wide
+        // character covers has none of its own
+        let covered = |b: &Buffer, p: ratatui::layout::Position| p.x > area.x && b[(p.x - 1, p.y)].symbol().width() > 1;
+        area.positions().all(|p| {
+            let (n, o) = (&new.0[p], &old.0[p]);
+            // (a length spilled left of the Pane, over its frame column: that cell is the fix, and stays empty now)
+            let spilled = p.x == area.x && *n == ratatui::buffer::Cell::EMPTY;
+            n == o || (fixed(p.y) && (spilled || covered(&new.0, p) || covered(&old.0, p) || (n.bg == o.bg && (n.symbol() != o.symbol() || n.symbol() == " " || n.style() == o.style()))))
+        })
+    }
+
+    #[test]
+    fn a_big_queue_changes_only_its_wide_headings() {
+        // the heading's cut is shared with the big queue (#75): there only a heading wider than the Pane in wide
+        // characters draws differently from the cut by characters, which lost its `…`
+        let wide = "夜明けのオーケストラと長い長い日本語のプレイリストの名前、夜明けのオーケストラと長い長い日本語のプレイリスト";
+        use unicode_width::UnicodeWidthStr;
+        let th = Theme::singularity();
+        let mut changes = 0;
+        for (w, h) in [(BIG.0, BIG.1), (BIG.0 + 1, BIG.1 + 7), (140, 50)] {
+            let r = Rect::new(0, 0, w, h);
+            for name in ["Night Drive", wide] {
+                let mut app = full_app(27);
+                app.playback.context_name = Some(name.into());
+                let (new, hits, (top, _, list_y)) = drawn(r, &mut app, draw);
+                assert!(is_big(r) && top == 0);
+                // the old frame: every heading row drawn again with the old cut
+                let mut old = new.clone();
+                let headings = lines_of(&app.playback.queue, Some(name)).into_iter().filter_map(|l| match l {
+                    Line::Heading(h) => Some(h),
+                    Line::Entry(_) => None,
+                });
+                let rows = (list_y..r.bottom()).filter(|&y| !hits.iter().any(|(rr, _)| rr.y <= y && y < rr.bottom()) && !row_text(&new, 0, w, y).trim().is_empty());
+                let mut changed = vec![];
+                for (y, heading) in rows.zip(headings) {
+                    for x in 1..w - 1 {
+                        old[(x, y)] = ratatui::buffer::Cell::EMPTY;
+                    }
+                    text(&mut old, 1, y, w - 2, &clip_by_chars(&heading, (w - 2) as usize), th.s(th.dim).add_modifier(Modifier::BOLD));
+                    if (0..w).any(|x| new[(x, y)] != old[(x, y)]) {
+                        changed.push(y);
+                        assert!(heading.contains('夜') && row_text(&new, 1, w - 1, y).trim_end().ends_with('…'), "{w}×{h}: {heading:?}");
+                    }
+                }
+                // every other cell as before; only the wide heading ("Next from …"), when wider than the Pane, changed
+                assert!(r.positions().all(|p| new[p] == old[p] || changed.contains(&p.y)), "{w}×{h}, {name}");
+                let cut = name == wide && format!("Next from {name}").width() > (w - 2) as usize;
+                assert_eq!(changed.len(), usize::from(cut), "{w}×{h}, {name}");
+                changes += changed.len();
+            }
+        }
+        assert_eq!(changes, 2, "the wide heading is cut at the two narrower sizes");
     }
 
     #[test]
