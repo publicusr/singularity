@@ -84,6 +84,11 @@ pub struct Hub {
     pub shutdown: tokio::sync::Notify,
     /// the listening log and library backups (LocalStore); None: off (tests, fake Daemons)
     pub store: Option<Arc<std::sync::Mutex<store::Store>>>,
+    /// the demo Listening log beside it (D90): plays go there too while a demo Client is connected, and demo
+    /// Clients' stats come from it
+    pub demo_store: Option<Arc<std::sync::Mutex<store::Store>>>,
+    /// how many demo Clients are connected
+    pub demo_clients: std::sync::atomic::AtomicUsize,
     /// background tasks that stopped and haven't run for a while: the health view names them (A1)
     pub stopped_tasks: Mutex<BTreeSet<String>>,
     /// the last Home and library on disk (#81); None: off (tests, fake Daemons)
@@ -265,6 +270,14 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
         }
         None => None,
     };
+    let demo_store = match extras.store.as_deref().filter(|_| store.is_some()).map(store::Store::open_demo) {
+        Some(Ok(s)) => Some(Arc::new(std::sync::Mutex::new(s))),
+        Some(Err(e)) => {
+            tracing::warn!("the demo listening log is unavailable: {e}");
+            None
+        }
+        None => None,
+    };
     let (events, _) = broadcast::channel(256);
     let (commands, command_rx) = mpsc::channel(64);
     let (cat_tx, cat_rx) = match catalogue {
@@ -298,6 +311,8 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
         spectrum_wake: Default::default(),
         shutdown: Default::default(),
         store,
+        demo_store,
+        demo_clients: Default::default(),
         stopped_tasks: Default::default(),
         last_seen,
     });
@@ -559,6 +574,13 @@ async fn log_plays(hub: Arc<Hub>) {
                 }
                 s.summary(now)
             };
+            // while a demo Client is connected, its own log gets the play too (D90; the real one keeps it as well)
+            if hub.demo_clients.load(std::sync::atomic::Ordering::SeqCst) > 0
+                && let Some(d) = &hub.demo_store
+                && let Err(e) = d.lock().expect("demo store lock").record(&play)
+            {
+                tracing::warn!("couldn't log a play in the demo log: {e}");
+            }
             if let Ok(summary) = summary {
                 let _ = hub.events.send(Event::Listening(summary));
             }
@@ -580,9 +602,17 @@ async fn device_name(hub: &Hub) -> String {
     }
 }
 
-/// Answer a LocalStore command (`GetListening`, `GetStats`, `ExportLocalData`, `DeleteLocalData`).
-async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>) {
-    let Some(store) = hub.store.clone() else {
+/// The demo Listening log summed up, for a demo Client (D90), in place of the real one's summary.
+fn demo_summary(hub: &Hub) -> Option<Event> {
+    let s = hub.demo_store.as_ref()?.lock().expect("demo store lock");
+    s.summary(proto::now_ms()).ok().map(Event::Listening)
+}
+
+/// Answer a LocalStore command (`GetListening`, `GetStats`, `ExportLocalData`, `DeleteLocalData`). A demo Client's
+/// questions and its "delete" go to the demo Listening log (D90).
+async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>, demo: bool) {
+    let store = if demo { hub.demo_store.clone() } else { hub.store.clone() };
+    let Some(store) = store else {
         // questions go unanswered (Widgets keep waiting quietly); asking to export or delete is told
         if matches!(cmd, Command::ExportLocalData | Command::DeleteLocalData) {
             let _ = out.send(DaemonMsg::Event(Event::Error { message: "the listening log is off in this Daemon".into() })).await;
@@ -596,7 +626,7 @@ async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>) {
             Command::GetListening => (s.summary(now).map(Event::Listening), None),
             Command::GetStats { period } => {
                 // plays logged before links were kept get them from the Catalogue, a few at a time (see Described)
-                if let Some(c) = &hub.catalogue
+                if !demo && let Some(c) = &hub.catalogue
                     && let Ok(uris) = s.unlinked_tracks(20)
                     && !uris.is_empty()
                 {
@@ -605,6 +635,11 @@ async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>) {
                 (s.stats(period, now).map(Event::Stats), None)
             }
             Command::ExportLocalData => (store::downloads_dir().and_then(|d| s.export(&d, now)).map(|p| Event::Notice { message: format!("Listening data exported to {}", p.display()) }), None),
+            // (the real log's summary goes to everyone: demo Clients swap it for theirs)
+            _ if demo => match s.delete_all() {
+                Ok(()) => (Ok(Event::Notice { message: "Deleted the demo listening log".into() }), hub.store.as_ref().and_then(|r| r.lock().expect("store lock").summary(now).ok()).map(Event::Listening)),
+                Err(e) => (Err(e), None),
+            },
             _ => match s.delete_all() {
                 Ok(()) => (Ok(Event::Notice { message: "Deleted the listening log and every library backup".into() }), s.summary(now).ok().map(Event::Listening)),
                 Err(e) => (Err(e), None),
@@ -826,10 +861,13 @@ fn catalogue_cmd(cmd: &Command) -> Option<Result<CatCmd, &'static str>> {
 async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()> {
     let (mut rd, mut wr) = stream.into_split();
     let hello: Option<ClientMsg> = proto::read_msg(&mut rd).await?;
+    // a demo Client (D90): its stats come from the demo Listening log, which logs plays while it's connected
+    let demo = matches!(hello, Some(ClientMsg::Hello { demo: true, .. }));
     match hello {
-        Some(ClientMsg::Hello { protocol, client }) if protocol == PROTOCOL_VERSION => {
-            tracing::info!("client connected: {client}");
-            let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind, soloist_in_vm: hub.soloist_in_vm };
+        Some(ClientMsg::Hello { protocol, client, demo: d }) if protocol == PROTOCOL_VERSION => {
+            tracing::info!("client connected: {client}{}", if d { " (demo mode)" } else { "" });
+            let account = if d { demo_account(&hub).await } else { String::new() };
+            let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind, soloist_in_vm: hub.soloist_in_vm, demo: d, account };
             proto::write_msg(&mut wr, &welcome).await?;
         }
         Some(ClientMsg::Hello { protocol, .. }) => {
@@ -839,6 +877,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
         }
         _ => return Ok(()),
     }
+    let _demo_client = demo.then(|| DemoClient::new(hub.clone()));
     // everything to this Client goes through one writer; a Client that takes nothing for WRITE_DEADLINE has stopped
     // reading, and its session ends (#71: it used to stay, blocked, for as long as it was connected)
     let (out_tx, mut out_rx) = mpsc::channel::<DaemonMsg>(64);
@@ -881,6 +920,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     }
 
     let fwd_tx = out_tx.clone();
+    let fwd_hub = hub.clone();
     let forwarder = tokio::spawn(async move {
         loop {
             let ev = match events.recv().await {
@@ -902,6 +942,14 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                 }
                 newest = newest.max(p.timestamp_ms);
             }
+            // a demo Client never sees the real log's summary: its own instead (D90)
+            let ev = match ev {
+                Event::Listening(_) if demo => match demo_summary(&fwd_hub) {
+                    Some(ev) => ev,
+                    None => continue,
+                },
+                ev => ev,
+            };
             if fwd_tx.send(DaemonMsg::Event(ev)).await.is_err() {
                 break;
             }
@@ -968,7 +1016,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                     h.stopped_tasks = hub.stopped_tasks.lock().await.iter().cloned().collect();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Health(h))).await;
                 }
-                ClientMsg::Command(cmd @ (Command::GetListening | Command::GetStats { .. } | Command::ExportLocalData | Command::DeleteLocalData)) => local_data(&hub, cmd, &out_tx).await,
+                ClientMsg::Command(cmd @ (Command::GetListening | Command::GetStats { .. } | Command::ExportLocalData | Command::DeleteLocalData)) => local_data(&hub, cmd, &out_tx, demo).await,
                 ClientMsg::Command(Command::GetState) => {
                     let s = hub.playback();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;
@@ -1009,6 +1057,33 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     forwarder.abort();
     writer.abort();
     result
+}
+
+/// The account's username for a demo Client to redact (D90): the logged-in one, else the saved login's.
+async fn demo_account(hub: &Hub) -> String {
+    if let Some(proto::CatalogueStatus::Ready { username, .. }) = hub.catalogue_status.lock().await.clone() {
+        return username;
+    }
+    if hub.catalogue.is_none() {
+        return String::new();
+    }
+    tokio::task::spawn_blocking(|| catalogue::saved_credentials(&catalogue::Dirs::from_env()).and_then(|c| c.username)).await.ok().flatten().unwrap_or_default()
+}
+
+/// A demo Client's session, counted while it lasts (D90: plays go to the demo Listening log meanwhile).
+struct DemoClient(Arc<Hub>);
+
+impl DemoClient {
+    fn new(hub: Arc<Hub>) -> DemoClient {
+        hub.demo_clients.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        DemoClient(hub)
+    }
+}
+
+impl Drop for DemoClient {
+    fn drop(&mut self) {
+        self.0.demo_clients.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// How long one request to Spotify may take. librespot's HTTP client has no timeout of its own: a request on a
@@ -1083,6 +1158,8 @@ mod tests {
             spectrum_wake: Default::default(),
             shutdown: Default::default(),
             store: None,
+            demo_store: None,
+            demo_clients: Default::default(),
             stopped_tasks: Default::default(),
             last_seen: None,
         })

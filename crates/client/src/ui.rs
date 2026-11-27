@@ -367,6 +367,10 @@ fn menu(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
 fn top_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     let buf = f.buffer_mut();
     text(buf, r.x + 1, r.y, 14, "◉ SINGULARITY", th.title());
+    // demo mode (D90): always in sight, so the owner knows what's being recorded
+    if app.demo.is_some() {
+        text(buf, r.x + 16, r.y, 6, " DEMO ", th.chip(th.accent));
+    }
     let (link, col) = match &app.link {
         Link::Connecting => ("connecting…".to_string(), th.dim),
         Link::Connected { version } => (format!("singularityd {version}"), th.dim),
@@ -381,7 +385,8 @@ fn top_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
         Some(EngineStatus::Failed { .. }) => "engine: failed".into(),
     };
     let account = match &app.catalogue {
-        Some(CatalogueStatus::Ready { username, premium, .. }) => format!("{username}{}", if *premium { " · Premium" } else { "" }),
+        // (demo mode knows no username: "Premium" alone)
+        Some(CatalogueStatus::Ready { username, premium, .. }) => [username.as_str(), if *premium { "Premium" } else { "" }].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "),
         Some(CatalogueStatus::LoginPending { code, .. }) => format!("log in: code {code}"),
         Some(CatalogueStatus::Connecting) => "connecting to Spotify…".into(),
         Some(CatalogueStatus::LoggedOut) => "not logged in (^K → Log in)".into(),
@@ -1280,7 +1285,7 @@ mod tests {
         // a new Shelf arrives on top: every Shelf moves down one
         let mut shifted = feed.clone();
         let card = Card { uri: "spotify:album:new".into(), name: "New".into(), subtitle: String::new(), image_url: None, kind: "album".into() };
-        shifted.shelves.insert(1, Shelf { title: "New releases".into(), kind: "shelf".into(), cards: vec![card.clone(), card] });
+        shifted.shelves.insert(1, Shelf { id: String::new(), title: "New releases".into(), kind: "shelf".into(), cards: vec![card.clone(), card] });
         app.hear(singularity_proto::Event::Home(shifted.clone()));
         let copy = |app: &App| app.menu().unwrap().items.iter().position(|(l, _)| l == "Copy link").unwrap();
         app.menu_run(copy(&app));
@@ -3037,7 +3042,7 @@ mod tests {
         let (mut app, _rx) = playing_app(200_000);
         let mut page = fake_artist();
         let more = page.shelves[0].clone();
-        page.shelves.extend((0..6).map(|i| singularity_proto::Shelf { title: format!("Shelf {i}"), ..more.clone() }));
+        page.shelves.extend((0..6).map(|i| singularity_proto::Shelf { id: String::new(), title: format!("Shelf {i}"), ..more.clone() }));
         app.open("spotify:artist:nova", "Nova Drift", "", "artist");
         app.artist_page(page);
         render(&mut app, 200, 48);
@@ -3284,7 +3289,7 @@ mod tests {
         use singularity_proto::{Card, Shelf, TrackRow};
         let top = (0..10).map(|i| TrackRow { uri: format!("spotify:track:hit{i}"), name: format!("Hit {i}"), artists: vec!["Nova Drift".into()], album: "Orbits".into(), album_uri: Some("spotify:album:orbits".into()), duration_ms: 200_000, playable: true, ..Default::default() }).collect();
         let card = |n: &str| Card { uri: format!("spotify:album:{n}"), name: n.into(), subtitle: "2024 · Album".into(), image_url: None, kind: "album".into() };
-        singularity_proto::ArtistPage { uri: "spotify:artist:nova".into(), name: "Nova Drift".into(), monthly_listeners: Some(1_234_567), image_url: None, top_tracks: top, shelves: vec![Shelf { title: "Albums".into(), kind: "shelf".into(), cards: vec![card("orbits"), card("drift")] }] }
+        singularity_proto::ArtistPage { uri: "spotify:artist:nova".into(), name: "Nova Drift".into(), monthly_listeners: Some(1_234_567), image_url: None, top_tracks: top, shelves: vec![Shelf { id: String::new(), title: "Albums".into(), kind: "shelf".into(), cards: vec![card("orbits"), card("drift")] }] }
     }
 
     #[test]

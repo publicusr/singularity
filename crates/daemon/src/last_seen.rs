@@ -153,7 +153,7 @@ mod tests {
     use singularity_proto::{LibraryItem, Shelf};
 
     fn home(t: &str) -> HomeFeed {
-        HomeFeed { fetched_unix_ms: 1, shelves: vec![Shelf { title: t.into(), kind: "shelf".into(), cards: vec![] }] }
+        HomeFeed { fetched_unix_ms: 1, shelves: vec![Shelf { id: String::new(), title: t.into(), kind: "shelf".into(), cards: vec![] }] }
     }
 
     fn library(n: &str) -> Library {

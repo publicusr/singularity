@@ -9,11 +9,26 @@ use singularity_proto::{DaemonMsg, EngineStatus, Event};
 impl App {
     /// A Daemon event, or a change in the connection.
     pub fn receive(&mut self, ev: ConnEvent) {
+        // demo mode (D90): what this Client may show, before anything reads it
+        let ev = match (ev, self.demo.as_mut()) {
+            (ConnEvent::Msg(DaemonMsg::Event(e)), Some(d)) => ConnEvent::Msg(DaemonMsg::Event(d.scrub(e))),
+            (ev, _) => ev,
+        };
         match ev {
             ConnEvent::Connecting => {}
             ConnEvent::Updating => self.say("Updating singularityd…"),
             ConnEvent::Disconnected => self.link = Link::Connecting,
-            ConnEvent::Connected { daemon_version, engine, soloist_in_vm } => {
+            ConnEvent::Connected { daemon_version, engine, soloist_in_vm, demo, account } => {
+                // demo mode: the saved login's name is redacted from the start (errors come before the login is
+                // Ready); a Daemon that didn't confirm demo mode would show the real stats, so none show
+                if let Some(d) = self.demo.as_mut() {
+                    d.redactor.learn(&account, "user");
+                    d.confirmed = demo;
+                    if !demo {
+                        self.listening = None;
+                        self.stats.clear();
+                    }
+                }
                 self.link = Link::Connected { version: daemon_version };
                 self.engine_kind = engine;
                 self.soloist_in_vm = soloist_in_vm;
@@ -34,11 +49,16 @@ impl App {
                     && !matches!(self.catalogue, Some(singularity_proto::CatalogueStatus::LoginPending { .. }))
                 {
                     self.login_hidden = false;
-                    // the main loop opens the pairing page in the browser
-                    self.open_url = Some(url.clone());
+                    // the main loop opens the pairing page in the browser; not in demo mode, where it would show the
+                    // account's name and picture on the recording (the link and code still show)
+                    if self.demo.is_none() {
+                        self.open_url = Some(url.clone());
+                    }
                 }
                 self.catalogue = Some(c);
             }
+            // demo mode: Home waits for the library, which says which playlists are the owner's (none may flash)
+            ConnEvent::Msg(DaemonMsg::Event(Event::Home(_))) if self.demo.as_ref().is_some_and(|d| !d.knows_library()) => {}
             ConnEvent::Msg(DaemonMsg::Event(Event::Home(h))) => {
                 // the selection stays on its Card (#23)
                 if let Some(old) = &self.home {
@@ -46,8 +66,28 @@ impl App {
                 }
                 self.home = Some(h);
             }
-            ConnEvent::Msg(DaemonMsg::Event(Event::Library(l))) => self.library = Some(l),
-            ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistCreated { uri, name })) => self.playlist_created(&uri, &name),
+            ConnEvent::Msg(DaemonMsg::Event(Event::Library(l))) => {
+                self.library = Some(l);
+                // demo mode: now it's known which playlists are the owner's, Home drops those outside the Demo set
+                if let Some(h) = self.demo.as_mut().and_then(|d| d.home_again()) {
+                    if let Some(old) = &self.home {
+                        self.home_view.refeed(old, &h);
+                    }
+                    self.home = Some(h);
+                }
+            }
+            ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistCreated { uri, name })) => {
+                // demo mode: a playlist this Client made in this session stays in the library
+                if self.asked_to_create(&name)
+                    && let Some(d) = self.demo.as_mut()
+                {
+                    d.created(&uri);
+                    if let Some(l) = d.library_again() {
+                        self.library = Some(l);
+                    }
+                }
+                self.playlist_created(&uri, &name)
+            }
             ConnEvent::Msg(DaemonMsg::Event(Event::AddedToPlaylist { playlist, name, uris, outcome })) => self.added_to_playlist(&playlist, &name, uris, outcome),
             ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistCoverSet { playlist, ok })) => self.cover_set(&playlist, ok),
             ConnEvent::Msg(DaemonMsg::Event(Event::MovedInPlaylist { playlist, uids, ok })) => self.moved_in_playlist(&playlist, &uids, ok),
@@ -74,6 +114,8 @@ impl App {
             ConnEvent::Msg(DaemonMsg::Event(Event::Lyrics(l))) => self.lyrics_event(l),
             ConnEvent::Msg(DaemonMsg::Event(Event::Notice { message })) => self.say(message),
             ConnEvent::Msg(DaemonMsg::Event(Event::Saved { entries })) => self.saved_event(entries),
+            // demo mode with a Daemon that didn't confirm it: these would be the real log's
+            ConnEvent::Msg(DaemonMsg::Event(Event::Listening(_) | Event::Stats(_))) if self.demo.as_ref().is_some_and(|d| !d.confirmed) => {}
             ConnEvent::Msg(DaemonMsg::Event(Event::Listening(s))) => {
                 self.listening = Some(s);
                 // a Play was logged (or old plays got their links): stats on screen ask again
@@ -108,11 +150,11 @@ mod tests {
     fn connecting_and_losing_the_daemon_shows_on_the_link() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let mut app = App::new(Some(tx));
-        app.receive(ConnEvent::Connected { daemon_version: "1.2.3".into(), engine: EngineKind::Librespot, soloist_in_vm: false });
+        app.receive(ConnEvent::Connected { daemon_version: "1.2.3".into(), engine: EngineKind::Librespot, soloist_in_vm: false, demo: false, account: String::new() });
         assert_eq!(app.link, Link::Connected { version: "1.2.3".into() });
         assert_eq!(app.engine_kind, EngineKind::Librespot);
         assert!(!app.soloist_in_vm);
-        app.receive(ConnEvent::Connected { daemon_version: "1.2.3".into(), engine: EngineKind::Soloist, soloist_in_vm: true });
+        app.receive(ConnEvent::Connected { daemon_version: "1.2.3".into(), engine: EngineKind::Soloist, soloist_in_vm: true, demo: false, account: String::new() });
         assert!(app.soloist_in_vm, "the Daemon's word on the Soloist VM (Q94)");
         assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|c| c == Command::GetListening), "connected: asks for the listening log");
         app.receive(ConnEvent::Disconnected);

@@ -188,7 +188,7 @@ fn pages() -> Vec<Case> {
         Case {
             what: "Home's Shelves",
             set: |app| {
-                let shelf = |s: usize| Shelf { title: format!("Shelf {s}"), kind: "shelf".into(), cards: (0..12).map(|i| card(i, "album")).collect() };
+                let shelf = |s: usize| Shelf { id: String::new(), title: format!("Shelf {s}"), kind: "shelf".into(), cards: (0..12).map(|i| card(i, "album")).collect() };
                 app.hear(singularity_proto::Event::Home(HomeFeed { fetched_unix_ms: 0, shelves: (0..8).map(shelf).collect() }));
             },
             moves: 20,
@@ -201,7 +201,7 @@ fn pages() -> Vec<Case> {
             what: "an artist page",
             set: |app| {
                 app.open("spotify:artist:a", "Nova Drift", "", "artist");
-                let shelf = |s: usize| Shelf { title: format!("Releases {s}"), kind: "shelf".into(), cards: (0..12).map(|i| card(i, "album")).collect() };
+                let shelf = |s: usize| Shelf { id: String::new(), title: format!("Releases {s}"), kind: "shelf".into(), cards: (0..12).map(|i| card(i, "album")).collect() };
                 let page = singularity_proto::ArtistPage { uri: "spotify:artist:a".into(), name: "Nova Drift".into(), top_tracks: (0..10).map(|i| row(i, "track")).collect(), shelves: (0..8).map(shelf).collect(), ..Default::default() };
                 app.page.artist_mut().unwrap().set_page(page);
             },

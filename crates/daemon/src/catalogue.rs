@@ -1625,10 +1625,12 @@ pub fn parse_home(v: &Value) -> HomeFeed {
             "HomeFeedBaselineSectionData" => "feed",
             _ => "shelf",
         };
+        // the section's own id (`spotify:section:…`), when it has one: demo mode hides personal Shelves by it (D90)
+        let id = s["uri"].as_str().unwrap_or_default().to_string();
         let title = s["data"]["title"]["transformedLabel"].as_str().or_else(|| s["data"]["title"]["text"].as_str()).unwrap_or("").to_string();
         let cards: Vec<Card> = s["sectionItems"]["items"].as_array().into_iter().flatten().filter_map(|it| card(&it["content"]["data"])).collect();
         if !cards.is_empty() {
-            shelves.push(Shelf { title, kind: kind.into(), cards });
+            shelves.push(Shelf { id, title, kind: kind.into(), cards });
         }
     }
     HomeFeed { fetched_unix_ms: singularity_proto::now_ms(), shelves }
@@ -1689,7 +1691,7 @@ mod tests {
       {"data":{"__typename":"HomeShortsSectionData","title":null},"sectionItems":{"items":[
         {"content":{"__typename":"AlbumResponseWrapper","data":{"__typename":"Album","uri":"spotify:album:a","name":"Event Horizon","artists":{"items":[{"profile":{"name":"Nova Drift"}}]},"coverArt":{"sources":[{"url":"https://i.scdn.co/image/64","width":64},{"url":"https://i.scdn.co/image/300","width":300},{"url":"https://i.scdn.co/image/640","width":640}]}}}},
         {"content":{"__typename":"UnknownType","uri":"spotify:x"}}]}},
-      {"data":{"__typename":"HomeGenericSectionData","title":{"transformedLabel":"Made For You"}},"sectionItems":{"items":[
+      {"uri":"spotify:section:fakemadeforyou","data":{"__typename":"HomeGenericSectionData","title":{"transformedLabel":"Made For You"}},"sectionItems":{"items":[
         {"content":{"__typename":"PlaylistResponseWrapper","data":{"__typename":"Playlist","uri":"spotify:playlist:p","name":"Daily Mix 1","description":"Nova Drift, <a href=\"x\">Mira Vale</a> &amp; more","images":{"items":[{"sources":[{"url":"https://i.scdn.co/image/mix","width":null}]}]}}}},
         {"content":{"__typename":"ArtistResponseWrapper","data":{"__typename":"Artist","uri":"spotify:artist:r","profile":{"name":"Lumen Fields"},"visuals":{"avatarImage":{"sources":[{"url":"https://i.scdn.co/image/av","width":320}]}}}}}]}},
       {"data":{"__typename":"HomeFeedBaselineSectionData","title":{"text":"Based on your recent listening"}},"sectionItems":{"items":[
@@ -1758,6 +1760,8 @@ mod tests {
         assert_eq!(album.image_url.as_deref(), Some("https://i.scdn.co/image/300"));
         let mix = &feed.shelves[1].cards[0];
         assert_eq!(feed.shelves[1].title, "Made For You");
+        // (D90: demo mode hides personal Shelves by this id; a section without one has none)
+        assert_eq!((feed.shelves[1].id.as_str(), feed.shelves[0].id.as_str()), ("spotify:section:fakemadeforyou", ""));
         assert_eq!(mix.subtitle, "Nova Drift, Mira Vale & more");
         assert_eq!(feed.shelves[1].cards[1].kind, "artist");
         assert_eq!(feed.shelves[2].kind, "feed");

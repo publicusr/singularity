@@ -273,7 +273,7 @@ impl Search {
             self.shelves = HomeView::default();
             return;
         };
-        let shelf = |t: &str, kind: &str, cards: &Vec<singularity_proto::Card>| Shelf { title: t.into(), kind: kind.into(), cards: cards.clone() };
+        let shelf = |t: &str, kind: &str, cards: &Vec<singularity_proto::Card>| Shelf { id: String::new(), title: t.into(), kind: kind.into(), cards: cards.clone() };
         let shelves = match self.chip {
             0 => vec![shelf("Top results", "shelf", &r.top), shelf("Artists", "shelf", &r.artists), shelf("Albums", "shelf", &r.albums), shelf("Playlists", "shelf", &r.playlists), shelf("Podcasts", "shelf", &r.podcasts), shelf("Audiobooks", "shelf", &r.audiobooks)],
             2 => vec![shelf("Artists", "grid", &r.artists)],
@@ -289,7 +289,9 @@ impl Search {
 }
 
 fn recent_file() -> std::path::PathBuf {
-    singularity_config::app_folders::AppFolders::this().state.join("recent-searches.json")
+    // demo mode keeps its own (D90): the real ones show as soon as Search opens
+    let name = if crate::demo::on() { "recent-searches-demo.json" } else { "recent-searches.json" };
+    singularity_config::app_folders::AppFolders::this().state.join(name)
 }
 
 pub fn load_recent() -> Vec<String> {

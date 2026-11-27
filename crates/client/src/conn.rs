@@ -14,7 +14,8 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 pub enum ConnEvent {
     Connecting,
-    Connected { daemon_version: String, engine: proto::EngineKind, soloist_in_vm: bool },
+    /// `demo`: the Daemon confirmed demo mode (D90), `account`: the saved login's username it gave a demo Client
+    Connected { daemon_version: String, engine: proto::EngineKind, soloist_in_vm: bool, demo: bool, account: String },
     /// the running Daemon is older than the `singularityd` on disk; it's being replaced
     Updating,
     Incompatible(String),
@@ -64,12 +65,12 @@ async fn run_at(path: std::path::PathBuf, mut cmd_rx: mpsc::Receiver<Command>, e
         // who's on the other end, in case it has to be stopped
         let peer = stream.peer_cred().ok().and_then(|c| c.pid());
         let (mut rd, mut wr) = stream.into_split();
-        let hello = ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: format!("singularity {}", env!("CARGO_PKG_VERSION")) };
+        let hello = ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: format!("singularity {}", env!("CARGO_PKG_VERSION")), demo: crate::demo::on() };
         if proto::write_msg(&mut wr, &hello).await.is_err() {
             continue;
         }
         match proto::read_msg::<_, DaemonMsg>(&mut rd).await {
-            Ok(Some(DaemonMsg::Welcome { daemon_version, started_unix_ms, engine, soloist_in_vm, .. })) => {
+            Ok(Some(DaemonMsg::Welcome { daemon_version, started_unix_ms, engine, soloist_in_vm, demo, account, .. })) => {
                 // after a rebuild the old Daemon keeps running; ask it to make way for the new binary (once)
                 if !replaced && daemon_binary().is_some_and(|b| built_after(&b, started_unix_ms)) {
                     replaced = true;
@@ -87,7 +88,7 @@ async fn run_at(path: std::path::PathBuf, mut cmd_rx: mpsc::Receiver<Command>, e
                     started_daemon = false;
                     continue;
                 }
-                let _ = ev_tx.send(ConnEvent::Connected { daemon_version, engine, soloist_in_vm }).await;
+                let _ = ev_tx.send(ConnEvent::Connected { daemon_version, engine, soloist_in_vm, demo, account }).await;
             }
             Ok(Some(DaemonMsg::Incompatible { message, .. })) => {
                 let _ = ev_tx.send(ConnEvent::Incompatible(message)).await;

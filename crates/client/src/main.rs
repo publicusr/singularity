@@ -12,6 +12,7 @@ mod conn;
 mod ambient;
 mod balance;
 mod covers;
+mod demo;
 mod design;
 mod gesture;
 mod gfx;
@@ -76,12 +77,21 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
     };
+    // demo mode (D90): before anything is read (the recent searches have their own file) or sent (the Hello says so)
+    let args: Vec<String> = std::env::args().collect();
+    if demo::asked(&args, std::env::var("SINGULARITY_DEMO").ok().as_deref()) {
+        demo::turn_on();
+    }
     let (cmd_tx, mut conn_rx) = conn::spawn();
     let mut app = App::new(Some(cmd_tx));
     app.search = search::Search::with_recent(search::load_recent());
     app.covers = covers::Covers::spawn(folders.cache.join("covers"));
     app.cell_px = term::cell_px();
     app.hole.allow_gpu = true;
+    // (demo mode first: what loading the config says is redacted too)
+    if demo::on() {
+        app.start_demo(demo::file_path());
+    }
     app.load_config();
     if term::kitty_graphics_supported() && app.cell_px.is_some() {
         let mut k = gfx::Kitty::new(term::kitty_shm());
