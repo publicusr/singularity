@@ -60,11 +60,6 @@ pub fn turn_on() {
     ON.store(true, Ordering::Relaxed);
 }
 
-/// The switch: `--demo` among the arguments, or `SINGULARITY_DEMO=1`.
-pub fn asked(args: &[String], env: Option<&str>) -> bool {
-    args.iter().any(|a| a == "--demo") || env.is_some_and(|v| v == "1")
-}
-
 /// `demo.toml` in the config folder: the Demo set's albums, artists, podcasts and audiobooks, and Liked Songs. (An
 /// older file's `[home]` rules are ignored: Home is built from the Demo set alone.)
 #[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]

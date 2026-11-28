@@ -205,11 +205,13 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 - **Listening log** (private, local): every track you hear for 30 s is logged in `~/.local/share/singularity/`, and
   Liked Songs and your own playlists are backed up there nightly (when a list doesn't come back whole, Settings says so
   in one line, and the next night's backup tries it again). Cockpit's listening Pane and the Stats page show it;
-  Ctrl+K → "Export listening data" / "Delete listening data". Nothing is uploaded.
+  Ctrl+K → "Export listening data" / "Delete listening data" (the log, every backup, the demo log and the copy of Home
+  and the library kept for the next start). Nothing is uploaded.
 - After a rebuild, the next Client notices the running Daemon is older than the installed `singularityd` and replaces
   it by itself ("Updating singularityd…"; the music pauses for a moment). If systemd or launchd ran the
   old one, every Client gives them 5 s to start the new one, so the Daemon stays under the service.
-- **Demo mode**, for recording videos on your own account: `singularity --demo` (or `SINGULARITY_DEMO=1`). A DEMO chip
+- **Demo mode**, for recording videos on your own account: `singularity --demo` (or `SINGULARITY_DEMO=1`, `true` or
+  `yes`; any other value, or a mistyped switch, stops with an error, and `singularity --help` lists the switches). A DEMO chip
   shows in the top bar, and this Client hides or replaces everything personal: the library shows only the playlists in
   a Spotify folder called "Demo" (plus albums, artists, podcasts and audiobooks listed in `demo.toml` in the config
   folder, `library = ["spotify:album:…"]`, `liked = true` for Liked Songs; "Add to demo" in a menu writes there), Home
@@ -220,10 +222,12 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   blank, stats come from a separate demo log that counts only the songs this Client showed (plays still count in the real one), and recent searches are kept apart.
   Music, Widgets and Designs work as usual, and other Clients don't change. It can't be switched on or off while
   running. Recording checklist: hide the terminal's own title bar (it can show user@host), turn off desktop and track
-  notifications (Ctrl+K → "Track notifications on / off"), don't log in on camera, keep phones off screen. Edits are real:
+  notifications (Ctrl+K → "Track notifications on / off"), hide the media widget (Linux) / Now Playing (Mac), don't log
+  in on camera, keep phones off screen. Edits are real:
   liking, saving, creating or deleting in demo mode changes your account.
 - After a restart of the Daemon, Home and your library show at once as they were last time (kept, owner-only, in
-  `~/.cache/singularity/home-and-library.json`, only for the account they belong to, and removed when you log out)
+  `~/.cache/singularity/home-and-library.json`, only for the account they belong to, and removed when you log out or
+  delete the listening data)
   while the fresh ones load behind.
   `grep timing: ~/.local/state/singularity/daemon.log*` shows how long each start step took (login, account type,
   keyring, Home, each library page), `grep search:` where each search's time went, and `grep reconnect` each time

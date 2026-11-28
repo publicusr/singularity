@@ -8,6 +8,7 @@ mod arrange;
 mod arrangement;
 mod artist;
 mod bigtext;
+mod cli;
 mod conn;
 mod ambient;
 mod balance;
@@ -65,10 +66,23 @@ use std::time::{Duration, Instant};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    if std::env::args().any(|a| a == "--version" || a == "-V") {
-        println!("singularity {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
+    let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
+    let demo_env = std::env::var_os("SINGULARITY_DEMO").map(|v| v.to_string_lossy().into_owned());
+    let demo = match cli::read(&args, demo_env.as_deref()) {
+        cli::Start::Run { demo } => demo,
+        cli::Start::Version => {
+            println!("singularity {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        cli::Start::Help => {
+            print!("{}", cli::HELP);
+            return Ok(());
+        }
+        cli::Start::Wrong(what) => {
+            eprintln!("singularity: {what} (see singularity --help)");
+            std::process::exit(2);
+        }
+    };
     // nowhere to keep settings and data without HOME: stop and say so (Q93), before a Daemon is started
     let folders = match singularity_config::app_folders::AppFolders::from_env() {
         Ok(f) => f,
@@ -78,8 +92,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     // demo mode (D90): before anything is read (the recent searches have their own file) or sent (the Hello says so)
-    let args: Vec<String> = std::env::args().collect();
-    if demo::asked(&args, std::env::var("SINGULARITY_DEMO").ok().as_deref()) {
+    if demo {
         demo::turn_on();
     }
     let (cmd_tx, mut conn_rx) = conn::spawn();

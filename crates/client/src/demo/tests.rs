@@ -44,14 +44,6 @@ fn names(l: &Library) -> Vec<&str> {
 }
 
 #[test]
-fn the_switch_is_an_argument_or_the_environment() {
-    assert!(asked(&["singularity".into(), "--demo".into()], None));
-    assert!(asked(&["singularity".into()], Some("1")));
-    assert!(!asked(&["singularity".into()], Some("0")));
-    assert!(!asked(&["singularity".into()], None));
-}
-
-#[test]
 fn the_redactor_replaces_what_it_learned_inside_longer_text() {
     let mut r = redactor();
     r.learn("zedq", "user");
