@@ -212,7 +212,7 @@ pub fn parse_lyricsfile(text: &str) -> Option<Vec<LyricLine>> {
         .iter()
         .filter_map(|l| {
             let start_ms = l.get("start_ms")?.ms()?;
-            let words: Vec<LyricWord> = l
+            let mut words: Vec<LyricWord> = l
                 .get("words")
                 .map(Yaml::seq)
                 .unwrap_or_default()
@@ -220,6 +220,13 @@ pub fn parse_lyricsfile(text: &str) -> Option<Vec<LyricLine>> {
                 .filter_map(|w| Some(LyricWord { start_ms: w.get("start_ms")?.ms()?, end_ms: w.get("end_ms").and_then(Yaml::ms), text: w.get("text")?.str()?.to_string() }))
                 .filter(|w| !w.text.trim().is_empty())
                 .collect();
+            // LRCLIB's word times are starts only, its lines' ends are given: the last word is sung until the line ends
+            if let (Some(last), Some(end)) = (words.last_mut(), l.get("end_ms").and_then(Yaml::ms))
+                && last.end_ms.is_none()
+                && end > last.start_ms
+            {
+                last.end_ms = Some(end);
+            }
             let text = match l.get("text").and_then(Yaml::str) {
                 Some(t) => tidy(t),
                 None => tidy(&words.iter().map(|w| w.text.as_str()).collect::<String>()),
@@ -263,19 +270,42 @@ pub async fn lrclib(uri: &str, artist: &str, title: &str, album: Option<&str>, d
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
-    let mut q = vec![("artist_name", artist.to_string()), ("track_name", title.to_string()), ("duration", (duration_ms / 1000).to_string())];
-    if let Some(a) = album {
-        q.push(("album_name", a.to_string()));
+    let q = vec![("artist_name", artist.to_string()), ("track_name", title.to_string()), ("duration", (duration_ms / 1000).to_string())];
+    for (k, q) in asks(q, album).iter().enumerate() {
+        if k > 0 {
+            // LRCLIB's docs ask for 200–500 ms between requests
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+        if let Some(v) = lrclib_get(&http, q).await? {
+            return Ok(parse_lrclib(uri, &v));
+        }
     }
-    let resp = http.get("https://lrclib.net/api/get").query(&q).send().await.map_err(|e| e.to_string())?;
+    Ok(None)
+}
+
+/// What to ask LRCLIB, in turn until one finds the song: with the album, then without it. LRCLIB finds nothing when it
+/// doesn't know the album (a compilation, a playlist's single, a deluxe edition), even when it has the song.
+fn asks(q: Vec<(&'static str, String)>, album: Option<&str>) -> Vec<Vec<(&'static str, String)>> {
+    match album.filter(|a| !a.trim().is_empty()) {
+        Some(a) => {
+            let mut with = q.clone();
+            with.push(("album_name", a.to_string()));
+            vec![with, q]
+        }
+        None => vec![q],
+    }
+}
+
+/// One `/api/get`: the record, `None` on a 404.
+async fn lrclib_get(http: &reqwest::Client, q: &[(&'static str, String)]) -> Result<Option<Value>, String> {
+    let resp = http.get("https://lrclib.net/api/get").query(q).send().await.map_err(|e| e.to_string())?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    let v: Value = serde_json::from_slice(&resp.bytes().await.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    Ok(parse_lrclib(uri, &v))
+    serde_json::from_slice(&resp.bytes().await.map_err(|e| e.to_string())?).map(Some).map_err(|e| e.to_string())
 }
 
 /// How one source answered.
@@ -388,6 +418,41 @@ plain: |
         assert!(parse_lrclib("u", &v).unwrap().lines[0].words.is_empty());
     }
 
+    /// A word-synced record as LRCLIB answers it today (2026-11, recorded from `/api/get`): `hasWordSync`, line-only
+    /// `syncedLyrics` (its stamps a little off the Lyricsfile's), and a Lyricsfile whose words carry starts only and
+    /// whose lines carry their ends. The structure, quoting and times are the recorded answer's, cut to two lines; the
+    /// words and names are invented.
+    const RECORDED: &str = include_str!("../tests/fixtures/lrclib-word-synced.json");
+
+    #[test]
+    fn todays_lrclib_answer_gives_every_word_its_time() {
+        let v: Value = serde_json::from_str(RECORDED).unwrap();
+        let l = parse_lrclib("u", &v).unwrap();
+        assert!(l.synced && l.lines.len() == 2, "{l:?}");
+        let w = &l.lines[0].words;
+        assert_eq!(l.lines[0].text, "Paper boats drift past, the harbour wall");
+        assert_eq!(w.iter().map(|w| (w.start_ms, w.text.as_str())).collect::<Vec<_>>(), [(8_120, "Paper "), (8_789, "boats "), (9_212, "drift "), (9_757, "past, "), (9_997, "the "), (10_663, "harbour "), (11_126, "wall")]);
+        // only the starts are given; the last word is sung until its line ends
+        assert_eq!(w.iter().map(|w| w.end_ms).collect::<Vec<_>>(), [None, None, None, None, None, None, Some(11_620)]);
+        assert_eq!(l.lines[1].words.last().unwrap().end_ms, Some(14_936));
+        // the line's stamp is the Lyricsfile's, not the LRC's
+        assert_eq!(l.lines[0].start_ms, 8_120);
+        // a line end before the last word's start says nothing about it
+        let odd = parse_lyricsfile("lines:\n- text: a b\n  start_ms: 10\n  end_ms: 15\n  words:\n  - {text: 'a ', start_ms: 10}\n  - {text: b, start_ms: 20}\n").unwrap();
+        assert_eq!(odd[0].words[1].end_ms, None);
+    }
+
+    #[test]
+    fn an_album_lrclib_doesnt_know_is_left_out_on_a_second_ask() {
+        let q = || vec![("artist_name", "A".to_string()), ("track_name", "T".to_string())];
+        let a = asks(q(), Some("Hits 2017"));
+        assert_eq!(a.len(), 2);
+        assert_eq!(a[0].last(), Some(&("album_name", "Hits 2017".to_string())));
+        assert_eq!(a[1], q());
+        assert_eq!(asks(q(), None), [q()]);
+        assert_eq!(asks(q(), Some(" ")), [q()]);
+    }
+
     #[test]
     fn hostile_yaml_is_refused_without_blowing_up() {
         // aliases (a billion laughs), deep nesting, garbage, too big
@@ -420,3 +485,4 @@ plain: |
         assert!(!missing(Nothing, Failed).1 && !missing(Failed, Failed).1);
     }
 }
+
