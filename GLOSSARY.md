@@ -296,11 +296,13 @@ _Avoid_: pixel font (the marquee's 3×5 blocks), big font
 
 **Word timing**:
 When each word of a lyrics line is sung: the lyrics come with it (LRCLIB's word-synced Lyricsfile, enhanced LRC) or
-not, and the Karaoke Widget says which ("no word timing"). LRCLIB times word starts; a word's sung length is its
-syllables at a generous multiple of the song's *pace* (the median time a syllable between word starts), the rest until
-the next word a pause (a script whose syllables can't be counted, such as Thai or CJK, never pauses so). Without word
-timing a line is lit whole when its first word would be sung; when it is sung out is still estimated (its syllables
-at one pace fitted over all the song's lines), for staging the next line.
+not, and the Karaoke Widget says which ("no word timing"). LRCLIB times word starts; in a quick song (its *pace*, the
+median time a syllable between word starts, under 200 ms: rap) a word's sung length is its syllables at a generous
+multiple of the pace, the rest until the next word a pause (a script whose syllables can't be counted, such as Thai or
+CJK, never pauses so); a slower song's words fill to the next. A line whose word times bunched up quicker than anyone
+sings (half its words under 40 ms a syllable apart) counts as without word timing. Without word timing a line is lit
+whole when its first word would be sung; when it is sung out is still estimated (its syllables at one pace fitted over
+all the song's lines), for staging the next line.
 _Avoid_: syllable sync (Spotify's unused `SYLLABLE_SYNCED`), word sync
 
 **Lyrics delay**:

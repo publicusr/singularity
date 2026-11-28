@@ -1,10 +1,12 @@
 //! When each word is sung, for the Karaoke Widget. Exact where the lyrics say (`LyricLine::words`: LRCLIB's
-//! word-synced Lyricsfile, enhanced LRC); a line the lyrics time only as a whole is lit whole at its time (the owner,
-//! Q181: a guessed word 300 ms off looks broken, a whole line on time looks fine).
+//! word-synced Lyricsfile, enhanced LRC); a line the lyrics time only as a whole, or whose word times bunched up
+//! quicker than anyone sings (`bunched`), is lit whole at its time (the owner, Q181: a guessed word 300 ms off looks
+//! broken, a whole line on time looks fine).
 //!
-//! A word followed by a pause fills only for about as long as it is sung (the owner, Q182): the lyrics give word
-//! starts, so a word's sung length is its syllables at a generous multiple of the song's pace (`SUNG_SLACK`, the pace
-//! being the median time a syllable between word starts); its fill ends there and the ball waits.
+//! In a quick song (rap, `QUICK_MS`) a word followed by a pause fills only for about as long as it is sung (the owner,
+//! Q182, Q209): the lyrics give word starts, so a word's sung length is its syllables at a generous multiple of the
+//! song's pace (`SUNG_SLACK`, the pace being the median time a syllable between word starts); its fill ends there and
+//! the ball waits. A slower song's long gaps are mostly held notes: its words fill to the next as before.
 //!
 //! Where a line has no word times, when its singing ends is still estimated, for staging the next line: the song is
 //! sung at one pace: a singer's syllables come at about the song's tempo whatever the room until the next line, and a
@@ -58,6 +60,13 @@ pub const HOP_MS: u64 = 650;
 /// would be cut short 27 % and 3.8 % of the time (2.5 ×: 31 % and 8.4 %). Start times alone can't tell a held note from
 /// a pause.
 const SUNG_SLACK: f64 = 3.0;
+/// The fill stops before a pause only in a quick song, its words a median under this many ms a syllable apart (rap):
+/// a slower song's long gaps are mostly held notes, filled to the next word (the owner, Q209). Of 17 word-timed sung
+/// songs 2 are this quick, of 7 of Polish rap all.
+const QUICK_MS: f64 = 200.0;
+/// Quicker than anyone sings, ms a syllable (25 syllables a second, past the fastest recorded rap): a line where at
+/// least half the words come this quick has word times that bunched up in the source, and is lit whole (the owner, ❓1).
+const BUNCHED_MS: f64 = 40.0;
 /// The song's pace between word starts, ms a syllable: when it has fewer than `PACE_WORDS` timed words to say, and
 /// the limits of a measured one (a song whose word times bunch up can't make every word a pause).
 const WORD_PACE: f64 = 250.0;
@@ -99,9 +108,24 @@ impl Line {
     }
 }
 
+/// The vowel letters `syllables` counts: Latin (to Latin Extended-A), Cyrillic (Ukrainian too) and Greek.
+const VOWELS: &str = "aeiouyàáâãäåæèéêëìíîïòóôõöøùúûüýÿāăąēĕėęěīĭįōŏőœūŭůűųаеёиоуыэюяіїєαεηιουωάέήίόύώϊϋΐΰ";
+/// The vowels counted before #166: a word-timed line's last word is still held by this count, so word-timed lines in
+/// Cyrillic, Greek, Czech, Hungarian or Latvian look as they did.
+const OLD_VOWELS: &str = "aeiouyàáâãäåæèéêëìíîïòóôõöøùúûüýÿąęėįųœ";
+
 /// Syllables in a word, roughly: groups of vowels (a silent final `e` in English doesn't count), at least one.
 /// Scripts without vowel letters (CJK, kana) count a syllable per character.
 pub fn syllables(word: &str) -> u32 {
+    count_syllables(word, VOWELS)
+}
+
+/// `syllables` as it counted before #166, for a word-timed line's held last word.
+fn held_syllables(word: &str) -> u32 {
+    count_syllables(word, OLD_VOWELS)
+}
+
+fn count_syllables(word: &str, vowels: &str) -> u32 {
     let letters: Vec<char> = word.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect();
     if letters.is_empty() {
         return 1;
@@ -109,7 +133,7 @@ pub fn syllables(word: &str) -> u32 {
     if letters.iter().any(|c| unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0) >= 2) {
         return letters.len() as u32;
     }
-    let vowel = |c: char| "aeiouyàáâãäåæèéêëìíîïòóôõöøùúûüýÿāăąēĕėęěīĭįōŏőœūŭůűųаеёиоуыэюяіїєαεηιουωάέήίόύώϊϋΐΰ".contains(c);
+    let vowel = |c: char| vowels.contains(c);
     let mut groups = 0;
     let mut prev = false;
     for &c in &letters {
@@ -199,10 +223,10 @@ pub fn pace(rooms: &[(f64, f64)]) -> Pace {
     if (60.0..1_200.0).contains(&p) && c >= 0.0 { Pace { syllable: p, tail: c } } else { Pace { syllable: med * 0.75, tail: med * 1.5 } }
 }
 
-/// Every sung line of a song, timed: a line with word times word by word, one without lit whole when an estimate
-/// says its first word is sung (its words all start and fill then; it ends when the estimate says it's sung out). Empty lines (instrumental
-/// marks) aren't lines here, but the line before one ends by it. `song_ms` (0 if unknown) bounds the last line. Times
-/// only ever go forward.
+/// Every sung line of a song, timed: a line with word times word by word, one without (or with word times no one
+/// could sing, `bunched`) lit whole when an estimate says its first word is sung (its words all start and fill then;
+/// it ends when the estimate says it's sung out). Empty lines (instrumental marks) aren't lines here, but the line
+/// before one ends by it. `song_ms` (0 if unknown) bounds the last line. Times only ever go forward.
 pub fn timed(lines: &[LyricLine], song_ms: u64) -> Vec<Line> {
     let mut out = timed_words(lines, song_ms);
     for l in out.iter_mut().filter(|l| !l.exact) {
@@ -236,7 +260,7 @@ fn timed_words(lines: &[LyricLine], song_ms: u64) -> Vec<Line> {
         }
         let start = l.start_ms.max(floor);
         let room_end = room_end(lines, i, start, song_ms);
-        let line = match exact(l, start, room_end, word_pace) {
+        let line = match (!bunched(l)).then(|| exact(l, start, room_end, word_pace)).flatten() {
             Some(words) => Line { start, end: words.last().map_or(start, |w| w.end), words, exact: true, index: i, guessed: vec![] },
             None => estimate(&l.text, start, room_end, i, pace),
         };
@@ -246,10 +270,20 @@ fn timed_words(lines: &[LyricLine], song_ms: u64) -> Vec<Line> {
     out
 }
 
-/// The song's pace between its timed words, ms a syllable: the median over every word and the next one in its line.
+/// Whether a line's word times bunched up in the source: at least half its words come quicker than anyone sings
+/// (`BUNCHED_MS` a syllable). It is lit whole.
+fn bunched(l: &LyricLine) -> bool {
+    let w: Vec<_> = l.words.iter().filter(|w| !w.text.trim().is_empty()).collect();
+    let pairs = w.len().saturating_sub(1);
+    let quick = w.windows(2).filter(|p| (p[1].start_ms.saturating_sub(p[0].start_ms) as f64) < BUNCHED_MS * syllables(&p[0].text) as f64).count();
+    pairs > 0 && quick * 2 >= pairs
+}
+
+/// The song's pace between its timed words, ms a syllable: the median over every word and the next one in its line
+/// (lines lit whole for `bunched` times don't count).
 fn word_pace(lines: &[LyricLine]) -> f64 {
     let mut per: Vec<f64> = vec![];
-    for l in lines {
+    for l in lines.iter().filter(|l| !bunched(l)) {
         let w: Vec<_> = l.words.iter().filter(|w| !w.text.trim().is_empty()).collect();
         for p in w.windows(2).filter(|p| countable(&p[0].text)) {
             let d = p[1].start_ms.saturating_sub(p[0].start_ms);
@@ -266,8 +300,8 @@ fn word_pace(lines: &[LyricLine]) -> f64 {
 }
 
 /// The line's own word times, cleaned up: inside [start, room_end], never going back, each word ending by the next;
-/// one without an end of its own is sung for its syllables at `SUNG_SLACK` × `word_pace` at most, the rest until the
-/// next word a pause.
+/// in a quick song (`QUICK_MS`) one without an end of its own is sung for its syllables at `SUNG_SLACK` × `word_pace`
+/// at most, the rest until the next word a pause.
 fn exact(l: &LyricLine, start: u64, room_end: u64, word_pace: f64) -> Option<Vec<Word>> {
     if l.words.is_empty() {
         return None;
@@ -295,13 +329,14 @@ fn exact(l: &LyricLine, start: u64, room_end: u64, word_pace: f64) -> Option<Vec
         let next = if k + 1 < n { words[k + 1].start } else { room_end };
         let said = words[k].end;
         words[k].end = if said > words[k].start && said <= next {
-            if k + 1 < n { said } else { said.min(words[k].start.saturating_add((syllables(&words[k].text) as u64 * MAX_HELD_SYLLABLE_MS).max(MAX_HELD_MS))) }
+            if k + 1 < n { said } else { said.min(words[k].start.saturating_add((held_syllables(&words[k].text) as u64 * MAX_HELD_SYLLABLE_MS).max(MAX_HELD_MS))) }
         } else if k + 1 < n {
-            // sung until the next word, unless that's a long way off
-            sung_ms(&words[k].text, word_pace, SUNG_SLACK).map_or(next, |ms| next.min(words[k].start.saturating_add(ms)))
+            // sung until the next word, unless that's a long way off in a quick song
+            let cap = if word_pace < QUICK_MS { sung_ms(&words[k].text, word_pace, SUNG_SLACK) } else { None };
+            cap.map_or(next, |ms| next.min(words[k].start.saturating_add(ms)))
         } else {
             // the last word without an end of its own: as long as an estimate would make it
-            words[k].start.saturating_add(syllables(&words[k].text) as u64 * MAX_SYLLABLE_MS).min(next)
+            words[k].start.saturating_add(held_syllables(&words[k].text) as u64 * MAX_SYLLABLE_MS).min(next)
         };
     }
     Some(words)
@@ -398,9 +433,9 @@ pub fn at(lines: &[Line], pos: u64) -> Stage {
 /// (the owner, 2026-11-06: it "rushes ahead"; it used to rest, then hop over in at most 650 ms, so it sat over the
 /// next word for most of a quick word and dashed across the long ones). The hop is a bounce at the end of the glide:
 /// up off the word and down onto the next as it starts. The last word it glides to the end of, as its fill does.
-/// Before a pause (a word that ends at least half a hop before the next starts) the drawing has it glide to the word's end as the fill
-/// gets there and wait there until the hop (`resting`). A line lit whole has no words to ride: the ball rests in
-/// its waiting spot.
+/// Before a pause (a word that ends at least half a hop before the next starts) the drawing has it glide to the
+/// word's end as the fill gets there and wait there until the hop (`resting`). A line lit whole has no words to ride:
+/// the ball rests in its waiting spot.
 pub fn ball(l: &Line, pos: u64, shown_at: u64) -> (f32, f32) {
     let w = &l.words;
     if w.is_empty() || !l.exact {
@@ -478,7 +513,7 @@ mod tests {
 
     #[test]
     fn syllables_are_counted_well_enough() {
-        for (w, n) in [("the", 1), ("home", 1), ("time", 1), ("little", 2), ("every", 3), ("echo", 2), ("beautiful", 3), ("night", 1), ("chorus,", 2), ("I", 1), ("rhythm", 1), ("canción", 2), ("żółw", 1), ("♪", 1), ("光が", 2), ("2024", 1), ("привет", 2), ("здравствуйте", 3), ("їжак", 2), ("καλημέρα", 4), ("příliš", 2)] {
+        for (w, n) in [("the", 1), ("home", 1), ("time", 1), ("little", 2), ("every", 3), ("echo", 2), ("beautiful", 3), ("night", 1), ("chorus,", 2), ("I", 1), ("rhythm", 1), ("canción", 2), ("żółw", 1), ("♪", 1), ("光が", 2), ("2024", 1), ("привет", 2), ("здравствуйте", 3), ("їжак", 2), ("καλημέρα", 4), ("příliš", 2), ("půjdeš", 2)] {
             assert_eq!(syllables(w), n, "{w}");
         }
     }
@@ -837,13 +872,18 @@ mod tests {
 
     /// A rap line at 150 ms a syllable, its words one syllable each, with a pause after "stop" (`gap` ms to "now").
     fn paused_line(gap: u64) -> Line {
+        timed(&[rap_line(gap, 150)], 0).remove(0)
+    }
+
+    /// That line's words, `step` ms a syllable apart.
+    fn rap_line(gap: u64, step: u64) -> LyricLine {
         let mut at = 1_000;
         let mut words = vec![];
         for w in ["we ", "go ", "stop ", "now ", "we ", "run ", "fast ", "and ", "far"] {
             words.push(LyricWord { start_ms: at, end_ms: None, text: w.into() });
-            at += if w == "stop " { gap } else { 150 };
+            at += if w == "stop " { gap } else { step };
         }
-        timed(&[LyricLine { start_ms: 1_000, text: "we go stop now we run fast and far".into(), words }], 0).remove(0)
+        LyricLine { start_ms: 1_000, text: "we go stop now we run fast and far".into(), words }
     }
 
     #[test]
@@ -875,17 +915,52 @@ mod tests {
         let span = 600;
         assert_eq!(ball(&l, 1_300 + span / 2, 0).0, 2.5, "halfway to the next word");
         assert!(ball(&l, 1_300 + span - HOP_MS.min(span) / 2, 0).1 > 0.9, "mid-hop as before");
-        // a song too short to say its pace: 250 ms a syllable
+        // only a quick song stops a fill early (Q209): at 250 ms a syllable the word fills to the next as before
+        let slow = timed(&[rap_line(1_200, 250)], 0).remove(0);
+        assert_eq!(slow.words[2].end, slow.words[3].start);
+        assert!(resting(&slow, 2).is_none());
+        // a song too short to say its pace (250 ms a syllable) isn't quick either
         let l = timed(&[LyricLine { start_ms: 0, text: "oh no".into(), words: vec![LyricWord { start_ms: 0, end_ms: None, text: "oh ".into() }, LyricWord { start_ms: 2_000, end_ms: None, text: "no".into() }] }], 0);
-        assert_eq!(l[0].words[0].end, 750);
-        // a script the syllables can't be counted in is never stopped early
-        let thai = |a: &str, b: &str| timed(&[LyricLine { start_ms: 0, text: format!("{a}{b}"), words: vec![LyricWord { start_ms: 0, end_ms: None, text: a.into() }, LyricWord { start_ms: 6_000, end_ms: None, text: b.into() }] }], 0);
+        assert_eq!(l[0].words[0].end, 2_000);
+        // in a quick song, a word in a script whose syllables can't be counted is never stopped early
+        let in_rap = |a: &str, b: &str| {
+            let line = LyricLine { start_ms: 10_000, text: format!("{a}{b}"), words: vec![LyricWord { start_ms: 10_000, end_ms: None, text: a.into() }, LyricWord { start_ms: 16_000, end_ms: None, text: b.into() }] };
+            timed(&[rap_line(150, 150), line], 0).remove(1).words[0].end
+        };
         for (a, b) in [("สวัสดี ", "ครับ"), ("नमस्ते ", "दुनिया"), ("שלום ", "עולם"), ("مرحبا ", "عالم"), ("夜空", "星屑"), ("Việt ", "Nam")] {
-            assert_eq!(thai(a, b)[0].words[0].end, 6_000, "{a}");
+            assert_eq!(in_rap(a, b), 16_000, "{a}");
         }
         // Cyrillic and Greek are counted
-        assert!(thai("привет ", "мир")[0].words[0].end < 6_000);
-        assert!(thai("καλημέρα ", "κόσμε")[0].words[0].end < 6_000);
+        assert!(in_rap("привет ", "мир") < 16_000);
+        assert!(in_rap("καλημέρα ", "κόσμε") < 16_000);
+    }
+
+    #[test]
+    fn a_line_whose_word_times_bunched_up_is_lit_whole() {
+        // nine words inside 0.28 s (as in one recorded LRCLIB line), then a held last word: no one raps that fast
+        let starts = [0u64, 20, 41, 62, 82, 116, 163, 209, 278];
+        let words: Vec<LyricWord> = ["Zostań ", "ze ", "mną ", "w ", "domu ", "lecę ", "bo ", "mam ", "sprawy"].iter().zip(starts).map(|(t, s)| LyricWord { start_ms: 5_000 + s, end_ms: None, text: (*t).into() }).collect();
+        let bunched_line = LyricLine { start_ms: 5_000, text: words.iter().map(|w| w.text.as_str()).collect(), words };
+        let l = timed(&[rap_line(150, 150), bunched_line.clone()], 0);
+        assert!(l[0].exact && !l[1].exact, "{l:?}");
+        assert!(l[1].words.iter().all(|w| w.start == l[1].first()), "lit whole");
+        // fast real rap stays word by word: 60 ms a syllable is 16 a second
+        let fast = LyricLine { start_ms: 5_000, text: "we go stop now".into(), words: ["we ", "go ", "stop ", "now"].iter().enumerate().map(|(k, t)| LyricWord { start_ms: 5_000 + k as u64 * 60, end_ms: None, text: (*t).into() }).collect() };
+        assert!(timed(&[fast], 0)[0].exact);
+        // under half the pairs bunched: still word by word
+        let mut some = rap_line(150, 150);
+        some.words[1].start_ms = some.words[0].start_ms + 10;
+        assert!(timed(&[some], 0)[0].exact);
+    }
+
+    #[test]
+    fn a_word_timed_lines_last_word_is_held_as_before_in_any_script() {
+        // the held last word without an end keeps the old syllable count (one syllable each then, 2–4 now)
+        for w in ["здравствуйте", "καλημέρα", "půjdeš"] {
+            let line = LyricLine { start_ms: 0, text: format!("a {w}"), words: vec![LyricWord { start_ms: 0, end_ms: None, text: "a ".into() }, LyricWord { start_ms: 500, end_ms: None, text: w.into() }] };
+            let l = timed(&[line, self::line(30_000, "next")], 0);
+            assert_eq!(l[0].words[1].end, 500 + MAX_SYLLABLE_MS, "{w}");
+        }
     }
 
     #[test]

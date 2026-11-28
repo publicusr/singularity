@@ -1347,7 +1347,7 @@ mod tests {
         assert_eq!(buf[(lights, ly as u16)].fg, th.fg.color(), "not yet sung");
         assert!(rows[..ly].iter().any(|r| r.contains('●')), "the ball is in its lane: {rows:#?}");
         assert!(rows[ly + 1..].iter().any(|r| r.contains("Sing it like")), "the next line waits below");
-        assert!(!rows.iter().any(|r| r.contains("estimated")), "this line's words are timed");
+        assert!(!rows.iter().any(|r| r.contains("no word timing")), "this line's words are timed");
         // the next line has no word times: lit whole, and the credit says so
         let mut app = app_at(8_000, true);
         assert!(render(&mut app, 70, 12).contains("lyrics: fake · no word timing"));
@@ -1661,7 +1661,8 @@ mod tests {
             let line = &song[lines[i].index];
             checked += 1;
             if line.words.is_empty() {
-                // a whole line: nothing lit before its stamp, all of it lit through from then (a frame's grace)
+                // a whole line: nothing lit before its estimated first word, all of it lit through from then (a
+                // frame's grace)
                 let (all, none) = (lit_pieces.iter().all(|p| p.1), !pieces.contains(&true));
                 let due = at >= lines[i].first();
                 let just = due && at - lines[i].first() < STEP_MS;
@@ -1744,8 +1745,8 @@ mod tests {
 
     /// Polish rap as LRCLIB answers it (#166: a recorded answer's times, quoting and punctuation, cut to four lines,
     /// the words invented): a bracketed ad-lib, a quoted letter, Polish letters, a line that wraps in the narrow Pane and
-    /// a word followed by a pause, sung in sync; the same answer without its word timing lights whole lines at their
-    /// stamps.
+    /// a word followed by a pause, sung in sync; the same answer without its word timing lights whole lines a moment
+    /// after their stamps (when the estimate's first word is).
     fn polish_rap() -> serde_json::Value {
         serde_json::from_str(include_str!("../../daemon/tests/fixtures/lrclib-polish-rap.json")).unwrap()
     }
@@ -1765,7 +1766,7 @@ mod tests {
         let lines = timing::timed(&song, SONG_MS);
         let (stop, next) = (&lines[2].words[1], &lines[2].words[2]);
         assert!(stop.text == "STOP)" && stop.end + 200 < next.start, "{lines:?}");
-        // without word timing: whole lines at the LRC's stamps, and the credit says so
+        // without word timing: whole lines a moment after the LRC's stamps, and the credit says so
         v["hasWordSync"] = false.into();
         let song = singularityd::lyrics::parse_lrclib("spotify:track:t", &v).expect("parsed").lines;
         assert!(song.len() == 4 && song.iter().all(|l| l.words.is_empty()), "{song:?}");

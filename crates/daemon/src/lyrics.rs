@@ -424,13 +424,16 @@ fn word_timed_records<'a>(records: &'a [Value], artist: &str, title: &str, durat
 }
 
 /// Whether a search's record (`artist`, `title`) is the song asked for (`want_artist`, `want_title`): the same artist,
-/// whatever the case (or the first one it credits: "A, B", "A & B"), and one title within the other once credits in
-/// brackets ("(feat. …)", "(Prod. …)", "[with …]") are dropped, whatever the case.
+/// whatever the case (or the first one it credits: "A, B", "A & B"), and one title's words a run of the other's
+/// (whole words, whatever the case) once credits in brackets ("(feat. …)", "(Prod. …)", "[with …]") are dropped.
 fn same_song(artist: &str, title: &str, want_artist: &str, want_title: &str) -> bool {
     let first = artist.split([',', '&']).next().unwrap_or("").trim();
     let artist_ok = [artist.trim(), first].iter().any(|a| a.to_lowercase() == want_artist.trim().to_lowercase());
-    let (a, b) = (bare_title(title), bare_title(want_title));
-    artist_ok && !a.is_empty() && !b.is_empty() && (a.contains(&b) || b.contains(&a))
+    let words = |t: &str| bare_title(t).split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect::<Vec<_>>();
+    let (a, b) = (words(title), words(want_title));
+    // `short`'s words in a row somewhere in `long`
+    let within = |short: &[String], long: &[String]| !short.is_empty() && long.windows(short.len()).any(|w| w == short);
+    artist_ok && (within(&a, &b) || within(&b, &a))
 }
 
 /// A title in lower case without bracketed credits ("(feat. X)", "(ft. X)", "(Prod. X)", "[with X]").
@@ -723,6 +726,11 @@ plain: |
         assert!(same_song("Nikt", "Wymyślona piosenka [with Ktoś]", "Nikt", "Wymyślona piosenka (ft. Ktoś)"));
         assert!(same_song("Nikt", "Wymyślona piosenka - Remastered", "Nikt", "Wymyślona piosenka"));
         assert!(!same_song("Nikt", "Inna piosenka", "Nikt", "Wymyślona piosenka"));
+        // whole words: a title inside another word is no match
+        assert!(!same_song("Nikt", "Love", "Nikt", "Lovely"));
+        assert!(!same_song("Nikt", "Rain", "Nikt", "Brain Drain"));
+        assert!(same_song("Nikt", "Rain", "Nikt", "Rain on Me"));
+        assert!(same_song("Nikt", "Rain!", "Nikt", "rain"));
         assert_eq!(bare_title("  Fiji (Prod. Borucci) [feat. X] (Live)"), "fiji (live)");
         // in a search: someone else's record of the same length is no match
         let mut search: Vec<Value> = serde_json::from_str(SEARCH).unwrap();

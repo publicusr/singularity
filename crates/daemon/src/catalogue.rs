@@ -57,7 +57,8 @@ pub enum CatCmd {
     /// look up names, artists and durations for these track URIs (Soloist sometimes sends bare URIs)
     Describe(Vec<String>),
     /// lyrics for a track; `meta` (name, artists, album, duration) helps the LRCLIB fallback
-    /// `words`: also ask LRCLIB for word timing when Spotify's lyrics only time lines (a Karaoke Widget is on screen)
+    /// `words`: a Karaoke Widget is on screen: also ask LRCLIB for word timing when Spotify's lyrics only time lines,
+    /// and let LRCLIB's lookup search for a word-timed version when its best match times only lines (Q183)
     Lyrics { uri: String, meta: Option<singularity_proto::Item>, words: bool },
     /// a lookup running beside browsing has ended: LRCLIB's answer if there is one to send on to the Clients, and
     /// whether to remember it
