@@ -17,6 +17,12 @@ use singularity_proto::LyricLine;
 
 /// How long the last word of an exactly timed line lasts per syllable when the source gives it no end.
 pub const MAX_SYLLABLE_MS: u64 = 550;
+/// The longest a last word given its end is held: this a syllable, or `MAX_HELD_MS`, whichever is longer. A source's
+/// "end" can be the next line's start or the song's end (a Lyricsfile made from LRC), which would fill the word
+/// through an instrumental and hide the gap's view. Real ones stay inside it: of 684 lines of 15 word-synced LRCLIB
+/// songs (2026-11-28), half the last words are held under 0.5 s, 99 % under 2.7 s, the longest 4.1 s (one syllable).
+pub const MAX_HELD_SYLLABLE_MS: u64 = 1_000;
+pub const MAX_HELD_MS: u64 = 4_500;
 /// The most of a line's room its estimated words may take: the rest is the breath before the next line.
 const SUNG_SHARE: f64 = 0.95;
 /// An estimated line's words start this long after its stamp (at most a tenth of its room): stamps tend to come a
@@ -215,7 +221,7 @@ fn exact(l: &LyricLine, start: u64, room_end: u64) -> Option<Vec<Word>> {
         let next = if k + 1 < n { words[k + 1].start } else { room_end };
         let said = words[k].end;
         words[k].end = if said > words[k].start && said <= next {
-            said
+            if k + 1 < n { said } else { said.min(words[k].start.saturating_add((syllables(&words[k].text) as u64 * MAX_HELD_SYLLABLE_MS).max(MAX_HELD_MS))) }
         } else if k + 1 < n {
             next
         } else {
@@ -402,6 +408,26 @@ mod tests {
         // a comma pauses: "hold me, closer now" has a syllable's rest after "me,"
         let h = &l[3].words;
         assert!(h[2].start - h[1].start > (h[1].start - h[0].start) * 3 / 2, "{h:?}");
+    }
+
+    #[test]
+    fn a_last_word_ending_at_the_next_line_or_the_songs_end_is_held_only_so_long() {
+        let timed_line = |start: u64, words: &[(&str, u64)], end: u64| LyricLine {
+            start_ms: start,
+            text: words.iter().map(|w| w.0).collect(),
+            words: words.iter().enumerate().map(|(k, (t, s))| LyricWord { start_ms: *s, end_ms: (k + 1 == words.len()).then_some(end), text: (*t).into() }).collect(),
+        };
+        // a break: the line "ends" where the next starts, 25 s on; an outro: the last line "ends" with the song
+        let lines = [timed_line(10_000, &[("one ", 10_000), ("more", 10_400)], 35_000), timed_line(35_000, &[("last ", 35_000), ("time", 35_500)], 200_000)];
+        let l = timed(&lines, 200_000);
+        assert_eq!((l[0].end, l[1].end), (10_400 + MAX_HELD_MS, 35_500 + MAX_HELD_MS));
+        // so the break has its own view and counts the next line in, and the song's end says so
+        assert!(matches!(at(&l, 20_000), Stage::Gap { next: Some(1), .. }), "{:?}", at(&l, 20_000));
+        assert_eq!(at(&l, 32_000), Stage::Line { i: 1, count: 3 });
+        assert_eq!(at(&l, 60_000), Stage::Gap { next: None, in_ms: 0 });
+        // a real held note (3 s, the longest kept whole) and a long word's own end stay as given
+        let l = timed(&[timed_line(5_000, &[("yeah", 5_000)], 8_000), timed_line(9_000, &[("unbelievable", 9_000)], 14_000)], 0);
+        assert_eq!((l[0].end, l[1].end), (8_000, 14_000));
     }
 
     #[test]
