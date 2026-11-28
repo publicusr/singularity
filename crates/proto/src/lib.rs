@@ -486,6 +486,10 @@ pub struct TrackRow {
     /// an episode's progress, as Spotify keeps it (#59); `added_at` is then its release date
     #[serde(default)]
     pub progress: Option<Progress>,
+    /// the song's album cover, where the list says (playlists, Liked Songs): demo mode's Home builds album Cards from
+    /// the Demo playlists' songs (#128). Additive: older Daemons leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_url: Option<String>,
 }
 
 /// How far into an episode you are (Spotify's `playedState`; marks can't be set from here).

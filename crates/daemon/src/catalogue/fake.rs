@@ -373,6 +373,7 @@ fn fake_artist(uri: &str, home: &HomeFeed) -> singularity_proto::ArtistPage {
             added_at: None,
             duration_ms: 200_000 + i * 3_000,
             playable: true,
+            cover_url: None,
         })
         .collect();
     singularity_proto::ArtistPage { uri: uri.into(), name: "Nova Drift".into(), monthly_listeners: Some(1_234_567), image_url: None, top_tracks, shelves }
@@ -560,6 +561,8 @@ fn fake_tracks(uri: &str) -> Vec<CatEvent> {
                     album_uri: Some(format!("spotify:album:fake{}", (i * 7) % 13 + 1)),
                     uid: uri.contains(":playlist:").then(|| format!("fakeuid{i}")),
                     progress: None,
+                    // the recorded Home feed's covers (the pty harness keeps them cached), one per fake album
+                    cover_url: Some(format!("https://i.scdn.co/image/fixture{:03}", (i * 7) % 13 + 1)),
                 })
                 .collect();
             let header = (offset == 0 && uri.contains(":album:")).then(|| singularity_proto::ListHeader {

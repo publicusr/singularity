@@ -265,6 +265,7 @@ pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
                 added_at: it["addedAt"]["isoString"].as_str().map(String::from),
                 duration_ms: ms,
                 playable: d["playability"]["playable"].as_bool().unwrap_or(true),
+                cover_url: image(&d["albumOfTrack"]["coverArt"]["sources"]),
             }
         })
         .collect();
@@ -304,6 +305,7 @@ pub fn episode_row(d: &Value) -> Option<TrackRow> {
         album_uri: None,
         uid: None,
         progress,
+        cover_url: None,
     })
 }
 
@@ -455,6 +457,7 @@ pub fn parse_search(query: &str, v: &Value) -> singularity_proto::SearchResults 
                 added_at: None,
                 duration_ms: t["duration"]["totalMilliseconds"].as_u64().unwrap_or(0),
                 playable: t["playability"]["playable"].as_bool().unwrap_or(true),
+                cover_url: None,
             })
         })
         .collect();
@@ -511,6 +514,7 @@ pub fn parse_artist(v: &Value) -> Option<ArtistPage> {
                 added_at: None,
                 duration_ms: t["duration"]["totalMilliseconds"].as_u64().unwrap_or(0),
                 playable: t["playability"]["playable"].as_bool().unwrap_or(true),
+                cover_url: None,
             })
         })
         .collect();
@@ -593,6 +597,7 @@ mod tests {
         assert_eq!((pl.len(), n), (3, 100), "the episode keeps its place");
         assert_eq!((pl[1].uri.as_str(), pl[1].name.as_str(), pl[1].uid.as_deref()), ("spotify:episode:e0", "Talk", Some("uidE")));
         assert_eq!(pl[2].artists, ["Mira Vale", "Lumen Fields"]);
+        assert_eq!(pl[0].cover_url.as_deref(), Some("https://i.scdn.co/image/pt300"), "a playlist's song carries its album's cover (#128)");
         assert!(!pl[2].playable);
 
         let (al, n) = parse_tracks("spotify:album:a", &fixture("album.json"));
