@@ -3,8 +3,8 @@
 //! really well for the smaller lyrics widgets").
 //!
 //! Which family: `SINGULARITY_BIG_FONT` when set, else the terminal's own setting (Ghostty's first `font-family`
-//! across its config files and their `config-file` includes, or in Ghostty with none set its built-in JetBrains Mono, as installed or as a Nerd Font build; kitty's `font_family`),
-//! else the system's monospace (`fc-match monospace`, where fontconfig is), else a few common monospace families.
+//! across its config files and their `config-file` includes, or in Ghostty with none set its built-in JetBrains Mono,
+//! as installed or as a Nerd Font build; kitty's `font_family`), else the system's monospace (`fc-match monospace`, where fontconfig is), else a few common monospace families.
 //! The face files come from the system font folders (`fontdb`); a family that isn't installed is skipped. None
 //! found: big text keeps the bundled font.
 
@@ -78,21 +78,23 @@ fn ghostty_family() -> Option<String> {
     ghostty_font(&ghostty_conf(&files, std::env::var_os("HOME").map(PathBuf::from).as_deref()))
 }
 
-/// At most this many included files are read (a guard besides the cycle check, #160).
+/// At most this many `config-file` entries are looked at, read or not (a guard besides the cycle check, #160).
 const GHOSTTY_MAX_INCLUDES: usize = 64;
 
 /// Ghostty's config lines in the order it applies them (its `Config.zig`, #160): every default file that exists, in
 /// order, then the `config-file` includes they name, in the order named, each read once; an included file's own
-/// includes join the end of that list. A relative path is relative to the file naming it, `~/` is `home`, a leading
-/// `?` only makes a missing file quiet (a missing one is skipped either way), and an empty `config-file =` clears the
-/// list.
+/// includes join the end of that list. A relative path is relative to the file naming it, with its links resolved (an
+/// absolute or `~/` one keeps the folder as written, the one its own relative includes start from), `~/` is `home`, a
+/// leading `?` only makes a missing file quiet (a missing one is skipped either way), and an empty `config-file =`
+/// clears the list. A UTF-8 BOM at a file's start is skipped.
 fn ghostty_conf(files: &[PathBuf], home: Option<&Path>) -> String {
     let mut text = String::new();
     let mut includes: Vec<PathBuf> = vec![];
     let mut read = |path: &Path, includes: &mut Vec<PathBuf>| {
         let Ok(conf) = std::fs::read_to_string(path) else { return };
-        ghostty_includes(&conf, path.parent().unwrap_or(Path::new("/")), home, includes);
-        text.push_str(&conf);
+        let conf = conf.strip_prefix('\u{feff}').unwrap_or(&conf);
+        ghostty_includes(conf, path.parent().unwrap_or(Path::new("/")), home, includes);
+        text.push_str(conf);
         text.push('\n');
     };
     for f in files {
@@ -101,7 +103,7 @@ fn ghostty_conf(files: &[PathBuf], home: Option<&Path>) -> String {
     let mut loaded = std::collections::HashSet::new();
     let mut i = 0;
     while i < includes.len() && i < GHOSTTY_MAX_INCLUDES {
-        let path = includes[i].canonicalize().unwrap_or_else(|_| includes[i].clone());
+        let path = includes[i].clone();
         i += 1;
         if path.is_file() && loaded.insert(path.clone()) {
             read(&path, &mut includes);
@@ -110,14 +112,16 @@ fn ghostty_conf(files: &[PathBuf], home: Option<&Path>) -> String {
     text
 }
 
-/// Adds the files `conf`'s `config-file` lines name to `list`, resolved against `base` (the folder of the file).
+/// Adds the files `conf`'s `config-file` lines name to `list`, resolved against `base` (the folder of the file). As in
+/// Ghostty, the line's quotes come off first (so `"?x"` is an optional `x` and `""` clears the list), then the `?`, then
+/// a second pair of quotes (`?"x"`); only a relative path has its links resolved (`path.zig`).
 fn ghostty_includes(conf: &str, base: &Path, home: Option<&Path>, list: &mut Vec<PathBuf>) {
     for line in conf.lines() {
         let Some((k, v)) = line.split_once('=') else { continue };
         if k.trim() != "config-file" {
             continue;
         }
-        let v = v.trim();
+        let v = unquote(v.trim());
         if v.is_empty() {
             list.clear();
             continue;
@@ -129,7 +133,8 @@ fn ghostty_includes(conf: &str, base: &Path, home: Option<&Path>, list: &mut Vec
         match (v.strip_prefix("~/"), home) {
             (Some(rest), Some(home)) => list.push(home.join(rest)),
             (Some(_), None) => {}
-            (None, _) => list.push(base.join(v)),
+            (None, _) if Path::new(v).is_absolute() => list.push(PathBuf::from(v)),
+            (None, _) => list.push(base.join(v).canonicalize().unwrap_or_else(|_| base.join(v))),
         }
     }
 }
@@ -302,7 +307,21 @@ mod tests {
         write("b/sub/one", "config-file = two\nconfig-file = ~/home-inc\n");
         write("b/sub/two", "font-family = Nested Mono\n");
         write("home-inc", "font-family = Home Mono\n");
-        assert_eq!(font(&[main]), Some("Nested Mono".into()), "the first font-family in load order is the primary");
+        assert_eq!(font(std::slice::from_ref(&main)), Some("Nested Mono".into()), "the first font-family in load order is the primary");
+        write("home-inc", "font-family =\nfont-family = Home Mono\n");
+        assert_eq!(font(&[main]), Some("Home Mono".into()), "`~/` is the home folder");
+
+        // the line's quotes come off before the `?`: `"?x"` is an optional `x`, `""` clears the list
+        let main = write("q/config", "config-file = \"?inc\"\nconfig-file = ?\"other\"\n");
+        write("q/inc", "font-family = Quoted Mono\n");
+        write("q/other", "font-family =\nfont-family = Other Mono\n");
+        assert_eq!(font(&[main]), Some("Other Mono".into()));
+        let main = write("q/config", "config-file = \"?inc\"\nconfig-file = \"\"\n");
+        assert_eq!(font(&[main]), None);
+
+        // a BOM at a file's start is skipped
+        let main = write("bom/config", "\u{feff}font-family = Bom Mono\n");
+        assert_eq!(font(&[main]), Some("Bom Mono".into()));
 
         // a cycle ends
         let main = write("c/config", "config-file = loop\n");
@@ -323,6 +342,19 @@ mod tests {
         assert_eq!(font(&[first.clone(), second.clone()]), Some("Inc Mono".into()));
         write("e/inc", "font-size = 3\n");
         assert_eq!(font(&[first, second]), Some("Second Mono".into()), "not only the first file");
+
+        // only a relative include has its links resolved: its own relative includes start from the link's target, an
+        // absolute or `~/` one's from the folder as written
+        write("g/real/os", "config-file = next\n");
+        write("g/real/next", "font-family = Real Mono\n");
+        write("g/next", "font-family = Written Mono\n");
+        std::os::unix::fs::symlink(d.join("g/real/os"), d.join("g/os")).unwrap();
+        let main = write("g/config", "config-file = os\n");
+        assert_eq!(font(&[main]), Some("Real Mono".into()));
+        let main = write("h/config", &format!("config-file = {}\n", d.join("g/os").display()));
+        assert_eq!(font(&[main]), Some("Written Mono".into()));
+        let main = write("h/config", "config-file = ~/g/os\n");
+        assert_eq!(font(&[main]), Some("Written Mono".into()));
 
         // an empty `config-file =` clears the includes named so far
         let main = write("f/config", "config-file = inc\nconfig-file =\n");
