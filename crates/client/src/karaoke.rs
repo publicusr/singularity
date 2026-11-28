@@ -611,8 +611,9 @@ struct Ball {
 fn cell_ball(buf: &mut Buffer, r: Rect, b: Ball, th: &Theme) {
     let x = b.x.round() as i32;
     let y = (b.base - b.height * (b.lane.saturating_sub(1)) as f32).round() as i32;
-    // (on its way down to a wrapped line's next row it crosses the row above: it never covers a letter there)
-    if x >= r.x as i32 && x < r.right() as i32 && y >= r.y as i32 && y < r.bottom() as i32 && buf[(x as u16, y as u16)].symbol().trim().is_empty() {
+    // (on its way down to a wrapped line's next row it crosses the row above: it never covers a letter there; a
+    // count-in dot it may)
+    if x >= r.x as i32 && x < r.right() as i32 && y >= r.y as i32 && y < r.bottom() as i32 && matches!(buf[(x as u16, y as u16)].symbol().trim(), "" | "●") {
         text(buf, x as u16, y as u16, 1, "●", th.s(th.accent2).add_modifier(Modifier::BOLD));
     }
 }

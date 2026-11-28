@@ -3,8 +3,8 @@
 //!
 //! An arrival (`receive`) starts all of that afresh, so nothing drawn from the lyrics before it can outlive them: the
 //! draw functions get their rows and timed lines from here and never guess whether the lyrics changed. A Karaoke Pane
-//! asks again with word timing (D67); that answer has the same song and lines as the one before, only the words'
-//! times differ, and it is a new arrival like any other.
+//! asks again with word timing (D67); that answer (often LRCLIB's after Spotify's) is the same song with its words
+//! timed: worked out afresh like any arrival, but the lyrics Pane's view stays where it was.
 
 use crate::karaoke::timing::Line;
 use singularity_proto::Lyrics;
@@ -39,8 +39,9 @@ impl SongLyrics {
             return;
         }
         self.answered |= self.asked.as_ref().is_some_and(|(u, _)| *u == l.uri);
+        let same = self.lyrics.as_ref().is_some_and(|o| o.uri == l.uri);
         self.lyrics = Some(l);
-        self.view = Default::default();
+        self.view = if same { std::mem::take(&mut self.view).same_song() } else { Default::default() };
         self.karaoke.new_lyrics();
     }
 
@@ -205,14 +206,28 @@ mod tests {
     }
 
     #[test]
-    fn an_arrival_starts_the_view_afresh() {
+    fn another_songs_lyrics_start_the_view_afresh_the_same_songs_keep_it() {
         let mut s = SongLyrics::default();
         let mut l = lyrics(false);
         l.synced = false;
         s.receive(l.clone(), Some(URI));
         assert!(s.wheel_lyrics(6));
         assert_eq!(s.lyrics_view().unwrap().1.scroll, 6);
-        s.receive(l, Some(URI));
-        assert_eq!(s.lyrics_view().unwrap().1.scroll, 0, "new lyrics: from the top");
+        // the same song again (LRCLIB's word-timed lyrics after Spotify's): the view stays
+        s.receive(l.clone(), Some(URI));
+        assert_eq!(s.lyrics_view().unwrap().1.scroll, 6, "the same song: where the reader was");
+        // synced: the wheel's hold stays too
+        let mut synced = lyrics(false);
+        s.receive(synced.clone(), Some(URI));
+        assert!(s.wheel_lyrics(3));
+        let held = format!("{:?}", s.lyrics_view().unwrap().1.follow);
+        synced.lines[0].words = lyrics(true).lines[0].words.clone();
+        s.receive(synced, Some(URI));
+        assert_eq!(format!("{:?}", s.lyrics_view().unwrap().1.follow), held);
+        // another song: from the top
+        let mut next = l;
+        next.uri = "spotify:track:next".into();
+        s.receive(next, Some("spotify:track:next"));
+        assert_eq!(s.lyrics_view().unwrap().1.scroll, 0, "another song: from the top");
     }
 }
