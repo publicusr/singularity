@@ -154,9 +154,14 @@ async fn deleting_the_listening_data_takes_the_copy_and_the_demo_log() {
     assert_eq!(said, Event::Notice { message: "Deleted the listening log and every library backup".into() });
     assert!(gone(&file).await, "the copy is gone");
     assert!(!demo_log.exists(), "the demo log is gone");
-    // what the Daemon fetches next isn't written back
+    // what the Daemon fetches next isn't written back, also after a reconnect names the same account again
     ev.send(CatEvent::Home(home("Today"))).await.unwrap();
     next(&mut a, |e| matches!(e, Event::Home(_))).await;
+    ev.send(ready("alice")).await.unwrap();
+    ev.send(CatEvent::Account("alice".into())).await.unwrap();
+    ev.send(CatEvent::Home(home("Later"))).await.unwrap();
+    ev.send(CatEvent::Library(library("Later"))).await.unwrap();
+    next(&mut a, |e| matches!(e, Event::Library(_))).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(!file.exists(), "written back");
 
@@ -169,6 +174,31 @@ async fn deleting_the_listening_data_takes_the_copy_and_the_demo_log() {
     assert!(!evs.iter().any(|e| matches!(e, Event::Home(_) | Event::Library(_))), "{evs:?}");
     ev.send(CatEvent::Library(library("Fresh"))).await.unwrap();
     assert_eq!(next(&mut b, |e| matches!(e, Event::Library(_))).await, Event::Library(library("Fresh")));
+}
+
+/// #167: a Delete before the Catalogue names the account: the copy read at start is never shown, and what is fetched
+/// after isn't written.
+#[tokio::test]
+async fn deleting_before_the_account_is_named_shows_and_keeps_nothing() {
+    use singularity_proto::Command;
+    let dir = common::scratch();
+    let file = dir.path().join("cache").join("home-and-library.json");
+    let data = dir.path().join("data");
+    write(&file, &alice());
+    let (path, ev) = daemon_with(dir.path().join("a.sock"), &file, Some(data.clone()));
+    let (mut a, _) = snapshot(&path).await;
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::DeleteLocalData)).await.unwrap();
+    let said = next(&mut a, |e| matches!(e, Event::Notice { .. } | Event::Error { .. })).await;
+    assert_eq!(said, Event::Notice { message: "Deleted the listening log and every library backup".into() });
+    assert!(gone(&file).await);
+    ev.send(ready("alice")).await.unwrap();
+    next(&mut a, |e| matches!(e, Event::Catalogue(CatalogueStatus::Ready { .. }))).await;
+    let (_b, evs) = snapshot(&path).await;
+    assert!(!evs.iter().any(|e| matches!(e, Event::Home(_) | Event::Library(_))), "{evs:?}");
+    ev.send(CatEvent::Library(library("Fresh"))).await.unwrap();
+    next(&mut a, |e| matches!(e, Event::Library(_))).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!file.exists(), "written back");
 }
 
 /// What the file holds once the Daemon's writer has done what `done` waits for (it writes on its own thread).

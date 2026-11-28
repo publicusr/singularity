@@ -7,12 +7,17 @@ fn run(args: &[&str], demo: Option<&str>) -> (Option<i32>, String, String, bool)
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("d.sock");
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_singularity"));
-    cmd.args(args)
-        .env_clear()
-        .env("HOME", dir.path())
-        .env("SINGULARITY_SOCKET", &socket)
-        .env("SINGULARITY_START_APP", "0")
-        .stdin(std::process::Stdio::null())
+    // (pinned and in scratch dirs like a pty run's, so a regression that goes on to start a Daemon touches nothing real)
+    cmd.args(args).env_clear().env("HOME", dir.path()).env("SINGULARITY_SOCKET", &socket);
+    for (k, v) in [("SINGULARITY_ENGINE", "soloist"), ("SINGULARITY_SOLOIST", "local"), ("SINGULARITY_START_APP", "0"), ("SINGULARITY_NOWPLAYING", "off"), ("SINGULARITY_NO_KEYRING", "1")] {
+        cmd.env(k, v);
+    }
+    for (k, sub) in [("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"), ("XDG_STATE_HOME", "state"), ("XDG_CACHE_HOME", "cache"), ("XDG_RUNTIME_DIR", "run")] {
+        let d = dir.path().join(sub);
+        std::fs::create_dir(&d).unwrap();
+        cmd.env(k, d);
+    }
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     if let Some(v) = demo {

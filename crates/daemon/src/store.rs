@@ -74,13 +74,12 @@ impl Store {
         // (the file's connection closes here, before the file goes)
         self.db = empty;
         self.removed = true;
-        for suffix in ["", "-journal", "-wal", "-shm"] {
-            match std::fs::remove_file(self.dir.join(format!("{}{suffix}", self.name))) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-                _ => {}
-            }
-        }
-        Ok(())
+        remove_files(&self.dir, self.name)
+    }
+
+    /// The demo Listening log's files beside this log, for a Daemon that couldn't open it (#167).
+    pub fn remove_demo_files(&self) -> anyhow::Result<()> {
+        remove_files(&self.dir, DEMO_DB)
     }
 
     /// The default place: `$XDG_DATA_HOME/singularity`.
@@ -543,8 +542,17 @@ fn parse_date(s: &str) -> Option<i64> {
     Some(days_from_civil(y, m, d))
 }
 
-/// The log's schema: 1 (#23); 2 adds album and artist links and an index for per-track counts (#35). Each step runs
-/// once, in place, keeping every row.
+/// The SQLite file `name` in `dir` and its journals, wherever there are any.
+fn remove_files(dir: &Path, name: &str) -> anyhow::Result<()> {
+    for suffix in ["", "-journal", "-wal", "-shm"] {
+        match std::fs::remove_file(dir.join(format!("{name}{suffix}"))) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// The plays table as this build has it.
 fn schema(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch(
@@ -566,6 +574,8 @@ fn schema(db: &Connection) -> rusqlite::Result<()> {
     migrate(db)
 }
 
+/// The log's schema: 1 (#23); 2 adds album and artist links and an index for per-track counts (#35). Each step runs
+/// once, in place, keeping every row.
 fn migrate(db: &Connection) -> rusqlite::Result<()> {
     let v: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if v < 2 {
@@ -921,5 +931,9 @@ mod tests {
         let mode = std::fs::metadata(dir.path().join(DEMO_DB)).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert_eq!(Store::open_demo(dir.path()).unwrap().summary(now).unwrap().plays, 1, "on disk");
+        // a Daemon that couldn't open the demo log removes it by its path, beside the real one
+        drop(demo);
+        Store::open(dir.path()).unwrap().remove_demo_files().unwrap();
+        assert!(!dir.path().join(DEMO_DB).exists() && dir.path().join(DB).exists());
     }
 }

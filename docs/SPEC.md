@@ -163,7 +163,8 @@ audio, and looks spectacular.
   - *OfficialCatalogue*: Web API fallback for library/search when the private source is broken.
   - Rules: metadata only, no crawling, cache with TTLs, back off on 429/5xx, never retry in a loop.
   - Start (#81): the last Home and library are kept in the user's cache dir (`home-and-library.json`, owner-only,
-    naming its account, removed on logout) and shown to Clients as soon as the saved login names that account, before
+    naming its account, removed on logout or when the listening data is deleted) and shown to Clients as soon as the
+    saved login names that account, before
     Spotify answers; another account's copy is deleted unseen. Home and the library are then fetched side by side,
     the library's pages and folders together, at most 4 requests out between them; a 429 or 5xx is asked once more
     after a pause. Each step's time is logged (`timing:` lines in `daemon.log`).
