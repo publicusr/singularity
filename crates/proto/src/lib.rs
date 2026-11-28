@@ -689,6 +689,19 @@ pub struct ListeningSummary {
     /// plays today
     #[serde(default)]
     pub plays_today: u32,
+    /// the newest library backup, when some of its lists didn't come back whole (#144); `None`: it was whole, or
+    /// there's none. Additive: older Daemons leave it out, older Clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_short: Option<BackupShort>,
+}
+
+/// The lists in the newest library backup that didn't come back whole (Settings shows one line about them).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct BackupShort {
+    /// Liked Songs and owned playlists that came back short
+    pub lists: u32,
+    /// how many of them kept their last whole copy beside tonight's short one (the rest are saved marked incomplete)
+    pub kept: u32,
 }
 
 /// A calendar period in local time (weeks start on Monday), for stats.

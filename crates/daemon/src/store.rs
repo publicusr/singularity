@@ -34,6 +34,8 @@ pub struct Store {
     db: Connection,
     /// the demo Listening log (D90): deleting it leaves the library backups alone
     demo: bool,
+    /// what came back short in the newest backup (#144), for the summary; read once at open, then kept as written
+    backup_short: Option<singularity_proto::BackupShort>,
 }
 
 impl Store {
@@ -70,7 +72,12 @@ impl Store {
             CREATE INDEX IF NOT EXISTS plays_day ON plays(day);",
         )?;
         migrate(&db)?;
-        Ok(Store { dir: dir.to_path_buf(), db, demo })
+        let mut store = Store { dir: dir.to_path_buf(), db, demo, backup_short: None };
+        // (the demo log's summary says nothing about the real account's backups)
+        if !demo {
+            store.backup_short = store.latest_backup().and_then(|(_, b)| crate::backup::short_lists(&b));
+        }
+        Ok(store)
     }
 
     /// The default place: `$XDG_DATA_HOME/singularity`.
@@ -133,6 +140,7 @@ impl Store {
             streak_days: streak(&days, today),
             plays: plays as u64,
             plays_today: plays_today as u32,
+            backup_short: self.backup_short.clone(),
         })
     }
 
@@ -271,10 +279,11 @@ impl Store {
     }
 
     /// Write today's backup (replacing one already taken today), then drop the ones retention doesn't keep.
-    pub fn write_backup(&self, now_ms: u64, backup: &Value) -> anyhow::Result<PathBuf> {
+    pub fn write_backup(&mut self, now_ms: u64, backup: &Value) -> anyhow::Result<PathBuf> {
         let today = local_day(now_ms);
         let path = self.backups_dir()?.join(format!("library-{}.json", date(today)));
         write_private(&path, &serde_json::to_vec_pretty(backup)?)?;
+        self.backup_short = crate::backup::short_lists(backup);
         let days: Vec<i64> = self.backups().iter().map(|(d, _)| *d).collect();
         let keep = retained(&days, today);
         for (d, p) in self.backups() {
@@ -302,13 +311,14 @@ impl Store {
     }
 
     /// Forget every play and remove every backup.
-    pub fn delete_all(&self) -> anyhow::Result<()> {
+    pub fn delete_all(&mut self) -> anyhow::Result<()> {
         self.db.execute("DELETE FROM plays", [])?;
         // free the pages too, so nothing lingers in the file
         self.db.execute_batch("VACUUM")?;
         if self.demo {
             return Ok(());
         }
+        self.backup_short = None;
         match std::fs::remove_dir_all(self.dir.join(BACKUPS)) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
@@ -769,7 +779,7 @@ mod tests {
     #[test]
     fn the_store_sums_up_exports_and_deletes_with_private_files() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path()).unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
         let now = 1_792_000_000_000u64; // 2026-10-14
         let day = 86_400_000;
         for (i, (back, artist, mins)) in [(0, "Nova Drift", 30), (1, "Nova Drift", 20), (1, "Mira Vale", 10), (3, "Mira Vale", 5)].into_iter().enumerate() {
@@ -798,5 +808,26 @@ mod tests {
         let s = store.summary(now).unwrap();
         assert_eq!((s.plays, s.minutes.iter().sum::<u32>()), (0, 0));
         assert!(store.latest_backup().is_none() && !dir.path().join(BACKUPS).exists());
+    }
+
+    #[test]
+    fn the_summary_says_when_the_newest_backup_came_back_short() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let now = 1_792_000_000_000u64;
+        let short = json!({ "liked": [], "liked_incomplete": "only 0 of its 2 tracks came back",
+            "playlists": [{ "uri": "spotify:playlist:a", "tracks": [], "short": { "incomplete": "x" } }, { "uri": "spotify:playlist:b", "tracks": [] }] });
+        store.write_backup(now, &short).unwrap();
+        let want = Some(singularity_proto::BackupShort { lists: 2, kept: 1 });
+        assert_eq!(store.summary(now).unwrap().backup_short, want);
+        // a Daemon started later reads it from the newest backup; the demo log never says
+        assert_eq!(Store::open(dir.path()).unwrap().summary(now).unwrap().backup_short, want);
+        assert_eq!(Store::open_demo(dir.path()).unwrap().summary(now).unwrap().backup_short, None);
+        // a whole one the next day: nothing to say
+        store.write_backup(now + 86_400_000, &json!({ "liked": [], "playlists": [] })).unwrap();
+        assert_eq!(store.summary(now).unwrap().backup_short, None);
+        store.write_backup(now + 2 * 86_400_000, &short).unwrap();
+        store.delete_all().unwrap();
+        assert_eq!(store.summary(now).unwrap().backup_short, None);
     }
 }

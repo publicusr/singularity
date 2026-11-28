@@ -736,7 +736,7 @@ mod tests {
     fn summary() -> singularity_proto::ListeningSummary {
         let mut minutes: Vec<u32> = (0..singularity_proto::LISTENING_DAYS as u32).map(|i| i * 7 % 40).collect();
         *minutes.last_mut().unwrap() = 0;
-        singularity_proto::ListeningSummary { minutes, today_weekday: 1, hours_this_year: 19.0, top_artist: Some("Mira Vale".into()), streak_days: 10, plays: 534, plays_today: 0 }
+        singularity_proto::ListeningSummary { minutes, today_weekday: 1, hours_this_year: 19.0, top_artist: Some("Mira Vale".into()), streak_days: 10, plays: 534, plays_today: 0, backup_short: None }
     }
 
     fn week() -> Stats {

@@ -650,7 +650,7 @@ async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>, demo
     };
     let now = proto::now_ms();
     let (reply, everyone) = {
-        let s = store.lock().expect("store lock");
+        let mut s = store.lock().expect("store lock");
         match cmd {
             Command::GetListening => (s.summary(now).map(Event::Listening), None),
             Command::GetStats { period } => {

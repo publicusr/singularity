@@ -115,6 +115,22 @@ fn settle(l: Listed, last: Option<(&Value, &Value, u64)>, now_ms: u64, what: &st
     m
 }
 
+/// The lists in backup `b` that came back short: Liked Songs and owned playlists, and how many of them kept their last
+/// whole copy beside the short one (`short`) rather than being saved marked `incomplete`. `None` when all were whole.
+pub fn short_lists(b: &Value) -> Option<singularity_proto::BackupShort> {
+    let marks = std::iter::once((&b["liked_short"], &b["liked_incomplete"])).chain(b["playlists"].as_array().into_iter().flatten().map(|p| (&p["short"], &p["incomplete"])));
+    let (mut lists, mut kept) = (0, 0);
+    for (short, incomplete) in marks {
+        if !short.is_null() {
+            kept += 1;
+        }
+        if !short.is_null() || !incomplete.is_null() {
+            lists += 1;
+        }
+    }
+    (lists > 0).then_some(singularity_proto::BackupShort { lists, kept })
+}
+
 /// Take a backup of `username`'s library. `previous`: the last backup, whose unchanged playlists are reused.
 pub async fn take(f: &mut impl Fetch, username: &str, previous: Option<&Value>, now_ms: u64) -> anyhow::Result<Value> {
     let mut playlists = vec![];
@@ -207,10 +223,19 @@ pub async fn run(hub: Arc<Hub>) {
             tracing::info!("taking the nightly library backup");
             let started = Instant::now();
             match take(&mut fetch, &user, previous.as_ref().map(|(_, v)| v), now).await {
-                Ok(b) => match store.lock().expect("store lock").write_backup(now, &b) {
-                    Ok(path) => tracing::info!("library backup written to {} in {:.0?}", path.display(), started.elapsed()),
-                    Err(e) => tracing::warn!("couldn't write the library backup: {e}"),
-                },
+                Ok(b) => {
+                    let mut s = store.lock().expect("store lock");
+                    match s.write_backup(now, &b) {
+                        Ok(path) => {
+                            tracing::info!("library backup written to {} in {:.0?}", path.display(), started.elapsed());
+                            // Clients learn whether it came out whole (Settings, #144)
+                            if let Ok(summary) = s.summary(now) {
+                                let _ = hub.events.send(singularity_proto::Event::Listening(summary));
+                            }
+                        }
+                        Err(e) => tracing::warn!("couldn't write the library backup: {e}"),
+                    }
+                }
                 // tried again at the next check
                 Err(e) => tracing::warn!("library backup failed: {e}"),
             }
@@ -356,6 +381,23 @@ mod tests {
             let m = mine(&b5);
             assert!(m.get("from_ms").is_none() && m.get("short").is_none() && m["revision"] == "r2", "{m}");
         }
+    }
+
+    #[tokio::test]
+    async fn short_lists_counts_what_came_back_short_and_what_kept_a_whole_copy() {
+        use singularity_proto::BackupShort;
+        let mut f = Fake { asked: vec![], revision: "r1", trouble: None };
+        let b = take(&mut f, "me", None, 7).await.unwrap();
+        assert_eq!(short_lists(&b), None, "a whole backup");
+        // "mine" short without an earlier copy: marked incomplete
+        let mut bad = Fake { asked: vec![], revision: "r1", trouble: Some(Trouble::Errors) };
+        let b2 = take(&mut bad, "me", None, 8).await.unwrap();
+        assert_eq!(short_lists(&b2), Some(BackupShort { lists: 1, kept: 0 }));
+        // "mine" short beside its whole copy, and Liked Songs too
+        let mut worse = Fake { asked: vec![], revision: "r2", trouble: Some(Trouble::Errors) };
+        let mut b3 = take(&mut worse, "me", Some(&b), 9).await.unwrap();
+        b3["liked_incomplete"] = json!("only 2 of its 3 tracks came back");
+        assert_eq!(short_lists(&b3), Some(BackupShort { lists: 2, kept: 1 }));
     }
 
     #[tokio::test]

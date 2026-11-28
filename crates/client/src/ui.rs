@@ -1994,7 +1994,7 @@ mod tests {
         let mut minutes = vec![0; singularity_proto::LISTENING_DAYS];
         let n = minutes.len();
         (minutes[n - 1], minutes[n - 2], minutes[n - 8]) = (60, 30, 15);
-        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 1.75, top_artist: Some("Nova Drift".into()), streak_days: 2, plays: 9, plays_today: 3 });
+        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 1.75, top_artist: Some("Nova Drift".into()), streak_days: 2, plays: 9, plays_today: 3, backup_short: None });
         let s = render(&mut app, 160, 48);
         assert!(s.contains("listening · 26 weeks") && s.contains("1.8 h this year · top: Nova Drift · streak 2 days"), "{s}");
         // this week is the last column, Monday on top, two days a cell (Cockpit's Pane is short): Wednesday over
@@ -2855,7 +2855,7 @@ mod tests {
             app.delivery_event(Delivery { bandwidth_kbps: Some(*k), measured_ms: now - 10_000 + i as u64, stalls_ms: vec![now - 5_000] });
         }
         let minutes: Vec<u32> = (0..singularity_proto::LISTENING_DAYS as u32).map(|d| if d % 5 == 3 { 0 } else { (d * 37) % 190 }).collect();
-        app.listening = Some(ListeningSummary { minutes, today_weekday: 3, hours_this_year: 212.4, top_artist: Some("Nova Drift".into()), streak_days: 6, plays: 1820, plays_today: 14 });
+        app.listening = Some(ListeningSummary { minutes, today_weekday: 3, hours_this_year: 212.4, top_artist: Some("Nova Drift".into()), streak_days: 6, plays: 1820, plays_today: 14, backup_short: None });
         app.stats.insert(StatsPeriod::Week, seeded_stats(StatsPeriod::Week));
         app
     }

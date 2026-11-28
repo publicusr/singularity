@@ -706,7 +706,7 @@ async fn a_demo_client_reads_and_deletes_only_the_demo_listening_log() {
     let now = proto::now_ms();
     let play = |i: usize, artist: &str| Play { started_ms: now, item: Item { uri: format!("spotify:track:{i}"), name: "T".into(), artists: vec![artist.into()], duration_ms: 600_000, ..Default::default() }, context_uri: None, played_ms: 120_000, device: "here".into() };
     {
-        let real = Store::open(&data).unwrap();
+        let mut real = Store::open(&data).unwrap();
         for i in 0..3 {
             real.record(&play(i, "Real Artist")).unwrap();
         }
