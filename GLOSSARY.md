@@ -280,7 +280,9 @@ _Avoid_: module, applet, panel
 
 **Karaoke Widget**:
 A Widget that shows the line being sung big, fills its words with the accent as they are sung and bounces a ball from
-word to word, landing on each as it starts; dots count a line in after an instrumental. It scales from one row to
+word to word, landing on each as it starts (a word followed by a pause fills as long as it is sung, and the ball waits at
+its end); a line without *word timing* lights whole at its time, the ball resting. Dots count a line in after an
+instrumental. It scales from one row to
 *big text* on the pixel tier (the marquee's pixel font on the cell tier).
 _Avoid_: sing-along view, karaoke mode
 
@@ -293,9 +295,11 @@ the Pane, or the cell tier keeps terminal text.
 _Avoid_: pixel font (the marquee's 3×5 blocks), big font
 
 **Word timing**:
-When each word of a lyrics line is sung. *Exact* when the lyrics come with it (LRCLIB's word-synced Lyricsfile,
-enhanced LRC), else *estimated*: the song's syllables at one *pace* fitted over all its lines, each line's words
-from its start, its last word held; the Karaoke Widget says which.
+When each word of a lyrics line is sung: the lyrics come with it (LRCLIB's word-synced Lyricsfile, enhanced LRC) or
+not, and the Karaoke Widget says which ("no word timing"). LRCLIB times word starts; a word's sung length is its
+syllables at a generous multiple of the song's *pace* (the median time a syllable between word starts), the rest until
+the next word a pause. Without word timing a line is lit whole; when it is sung out is still estimated (its syllables
+at one pace fitted over all the song's lines), for staging the next line.
 _Avoid_: syllable sync (Spotify's unused `SYLLABLE_SYNCED`), word sync
 
 **Lyrics delay**:

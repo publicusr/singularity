@@ -1,14 +1,19 @@
 //! When each word is sung, for the Karaoke Widget. Exact where the lyrics say (`LyricLine::words`: LRCLIB's
-//! word-synced Lyricsfile, enhanced LRC), estimated otherwise.
+//! word-synced Lyricsfile, enhanced LRC); a line the lyrics time only as a whole is lit whole at its time (the owner,
+//! Q181: a guessed word 300 ms off looks broken, a whole line on time looks fine).
 //!
-//! An estimate sings the song at one pace: a singer's syllables come at about the song's tempo whatever the room
-//! until the next line, and a line with room to spare holds its last word and rests (it doesn't slow down). So the
-//! song's lines are fitted first (`pace`: a line's room ≈ syllables × pace + the hold and rest after them, a robust
-//! straight-line fit over every line), then each line's words get that pace, scaled to the line's own room within
-//! limits, a short pause at a comma, and the last word holds. Measured against modelled singing
-//! (`tests::estimates_follow_modelled_singing`), word starts land a third closer than sharing the room out evenly
-//! did (mean miss 450 → 300 ms, the worst tenth from 1.04 s → 0.69 s); a text can't say more: which syllables a
-//! singer stretches is in the music alone.
+//! A word followed by a pause fills only for about as long as it is sung (the owner, Q182): the lyrics give word
+//! starts, so a word's sung length is its syllables at a generous multiple of the song's pace (`SUNG_SLACK`, the pace
+//! being the median time a syllable between word starts); its fill ends there and the ball waits.
+//!
+//! Where a line has no word times, when its singing ends is still estimated, for staging the next line: the song is
+//! sung at one pace: a singer's syllables come at about the song's tempo whatever the room until the next line, and a
+//! line with room to spare holds its last word and rests (it doesn't slow down). So the song's lines are fitted first
+//! (`pace`: a line's room ≈ syllables × pace + the hold and rest after them, a robust straight-line fit over every
+//! line), then each line's words get that pace, scaled to the line's own room within limits, a short pause at a comma,
+//! and the last word holds (`timed_words`). Measured against modelled singing (`tests::estimates_follow_modelled_singing`),
+//! word starts land a third closer than sharing the room out evenly did (mean miss 450 → 300 ms); on real Polish rap
+//! (#166) they missed by 250–420 ms on average, which is why they aren't shown.
 //!
 //! Then which line is on show at a moment (`at`): the next line takes the stage a little before it is sung (after
 //! the line before has been sung out), and a long gap shows a countdown of dots before the line after it.
@@ -47,6 +52,15 @@ pub const PREROLL_MS: u64 = 1_000;
 pub const LINGER_MS: u64 = 1_500;
 /// The longest hop of the ball: between words further apart than this, it rests, then hops.
 pub const HOP_MS: u64 = 650;
+/// A word is sung for at most this many times the song's pace a syllable; past that until the next word is a pause.
+/// Real word starts are a median 130–190 ms a syllable apart in Polish rap, 95 % within 290–430 ms (8 word-synced
+/// LRCLIB songs, 2026-11-28): 2.5 × the median stops the fill only before the slowest few words.
+const SUNG_SLACK: f64 = 2.5;
+/// The song's pace between word starts, ms a syllable: when it has fewer than `PACE_WORDS` timed words to say, and
+/// the limits of a measured one (a song whose word times bunch up can't make every word a pause).
+const WORD_PACE: f64 = 250.0;
+const WORD_PACE_RANGE: (f64, f64) = (100.0, 400.0);
+const PACE_WORDS: usize = 8;
 
 /// A timed piece of a line: a word, or a syllable when the source times syllables.
 #[derive(Debug, Clone, PartialEq)]
@@ -165,9 +179,23 @@ pub fn pace(rooms: &[(f64, f64)]) -> Pace {
     if (60.0..1_200.0).contains(&p) && c >= 0.0 { Pace { syllable: p, tail: c } } else { Pace { syllable: med * 0.75, tail: med * 1.5 } }
 }
 
-/// Every sung line of a song, timed. Empty lines (instrumental marks) aren't lines here, but the line before one
-/// ends by it. `song_ms` (0 if unknown) bounds the last line. Times only ever go forward.
+/// Every sung line of a song, timed: a line with word times word by word, one without lit whole at its time (its
+/// words all start and fill then; it still ends when an estimate says it's sung out). Empty lines (instrumental
+/// marks) aren't lines here, but the line before one ends by it. `song_ms` (0 if unknown) bounds the last line. Times
+/// only ever go forward.
 pub fn timed(lines: &[LyricLine], song_ms: u64) -> Vec<Line> {
+    let mut out = timed_words(lines, song_ms);
+    for l in out.iter_mut().filter(|l| !l.exact) {
+        for w in &mut l.words {
+            (w.start, w.end) = (l.start, l.start);
+        }
+    }
+    out
+}
+
+/// Every sung line of a song timed word by word: the lyrics' own word times, else estimated ones (see the module
+/// notes).
+fn timed_words(lines: &[LyricLine], song_ms: u64) -> Vec<Line> {
     let sung = |l: &LyricLine| !(l.text.trim().is_empty() && l.words.is_empty());
     // the song's pace, from the lines without word times of their own
     let rooms: Vec<(f64, f64)> = (0..lines.len())
@@ -175,6 +203,7 @@ pub fn timed(lines: &[LyricLine], song_ms: u64) -> Vec<Line> {
         .map(|i| ((room_end(lines, i, lines[i].start_ms, song_ms) - lines[i].start_ms) as f64, units(&lines[i].text)))
         .collect();
     let pace = pace(&rooms);
+    let word_pace = word_pace(lines);
     let mut out: Vec<Line> = vec![];
     let mut floor = 0u64;
     for (i, l) in lines.iter().enumerate() {
@@ -183,7 +212,7 @@ pub fn timed(lines: &[LyricLine], song_ms: u64) -> Vec<Line> {
         }
         let start = l.start_ms.max(floor);
         let room_end = room_end(lines, i, start, song_ms);
-        let line = match exact(l, start, room_end) {
+        let line = match exact(l, start, room_end, word_pace) {
             Some(words) => Line { start, end: words.last().map_or(start, |w| w.end), words, exact: true, index: i },
             None => estimate(&l.text, start, room_end, i, pace),
         };
@@ -193,8 +222,29 @@ pub fn timed(lines: &[LyricLine], song_ms: u64) -> Vec<Line> {
     out
 }
 
-/// The line's own word times, cleaned up: inside [start, room_end], never going back, each word ending by the next.
-fn exact(l: &LyricLine, start: u64, room_end: u64) -> Option<Vec<Word>> {
+/// The song's pace between its timed words, ms a syllable: the median over every word and the next one in its line.
+fn word_pace(lines: &[LyricLine]) -> f64 {
+    let mut per: Vec<f64> = vec![];
+    for l in lines {
+        let w: Vec<_> = l.words.iter().filter(|w| !w.text.trim().is_empty()).collect();
+        for p in w.windows(2) {
+            let d = p[1].start_ms.saturating_sub(p[0].start_ms);
+            if d > 0 {
+                per.push(d as f64 / syllables(&p[0].text) as f64);
+            }
+        }
+    }
+    if per.len() < PACE_WORDS {
+        return WORD_PACE;
+    }
+    per.sort_by(f64::total_cmp);
+    per[per.len() / 2].clamp(WORD_PACE_RANGE.0, WORD_PACE_RANGE.1)
+}
+
+/// The line's own word times, cleaned up: inside [start, room_end], never going back, each word ending by the next;
+/// one without an end of its own is sung for its syllables at `SUNG_SLACK` × `word_pace` at most, the rest until the
+/// next word a pause.
+fn exact(l: &LyricLine, start: u64, room_end: u64, word_pace: f64) -> Option<Vec<Word>> {
     if l.words.is_empty() {
         return None;
     }
@@ -223,7 +273,8 @@ fn exact(l: &LyricLine, start: u64, room_end: u64) -> Option<Vec<Word>> {
         words[k].end = if said > words[k].start && said <= next {
             if k + 1 < n { said } else { said.min(words[k].start.saturating_add((syllables(&words[k].text) as u64 * MAX_HELD_SYLLABLE_MS).max(MAX_HELD_MS))) }
         } else if k + 1 < n {
-            next
+            // sung until the next word, unless that's a long way off
+            next.min(words[k].start.saturating_add((syllables(&words[k].text) as f64 * word_pace * SUNG_SLACK) as u64))
         } else {
             // the last word without an end of its own: as long as an estimate would make it
             words[k].start.saturating_add(syllables(&words[k].text) as u64 * MAX_SYLLABLE_MS).min(next)
@@ -323,9 +374,12 @@ pub fn at(lines: &[Line], pos: u64) -> Stage {
 /// (the owner, 2026-11-06: it "rushes ahead"; it used to rest, then hop over in at most 650 ms, so it sat over the
 /// next word for most of a quick word and dashed across the long ones). The hop is a bounce at the end of the glide:
 /// up off the word and down onto the next as it starts. The last word it glides to the end of, as its fill does.
+/// Before a pause (a word that ends before the next starts) the drawing has it glide to the word's end as the fill
+/// gets there and wait there until the hop (`resting`). A line lit whole has no words to ride: the ball rests in
+/// its waiting spot.
 pub fn ball(l: &Line, pos: u64, shown_at: u64) -> (f32, f32) {
     let w = &l.words;
-    if w.is_empty() {
+    if w.is_empty() || !l.exact {
         return (-1.0, 0.0);
     }
     // the word being sung: the last one started
@@ -349,11 +403,31 @@ pub fn ball(l: &Line, pos: u64, shown_at: u64) -> (f32, f32) {
     };
     let span = (next.start - start).max(1);
     let t = (pos - start) as f32 / span as f32;
-    // the bounce: the last stretch of the glide, at most a hop long
-    let hop = HOP_MS.min(span).max(1);
+    // the bounce: the last stretch of the glide, at most a hop long (before a pause, the flight over it)
+    let hop = flight(&w[cur], next).max(1);
     let up = next.start - hop;
     let h = if pos >= up { arc((pos - up) as f32 / hop as f32, hop) } else { 0.0 };
     (cur as f32 + t, h)
+}
+
+/// How long the hop from word `w` to `next` takes: at most `HOP_MS`; before a pause, no longer than the pause, so the
+/// ball is at the word's end when its fill is.
+fn flight(w: &Word, next: &Word) -> u64 {
+    let span = next.start.saturating_sub(w.start);
+    if w.end < next.start { HOP_MS.min(next.start - w.end) } else { HOP_MS.min(span) }
+}
+
+/// Where along word `k`'s stretch to the next word's start (0..1, as `ball` counts it) the word's fill ends and where
+/// the hop over to the next begins (the ball waits at the word's end between them); None when the word is sung right
+/// up to the next (no pause).
+pub fn resting(l: &Line, k: usize) -> Option<(f32, f32)> {
+    let (w, next) = (l.words.get(k)?, l.words.get(k + 1)?);
+    if w.end >= next.start {
+        return None;
+    }
+    let span = next.start.saturating_sub(w.start).max(1) as f32;
+    let filled = w.end.saturating_sub(w.start) as f32 / span;
+    Some((filled, (1.0 - flight(w, next) as f32 / span).max(filled)))
 }
 
 /// The hop's height at `t` (0..1) of a hop lasting `hop_ms`: a parabola, lower for quick hops.
@@ -394,7 +468,7 @@ mod tests {
         let rooms: Vec<(f64, f64)> = lines.windows(2).map(|w| ((w[1].start_ms - w[0].start_ms) as f64, units(&w[0].text))).collect();
         let p = pace(&rooms);
         assert!((p.syllable - 250.0).abs() < 5.0 && (p.tail - 1_000.0).abs() < 30.0, "{p:?}");
-        let l = timed(&lines, at + 5_000);
+        let l = timed_words(&lines, at + 5_000);
         let w = &l[0].words;
         assert!(!l[0].exact);
         assert_eq!(w.len(), 3);
@@ -433,12 +507,12 @@ mod tests {
     #[test]
     fn a_long_gap_doesnt_stretch_the_last_words() {
         // the next line is 40 s away: the words keep a usual pace and the last one holds at most a little
-        let l = timed(&[line(5_000, "hold on now"), line(45_000, "after the solo")], 0);
+        let l = timed_words(&[line(5_000, "hold on now"), line(45_000, "after the solo")], 0);
         let w = &l[0].words;
         assert!(w[2].start <= 5_000 + LEAD_MS + 2 * 400, "{:?}", l[0]);
         assert!(l[0].end <= w[2].start + 400 + MAX_HOLD_MS as u64, "{:?}", l[0]);
         // an empty line is a mark that ends the line before it, not a line
-        let l = timed(&[line(5_000, "a b c d e f g h i j k l"), line(6_000, ""), line(9_000, "x")], 0);
+        let l = timed_words(&[line(5_000, "a b c d e f g h i j k l"), line(6_000, ""), line(9_000, "x")], 0);
         assert_eq!(l.len(), 2);
         assert!(l[0].end <= 6_000);
         assert_eq!(l[1].index, 2);
@@ -586,7 +660,7 @@ mod tests {
             for seed in 0..40 {
                 let (lines, sung, song_ms) = sing(seed * 31 + style.name.len() as u64, style);
                 old.extend(misses(&even_share(&lines, song_ms), &sung));
-                let est: Vec<Vec<f64>> = timed(&lines, song_ms).iter().map(|l| l.words.iter().map(|w| w.start as f64).collect()).collect();
+                let est: Vec<Vec<f64>> = timed_words(&lines, song_ms).iter().map(|l| l.words.iter().map(|w| w.start as f64).collect()).collect();
                 new.extend(misses(&est, &sung));
             }
             old.sort_by(f64::total_cmp);
@@ -630,8 +704,7 @@ mod tests {
         // overlapping, repeated and backwards stamps, words before their line
         let mut lines = vec![line(5_000, "one two three four five six seven"), line(5_000, "same time"), line(4_000, "backwards"), line(u64::MAX, "the end")];
         lines.push(LyricLine { start_ms: 30_000, text: "x y".into(), words: vec![LyricWord { start_ms: 1, end_ms: Some(0), text: "x ".into() }, LyricWord { start_ms: u64::MAX, end_ms: None, text: "y".into() }] });
-        for song in [0, 60_000] {
-            let l = timed(&lines, song);
+        for l in [timed(&lines, 0), timed(&lines, 60_000), timed_words(&lines, 0), timed_words(&lines, 60_000)] {
             let mut last = 0;
             for line in &l {
                 assert!(line.start >= last, "{l:#?}");
@@ -646,7 +719,7 @@ mod tests {
     }
 
     fn song() -> Vec<Line> {
-        timed(&[line(3_000, "turn the lights down"), line(6_500, "sing it like the night"), line(10_000, ""), line(20_000, "after the gap")], 0)
+        timed_words(&[line(3_000, "turn the lights down"), line(6_500, "sing it like the night"), line(10_000, ""), line(20_000, "after the gap")], 0)
     }
 
     #[test]
@@ -680,7 +753,8 @@ mod tests {
 
     #[test]
     fn the_ball_waits_hops_and_lands_on_each_word_as_it_starts() {
-        let l = &song()[0];
+        // (words timed as an estimate times them, as if the lyrics had said so)
+        let l = &Line { exact: true, ..song()[0].clone() };
         let shown = on_stage(&song(), 0);
         let w = &l.words;
         assert_eq!(ball(l, shown, shown), (-1.0, 0.0), "waiting left of the line");
@@ -704,6 +778,63 @@ mod tests {
             assert!(x >= last && (0.0..=1.0).contains(&h), "{pos}: {x} {h}");
             last = x;
         }
+    }
+
+    #[test]
+    fn a_line_without_word_times_lights_whole_at_its_stamp() {
+        let lines = [line(3_000, "turn the lights down"), line(6_500, "sing it like the night"), line(10_000, ""), line(20_000, "after the gap")];
+        let (whole, guessed) = (timed(&lines, 0), timed_words(&lines, 0));
+        for (a, b) in whole.iter().zip(&guessed) {
+            assert!(!a.exact && a.words.iter().all(|w| (w.start, w.end) == (a.start, a.start)), "{a:?}");
+            // staged as before: the line ends when an estimate says it's sung out
+            assert_eq!((a.start, a.end, a.words.len()), (b.start, b.end, b.words.len()));
+        }
+        let last = &whole[0].words[3];
+        assert_eq!((fill(last, 2_999), fill(last, 3_000)), (0.0, 1.0), "every word at once, at the stamp");
+        // no words to ride: the ball rests in its waiting spot
+        for pos in [0, 2_999, 3_000, 4_000, 6_000] {
+            assert_eq!(ball(&whole[0], pos, 0), (-1.0, 0.0), "{pos}");
+        }
+        assert_eq!(at(&whole, 3_000), Stage::Line { i: 0, count: 0 });
+        assert_eq!(at(&whole, 2_000), Stage::Line { i: 0, count: 1 }, "counted in to the stamp");
+    }
+
+    /// A rap line at 150 ms a syllable, its words one syllable each, with a pause after "stop" (`gap` ms to "now").
+    fn paused_line(gap: u64) -> Line {
+        let mut at = 1_000;
+        let mut words = vec![];
+        for w in ["we ", "go ", "stop ", "now ", "we ", "run ", "fast ", "and ", "far"] {
+            words.push(LyricWord { start_ms: at, end_ms: None, text: w.into() });
+            at += if w == "stop " { gap } else { 150 };
+        }
+        timed(&[LyricLine { start_ms: 1_000, text: "we go stop now we run fast and far".into(), words }], 0).remove(0)
+    }
+
+    #[test]
+    fn a_word_before_a_pause_fills_only_as_long_as_it_is_sung() {
+        let l = paused_line(1_200);
+        let w = &l.words;
+        // sung for its syllable at 2.5 × the song's pace, then a pause; the rest are sung up to the next word
+        assert_eq!((w[2].text.as_str(), w[2].start, w[2].end), ("stop", 1_300, 1_300 + 375));
+        for k in [0, 1, 3, 4, 5, 6, 7] {
+            assert_eq!(w[k].end, w[k + 1].start, "{}", w[k].text);
+        }
+        assert_eq!((fill(&w[2], 1_300 + 375), fill(&w[2], 2_000)), (1.0, 1.0));
+        // the ball: along the word as it fills, waiting at its end, then the hop: a whole one, in the pause's last 650 ms
+        let (filled, up) = resting(&l, 2).expect("a pause");
+        assert!((filled - 375.0 / 1_200.0).abs() < 1e-4 && (up - (1.0 - 650.0 / 1_200.0)).abs() < 1e-4, "{filled} {up}");
+        assert_eq!(ball(&l, 1_800, 0).1, 0.0, "no hop yet while it waits");
+        assert!(ball(&l, 2_500 - 325, 0).1 > 0.9, "mid-hop");
+        assert_eq!(ball(&l, 2_500, 0), (3.0, 0.0), "lands on \"now\" as it starts");
+        assert!(resting(&l, 1).is_none() && resting(&l, 8).is_none());
+        // a pause shorter than a hop: the hop takes the whole pause, from the moment the fill ends
+        let l = paused_line(700);
+        let (filled, up) = resting(&l, 2).expect("a pause");
+        assert!((filled - 375.0 / 700.0).abs() < 1e-6 && (up - filled).abs() < 1e-6, "{filled} {up}");
+        assert!(ball(&l, 1_300 + 375 + 162, 0).1 > 0.5);
+        // a song too short to say its pace: 250 ms a syllable
+        let l = timed(&[LyricLine { start_ms: 0, text: "oh no".into(), words: vec![LyricWord { start_ms: 0, end_ms: None, text: "oh ".into() }, LyricWord { start_ms: 2_000, end_ms: None, text: "no".into() }] }], 0);
+        assert_eq!(l[0].words[0].end, 625);
     }
 
     #[test]

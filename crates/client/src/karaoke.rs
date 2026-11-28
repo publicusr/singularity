@@ -10,7 +10,7 @@
 //! Pane, long lines wrapped; the line is two images (sung and waiting) split where the fill has got to, and the ball
 //! lands on each word's middle as the font measures it. A narrow, tall Pane runs the rest of the song above and
 //! below the line like a lyric sheet, each line wrapped whole (`narrow_tall`). Word times come with the lyrics when
-//! the source has them, else they're estimated (`timing.rs`); the credit line says which.
+//! the source has them, else the line lights whole at its time (`timing.rs`); the credit line says which.
 
 pub mod timing;
 
@@ -532,6 +532,31 @@ fn plain_text(words: &[Word]) -> String {
     s
 }
 
+/// A word's text around the letters that are sung: what comes before its first letter or digit (an opening bracket,
+/// a quote), the sung part, and what follows its last (a closing bracket, a comma). A word without letters is all
+/// sung part. The fill sweeps only the sung part; the rest lights with the letter beside it (#166: rap lyrics bracket
+/// their ad-libs, and a bracket swept first lit the word's first letter up to 0.2 s after it was sung).
+fn sung_part(text: &str) -> (&str, &str, &str) {
+    let letter = |g: &str| g.chars().any(char::is_alphanumeric);
+    let gs: Vec<(usize, &str)> = text.grapheme_indices(true).collect();
+    let (Some(a), Some(b)) = (gs.iter().position(|(_, g)| letter(g)), gs.iter().rposition(|(_, g)| letter(g))) else {
+        return ("", text, "");
+    };
+    let (s, e) = (gs[a].0, gs[b].0 + gs[b].1.len());
+    (&text[..s], &text[s..e], &text[e..])
+}
+
+/// A word's grapheme clusters when it is `f` sung, each with how far it is lit (0..1): the sung part's one after
+/// another, those before and after it as the first and last of it.
+fn lit_graphemes(text: &str, f: f32) -> Vec<(&str, f32)> {
+    let (lead, sung, trail) = sung_part(text);
+    let n = sung.graphemes(true).count().max(1) as f32;
+    let lit = |j: f32| (f * n - j).clamp(0.0, 1.0);
+    let lead = lead.graphemes(true).map(|g| (g, lit(0.0)));
+    let trail = trail.graphemes(true).map(|g| (g, lit(n - 1.0)));
+    lead.chain(sung.graphemes(true).enumerate().map(|(j, g)| (g, lit(j as f32)))).chain(trail).collect()
+}
+
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     draw_at(buf, r, app, th, singularity_proto::now_ms());
 }
@@ -751,7 +776,7 @@ fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th:
         }
     }
     if credit {
-        let hint = if line.exact { "" } else { " · word timing estimated" };
+        let hint = if line.exact { "" } else { " · no word timing" };
         let credits = [format!("lyrics: {source}{hint}"), format!("{source}{hint}"), source.to_string()];
         let c = credits.iter().find(|c| c.width() < r.width as usize).unwrap_or(&credits[2]);
         let cw = c.width() as u16;
@@ -798,6 +823,7 @@ fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th:
         }
     };
     let base_of = |k: usize| (row_top(p.spots[k].row) - 1) as f32;
+    let mut rests = false;
     let (x, base) = if wx < 0.0 {
         let from = (touch(0, false) - 3.0 * p.font.char_w().min(4) as f32).max(r.x as f32);
         let t = wx + 1.0;
@@ -809,18 +835,26 @@ fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th:
         if a + 1 >= n {
             // along the last word as it fills
             (lerp(touch(a, false), touch(a, true), t), base_of(a))
-        } else if p.spots[a + 1].row == p.spots[a].row {
-            (lerp(touch(a, false), touch(a + 1, false), t), base_of(a))
         } else {
-            // the next word starts a row further down: along this one to its end, then the hop down to it
-            let span = line.words[a + 1].start.saturating_sub(line.words[a].start).max(1);
-            let up = 1.0 - timing::HOP_MS.min(span) as f32 / span as f32;
-            if up > 0.0 && t < up {
-                (lerp(touch(a, false), touch(a, true), t / up), base_of(a))
-            } else {
-                let u = if up > 0.0 { (t - up) / (1.0 - up) } else { t };
-                let from = if up > 0.0 { touch(a, true) } else { touch(a, false) };
-                (lerp(from, touch(a + 1, false), u), lerp(base_of(a), base_of(a + 1), u))
+            // a pause after the word: along it to its end as it fills, waiting there, then the hop over (#166); the next
+            // word a row further down: along this one to its end, then the hop down to it
+            let wrapped = p.spots[a + 1].row != p.spots[a].row;
+            let rest = timing::resting(line, a).or_else(|| {
+                let span = line.words[a + 1].start.saturating_sub(line.words[a].start).max(1);
+                let up = 1.0 - timing::HOP_MS.min(span) as f32 / span as f32;
+                wrapped.then_some((up, up))
+            });
+            match rest {
+                None => (lerp(touch(a, false), touch(a + 1, false), t), base_of(a)),
+                Some((filled, up)) if up > 0.0 && t < up => {
+                    rests = t >= filled;
+                    (lerp(touch(a, false), touch(a, true), if filled > 0.0 { (t / filled).min(1.0) } else { 1.0 }), base_of(a))
+                }
+                Some((_, up)) => {
+                    let u = if up > 0.0 { (t - up) / (1.0 - up) } else { t };
+                    let from = if up > 0.0 { touch(a, true) } else { touch(a, false) };
+                    (lerp(from, touch(a + 1, false), u), lerp(base_of(a), base_of(a + 1), u))
+                }
             }
         }
     };
@@ -828,7 +862,7 @@ fn synced(buf: &mut Buffer, r: Rect, lines: &[Line], pos: u64, source: &str, th:
         Font::Px { px, .. } => Some((px * 0.16) as f64),
         _ => None,
     };
-    Some(Ball { x, base, height: h, lane: p.lane, rad, moving: wx > -1.0 && wx < n as f32 })
+    Some(Ball { x, base, height: h, lane: p.lane, rad, moving: wx > -1.0 && wx < n as f32 && !(rests && h == 0.0) })
 }
 
 /// The line on stage in big text: per row, the sung part (accent) and the rest (waiting), two images of the same
@@ -849,7 +883,10 @@ fn px_line(kitty: &mut crate::gfx::Kitty, r: Rect, x0: u16, p: &Plan, line: &Lin
         for (w, &(wx, ww)) in line.words.iter().zip(&p.px).zip(&p.spots).filter(|(_, s)| s.row == ri as u16).map(|(a, _)| a) {
             let f = timing::fill(w, pos);
             if f > 0.0 {
-                fill = fill.max(wx - left + f * ww);
+                // the sung part sweeps; what's before it lights with its first letter, what's after with its last
+                let (lead, _, trail) = sung_part(&w.text);
+                let (lw, tw) = (crate::bigtext::width(lead, px, true), crate::bigtext::width(trail, px, true));
+                fill = fill.max(wx - left + if f >= 1.0 { ww } else { lw + f * (ww - lw - tw).max(0.0) });
             }
         }
         let split = ((fill as f64 / cw).round() as u16).min(*cols);
@@ -915,10 +952,8 @@ fn draw_line(buf: &mut Buffer, r: Rect, x0: u16, p: &Plan, line: &Line, pos: u64
         match p.font {
             Font::Plain => {
                 // by grapheme cluster: a mark (Thai, Hindi, Vietnamese) goes into its base's cell (#146)
-                let n = w.text.graphemes(true).count().max(1) as f32;
                 let mut x = x0 + s.x;
-                for (j, g) in w.text.graphemes(true).enumerate() {
-                    let a = (f * n - j as f32).clamp(0.0, 1.0);
+                for (g, a) in lit_graphemes(&w.text, f) {
                     let mut st = th.s(waiting.lerp(sung, a));
                     if a >= 1.0 {
                         st = st.add_modifier(Modifier::BOLD);
@@ -943,7 +978,12 @@ fn draw_line(buf: &mut Buffer, r: Rect, x0: u16, p: &Plan, line: &Line, pos: u64
 fn big_word(buf: &mut Buffer, r: Rect, x: u16, y: u16, word: &str, sc: u16, f: f32, waiting: Rgb, sung: Rgb) {
     let chars: Vec<char> = word.chars().filter_map(big_char).collect();
     let cols = chars.len() as u16 * 4 * sc;
-    let lit_cols = f * cols.saturating_sub(sc) as f32;
+    // the fill sweeps the sung part's columns; the columns before and after it are lit as its first and last
+    let (lead, core, _) = sung_part(word);
+    let count = |s: &str| s.chars().filter_map(big_char).count() as u16;
+    let c0 = count(lead) * 4 * sc;
+    let c1 = ((count(lead) + count(core)) * 4 * sc).saturating_sub(sc).max(c0 + 1);
+    let lit_cols = c0 as f32 + f * (c1 - c0) as f32;
     let rows = Font::Big(sc).rows();
     let on = |col: u16, half: u16| -> bool {
         let (ci, cx) = ((col / (4 * sc)) as usize, (col % (4 * sc)) / sc);
@@ -955,7 +995,7 @@ fn big_word(buf: &mut Buffer, r: Rect, x: u16, y: u16, word: &str, sc: u16, f: f
         if cx >= r.right() {
             break;
         }
-        let a = (lit_cols - col as f32).clamp(0.0, 1.0);
+        let a = (lit_cols - col.clamp(c0, c1 - 1) as f32).clamp(0.0, 1.0);
         let c = waiting.lerp(sung, a).color();
         for row in 0..rows {
             let cy = y + row;
@@ -1031,13 +1071,12 @@ fn tiny(buf: &mut Buffer, r: Rect, lines: &[Line], stage: Stage, pos: u64, th: &
             cells.push((" ", if w.start <= pos { 1.0 } else { 0.0 }));
             width += 1;
         }
-        let f = timing::fill(w, pos);
-        let n = w.text.graphemes(true).count().max(1) as f32;
-        if w.start <= pos {
+        // (a line lit whole has no word being sung: it shows from its start)
+        if w.start <= pos && line.exact {
             now = width;
         }
-        for (j, g) in w.text.graphemes(true).enumerate() {
-            cells.push((g, (f * n - j as f32).clamp(0.0, 1.0)));
+        for (g, a) in lit_graphemes(&w.text, timing::fill(w, pos)) {
+            cells.push((g, a));
             width += g.width();
         }
     }
@@ -1309,9 +1348,9 @@ mod tests {
         assert!(rows[..ly].iter().any(|r| r.contains('●')), "the ball is in its lane: {rows:#?}");
         assert!(rows[ly + 1..].iter().any(|r| r.contains("Sing it like")), "the next line waits below");
         assert!(!rows.iter().any(|r| r.contains("estimated")), "this line's words are timed");
-        // the next line's words are estimated, and the credit says so
+        // the next line has no word times: lit whole, and the credit says so
         let mut app = app_at(8_000, true);
-        assert!(render(&mut app, 70, 12).contains("word timing estimated"));
+        assert!(render(&mut app, 70, 12).contains("lyrics: fake · no word timing"));
     }
 
     #[test]
@@ -1530,11 +1569,16 @@ mod tests {
     /// sung colour, not the dimmed lines around it; a wrapped line's rows in order) and which of its pieces have begun to
     /// fill. Pieces are runs of letters (a comma or an apostrophe splits a word).
     fn on_stage_now(app: &mut App, w: u16, h: u16, now: u64) -> Option<(String, Vec<bool>)> {
+        on_stage_lit(app, w, h, now).map(|(text, p)| (text, p.iter().map(|p| p.0).collect()))
+    }
+
+    /// `on_stage_now`, and for each piece whether it is lit all through (every letter in the sung colour).
+    fn on_stage_lit(app: &mut App, w: u16, h: u16, now: u64) -> Option<(String, Vec<(bool, bool)>)> {
         let th = Theme::singularity();
         let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
         draw_at(&mut buf, Rect::new(0, 0, w, h), app, &th, now);
         let quiet = [th.dim.color(), th.border.color()];
-        let mut words: Vec<(String, bool)> = vec![];
+        let mut words: Vec<(String, bool, bool)> = vec![];
         // (the credit row is the last)
         for y in 0..h - 1 {
             let mut prev_space = true;
@@ -1546,13 +1590,15 @@ mod tests {
                     continue;
                 }
                 if prev_space {
-                    words.push((String::new(), c.fg != th.fg.color()));
+                    words.push((String::new(), c.fg != th.fg.color(), true));
                 }
-                words.last_mut().expect("pushed").0.push_str(c.symbol());
+                let last = words.last_mut().expect("pushed");
+                last.0.push_str(c.symbol());
+                last.2 &= c.fg == th.accent.color();
                 prev_space = false;
             }
         }
-        (!words.is_empty()).then(|| (words.iter().map(|w| w.0.as_str()).collect::<Vec<_>>().join(" "), words.iter().map(|w| w.1).collect()))
+        (!words.is_empty()).then(|| (words.iter().map(|w| w.0.as_str()).collect::<Vec<_>>().join(" "), words.iter().map(|w| (w.1, w.2)).collect()))
     }
 
     /// How many of `line`'s words have begun to fill, from the pieces `on_stage_now` read: a word is lit when its first
@@ -1578,24 +1624,58 @@ mod tests {
     /// The frames of the sync check, 10 ms apart: a begun word may show its tint one frame late, no later.
     const STEP_MS: u64 = 10;
 
+    /// The pieces (as `on_stage_now` reads them) each of `words` takes.
+    fn piece_ranges(words: &[Word]) -> Vec<std::ops::Range<usize>> {
+        let mut at = 0;
+        words
+            .iter()
+            .map(|w| {
+                let n = bare(&w.text).split(' ').filter(|p| !p.is_empty()).count();
+                at += n;
+                at - n..at
+            })
+            .collect()
+    }
+
     /// The sync check over `song`: played `STEP_MS` at a time in a `w`×`h` Pane with the lyrics `delay`, every frame
     /// read off the drawn Pane. Whenever the timing puts a line on stage, the Pane shows exactly that line (wrapped or
-    /// not) with exactly the words begun lit; each word lights at most one frame after it is sung. Returns the latest
-    /// any word lit, and the frames checked.
+    /// not) with exactly the words begun lit; each word lights at most one frame after it is sung, and is lit all
+    /// through once its fill has ended (before a pause, before the next word starts). A line without word times lights
+    /// whole, all at once, at most a frame after its stamp. Returns the latest any word or whole line lit, and the
+    /// frames checked.
     fn sync_check(song: &[LyricLine], w: u16, h: u16, delay: i32) -> (u64, usize) {
         let lines = timing::timed(song, SONG_MS);
         let mut app = timed_app(0, song.to_vec());
         app.config.lyrics.delay_ms = delay;
         let mut lit_at: Vec<Vec<Option<u64>>> = lines.iter().map(|l| vec![None; song[l.index].words.len()]).collect();
+        let mut whole_at: Vec<Option<u64>> = vec![None; lines.len()];
         let mut checked = 0;
         for pos in (0..SONG_MS).step_by(STEP_MS as usize) {
             app.playback.position_ms = pos;
             let at = (pos as i64 - delay as i64).max(0) as u64;
             let Stage::Line { i, .. } = timing::at(&lines, at) else { continue };
             let want = bare(&song[lines[i].index].text);
-            let Some((text, pieces)) = on_stage_now(&mut app, w, h, NOW) else { panic!("{w}×{h} at {at} ms (delay {delay}): {want:?} should be on stage, nothing is") };
+            let Some((text, lit_pieces)) = on_stage_lit(&mut app, w, h, NOW) else { panic!("{w}×{h} at {at} ms (delay {delay}): {want:?} should be on stage, nothing is") };
             assert_eq!(text, want, "{w}×{h} at {at} ms (delay {delay})");
+            let pieces: Vec<bool> = lit_pieces.iter().map(|p| p.0).collect();
             let line = &song[lines[i].index];
+            checked += 1;
+            if line.words.is_empty() {
+                // a whole line: nothing lit before its stamp, all of it lit through from then (a frame's grace)
+                let (all, none) = (lit_pieces.iter().all(|p| p.1), !pieces.contains(&true));
+                let due = at >= line.start_ms;
+                let just = due && at - line.start_ms < STEP_MS;
+                assert!(if due { all || (just && none) } else { none }, "{w}×{h} at {at} ms (delay {delay}): {text:?} stamped {} lit {pieces:?}", line.start_ms);
+                if all {
+                    whole_at[i].get_or_insert(at);
+                }
+                continue;
+            }
+            // a word whose fill has ended (a frame ago) is lit all through
+            for (k, r) in piece_ranges(&lines[i].words).into_iter().enumerate() {
+                let tw = &lines[i].words[k];
+                assert!(at < tw.end + STEP_MS || r.clone().all(|p| lit_pieces[p].1), "{w}×{h} at {at} ms (delay {delay}) in {text:?}: {:?} ended at {} but isn't lit through", tw.text, tw.end);
+            }
             let lit = words_lit(line, &pieces);
             let starts: Vec<u64> = line.words.iter().map(|wd| wd.start_ms).collect();
             let begun = starts.iter().filter(|&&s| s <= at).count();
@@ -1604,10 +1684,16 @@ mod tests {
             for seen in lit_at[i].iter_mut().take(lit) {
                 seen.get_or_insert(at);
             }
-            checked += 1;
         }
         let mut worst = 0;
         for (i, l) in lines.iter().enumerate() {
+            if song[l.index].words.is_empty() {
+                let stamp = song[l.index].start_ms;
+                let seen = whole_at[i].unwrap_or_else(|| panic!("{w}×{h}: {:?} never lit (delay {delay})", song[l.index].text));
+                let lag = seen.saturating_sub(stamp);
+                assert!(lag <= STEP_MS, "{w}×{h}: {:?} lit {lag} ms after its stamp (delay {delay})", song[l.index].text);
+                worst = worst.max(lag);
+            }
             for (k, start) in song[l.index].words.iter().map(|wd| wd.start_ms).enumerate() {
                 let seen = lit_at[i][k].unwrap_or_else(|| panic!("{w}×{h}: word {k} of {:?} never lit (delay {delay})", song[l.index].text));
                 let lag = seen.saturating_sub(start);
@@ -1653,6 +1739,79 @@ mod tests {
             let (worst, n) = sync_check(&song, 60, 9, delay);
             assert!(worst <= STEP_MS && n > 500, "{worst} {n}");
         }
+    }
+
+    /// Polish rap as LRCLIB answers it (#166: a recorded answer's times, quoting and punctuation, cut to four lines,
+    /// the words invented): a bracketed ad-lib, a quoted letter, Polish letters, a line that wraps in the narrow Pane and
+    /// a word followed by a pause, sung in sync; the same answer without its word timing lights whole lines at their
+    /// stamps.
+    fn polish_rap() -> serde_json::Value {
+        serde_json::from_str(include_str!("../../daemon/tests/fixtures/lrclib-polish-rap.json")).unwrap()
+    }
+
+    #[test]
+    fn polish_rap_from_lrclib_is_sung_in_sync() {
+        let mut v = polish_rap();
+        let song = singularityd::lyrics::parse_lrclib("spotify:track:t", &v).expect("parsed").lines;
+        assert!(song.len() == 4 && song.iter().all(|l| !l.words.is_empty()), "{song:?}");
+        for (w, h) in [(60u16, 9u16), (30, 9)] {
+            for delay in [0, 250] {
+                let (worst, n) = sync_check(&song, w, h, delay);
+                assert!(worst <= STEP_MS && n > 500, "{w}×{h}: {worst} {n}");
+            }
+        }
+        // the word before the pause finishes filling well before the next word starts
+        let lines = timing::timed(&song, SONG_MS);
+        let (stop, next) = (&lines[2].words[1], &lines[2].words[2]);
+        assert!(stop.text == "STOP)" && stop.end + 300 < next.start, "{lines:?}");
+        // without word timing: whole lines at the LRC's stamps, and the credit says so
+        v["hasWordSync"] = false.into();
+        let song = singularityd::lyrics::parse_lrclib("spotify:track:t", &v).expect("parsed").lines;
+        assert!(song.len() == 4 && song.iter().all(|l| l.words.is_empty()), "{song:?}");
+        for (w, h) in [(60u16, 9u16), (30, 9)] {
+            let (worst, n) = sync_check(&song, w, h, 0);
+            assert!(worst <= STEP_MS && n > 500, "{w}×{h}: {worst} {n}");
+        }
+        let mut app = timed_app(43_000, song);
+        assert!(render(&mut app, 60, 9).contains("lyrics: fake · no word timing"));
+    }
+
+    /// Where the ball is drawn in a 60×9 Pane at `pos`, and the line's row.
+    fn ball_cell(app: &mut App, pos: u64) -> Option<(u16, u16)> {
+        app.playback.position_ms = pos;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 60, 9));
+        draw_at(&mut buf, Rect::new(0, 0, 60, 9), app, &Theme::singularity(), NOW);
+        (0..9u16).flat_map(|y| (0..60u16).map(move |x| (x, y))).find(|&(x, y)| buf[(x, y)].symbol() == "●")
+    }
+
+    /// Before a pause the fill ends with the word, and the ball waits over the word's end until it hops on (Q182).
+    #[test]
+    fn the_ball_waits_at_the_end_of_a_word_before_a_pause() {
+        let song = singularityd::lyrics::parse_lrclib("spotify:track:t", &polish_rap()).expect("parsed").lines;
+        let lines = timing::timed(&song, SONG_MS);
+        let (stop, next) = (&lines[2].words[1], &lines[2].words[2]);
+        let hop = timing::HOP_MS.min(next.start - stop.end);
+        // the column of the word's last character, on the row the line is drawn on
+        let mut app = timed_app(stop.end, song.clone());
+        let rows = cells(&mut app, 60, 9);
+        let ly = rows.iter().position(|r| r.concat().contains("(KOLEJNY STOP)")).expect("the line");
+        let end_x = rows[ly].concat().find("STOP)").unwrap() as u16 + 4;
+        let rest = ball_cell(&mut app, stop.end).expect("the ball");
+        assert_eq!(rest.0, end_x, "over the word's end as the fill gets there");
+        for pos in (stop.end..next.start - hop).step_by(10) {
+            assert_eq!(ball_cell(&mut app, pos), Some(rest), "waiting at {pos}");
+        }
+        // it left with the fill and lands on the next word as it starts
+        assert!(ball_cell(&mut app, stop.start + (stop.end - stop.start) / 2).unwrap().0 < end_x);
+        assert_eq!(ball_cell(&mut app, next.start).unwrap().0, end_x + 2);
+    }
+
+    #[test]
+    fn a_whole_line_in_a_tiny_pane_shows_from_its_start() {
+        // the long line has no word times: lit whole, from its first word, however long
+        let mut app = app_at(8_000, true);
+        let row = cells(&mut app, 30, 1).remove(0).concat();
+        assert!(row.starts_with("Sing it like the night"), "{row}");
     }
 
     /// The position the Pane sings from moves on between the player's updates, stops on a pause, jumps with a seek,

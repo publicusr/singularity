@@ -1,0 +1,13 @@
+{
+  "id": 1,
+  "name": "Wymyślona piosenka",
+  "trackName": "Wymyślona piosenka",
+  "artistName": "Nikt",
+  "albumName": "Wymyślony album",
+  "duration": 252.0,
+  "instrumental": false,
+  "hasWordSync": true,
+  "plainLyrics": "Żeglarz z mapą liczy, że jest wiosna, a może burza\nLecz brak mu cierpliwości, zaraz Port Północny\n(KOLEJNY STOP) Rynek Zielony\nDwuwargowe \"W\", ja ćwiczę wieczorem znowu\n",
+  "syncedLyrics": "[00:36.01] Żeglarz z mapą liczy, że jest wiosna, a może burza\n[00:38.92] Lecz brak mu cierpliwości, zaraz Port Północny\n[00:41.99] (KOLEJNY STOP) Rynek Zielony\n[00:44.07] Dwuwargowe \"W\", ja ćwiczę wieczorem znowu\n",
+  "lyricsfile": "version: '1.0'\nmetadata:\n  title: Wymyślona piosenka\n  artist: Nikt\n  album: Wymyślony album\n  duration_ms: 252000\n  instrumental: false\n  language: pl\nlines:\n- text: Żeglarz z mapą liczy, że jest wiosna, a może burza\n  start_ms: 36657\n  end_ms: 39147\n  words:\n  - text: 'Żeglarz '\n    start_ms: 36657\n  - text: 'z '\n    start_ms: 36717\n  - text: 'mapą '\n    start_ms: 36797\n  - text: 'liczy, '\n    start_ms: 37167\n  - text: 'że '\n    start_ms: 37487\n  - text: 'jest '\n    start_ms: 37697\n  - text: 'wiosna, '\n    start_ms: 37847\n  - text: 'a '\n    start_ms: 38337\n  - text: 'może '\n    start_ms: 38517\n  - text: burza\n    start_ms: 38697\n- text: Lecz brak mu cierpliwości, zaraz Port Północny\n  start_ms: 39403\n  end_ms: 41543\n  words:\n  - text: 'Lecz '\n    start_ms: 39403\n  - text: 'brak '\n    start_ms: 39429\n  - text: 'mu '\n    start_ms: 39483\n  - text: 'cierpliwości, '\n    start_ms: 39683\n  - text: 'zaraz '\n    start_ms: 40513\n  - text: 'Port '\n    start_ms: 40713\n  - text: Północny\n    start_ms: 41063\n- text: (KOLEJNY STOP) Rynek Zielony\n  start_ms: 42333\n  end_ms: 44293\n  words:\n  - text: '(KOLEJNY '\n    start_ms: 42333\n  - text: 'STOP) '\n    start_ms: 42593\n  - text: 'Rynek '\n    start_ms: 43423\n  - text: Zielony\n    start_ms: 43843\n- text: Dwuwargowe \"W\", ja ćwiczę wieczorem znowu\n  start_ms: 45147\n  end_ms: 47367\n  words:\n  - text: 'Dwuwargowe '\n    start_ms: 45147\n  - text: '\"W\", '\n    start_ms: 45933\n  - text: 'ja '\n    start_ms: 46146\n  - text: 'ćwiczę '\n    start_ms: 46314\n  - text: 'wieczorem '\n    start_ms: 46696\n  - text: znowu\n    start_ms: 47047\n"
+}
