@@ -1350,3 +1350,12 @@ flowchart LR
   version, only with Karaoke on screen), Q184 yes (start-up login retried with a growing wait, stopping after a while),
   Q185 yes, Q186 yes (as built in #165). Q187: Polish rap still wrong on some lines; songs unknown, checked in #166.
   Tickets: #166, #167, #168, #170 (v1), #169 (after v1.0).
+  2026-11-28, evening (PC): owner answered Q198 yes (during start-up tries a Client connect or a play tries at once,
+  at most every 5 s), Q199 yes (a Spotify refusal ends every retry, not only start-up's), Q200 yes (a keyring not ready
+  at start isn't a logout when logged in last time), Q201 yes (`-h` = `--help`), Q202 yes (a play pressed during a
+  login waits for it and plays), Q203 yes (the Delete hint names everything it removes): #175. Karaoke (#166, PR #173):
+  Q204 yes with care ("some rap songs really will go that fast"): a line lights whole only when its word times are
+  faster than anyone raps (under 40 ms a syllable); Q205 yes (the ball rests left of a whole line), Q206 yes ("no word
+  timing"), Q207 yes (search only after a line-only match), Q208 yes (edge punctuation lights with its letter), Q209
+  yes (the fill stops early only in quick songs, under 200 ms a syllable). Owner search test: the wheel doesn't scroll
+  results, Esc doesn't keep a recent search, older queries hold up the newest: #176.
