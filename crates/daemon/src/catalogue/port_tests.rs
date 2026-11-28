@@ -574,14 +574,14 @@ fn connect_work_goes_to_connect_and_browsing_stays() {
 }
 
 /// A stand-in for LRCLIB, by track: the Catalogue's lookup of that track goes to it instead of the network. It's told
-/// whether a Karaoke Widget is on screen (`lyrics::lrclib`'s `words`).
-type FakeLrclib = Arc<dyn Fn(bool) -> futures_util::future::BoxFuture<'static, Result<Option<singularity_proto::Lyrics>, String>> + Send + Sync>;
+/// what the lookup is for (`lyrics::Want`).
+type FakeLrclib = Arc<dyn Fn(crate::lyrics::Want) -> futures_util::future::BoxFuture<'static, Result<Option<singularity_proto::Lyrics>, String>> + Send + Sync>;
 
 static FAKE_LRCLIB: Mutex<Option<HashMap<String, FakeLrclib>>> = Mutex::new(None);
 
 /// The stand-in's answer for `uri`, if a test put one there.
-pub(super) fn fake_lrclib(uri: &str, words: bool) -> Option<futures_util::future::BoxFuture<'static, Result<Option<singularity_proto::Lyrics>, String>>> {
-    FAKE_LRCLIB.lock().unwrap().as_ref()?.get(uri).map(|f| f(words))
+pub(super) fn fake_lrclib(uri: &str, want: crate::lyrics::Want) -> Option<futures_util::future::BoxFuture<'static, Result<Option<singularity_proto::Lyrics>, String>>> {
+    FAKE_LRCLIB.lock().unwrap().as_ref()?.get(uri).map(|f| f(want))
 }
 
 /// LRCLIB runs beside browsing: a search is answered while it takes its time, its answer reaches the Clients and is
@@ -626,43 +626,85 @@ async fn lrclib_is_asked_beside_browsing_once_a_track() {
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
-/// Q183: LRCLIB's lookup is told whether a Karaoke Widget is on screen (only then may it search for a word-timed
-/// version). A line-timed answer found without one is kept; a Karaoke Widget asking later has LRCLIB asked once more,
-/// and only once.
+/// Q183: LRCLIB's lookup is told what it is for. Without a Karaoke Widget on screen, `/api/get` alone; a line-timed
+/// answer found so is kept, and a Karaoke Widget asking later has LRCLIB searched for a word-timed version, the get not
+/// asked again, and only once.
 #[tokio::test]
 async fn lrclib_is_told_whether_a_karaoke_widget_is_on_screen() {
-    no_real_login();
-    const URI: &str = "spotify:track:lrclibkaraoke";
-    let told = Arc::new(Mutex::new(vec![]));
-    let t = told.clone();
-    let fake: FakeLrclib = Arc::new(move |words| {
-        t.lock().unwrap().push(words);
-        Box::pin(async {
-            let lines = vec![singularity_proto::LyricLine { start_ms: 1_000, text: "Invented line".into(), ..Default::default() }];
-            Ok(Some(singularity_proto::Lyrics { uri: URI.into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() }))
-        })
-    });
-    FAKE_LRCLIB.lock().unwrap().get_or_insert_default().insert(URI.into(), fake);
-    let f = Fixtures::new(|_, _| Ok(json!({})));
-    let (_dir, tx, mut ev) = catalogue(&f);
-    let meta = || Some(singularity_proto::Item { uri: URI.into(), name: "Invented".into(), artists: vec!["Nobody".into()], duration_ms: 200_000, ..Default::default() });
-    let lyrics = |words| CatCmd::Lyrics { uri: URI.into(), meta: meta(), words };
+    use crate::lyrics::Want;
+    let (told, tx, mut ev, _dir) = karaoke_lrclib("spotify:track:lrclibkaraoke", Duration::ZERO);
+    let lyrics = |words| CatCmd::Lyrics { uri: "spotify:track:lrclibkaraoke".into(), meta: invented(), words };
     tx.send(lyrics(false)).await.unwrap();
     next(&mut ev, |e| matches!(e, CatEvent::Lyrics(_)).then_some(())).await;
-    assert_eq!(*told.lock().unwrap(), [false]);
-    // a Karaoke Widget now: the kept lines at once, and LRCLIB asked again, told so
+    assert_eq!(*told.lock().unwrap(), [Want::Lines]);
+    // a Karaoke Widget now: the kept lines at once, and LRCLIB's search alone
     tx.send(lyrics(true)).await.unwrap();
     next(&mut ev, |e| matches!(e, CatEvent::Lyrics(_)).then_some(())).await;
-    let asked = Instant::now();
-    while told.lock().unwrap().len() < 2 && asked.elapsed() < Duration::from_secs(3) {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(*told.lock().unwrap(), [false, true]);
+    told_within(&told, 2).await;
+    assert_eq!(*told.lock().unwrap(), [Want::Lines, Want::SearchOnly]);
     // and not again
     tx.send(lyrics(true)).await.unwrap();
     next(&mut ev, |e| matches!(e, CatEvent::Lyrics(_)).then_some(())).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(*told.lock().unwrap(), [false, true]);
+    assert_eq!(*told.lock().unwrap(), [Want::Lines, Want::SearchOnly]);
+}
+
+/// #166 review: a Karaoke Widget asking while LRCLIB is being asked without one (the same track: no second lookup) has
+/// the search made once that answer arrives.
+#[tokio::test]
+async fn a_karaoke_widget_asking_during_a_lookup_without_one_gets_the_search_after_it() {
+    use crate::lyrics::Want;
+    const URI: &str = "spotify:track:lrclibrace";
+    let (told, tx, mut ev, _dir) = karaoke_lrclib(URI, Duration::from_millis(600));
+    tx.send(CatCmd::Lyrics { uri: URI.into(), meta: invented(), words: false }).await.unwrap();
+    told_within(&told, 1).await;
+    tx.send(CatCmd::Lyrics { uri: URI.into(), meta: invented(), words: true }).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Lyrics(_)).then_some(())).await;
+    told_within(&told, 2).await;
+    assert_eq!(*told.lock().unwrap(), [Want::Lines, Want::SearchOnly]);
+    // with a Karaoke Widget all along, its lookup had the search in it: nothing more
+    const URI2: &str = "spotify:track:lrclibrace2";
+    let (told, tx, mut ev, _dir) = karaoke_lrclib(URI2, Duration::from_millis(600));
+    tx.send(CatCmd::Lyrics { uri: URI2.into(), meta: invented(), words: true }).await.unwrap();
+    told_within(&told, 1).await;
+    tx.send(CatCmd::Lyrics { uri: URI2.into(), meta: invented(), words: true }).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Lyrics(_)).then_some(())).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(*told.lock().unwrap(), [Want::Words]);
+}
+
+/// A track's details as a Client sends them, invented.
+fn invented() -> Option<singularity_proto::Item> {
+    Some(singularity_proto::Item { name: "Invented".into(), artists: vec!["Nobody".into()], duration_ms: 200_000, ..Default::default() })
+}
+
+/// A Catalogue whose LRCLIB stand-in for `uri` answers line-timed lines after `delay`, writing down what each lookup
+/// was for.
+type Told = Arc<Mutex<Vec<crate::lyrics::Want>>>;
+fn karaoke_lrclib(uri: &'static str, delay: Duration) -> (Told, mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>, tempfile::TempDir) {
+    no_real_login();
+    let told: Told = Arc::default();
+    let t = told.clone();
+    let fake: FakeLrclib = Arc::new(move |want| {
+        t.lock().unwrap().push(want);
+        Box::pin(async move {
+            tokio::time::sleep(delay).await;
+            let lines = vec![singularity_proto::LyricLine { start_ms: 1_000, text: "Invented line".into(), ..Default::default() }];
+            Ok(Some(singularity_proto::Lyrics { uri: uri.into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() }))
+        })
+    });
+    FAKE_LRCLIB.lock().unwrap().get_or_insert_default().insert(uri.into(), fake);
+    let f = Fixtures::new(|_, _| Ok(json!({})));
+    let (dir, tx, ev) = catalogue(&f);
+    (told, tx, ev, dir)
+}
+
+/// Waits (3 s at most) until `n` lookups were made.
+async fn told_within(told: &Told, n: usize) {
+    let asked = Instant::now();
+    while told.lock().unwrap().len() < n && asked.elapsed() < Duration::from_secs(3) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// A browsing State as `run` makes one, not yet started, with a session that logged in `ago` and reaches nothing

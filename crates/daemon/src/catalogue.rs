@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use crate::connect::{ConnectRemote, QueueEdit};
 use crate::engine::Identity;
 use crate::library;
+use crate::lyrics::Want;
 use singularity_proto::{Card, CatalogueStatus, Command, EngineStatus, HomeFeed, Library, Shelf, TrackPage};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -347,6 +348,9 @@ struct State<Q> {
     /// tracks LRCLIB is being asked about right now: asked again meanwhile (another Client, a reconnect), the one
     /// lookup's answer reaches every Client
     lrclib_asking: std::collections::HashSet<String>,
+    /// tracks a Karaoke Widget asked about while LRCLIB was being asked for them (perhaps without one): looked at again
+    /// for word timing when that answer arrives, with the track's details if the Client sent them
+    karaoke_waiting: HashMap<String, Option<singularity_proto::Item>>,
     artists: HashMap<String, (Instant, singularity_proto::ArtistPage)>,
     searches: HashMap<String, (Instant, singularity_proto::SearchResults)>,
     /// the newest search not made yet (#126)
@@ -650,12 +654,17 @@ async fn handle<Q: Fetch + Sync + Clone>(st: &mut State<Q>, cmd: CatCmd) {
         CatCmd::Lyrics { uri, meta, words } => st.lyrics(uri, meta, words).await,
         CatCmd::LyricsFound { uri, found } => {
             st.lrclib_asking.remove(&uri);
+            let waiting = st.karaoke_waiting.remove(&uri);
             if let Some((lyrics, keep)) = found {
                 if keep {
                     trim_any(&mut st.lyrics, MAX_LYRICS);
                     st.lyrics.insert(lyrics.uri.clone(), lyrics.clone());
                 }
-                let _ = st.ev.send(CatEvent::Lyrics(lyrics)).await;
+                let _ = st.ev.send(CatEvent::Lyrics(lyrics.clone())).await;
+                // a Karaoke Widget asked meanwhile: word timing, unless this lookup was for it
+                if let Some(meta) = waiting {
+                    st.with_words(&lyrics, meta).await;
+                }
             }
         }
         CatCmd::Artist(uri) => st.artist(uri).await,
@@ -787,7 +796,7 @@ fn cache(dirs: &Dirs) -> anyhow::Result<Cache> {
 impl<Q: Fetch + Sync + Clone> State<Q> {
     #[allow(clippy::too_many_arguments)]
     fn new(dirs: Dirs, queries: Q, slot: SessionSlot, ev: mpsc::Sender<CatEvent>, to_connect: mpsc::UnboundedSender<CatCmd>, logging_in: std::sync::Arc<tokio::sync::watch::Sender<bool>>, inbox: mpsc::UnboundedReceiver<CatCmd>, to_browse: mpsc::WeakUnboundedSender<CatCmd>) -> State<Q> {
-        State { dirs, session: None, slot, queries, ev, to_connect, logging_in, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), to_browse, lrclib_asking: Default::default(), artists: HashMap::new(), searches: HashMap::new(), pending: Default::default(), inbox, waiting: VecDeque::new(), busy: None, last: None, redial: Redial::new(), reusable: None, clients: &CLIENTS, tried: false }
+        State { dirs, session: None, slot, queries, ev, to_connect, logging_in, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), to_browse, lrclib_asking: Default::default(), karaoke_waiting: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), pending: Default::default(), inbox, waiting: VecDeque::new(), busy: None, last: None, redial: Redial::new(), reusable: None, clients: &CLIENTS, tried: false }
     }
 
     /// The session changes in one place, so the query port's adapter always asks through the current one.
@@ -1573,22 +1582,22 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
         }
     }
 
-    async fn lrclib_for(uri: &str, m: &singularity_proto::Item, words: bool) -> Result<Option<singularity_proto::Lyrics>, String> {
+    async fn lrclib_for(uri: &str, m: &singularity_proto::Item, want: Want) -> Result<Option<singularity_proto::Lyrics>, String> {
         #[cfg(test)]
-        if let Some(fake) = port_tests::fake_lrclib(uri, words) {
+        if let Some(fake) = port_tests::fake_lrclib(uri, want) {
             return fake.await;
         }
-        crate::lyrics::lrclib(uri, &m.artists.first().cloned().unwrap_or_default(), &m.name, m.album.as_deref(), m.duration_ms, words).await
+        crate::lyrics::lrclib(uri, &m.artists.first().cloned().unwrap_or_default(), &m.name, m.album.as_deref(), m.duration_ms, want).await
     }
 
     /// LRCLIB asked beside browsing (it can take seconds, more when it asks us to wait; lookups go one at a time,
     /// `lyrics::lrclib`): `then` makes what to send of its answer, which comes back as `LyricsFound`, so Home, the
     /// library and everything else browsing does never wait for it.
-    fn ask_lrclib(&mut self, uri: String, m: singularity_proto::Item, words: bool, then: impl FnOnce(Result<Option<singularity_proto::Lyrics>, String>) -> Option<(singularity_proto::Lyrics, bool)> + Send + 'static) {
+    fn ask_lrclib(&mut self, uri: String, m: singularity_proto::Item, want: Want, then: impl FnOnce(Result<Option<singularity_proto::Lyrics>, String>) -> Option<(singularity_proto::Lyrics, bool)> + Send + 'static) {
         self.lrclib_asking.insert(uri.clone());
         let back = self.to_browse.clone();
         tokio::spawn(async move {
-            let found = then(Self::lrclib_for(&uri, &m, words).await);
+            let found = then(Self::lrclib_for(&uri, &m, want).await);
             if let Some(back) = back.upgrade() {
                 let _ = back.send(CatCmd::LyricsFound { uri, found });
             }
@@ -1596,7 +1605,8 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
     }
 
     /// Line-synced lyrics without word times, for a Karaoke Widget: LRCLIB's word-synced version follows when it has
-    /// one (D67, the owner: yes). Asked once per track, whatever the answer.
+    /// one (D67, the owner: yes). Asked once per track, whatever the answer. When the lines are LRCLIB's own best
+    /// match (asked without a Karaoke Widget), only its search is left to try (Q183).
     async fn with_words(&mut self, l: &singularity_proto::Lyrics, meta: Option<singularity_proto::Item>) {
         if !l.synced || l.lines.iter().any(|x| !x.words.is_empty()) || self.word_tried.contains_key(&l.uri) {
             return;
@@ -1604,7 +1614,8 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
         trim_any(&mut self.word_tried, MAX_LYRICS);
         self.word_tried.insert(l.uri.clone(), ());
         let Some(m) = self.lyrics_meta(&l.uri, meta).await else { return };
-        self.ask_lrclib(l.uri.clone(), m, true, |got| match got {
+        let want = if l.source == "LRCLIB" { Want::SearchOnly } else { Want::Words };
+        self.ask_lrclib(l.uri.clone(), m, want, |got| match got {
             Ok(Some(w)) if w.synced && w.lines.iter().any(|x| !x.words.is_empty()) => {
                 tracing::info!("lyrics for {}: word timing from LRCLIB", w.uri);
                 Some((w, true))
@@ -1626,8 +1637,11 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
             }
             return;
         }
-        // LRCLIB is being asked already: its answer goes to every Client
+        // LRCLIB is being asked already: its answer goes to every Client (and a Karaoke Widget's word timing follows it)
         if self.lrclib_asking.contains(&uri) {
+            if words {
+                self.karaoke_waiting.insert(uri, meta);
+            }
             return;
         }
         let mut found = None;
@@ -1675,7 +1689,7 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
             }
         };
         match self.lyrics_meta(&uri, meta).await {
-            Some(m) => self.ask_lrclib(uri.clone(), m, words, move |got| {
+            Some(m) => self.ask_lrclib(uri.clone(), m, if words { Want::Words } else { Want::Lines }, move |got| {
                 Some(match got {
                     Ok(Some(l)) => answer(Outcome::Found, Some(l), &uri),
                     Ok(None) => answer(Outcome::Nothing, None, &uri),

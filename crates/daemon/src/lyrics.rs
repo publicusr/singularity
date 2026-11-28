@@ -297,11 +297,23 @@ fn quiet_left(now_ms: u64) -> Option<u64> {
 /// matches within 2 s too).
 const SAME_LENGTH_MS: f64 = 2_000.0;
 
-/// Ask LRCLIB: with the album, then without it if that finds nothing (`asks`). `words`: a Karaoke Widget is on
-/// screen: when the best match times only lines, one search for the same track and artist looks for a word-timed
-/// version of the same length (the owner, Q183). `Ok(None)` when it has nothing, `Err` when it couldn't be asked,
-/// including while it has asked us to wait.
-pub async fn lrclib(uri: &str, artist: &str, title: &str, album: Option<&str>, duration_ms: u64, words: bool) -> Result<Option<Lyrics>, String> {
+/// What an LRCLIB lookup is for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Want {
+    /// lyrics, no Karaoke Widget on screen: `/api/get` alone
+    Lines,
+    /// lyrics for a Karaoke Widget: `/api/get`, then one search when its best match times only lines (the owner, Q183)
+    Words,
+    /// a word-timed version of a song whose `/api/get` answer timed only lines (asked without a Karaoke Widget): the
+    /// search alone
+    SearchOnly,
+}
+
+/// Ask LRCLIB: with the album, then without it if that finds nothing (`asks`); for a Karaoke Widget (`want`), one
+/// search for a word-timed version of the same song when the best match times only lines. `Ok(None)` when it has
+/// nothing (a search finding nothing word-timed), `Err` when it couldn't be asked, including while it has asked us to
+/// wait.
+pub async fn lrclib(uri: &str, artist: &str, title: &str, album: Option<&str>, duration_ms: u64, want: Want) -> Result<Option<Lyrics>, String> {
     let http = reqwest::Client::builder()
         .user_agent(concat!("Singularity/", env!("CARGO_PKG_VERSION"), " (https://github.com/publicusr/singularity)"))
         .timeout(Duration::from_secs(10))
@@ -317,7 +329,7 @@ pub async fn lrclib(uri: &str, artist: &str, title: &str, album: Option<&str>, d
             Ok(Answer { status, retry_after, body })
         })
     };
-    lookup(&ask, uri, artist, title, album, duration_ms, words).await
+    lookup(&ask, uri, artist, title, album, duration_ms, want).await
 }
 
 /// One answer from LRCLIB: its status, its `Retry-After`, its body (a success's only).
@@ -331,27 +343,30 @@ struct Answer {
 type Ask = dyn Fn(&'static str, Vec<(&'static str, String)>) -> BoxFuture<'static, Result<Answer, String>> + Sync;
 
 /// `lrclib`, its requests sent through `ask`.
-async fn lookup(ask: &Ask, uri: &str, artist: &str, title: &str, album: Option<&str>, duration_ms: u64, words: bool) -> Result<Option<Lyrics>, String> {
+async fn lookup(ask: &Ask, uri: &str, artist: &str, title: &str, album: Option<&str>, duration_ms: u64, want: Want) -> Result<Option<Lyrics>, String> {
     // one lookup at a time, its requests spaced (LRCLIB's docs: sequential, 200–500 ms apart)
     let mut turn = LRCLIB_TURN.lock().await;
-    let q = vec![("artist_name", artist.to_string()), ("track_name", title.to_string()), ("duration", (duration_ms / 1000).to_string())];
-    let mut record = None;
-    for q in asks(q, album) {
-        if let Some(v) = send(ask, &mut turn, "/api/get", q).await? {
-            record = Some(v);
-            break;
+    let mut best = None;
+    if want != Want::SearchOnly {
+        let q = vec![("artist_name", artist.to_string()), ("track_name", title.to_string()), ("duration", (duration_ms / 1000).to_string())];
+        let mut record = None;
+        for q in asks(q, album) {
+            if let Some(v) = send(ask, &mut turn, "/api/get", q).await? {
+                record = Some(v);
+                break;
+            }
         }
-    }
-    let Some(record) = record else { return Ok(None) };
-    let best = parse_lrclib(uri, &record);
-    let lines_only = best.as_ref().is_some_and(|l| l.synced && l.lines.iter().all(|x| x.words.is_empty()));
-    if !(words && lines_only) {
-        return Ok(best);
+        let Some(record) = record else { return Ok(None) };
+        best = parse_lrclib(uri, &record);
+        let lines_only = best.as_ref().is_some_and(|l| l.synced && l.lines.iter().all(|x| x.words.is_empty()));
+        if !(want == Want::Words && lines_only) {
+            return Ok(best);
+        }
     }
     let q = vec![("track_name", title.to_string()), ("artist_name", artist.to_string())];
     match send(ask, &mut turn, "/api/search", q).await {
         Ok(Some(Value::Array(records))) => {
-            if let Some(w) = word_timed(uri, &records, duration_ms) {
+            if let Some(w) = word_timed(uri, &records, artist, title, duration_ms) {
                 tracing::info!("lyrics for {uri}: LRCLIB's best match times lines only, a search found a word-timed version");
                 return Ok(Some(w));
             }
@@ -388,22 +403,54 @@ async fn send(ask: &Ask, last: &mut Option<tokio::time::Instant>, path: &'static
     }
 }
 
-/// Of a search's `records`, the word-timed version of a track `duration_ms` long: the closest in length within
-/// `SAME_LENGTH_MS` whose words parse.
-fn word_timed(uri: &str, records: &[Value], duration_ms: u64) -> Option<Lyrics> {
-    word_timed_records(records, duration_ms).into_iter().find_map(|r| parse_lrclib(uri, r).filter(|l| l.lines.iter().any(|x| !x.words.is_empty())))
+/// Of a search's `records`, the word-timed version of `artist`'s `title`, `duration_ms` long: the closest in length
+/// within `SAME_LENGTH_MS` whose words parse.
+fn word_timed(uri: &str, records: &[Value], artist: &str, title: &str, duration_ms: u64) -> Option<Lyrics> {
+    word_timed_records(records, artist, title, duration_ms).into_iter().find_map(|r| parse_lrclib(uri, r).filter(|l| l.lines.iter().any(|x| !x.words.is_empty())))
 }
 
-/// The word-timed records of a search within `SAME_LENGTH_MS` of `duration_ms` (no instrumentals), closest first.
-fn word_timed_records(records: &[Value], duration_ms: u64) -> Vec<&Value> {
+/// The word-timed records of a search that are `artist`'s `title` (`same_song`), within `SAME_LENGTH_MS` of
+/// `duration_ms` (no instrumentals), closest first.
+fn word_timed_records<'a>(records: &'a [Value], artist: &str, title: &str, duration_ms: u64) -> Vec<&'a Value> {
     let mut near: Vec<(f64, &Value)> = records
         .iter()
         .filter(|r| r["hasWordSync"].as_bool() == Some(true) && r["instrumental"].as_bool() != Some(true))
+        .filter(|r| same_song(r["artistName"].as_str().unwrap_or(""), r["trackName"].as_str().unwrap_or(""), artist, title))
         .filter_map(|r| Some(((r["duration"].as_f64()? * 1000.0 - duration_ms as f64).abs(), r)))
         .filter(|(d, _)| *d <= SAME_LENGTH_MS)
         .collect();
     near.sort_by(|a, b| a.0.total_cmp(&b.0));
     near.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Whether a search's record (`artist`, `title`) is the song asked for (`want_artist`, `want_title`): the same artist,
+/// whatever the case (or the first one it credits: "A, B", "A & B"), and one title within the other once credits in
+/// brackets ("(feat. …)", "(Prod. …)", "[with …]") are dropped, whatever the case.
+fn same_song(artist: &str, title: &str, want_artist: &str, want_title: &str) -> bool {
+    let first = artist.split([',', '&']).next().unwrap_or("").trim();
+    let artist_ok = [artist.trim(), first].iter().any(|a| a.to_lowercase() == want_artist.trim().to_lowercase());
+    let (a, b) = (bare_title(title), bare_title(want_title));
+    artist_ok && !a.is_empty() && !b.is_empty() && (a.contains(&b) || b.contains(&a))
+}
+
+/// A title in lower case without bracketed credits ("(feat. X)", "(ft. X)", "(Prod. X)", "[with X]").
+fn bare_title(t: &str) -> String {
+    let mut out = String::new();
+    let mut rest = t;
+    while let Some(i) = rest.find(['(', '[']) {
+        let close = if rest[i..].starts_with('(') { ')' } else { ']' };
+        let inner = &rest[i + 1..];
+        let end = inner.find(close).map_or(inner.len(), |e| e + 1);
+        let word = inner.trim_start().to_lowercase();
+        let credit = ["feat", "ft.", "ft ", "prod", "with "].iter().any(|c| word.starts_with(c));
+        out.push_str(&rest[..i]);
+        if !credit {
+            out.push_str(&rest[i..i + 1 + end.min(inner.len())]);
+        }
+        rest = &inner[end.min(inner.len())..];
+    }
+    out.push_str(rest);
+    out.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
 /// What to ask LRCLIB, in turn until one finds the song: with the album, then without it. LRCLIB finds nothing when it
@@ -582,7 +629,7 @@ plain: |
         assert_eq!(quiet_left(now + 19_500), Some(1));
         assert_eq!(quiet_left(now + 20_000), None);
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let got = rt.block_on(lrclib("u", "A", "T", Some("LP"), 200_000, true));
+        let got = rt.block_on(lrclib("u", "A", "T", Some("LP"), 200_000, Want::Words));
         assert!(got.as_ref().is_err_and(|e| e.contains("wait")), "{got:?}");
         LRCLIB_QUIET_UNTIL.store(0, Ordering::Relaxed);
     }
@@ -619,47 +666,76 @@ plain: |
         let mut line_only: Value = serde_json::from_str(RECORDED).unwrap();
         line_only["hasWordSync"] = false.into();
         let search: Value = serde_json::from_str(SEARCH).unwrap();
-        let run = |get: Option<Value>, search: Result<Value, u16>, words: bool| {
+        let run = |get: Option<Value>, search: Result<Value, u16>, want: Want| {
             let asked = std::sync::Arc::default();
             let ask = stand_in(get, search, std::sync::Arc::clone(&asked));
-            let got = rt.block_on(lookup(&ask, "u", "Nikt", "Wymyślona piosenka", Some("Wymyślony album"), 243_000, words));
+            let got = rt.block_on(lookup(&ask, "u", "Nikt", "Wymyślona piosenka", Some("Wymyślony album"), 243_000, want));
             (got, asked.lock().unwrap().clone())
         };
         let words = |l: &Lyrics| l.lines.iter().any(|x| !x.words.is_empty());
         // a Karaoke Widget on screen: the get, then one search for the same track and artist, which has a word-timed
         // version within 2 s of the track's length
-        let (got, asked) = run(Some(line_only.clone()), Ok(search.clone()), true);
+        let (got, asked) = run(Some(line_only.clone()), Ok(search.clone()), Want::Words);
         assert_eq!(asked, ["/api/get?artist_name=Nikt&track_name=Wymyślona piosenka&duration=243&album_name=Wymyślony album", "/api/search?track_name=Wymyślona piosenka&artist_name=Nikt"]);
         let l = got.unwrap().unwrap();
         assert!(l.synced && l.source == "LRCLIB" && words(&l), "{l:?}");
         assert_eq!(l.lines[0].words.iter().map(|w| w.text.as_str()).collect::<String>(), "Lampy nad rzeką gasną powoli");
         // none on screen: no search, the best match as it is
-        let (got, asked) = run(Some(line_only.clone()), Ok(search.clone()), false);
+        let (got, asked) = run(Some(line_only.clone()), Ok(search.clone()), Want::Lines);
         let l = got.unwrap().unwrap();
         assert!(asked.len() == 1 && !words(&l) && l.lines[0].text == "Paper boats drift past, the harbour wall", "{asked:?}");
         // a word-timed best match: no search
-        let (got, asked) = run(Some(serde_json::from_str(RECORDED).unwrap()), Ok(search.clone()), true);
+        let (got, asked) = run(Some(serde_json::from_str(RECORDED).unwrap()), Ok(search.clone()), Want::Words);
         assert!(asked.len() == 1 && words(&got.unwrap().unwrap()), "{asked:?}");
         // nothing word-timed of the same length, the search failing: the best match stands, after the one search
-        let (got, asked) = run(Some(line_only.clone()), Ok(Value::Array(search.as_array().unwrap()[..3].to_vec())), true);
+        let (got, asked) = run(Some(line_only.clone()), Ok(Value::Array(search.as_array().unwrap()[..3].to_vec())), Want::Words);
         assert!(asked.len() == 2 && !words(&got.unwrap().unwrap()), "{asked:?}");
-        let (got, asked) = run(Some(line_only.clone()), Err(500), true);
+        let (got, asked) = run(Some(line_only.clone()), Err(500), Want::Words);
         assert!(asked.len() == 2 && !words(&got.unwrap().unwrap()), "{asked:?}");
         // not found at all: the two gets (with the album and without), no search
-        let (got, asked) = run(None, Ok(search.clone()), true);
+        let (got, asked) = run(None, Ok(search.clone()), Want::Words);
         assert!(asked.len() == 2 && asked.iter().all(|a| a.starts_with("/api/get")) && got == Ok(None), "{asked:?}");
         // the search told to wait: the best match stands, and LRCLIB is left alone meanwhile, any track
-        let (got, asked) = run(Some(line_only.clone()), Err(429), true);
+        let (got, asked) = run(Some(line_only.clone()), Err(429), Want::Words);
         assert!(asked.len() == 2 && !words(&got.unwrap().unwrap()), "{asked:?}");
-        let (got, asked) = run(Some(line_only), Ok(search), true);
+        let (got, asked) = run(Some(line_only.clone()), Ok(search.clone()), Want::Words);
         assert!(asked.is_empty() && got.is_err_and(|e| e.contains("wait")), "{asked:?}");
         LRCLIB_QUIET_UNTIL.store(0, Ordering::Relaxed);
+        // a song whose get timed only lines, asked about again for a Karaoke Widget: the search alone, no get again
+        let (got, asked) = run(Some(line_only.clone()), Ok(search), Want::SearchOnly);
+        assert_eq!(asked, ["/api/search?track_name=Wymyślona piosenka&artist_name=Nikt"]);
+        assert!(words(&got.unwrap().unwrap()));
+        let (got, asked) = run(Some(line_only), Ok(Value::Array(vec![])), Want::SearchOnly);
+        assert!(asked.len() == 1 && got == Ok(None), "{asked:?}");
+    }
+
+    #[test]
+    fn the_search_takes_only_the_same_artists_same_song() {
+        // the same artist whatever the case, or the first one a record credits
+        assert!(same_song("nikt", "Wymyślona piosenka", "Nikt", "Wymyślona piosenka"));
+        assert!(same_song("Nikt, Ktoś", "Wymyślona piosenka", "Nikt", "Wymyślona piosenka"));
+        assert!(same_song("Nikt & Ktoś", "Wymyślona piosenka", "Nikt", "Wymyślona piosenka"));
+        assert!(!same_song("Ktoś, Nikt", "Wymyślona piosenka", "Nikt", "Wymyślona piosenka"), "someone else's song");
+        assert!(!same_song("Nikt Inny", "Wymyślona piosenka", "Nikt", "Wymyślona piosenka"));
+        // one title within the other, credits in brackets dropped
+        assert!(same_song("Nikt", "Wymyślona piosenka (Prod. Ktoś)", "Nikt", "Wymyślona piosenka"));
+        assert!(same_song("Nikt", "Wymyślona Piosenka", "Nikt", "Wymyślona piosenka (feat. Ktoś)"));
+        assert!(same_song("Nikt", "Wymyślona piosenka [with Ktoś]", "Nikt", "Wymyślona piosenka (ft. Ktoś)"));
+        assert!(same_song("Nikt", "Wymyślona piosenka - Remastered", "Nikt", "Wymyślona piosenka"));
+        assert!(!same_song("Nikt", "Inna piosenka", "Nikt", "Wymyślona piosenka"));
+        assert_eq!(bare_title("  Fiji (Prod. Borucci) [feat. X] (Live)"), "fiji (live)");
+        // in a search: someone else's record of the same length is no match
+        let mut search: Vec<Value> = serde_json::from_str(SEARCH).unwrap();
+        search[4]["artistName"] = "Ktoś".into();
+        assert_eq!(word_timed_records(&search, "Nikt", "Wymyślona piosenka", 243_000).iter().map(|r| r["id"].as_u64().unwrap()).collect::<Vec<_>>(), [6]);
+        search[3]["trackName"] = "Inna piosenka".into();
+        assert!(word_timed_records(&search, "Nikt", "Wymyślona piosenka", 243_000).is_empty());
     }
 
     #[test]
     fn the_search_takes_the_closest_word_timed_version_of_the_same_length() {
         let search: Vec<Value> = serde_json::from_str(SEARCH).unwrap();
-        let ids = |ms: u64| word_timed_records(&search, ms).iter().map(|r| r["id"].as_u64().unwrap()).collect::<Vec<_>>();
+        let ids = |ms: u64| word_timed_records(&search, "Nikt", "Wymyślona piosenka", ms).iter().map(|r| r["id"].as_u64().unwrap()).collect::<Vec<_>>();
         assert_eq!(ids(243_000), [7, 6]);
         assert_eq!(ids(241_000), [6, 7]);
         assert_eq!(ids(170_500), [4]);
@@ -667,7 +743,7 @@ plain: |
         // an instrumental is no version to sing
         let mut inst = search.clone();
         inst[4]["instrumental"] = true.into();
-        assert_eq!(word_timed_records(&inst, 243_000).iter().map(|r| r["id"].as_u64().unwrap()).collect::<Vec<_>>(), [6]);
+        assert_eq!(word_timed_records(&inst, "Nikt", "Wymyślona piosenka", 243_000).iter().map(|r| r["id"].as_u64().unwrap()).collect::<Vec<_>>(), [6]);
     }
 
     #[test]

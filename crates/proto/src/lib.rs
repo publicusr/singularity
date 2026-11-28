@@ -146,7 +146,8 @@ pub enum Command {
     /// logs no others).
     ShownInDemo { uri: String },
     /// Fetch lyrics for a track (Spotify's, else LRCLIB's); arrives as `Event::Lyrics`. `words`: a Karaoke Widget is
-    /// on screen, so LRCLIB is also asked for word timing when Spotify's lyrics only time lines (D67). Additive: older
+    /// on screen, so LRCLIB is also asked for word timing when Spotify's lyrics only time lines (D67), and LRCLIB's own
+    /// line-timed best match leads to one search for a word-timed version of the same song (Q183). Additive: older
     /// Daemons ignore it, older Clients leave it out.
     GetLyrics {
         uri: String,
@@ -671,7 +672,7 @@ pub struct LyricLine {
     pub start_ms: u64,
     pub text: String,
     /// when each word is sung, when the source says so (LRCLIB's word-synced Lyricsfile, enhanced LRC); empty: only
-    /// the line is timed (the Karaoke Widget estimates its words). Additive: older Clients ignore it, older Daemons
+    /// the line is timed (the Karaoke Widget lights it whole). Additive: older Clients ignore it, older Daemons
     /// leave it out.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub words: Vec<LyricWord>,
