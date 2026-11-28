@@ -602,7 +602,7 @@ async fn log_plays(hub: Arc<Hub>) {
         let now = proto::now_ms();
         if let Some(play) = rec.observe(&state, &device, now) {
             let summary = {
-                let s = store.lock().expect("store lock");
+                let mut s = store.lock().expect("store lock");
                 if let Err(e) = s.record(&play) {
                     tracing::warn!("couldn't log a play: {e}");
                 }
@@ -660,6 +660,7 @@ async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>, demo
         }
         return;
     };
+    let deleting = !demo && matches!(cmd, Command::DeleteLocalData);
     let now = proto::now_ms();
     let (reply, everyone) = {
         let mut s = store.lock().expect("store lock");
@@ -687,11 +688,36 @@ async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>, demo
             },
         }
     };
+    // the real "delete" also takes the fast-start copy of Home and the library and the demo Listening log, files and
+    // all (#167), after the real log (a failure here can't leave that one); every part is tried, each failure told
+    let reply = if deleting {
+        match (reply, delete_the_rest(hub, &store)) {
+            (Ok(_), Err(e)) => Err(e),
+            (Err(a), Err(b)) => Err(anyhow::anyhow!("{a}; {b}")),
+            (r, Ok(())) => r,
+        }
+    } else {
+        reply
+    };
     let ev = reply.unwrap_or_else(|e| Event::Error { message: format!("Local data: {e}") });
     let _ = out.send(DaemonMsg::Event(ev)).await;
     if let Some(ev) = everyone {
         let _ = hub.events.send(ev);
     }
+}
+
+/// What "Delete listening data" takes besides the real log (#167): the fast-start copy (not written again in this
+/// run until a logout and a login, or another account) and the demo Listening log, by its path beside `store` when
+/// this Daemon couldn't open it.
+fn delete_the_rest(hub: &Hub, store: &std::sync::Mutex<store::Store>) -> anyhow::Result<()> {
+    if let Some(l) = &hub.last_seen {
+        l.delete();
+    }
+    match &hub.demo_store {
+        Some(d) => d.lock().expect("demo store lock").remove(),
+        None => store.lock().expect("store lock").remove_demo_files(),
+    }
+    .map_err(|e| anyhow::anyhow!("the demo listening log: {e}"))
 }
 
 async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
