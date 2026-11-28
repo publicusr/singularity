@@ -18,14 +18,14 @@ pub trait Store {
     fn write(&mut self, s: &Saved) -> Result<(), String>;
     /// Forget Design `id` (gone already: nothing happens). Err: why it couldn't be removed.
     fn remove(&mut self, id: &str) -> Result<(), String>;
-    /// Design `id`'s file as it is, to put back exactly if its delete is undone (None: this store keeps no text).
-    fn text(&self, _id: &str) -> Option<String> {
-        None
+    /// Design `id`'s file as it is, to put back exactly if its delete is undone. Ok(None): this store keeps no text;
+    /// Err: it couldn't be read (an undo writes the Design anew).
+    fn text(&self, _id: &str) -> Result<Option<String>, String> {
+        Ok(None)
     }
-    /// Put a deleted Design back: its file's `text` as it was, or (no text) `s` written anew.
-    fn put_back(&mut self, s: &Saved, _text: Option<&str>) -> Result<(), String> {
-        self.write(s)
-    }
+    /// Put a deleted Design back: its file's `text` as it was, or (no text) `s` written anew. Err: it can't be, or a
+    /// file of that name is there now (never written over).
+    fn put_back(&mut self, s: &Saved, text: Option<&str>) -> Result<(), String>;
 }
 
 /// The layouts folder: one `<id>.toml` per Design.
@@ -47,14 +47,18 @@ impl Store for Folder {
         }
     }
 
-    fn text(&self, id: &str) -> Option<String> {
-        std::fs::read_to_string(self.0.join(format!("{id}.toml"))).ok()
+    fn text(&self, id: &str) -> Result<Option<String>, String> {
+        std::fs::read_to_string(self.0.join(format!("{id}.toml"))).map(Some).map_err(|e| e.to_string())
     }
 
     fn put_back(&mut self, s: &Saved, text: Option<&str>) -> Result<(), String> {
+        let path = self.0.join(format!("{}.toml", s.id));
+        if path.exists() {
+            return Err(format!("layouts/{}.toml is there again", s.id));
+        }
         let Some(text) = text else { return self.write(s) };
         std::fs::create_dir_all(&self.0).map_err(|e| e.to_string())?;
-        singularity_config::write_atomic(&self.0.join(format!("{}.toml", s.id)), text).map_err(|e| e.to_string())
+        singularity_config::write_atomic(&path, text).map_err(|e| e.to_string())
     }
 }
 
@@ -65,6 +69,8 @@ impl Store for Folder {
 pub struct Deleted {
     pub saved: Saved,
     text: Option<String>,
+    /// why its file's text couldn't be read (an undo then writes the Design anew, and says so)
+    unread: Option<String>,
 }
 
 /// What a change to the Shown Design asks of the App, in the order it happens: lines for the bar (the last one shows)
@@ -382,7 +388,8 @@ impl ShownDesign {
     pub fn delete(&mut self, undo_key: Option<&str>) -> Option<Result<(Outcome, Option<Deleted>), Outcome>> {
         let id = self.file.clone()?;
         let (name, edited) = self.find(&id).map_or((id.clone(), false), |s| (s.name.clone(), s.edited));
-        let kept = self.find(&id).filter(|s| !s.edited).cloned().map(|saved| Deleted { text: self.store.as_ref().and_then(|st| st.text(&id)), saved });
+        let text = self.store.as_ref().map_or(Ok(None), |st| st.text(&id));
+        let kept = self.find(&id).filter(|s| !s.edited).cloned().map(|saved| Deleted { text: text.clone().ok().flatten(), unread: text.err(), saved });
         let mut out = Outcome::default();
         if let Some(Err(e)) = self.store.as_mut().map(|st| st.remove(&id)) {
             out.say(format!("Couldn't delete \"{name}\": {e}"));
@@ -402,12 +409,9 @@ impl ShownDesign {
     }
 
     /// Undo a Delete design of a Design of the user's (Q151): its file is put back as it was (the App puts it on
-    /// screen). Err: it can't be written, or a Design with its file name has appeared since; the bar says why.
+    /// screen). Err: it can't be written, or a file with its name has appeared since (never written over); the bar
+    /// says why, and the App keeps `d` to try again.
     pub fn undelete(&mut self, d: &Deleted) -> Result<Outcome, Outcome> {
-        self.reload();
-        if self.find(&d.saved.id).is_some() {
-            return Err(taken(&d.saved.name));
-        }
         let mut out = Outcome::default();
         if let Some(Err(e)) = self.store.as_mut().map(|st| st.put_back(&d.saved, d.text.as_deref())) {
             out.say(format!("Couldn't bring back \"{}\": {e}", d.saved.name));
@@ -415,7 +419,10 @@ impl ShownDesign {
         }
         self.reread(&mut out);
         out.save_ui();
-        out.say(format!("Brought back \"{}\"", d.saved.name));
+        match &d.unread {
+            Some(e) => out.say(format!("Brought back \"{}\" · its file couldn't be read ({e}), so it was written anew", d.saved.name)),
+            None => out.say(format!("Brought back \"{}\"", d.saved.name)),
+        }
         Ok(out)
     }
 
@@ -523,6 +530,13 @@ impl Store for Memory {
         }
         self.files.borrow_mut().remove(id);
         Ok(())
+    }
+
+    fn put_back(&mut self, s: &Saved, _text: Option<&str>) -> Result<(), String> {
+        if self.files.borrow().contains_key(&s.id) {
+            return Err(format!("layouts/{}.toml is there again", s.id));
+        }
+        self.write(s)
     }
 }
 

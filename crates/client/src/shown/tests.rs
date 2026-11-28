@@ -194,7 +194,7 @@ fn a_delete_that_cant_remove_the_file_says_so_and_changes_nothing() {
 }
 
 /// Q151: a Design of the user's deleted comes back from `undelete` exactly as it was, in its place in the list; the bar
-/// offers the key it was given. One whose file name was taken meanwhile isn't written over.
+/// offers the key it was given. One whose file name was taken meanwhile isn't written over (Err: the App keeps it).
 #[test]
 fn an_undone_delete_puts_the_same_design_back_in_its_place() {
     let (mut s, mem) = shown();
@@ -220,7 +220,7 @@ fn an_undone_delete_puts_the_same_design_back_in_its_place() {
     let other = Saved { name: "Mine".into(), ..was.clone() };
     mem.files.borrow_mut().insert("mine".into(), Saved { design: "singularity".into(), ..other });
     let o = s.undelete(&kept.unwrap()).expect_err("not over it");
-    assert_eq!(said(&o), Some("There is already a design called \"Mine\""));
+    assert_eq!(said(&o), Some("Couldn't bring back \"Mine\": layouts/mine.toml is there again"));
     assert_eq!(mem.files.borrow().get("mine").map(|s| s.design.as_str()), Some("singularity"));
 }
 
@@ -238,9 +238,37 @@ fn an_undone_delete_puts_the_file_back_byte_for_byte() {
     let _ = s.reload();
     let (_, kept) = s.delete(None).unwrap().expect("deleted");
     assert!(!file.exists(), "removed at once: a crash now leaves it deleted, not half there");
-    let _ = s.undelete(&kept.unwrap()).expect("back");
+    let kept = kept.unwrap();
+    // a file of its name there again, even one that doesn't read as a Design: never written over
+    std::fs::write(&file, "not a design").unwrap();
+    let o = s.undelete(&kept).expect_err("not over it");
+    assert_eq!(said(&o), Some("Couldn't bring back \"Mine\": layouts/mine.toml is there again"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "not a design");
+    std::fs::remove_file(&file).unwrap();
+    let _ = s.undelete(&kept).expect("back");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
     assert_eq!(s.saved().len(), 1);
+}
+
+/// Q151 review: a file whose text couldn't be read as it was deleted is written anew by the undo, and the bar says so.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_file_is_brought_back_written_anew_and_the_bar_says_so() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = ShownDesign::default();
+    s.set_store(Box::new(Folder(dir.path().to_path_buf())));
+    let a = edit(Node::singularity(), Widget::Stream, Widget::Queue);
+    let _ = s.save_as("Mine", &a, THEME);
+    let file = dir.path().join("mine.toml");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_to_string(&file).is_ok() {
+        return; // (root reads it anyway)
+    }
+    let (_, kept) = s.delete(None).unwrap().expect("deleted");
+    let o = s.undelete(&kept.unwrap()).expect("back");
+    assert!(said(&o).is_some_and(|t| t.starts_with("Brought back \"Mine\" · its file couldn't be read (") && t.ends_with("so it was written anew")), "{:?}", said(&o));
+    assert_eq!(s.find("mine").map(|m| m.arrangement()), Some(a));
 }
 
 #[test]

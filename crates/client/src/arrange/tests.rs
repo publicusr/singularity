@@ -365,7 +365,7 @@ fn delete_design_asks_first_then_deletes_the_design_on_screen() {
     let (was, screen) = (text(), (a.layout.clone(), a.shown.design(), a.theme.id.clone()));
     a.run(Action::DeleteDesign);
     assert!(a.modal().is_none());
-    assert!(a.toast.as_ref().is_some_and(|(t, _)| t == "Deleted \"Mine\" · Ctrl+Z to undo"), "{:?}", a.toast);
+    assert!(a.toast.as_ref().is_some_and(|(t, _)| t == "Deleted \"Mine\" · ^Z to undo"), "{:?}", a.toast);
     assert_eq!((a.shown.file(), a.shown.design(), a.theme.id.as_str()), (None, 0, DESIGNS[0].themes[0]));
     assert_eq!(a.layout, Node::singularity());
     assert_eq!(text(), None, "its file goes at once");
@@ -376,11 +376,18 @@ fn delete_design_asks_first_then_deletes_the_design_on_screen() {
     assert_eq!((text(), a.shown.file()), (was, Some("mine")));
     assert_eq!((a.layout.clone(), a.shown.design(), a.theme.id.clone()), screen);
     assert!(config().contains("layout = \"mine\""));
-    // something else in between (another Design picked): the delete is final, even back on the same screen
+    // another Design on screen: Ctrl+Z leaves it, and keeps the delete for when the screen is back as the delete left it
     a.run(Action::DeleteDesign);
     a.set_design(cockpit);
     ctrl(&mut a, 'z');
+    assert_eq!((text(), a.shown.design()), (None, cockpit));
     a.set_design(0);
+    ctrl(&mut a, 'z');
+    assert_eq!(a.shown.file(), Some("mine"));
+    // the Design picker opened since: final
+    a.run(Action::DeleteDesign);
+    a.run(Action::PickDesign);
+    key(&mut a, KeyCode::Esc);
     ctrl(&mut a, 'z');
     assert!(a.toast.as_ref().is_some_and(|(t, _)| t == "Nothing to undo"), "{:?}", a.toast);
     assert_eq!((text(), a.shown.file()), (None, None));
@@ -455,6 +462,89 @@ fn the_design_pickers_delete_key_deletes_at_once_and_u_brings_it_back() {
     assert!(crate::layouts::load_dir(&layouts).0.is_empty());
     ctrl(&mut a, 'z');
     assert!(crate::layouts::load_dir(&layouts).0.is_empty(), "final once the picker closed");
+}
+
+/// Q151 review: Ctrl+K's delete in Arrange mode is undone by Ctrl+Z there too; an edit made after it is undone first,
+/// then the Design comes back, and Ctrl+Y can't take it away again (its redo steps were Singularity's).
+#[test]
+fn ctrl_z_brings_back_a_ctrl_k_delete_in_arrange_mode_and_after_an_edit() {
+    let (mut a, dir) = with_dirs();
+    let text = || std::fs::read_to_string(dir.path().join("layouts/mine.toml")).ok();
+    a.layout = swapped(Node::singularity(), Widget::Stream, Widget::Queue);
+    a.save_layout("Mine");
+    let (was, mine) = (text(), a.layout.clone());
+    a.run(Action::Arrange);
+    assert!(a.arrange.is_on());
+    a.run(Action::DeleteDesign);
+    assert_eq!(text(), None);
+    ctrl(&mut a, 'z');
+    assert_eq!((text(), a.shown.file(), a.layout.clone()), (was.clone(), Some("mine"), mine.clone()));
+    key(&mut a, KeyCode::Esc);
+    assert!(!a.arrange.is_on() && a.shown.file() == Some("mine"));
+    // deleted, an edit, Ctrl+Z (the edit), Ctrl+Z (the Design), Ctrl+Y: nothing to redo
+    a.run(Action::DeleteDesign);
+    a.commit_layout(swapped(Node::singularity(), Widget::Fft, Widget::Loudness));
+    assert_eq!(a.shown.file(), Some("singularity-edited"));
+    ctrl(&mut a, 'z');
+    assert_eq!((a.shown.file(), text()), (None, None), "the edit first");
+    ctrl(&mut a, 'z');
+    assert_eq!((text(), a.shown.file(), a.layout.clone()), (was, Some("mine"), mine.clone()));
+    ctrl(&mut a, 'y');
+    assert_eq!((a.shown.file(), a.layout.clone()), (Some("mine"), mine));
+    assert!(!dir.path().join("layouts/singularity-edited.toml").exists());
+}
+
+/// Q151 review: a restore that fails (a file of its name is there again) keeps the delete, to try again, from the
+/// picker's Undo and from Ctrl+Z; the bar says why.
+#[test]
+fn a_failed_restore_keeps_the_undo() {
+    let (mut a, dir) = with_dirs();
+    let file = dir.path().join("layouts/mine.toml");
+    a.save_layout("Mine");
+    let was = std::fs::read_to_string(&file).unwrap();
+    a.run(Action::DeleteDesign);
+    std::fs::write(&file, "in the way").unwrap();
+    ctrl(&mut a, 'z');
+    assert!(a.toast.as_ref().is_some_and(|(t, _)| t == "Couldn't bring back \"Mine\": layouts/mine.toml is there again"), "{:?}", a.toast);
+    assert!(a.undelete.is_some());
+    std::fs::remove_file(&file).unwrap();
+    ctrl(&mut a, 'z');
+    assert_eq!((std::fs::read_to_string(&file).unwrap(), a.shown.file()), (was.clone(), Some("mine")));
+    // the picker's
+    a.run(Action::PickDesign);
+    key(&mut a, KeyCode::Delete);
+    std::fs::write(&file, "in the way").unwrap();
+    key(&mut a, KeyCode::Char('u'));
+    assert!(a.picker().is_some_and(|p| p.undo.is_some()), "still offered");
+    std::fs::remove_file(&file).unwrap();
+    key(&mut a, KeyCode::Char('u'));
+    assert_eq!((std::fs::read_to_string(&file).unwrap(), a.shown.file()), (was, Some("mine")));
+    // Ctrl+U / Alt+U aren't the picker's u
+    key(&mut a, KeyCode::Delete);
+    a.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    a.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::ALT));
+    assert!(!file.exists() && a.picker().is_some_and(|p| p.undo.is_some()));
+}
+
+/// Q151 review, the drawn buffer: a long name is cut short with … so Undo always fits, by display width (wide
+/// characters too), and a click anywhere on the line is the Undo.
+#[test]
+fn the_undo_line_fits_a_long_wide_name_and_is_clickable_all_along() {
+    let (mut a, dir) = with_dirs();
+    let name = "夜のドライブ 夜のドライブ 夜のドライブ とても長い名前";
+    a.save_layout(name);
+    a.run(Action::PickDesign);
+    key(&mut a, KeyCode::Delete);
+    let buf = render_buf(&mut a, W, H);
+    let r = a.overlays.first().copied().unwrap();
+    let y = r.bottom() - 4;
+    let line = row(&buf, y, r.x + 1, r.right() - 1);
+    assert!(line.contains('…') && line.trim_end().ends_with("\" · Undo"), "{line:?}");
+    let undo = a.all_hits().iter().find(|(_, h)| *h == Hit::PickerUndo).map(|(r, _)| *r).unwrap();
+    assert_eq!((undo.y, undo.x, undo.right()), (y, r.x + 1, r.right() - 1), "the whole line");
+    press(&mut a, r.x + 2, y);
+    assert!(a.picker().is_some_and(|p| p.undo.is_none()));
+    assert_eq!(crate::layouts::load_dir(&dir.path().join("layouts")).0.len(), 1);
 }
 
 /// Q151: a delete from Ctrl+K is final once the Design picker opens (its Undo is for its own deletes), and a second

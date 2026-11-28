@@ -289,10 +289,11 @@ audio, and looks spectacular.
     palette leaves it out). keys.toml's `reset_layout` still binds, as `delete_design`, with the same yes/no. **Undo
     (owner Q151, 2026-11-28):** a Design of your own is deleted at once, no yes/no: in Pick a design the picker says
     `Deleted "<name>" · Undo` and `u` or a click brings it back as it was (layout, Tray, name, place in the list) until
-    the picker closes; from Ctrl+K the bar says `Deleted "<name>" · Ctrl+Z to undo`, and Ctrl+Z brings it back while the
-    screen still shows what the delete left (no edit, other Design or Theme in between, not in Arrange mode, the Design
-    picker not opened since). Its file goes at once and it is kept in memory only: quitting or a crash makes the
-    delete final. The picker's hint names the key "Del" (on a Mac "delete", Q132). **Polished (owner round, 2026-11-01):** a held Pane is
+    the picker closes; from Ctrl+K the bar says `Deleted "<name>" · ^Z to undo` (the undo key from keys.toml), and
+    Ctrl+Z brings it back whenever the screen shows what the delete left (the same built-in Design, layout and Theme,
+    in Arrange mode too); an edit made since is undone first, then the Design comes back, and its redo steps go. The
+    Design picker opening makes it final. Its file goes at once and it is kept in memory only: quitting or a crash
+    makes the delete final; a failed restore (a file of that name there again, a disk error) keeps it to try again. The picker's hint names the key "Del" (on a Mac "delete", Q132). **Polished (owner round, 2026-11-01):** a held Pane is
     lifted and floats live under the pointer (its own Widget, at most ~45% of the screen each way, with a shadow)
     while the others ease into place around a dashed "drop here" slot; on release it lands there (Esc: everything
     goes back). A drop that would only change sizes is no drop (it looked like one Pane "just extended 15%"); the

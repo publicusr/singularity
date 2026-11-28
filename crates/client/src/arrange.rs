@@ -382,15 +382,21 @@ impl App {
         arrange!(self, commit, tree)
     }
 
-    /// Ctrl+Z. Right after Ctrl+K deleted a Design of the user's, it brings that Design back (Q151): while the screen
-    /// still shows what the delete left (the same Design, layout and Theme, no file, outside Arrange mode) and there is
-    /// no later edit to undo first. Anything else in between makes that delete final.
+    /// Ctrl+Z. After Ctrl+K deleted a Design of the user's, it brings that Design back (Q151) whenever the screen
+    /// shows what the delete left (the same built-in Design, layout and Theme, no file; in Arrange mode too) and there
+    /// is no later edit to undo first: an edit after the delete is undone first, then the Design comes back. It is
+    /// kept until then (the Design picker opening or quitting makes the delete final), and kept on a failed restore.
+    /// Once back, the redo steps go (they were Singularity's, not its).
     pub fn undo_layout(&mut self) {
         if let Some(u) = self.undelete.take() {
-            if self.arrange.history.can_undo() {
+            let left = !self.arrange.history.can_undo() && self.shown.file().is_none() && (self.shown.design(), &self.theme.id, &self.layout) == (u.left.0, &u.left.1, &u.left.2);
+            if !left {
                 self.undelete = Some(u);
-            } else if !self.arrange.is_on() && self.shown.file().is_none() && (self.shown.design(), &self.theme.id, &self.layout) == (u.left.0, &u.left.1, &u.left.2) {
-                self.undelete(u);
+            } else {
+                match self.undelete(u) {
+                    Ok(()) => self.arrange.forget_history(),
+                    Err(u) => self.undelete = Some(*u),
+                }
                 return;
             }
         }

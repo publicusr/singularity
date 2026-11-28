@@ -10,6 +10,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime};
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickerKind {
@@ -409,7 +410,8 @@ impl App {
         if self.shown.on_edited_copy() {
             return self.ask_delete(None);
         }
-        if let Some(u) = self.delete_design(true, Some("Ctrl+Z")) {
+        let key = self.keymap.label(crate::app::Action::UndoLayout);
+        if let Some(u) = self.delete_design(true, Some(key.as_str()).filter(|k| !k.is_empty())) {
             self.undelete = Some(u);
         }
     }
@@ -448,30 +450,37 @@ impl App {
         let Some(mut p) = self.take_picker() else { return };
         if let Some(mut u) = p.undo.take() {
             let before = u.before.take();
-            if self.undelete(u) {
-                self.picker_on_shown(&mut p);
-                if let Some(b) = before {
-                    p.before = b;
+            match self.undelete(u) {
+                Ok(()) => {
+                    self.picker_on_shown(&mut p);
+                    if let Some(b) = before {
+                        p.before = b;
+                    }
+                }
+                // (still offered, to try again)
+                Err(mut u) => {
+                    u.before = before;
+                    p.undo = Some(*u);
                 }
             }
         }
         self.open_popup(crate::app::Popup::Picker(p));
     }
 
-    /// Put a deleted Design of the user's back (its file, and the screen it was on). False: it couldn't be (the bar
-    /// says why).
-    pub(crate) fn undelete(&mut self, u: Undelete) -> bool {
+    /// Put a deleted Design of the user's back (its file, and the screen it was on). Err: it couldn't be (the bar says
+    /// why), and it is handed back, to try again.
+    pub(crate) fn undelete(&mut self, u: Undelete) -> Result<(), Box<Undelete>> {
         match self.shown.undelete(&u.file) {
             Err(o) => {
                 self.shown_did(o);
-                false
+                Err(Box::new(u))
             }
             Ok(o) => {
                 self.use_layout(&u.file.saved);
                 self.set_theme(&u.theme);
                 self.set_layout(u.layout);
                 self.shown_did(o);
-                true
+                Ok(())
             }
         }
     }
@@ -534,7 +543,7 @@ impl App {
                 self.ask_delete(p);
             }
             KeyCode::Delete | KeyCode::Backspace if self.picker_on_own() => self.picker_delete(),
-            KeyCode::Char('u') if undo => self.picker_undo(),
+            KeyCode::Char('u') if undo && !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => self.picker_undo(),
             _ => {}
         }
     }
@@ -586,13 +595,16 @@ pub fn draw_picker(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
         x += 2;
     }
     // the Design deleted last, above the swatch, and its Undo (a click too)
+    // (the whole line is the Undo: a click just beside it mustn't close the picker, making the delete final)
     if let Some(name) = undo {
         let (y, w) = (inner.bottom().saturating_sub(3), inner.width.saturating_sub(2));
-        let said = format!("Deleted \"{name}\" · ");
-        let n = (said.chars().count() as u16).min(w);
+        // a long name is cut short (…) so Undo always fits
+        let room = (w as usize).saturating_sub(UnicodeWidthStr::width("Deleted \"\" · Undo"));
+        let said = format!("Deleted \"{}\" · ", crate::sidebar::clip(&name, room as u16));
+        let n = (UnicodeWidthStr::width(said.as_str()) as u16).min(w);
         text(buf, inner.x + 1, y, w, &said, th.s(th.dim));
         text(buf, inner.x + 1 + n, y, w - n, "Undo", th.s(th.accent));
-        app.hit(Rect::new(inner.x + 1 + n, y, 4.min(w - n), 1), Hit::PickerUndo);
+        app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::PickerUndo);
     }
     let hint = if app.picker_on_own() { format!("↑↓ preview · Enter keep · Esc put back · {} delete", crate::keymap::DELETE_KEY) } else { "↑↓ preview · Enter keep · Esc put back".to_string() };
     text(buf, inner.x + 1, inner.bottom().saturating_sub(1), inner.width.saturating_sub(2), &hint, th.s(th.dim));

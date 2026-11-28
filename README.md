@@ -187,8 +187,9 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   Done asks what to call it if you changed something while arranging (Esc keeps it unnamed). Ctrl+K → Save design as…
   names one any time, and a Design of your own saves itself. Ctrl+K → **Delete design…** (or Delete, or Backspace, on
   one of yours in Pick a design) deletes the Design on screen: a Design of your own goes at once and the default
-  Singularity comes up; Ctrl+Z brings it back (from the picker: `u` or a click on its "Undo", until the picker closes),
-  as long as nothing else has changed the screen since. "Singularity (edited)" is asked about first (yes/no) and goes
+  Singularity comes up; Ctrl+Z brings it back whenever the screen shows Singularity as the delete left it (an edit made
+  since is undone first), until the Design picker opens or the app quits (from the picker: `u` or a click on its
+  "Undo" line, until the picker closes). "Singularity (edited)" is asked about first (yes/no) and goes
   back to the built-in Singularity; the built-in Designs have nothing to delete. In keys.toml, `reset_layout` is
   another name for `delete_design`. Ctrl+K →
   **New design…** starts from a blank slate: Arrange mode with one empty Pane filling the screen and Home in the Tray;
