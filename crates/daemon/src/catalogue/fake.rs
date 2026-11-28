@@ -36,7 +36,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
             let evs = match cmd {
                 CatCmd::Home => vec![CatEvent::Home(home.clone())],
                 CatCmd::Login => vec![CatEvent::Status(ready.clone())],
-                CatCmd::Reconnect => vec![],
+                CatCmd::Reconnect | CatCmd::LoginWanted => vec![],
                 CatCmd::Logout => vec![CatEvent::Status(CatalogueStatus::LoggedOut)],
                 CatCmd::Library => vec![CatEvent::Library(lib.clone())],
                 CatCmd::HomeAndLibrary => vec![CatEvent::Home(home.clone()), CatEvent::Library(lib.clone())],

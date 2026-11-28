@@ -752,3 +752,130 @@ async fn one_login_try_per_command_even_past_the_wait() {
     st.end(was);
     assert_eq!(failed_tries_within(&mut ev, Duration::from_millis(50)).await, 1, "the next command, past the wait");
 }
+
+/// When a fake Spotify was asked to log in.
+type Tries = Arc<Mutex<Vec<Instant>>>;
+
+/// A Spotify that never answers a login (no network yet), or refuses it from the `refuse_from`-th try on, and when it
+/// was asked.
+fn fake_spotify(refuse_from: usize) -> (Dial, Tries) {
+    let tries: Tries = Default::default();
+    let asked = tries.clone();
+    let dial: Dial = Arc::new(move |_, _| {
+        let mut tries = asked.lock().unwrap();
+        tries.push(Instant::now());
+        let e = if tries.len() > refuse_from {
+            librespot_core::Error::permission_denied("Login failed with reason: Bad credentials")
+        } else {
+            librespot_core::Error::unavailable("couldn't connect: network is unreachable")
+        };
+        Box::pin(async move { Err(e) })
+    });
+    (dial, tries)
+}
+
+/// The start-up tries 200 times faster: about 10 ms, doubling up to 300 ms, for 3 s.
+const FAST_START: StartPace = StartPace { first: Duration::from_millis(10), longest: Duration::from_millis(300), stop_after: Duration::from_secs(3) };
+
+/// A browsing State as `run` makes one, not yet started, with a saved login in its scratch dir, no Client connected
+/// and Spotify as `fake_spotify(refuse_from)`; idle browsing looks every 5 ms and the start-up tries go `FAST_START`.
+fn starting(refuse_from: usize) -> (State<Fixtures>, Tries, mpsc::Receiver<CatEvent>, mpsc::UnboundedSender<CatCmd>, tempfile::TempDir) {
+    no_real_login();
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = Dirs { credentials: dir.path().join("creds"), queries: dir.path().join("q.json") };
+    cache(&dirs).unwrap().save_credentials(&Credentials::with_access_token("not a real token"));
+    let (ev_tx, ev) = mpsc::channel(256);
+    let (connect_tx, connect_rx) = mpsc::unbounded_channel();
+    std::mem::forget(connect_rx);
+    let (browse_tx, browse_rx) = mpsc::unbounded_channel();
+    let mut st = State::new(dirs, Fixtures::new(|_, _| Ok(json!({}))), session_slot(), ev_tx, connect_tx, Default::default(), browse_rx, browse_tx.downgrade());
+    st.redial.every = Duration::from_millis(5);
+    st.redial.pace = FAST_START;
+    st.clients = Box::leak(Box::new(std::sync::atomic::AtomicUsize::new(0)));
+    let (dial, tries) = fake_spotify(refuse_from);
+    st.dial = dial;
+    (st, tries, ev, browse_tx, dir)
+}
+
+/// Every status the Catalogue sent within `wait`.
+async fn statuses_within(ev: &mut mpsc::Receiver<CatEvent>, wait: Duration) -> Vec<CatalogueStatus> {
+    let mut seen = vec![];
+    let deadline = tokio::time::Instant::now() + wait;
+    while let Ok(Some(e)) = tokio::time::timeout_at(deadline, ev.recv()).await {
+        if let CatEvent::Status(s) = e {
+            seen.push(s);
+        }
+    }
+    seen
+}
+
+/// #168 (Q184): a start-up login that can't reach Spotify is tried again in the background, with no Client connected
+/// and no request, the wait growing each time up to the longest, until the tries run out. Then nothing more is tried
+/// (a request doesn't either), the error stays, and the user is never logged out over it.
+#[tokio::test]
+async fn a_start_up_login_without_a_network_is_tried_again_for_a_while() {
+    let (st, tries, mut ev, browse_tx, _dir) = starting(usize::MAX);
+    let began = Instant::now();
+    tokio::spawn(browse(st));
+    let seen = statuses_within(&mut ev, FAST_START.stop_after + Duration::from_millis(700)).await;
+    let tries = tries.lock().unwrap().clone();
+    let gaps: Vec<Duration> = tries.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(tries.len() >= 8, "{} tries, gaps {gaps:?}", tries.len());
+    // each wait about twice the last (a jitter takes up to a quarter off), up to the longest
+    let mut want = FAST_START.first;
+    for g in &gaps {
+        assert!(*g >= want.mul_f64(0.75), "a wait shorter than {want:?}: {gaps:?}");
+        assert!(*g <= want + Duration::from_millis(150), "a wait longer than {want:?}: {gaps:?}");
+        want = (want * 2).min(FAST_START.longest);
+    }
+    let last = *tries.last().unwrap() - began;
+    assert!(last >= FAST_START.stop_after && last < FAST_START.stop_after + FAST_START.longest + Duration::from_millis(150), "the last try at {last:?}");
+    assert!(!seen.iter().any(|s| matches!(s, CatalogueStatus::LoggedOut)), "never logged out: {seen:?}");
+    match seen.last() {
+        Some(CatalogueStatus::Unavailable { message }) => assert!(message.contains("couldn't reach Spotify"), "{message}"),
+        other => panic!("the login error isn't the last word: {other:?}"),
+    }
+    // they ran out: nothing more, not even for a request
+    browse_tx.send(query("x")).unwrap();
+    assert!(statuses_within(&mut ev, Duration::from_millis(300)).await.is_empty(), "tried again after the tries ran out");
+}
+
+/// #168 (Q184): once the start-up tries ran out, a Client connecting (or asking to play: the same `LoginWanted`)
+/// tries exactly once, each time, and that try failing starts no new run of tries.
+#[tokio::test]
+async fn after_the_tries_ran_out_a_client_sets_off_exactly_one() {
+    let (mut st, tries, mut ev, browse_tx, _dir) = starting(usize::MAX);
+    st.redial.pace.stop_after = Duration::from_millis(100);
+    tokio::spawn(browse(st));
+    statuses_within(&mut ev, Duration::from_millis(600)).await;
+    let ran = tries.lock().unwrap().len();
+    assert!(statuses_within(&mut ev, Duration::from_millis(200)).await.is_empty(), "the tries ran out");
+    for _ in 0..2 {
+        browse_tx.send(CatCmd::LoginWanted).unwrap();
+        assert_eq!(failed_tries_within(&mut ev, Duration::from_millis(400)).await, 1);
+    }
+    assert_eq!(tries.lock().unwrap().len(), ran + 2, "one try each");
+}
+
+/// #168: a start-up login Spotify refuses isn't tried again, in the background or for a Client.
+#[tokio::test]
+async fn a_refused_start_up_login_is_not_tried_again() {
+    let (st, tries, mut ev, browse_tx, _dir) = starting(0);
+    tokio::spawn(browse(st));
+    let seen = statuses_within(&mut ev, Duration::from_millis(300)).await;
+    assert!(matches!(seen.last(), Some(CatalogueStatus::Unavailable { message }) if message.contains("Bad credentials")), "the error at once: {seen:?}");
+    browse_tx.send(CatCmd::LoginWanted).unwrap();
+    assert!(statuses_within(&mut ev, Duration::from_millis(300)).await.is_empty());
+    assert_eq!(tries.lock().unwrap().len(), 1);
+}
+
+/// #168: Spotify refusing one of the later tries (the network came back, the login didn't) ends them there.
+#[tokio::test]
+async fn a_refusal_ends_the_start_up_tries() {
+    let (st, tries, mut ev, browse_tx, _dir) = starting(2);
+    tokio::spawn(browse(st));
+    statuses_within(&mut ev, Duration::from_millis(500)).await;
+    browse_tx.send(CatCmd::LoginWanted).unwrap();
+    statuses_within(&mut ev, Duration::from_millis(300)).await;
+    assert_eq!(tries.lock().unwrap().len(), 3, "two unreachable, then the refusal");
+}
