@@ -1333,3 +1333,11 @@ flowchart LR
   Q155 yes (demo hides Home Shelves from the account), Q156 yes (demo shows an empty player until a Demo-set song plays),
   Q157 yes (demo Home: Demo playlists, then albums and artists from their songs, then liked if on). Q147: a notch is
   exactly three reports at once on the PC's mouse (fits D86).
+  2026-11-28, later: owner answered Q158 yes (the incomplete-backup line as built: red, on both tabs, "tried again
+  tomorrow"), Q159 yes (the picker's line reads `Deleted "X" · u Undo`, the key before the action like the other
+  hints), Q160 yes (on a Mac the delete hint reads `⌫ delete`; the PC keeps `Del delete`), Q161 yes ("(edited)" copies
+  keep the yes/no; the one-line list keeps the small ⌂; ♡ stays small), Q162 yes (`demo.toml`'s `[home]` rules are
+  dropped, superseding that part of Q149), Q163 yes (a song this Client plays or queues shows in demo mode; the owner
+  picks showcase songs that way), Q164 yes (the KDE media widget and notifications are left to the recording
+  checklist), Q165 yes (songs by the artists and albums `demo.toml` lists show even when queued elsewhere; autoplay
+  stays hidden), Q166 yes (big text uses the terminal's own Ghostty font, found through its includes, #160).
