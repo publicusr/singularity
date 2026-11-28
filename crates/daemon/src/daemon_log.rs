@@ -54,10 +54,22 @@ fn size_if_same(fd: RawFd, path: &Path) -> Option<u64> {
     same.then_some(st.st_size as u64)
 }
 
-/// Move the logs at `path` along and point `fd` at a fresh, owner-only `path`.
-fn fresh(fd: RawFd, path: &Path) -> std::io::Result<()> {
+/// Move the logs at `path` along and point `fd` at a fresh, owner-only `path`. What went wrong, said in full (once the
+/// logs moved, `fd` still writes to the one now at `path.1`).
+fn fresh(fd: RawFd, path: &Path) -> Result<(), String> {
+    fresh_with(fd, path, || {})
+}
+
+/// `fresh`, with `between` run after the move (a test's way in).
+fn fresh_with(fd: RawFd, path: &Path, between: impl FnOnce()) -> Result<(), String> {
+    rotate(path, KEEP).map_err(|e| format!("couldn't move {NAME} aside: {e}"))?;
+    between();
+    reopen(fd, path).map_err(|e| format!("couldn't start a fresh {NAME} ({e}); this Daemon's lines go on in {NAME}.1"))
+}
+
+/// Point `fd` at `path`, made if it isn't there, owner-only.
+fn reopen(fd: RawFd, path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    rotate(path, KEEP)?;
     let f = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(path)?;
     f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     // SAFETY: both are open descriptors; dup2 swaps what `fd` writes to in one step, so no line is lost or split
@@ -75,7 +87,7 @@ pub fn take_over(fd: RawFd, path: &Path) -> bool {
         Some(0) => true,
         Some(_) => {
             if let Err(e) = fresh(fd, path) {
-                tracing::warn!("couldn't keep the last log: {e}");
+                tracing::warn!("log: {e}");
             }
             true
         }
@@ -93,17 +105,36 @@ pub fn cap(fd: RawFd, path: &Path, max: u64) -> bool {
             true
         }
         Err(e) => {
-            tracing::warn!("couldn't move the log aside: {e}");
+            tracing::warn!("log: {e}");
             false
         }
     }
 }
 
-/// Keep the log `fd` writes to at `path` under `MAX_BYTES`, for as long as the Daemon runs.
+/// If the log `fd` wrote to at `path` was removed, start a fresh one there. Whether it did.
+pub fn recover(fd: RawFd, path: &Path) -> bool {
+    if std::fs::symlink_metadata(path).is_ok() {
+        return false;
+    }
+    match reopen(fd, path) {
+        Ok(()) => {
+            tracing::warn!("log: {NAME} was removed while the Daemon ran; this is a fresh one");
+            true
+        }
+        Err(e) => {
+            tracing::warn!("log: {NAME} was removed and couldn't be made again ({e}); nothing is kept from now on");
+            false
+        }
+    }
+}
+
+/// Keep the log `fd` writes to at `path` under `MAX_BYTES`, and there, for as long as the Daemon runs.
 pub async fn watch(fd: RawFd, path: PathBuf) {
     loop {
         tokio::time::sleep(CHECK_EVERY).await;
-        cap(fd, &path, MAX_BYTES);
+        if !recover(fd, &path) {
+            cap(fd, &path, MAX_BYTES);
+        }
     }
 }
 
@@ -178,5 +209,34 @@ mod tests {
         writeln!(f, "after").unwrap();
         assert_eq!(read(&older(&path, 1)).map(|s| s.len()), Some(101));
         assert!(read(&path).unwrap().ends_with("after\n"), "the fresh log goes on: {:?}", read(&path));
+    }
+
+    /// Review: a log removed while the Daemon runs is started again (its lines don't go to a file no one can open).
+    #[test]
+    fn a_removed_log_is_started_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(NAME);
+        let mut f = opened(&path);
+        assert!(!recover(f.as_raw_fd(), &path), "it's there");
+        std::fs::remove_file(&path).unwrap();
+        assert!(recover(f.as_raw_fd(), &path));
+        writeln!(f, "after").unwrap();
+        assert_eq!(read(&path).as_deref(), Some("after\n"));
+    }
+
+    /// Review: when no fresh log can be made after the move, the Daemon goes on writing to the one moved aside, and
+    /// the warning says so.
+    #[test]
+    fn a_fresh_log_that_cant_be_made_says_where_the_lines_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(NAME);
+        let mut f = opened(&path);
+        writeln!(f, "before").unwrap();
+        // something that isn't a file where the fresh log goes, once the old one moved
+        let blocked = path.clone();
+        let err = fresh_with(f.as_raw_fd(), &path, || std::fs::create_dir(&blocked).unwrap()).unwrap_err();
+        assert!(err.ends_with("go on in daemon.log.1"), "{err}");
+        writeln!(f, "after").unwrap();
+        assert_eq!(read(&older(&path, 1)).as_deref(), Some("before\nafter\n"));
     }
 }

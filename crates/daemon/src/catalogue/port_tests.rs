@@ -278,6 +278,7 @@ fn at(order: &[String], what: &str) -> usize {
 
 /// A Catalogue over `f`, in a scratch dir.
 fn catalogue(f: &Fixtures) -> (tempfile::TempDir, mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
+    no_real_login();
     let dir = tempfile::tempdir().unwrap();
     let dirs = Dirs { credentials: dir.path().join("creds"), queries: dir.path().join("q.json") };
     let f = f.clone();
@@ -572,28 +573,73 @@ fn connect_work_goes_to_connect_and_browsing_stays() {
     }
 }
 
-/// Q171: Spotify ending the session is seen while idle and the login is tried again then, with no request to set it
-/// off; with no saved login (logged out) it isn't tried again.
-#[tokio::test]
-async fn a_session_spotify_ended_is_replaced_without_a_request() {
+/// A browsing State as `run` makes one, not yet started, with a session that logged in `ago` and reaches nothing
+/// (never connected), and `clients` Clients connected; idle browsing looks every 10 ms.
+fn ended_soon(ago: Duration, clients: usize) -> (State<Fixtures>, Session, mpsc::Receiver<CatEvent>, mpsc::UnboundedSender<CatCmd>, tempfile::TempDir) {
+    no_real_login();
     let dir = tempfile::tempdir().unwrap();
     let dirs = Dirs { credentials: dir.path().join("creds"), queries: dir.path().join("q.json") };
-    let (ev_tx, mut ev) = mpsc::channel(64);
-    let (connect_tx, _connect_rx) = mpsc::unbounded_channel();
-    let (_browse_tx, browse_rx) = mpsc::unbounded_channel();
+    let (ev_tx, ev) = mpsc::channel(64);
+    let (connect_tx, connect_rx) = mpsc::unbounded_channel();
+    std::mem::forget(connect_rx);
+    let (browse_tx, browse_rx) = mpsc::unbounded_channel();
     let mut st = State::new(dirs, Fixtures::new(|_, _| Ok(json!({}))), session_slot(), ev_tx, connect_tx, Default::default(), browse_rx);
     st.redial.every = Duration::from_millis(10);
-    // a session that has run a while (it reaches nothing: never connected)
+    st.clients = Box::leak(Box::new(std::sync::atomic::AtomicUsize::new(clients)));
     let session = Session::new(SessionConfig::default(), None);
     st.set_session(Some(session.clone()));
-    st.redial.logged_in(Instant::now() - STEADY);
+    st.redial.logged_in(Instant::now() - ago);
+    (st, session, ev, browse_tx, dir)
+}
+
+/// The next status from the Catalogue within `wait`, if any.
+async fn status_within(ev: &mut mpsc::Receiver<CatEvent>, wait: Duration) -> Option<CatalogueStatus> {
+    tokio::time::timeout(wait, next(ev, |e| if let CatEvent::Status(s) = e { Some(s) } else { None })).await.ok()
+}
+
+/// Q171: with a Client connected, Spotify ending the session is seen while idle and the login is tried again then,
+/// with no request to set it off. With no saved login found then (a keyring that doesn't answer), it isn't taken for
+/// a logout (that forgets Home and the library): it's a failed try, tried again later.
+#[tokio::test]
+async fn a_session_spotify_ended_is_replaced_without_a_request() {
+    let (st, session, mut ev, _browse, _dir) = ended_soon(STEADY, 1);
     tokio::spawn(browse(st));
-    // the start: no saved login in the scratch dir
-    next(&mut ev, |e| matches!(e, CatEvent::Status(CatalogueStatus::LoggedOut)).then_some(())).await;
+    // the start: no saved login in the scratch dirs
+    assert!(matches!(status_within(&mut ev, Duration::from_secs(5)).await, Some(CatalogueStatus::LoggedOut)));
     // nothing is asked of it; Spotify ends the session
     session.shutdown();
-    next(&mut ev, |e| matches!(e, CatEvent::Status(CatalogueStatus::Connecting)).then_some(())).await;
-    next(&mut ev, |e| matches!(e, CatEvent::Status(CatalogueStatus::LoggedOut)).then_some(())).await;
-    let again = tokio::time::timeout(Duration::from_millis(200), next(&mut ev, |e| matches!(e, CatEvent::Status(CatalogueStatus::Connecting)).then_some(()))).await;
-    assert!(again.is_err(), "logged out: not tried again");
+    assert!(matches!(status_within(&mut ev, Duration::from_secs(5)).await, Some(CatalogueStatus::Unavailable { .. })), "a failed try, not a logout");
+    assert!(status_within(&mut ev, Duration::from_millis(300)).await.is_none(), "the next try waits");
+}
+
+/// Q171: with no Client connected, an ended session isn't replaced in the background; the next request does it.
+#[tokio::test]
+async fn with_no_client_the_next_request_logs_in_again() {
+    let (st, session, mut ev, browse_tx, _dir) = ended_soon(STEADY, 0);
+    tokio::spawn(browse(st));
+    assert!(matches!(status_within(&mut ev, Duration::from_secs(5)).await, Some(CatalogueStatus::LoggedOut)));
+    session.shutdown();
+    assert!(status_within(&mut ev, Duration::from_millis(300)).await.is_none(), "no one's here: no login in the background");
+    browse_tx.send(query("x")).unwrap();
+    assert!(matches!(status_within(&mut ev, Duration::from_secs(5)).await, Some(CatalogueStatus::Unavailable { .. })), "the request tried");
+}
+
+/// Q171 (review): a session that ends soon after its login waits before the background login, and says so; a request
+/// meanwhile still logs in again at once.
+#[tokio::test]
+async fn a_request_logs_in_again_at_once_while_the_background_waits() {
+    let (st, session, mut ev, browse_tx, _dir) = ended_soon(Duration::ZERO, 1);
+    tokio::spawn(browse(st));
+    assert!(matches!(status_within(&mut ev, Duration::from_secs(5)).await, Some(CatalogueStatus::LoggedOut)));
+    session.shutdown();
+    match status_within(&mut ev, Duration::from_secs(5)).await {
+        Some(CatalogueStatus::Unavailable { message }) => assert!(message.contains("logging in again in 5 s"), "{message}"),
+        other => panic!("the wait isn't said: {other:?}"),
+    }
+    assert!(status_within(&mut ev, Duration::from_millis(300)).await.is_none(), "the background waits");
+    browse_tx.send(query("x")).unwrap();
+    match status_within(&mut ev, Duration::from_millis(500)).await {
+        Some(CatalogueStatus::Unavailable { message }) => assert!(message.contains("saved Spotify login"), "the request tried at once: {message}"),
+        other => panic!("the request didn't log in again: {other:?}"),
+    }
 }

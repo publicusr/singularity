@@ -63,8 +63,8 @@ async fn run() -> anyhow::Result<i32> {
     };
     // this is the Daemon now: the one before's log is kept aside, and this one's can't grow for ever (Q170)
     let log = folders.state.join(singularityd::daemon_log::NAME);
-    if singularityd::daemon_log::take_over(2, &log) {
-        tokio::spawn(singularityd::daemon_log::watch(2, log));
+    if singularityd::daemon_log::take_over(libc::STDERR_FILENO, &log) {
+        tokio::spawn(singularityd::daemon_log::watch(libc::STDERR_FILENO, log));
     }
     tracing::info!("singularityd {} listening on {}", singularityd::VERSION, path.display());
     // the Engine (D51, D52, D55), its tap and the Catalogue, from config.toml's [engine], the environment and the flags

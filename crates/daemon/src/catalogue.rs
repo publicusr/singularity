@@ -354,71 +354,107 @@ struct State<Q> {
     last: Option<(String, Instant)>,
     /// when to log in again after Spotify ended the session (Q171)
     redial: Redial,
+    /// the reusable login of the last session, for logging in again (Q171: a keyring that doesn't answer then isn't
+    /// a logout)
+    reusable: Option<Credentials>,
+    /// the Clients connected (`CLIENTS`; a test's own count): logins again in the background only while there's one
+    clients: &'static std::sync::atomic::AtomicUsize,
 }
 
 /// How often idle browsing looks whether Spotify ended the session (Q171): librespot only marks it ended, so it's
 /// looked at, not waited on. (A request in between finds it ended too, and logs in again first.)
 const LOOK_EVERY: Duration = Duration::from_secs(5);
-/// The first wait before logging in again after a failed try, or after a session that ended soon after its login;
+/// The first wait before trying again after a failed login, or after a session that ended soon after its login;
 /// it doubles each time, up to `REDIAL_MAX`.
 const REDIAL_FIRST: Duration = Duration::from_secs(5);
 const REDIAL_MAX: Duration = Duration::from_secs(300);
 /// A session that lasted this long ended in the ordinary way (Spotify drops an idle one): logged in again at once.
 const STEADY: Duration = Duration::from_secs(60);
 
-/// When to log in again after Spotify ended the session (Q171, #126). Spotify drops a quiet connection after a while;
-/// logging in again when that's seen, not at the next request, keeps the next search from waiting for the login.
-/// A session that lasted is replaced at once; one that ends soon after its login, or a login that fails (no network),
-/// is tried again later and later, so Spotify isn't asked over and over. Logging out stops it.
+/// Clients connected to the Daemon (Q171): with none, a session Spotify ended is replaced at the next request, not in
+/// the background (a Daemon run by a service would otherwise log in again all day for no one).
+pub static CLIENTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One connected Client, counted in `CLIENTS` while it lasts.
+pub struct ClientHere;
+
+impl ClientHere {
+    pub fn new() -> ClientHere {
+        CLIENTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ClientHere
+    }
+}
+
+impl Default for ClientHere {
+    fn default() -> ClientHere {
+        ClientHere::new()
+    }
+}
+
+impl Drop for ClientHere {
+    fn drop(&mut self) {
+        CLIENTS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// When to log in again in the background after Spotify ended the session (Q171, #126). Spotify drops a quiet
+/// connection after a while; logging in again when that's seen, not at the next request, keeps the next search from
+/// waiting for the login. A session that lasted is replaced at once. One that ends soon after its login waits, longer
+/// each time it happens again (until one lasts); a login that fails (no network) is tried again later and later,
+/// until one works. So Spotify isn't asked over and over. A request never waits for any of this: it logs in again at
+/// once (`State::session`). Logging out stops it.
 #[derive(Debug)]
 struct Redial {
     /// how often idle browsing looks (`LOOK_EVERY`; shorter in tests)
     every: Duration,
-    /// the next wait
+    /// the wait after the next failed login
     backoff: Duration,
-    /// a login to try then (none: nothing is waiting)
+    /// sessions in a row that ended soon after their login
+    quick: u32,
+    /// a background login to try then
     at: Option<Instant>,
     /// when the current session logged in
     since: Option<Instant>,
+    /// a login is owed: the session ended, or logging in again failed (requests log in again at once)
+    owed: bool,
 }
 
 impl Redial {
     fn new() -> Redial {
-        Redial { every: LOOK_EVERY, backoff: REDIAL_FIRST, at: None, since: None }
+        Redial { every: LOOK_EVERY, backoff: REDIAL_FIRST, quick: 0, at: None, since: None, owed: false }
     }
 
-    /// A session is in: nothing waits.
+    /// A session is in: nothing waits, and the next failure starts from the first wait.
     fn logged_in(&mut self, now: Instant) {
-        self.since = Some(now);
-        self.at = None;
+        *self = Redial { every: self.every, quick: self.quick, since: Some(now), ..Redial::new() };
     }
 
     /// The session Spotify ended was seen at `now`: when to log in again (`now` for one that lasted).
     fn ended(&mut self, now: Instant) -> Instant {
         let lasted = self.since.is_some_and(|s| now.duration_since(s) >= STEADY);
         self.since = None;
-        if lasted {
-            self.backoff = REDIAL_FIRST;
-            self.at = Some(now);
+        self.owed = true;
+        let at = if lasted {
+            self.quick = 0;
             now
         } else {
-            self.later(now)
-        }
-    }
-
-    /// Logging in again failed at `now`: when to try next.
-    fn failed(&mut self, now: Instant) -> Instant {
-        self.later(now)
-    }
-
-    fn later(&mut self, now: Instant) -> Instant {
-        let at = now + self.backoff;
-        self.backoff = (self.backoff * 2).min(REDIAL_MAX);
+            self.quick += 1;
+            now + REDIAL_FIRST.saturating_mul(1 << (self.quick - 1).min(16)).min(REDIAL_MAX)
+        };
         self.at = Some(at);
         at
     }
 
-    /// Logged out, or no saved login: nothing to log in again with.
+    /// Logging in again failed at `now`: when to try next.
+    fn failed(&mut self, now: Instant) -> Instant {
+        let at = now + self.backoff;
+        self.backoff = (self.backoff * 2).min(REDIAL_MAX);
+        self.owed = true;
+        self.at = Some(at);
+        at
+    }
+
+    /// Logged out: nothing to log in again with.
     fn stop(&mut self) {
         *self = Redial { every: self.every, ..Redial::new() };
     }
@@ -711,7 +747,7 @@ fn cache(dirs: &Dirs) -> anyhow::Result<Cache> {
 
 impl<Q: Fetch + Sync + Clone> State<Q> {
     fn new(dirs: Dirs, queries: Q, slot: SessionSlot, ev: mpsc::Sender<CatEvent>, to_connect: mpsc::UnboundedSender<CatCmd>, logging_in: std::sync::Arc<tokio::sync::watch::Sender<bool>>, inbox: mpsc::UnboundedReceiver<CatCmd>) -> State<Q> {
-        State { dirs, session: None, slot, queries, ev, to_connect, logging_in, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), pending: Default::default(), inbox, waiting: VecDeque::new(), busy: None, last: None, redial: Redial::new() }
+        State { dirs, session: None, slot, queries, ev, to_connect, logging_in, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), pending: Default::default(), inbox, waiting: VecDeque::new(), busy: None, last: None, redial: Redial::new(), reusable: None, clients: &CLIENTS }
     }
 
     /// The session changes in one place, so the query port's adapter always asks through the current one.
@@ -815,6 +851,7 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
         timing("keyring save", began);
         let ready = CatalogueStatus::Ready { username: session.username(), country: session.country(), premium };
         // in the slot first: what Ready sets off (librespot starting, an Engine's commands) finds the session there
+        self.reusable = Some(Credentials { username: Some(session.username()), auth_type: librespot_protocol::authentication::AuthenticationType::AUTHENTICATION_STORED_SPOTIFY_CREDENTIALS, auth_data: session.auth_data() });
         self.set_session(Some(session));
         self.redial.logged_in(Instant::now());
         self.status(ready).await;
@@ -829,15 +866,17 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
         }
         self.set_session(None);
         self.redial.stop();
+        self.reusable = None;
         let _ = std::fs::remove_file(self.dirs.credentials.join("credentials.json"));
         crate::secrets::clear("spotify");
         self.status(CatalogueStatus::LoggedOut).await;
     }
 
-    /// The session, replaced first if Spotify ended it: a request can't wait for `look`.
+    /// The session, replaced first if Spotify ended it or a login is owed: a request never waits for `look`'s
+    /// backoff.
     async fn session(&mut self) -> Option<Session> {
-        if self.ended() {
-            self.redial.ended(Instant::now());
+        self.seen_ended(Instant::now());
+        if self.redial.owed {
             self.reconnect().await;
         }
         self.session.clone()
@@ -848,45 +887,58 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
         self.session.as_ref().is_some_and(|s| s.is_invalid())
     }
 
-    /// Between two pieces of work (and every `LOOK_EVERY` while idle): a session Spotify ended is replaced at once,
-    /// so the next search doesn't wait for the login (Q171); one that ended soon after its login, or a login that
-    /// failed, is tried again when its wait is over.
-    async fn look(&mut self) {
-        let now = Instant::now();
-        if self.ended() {
-            let at = self.redial.ended(now);
-            if at > now {
-                tracing::info!("catalogue session ended soon after its login; logging in again in {} s", at.duration_since(now).as_secs());
-                // gone: the next request doesn't log in again before the wait is over
-                self.set_session(None);
-                return;
-            }
-        } else if self.session.is_some() || !self.redial.due(now) {
-            return;
-        }
-        self.reconnect().await;
+    /// A session Spotify ended, seen for the first time: when to log in again in the background.
+    fn seen_ended(&mut self, now: Instant) -> Option<Instant> {
+        (self.ended() && !self.redial.owed).then(|| self.redial.ended(now))
     }
 
-    /// Log in again with the saved login, on a line of its own with its time (Q171: a search's "Spotify" time
-    /// doesn't include it).
+    /// Between two pieces of work (and every `LOOK_EVERY` while idle): a session Spotify ended is replaced at once
+    /// while a Client is connected, so the next search doesn't wait for the login (Q171); one that ended soon after
+    /// its login, or a login that failed, is tried again when its wait is over.
+    async fn look(&mut self) {
+        let now = Instant::now();
+        if let Some(at) = self.seen_ended(now)
+            && at > now
+        {
+            let s = at.duration_since(now).as_secs();
+            tracing::info!("catalogue session ended soon after its login; logging in again in {s} s, or at the next request");
+            self.status(CatalogueStatus::Unavailable { message: format!("Spotify ended the session; logging in again in {s} s") }).await;
+        }
+        if !self.redial.owed || !self.redial.due(now) || self.clients.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            return;
+        }
+        // a search that comes meanwhile waited "behind Reconnect"
+        let was = self.begin("Reconnect".into());
+        self.reconnect().await;
+        self.end(was);
+    }
+
+    /// Log in again with the last session's login (else the saved one), on a line of its own with its time (Q171: a
+    /// search's "Spotify" time doesn't include it). A failure is tried again later, never taken for a logout.
     async fn reconnect(&mut self) {
-        tracing::info!("catalogue session ended; reconnecting");
+        if self.session.is_some() {
+            tracing::info!("catalogue session ended; reconnecting");
+        } else {
+            tracing::info!("catalogue login: retrying");
+        }
         // Connect sees the new session in the slot and starts a new remote for it (a dealer belongs to one)
         self.set_session(None);
         let began = Instant::now();
-        let how = self.connect_how(None).await;
+        let how = match self.reusable.clone().or_else(|| saved_credentials(&self.dirs)) {
+            Some(creds) => self.connect_how(Some(creds)).await,
+            None => {
+                // (the keyring may just not answer now: not a logout, whose Home and library would be forgotten)
+                self.status(CatalogueStatus::Unavailable { message: "couldn't read the saved Spotify login; trying again".into() }).await;
+                LoggedIn::Failed
+            }
+        };
         let ms = began.elapsed().as_millis();
-        match how {
-            LoggedIn::Yes => tracing::info!("reconnect: logged in again in {ms} ms"),
-            LoggedIn::NoLogin => {
-                self.redial.stop();
-                tracing::info!("reconnect: no saved login ({ms} ms)");
-            }
-            LoggedIn::Failed => {
-                let now = Instant::now();
-                let next = self.redial.failed(now).duration_since(now);
-                tracing::info!("reconnect: failed after {ms} ms; trying again in {} s", next.as_secs());
-            }
+        if how == LoggedIn::Yes {
+            tracing::info!("reconnect: logged in again in {ms} ms");
+        } else {
+            let now = Instant::now();
+            let next = self.redial.failed(now).duration_since(now);
+            tracing::info!("reconnect: failed after {ms} ms; trying again in {} s, or at the next request", next.as_secs());
         }
     }
 
@@ -1830,6 +1882,21 @@ pub fn parse_home(v: &Value) -> HomeFeed {
 #[cfg(test)]
 mod port_tests;
 
+/// A test Catalogue never finds the owner's real Spotify login: no keyring, and the fallback secrets file in a
+/// scratch config dir, for the whole test binary (set once, before the first Catalogue reads them).
+#[cfg(test)]
+fn no_real_login() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let dir = tempfile::tempdir().unwrap().keep();
+        // SAFETY: set once, before any Catalogue in this binary reads them
+        unsafe {
+            std::env::set_var("SINGULARITY_NO_KEYRING", "1");
+            std::env::set_var("XDG_CONFIG_HOME", dir);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     /// A2 (2026-11-20 bug hunt): a playlist command sent its sidebar refresh back into the Catalogue's own channel of
@@ -1838,6 +1905,7 @@ mod tests {
     #[tokio::test]
     async fn a_full_queue_of_playlist_edits_does_not_lock_the_catalogue() {
         use super::*;
+        no_real_login();
         let dir = tempfile::tempdir().unwrap();
         let dirs = Dirs { credentials: dir.path().join("creds"), queries: dir.path().join("q.json") };
         let (tx, mut ev) = spawn(dirs, crate::engine::Identity::default());
@@ -1856,35 +1924,41 @@ mod tests {
         assert!(answer.is_err(), "logged out: no query runs");
     }
 
-    /// Q171: a session that lasted is replaced at once; quick ends and failed logins wait longer each time, up to a
-    /// cap; a login that holds starts over; logging out stops it.
+    /// Q171: a session that lasted is replaced at once; failed logins wait longer each time up to a cap, and a login
+    /// that works starts that over; sessions that keep ending soon after their login wait longer each time until one
+    /// lasts; logging out stops it.
     #[test]
     fn logging_in_again_backs_off_and_starts_over() {
         use super::*;
+        let secs = |at: Instant, from: Instant| at.duration_since(from).as_secs();
         let t0 = Instant::now();
         let mut r = Redial::new();
         r.logged_in(t0);
         let t = t0 + STEADY;
         assert_eq!(r.ended(t), t, "a session that lasted: at once");
-        assert!(r.due(t));
+        assert!(r.owed && r.due(t));
         // no network: later and later
-        let waits: Vec<u64> = (0..8).map(|_| r.failed(t).duration_since(t).as_secs()).collect();
+        let waits: Vec<u64> = (0..8).map(|_| secs(r.failed(t), t)).collect();
         assert_eq!(waits, [5, 10, 20, 40, 80, 160, 300, 300]);
         assert!(!r.due(t) && r.due(t + REDIAL_MAX));
-        // it comes back and holds: the next ordinary end is at once again
+        // a login that works: nothing owed, and the next failure starts from the first wait
         r.logged_in(t);
-        assert!(!r.due(t + REDIAL_MAX), "nothing waits once logged in");
+        assert!(!r.owed && !r.due(t + REDIAL_MAX));
+        assert_eq!(secs(r.failed(t), t), 5);
+        // sessions that end soon after their login wait longer each time, though each login worked
+        let t = t + STEADY;
+        for want in [5, 10, 20] {
+            r.logged_in(t);
+            assert_eq!(secs(r.ended(t + Duration::from_secs(1)), t + Duration::from_secs(1)), want);
+        }
+        // until one lasts
+        r.logged_in(t);
         let t = t + STEADY;
         assert_eq!(r.ended(t), t);
-        // a session that ends soon after its login waits, longer each time
         r.logged_in(t);
-        assert_eq!(r.ended(t + Duration::from_secs(1)).duration_since(t).as_secs(), 6);
-        r.logged_in(t);
-        assert_eq!(r.ended(t + Duration::from_secs(1)).duration_since(t).as_secs(), 11);
+        assert_eq!(secs(r.ended(t + Duration::from_secs(1)), t + Duration::from_secs(1)), 5);
         r.stop();
-        assert!(!r.due(t + REDIAL_MAX), "logged out: nothing waits");
-        r.logged_in(t);
-        assert_eq!(r.ended(t + Duration::from_secs(1)).duration_since(t).as_secs(), 6, "and it starts over");
+        assert!(!r.owed && !r.due(t + REDIAL_MAX), "logged out: nothing owed");
     }
 
     #[test]
