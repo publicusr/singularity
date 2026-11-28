@@ -34,6 +34,11 @@ pub struct Store {
     db: Connection,
     /// the demo Listening log (D90): deleting it leaves the library backups alone
     demo: bool,
+    /// what came back short in the newest backup (#144) and whose backup it is, for the summary; learnt off the start
+    /// path (`note_backup`: by the backup task, and as each backup is written)
+    backup_short: Option<(String, singularity_proto::BackupShort)>,
+    /// the account logged in now (`set_account`): the summary speaks of its backups only, and of none while logged out
+    account: Option<String>,
 }
 
 impl Store {
@@ -70,7 +75,7 @@ impl Store {
             CREATE INDEX IF NOT EXISTS plays_day ON plays(day);",
         )?;
         migrate(&db)?;
-        Ok(Store { dir: dir.to_path_buf(), db, demo })
+        Ok(Store { dir: dir.to_path_buf(), db, demo, backup_short: None, account: None })
     }
 
     /// The default place: `$XDG_DATA_HOME/singularity`.
@@ -133,6 +138,7 @@ impl Store {
             streak_days: streak(&days, today),
             plays: plays as u64,
             plays_today: plays_today as u32,
+            backup_short: self.backup_shown(),
         })
     }
 
@@ -271,10 +277,11 @@ impl Store {
     }
 
     /// Write today's backup (replacing one already taken today), then drop the ones retention doesn't keep.
-    pub fn write_backup(&self, now_ms: u64, backup: &Value) -> anyhow::Result<PathBuf> {
+    pub fn write_backup(&mut self, now_ms: u64, backup: &Value) -> anyhow::Result<PathBuf> {
         let today = local_day(now_ms);
         let path = self.backups_dir()?.join(format!("library-{}.json", date(today)));
         write_private(&path, &serde_json::to_vec_pretty(backup)?)?;
+        self.note_backup(backup);
         let days: Vec<i64> = self.backups().iter().map(|(d, _)| *d).collect();
         let keep = retained(&days, today);
         for (d, p) in self.backups() {
@@ -283,6 +290,29 @@ impl Store {
             }
         }
         Ok(path)
+    }
+
+    /// Learn what came back short in the newest backup `b`, and for which account (a backup from before #144 names
+    /// none, so says nothing). The demo log never does (D90). Whether the summary changed.
+    pub fn note_backup(&mut self, b: &Value) -> bool {
+        if self.demo {
+            return false;
+        }
+        let before = self.backup_shown();
+        self.backup_short = b["account"].as_str().zip(crate::backup::short_lists(b)).map(|(a, s)| (a.to_string(), s));
+        before != self.backup_shown()
+    }
+
+    /// The account logged in now (`None`: logged out). Whether the summary changed.
+    pub fn set_account(&mut self, account: Option<String>) -> bool {
+        let before = self.backup_shown();
+        self.account = account;
+        before != self.backup_shown()
+    }
+
+    /// What the summary says about the newest backup: only when it is the logged-in account's.
+    fn backup_shown(&self) -> Option<singularity_proto::BackupShort> {
+        self.backup_short.as_ref().filter(|(a, _)| self.account.as_ref() == Some(a)).map(|(_, b)| b.clone())
     }
 
     // ── export / delete ───────────────────────────────────────────────
@@ -302,13 +332,14 @@ impl Store {
     }
 
     /// Forget every play and remove every backup.
-    pub fn delete_all(&self) -> anyhow::Result<()> {
+    pub fn delete_all(&mut self) -> anyhow::Result<()> {
         self.db.execute("DELETE FROM plays", [])?;
         // free the pages too, so nothing lingers in the file
         self.db.execute_batch("VACUUM")?;
         if self.demo {
             return Ok(());
         }
+        self.backup_short = None;
         match std::fs::remove_dir_all(self.dir.join(BACKUPS)) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
@@ -769,7 +800,7 @@ mod tests {
     #[test]
     fn the_store_sums_up_exports_and_deletes_with_private_files() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path()).unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
         let now = 1_792_000_000_000u64; // 2026-10-14
         let day = 86_400_000;
         for (i, (back, artist, mins)) in [(0, "Nova Drift", 30), (1, "Nova Drift", 20), (1, "Mira Vale", 10), (3, "Mira Vale", 5)].into_iter().enumerate() {
@@ -798,5 +829,47 @@ mod tests {
         let s = store.summary(now).unwrap();
         assert_eq!((s.plays, s.minutes.iter().sum::<u32>()), (0, 0));
         assert!(store.latest_backup().is_none() && !dir.path().join(BACKUPS).exists());
+    }
+
+    #[test]
+    fn the_summary_speaks_of_the_logged_in_accounts_newest_backup_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let now = 1_792_000_000_000u64;
+        let short = json!({ "account": "me", "liked": [], "liked_incomplete": "only 0 of its 2 tracks came back",
+            "playlists": [{ "uri": "spotify:playlist:a", "tracks": [], "short": { "incomplete": "x" } }, { "uri": "spotify:playlist:b", "tracks": [] }] });
+        let want = Some(singularity_proto::BackupShort { lists: 2, kept: 1 });
+        // logged out: nothing, even about a short backup
+        store.write_backup(now, &short).unwrap();
+        assert_eq!(store.summary(now).unwrap().backup_short, None);
+        // its account logs in: the line; another account: none
+        assert!(store.set_account(Some("me".into())));
+        assert_eq!(store.summary(now).unwrap().backup_short, want);
+        assert!(store.set_account(Some("someone".into())));
+        assert_eq!(store.summary(now).unwrap().backup_short, None);
+        assert!(!store.set_account(None));
+        // opening reads no backup (that's the backup task's, off the start path): nothing until it's noted
+        let mut later = Store::open(dir.path()).unwrap();
+        later.set_account(Some("me".into()));
+        assert_eq!(later.summary(now).unwrap().backup_short, None);
+        assert!(later.note_backup(&later.latest_backup().unwrap().1));
+        assert_eq!(later.summary(now).unwrap().backup_short, want);
+        // a backup from before #144 names no account: nothing
+        let mut unnamed = short.clone();
+        unnamed.as_object_mut().unwrap().remove("account");
+        assert!(later.note_backup(&unnamed));
+        assert_eq!(later.summary(now).unwrap().backup_short, None);
+        // the demo log never says
+        let mut demo = Store::open_demo(dir.path()).unwrap();
+        demo.set_account(Some("me".into()));
+        assert!(!demo.note_backup(&short));
+        assert_eq!(demo.summary(now).unwrap().backup_short, None);
+        // a whole one the next day: nothing to say; nor after a delete
+        later.write_backup(now, &short).unwrap();
+        later.write_backup(now + 86_400_000, &json!({ "account": "me", "liked": [], "playlists": [] })).unwrap();
+        assert_eq!(later.summary(now).unwrap().backup_short, None);
+        later.write_backup(now + 2 * 86_400_000, &short).unwrap();
+        later.delete_all().unwrap();
+        assert_eq!(later.summary(now).unwrap().backup_short, None);
     }
 }

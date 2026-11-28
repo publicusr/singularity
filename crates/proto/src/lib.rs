@@ -689,6 +689,19 @@ pub struct ListeningSummary {
     /// plays today
     #[serde(default)]
     pub plays_today: u32,
+    /// the newest library backup, when some of its lists didn't come back whole (#144); `None`: it was whole, or
+    /// there's none. Additive: older Daemons leave it out, older Clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_short: Option<BackupShort>,
+}
+
+/// The lists in the newest library backup that didn't come back whole (Settings shows one line about them).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct BackupShort {
+    /// Liked Songs and owned playlists that came back short
+    pub lists: u32,
+    /// how many of them kept their last whole copy beside the newest backup's short one (the rest are saved marked incomplete)
+    pub kept: u32,
 }
 
 /// A calendar period in local time (weeks start on Monday), for stats.
@@ -882,6 +895,19 @@ mod tests {
         }
         let OldDaemonMsg::Welcome { engine, .. } = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
         assert_eq!(engine, EngineKind::Soloist);
+    }
+
+    /// #144: a summary from an older Daemon (no `backup_short`) still decodes, and a whole backup's `None` isn't sent.
+    #[test]
+    fn a_summary_without_a_backup_note_decodes_and_none_is_left_out() {
+        let old: Event = serde_json::from_str(r#"{"ev":"listening","minutes":[1],"today_weekday":2,"hours_this_year":1.5,"top_artist":null,"streak_days":1,"plays":3}"#).unwrap();
+        let Event::Listening(s) = old else { panic!("{old:?}") };
+        assert_eq!((s.plays, &s.backup_short), (3, &None));
+        let json = serde_json::to_string(&Event::Listening(s.clone())).unwrap();
+        assert!(!json.contains("backup_short"), "{json}");
+        let short = ListeningSummary { backup_short: Some(BackupShort { lists: 2, kept: 1 }), ..s };
+        let back: Event = serde_json::from_str(&serde_json::to_string(&Event::Listening(short.clone())).unwrap()).unwrap();
+        assert_eq!(back, Event::Listening(short));
     }
 
     #[test]

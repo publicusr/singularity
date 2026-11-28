@@ -1084,7 +1084,7 @@ mod tests {
     fn the_big_listening_pane_keeps_its_numbers_close_under_the_grid() {
         let th = crate::app::App::new(None).theme.clone();
         let minutes: Vec<u32> = (0..singularity_proto::LISTENING_DAYS as u32).map(|i| i * 7 % 50).collect();
-        let s = singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Nova Drift".into()), streak_days: 10, plays: 534, plays_today: 3 };
+        let s = singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Nova Drift".into()), streak_days: 10, plays: 534, plays_today: 3, backup_short: None };
         for (w, h) in [(40, 12), (46, 16), (60, 24), (90, 34), (120, 40), (120, 60), (150, 50), (200, 30), (256, 64), (80, 80)] {
             let r = Rect::new(3, 2, w, h);
             let mut buf = Buffer::empty(Rect::new(0, 0, w + 6, h + 4));
@@ -1106,7 +1106,7 @@ mod tests {
         // #58: a narrow, tall Pane left everything under the grid empty; a wide, short one kept it all at the left
         let mut app = App::new(None);
         let minutes: Vec<u32> = (0..singularity_proto::LISTENING_DAYS as u32).map(|i| i * 7 % 50).collect();
-        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Mira Vale".into()), streak_days: 10, plays: 534, plays_today: 3 });
+        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Mira Vale".into()), streak_days: 10, plays: 534, plays_today: 3, backup_short: None });
         let th = app.theme.clone();
         let margins = |w: u16, h: u16| {
             let r = Rect::new(2, 1, w, h);
@@ -1128,7 +1128,7 @@ mod tests {
         // rows filled (up to 26 weeks), the whole in the middle
         let mut app = App::new(None);
         let minutes: Vec<u32> = (0..singularity_proto::LISTENING_DAYS as u32).map(|i| i * 7 % 50).collect();
-        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Mira Vale".into()), streak_days: 10, plays: 534, plays_today: 3 });
+        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Mira Vale".into()), streak_days: 10, plays: 534, plays_today: 3, backup_short: None });
         let th = app.theme.clone();
         for (w, h, weeks) in [(14u16, 30u16, 24usize), (24, 30, 24), (30, 40, 26), (22, 20, 14)] {
             let r = Rect::new(2, 1, w, h);

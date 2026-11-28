@@ -706,7 +706,7 @@ async fn a_demo_client_reads_and_deletes_only_the_demo_listening_log() {
     let now = proto::now_ms();
     let play = |i: usize, artist: &str| Play { started_ms: now, item: Item { uri: format!("spotify:track:{i}"), name: "T".into(), artists: vec![artist.into()], duration_ms: 600_000, ..Default::default() }, context_uri: None, played_ms: 120_000, device: "here".into() };
     {
-        let real = Store::open(&data).unwrap();
+        let mut real = Store::open(&data).unwrap();
         for i in 0..3 {
             real.record(&play(i, "Real Artist")).unwrap();
         }
@@ -762,4 +762,59 @@ async fn a_demo_client_reads_and_deletes_only_the_demo_listening_log() {
     assert_eq!(Store::open(&data).unwrap().summary(now).unwrap().plays, 3);
     assert!(Store::open(&data).unwrap().latest_backup().is_some(), "the backups stay");
     assert_eq!(Store::open_demo(&data).unwrap().summary(now).unwrap().plays, 0);
+}
+
+/// #144: a backup that comes back short is told to every Client at once (Settings shows a line), as the logged-in
+/// account's; a demo Client is never told about the real account's backups (D90).
+#[tokio::test]
+async fn a_written_backup_tells_clients_what_came_back_short_but_not_a_demo_client() {
+    use singularityd::catalogue::{CatCmd, CatEvent};
+    use tokio::sync::mpsc;
+    // (only this test runs the backup task: the others have no Catalogue beside a LocalStore)
+    unsafe { std::env::set_var("SINGULARITY_BACKUP_CHECK_SECS", "1") };
+    let dir = common::scratch();
+    let (cat_tx, mut cat_rx) = mpsc::channel::<CatCmd>(64);
+    let (cat_events, cat_events_rx) = mpsc::channel::<CatEvent>(64);
+    // a fake Catalogue: an empty library, and Liked Songs coming back without its tracks
+    tokio::spawn(async move {
+        while let Some(cmd) = cat_rx.recv().await {
+            if let CatCmd::Query { op, reply, .. } = cmd {
+                let v = if op == "libraryV3" {
+                    serde_json::json!({ "data": { "me": { "libraryV3": { "totalCount": 0, "items": [] } } } })
+                } else {
+                    serde_json::json!({ "errors": [{ "message": "Something went wrong" }], "data": null })
+                };
+                let _ = reply.send(Ok(v));
+            }
+        }
+    });
+    let path = dir.path().join("backup.sock");
+    let listener = singularityd::bind(&path).unwrap();
+    let extras = singularityd::Extras { store: Some(dir.path().join("data")), ..Default::default() };
+    tokio::spawn(singularityd::serve_with(listener, Box::new(NoEngine { reason: "test".into() }), Some((cat_tx, cat_events_rx)), None, extras));
+    let mut normal = connect(&path).await;
+    let mut demo = UnixStream::connect(&path).await.unwrap();
+    proto::write_msg(&mut demo, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into(), demo: true }).await.unwrap();
+    let _welcome: DaemonMsg = proto::read_msg(&mut demo).await.unwrap().unwrap();
+    cat_events.send(CatEvent::Status(proto::CatalogueStatus::Ready { username: "me".into(), country: "SE".into(), premium: true })).await.unwrap();
+    async fn listening(s: &mut UnixStream) -> proto::ListeningSummary {
+        let wait = std::time::Duration::from_secs(20);
+        tokio::time::timeout(wait, async {
+            loop {
+                if let DaemonMsg::Event(Event::Listening(l)) = proto::read_msg::<_, DaemonMsg>(s).await.unwrap().unwrap() {
+                    return l;
+                }
+            }
+        })
+        .await
+        .expect("no listening summary came")
+    }
+    // nobody asked: the summary comes when the backup is written
+    let s = listening(&mut normal).await;
+    assert_eq!(s.backup_short, Some(proto::BackupShort { lists: 1, kept: 0 }));
+    let d = listening(&mut demo).await;
+    assert_eq!(d.backup_short, None, "a demo Client gets its own summary, without the real backups");
+    // logged out: the line goes
+    cat_events.send(CatEvent::Status(proto::CatalogueStatus::LoggedOut)).await.unwrap();
+    assert_eq!(listening(&mut normal).await.backup_short, None);
 }

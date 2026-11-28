@@ -650,7 +650,7 @@ async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>, demo
     };
     let now = proto::now_ms();
     let (reply, everyone) = {
-        let s = store.lock().expect("store lock");
+        let mut s = store.lock().expect("store lock");
         match cmd {
             Command::GetListening => (s.summary(now).map(Event::Listening), None),
             Command::GetStats { period } => {
@@ -753,6 +753,21 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                 }
                 if let proto::CatalogueStatus::Ready { username, .. } = &s {
                     claim_last_seen(&hub, username).await;
+                }
+                // the listening summary speaks of the logged-in account's backups only, and of none while logged out
+                let account = match &s {
+                    proto::CatalogueStatus::Ready { username, .. } => Some(Some(username.clone())),
+                    proto::CatalogueStatus::LoggedOut | proto::CatalogueStatus::LoginPending { .. } => Some(None),
+                    _ => None,
+                };
+                if let (Some(account), Some(store)) = (account, &hub.store) {
+                    let summary = {
+                        let mut st = store.lock().expect("store lock");
+                        st.set_account(account).then(|| st.summary(proto::now_ms()).ok()).flatten()
+                    };
+                    if let Some(summary) = summary {
+                        let _ = hub.events.send(Event::Listening(summary));
+                    }
                 }
                 *hub.catalogue_status.lock().await = Some(s.clone());
                 let _ = hub.events.send(Event::Catalogue(s));

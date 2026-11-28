@@ -365,6 +365,10 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let path = path.map(|p| app.demo.as_ref().map(|d| d.redact(&p)).unwrap_or(p));
     text(buf, tx + 1, y, (x + w).saturating_sub(tx + 1), &path.unwrap_or_default(), th.s(th.border));
     y += 1;
+    // the newest library backup, when it came back short (#144): in the empty row under the tabs, so nothing moves
+    if let Some(b) = app.listening.as_ref().and_then(|s| s.backup_short.as_ref()) {
+        text(buf, x, y, w, &backup_line(b, w as usize), th.s(th.error));
+    }
     // (demo mode: a path or name in a problem is redacted)
     let problems: Vec<String> = problems.iter().map(|p| app.demo.as_ref().map(|d| d.redact(p)).unwrap_or_else(|| p.clone())).collect();
     if view.tab == Tab::Keys {
@@ -441,6 +445,32 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     if let Some(v) = app.page.settings_mut() {
         *v = view;
     }
+}
+
+/// One line about a backup that came back short, in at most `w` columns: what the Daemon does about it drops off the
+/// end first, then the count is cut with "…".
+fn backup_line(b: &singularity_proto::BackupShort, w: usize) -> String {
+    let (n, k) = (b.lists, b.kept);
+    let kept = match (k, n) {
+        (0, _) => "no whole copy to keep yet".to_string(),
+        (1, 1) => "last whole copy kept".to_string(),
+        (k, n) if k == n => "last whole copies kept".to_string(),
+        (1, _) => "last whole copy kept for 1".to_string(),
+        (k, _) => format!("last whole copies kept for {k}"),
+    };
+    let parts = [format!("Last backup incomplete: {n} list{}", if n == 1 { "" } else { "s" }), "tried again tomorrow".into(), kept];
+    let mut line = String::new();
+    for p in parts {
+        let next = if line.is_empty() { p } else { format!("{line} · {p}") };
+        if next.chars().count() > w && !line.is_empty() {
+            break;
+        }
+        line = next;
+    }
+    if line.chars().count() > w {
+        line = format!("{}…", line.chars().take(w.saturating_sub(1)).collect::<String>());
+    }
+    line
 }
 
 /// The keys tab: what's wrong with `keys.toml`, then every action with its keys and its name in the file.
@@ -619,6 +649,48 @@ mod tests {
         assert_eq!(app.page.settings().unwrap().tab, Tab::Config);
         key(&mut app, KeyCode::Esc);
         assert!(app.page.settings().is_none());
+    }
+
+    #[test]
+    fn a_short_backup_adds_one_line_under_the_tabs_and_nothing_else_moves() {
+        let (mut app, _dir) = app_with_files();
+        let draw = |app: &mut App| {
+            let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+            t.draw(|f| crate::ui::frame(f, app)).unwrap();
+            t.backend().buffer().clone()
+        };
+        let rows = |b: &Buffer| (0..b.area.height).map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>();
+        // the last backup was whole: no line
+        app.listening = Some(singularity_proto::ListeningSummary { minutes: vec![0; singularity_proto::LISTENING_DAYS], ..Default::default() });
+        let whole = draw(&mut app);
+        assert!(!rows(&whole).iter().any(|r| r.contains("backup")), "{:#?}", rows(&whole));
+        // incomplete: one line; every other cell as before
+        app.listening.as_mut().unwrap().backup_short = Some(singularity_proto::BackupShort { lists: 2, kept: 2 });
+        let short = draw(&mut app);
+        let changed: Vec<u16> = (0..40).filter(|&y| (0..120).any(|x| whole[(x, y)] != short[(x, y)])).collect();
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        let line = &rows(&short)[changed[0] as usize];
+        // (Settings is the middle Pane here, too narrow for the whole line: what's kept drops off)
+        assert!(line.contains("│ Last backup incomplete: 2 lists · tried again tomorrow "), "{line}");
+        // back to whole: gone again
+        app.listening.as_mut().unwrap().backup_short = None;
+        assert_eq!(draw(&mut app), whole);
+    }
+
+    #[test]
+    fn the_backup_line_fits_a_narrow_pane() {
+        use singularity_proto::BackupShort;
+        let b = |lists, kept| BackupShort { lists, kept };
+        assert_eq!(backup_line(&b(1, 1), 80), "Last backup incomplete: 1 list · tried again tomorrow · last whole copy kept");
+        assert_eq!(backup_line(&b(3, 1), 90), "Last backup incomplete: 3 lists · tried again tomorrow · last whole copy kept for 1");
+        assert_eq!(backup_line(&b(2, 0), 90), "Last backup incomplete: 2 lists · tried again tomorrow · no whole copy to keep yet");
+        // what's done about it drops off whole, then the count is cut
+        assert_eq!(backup_line(&b(2, 2), 60), "Last backup incomplete: 2 lists · tried again tomorrow");
+        assert_eq!(backup_line(&b(2, 2), 40), "Last backup incomplete: 2 lists");
+        assert_eq!(backup_line(&b(2, 2), 24), "Last backup incomplete:…");
+        for w in 1..100 {
+            assert!(backup_line(&b(12, 5), w).chars().count() <= w);
+        }
     }
 
     #[test]

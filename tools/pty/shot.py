@@ -1029,6 +1029,29 @@ def stalls(t, out):
     t.send(b"q", 0.5)
 
 
+def seed_backup(data, short, account="fake"):
+    """A scratch library backup dated today, the fake Catalogue's account's (`account`): whole, or (#144) with Liked
+    Songs short beside its whole copy and a playlist saved marked incomplete."""
+    os.makedirs(f"{data}/backups", exist_ok=True)
+    b = {"schema": 1, "taken_ms": int(time.time() * 1000), "account": account, "liked": [], "liked_total": 0, "followed": [],
+         "playlists": [{"uri": "spotify:playlist:fake", "name": "Fake List", "tracks": [], "total": 0}]}
+    if short:
+        b["liked_short"] = {"taken_ms": b["taken_ms"], "incomplete": "only 0 of its 3 tracks came back", "total": 3, "tracks": []}
+        b["playlists"][0]["incomplete"] = "the page at 0 came back without its tracks (Something went wrong)"
+    open(f"{data}/backups/library-{time.strftime('%Y-%m-%d')}.json", "w").write(json.dumps(b))
+
+
+def backup_notice(t, out):
+    """#144: Settings with the newest backup short (PTY_BACKUP=whole: whole; =other: another account's); the screen's
+    text goes beside the shot. The backup task reads the backup a couple of seconds after start."""
+    t.pump(3.5)
+    t.send(b"\x0b", 0.3); t.send(b"settings", 0.3); t.send(b"\r", 1.0)
+    t.shot(f"{out}/settings.png")
+    open(f"{out}/screen.txt", "w").write("\n".join(t.screen.display))
+    print("backup line:", [l.strip() for l in t.screen.display if "backup" in l.lower()])
+    t.send(b"q", 0.5)
+
+
 def settings(t, out, env):
     """#57: the Settings page from config.toml: a click flips a setting, → steps the design, a typed number, an edit
     made in the file shows on the page; the file keeps its comments."""
@@ -3054,7 +3077,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("demo", "library", "queue", "lyrics", "artist", "search", "search-recent", "search-timing", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "gesture", "wheel-burst", "touchpad", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
+    if scenario.startswith("home") or scenario in ("demo", "library", "queue", "lyrics", "artist", "search", "search-recent", "search-timing", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "gesture", "wheel-burst", "touchpad", "popup-wheel", "wheel-all", "settings", "backup-notice", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-fast", "tiling-paths", "resize", "karaoke", "arrange-fixes") else "0"
@@ -3071,6 +3094,10 @@ def main():
         env["SINGULARITY_BACKUP_CHECK_SECS"] = "2"
         os.makedirs(env["XDG_DOWNLOAD_DIR"], exist_ok=True)
         seed_listening(env["SINGULARITY_DATA"])
+    if scenario == "backup-notice":
+        env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
+        seed_backup(env["SINGULARITY_DATA"], os.environ.get("PTY_BACKUP") != "whole", "someone" if os.environ.get("PTY_BACKUP") == "other" else "fake")
+        env["SINGULARITY_BACKUP_CHECK_SECS"] = "2"
     if scenario == "stalls":
         env["SINGULARITY_FAKE_STALLS"] = "1"
     if scenario in ("stats", "stats-widgets", "widgets-large", "sizes", "wheel-all", "contact-sheet"):
@@ -3155,6 +3182,8 @@ def main():
             return idle(t, out)
         if scenario == "listening":
             return listening(t, out, env)
+        if scenario == "backup-notice":
+            return backup_notice(t, out)
         if scenario == "stats":
             return stats(t, out)
         if scenario == "stats-widgets":
