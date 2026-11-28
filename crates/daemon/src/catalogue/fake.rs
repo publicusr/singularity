@@ -401,7 +401,7 @@ fn fake_lyrics(uri: &str) -> singularity_proto::Lyrics {
 }
 
 /// Invented lyrics for the Karaoke Widget, a 30 s verse sung six times: lines of uneven length and pace, some with
-/// every word timed (as LRCLIB's word-synced ones come) and some only by the line (their words are estimated), an
+/// every word timed (as LRCLIB's word-synced ones come) and some only by the line (lit whole), an
 /// instrumental gap of about 8 s marked by an empty line, and a long line that wraps.
 fn karaoke_lyrics(uri: &str) -> singularity_proto::Lyrics {
     use singularity_proto::{LyricLine, LyricWord};

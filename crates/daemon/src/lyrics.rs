@@ -1,6 +1,7 @@
 //! Lyrics (#14): Spotify's own (spclient `color-lyrics`, through the Catalogue session), else LRCLIB
 //! (<https://lrclib.net>, free and open; only artist, title, album and duration are sent).
 
+use futures_util::future::BoxFuture;
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -265,7 +266,7 @@ pub fn parse_lrclib(uri: &str, v: &Value) -> Option<Lyrics> {
     (!lines.is_empty()).then(|| Lyrics { uri: uri.into(), synced: false, lines, source: "LRCLIB".into(), ..Default::default() })
 }
 
-/// LRCLIB's turn: held for a whole lookup (both its asks), so lookups go one at a time; when its last request went.
+/// LRCLIB's turn: held for a whole lookup (all its asks), so lookups go one at a time; when its last request went.
 static LRCLIB_TURN: tokio::sync::Mutex<Option<tokio::time::Instant>> = tokio::sync::Mutex::const_new(None);
 /// The least time between two requests to LRCLIB.
 const LRCLIB_SPACING: Duration = Duration::from_millis(300);
@@ -292,31 +293,117 @@ fn quiet_left(now_ms: u64) -> Option<u64> {
     (now_ms < until).then(|| (until - now_ms).div_ceil(1000))
 }
 
-/// Ask LRCLIB: with the album, then without it if that finds nothing (`asks`). `Ok(None)` when it has nothing, `Err`
-/// when it couldn't be asked, including while it has asked us to wait.
-pub async fn lrclib(uri: &str, artist: &str, title: &str, album: Option<&str>, duration_ms: u64) -> Result<Option<Lyrics>, String> {
-    // one lookup at a time, its requests spaced (LRCLIB's docs: sequential, 200–500 ms apart)
-    let mut turn = LRCLIB_TURN.lock().await;
+/// How much the length of a search's word-timed version may differ from the track's (LRCLIB's own `/api/get`
+/// matches within 2 s too).
+const SAME_LENGTH_MS: f64 = 2_000.0;
+
+/// Ask LRCLIB: with the album, then without it if that finds nothing (`asks`). `words`: a Karaoke Widget is on
+/// screen: when the best match times only lines, one search for the same track and artist looks for a word-timed
+/// version of the same length (the owner, Q183). `Ok(None)` when it has nothing, `Err` when it couldn't be asked,
+/// including while it has asked us to wait.
+pub async fn lrclib(uri: &str, artist: &str, title: &str, album: Option<&str>, duration_ms: u64, words: bool) -> Result<Option<Lyrics>, String> {
     let http = reqwest::Client::builder()
         .user_agent(concat!("Singularity/", env!("CARGO_PKG_VERSION"), " (https://github.com/publicusr/singularity)"))
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
+    let ask = move |path: &'static str, q: Vec<(&'static str, String)>| -> BoxFuture<'static, Result<Answer, String>> {
+        let http = http.clone();
+        Box::pin(async move {
+            let resp = http.get(format!("https://lrclib.net{path}")).query(&q).send().await.map_err(|e| e.to_string())?;
+            let retry_after = resp.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok()).map(str::to_string);
+            let status = resp.status().as_u16();
+            let body = if resp.status().is_success() { resp.bytes().await.map_err(|e| e.to_string())?.to_vec() } else { vec![] };
+            Ok(Answer { status, retry_after, body })
+        })
+    };
+    lookup(&ask, uri, artist, title, album, duration_ms, words).await
+}
+
+/// One answer from LRCLIB: its status, its `Retry-After`, its body (a success's only).
+struct Answer {
+    status: u16,
+    retry_after: Option<String>,
+    body: Vec<u8>,
+}
+
+/// How a request goes to LRCLIB: an endpoint (`/api/get`, `/api/search`) and its query.
+type Ask = dyn Fn(&'static str, Vec<(&'static str, String)>) -> BoxFuture<'static, Result<Answer, String>> + Sync;
+
+/// `lrclib`, its requests sent through `ask`.
+async fn lookup(ask: &Ask, uri: &str, artist: &str, title: &str, album: Option<&str>, duration_ms: u64, words: bool) -> Result<Option<Lyrics>, String> {
+    // one lookup at a time, its requests spaced (LRCLIB's docs: sequential, 200–500 ms apart)
+    let mut turn = LRCLIB_TURN.lock().await;
     let q = vec![("artist_name", artist.to_string()), ("track_name", title.to_string()), ("duration", (duration_ms / 1000).to_string())];
+    let mut record = None;
     for q in asks(q, album) {
-        // (checked after the wait for the turn: the lookup before may have been told to wait)
-        if let Some(s) = quiet_left(singularity_proto::now_ms()) {
-            return Err(format!("LRCLIB asked us to wait ({s} s left)"));
-        }
-        if let Some(last) = *turn {
-            tokio::time::sleep(LRCLIB_SPACING.saturating_sub(last.elapsed())).await;
-        }
-        *turn = Some(tokio::time::Instant::now());
-        if let Some(v) = lrclib_get(&http, &q).await? {
-            return Ok(parse_lrclib(uri, &v));
+        if let Some(v) = send(ask, &mut turn, "/api/get", q).await? {
+            record = Some(v);
+            break;
         }
     }
-    Ok(None)
+    let Some(record) = record else { return Ok(None) };
+    let best = parse_lrclib(uri, &record);
+    let lines_only = best.as_ref().is_some_and(|l| l.synced && l.lines.iter().all(|x| x.words.is_empty()));
+    if !(words && lines_only) {
+        return Ok(best);
+    }
+    let q = vec![("track_name", title.to_string()), ("artist_name", artist.to_string())];
+    match send(ask, &mut turn, "/api/search", q).await {
+        Ok(Some(Value::Array(records))) => {
+            if let Some(w) = word_timed(uri, &records, duration_ms) {
+                tracing::info!("lyrics for {uri}: LRCLIB's best match times lines only, a search found a word-timed version");
+                return Ok(Some(w));
+            }
+        }
+        Ok(_) => {}
+        // (the best match stands)
+        Err(e) => tracing::info!("lyrics for {uri}: LRCLIB search failed: {e}"),
+    }
+    Ok(best)
+}
+
+/// One request in a lookup's turn, `LRCLIB_SPACING` after the one before at least, none while LRCLIB has asked us to
+/// wait: the answer's JSON, `None` on a 404.
+async fn send(ask: &Ask, last: &mut Option<tokio::time::Instant>, path: &'static str, q: Vec<(&'static str, String)>) -> Result<Option<Value>, String> {
+    // (checked after the wait for the turn: the lookup before may have been told to wait)
+    if let Some(s) = quiet_left(singularity_proto::now_ms()) {
+        return Err(format!("LRCLIB asked us to wait ({s} s left)"));
+    }
+    if let Some(at) = *last {
+        tokio::time::sleep(LRCLIB_SPACING.saturating_sub(at.elapsed())).await;
+    }
+    *last = Some(tokio::time::Instant::now());
+    let a = ask(path, q).await?;
+    // (a jitter from the clock's nanoseconds: no randomness crate for this)
+    let jitter = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos()) as f64 / 1e9;
+    if let Some(wait) = wait_asked(a.status, a.retry_after.as_deref(), jitter) {
+        LRCLIB_QUIET_UNTIL.fetch_max(singularity_proto::now_ms() + wait.as_millis() as u64, Ordering::Relaxed);
+        return Err(format!("HTTP {}: LRCLIB asks us to wait {} s", a.status, wait.as_secs()));
+    }
+    match a.status {
+        404 => Ok(None),
+        200..=299 => serde_json::from_slice(&a.body).map(Some).map_err(|e| e.to_string()),
+        s => Err(format!("HTTP {s}")),
+    }
+}
+
+/// Of a search's `records`, the word-timed version of a track `duration_ms` long: the closest in length within
+/// `SAME_LENGTH_MS` whose words parse.
+fn word_timed(uri: &str, records: &[Value], duration_ms: u64) -> Option<Lyrics> {
+    word_timed_records(records, duration_ms).into_iter().find_map(|r| parse_lrclib(uri, r).filter(|l| l.lines.iter().any(|x| !x.words.is_empty())))
+}
+
+/// The word-timed records of a search within `SAME_LENGTH_MS` of `duration_ms` (no instrumentals), closest first.
+fn word_timed_records(records: &[Value], duration_ms: u64) -> Vec<&Value> {
+    let mut near: Vec<(f64, &Value)> = records
+        .iter()
+        .filter(|r| r["hasWordSync"].as_bool() == Some(true) && r["instrumental"].as_bool() != Some(true))
+        .filter_map(|r| Some(((r["duration"].as_f64()? * 1000.0 - duration_ms as f64).abs(), r)))
+        .filter(|(d, _)| *d <= SAME_LENGTH_MS)
+        .collect();
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    near.into_iter().map(|(_, r)| r).collect()
 }
 
 /// What to ask LRCLIB, in turn until one finds the song: with the album, then without it. LRCLIB finds nothing when it
@@ -330,25 +417,6 @@ fn asks(q: Vec<(&'static str, String)>, album: Option<&str>) -> Vec<Vec<(&'stati
         }
         None => vec![q],
     }
-}
-
-/// One `/api/get`: the record, `None` on a 404.
-async fn lrclib_get(http: &reqwest::Client, q: &[(&'static str, String)]) -> Result<Option<Value>, String> {
-    let resp = http.get("https://lrclib.net/api/get").query(q).send().await.map_err(|e| e.to_string())?;
-    let retry_after = resp.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok());
-    // (a jitter from the clock's nanoseconds: no randomness crate for this)
-    let jitter = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos()) as f64 / 1e9;
-    if let Some(wait) = wait_asked(resp.status().as_u16(), retry_after, jitter) {
-        LRCLIB_QUIET_UNTIL.fetch_max(singularity_proto::now_ms() + wait.as_millis() as u64, Ordering::Relaxed);
-        return Err(format!("HTTP {}: LRCLIB asks us to wait {} s", resp.status(), wait.as_secs()));
-    }
-    if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    serde_json::from_slice(&resp.bytes().await.map_err(|e| e.to_string())?).map(Some).map_err(|e| e.to_string())
 }
 
 /// How one source answered.
@@ -498,6 +566,7 @@ plain: |
 
     #[test]
     fn lrclib_is_left_alone_as_long_as_it_asks() {
+        let _quiet = QUIET.lock().unwrap_or_else(|e| e.into_inner());
         // Retry-After in seconds, plus up to 30 % jitter; an HTTP date or none: a minute (429), a second (503)
         assert_eq!(wait_asked(429, Some("12"), 0.0), Some(Duration::from_secs(12)));
         assert_eq!(wait_asked(429, Some(" 10 "), 1.0), Some(Duration::from_secs(13)));
@@ -513,9 +582,92 @@ plain: |
         assert_eq!(quiet_left(now + 19_500), Some(1));
         assert_eq!(quiet_left(now + 20_000), None);
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let got = rt.block_on(lrclib("u", "A", "T", Some("LP"), 200_000));
+        let got = rt.block_on(lrclib("u", "A", "T", Some("LP"), 200_000, true));
         assert!(got.as_ref().is_err_and(|e| e.contains("wait")), "{got:?}");
         LRCLIB_QUIET_UNTIL.store(0, Ordering::Relaxed);
+    }
+
+    /// Serializes the tests that touch LRCLIB's wait (`LRCLIB_QUIET_UNTIL`, process-wide).
+    static QUIET: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A search answer as LRCLIB gives it today (2026-11, recorded from `/api/search`): records of `/api/get`'s fields,
+    /// lengths in seconds or none, word-timed and line-only versions of one song. Cut to five records of two lines; the
+    /// names, words and lengths are invented: 3 line-only (no length), 4 word-timed 169.7 s, 5 line-only 243 s, 6
+    /// word-timed 241.4 s, 7 word-timed 242.56 s.
+    const SEARCH: &str = include_str!("../tests/fixtures/lrclib-search.json");
+
+    /// A stand-in LRCLIB: `/api/get` answers `get` (None: a 404), `/api/search` answers `search` (Err: that status,
+    /// with a `Retry-After` of 5 s); every request is written down in `asked`.
+    fn stand_in(get: Option<Value>, search: Result<Value, u16>, asked: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Box<Ask> {
+        Box::new(move |path: &'static str, q: Vec<(&'static str, String)>| -> BoxFuture<'static, Result<Answer, String>> {
+            asked.lock().unwrap().push(format!("{path}?{}", q.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("&")));
+            let ok = |v: &Value| Answer { status: 200, retry_after: None, body: serde_json::to_vec(v).unwrap() };
+            let a = match (path, &get, &search) {
+                ("/api/get", Some(v), _) => ok(v),
+                ("/api/get", None, _) => Answer { status: 404, retry_after: None, body: vec![] },
+                (_, _, Ok(v)) => ok(v),
+                (_, _, Err(s)) => Answer { status: *s, retry_after: Some("5".into()), body: vec![] },
+            };
+            Box::pin(async move { Ok(a) })
+        })
+    }
+
+    #[test]
+    fn a_line_only_best_match_leads_to_one_search_for_a_word_timed_version() {
+        let _quiet = QUIET.lock().unwrap_or_else(|e| e.into_inner());
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let mut line_only: Value = serde_json::from_str(RECORDED).unwrap();
+        line_only["hasWordSync"] = false.into();
+        let search: Value = serde_json::from_str(SEARCH).unwrap();
+        let run = |get: Option<Value>, search: Result<Value, u16>, words: bool| {
+            let asked = std::sync::Arc::default();
+            let ask = stand_in(get, search, std::sync::Arc::clone(&asked));
+            let got = rt.block_on(lookup(&ask, "u", "Nikt", "Wymyślona piosenka", Some("Wymyślony album"), 243_000, words));
+            (got, asked.lock().unwrap().clone())
+        };
+        let words = |l: &Lyrics| l.lines.iter().any(|x| !x.words.is_empty());
+        // a Karaoke Widget on screen: the get, then one search for the same track and artist, which has a word-timed
+        // version within 2 s of the track's length
+        let (got, asked) = run(Some(line_only.clone()), Ok(search.clone()), true);
+        assert_eq!(asked, ["/api/get?artist_name=Nikt&track_name=Wymyślona piosenka&duration=243&album_name=Wymyślony album", "/api/search?track_name=Wymyślona piosenka&artist_name=Nikt"]);
+        let l = got.unwrap().unwrap();
+        assert!(l.synced && l.source == "LRCLIB" && words(&l), "{l:?}");
+        assert_eq!(l.lines[0].words.iter().map(|w| w.text.as_str()).collect::<String>(), "Lampy nad rzeką gasną powoli");
+        // none on screen: no search, the best match as it is
+        let (got, asked) = run(Some(line_only.clone()), Ok(search.clone()), false);
+        let l = got.unwrap().unwrap();
+        assert!(asked.len() == 1 && !words(&l) && l.lines[0].text == "Paper boats drift past, the harbour wall", "{asked:?}");
+        // a word-timed best match: no search
+        let (got, asked) = run(Some(serde_json::from_str(RECORDED).unwrap()), Ok(search.clone()), true);
+        assert!(asked.len() == 1 && words(&got.unwrap().unwrap()), "{asked:?}");
+        // nothing word-timed of the same length, the search failing: the best match stands, after the one search
+        let (got, asked) = run(Some(line_only.clone()), Ok(Value::Array(search.as_array().unwrap()[..3].to_vec())), true);
+        assert!(asked.len() == 2 && !words(&got.unwrap().unwrap()), "{asked:?}");
+        let (got, asked) = run(Some(line_only.clone()), Err(500), true);
+        assert!(asked.len() == 2 && !words(&got.unwrap().unwrap()), "{asked:?}");
+        // not found at all: the two gets (with the album and without), no search
+        let (got, asked) = run(None, Ok(search.clone()), true);
+        assert!(asked.len() == 2 && asked.iter().all(|a| a.starts_with("/api/get")) && got == Ok(None), "{asked:?}");
+        // the search told to wait: the best match stands, and LRCLIB is left alone meanwhile, any track
+        let (got, asked) = run(Some(line_only.clone()), Err(429), true);
+        assert!(asked.len() == 2 && !words(&got.unwrap().unwrap()), "{asked:?}");
+        let (got, asked) = run(Some(line_only), Ok(search), true);
+        assert!(asked.is_empty() && got.is_err_and(|e| e.contains("wait")), "{asked:?}");
+        LRCLIB_QUIET_UNTIL.store(0, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn the_search_takes_the_closest_word_timed_version_of_the_same_length() {
+        let search: Vec<Value> = serde_json::from_str(SEARCH).unwrap();
+        let ids = |ms: u64| word_timed_records(&search, ms).iter().map(|r| r["id"].as_u64().unwrap()).collect::<Vec<_>>();
+        assert_eq!(ids(243_000), [7, 6]);
+        assert_eq!(ids(241_000), [6, 7]);
+        assert_eq!(ids(170_500), [4]);
+        assert_eq!(ids(250_000), [] as [u64; 0]);
+        // an instrumental is no version to sing
+        let mut inst = search.clone();
+        inst[4]["instrumental"] = true.into();
+        assert_eq!(word_timed_records(&inst, 243_000).iter().map(|r| r["id"].as_u64().unwrap()).collect::<Vec<_>>(), [6]);
     }
 
     #[test]

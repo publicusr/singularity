@@ -1699,22 +1699,22 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
         }
     }
 
-    async fn lrclib_for(uri: &str, m: &singularity_proto::Item) -> Result<Option<singularity_proto::Lyrics>, String> {
+    async fn lrclib_for(uri: &str, m: &singularity_proto::Item, words: bool) -> Result<Option<singularity_proto::Lyrics>, String> {
         #[cfg(test)]
-        if let Some(fake) = port_tests::fake_lrclib(uri) {
+        if let Some(fake) = port_tests::fake_lrclib(uri, words) {
             return fake.await;
         }
-        crate::lyrics::lrclib(uri, &m.artists.first().cloned().unwrap_or_default(), &m.name, m.album.as_deref(), m.duration_ms).await
+        crate::lyrics::lrclib(uri, &m.artists.first().cloned().unwrap_or_default(), &m.name, m.album.as_deref(), m.duration_ms, words).await
     }
 
     /// LRCLIB asked beside browsing (it can take seconds, more when it asks us to wait; lookups go one at a time,
     /// `lyrics::lrclib`): `then` makes what to send of its answer, which comes back as `LyricsFound`, so Home, the
     /// library and everything else browsing does never wait for it.
-    fn ask_lrclib(&mut self, uri: String, m: singularity_proto::Item, then: impl FnOnce(Result<Option<singularity_proto::Lyrics>, String>) -> Option<(singularity_proto::Lyrics, bool)> + Send + 'static) {
+    fn ask_lrclib(&mut self, uri: String, m: singularity_proto::Item, words: bool, then: impl FnOnce(Result<Option<singularity_proto::Lyrics>, String>) -> Option<(singularity_proto::Lyrics, bool)> + Send + 'static) {
         self.lrclib_asking.insert(uri.clone());
         let back = self.to_browse.clone();
         tokio::spawn(async move {
-            let found = then(Self::lrclib_for(&uri, &m).await);
+            let found = then(Self::lrclib_for(&uri, &m, words).await);
             if let Some(back) = back.upgrade() {
                 let _ = back.send(CatCmd::LyricsFound { uri, found });
             }
@@ -1730,7 +1730,7 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
         trim_any(&mut self.word_tried, MAX_LYRICS);
         self.word_tried.insert(l.uri.clone(), ());
         let Some(m) = self.lyrics_meta(&l.uri, meta).await else { return };
-        self.ask_lrclib(l.uri.clone(), m, |got| match got {
+        self.ask_lrclib(l.uri.clone(), m, true, |got| match got {
             Ok(Some(w)) if w.synced && w.lines.iter().any(|x| !x.words.is_empty()) => {
                 tracing::info!("lyrics for {}: word timing from LRCLIB", w.uri);
                 Some((w, true))
@@ -1784,9 +1784,12 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
         }
         // a search waiting goes first: the track's name may need looking up
         self.search_between().await;
-        // LRCLIB's answer has its word timing, if any, in it
-        trim_any(&mut self.word_tried, MAX_LYRICS);
-        self.word_tried.insert(uri.clone(), ());
+        // with a Karaoke Widget on screen, LRCLIB's answer has its word timing, if any, in it (a search included); else
+        // a Karaoke Widget opened later asks again for it
+        if words {
+            trim_any(&mut self.word_tried, MAX_LYRICS);
+            self.word_tried.insert(uri.clone(), ());
+        }
         let answer = move |lrclib: Outcome, l: Option<singularity_proto::Lyrics>, uri: &str| {
             tracing::info!("lyrics for {uri}: Spotify {spotify:?}, LRCLIB {lrclib:?}");
             match l {
@@ -1798,7 +1801,7 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
             }
         };
         match self.lyrics_meta(&uri, meta).await {
-            Some(m) => self.ask_lrclib(uri.clone(), m, move |got| {
+            Some(m) => self.ask_lrclib(uri.clone(), m, words, move |got| {
                 Some(match got {
                     Ok(Some(l)) => answer(Outcome::Found, Some(l), &uri),
                     Ok(None) => answer(Outcome::Nothing, None, &uri),

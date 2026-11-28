@@ -2114,8 +2114,8 @@ def designs(t, out):
 
 
 def karaoke(t, out):
-    """The Karaoke design and Widget: track 2 of the fake Catalogue sings (timed and estimated lines, an instrumental
-    gap, a wrapping line). Shots at moments of the song: the count-in, the ball mid-hop, a line sung out, an estimated
+    """The Karaoke design and Widget: track 2 of the fake Catalogue sings (word-timed and line-only lines, an instrumental
+    gap, a wrapping line). Shots at moments of the song: the count-in, the ball mid-hop, a line sung out, a line-only
     line, the gap, its count-in, the long line. Run it at a few sizes (PTY_COLS/PTY_ROWS); `karaoke-cells` has no
     pixel tier (the ball is a `●` in cells)."""
     t.pump(1.0)
@@ -2131,7 +2131,7 @@ def karaoke(t, out):
     at(3.62, "2-mid-hop")
     at(4.1, "3-mid-hop-2")
     at(6.2, "4-sung-out")
-    at(8.0, "5-estimated")
+    at(8.0, "5-line-only")
     t.send(b"\x1b[1;2C", 0.0)  # Shift+→: seek 5 s on, ~13 s (a bare → moves Home's highlight)
     t0 -= 5
     at(16.5, "6-gap")
