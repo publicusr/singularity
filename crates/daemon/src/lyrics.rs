@@ -265,6 +265,11 @@ pub fn parse_lrclib(uri: &str, v: &Value) -> Option<Lyrics> {
     (!lines.is_empty()).then(|| Lyrics { uri: uri.into(), synced: false, lines, source: "LRCLIB".into(), ..Default::default() })
 }
 
+/// LRCLIB's turn: held for a whole lookup (both its asks), so lookups go one at a time; when its last request went.
+static LRCLIB_TURN: tokio::sync::Mutex<Option<tokio::time::Instant>> = tokio::sync::Mutex::const_new(None);
+/// The least time between two requests to LRCLIB.
+const LRCLIB_SPACING: Duration = Duration::from_millis(300);
+
 /// LRCLIB asked us to wait (a 429 or 503 with `Retry-After`): no request goes to it before this (Unix ms), for any
 /// track. Its docs: clients "must honor `Retry-After`", with jitter, or risk a temporary ban.
 static LRCLIB_QUIET_UNTIL: AtomicU64 = AtomicU64::new(0);
@@ -290,21 +295,24 @@ fn quiet_left(now_ms: u64) -> Option<u64> {
 /// Ask LRCLIB: with the album, then without it if that finds nothing (`asks`). `Ok(None)` when it has nothing, `Err`
 /// when it couldn't be asked, including while it has asked us to wait.
 pub async fn lrclib(uri: &str, artist: &str, title: &str, album: Option<&str>, duration_ms: u64) -> Result<Option<Lyrics>, String> {
-    if let Some(s) = quiet_left(singularity_proto::now_ms()) {
-        return Err(format!("LRCLIB asked us to wait ({s} s left)"));
-    }
+    // one lookup at a time, its requests spaced (LRCLIB's docs: sequential, 200–500 ms apart)
+    let mut turn = LRCLIB_TURN.lock().await;
     let http = reqwest::Client::builder()
         .user_agent(concat!("Singularity/", env!("CARGO_PKG_VERSION"), " (https://github.com/publicusr/singularity)"))
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
     let q = vec![("artist_name", artist.to_string()), ("track_name", title.to_string()), ("duration", (duration_ms / 1000).to_string())];
-    for (k, q) in asks(q, album).iter().enumerate() {
-        if k > 0 {
-            // LRCLIB's docs ask for 200–500 ms between requests
-            tokio::time::sleep(Duration::from_millis(300)).await;
+    for q in asks(q, album) {
+        // (checked after the wait for the turn: the lookup before may have been told to wait)
+        if let Some(s) = quiet_left(singularity_proto::now_ms()) {
+            return Err(format!("LRCLIB asked us to wait ({s} s left)"));
         }
-        if let Some(v) = lrclib_get(&http, q).await? {
+        if let Some(last) = *turn {
+            tokio::time::sleep(LRCLIB_SPACING.saturating_sub(last.elapsed())).await;
+        }
+        *turn = Some(tokio::time::Instant::now());
+        if let Some(v) = lrclib_get(&http, &q).await? {
             return Ok(parse_lrclib(uri, &v));
         }
     }
