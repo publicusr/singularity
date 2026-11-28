@@ -189,7 +189,17 @@ impl Engine for FakeEngine {
                         st.status = if st.status == PlayStatus::Playing { PlayStatus::Paused } else { PlayStatus::Playing };
                     }
                     Command::Next => {
-                        idx = (idx + 1) % tracks.len();
+                        // a song the user queued plays first (the context stays, as Spotify keeps it: #128's demo check)
+                        match st.queue.iter().position(|q| q.source == "queue") {
+                            Some(i) => {
+                                let q = st.queue.remove(i);
+                                idx = pick(&mut tracks, &q.item.uri, None);
+                                if !q.item.name.is_empty() {
+                                    tracks[idx] = q.item;
+                                }
+                            }
+                            None => idx = (idx + 1) % tracks.len(),
+                        }
                         st.position_ms = 0;
                     }
                     Command::Previous => {

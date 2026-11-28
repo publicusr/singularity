@@ -392,6 +392,34 @@ async fn a_long_track_list_comes_page_by_page() {
     assert_eq!(asked, [0, 100, 200]);
 }
 
+/// #128: demo Home's quiet look at a long playlist asks for its first page only, and a failure is answered with
+/// neither page, not with a toast.
+#[tokio::test]
+async fn a_peek_asks_for_one_page_and_fails_quietly() {
+    let f = Fixtures::new(|op, v| match op {
+        "fetchPlaylist" => {
+            let mut v = fixture("playlist.json");
+            v["data"]["playlistV2"]["content"]["totalCount"] = json!(250);
+            Ok(v)
+        }
+        _ => anyhow::bail!("offline ({})", v["uri"]),
+    });
+    let (_dir, tx, mut ev) = catalogue(&f);
+    tx.send(CatCmd::Peek("spotify:playlist:p".into())).await.unwrap();
+    let (tracks, artist) = next(&mut ev, |e| if let CatEvent::Peeked { tracks, artist, .. } = e { Some((tracks.clone(), artist.clone())) } else { None }).await;
+    let page = tracks.expect("the first page");
+    assert_eq!((page.offset, page.total, artist.is_none()), (0, 250, true));
+    assert_eq!(f.asked("fetchPlaylist"), 1, "one page, not the whole list");
+    tx.send(CatCmd::Peek("spotify:artist:a".into())).await.unwrap();
+    let got = next(&mut ev, |e| match e {
+        CatEvent::Peeked { tracks, artist, .. } => Some(Some((tracks.is_none(), artist.is_none()))),
+        CatEvent::Error(_) => Some(None),
+        _ => None,
+    })
+    .await;
+    assert_eq!(got, Some((true, true)), "a failure: neither, and no toast first");
+}
+
 /// While typing, only the newest search matters: the ones it replaces aren't asked for. It goes ahead of the browsing
 /// work waiting (#126), and what waited runs after it, in the order it was asked for.
 #[tokio::test]

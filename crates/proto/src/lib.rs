@@ -139,6 +139,12 @@ pub enum Command {
     Search { query: String },
     /// Fetch an artist page; arrives as `Event::Artist`.
     GetArtist { uri: String },
+    /// Demo mode's Home (#128): a playlist's first page or an artist's page, looked at quietly (no toast if it fails, no
+    /// further pages); answered by `Event::Peeked`.
+    Peek { uri: String },
+    /// Demo mode (#128): a demo Client shows this track as playing, so the demo Listening log may count its plays (it
+    /// logs no others).
+    ShownInDemo { uri: String },
     /// Fetch lyrics for a track (Spotify's, else LRCLIB's); arrives as `Event::Lyrics`. `words`: a Karaoke Widget is
     /// on screen, so LRCLIB is also asked for word timing when Spotify's lyrics only time lines (D67). Additive: older
     /// Daemons ignore it, older Clients leave it out.
@@ -284,6 +290,8 @@ pub enum Event {
     MovedInPlaylist { playlist: String, uids: Vec<String>, ok: bool },
     /// The answer to `FindShow`: the episode's show.
     EpisodeShow { episode: String, show: Link },
+    /// The answer to `Peek`: a playlist's first page or an artist's page; neither when it failed.
+    Peeked { uri: String, tracks: Option<TrackPage>, artist: Option<ArtistPage> },
     #[serde(other)]
     Unknown,
 }
@@ -409,8 +417,8 @@ pub struct HomeFeed {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Shelf {
-    /// the section's id on Spotify (`spotify:section:…`), when it has one (D90: demo mode hides personal Shelves by
-    /// it). Additive: older Daemons leave it out.
+    /// the section's id on Spotify (`spotify:section:…`), when it has one. Additive: older Daemons leave it out.
+    /// (D90's first demo mode hid personal Shelves by it; demo Home is now built from the Demo set, #128.)
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
     pub title: String,

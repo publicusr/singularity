@@ -118,6 +118,9 @@ pub struct Hub {
     pub demo_store: Option<Arc<std::sync::Mutex<store::Store>>>,
     /// how many demo Clients are connected
     pub demo_clients: std::sync::atomic::AtomicUsize,
+    /// tracks a demo Client showed as playing (#128): only their plays go into the demo log; forgotten when the last
+    /// demo Client leaves
+    pub demo_shown: std::sync::Mutex<std::collections::HashSet<String>>,
     /// background tasks that stopped and haven't run for a while: the health view names them (A1)
     pub stopped_tasks: Mutex<BTreeSet<String>>,
     /// the last Home and library on disk (#81); None: off (tests, fake Daemons)
@@ -342,6 +345,7 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
         store,
         demo_store,
         demo_clients: Default::default(),
+        demo_shown: Default::default(),
         stopped_tasks: Default::default(),
         last_seen,
     });
@@ -603,8 +607,10 @@ async fn log_plays(hub: Arc<Hub>) {
                 }
                 s.summary(now)
             };
-            // while a demo Client is connected, its own log gets the play too (D90; the real one keeps it as well)
-            if hub.demo_clients.load(std::sync::atomic::Ordering::SeqCst) > 0
+            // while a demo Client is connected, its own log gets the play too (D90; the real one keeps it as well), if
+            // that Client showed the track: a hidden one (the song left from before, one queued elsewhere) stays out
+            // of demo stats (#128)
+            if demo_logs(&hub, &play)
                 && let Some(d) = &hub.demo_store
                 && let Err(e) = d.lock().expect("demo store lock").record(&play)
             {
@@ -615,6 +621,11 @@ async fn log_plays(hub: Arc<Hub>) {
             }
         }
     }
+}
+
+/// Does this play go into the demo Listening log: a demo Client is connected and showed its track (#128)?
+fn demo_logs(hub: &Hub, play: &store::Play) -> bool {
+    hub.demo_clients.load(std::sync::atomic::Ordering::SeqCst) > 0 && hub.demo_shown.lock().expect("demo shown lock").contains(&play.item.uri)
 }
 
 /// Where playback is happening, for the listening log.
@@ -774,6 +785,9 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
             CatEvent::Artist(p) => {
                 let _ = hub.events.send(Event::Artist(p));
             }
+            CatEvent::Peeked { uri, tracks, artist } => {
+                let _ = hub.events.send(Event::Peeked { uri, tracks, artist });
+            }
             CatEvent::Lyrics(l) => {
                 let _ = hub.events.send(Event::Lyrics(l));
             }
@@ -862,6 +876,7 @@ fn catalogue_cmd(cmd: &Command) -> Option<Result<CatCmd, &'static str>> {
         Command::ClearQueue => CatCmd::Queue(connect::QueueEdit::Clear),
         Command::MoveInQueue { uri, uid, to, into_queue } => CatCmd::Queue(connect::QueueEdit::Move { uri: uri.clone(), uid: uid.clone(), to: *to, into_queue: *into_queue }),
         Command::GetArtist { uri } => CatCmd::Artist(uri.clone()),
+        Command::Peek { uri } => CatCmd::Peek(uri.clone()),
         Command::Search { query } => CatCmd::Search(query.clone()),
         Command::GetDevices => CatCmd::Devices,
         Command::Transfer { device_id } => CatCmd::Transfer(device_id.clone()),
@@ -1046,6 +1061,12 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                     let _ = out_tx.send(DaemonMsg::Event(Event::Health(h))).await;
                 }
                 ClientMsg::Command(cmd @ (Command::GetListening | Command::GetStats { .. } | Command::ExportLocalData | Command::DeleteLocalData)) => local_data(&hub, cmd, &out_tx, demo).await,
+                // (only a demo Client's word counts)
+                ClientMsg::Command(Command::ShownInDemo { uri }) => {
+                    if demo {
+                        hub.demo_shown.lock().expect("demo shown lock").insert(uri);
+                    }
+                }
                 ClientMsg::Command(Command::GetState) => {
                     let s = hub.playback();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;
@@ -1111,7 +1132,9 @@ impl DemoClient {
 
 impl Drop for DemoClient {
     fn drop(&mut self) {
-        self.0.demo_clients.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        if self.0.demo_clients.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            self.0.demo_shown.lock().expect("demo shown lock").clear();
+        }
     }
 }
 
@@ -1162,6 +1185,29 @@ pub fn default_socket() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #128: while a demo Client is connected, the demo Listening log gets only the plays of tracks it showed; a
+    /// hidden one (the song left from before) goes only into the real log.
+    #[tokio::test]
+    async fn the_demo_log_gets_only_the_tracks_a_demo_client_showed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut hub = Arc::into_inner(test_hub()).expect("one owner");
+        hub.store = Some(Arc::new(std::sync::Mutex::new(store::Store::open(dir.path()).unwrap())));
+        hub.demo_store = Some(Arc::new(std::sync::Mutex::new(store::Store::open_demo(dir.path()).unwrap())));
+        let hub = Arc::new(hub);
+        hub.demo_clients.store(1, std::sync::atomic::Ordering::SeqCst);
+        hub.demo_shown.lock().unwrap().insert("spotify:track:shown".into());
+        tokio::spawn(log_plays(hub.clone()));
+        tokio::task::yield_now().await;
+        let playing = |uri: &str| PlaybackState { status: proto::PlayStatus::Playing, item: Some(proto::Item { uri: uri.into(), name: "T".into(), artists: vec!["A".into()], duration_ms: 400, ..Default::default() }), speed: 1.0, ..Default::default() };
+        for uri in ["spotify:track:hidden", "spotify:track:shown", "spotify:track:last"] {
+            let _ = hub.events.send(Event::Playback(playing(uri)));
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        }
+        let now = proto::now_ms();
+        assert_eq!(hub.store.as_ref().unwrap().lock().unwrap().summary(now).unwrap().plays, 2, "the real log: both");
+        assert_eq!(hub.demo_store.as_ref().unwrap().lock().unwrap().summary(now).unwrap().plays, 1, "the demo log: only the shown one");
+    }
 
     /// #145: the Daemon knows it runs under the service manager from what systemd or launchd put in its environment.
     /// #145: only our own unit counts, never a unit the terminal (and so the Client) runs under.
@@ -1217,6 +1263,7 @@ mod tests {
             store: None,
             demo_store: None,
             demo_clients: Default::default(),
+            demo_shown: Default::default(),
             stopped_tasks: Default::default(),
             last_seen: None,
         })

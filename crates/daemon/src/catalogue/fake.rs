@@ -168,6 +168,15 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 })],
                 CatCmd::Lyrics { uri, .. } => vec![CatEvent::Lyrics(fake_lyrics(&uri))],
                 CatCmd::Artist(uri) => vec![CatEvent::Artist(fake_artist(&uri, &home))],
+                // demo Home's quiet look (#128): an artist's page, or a list's first page
+                CatCmd::Peek(uri) if uri.starts_with("spotify:artist:") => vec![CatEvent::Peeked { artist: Some(fake_artist(&uri, &home)), tracks: None, uri }],
+                CatCmd::Peek(uri) => {
+                    let first = fake_tracks(&uri).into_iter().find_map(|e| match e {
+                        CatEvent::Tracks(p) => Some(p),
+                        _ => None,
+                    });
+                    vec![CatEvent::Peeked { uri, tracks: first, artist: None }]
+                }
                 CatCmd::MoreTracks { uri, offset } => fake_tracks(&uri).into_iter().filter(|e| matches!(e, CatEvent::Tracks(p) if p.offset >= offset)).collect(),
                 CatCmd::FindShow(uri) => vec![CatEvent::EpisodeShow { episode: uri, show: singularity_proto::Link { name: "Fake Show".into(), uri: "spotify:show:fakeshow".into() } }],
                 CatCmd::Search(q) => vec![CatEvent::Search(fake_search(&q, &home))],
