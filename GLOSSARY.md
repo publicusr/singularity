@@ -359,9 +359,10 @@ A layout you saved ("Save design as…") is a Design of your own: it remembers t
 _Avoid_: skin, mode, look (that's the Disk look)
 
 **Delete design**:
-Deleting the Design on screen, after a yes/no (Ctrl+K, or Delete in the Design picker): "<Design> (edited)" gives way
-to its built-in Design, a Design of your own to the default Singularity. Built-in Designs have none. It replaced
-"Reset design" (#80, Q72/Q75).
+Deleting the Design on screen (Ctrl+K, or Delete in the Design picker): a Design of your own goes at once, to the
+default Singularity, and can be undone (Ctrl+Z, or the picker's Undo while it is open; Q151); "<Design> (edited)" is
+asked about first (yes/no) and gives way to its built-in Design. Built-in Designs have none. It replaced "Reset
+design" (#80, Q72/Q75).
 _Avoid_: reset design, remove layout
 
 **Free tiling**:

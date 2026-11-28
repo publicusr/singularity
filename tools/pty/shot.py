@@ -2281,9 +2281,10 @@ def layouts(t, out, env):
 
 
 def delete_design(t, out, env):
-    """#80: two Designs of your own saved; in the Design picker, Delete on one asks (n keeps it, the picker back as it
-    was), Delete then y deletes it (the picker back without it, on Singularity, whose hint has no Del); Ctrl+K → Delete
-    design… on the other asks, y deletes it. Prints the layouts folder after each step."""
+    """#80, Q151: two Designs of your own saved; in the Design picker, Delete on the one on screen deletes it at once
+    (the picker stays, without it, on Singularity, saying `Deleted "Other" · Undo`), `u` brings it back, Delete again
+    and a click on Undo too; Esc. Ctrl+K → Delete design… deletes "Other" at once (the bar offers Ctrl+Z), Ctrl+Z brings
+    it back. Then the picker on a built-in row (its hint without Del). Prints the layouts folder after each step."""
     files = lambda: sorted(os.listdir(f"{env['XDG_CONFIG_HOME']}/singularity/layouts"))
     t.pump(1.0)
     for name in (b"Mine", b"Other"):
@@ -2292,23 +2293,31 @@ def delete_design(t, out, env):
     print("saved:", files())
     t.send(b"\x0b", 0.3); t.send(b"pick a design", 0.3); t.send(b"\r", 0.6)
     t.shot(f"{out}/0-picker-on-own.png")
-    t.send(b"\x1b[3~", 0.5)
-    t.shot(f"{out}/1-asks.png")
-    t.send(b"n", 0.5)
-    t.shot(f"{out}/2-kept.png")
-    print("after n:", files())
-    t.send(b"\x1b[3~", 0.5); t.send(b"y", 0.8)
-    t.shot(f"{out}/3-deleted-picker-back.png")
-    print("after y:", files())
-    t.send(b"\x1b[F", 0.6)  # End: "Mine", the last
-    t.send(b"\r", 0.5)
+    t.send(b"\x1b[3~", 0.8)
+    t.shot(f"{out}/1-deleted-undo-line.png")
+    print("after Del:", files())
+    t.send(b"u", 0.8)
+    t.shot(f"{out}/2-undone.png")
+    print("after u:", files())
+    t.send(b"\x7f", 0.8)  # Backspace, a Mac's delete key
+    x, y = t.find("· Undo")
+    mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
+    t.shot(f"{out}/3-clicked-undo.png")
+    print("after Backspace and a click on Undo:", files())
+    t.send(b"\x1b", 0.6)
     t.send(b"\x0b", 0.3); t.send(b"delete design", 0.3)
     t.shot(f"{out}/4-palette.png")
-    t.send(b"\r", 0.5)
-    t.shot(f"{out}/5-palette-asks.png")
-    t.send(b"y", 0.8)
-    t.shot(f"{out}/6-deleted.png")
+    t.send(b"\r", 0.8)
+    t.shot(f"{out}/5-deleted-bar.png")
     print("after the palette's:", files())
+    t.send(b"\x1a", 0.8)  # Ctrl+Z
+    t.shot(f"{out}/6-ctrl-z-back.png")
+    print("after Ctrl+Z:", files())
+    t.send(b"\x0b", 0.3); t.send(b"pick a design", 0.3); t.send(b"\r", 0.6)
+    t.send(b"\x1b[H", 0.6)  # Home: Singularity, built in
+    t.shot(f"{out}/7-picker-built-in.png")
+    t.send(b"\x1b", 0.6)
+    print("at the end:", files())
     t.send(b"q", 0.5)
 
 

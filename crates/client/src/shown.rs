@@ -18,6 +18,14 @@ pub trait Store {
     fn write(&mut self, s: &Saved) -> Result<(), String>;
     /// Forget Design `id` (gone already: nothing happens). Err: why it couldn't be removed.
     fn remove(&mut self, id: &str) -> Result<(), String>;
+    /// Design `id`'s file as it is, to put back exactly if its delete is undone. Ok(None): this store keeps no text;
+    /// Err: it couldn't be read (an undo writes the Design anew).
+    fn text(&self, _id: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    /// Put a deleted Design back: its file's `text` as it was, or (no text) `s` written anew. Err: it can't be, or a
+    /// file of that name is there now (never written over).
+    fn put_back(&mut self, s: &Saved, text: Option<&str>) -> Result<(), String>;
 }
 
 /// The layouts folder: one `<id>.toml` per Design.
@@ -38,6 +46,31 @@ impl Store for Folder {
             _ => Ok(()),
         }
     }
+
+    fn text(&self, id: &str) -> Result<Option<String>, String> {
+        std::fs::read_to_string(self.0.join(format!("{id}.toml"))).map(Some).map_err(|e| e.to_string())
+    }
+
+    fn put_back(&mut self, s: &Saved, text: Option<&str>) -> Result<(), String> {
+        let path = self.0.join(format!("{}.toml", s.id));
+        if path.exists() {
+            return Err(format!("layouts/{}.toml is there again", s.id));
+        }
+        let Some(text) = text else { return self.write(s) };
+        std::fs::create_dir_all(&self.0).map_err(|e| e.to_string())?;
+        singularity_config::write_atomic(&path, text).map_err(|e| e.to_string())
+    }
+}
+
+/// A Design of the user's that Delete design removed, kept in memory only while its undo is offered (owner Q151): what
+/// it was, and its file's text to put back exactly. The file itself is gone at once, so a quit or crash meanwhile
+/// leaves the delete final: never half there, never shown twice.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Deleted {
+    pub saved: Saved,
+    text: Option<String>,
+    /// why its file's text couldn't be read (an undo then writes the Design anew, and says so)
+    unread: Option<String>,
 }
 
 /// What a change to the Shown Design asks of the App, in the order it happens: lines for the bar (the last one shows)
@@ -349,9 +382,14 @@ impl ShownDesign {
     /// built-in one is shown (the App puts its layout on screen): the "(edited)" copy's own, or the default
     /// (Singularity) for a Design of the user's. None: a built-in Design is on screen (nothing to delete). Err: its
     /// file couldn't be removed; nothing changed (it stays on screen), the bar says why.
-    pub fn delete(&mut self) -> Option<Result<Outcome, Outcome>> {
+    ///
+    /// A Design of the user's comes back as `Deleted`, for its undo (Q151); `undo_key`, the key the bar offers for it
+    /// (Ctrl+K's delete: the Design picker offers its own Undo).
+    pub fn delete(&mut self, undo_key: Option<&str>) -> Option<Result<(Outcome, Option<Deleted>), Outcome>> {
         let id = self.file.clone()?;
         let (name, edited) = self.find(&id).map_or((id.clone(), false), |s| (s.name.clone(), s.edited));
+        let text = self.store.as_ref().map_or(Ok(None), |st| st.text(&id));
+        let kept = self.find(&id).filter(|s| !s.edited).cloned().map(|saved| Deleted { text: text.clone().ok().flatten(), unread: text.err(), saved });
         let mut out = Outcome::default();
         if let Some(Err(e)) = self.store.as_mut().map(|st| st.remove(&id)) {
             out.say(format!("Couldn't delete \"{name}\": {e}"));
@@ -363,8 +401,29 @@ impl ShownDesign {
         }
         self.reread(&mut out);
         out.save_ui();
-        out.say(format!("Deleted \"{name}\" · back to {}", self.built_in().name));
-        Some(Ok(out))
+        match undo_key.filter(|_| kept.is_some()) {
+            Some(k) => out.say(format!("Deleted \"{name}\" · {k} to undo")),
+            None => out.say(format!("Deleted \"{name}\" · back to {}", self.built_in().name)),
+        }
+        Some(Ok((out, kept)))
+    }
+
+    /// Undo a Delete design of a Design of the user's (Q151): its file is put back as it was (the App puts it on
+    /// screen). Err: it can't be written, or a file with its name has appeared since (never written over); the bar
+    /// says why, and the App keeps `d` to try again.
+    pub fn undelete(&mut self, d: &Deleted) -> Result<Outcome, Outcome> {
+        let mut out = Outcome::default();
+        if let Some(Err(e)) = self.store.as_mut().map(|st| st.put_back(&d.saved, d.text.as_deref())) {
+            out.say(format!("Couldn't bring back \"{}\": {e}", d.saved.name));
+            return Err(out);
+        }
+        self.reread(&mut out);
+        out.save_ui();
+        match &d.unread {
+            Some(e) => out.say(format!("Brought back \"{}\" · its file couldn't be read ({e}), so it was written anew", d.saved.name)),
+            None => out.say(format!("Brought back \"{}\"", d.saved.name)),
+        }
+        Ok(out)
     }
 
     /// Undo or redo put `a` back on screen: `m`'s Design comes back with it, its file saying `a` again. Back to the
@@ -471,6 +530,13 @@ impl Store for Memory {
         }
         self.files.borrow_mut().remove(id);
         Ok(())
+    }
+
+    fn put_back(&mut self, s: &Saved, _text: Option<&str>) -> Result<(), String> {
+        if self.files.borrow().contains_key(&s.id) {
+            return Err(format!("layouts/{}.toml is there again", s.id));
+        }
+        self.write(s)
     }
 }
 

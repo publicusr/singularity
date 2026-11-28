@@ -436,6 +436,8 @@ pub enum Hit {
     Save(singularity_proto::Link),
     /// a row of the design or theme picker
     PickerItem(usize),
+    /// the Design picker's Undo, after a Design of the user's was deleted (Q151)
+    PickerUndo,
     /// Delete design's yes (true) or no (#80)
     DeleteAnswer(bool),
     /// a row of the "Add to playlist" picker (#53)
@@ -801,6 +803,8 @@ pub struct App {
     config_files: Option<ConfigFiles>,
     /// the Design on screen, its file and the user's own Designs (D89), and the user's themes (#18)
     pub shown: crate::shown::ShownDesign,
+    /// a Design of the user's that Ctrl+K just deleted, while Ctrl+Z can bring it back (Q151, `App::undo_layout`)
+    pub(crate) undelete: Option<crate::looks::Undelete>,
     pub user_themes: Vec<crate::theme::Theme>,
     pub theme_dir: Option<crate::looks::ThemeDir>,
     /// state of the Widgets other designs bring (rain, scope, top)
@@ -916,6 +920,7 @@ impl App {
             keymap: Default::default(),
             config_files: None,
             shown: Default::default(),
+            undelete: None,
             user_themes: vec![],
             theme_dir: None,
             widgets: Default::default(),
@@ -3051,7 +3056,7 @@ impl App {
                             self.play_top(i);
                         }
                     }
-                    Some(Hit::MenuItem(_) | Hit::MenuSplit(_) | Hit::PickerItem(_) | Hit::DeleteAnswer(_) | Hit::AddPick(_)) => {}
+                    Some(Hit::MenuItem(_) | Hit::MenuSplit(_) | Hit::PickerItem(_) | Hit::PickerUndo | Hit::DeleteAnswer(_) | Hit::AddPick(_)) => {}
                     Some(Hit::Swap(p, d)) => {
                         self.swap_widget(p, d);
                     }
@@ -3586,6 +3591,7 @@ impl App {
                             self.picker_select(i);
                             self.picker_keep();
                         }
+                        Some(Hit::PickerUndo) => self.picker_undo(),
                         _ => self.picker_cancel(),
                     },
                     // an answer; outside the box is a no; inside, elsewhere, nothing
