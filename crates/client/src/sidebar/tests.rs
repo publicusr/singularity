@@ -172,9 +172,9 @@ fn a_big_library_pane_shows_columns_that_keys_the_wheel_and_clicks_cross() {
     let cover = home.height;
     assert!(cover >= 4, "{cover}");
     assert_eq!(entry(&app, 1).unwrap().y, home.y + cover + 1);
-    // a glyph standing in for a cover is level with the name, not the tag under it
+    // a glyph standing in for a cover is level with the name, not the tag under it (Home's is its ⌂ as big as a cover)
     let line = |y: u16| s.lines().nth(y as usize).unwrap().to_string();
-    assert!(line(home.y).contains('⌂') && line(home.y).contains("Home"), "{}", line(home.y));
+    assert!(line(home.y).contains("Home"), "{}", line(home.y));
     let mix = entry(&app, 1).unwrap().y;
     assert!(line(mix).contains('≡') && line(mix).contains("Mix 0"), "{}", line(mix));
     assert!((mix + 1..mix + cover).all(|y| !line(y).contains('≡') && !line(y).contains('⌂')), "the glyph is on the name row only");
@@ -256,3 +256,85 @@ fn a_shrunk_pane_keeps_the_highlight_in_view() {
     assert!(entry(&app, 70).is_some(), "top {} visible {}", app.sidebar.top, app.sidebar.visible);
 }
 
+
+/// #76 (the owner, 2026-11-28: "a larger version of the og icon"): where the others have covers, Home has its ⌂ as big
+/// as one, drawn in braille on cells, in the colour its glyph had, on the row's own background: no square behind it.
+/// In one-line lists it stays the one-cell glyph.
+#[test]
+fn home_is_its_house_as_big_as_a_cover() {
+    for (w, h) in [(40, 30), (78, 24), (118, 38), (178, 47), (240, 60)] {
+        let mut app = app(3);
+        let th = crate::theme::builtin("singularity").unwrap();
+        let r = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(r);
+        draw(&mut buf, r, &mut app, &th);
+        let cover = Shape::of(w, h).cover;
+        let home = entry(&app, 0).unwrap();
+        let x = home.x + 1;
+        let slot = Rect::new(x, home.y, cover * 2, cover);
+        let dots = |y: u16| (slot.x..slot.right()).filter(|&x| ('\u{2801}'..='\u{28ff}').contains(&buf[(x, y)].symbol().chars().next().unwrap())).count();
+        let rows: Vec<usize> = (slot.y..slot.bottom()).map(dots).collect();
+        // the house fills the slot's height and over half its width (⌂ is a little taller than wide), narrowing to
+        // its roof
+        assert!(rows.iter().all(|&n| n > 0), "{w}×{h}: dots on every row {rows:?}");
+        assert!(*rows.last().unwrap() > slot.width as usize / 2, "{w}×{h}: the floor spans it {rows:?}");
+        // the top row of dots is the roof's peak: a single dot
+        let bit = |x: u16, y: u16, dy: u32| buf[(x, y)].symbol().chars().next().filter(|c| ('\u{2800}'..='\u{28ff}').contains(c)).map_or(0, |c| (c as u32 - 0x2800) & [0x09, 0x12, 0x24, 0xc0][dy as usize]);
+        let peak = (0..4 * cover as u32).find_map(|d| {
+            let n: u32 = (slot.x..slot.right()).map(|x| bit(x, slot.y + (d / 4) as u16, d % 4).count_ones()).sum();
+            (n > 0).then_some(n)
+        });
+        assert_eq!(peak, Some(1), "{w}×{h}: the roof's peak");
+        let row = |y: u16| (home.x..home.right()).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        assert!(!row(home.y).contains('⌂') && row(home.y).contains("Home"), "{}", row(home.y));
+        for y in slot.y..slot.bottom() {
+            for x in slot.x..slot.right() {
+                let c = &buf[(x, y)];
+                // Home is the page open: the accent, as its glyph was; the row's own background beside it (here the
+                // highlight's: Home is the highlighted row), no square of another colour behind
+                assert_eq!(c.bg, buf[(slot.right(), y)].bg, "{w}×{h} ({x}, {y})");
+                assert_eq!(c.bg, th.selection.color(), "{w}×{h} ({x}, {y})");
+                if c.symbol() != " " {
+                    assert_eq!(c.fg, th.accent.color(), "{w}×{h} ({x}, {y})");
+                }
+            }
+        }
+        // nothing else in the slot's column: the next entry starts below it as before
+        assert!(entry(&app, 1).unwrap().y >= slot.bottom());
+    }
+    // a one-line list keeps the glyph
+    let mut app = app(3);
+    let th = crate::theme::builtin("singularity").unwrap();
+    let r = Rect::new(0, 0, 30, 20);
+    let mut buf = Buffer::empty(r);
+    draw(&mut buf, r, &mut app, &th);
+    let home = entry(&app, 0).unwrap();
+    assert_eq!(buf[(home.x + 1, home.y)].symbol(), "⌂");
+}
+
+/// On the pixel tier Home's ⌂ is the terminal font's own, drawn big over the slot's cells (big text's way), its ink
+/// centred in four fifths of the slot. A font without ⌂ (the bundled one tests use) leaves the braille house.
+#[test]
+fn on_the_pixel_tier_home_is_the_font_s_own_house_drawn_big() {
+    // a made-up ⌂ whose ink is 0.6 by 0.7 em, its left edge 0.1 em from the pen and its bottom on the baseline
+    let ink = |px: f32| Some((0.1 * px, 0.0, 0.6 * px, 0.7 * px));
+    let (w, h) = (80, 80);
+    let (px, pen, baseline) = super::centred(w, h, ink).unwrap();
+    let (xmin, _, iw, ih) = ink(px).unwrap();
+    assert!((ih - 0.8 * h as f32).abs() <= 1.0, "four fifths of the height: {ih}");
+    let (left, top) = (pen + xmin, baseline - ih);
+    assert!((left - (w as f32 - iw - left)).abs() <= 1.0 && (top - (h as f32 - ih - top)).abs() <= 1.0, "centred: {left} {top}");
+    // a wide, short slot: the width caps it
+    let (px, ..) = super::centred(40, 400, ink).unwrap();
+    assert!(0.6 * px <= 0.8 * 40.0 + 0.01);
+    assert_eq!(super::centred(80, 80, |_| None), None);
+
+    assert!(!crate::bigtext::covers("⌂"), "the bundled font has no ⌂ (if it gets one, check this test's cells)");
+    let mut app = app(3);
+    app.cell_px = Some((10.0, 20.0));
+    app.kitty = Some(crate::gfx::Kitty::new(false));
+    let s = render(&mut app);
+    let home = entry(&app, 0).unwrap();
+    let line = s.lines().nth(home.y as usize + home.height as usize - 1).unwrap();
+    assert!(line.chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)), "{line}");
+}

@@ -86,6 +86,12 @@ pub fn advance(c: char, px: f32, bold: bool) -> f32 {
     font_for(c, bold).map_or(0.0, |f| f.metrics(c, px).advance_width)
 }
 
+/// The ink of `c` drawn at `px`: its left edge from the pen, its bottom over the baseline, its width and height.
+pub fn ink(c: char, px: f32) -> Option<(f32, f32, f32, f32)> {
+    let m = font_for(c, false)?.metrics(c, px);
+    Some((m.xmin as f32, m.ymin as f32, m.width as f32, m.height as f32))
+}
+
 /// `s`'s width at `px`.
 pub fn width(s: &str, px: f32, bold: bool) -> f32 {
     s.chars().map(|c| advance(c, px, bold)).sum()
