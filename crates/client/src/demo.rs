@@ -42,6 +42,10 @@ pub const LIKED: &str = "Liked Songs";
 const MAX_LISTS: usize = 12;
 const MAX_ALBUMS: usize = 20;
 const MAX_ARTISTS: usize = 12;
+/// How many of each Demo playlist's songs Home ranks albums and artists by (a list's first page).
+const RANKED_SONGS: usize = 100;
+/// How many times a look for Home is made (the first, and one more after a failure, on the next library).
+const TRIES: u8 = 2;
 
 static ON: AtomicBool = AtomicBool::new(false);
 
@@ -243,14 +247,31 @@ pub struct Demo {
     shown_playback: Option<PlaybackState>,
     /// the library as shown (the Demo set), what Home is built from
     shown: Vec<LibraryItem>,
-    /// the Demo playlists' songs, as far as they've come (their albums and artists make Home's Shelves)
+    /// the Demo playlists' songs (their albums and artists make Home's Shelves), and a list's pages while a reload
+    /// comes in (the old ones stay until it's whole)
     songs: HashMap<String, Vec<TrackRow>>,
+    loading: HashMap<String, Vec<TrackRow>>,
+    /// every song of the Demo playlists known so far, and those learned as coming up from a shown context: songs of
+    /// the Demo set, shown when they play
+    song_uris: HashSet<String>,
+    learned: HashSet<String>,
     /// an artist's picture, once its page came
     artist_images: HashMap<String, Option<String>>,
-    /// track lists and artist pages asked for, so each is asked once
-    asked: HashSet<String>,
+    /// the artists Home shows from the songs (kept from the last change)
+    wanted_artists: Vec<(String, String)>,
+    /// looks asked for Home (playlists' first pages, artist pages), with how often; those that failed, and those of
+    /// them to ask once more (on the next library); how many artist pages were asked in all (at most [`MAX_ARTISTS`]
+    /// a session)
+    asked: HashMap<String, u8>,
+    failed: HashSet<String>,
+    due: HashSet<String>,
+    artist_asks: usize,
     /// what this Client asked to play or queue in this session: shown when it plays
     played: HashSet<String>,
+    /// tracks shown as playing that the Daemon was told of (its demo Listening log counts only those)
+    reported: HashSet<String>,
+    /// a list this Client just started without naming the song: its first song is one this Client played
+    starting: Option<String>,
     /// when the Daemon's last Home feed was fetched (demo Home takes its time, not its Shelves)
     home_fetched: u64,
     /// Home and the player changed with what came (a library, a Demo playlist's songs, an artist's picture)
@@ -259,12 +280,13 @@ pub struct Demo {
     replay: bool,
 }
 
-/// What a demo Client does after an event: Home and the player as they are now, and what to fetch for Home.
+/// What a demo Client does after an event: Home and the player as they are now, and what to send the Daemon (looks
+/// for Home, a track shown as playing).
 #[derive(Debug, Default)]
 pub struct FollowUp {
     pub home: Option<HomeFeed>,
     pub playback: Option<PlaybackState>,
-    pub fetch: Vec<Command>,
+    pub send: Vec<Command>,
 }
 
 impl Demo {
@@ -302,22 +324,38 @@ impl Demo {
             Event::Library(l) => {
                 self.raw_library = Some(l.clone());
                 self.changed = true;
+                // what failed is looked at once more
+                let again: Vec<String> = self.failed.iter().filter(|u| self.asked.get(*u).is_some_and(|n| *n < TRIES)).cloned().collect();
+                for u in again {
+                    self.failed.remove(&u);
+                    self.due.insert(u);
+                }
                 Event::Library(self.library(l))
             }
             Event::Tracks(p) => {
-                self.keep_songs(&p);
+                self.keep_page(&p);
                 Event::Tracks(self.tracks(p))
+            }
+            Event::Peeked { uri, tracks, artist } => {
+                match (tracks, artist) {
+                    (Some(p), _) if !self.songs.contains_key(&uri) => self.keep_page(&p),
+                    (_, Some(a)) => self.keep_artist(&a),
+                    (None, None) => {
+                        self.failed.insert(uri.clone());
+                    }
+                    _ => {}
+                }
+                Event::Peeked { uri, tracks: None, artist: None }
             }
             Event::Search(r) => Event::Search(self.search(r)),
             Event::Artist(p) => {
-                if self.asked.contains(&p.uri) && self.artist_images.insert(p.uri.clone(), p.image_url.clone()) != Some(p.image_url.clone()) {
-                    self.changed = true;
-                }
+                self.keep_artist(&p);
                 Event::Artist(self.artist(p))
             }
             Event::Devices { devices } => Event::Devices { devices: devices.into_iter().map(|d| self.device(d)).collect() },
             Event::Jam { jam } => Event::Jam { jam: jam.map(|j| self.jam(j)) },
             Event::Playback(p) => {
+                self.learn(&p);
                 self.raw_playback = Some(p.clone());
                 let shown = self.playback(p);
                 self.shown_playback = Some(shown.clone());
@@ -348,11 +386,13 @@ impl Demo {
     /// The library again, after something that decides it changed (a playlist made here): None before the first.
     pub fn library_again(&mut self) -> Option<Library> {
         let l = self.raw_library.clone()?;
+        self.changed = true;
         Some(self.library(l))
     }
 
-    /// After an event: Home and the player again if what decides them changed (nothing before the library), and the
-    /// Demo playlists' songs and artists' pages Home still needs.
+    /// After an event: Home and the player again if what decides them changed (nothing before the library), what Home
+    /// still needs looked at (the Demo playlists' first pages, then, once they're all in, the artists' pages), and
+    /// the Daemon told of a track shown as playing.
     pub fn follow_up(&mut self) -> FollowUp {
         if !self.knows_library() {
             return FollowUp::default();
@@ -360,6 +400,8 @@ impl Demo {
         let mut up = FollowUp::default();
         let replay = std::mem::take(&mut self.replay);
         if std::mem::take(&mut self.changed) {
+            self.song_uris = self.songs.values().flatten().map(|t| t.uri.clone()).collect();
+            self.wanted_artists = self.artists();
             up.home = Some(self.home());
         }
         if (replay || up.home.is_some())
@@ -370,17 +412,36 @@ impl Demo {
             up.playback = Some(p);
         }
         let lists: Vec<String> = self.demo_playlists().take(MAX_LISTS).map(|i| i.uri.clone()).collect();
-        for uri in lists {
-            if !self.songs.contains_key(&uri) && self.asked.insert(uri.clone()) {
-                up.fetch.push(Command::GetTracks { uri });
+        for uri in &lists {
+            if !self.songs.contains_key(uri) && (!self.asked.contains_key(uri) || self.due.contains(uri)) {
+                up.send.push(self.ask(uri));
             }
         }
-        for (uri, ..) in self.artists() {
-            if !self.artist_images.contains_key(&uri) && self.asked.insert(uri.clone()) {
-                up.fetch.push(Command::GetArtist { uri });
+        // the artists once every list has answered (or failed for good): until then they're still changing
+        if lists.iter().all(|u| self.songs.contains_key(u) || (self.failed.contains(u) && !self.due.contains(u))) {
+            for (uri, _) in self.wanted_artists.clone() {
+                if self.artist_images.contains_key(&uri) {
+                    continue;
+                }
+                if self.due.contains(&uri) || (!self.asked.contains_key(&uri) && self.artist_asks < MAX_ARTISTS) {
+                    self.artist_asks += !self.asked.contains_key(&uri) as usize;
+                    up.send.push(self.ask(&uri));
+                }
             }
+        }
+        if let Some(i) = self.shown_playback.as_ref().and_then(|p| p.item.as_ref())
+            && self.reported.insert(i.uri.clone())
+        {
+            up.send.push(Command::ShownInDemo { uri: i.uri.clone() });
         }
         up
+    }
+
+    /// A look for Home at `uri`, counted.
+    fn ask(&mut self, uri: &str) -> Command {
+        *self.asked.entry(uri.to_string()).or_default() += 1;
+        self.due.remove(uri);
+        Command::Peek { uri: uri.to_string() }
     }
 
     /// A command this Client sends: what it plays or queues shows in the player when it's on.
@@ -395,6 +456,12 @@ impl Demo {
                 self.replay = true;
             }
         }
+        self.starting = match c {
+            Command::Play { uri: Some(u) } if !u.starts_with("spotify:track:") && !u.starts_with("spotify:episode:") => Some(u.clone()),
+            Command::PlayFrom { context_uri, track_uri: None, .. } => Some(context_uri.clone()),
+            Command::Play { .. } | Command::PlayFrom { .. } => None,
+            _ => self.starting.take(),
+        };
     }
 
     /// The Demo set's playlists, in the library's order.
@@ -402,20 +469,58 @@ impl Demo {
         self.shown.iter().filter(|i| i.kind == "playlist")
     }
 
-    /// A page of a Demo playlist's songs, kept for Home.
-    fn keep_songs(&mut self, p: &TrackPage) {
+    /// A page of a Demo playlist's songs: kept once the list is whole (a reload's pages replace the old ones only
+    /// then), or at once when it's a first look.
+    fn keep_page(&mut self, p: &TrackPage) {
         if !self.demo_playlists().any(|i| i.uri == p.uri) {
             return;
         }
-        let rows = self.songs.entry(p.uri.clone()).or_default();
-        rows.truncate(p.offset as usize);
+        self.failed.remove(&p.uri);
+        let rows = self.loading.entry(p.uri.clone()).or_default();
+        if p.offset == 0 {
+            rows.clear();
+        }
+        if rows.len() != p.offset as usize {
+            // (a page out of order: wait for the next reload)
+            self.loading.remove(&p.uri);
+            return;
+        }
         rows.extend(p.tracks.iter().cloned());
-        self.changed = true;
+        let first_look = !self.songs.contains_key(&p.uri);
+        if rows.len() >= p.total as usize || first_look {
+            let rows = if rows.len() >= p.total as usize { self.loading.remove(&p.uri).unwrap_or_default() } else { rows.clone() };
+            self.songs.insert(p.uri.clone(), rows);
+            self.changed = true;
+        }
     }
 
-    /// The Demo playlists' songs (those Home reads), in order.
+    /// An artist's page: its picture, if Home shows the artist.
+    fn keep_artist(&mut self, a: &singularity_proto::ArtistPage) {
+        if self.wanted_artists.iter().any(|(u, _)| *u == a.uri) && self.artist_images.get(&a.uri) != Some(&a.image_url) {
+            self.artist_images.insert(a.uri.clone(), a.image_url.clone());
+            self.failed.remove(&a.uri);
+            self.changed = true;
+        }
+    }
+
+    /// Songs coming up from a context the player shows are the Demo set's too (a long Demo playlist, Liked Songs): they
+    /// show when they play. Songs queued by hand aren't learned.
+    fn learn(&mut self, p: &PlaybackState) {
+        // the first song of a list this Client started (Spotify plays it before anything queued)
+        if let (Some(s), Some(i)) = (&self.starting, &p.item)
+            && p.context_uri.as_ref() == Some(s)
+        {
+            self.learned.insert(i.uri.clone());
+            self.starting = None;
+        }
+        if self.ctx_shown(p.context_uri.as_deref().unwrap_or("")) {
+            self.learned.extend(p.queue.iter().filter(|e| e.source == "context").map(|e| e.item.uri.clone()));
+        }
+    }
+
+    /// The Demo playlists' songs Home ranks by (each list's first page), in order.
     fn demo_songs(&self) -> impl Iterator<Item = &TrackRow> {
-        self.demo_playlists().take(MAX_LISTS).filter_map(|i| self.songs.get(&i.uri)).flatten().filter(|t| t.playable)
+        self.demo_playlists().take(MAX_LISTS).filter_map(|i| self.songs.get(&i.uri)).flat_map(|rows| rows.iter().take(RANKED_SONGS)).filter(|t| t.playable)
     }
 
     /// Things the Demo playlists' songs are on (an album, an artist), the most songs first (then the first seen), as
@@ -517,20 +622,34 @@ impl Demo {
         HomeFeed { fetched_unix_ms: self.home_fetched, shelves }
     }
 
-    /// The player as this Client may show it (Q156): a song shows once it's from the Demo set (its context is, or it's
-    /// one of the Demo playlists' songs) or this Client played or queued it (or its list) in this session; any other
-    /// is as if nothing played, even while it plays on. Play, pause, skip and volume still work. Shown, the queue keeps
-    /// the context's songs when the context shows, and the songs queued that show on their own; a context's name
-    /// outside the Demo set is "a playlist".
+    /// A context whose own songs show: in the Demo set, played from this Client, or Liked Songs when it's in the set.
+    fn ctx_shown(&self, ctx: &str) -> bool {
+        !ctx.is_empty() && (self.set.contains(ctx) || self.played.contains(ctx) || (self.file.liked && (ctx.ends_with(":collection") || ctx == crate::tracks::LIKED)))
+    }
+
+    /// A song of the Demo set, or one this Client played or queued: one of the Demo playlists' songs, on an album or by
+    /// an artist `demo.toml` lists, or seen coming up from a shown context.
+    fn song_shown(&self, i: &singularity_proto::Item) -> bool {
+        self.played.contains(&i.uri)
+            || self.song_uris.contains(&i.uri)
+            || self.learned.contains(&i.uri)
+            || i.album_uri.as_ref().is_some_and(|a| self.set.contains(a))
+            || i.artist_uris.iter().any(|a| self.set.contains(a))
+    }
+
+    /// The player as this Client may show it (Q156): a song shows only when it is itself a song of the Demo set or one
+    /// this Client played or queued in this session (its context being in the Demo set isn't enough: a song queued
+    /// on the phone plays under it); any other is as if nothing played, even while it plays on. Play, pause, skip
+    /// and volume still work. Shown, the queue keeps the context's next songs when the context shows, and the other
+    /// songs that show on their own; a context's name outside the Demo set is "a playlist".
     pub fn playback(&self, mut p: PlaybackState) -> PlaybackState {
-        let ctx = p.context_uri.as_deref().unwrap_or("");
-        let ctx_shown = !ctx.is_empty() && (self.set.contains(ctx) || self.played.contains(ctx) || (self.file.liked && (ctx.ends_with(":collection") || ctx == crate::tracks::LIKED)));
-        let song_shown = |uri: &str| self.played.contains(uri) || self.demo_songs().any(|t| t.uri == uri);
-        if !p.item.as_ref().is_some_and(|i| ctx_shown || song_shown(&i.uri)) {
+        let ctx = p.context_uri.clone().unwrap_or_default();
+        if !p.item.as_ref().is_some_and(|i| self.song_shown(i)) {
             return PlaybackState { status: p.status, timestamp_ms: p.timestamp_ms, volume: p.volume, shuffle: p.shuffle, repeat: p.repeat, ..Default::default() };
         }
-        p.queue.retain(|e| song_shown(&e.item.uri) || (ctx_shown && e.source != "queue"));
-        if p.context_name.is_some() && !self.context_shown(ctx) {
+        let ctx_shown = self.ctx_shown(&ctx);
+        p.queue.retain(|e| self.song_shown(&e.item) || (ctx_shown && e.source == "context"));
+        if p.context_name.is_some() && !self.context_shown(&ctx) {
             p.context_name = Some(SOME_PLAYLIST.into());
         }
         p

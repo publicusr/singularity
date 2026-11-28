@@ -675,7 +675,8 @@ def demo(t, out, env):
 
     t.pump(2.5)
     look("home")
-    print("   carried-over song drawn:", any("Secret Song" in l for l in t.screen.display))
+    if on == any("Secret Song" in l for l in t.screen.display):
+        sys.exit(f"the carried-over song is {'drawn' if on else 'missing'}")
     t.send(b"\x1b[B", 0.2)  # a key, so the Home view has a selection; then the shelves below
     for _ in range(6):
         t.send(b"\x1b[B", 0.1)
@@ -690,7 +691,17 @@ def demo(t, out, env):
             for _ in range(2):  # double-click plays it
                 mouse(t, 0, sx[0] + 2, sx[1], wait=0.03); mouse(t, 0, sx[0] + 2, sx[1], release=True, wait=0.05)
             look("playing-demo-song", 1.5)
-            print("   playing shown:", any("Fake Track 003" in l and ("—" in l or "♪" in l) for l in t.screen.display))
+            if not any("Track 2" in l and "—" in l for l in t.screen.display):
+                sys.exit("the Demo playlist's song played from here isn't shown")
+            # next: the song queued in the normal session plays, under the Demo playlist; demo mode still hides it
+            t.send(b"n", 0.2)
+            look("queued-secret-plays", 1.0)
+            if on and not any("now-playing --follow  # nothing playing" in l for l in t.screen.display):
+                sys.exit("the song queued in the normal session is shown")
+            t.send(b"n", 0.2)
+            look("next-demo-song", 1.0)
+            if not any("Track 1" in l and "—" in l for l in t.screen.display):
+                sys.exit("the Demo playlist's next song isn't shown")
         mouse(t, 2, at[0] + 2, at[1], wait=0.4)
         look("library-menu")
         t.send(b"\x1b", 0.2)

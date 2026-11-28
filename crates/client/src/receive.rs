@@ -123,7 +123,7 @@ impl App {
     }
 
     /// Demo mode (Q155–Q157): Home and the player again when what decides them came (the library, a Demo playlist's
-    /// songs, an artist's picture), and what Home still needs fetched.
+    /// songs, an artist's picture), what Home still needs looked at, and the track shown as playing for the Daemon.
     fn demo_follow_up(&mut self) {
         let Some(up) = self.demo.as_mut().map(|d| d.follow_up()) else { return };
         if let Some(h) = up.home {
@@ -136,7 +136,7 @@ impl App {
         if let Some(p) = up.playback {
             self.playback_event(p);
         }
-        for c in up.fetch {
+        for c in up.send {
             self.send(c);
         }
     }

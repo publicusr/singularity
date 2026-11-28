@@ -187,8 +187,17 @@ fn cards(h: &HomeFeed, title: &str) -> Vec<String> {
     h.shelves.iter().find(|s| s.title == title).map(|s| s.cards.iter().map(|c| c.name.clone()).collect()).unwrap_or_default()
 }
 
+fn peeked(p: TrackPage) -> Event {
+    Event::Peeked { uri: p.uri.clone(), tracks: Some(p), artist: None }
+}
+
+fn peek(uri: &str) -> Command {
+    Command::Peek { uri: uri.into() }
+}
+
 /// Q155, Q157: Home is the Demo set alone, whatever the account's Home holds: the Demo playlists, then the albums and
-/// then the artists their songs are on (the most songs first, each once), then Liked Songs when it's on.
+/// then the artists their songs are on (the most songs first, each once), then Liked Songs when it's on. Review of
+/// #159: a first page each (a quiet look), the artists' pages only once every list is in.
 #[test]
 fn home_is_built_from_the_demo_set_alone() {
     let mut d = Demo::new(DemoFile { liked: true, ..Default::default() }, redactor());
@@ -202,12 +211,13 @@ fn home_is_built_from_the_demo_set_alone() {
     assert_eq!(h.fetched_unix_ms, 7);
     assert_eq!(cards(&h, PLAYLISTS), ["Showcase", "Road Trip", "Deep Cuts"]);
     let up = d.follow_up();
-    assert_eq!(up.fetch, ["spotify:playlist:show1", "spotify:playlist:friend", "spotify:playlist:deep"].map(|u| Command::GetTracks { uri: u.into() }), "the Demo playlists' songs, asked once");
-    assert!(d.follow_up().fetch.is_empty());
-    d.scrub(Event::Tracks(songs("spotify:playlist:show1", &[("a", "Orbits", &["Nova"]), ("b", "Tides", &["Mira", "Nova"])])));
-    d.scrub(Event::Tracks(songs("spotify:playlist:friend", &[("c", "Tides", &["Mira"]), ("a", "Orbits", &["Nova"]), ("d", "Tides", &["Mira"])])));
-    d.scrub(Event::Tracks(songs("spotify:playlist:diary", &[("x", "Secret Album", &["Secret Artist"])])));
+    assert_eq!(up.send, ["spotify:playlist:show1", "spotify:playlist:friend", "spotify:playlist:deep"].map(peek), "a look at each Demo playlist, once");
+    assert!(d.follow_up().send.is_empty());
+    d.scrub(peeked(songs("spotify:playlist:show1", &[("a", "Orbits", &["Nova"]), ("b", "Tides", &["Mira", "Nova"])])));
+    d.scrub(peeked(songs("spotify:playlist:friend", &[("c", "Tides", &["Mira"]), ("a", "Orbits", &["Nova"]), ("d", "Tides", &["Mira"])])));
+    d.scrub(peeked(songs("spotify:playlist:diary", &[("x", "Secret Album", &["Secret Artist"])])));
     let up = d.follow_up();
+    assert!(up.send.is_empty(), "no artist pages while a list is still out: {:?}", up.send);
     let h = up.home.expect("Home again with the songs");
     assert_eq!(titles(&h), [PLAYLISTS, ALBUMS, ARTISTS, LIKED]);
     assert_eq!(cards(&h, ALBUMS), ["Tides", "Orbits"], "three songs on Tides, two on Orbits; not the private playlist's");
@@ -216,12 +226,43 @@ fn home_is_built_from_the_demo_set_alone() {
     assert_eq!((tides.uri.as_str(), tides.subtitle.as_str(), tides.image_url.as_deref(), tides.kind.as_str()), ("spotify:album:Tides", "Mira, Nova", Some("https://i.example/Tides"), "album"));
     assert_eq!(cards(&h, LIKED), ["Liked Songs"]);
     assert_eq!(h.shelves[3].cards[0].uri, "spotify:collection");
-    assert_eq!(up.fetch, ["Nova", "Mira"].map(|a| Command::GetArtist { uri: format!("spotify:artist:{a}") }), "the artists' pictures");
-    assert!(d.follow_up().home.is_none(), "nothing new: Home stays");
-    d.scrub(Event::Artist(singularity_proto::ArtistPage { uri: "spotify:artist:Nova".into(), name: "Nova".into(), image_url: Some("https://i.example/nova".into()), ..Default::default() }));
+    // the last list fails: the artists' pages are asked for now, and the list again on the next library
+    d.scrub(Event::Peeked { uri: "spotify:playlist:deep".into(), tracks: None, artist: None });
+    let up = d.follow_up();
+    assert_eq!(up.send, ["Nova", "Mira"].map(|a| peek(&format!("spotify:artist:{a}"))), "the artists' pictures");
+    assert!(d.follow_up().home.is_none() && d.follow_up().send.is_empty(), "nothing new: Home stays, nothing asked again");
+    d.scrub(Event::Peeked { uri: "spotify:artist:Mira".into(), tracks: None, artist: None });
+    d.scrub(Event::Library(library()));
+    let up = d.follow_up();
+    assert_eq!(up.send, [peek("spotify:playlist:deep")], "the failed list, once more (the artists wait for it)");
+    d.scrub(Event::Peeked { uri: "spotify:playlist:deep".into(), tracks: None, artist: None });
+    assert_eq!(d.follow_up().send, [peek("spotify:artist:Mira")], "then the failed artist, once more");
+    d.scrub(Event::Peeked { uri: "spotify:artist:Mira".into(), tracks: None, artist: None });
+    d.scrub(Event::Library(library()));
+    assert!(d.follow_up().send.is_empty(), "and not a third time");
+    d.scrub(Event::Peeked { uri: "spotify:artist:Nova".into(), tracks: None, artist: Some(singularity_proto::ArtistPage { uri: "spotify:artist:Nova".into(), name: "Nova".into(), image_url: Some("https://i.example/nova".into()), ..Default::default() }) });
     let h = d.follow_up().home.unwrap();
     assert_eq!(h.shelves[2].cards[0].image_url.as_deref(), Some("https://i.example/nova"));
     assert_eq!(h.shelves[2].cards[0].kind, "artist");
+}
+
+/// Review of #159: a Demo playlist's pages sent again (the list opened) don't shrink Home's Shelves while they come.
+#[test]
+fn a_reload_keeps_the_songs_until_it_is_whole() {
+    let mut d = demo();
+    d.scrub(Event::Library(library()));
+    let rows: Vec<(String, String)> = (0..4).map(|i| (format!("t{i}"), format!("Album {i}"))).collect();
+    let all: Vec<(&str, &str, &[&str])> = rows.iter().map(|(t, a)| (t.as_str(), a.as_str(), &["Nova"][..])).collect();
+    d.scrub(peeked(songs("spotify:playlist:show1", &all)));
+    assert_eq!(cards(&d.follow_up().home.unwrap(), ALBUMS).len(), 4);
+    let mut first = songs("spotify:playlist:show1", &all[..2]);
+    first.total = 4;
+    d.scrub(Event::Tracks(first));
+    assert!(d.follow_up().home.is_none(), "half a reload changes nothing");
+    let mut second = songs("spotify:playlist:show1", &all[2..]);
+    (second.offset, second.total) = (2, 4);
+    d.scrub(Event::Tracks(second));
+    assert_eq!(cards(&d.follow_up().home.unwrap(), ALBUMS).len(), 4);
 }
 
 /// Q157: albums and artists `demo.toml` lists come first on their Shelves, each once; the Shelves have caps.
@@ -233,7 +274,8 @@ fn listed_albums_lead_and_the_shelves_are_capped() {
     let rows: Vec<(&str, &str, &[&str])> = many.iter().map(|(t, a)| (t.as_str(), a.as_str(), &["Nova"][..])).collect();
     let mut page = songs("spotify:playlist:show1", &rows);
     page.tracks.push(TrackRow { album_uri: Some("spotify:album:a1".into()), album: "Orbits".into(), playable: true, ..page.tracks[0].clone() });
-    d.scrub(Event::Tracks(page));
+    page.total += 1;
+    d.scrub(peeked(page));
     let h = d.follow_up().home.unwrap();
     let albums = cards(&h, ALBUMS);
     assert_eq!(albums.len(), 20);
@@ -273,7 +315,8 @@ fn shown(d: &mut Demo, p: PlaybackState) -> PlaybackState {
     p
 }
 
-/// Q156: the song from the last normal session stays hidden, even while it plays on; transport state stays.
+/// Q156: the song from the last normal session stays hidden, even while it plays on; transport state stays. Review of
+/// #159: a Demo-set context isn't enough, the song itself must be the Demo set's.
 #[test]
 fn the_player_is_empty_until_a_demo_set_song_plays() {
     let mut d = demo();
@@ -281,20 +324,41 @@ fn the_player_is_empty_until_a_demo_set_song_plays() {
     assert_eq!((hidden.item.as_ref(), hidden.context_uri.as_ref(), hidden.context_name.as_ref(), hidden.queue.len()), (None, None, None, 0), "nothing identifying, before the library too");
     assert_eq!((hidden.status, hidden.volume), (singularity_proto::PlayStatus::Playing, 70), "play/pause and volume still work");
     d.scrub(Event::Library(library()));
+    d.scrub(peeked(songs("spotify:playlist:show1", &[("s1", "Orbits", &["Nova"])])));
+    d.follow_up();
     assert!(shown(&mut d, playing("spotify:track:real", "spotify:album:public")).item.is_none(), "an album outside the Demo set too");
-    // a Demo playlist plays (on the phone, say): it shows, its own songs and autoplay too, the old queue doesn't
+    // a song queued elsewhere, playing under a Demo playlist: still hidden
+    assert!(shown(&mut d, playing("spotify:track:queued", "spotify:playlist:show1")).item.is_none(), "the context alone isn't enough");
+    // a Demo playlist's song (played on the phone, say): it shows with the list's next songs; not the queued or autoplay ones
     let p = shown(&mut d, playing("spotify:track:s1", "spotify:playlist:show1"));
     assert_eq!(p.item.unwrap().name, "Real Song");
     assert_eq!(p.context_name.as_deref(), Some("Real List"));
-    assert_eq!(p.queue.iter().map(|e| e.item.uri.as_str()).collect::<Vec<_>>(), ["spotify:track:next", "spotify:track:auto"]);
-    // back to a private playlist: hidden again
+    assert_eq!(p.queue.iter().map(|e| e.item.uri.as_str()).collect::<Vec<_>>(), ["spotify:track:next"]);
+    // the next song came up from the Demo playlist: it shows when it plays (a long list's later songs, Liked Songs)
+    assert!(shown(&mut d, playing("spotify:track:next", "spotify:playlist:show1")).item.is_some());
+    // back to a private playlist: hidden again; the Demo playlist's song from it shows, without its next songs
     assert!(shown(&mut d, playing("spotify:track:real", "spotify:playlist:diary")).item.is_none());
-    // a Demo playlist's song from another context shows, without that context's songs
-    d.scrub(Event::Tracks(songs("spotify:playlist:show1", &[("s1", "Orbits", &["Nova"])])));
-    let p = shown(&mut d, playing("spotify:track:s1", "spotify:playlist:diary"));
+    let mut p = playing("spotify:track:s1", "spotify:playlist:diary");
+    for e in &mut p.queue {
+        e.item.uri += "-private";
+    }
+    let p = shown(&mut d, p);
     assert!(p.item.is_some());
     assert_eq!(p.context_name.as_deref(), Some(SOME_PLAYLIST));
     assert!(p.queue.is_empty(), "the private playlist's next songs stay hidden");
+}
+
+/// Review of #159: songs of an album or artist `demo.toml` lists show, queued ones too.
+#[test]
+fn songs_of_listed_albums_show_even_queued() {
+    let mut d = Demo::new(DemoFile { library: vec!["spotify:album:a1".into()], ..Default::default() }, redactor());
+    d.scrub(Event::Library(library()));
+    let mut p = playing("spotify:track:x", "spotify:album:a1");
+    p.item.as_mut().unwrap().album_uri = Some("spotify:album:a1".into());
+    p.queue[0].item.album_uri = Some("spotify:album:a1".into());
+    let p = shown(&mut d, p);
+    assert!(p.item.is_some());
+    assert_eq!(p.queue.iter().map(|e| e.item.uri.as_str()).collect::<Vec<_>>(), ["spotify:track:queued", "spotify:track:next"]);
 }
 
 /// Q156: what this Client plays or queues shows (a search result, say); Liked Songs only when it's in the Demo set.
@@ -307,12 +371,30 @@ fn what_this_client_plays_shows() {
     let p = shown(&mut d, playing("spotify:track:found", "spotify:album:x"));
     assert!(p.item.is_some());
     assert_eq!(p.queue.iter().map(|e| e.item.uri.as_str()).collect::<Vec<_>>(), ["spotify:track:queued"], "the queued song; the album's next ones weren't asked for");
-    d.sent(&Command::PlayFrom { context_uri: "spotify:playlist:public".into(), index: 3, track_uri: None });
-    assert_eq!(shown(&mut d, playing("spotify:track:any", "spotify:playlist:public")).queue.len(), 3);
-    assert!(shown(&mut d, playing("spotify:track:l", "spotify:user:zed:collection")).item.is_none(), "Liked Songs isn't in this Demo set");
+    d.sent(&Command::PlayFrom { context_uri: "spotify:playlist:public".into(), index: 3, track_uri: Some("spotify:track:any".into()) });
+    assert_eq!(shown(&mut d, playing("spotify:track:any", "spotify:playlist:public")).queue.len(), 2, "the queued song and the list's next one");
+    // a list started from here without naming the song: its first song
+    d.sent(&Command::Play { uri: Some("spotify:playlist:found".into()) });
+    assert!(shown(&mut d, playing("spotify:track:first", "spotify:playlist:found")).item.is_some());
     let mut d = Demo::new(DemoFile { liked: true, ..Default::default() }, redactor());
     d.scrub(Event::Library(library()));
-    assert!(shown(&mut d, playing("spotify:track:l", "spotify:user:zed:collection")).item.is_some());
+    assert!(shown(&mut d, playing("spotify:track:l", "spotify:user:zed:collection")).item.is_none(), "Liked Songs: a song only once it came up from it");
+    assert!(shown(&mut d, playing("spotify:track:next", "spotify:user:zed:collection")).item.is_some());
+}
+
+/// Review of #159: the Daemon is told of each track shown as playing (the demo Listening log counts only those), once.
+#[test]
+fn the_daemon_hears_which_tracks_were_shown() {
+    let mut d = demo();
+    d.scrub(Event::Library(library()));
+    d.follow_up();
+    shown(&mut d, playing("spotify:track:real", "spotify:playlist:diary"));
+    assert!(!d.follow_up().send.iter().any(|c| matches!(c, Command::ShownInDemo { .. })), "a hidden one: no");
+    d.sent(&Command::Play { uri: Some("spotify:track:found".into()) });
+    shown(&mut d, playing("spotify:track:found", "spotify:album:x"));
+    assert!(d.follow_up().send.contains(&Command::ShownInDemo { uri: "spotify:track:found".into() }));
+    shown(&mut d, playing("spotify:track:found", "spotify:album:x"));
+    assert!(d.follow_up().send.is_empty(), "once");
 }
 
 fn row(added: &str, progress: Option<Progress>) -> TrackRow {
@@ -619,7 +701,9 @@ fn session(demo: bool) -> (crate::app::App, tokio::sync::mpsc::Receiver<singular
     app.hear(Event::Playback(playing("spotify:track:real", "spotify:playlist:diary")));
     app.hear(Event::Library(library()));
     app.hear(Event::Home(HomeFeed { fetched_unix_ms: 1, shelves: vec![shelf("", "Made For Zed Quill", "shelf", &["spotify:playlist:mix"]), shelf("", "Charts", "shelf", &["spotify:playlist:top50"])] }));
-    app.hear(Event::Tracks(songs("spotify:playlist:show1", &[("a", "Orbits", &["Nova Drift"]), ("b", "Tides", &["Mira Vale"])])));
+    for list in ["spotify:playlist:show1", "spotify:playlist:friend", "spotify:playlist:deep"] {
+        app.hear(peeked(songs(list, &[("a", "Orbits", &["Nova Drift"]), ("b", "Tides", &["Mira Vale"])])));
+    }
     (app, rx)
 }
 
@@ -629,8 +713,8 @@ fn session(demo: bool) -> (crate::app::App, tokio::sync::mpsc::Receiver<singular
 fn demo_home_and_the_player_as_drawn() {
     let (mut app, mut rx) = session(true);
     let asked: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
-    assert!(asked.contains(&Command::GetTracks { uri: "spotify:playlist:show1".into() }), "{asked:?}");
-    assert!(asked.contains(&Command::GetArtist { uri: "spotify:artist:Nova Drift".into() }), "{asked:?}");
+    assert!(asked.contains(&peek("spotify:playlist:show1")), "{asked:?}");
+    assert!(asked.contains(&peek("spotify:artist:Nova Drift")), "{asked:?}");
     assert_eq!(titles(app.home.as_ref().unwrap()), [PLAYLISTS, ALBUMS, ARTISTS]);
     let screen = render(&mut app, 160, 48);
     for s in ["Real Song", "Real Artist", "Real List", "Next spotify", "Charts", "Made For"] {
