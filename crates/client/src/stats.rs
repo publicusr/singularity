@@ -315,7 +315,7 @@ const WEEKDAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun
 /// The "today" Widget: minutes today as a headline, plays and the streak, and the last days as a column chart.
 /// Small Panes get lines of text and a 7-day sparkline; tall ones a big figure, a comparison with the week's average
 /// and a chart of 7, 14 or 28 days (by width) with the minutes over the columns when they fit. The words sit in the
-/// middle of the width (#58).
+/// middle of the width (#58). A narrow, tall Pane lays the days sideways, a bar a row (#76).
 pub fn today(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     let (x, w) = (r.x + 1, r.width.saturating_sub(2));
     if r.height == 0 || w < 6 {
@@ -336,6 +336,10 @@ pub fn today(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     // small: lines of text (a narrow Pane tall enough still gets the figure and the chart)
     if r.height < 9 || w < 12 || (w < 22 && r.height < 16) {
         return today_compact(buf, r, sum, mins, &plays, &streak, streak_st, th);
+    }
+    // narrow and tall (#76): the last days as bars lying sideways, one a row
+    if w <= 34 && r.height >= 24 {
+        return today_bars(buf, r, sum, mins, &plays, &streak, streak_st, th);
     }
     let mut y = r.y;
     // a line in the middle of the Pane's width (#58)
@@ -717,6 +721,57 @@ enum Style {
     Heading,
 }
 
+/// "today" in a narrow, tall Pane (#76, the owner's option B): the minutes as a figure, plays and the streak under
+/// it, then the last days as bars across, one a row (two rows apart where there's room; 14 days where the Pane is tall
+/// enough, else 7), the weekday at the left and the minutes at the right, today in the accent; the whole in the middle
+/// of the Pane.
+#[allow(clippy::too_many_arguments)]
+fn today_bars(buf: &mut Buffer, r: Rect, sum: &singularity_proto::ListeningSummary, mins: u32, plays: &str, streak: &str, streak_st: ratatui::style::Style, th: &Theme) {
+    let (x, w) = (r.x + 1, r.width.saturating_sub(2));
+    let fig = if mins >= 60 { format!("{}h{:02}m", mins / 60, mins % 60) } else { format!("{mins}m") };
+    let fw = crate::tile::figure_width(&fig).min(w);
+    // the figure and a blank row, plays, the streak and a blank row
+    let head = 3 + 1 + 2 + 1;
+    let days = if r.height >= head + 2 * 14 + 2 { 14 } else { 7 }.min(sum.minutes.len());
+    if days == 0 {
+        return;
+    }
+    let pitch = if r.height > head + 2 * days as u16 { 2 } else { 1 };
+    let block = head + days as u16 * pitch - (pitch - 1);
+    let mut y = r.y + r.height.saturating_sub(block) / 2;
+    crate::tile::figure(buf, crate::balance::centre(x, w, fw), y, w, &fig, th.s(th.accent).add_modifier(Modifier::BOLD), th.s(th.dim));
+    y += 4;
+    for (s, st) in [(plays, th.s(th.fg)), (streak, streak_st)] {
+        let s = clip(s, w as usize);
+        text(buf, crate::balance::centre(x, w, s.width() as u16), y, w, &s, st);
+        y += 1;
+    }
+    y += 1;
+    let shown = &sum.minutes[sum.minutes.len() - days..];
+    let max = shown.iter().copied().max().unwrap_or(0).max(1);
+    // the weekday (3 columns and a gap), the bar, the minutes (up to 5 columns)
+    let bw = w.saturating_sub(4 + 5);
+    for (i, m) in shown.iter().enumerate() {
+        let is_today = i == days - 1;
+        let wd = (sum.today_weekday as usize + 7 * 5 - (days - 1 - i)) % 7;
+        text(buf, x, y, 3, WEEKDAY_NAMES[wd], th.s(if is_today { th.accent } else { th.border }));
+        let t = *m as f32 / max as f32;
+        let col = if is_today { th.accent } else { th.ramp_at(0.3 + 0.6 * t) };
+        let eighths = (t * bw as f32 * 8.0).round() as u16;
+        for k in 0..bw {
+            let e = eighths.saturating_sub(k * 8).min(8) as usize;
+            let (ch, st) = if e == 0 { (if k == 0 { '▏' } else { ' ' }, th.s(th.border)) } else { (crate::tile::H_EIGHTHS[e], th.s(col)) };
+            if let Some(c) = buf.cell_mut((x + 4 + k, y)) {
+                c.set_char(ch).set_style(st);
+            }
+        }
+        let v = if *m == 0 { "·".to_string() } else { short_minutes(*m) };
+        let vw = v.width() as u16;
+        text(buf, (x + w).saturating_sub(vw), y, vw, &v, th.s(if is_today { th.accent } else { th.dim }));
+        y += pitch;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -777,11 +832,41 @@ mod tests {
             assert!(left.abs_diff(right) <= 1, "tiny, line {i}: {line:?}");
         }
         // with the figure: the headline (the figure and its words) in the middle of the Pane's width
-        for (w, h) in [(22, 28), (58, 18), (118, 38)] {
+        // (a narrow Pane under 24 rows: the columns still; taller, the bars below)
+        for (w, h) in [(22, 20), (58, 18), (118, 38)] {
             let (buf, r) = draw(w, h);
             let head = Rect::new(r.x, r.y, r.width, 3);
             let (_, _, left, right) = crate::balance::margins(&buf, head);
             assert!(left >= 3 && left.abs_diff(right) <= 2, "{w}x{h}: {left} columns left of the headline, {right} right\n{}", rows(&buf, r).join("\n"));
+        }
+    }
+
+    #[test]
+    fn a_narrow_tall_today_lays_its_days_sideways_in_the_middle() {
+        // #76 (option B): a bar a row, the weekday at the left, the minutes at the right, today last
+        let mut app = App::new(None);
+        app.listening = Some(summary());
+        let th = app.theme.clone();
+        for (w, h, days) in [(16u16, 30u16, 7usize), (24, 30, 7), (36, 30, 7), (30, 40, 14)] {
+            let r = Rect::new(2, 1, w, h);
+            let mut buf = Buffer::empty(Rect::new(0, 0, w + 4, h + 2));
+            today(&mut buf, r, &app, &th);
+            let lines = rows(&buf, r);
+            let all = lines.join("\n");
+            let bars: Vec<&String> = lines.iter().filter(|l| WEEKDAY_NAMES.iter().any(|d| l.trim_start().starts_with(d))).collect();
+            assert_eq!(bars.len(), days, "{w}x{h}: a row a day\n{all}");
+            assert!(bars.last().unwrap().trim_start().starts_with("Tue") && bars.last().unwrap().trim_end().ends_with('·'), "{w}x{h}: today last, nothing yet\n{all}");
+            assert!(bars.iter().any(|l| l.contains('█')) && bars.iter().any(|l| l.trim_end().ends_with('m')), "{w}x{h}: bars and minutes\n{all}");
+            assert!(lines.iter().any(|l| l.trim() == "0 plays") && lines.iter().any(|l| l.trim() == "10-day streak"), "{w}x{h}\n{all}");
+            let (over, under, ..) = crate::balance::margins(&buf, r);
+            assert!(over.abs_diff(under) <= 1, "{w}x{h}: {over} rows over, {under} under\n{all}");
+        }
+        // a row short or a column wide of it: the columns as before
+        for (w, h) in [(24u16, 23u16), (37, 30)] {
+            let r = Rect::new(2, 1, w, h);
+            let mut buf = Buffer::empty(Rect::new(0, 0, w + 4, h + 2));
+            today(&mut buf, r, &app, &th);
+            assert!(!rows(&buf, r).iter().any(|l| l.trim_start().starts_with("Tue")), "{w}x{h}");
         }
     }
 

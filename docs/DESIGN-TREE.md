@@ -1326,3 +1326,10 @@ flowchart LR
   2026-11-27: owner answered Q126–Q128 and Q133–Q150 (bug-hunt fixes for v1, search pause, offline Home, Search keys,
   #76 picks, the wheel, demo extras); Q129, Q132 open, Q130/Q131 reworked (Delete in Pick a design with undo, Q151),
   Q143 follow-up Q152. Tickets: #142–#146 (v1), #147, #148 (after v1).
+  2026-11-28: owner answered Q129 yes, Q132 yes (Del on Linux, delete on macOS), Q151 Undo only for deleting one's own
+  Designs (deleted at once, `Deleted "X" · Undo` with `u`/click until the picker closes; Ctrl+K path with Ctrl+Z;
+  built-ins unchanged), Q152 not B: a larger version of the original Home icon with no square, Q153 yes (full-screen
+  Now playing re-laid, block letters at 60×8; #154 merged), Q154 yes (one Settings line for an incomplete backup),
+  Q155 yes (demo hides Home Shelves from the account), Q156 yes (demo shows an empty player until a Demo-set song plays),
+  Q157 yes (demo Home: Demo playlists, then albums and artists from their songs, then liked if on). Q147: a notch is
+  exactly three reports at once on the PC's mouse (fits D86).
