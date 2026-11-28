@@ -2,8 +2,8 @@
 //! as the cells, only bigger (the owner, 2026-11-08: the bundled Noto Sans looked "basic"; "the font I have worked
 //! really well for the smaller lyrics widgets").
 //!
-//! Which family: `SINGULARITY_BIG_FONT` when set, else the terminal's own setting (Ghostty's first `font-family`, or
-//! in Ghostty with none set its built-in JetBrains Mono, as installed or as a Nerd Font build; kitty's `font_family`),
+//! Which family: `SINGULARITY_BIG_FONT` when set, else the terminal's own setting (Ghostty's first `font-family`
+//! across its config files and their `config-file` includes, or in Ghostty with none set its built-in JetBrains Mono, as installed or as a Nerd Font build; kitty's `font_family`),
 //! else the system's monospace (`fc-match monospace`, where fontconfig is), else a few common monospace families.
 //! The face files come from the system font folders (`fontdb`); a family that isn't installed is skipped. None
 //! found: big text keeps the bundled font.
@@ -74,7 +74,64 @@ fn ghostty_fonts(configured: Option<String>, in_ghostty: bool) -> Vec<String> {
 }
 
 fn ghostty_family() -> Option<String> {
-    config_files("ghostty", "com.mitchellh.ghostty", &["config", "config.ghostty"]).iter().find_map(|p| ghostty_font(&std::fs::read_to_string(p).ok()?))
+    let files = config_files("ghostty", "com.mitchellh.ghostty", &["config", "config.ghostty"]);
+    ghostty_font(&ghostty_conf(&files, std::env::var_os("HOME").map(PathBuf::from).as_deref()))
+}
+
+/// At most this many included files are read (a guard besides the cycle check, #160).
+const GHOSTTY_MAX_INCLUDES: usize = 64;
+
+/// Ghostty's config lines in the order it applies them (its `Config.zig`, #160): every default file that exists, in
+/// order, then the `config-file` includes they name, in the order named, each read once; an included file's own
+/// includes join the end of that list. A relative path is relative to the file naming it, `~/` is `home`, a leading
+/// `?` only makes a missing file quiet (a missing one is skipped either way), and an empty `config-file =` clears the
+/// list.
+fn ghostty_conf(files: &[PathBuf], home: Option<&Path>) -> String {
+    let mut text = String::new();
+    let mut includes: Vec<PathBuf> = vec![];
+    let mut read = |path: &Path, includes: &mut Vec<PathBuf>| {
+        let Ok(conf) = std::fs::read_to_string(path) else { return };
+        ghostty_includes(&conf, path.parent().unwrap_or(Path::new("/")), home, includes);
+        text.push_str(&conf);
+        text.push('\n');
+    };
+    for f in files {
+        read(f, &mut includes);
+    }
+    let mut loaded = std::collections::HashSet::new();
+    let mut i = 0;
+    while i < includes.len() && i < GHOSTTY_MAX_INCLUDES {
+        let path = includes[i].canonicalize().unwrap_or_else(|_| includes[i].clone());
+        i += 1;
+        if path.is_file() && loaded.insert(path.clone()) {
+            read(&path, &mut includes);
+        }
+    }
+    text
+}
+
+/// Adds the files `conf`'s `config-file` lines name to `list`, resolved against `base` (the folder of the file).
+fn ghostty_includes(conf: &str, base: &Path, home: Option<&Path>, list: &mut Vec<PathBuf>) {
+    for line in conf.lines() {
+        let Some((k, v)) = line.split_once('=') else { continue };
+        if k.trim() != "config-file" {
+            continue;
+        }
+        let v = v.trim();
+        if v.is_empty() {
+            list.clear();
+            continue;
+        }
+        let v = unquote(v.strip_prefix('?').unwrap_or(v));
+        if v.is_empty() {
+            continue;
+        }
+        match (v.strip_prefix("~/"), home) {
+            (Some(rest), Some(home)) => list.push(home.join(rest)),
+            (Some(_), None) => {}
+            (None, _) => list.push(base.join(v)),
+        }
+    }
 }
 
 /// Ghostty's primary font from its config: the first `font-family` after the last one set empty (each further line
@@ -220,6 +277,57 @@ mod tests {
         assert_eq!(ghostty_font("font-family = \"Fira Code\"\nfont-family = Symbols\n"), Some("Fira Code".into()));
         assert_eq!(ghostty_font("font-family = A\nfont-family = \"\"\nfont-family = B\n"), Some("B".into()));
         assert_eq!(ghostty_font("# font-family = A\nfont-size = 3\n"), None);
+    }
+
+    /// #160: Ghostty's `config-file` includes, read in its order.
+    #[test]
+    fn ghosttys_font_is_found_through_its_includes() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let write = |name: &str, body: &str| {
+            let p = d.join(name);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, body).unwrap();
+            p
+        };
+        let font = |files: &[PathBuf]| ghostty_font(&ghostty_conf(files, Some(d)));
+
+        // a relative include, and an optional one that is missing
+        let main = write("a/config", "font-size = 11\nconfig-file = ?missing\nconfig-file = os\n");
+        write("a/os", "font-family = Fake Mono\n");
+        assert_eq!(font(&[main]), Some("Fake Mono".into()));
+
+        // nested: the include's own include, relative to the include's folder; `~/` and a quoted path
+        let main = write("b/config", "config-file = \"sub/one\"\n");
+        write("b/sub/one", "config-file = two\nconfig-file = ~/home-inc\n");
+        write("b/sub/two", "font-family = Nested Mono\n");
+        write("home-inc", "font-family = Home Mono\n");
+        assert_eq!(font(&[main]), Some("Nested Mono".into()), "the first font-family in load order is the primary");
+
+        // a cycle ends
+        let main = write("c/config", "config-file = loop\n");
+        write("c/loop", "config-file = config\nconfig-file = loop\nfont-family = Loop Mono\n");
+        assert_eq!(font(&[main]), Some("Loop Mono".into()));
+
+        // includes load after the file naming them: the main file's font comes first, an include's reset replaces it
+        let main = write("d/config", "config-file = over\nfont-family = Main Mono\n");
+        write("d/over", "font-family = Fallback Mono\n");
+        assert_eq!(font(std::slice::from_ref(&main)), Some("Main Mono".into()), "a further font-family only adds a fallback");
+        write("d/over", "font-family = \"\"\nfont-family = Over Mono\n");
+        assert_eq!(font(&[main]), Some("Over Mono".into()), "an empty value resets the list");
+
+        // every default file is read, in order, and their includes after all of them
+        let first = write("e/config", "config-file = inc\n");
+        let second = write("e/config.ghostty", "font-family = Second Mono\n");
+        write("e/inc", "font-family = \"\"\nfont-family = Inc Mono\n");
+        assert_eq!(font(&[first.clone(), second.clone()]), Some("Inc Mono".into()));
+        write("e/inc", "font-size = 3\n");
+        assert_eq!(font(&[first, second]), Some("Second Mono".into()), "not only the first file");
+
+        // an empty `config-file =` clears the includes named so far
+        let main = write("f/config", "config-file = inc\nconfig-file =\n");
+        write("f/inc", "font-family = Cleared Mono\n");
+        assert_eq!(font(&[main]), None);
     }
 
     #[test]
