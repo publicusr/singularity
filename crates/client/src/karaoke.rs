@@ -1071,8 +1071,8 @@ fn tiny(buf: &mut Buffer, r: Rect, lines: &[Line], stage: Stage, pos: u64, th: &
             cells.push((" ", if w.start <= pos { 1.0 } else { 0.0 }));
             width += 1;
         }
-        // (a line lit whole has no word being sung: it shows from its start)
-        if w.start <= pos && line.exact {
+        // (a line lit whole scrolls along when its words are probably sung, as before it was lit whole)
+        if line.guessed.get(k).map_or(w.start, |g| *g) <= pos {
             now = width;
         }
         for (g, a) in lit_graphemes(&w.text, timing::fill(w, pos)) {
@@ -1157,7 +1157,7 @@ mod tests {
     #[test]
     fn a_long_line_keeps_the_songs_font() {
         let (short, long) = (words("Turn the lights down"), words("Here comes the chorus hold on to the note and let the whole room carry it"));
-        let line = |w: &[Word]| Line { start: 0, end: 9_000, words: w.to_vec(), exact: true, index: 0 };
+        let line = |w: &[Word]| Line { start: 0, end: 9_000, words: w.to_vec(), exact: true, index: 0, guessed: vec![] };
         let song = [line(&short), line(&long)];
         // the cells: one scale for the whole song, the long line wrapped further at it
         for (w, h) in [(78u16, 20u16), (78, 30), (120, 30), (158, 40)] {
@@ -1641,8 +1641,8 @@ mod tests {
     /// read off the drawn Pane. Whenever the timing puts a line on stage, the Pane shows exactly that line (wrapped or
     /// not) with exactly the words begun lit; each word lights at most one frame after it is sung, and is lit all
     /// through once its fill has ended (before a pause, before the next word starts). A line without word times lights
-    /// whole, all at once, at most a frame after its stamp. Returns the latest any word or whole line lit, and the
-    /// frames checked.
+    /// whole, all at once, when an estimate says its first word is sung (`LEAD_MS` after its stamp at most), a frame
+    /// late at most. Returns the latest any word or whole line lit, and the frames checked.
     fn sync_check(song: &[LyricLine], w: u16, h: u16, delay: i32) -> (u64, usize) {
         let lines = timing::timed(song, SONG_MS);
         let mut app = timed_app(0, song.to_vec());
@@ -1663,9 +1663,9 @@ mod tests {
             if line.words.is_empty() {
                 // a whole line: nothing lit before its stamp, all of it lit through from then (a frame's grace)
                 let (all, none) = (lit_pieces.iter().all(|p| p.1), !pieces.contains(&true));
-                let due = at >= line.start_ms;
-                let just = due && at - line.start_ms < STEP_MS;
-                assert!(if due { all || (just && none) } else { none }, "{w}×{h} at {at} ms (delay {delay}): {text:?} stamped {} lit {pieces:?}", line.start_ms);
+                let due = at >= lines[i].first();
+                let just = due && at - lines[i].first() < STEP_MS;
+                assert!(if due { all || (just && none) } else { none }, "{w}×{h} at {at} ms (delay {delay}): {text:?} due {} lit {pieces:?}", lines[i].first());
                 if all {
                     whole_at[i].get_or_insert(at);
                 }
@@ -1688,10 +1688,11 @@ mod tests {
         let mut worst = 0;
         for (i, l) in lines.iter().enumerate() {
             if song[l.index].words.is_empty() {
-                let stamp = song[l.index].start_ms;
+                let (stamp, due) = (song[l.index].start_ms, l.first());
+                assert!(due >= stamp && due - stamp <= timing::LEAD_MS, "{:?}: lit {} ms after its stamp", song[l.index].text, due - stamp);
                 let seen = whole_at[i].unwrap_or_else(|| panic!("{w}×{h}: {:?} never lit (delay {delay})", song[l.index].text));
-                let lag = seen.saturating_sub(stamp);
-                assert!(lag <= STEP_MS, "{w}×{h}: {:?} lit {lag} ms after its stamp (delay {delay})", song[l.index].text);
+                let lag = seen.saturating_sub(due);
+                assert!(lag <= STEP_MS, "{w}×{h}: {:?} lit {lag} ms late (delay {delay})", song[l.index].text);
                 worst = worst.max(lag);
             }
             for (k, start) in song[l.index].words.iter().map(|wd| wd.start_ms).enumerate() {
@@ -1760,10 +1761,10 @@ mod tests {
                 assert!(worst <= STEP_MS && n > 500, "{w}×{h}: {worst} {n}");
             }
         }
-        // the word before the pause finishes filling well before the next word starts
+        // the word before the pause finishes filling before the next word starts
         let lines = timing::timed(&song, SONG_MS);
         let (stop, next) = (&lines[2].words[1], &lines[2].words[2]);
-        assert!(stop.text == "STOP)" && stop.end + 300 < next.start, "{lines:?}");
+        assert!(stop.text == "STOP)" && stop.end + 200 < next.start, "{lines:?}");
         // without word timing: whole lines at the LRC's stamps, and the credit says so
         v["hasWordSync"] = false.into();
         let song = singularityd::lyrics::parse_lrclib("spotify:track:t", &v).expect("parsed").lines;
@@ -1787,15 +1788,23 @@ mod tests {
     /// Before a pause the fill ends with the word, and the ball waits over the word's end until it hops on (Q182).
     #[test]
     fn the_ball_waits_at_the_end_of_a_word_before_a_pause() {
-        let song = singularityd::lyrics::parse_lrclib("spotify:track:t", &polish_rap()).expect("parsed").lines;
+        // a rap line at 150 ms a syllable with 1.6 s from "(stop)" to "now"
+        let mut at = 1_000;
+        let mut words = vec![];
+        for w in ["we ", "go ", "(stop) ", "now ", "we ", "run ", "fast ", "and ", "far"] {
+            words.push(LyricWord { start_ms: at, end_ms: None, text: w.into() });
+            at += if w == "(stop) " { 1_600 } else { 150 };
+        }
+        let song = vec![LyricLine { start_ms: 1_000, text: "we go (stop) now we run fast and far".into(), words }];
         let lines = timing::timed(&song, SONG_MS);
-        let (stop, next) = (&lines[2].words[1], &lines[2].words[2]);
+        let (stop, next) = (&lines[0].words[2], &lines[0].words[3]);
         let hop = timing::HOP_MS.min(next.start - stop.end);
+        assert!(stop.end + hop + 300 < next.start, "{lines:?}");
         // the column of the word's last character, on the row the line is drawn on
         let mut app = timed_app(stop.end, song.clone());
         let rows = cells(&mut app, 60, 9);
-        let ly = rows.iter().position(|r| r.concat().contains("(KOLEJNY STOP)")).expect("the line");
-        let end_x = rows[ly].concat().find("STOP)").unwrap() as u16 + 4;
+        let ly = rows.iter().position(|r| r.concat().contains("we go (stop) now")).expect("the line");
+        let end_x = rows[ly].concat().find("(stop)").unwrap() as u16 + 5;
         let rest = ball_cell(&mut app, stop.end).expect("the ball");
         assert_eq!(rest.0, end_x, "over the word's end as the fill gets there");
         for pos in (stop.end..next.start - hop).step_by(10) {
@@ -1807,11 +1816,19 @@ mod tests {
     }
 
     #[test]
-    fn a_whole_line_in_a_tiny_pane_shows_from_its_start() {
-        // the long line has no word times: lit whole, from its first word, however long
-        let mut app = app_at(8_000, true);
+    fn a_whole_line_in_a_tiny_pane_scrolls_along_as_it_is_probably_sung() {
+        // the long line has no word times: lit whole, and scrolled along its estimated word times as before, so none
+        // of it is lost
+        let lines = timing::timed(&app_at(0, true).lyrics.current().unwrap().lines, 120_000);
+        let l = &lines[1];
+        assert!(!l.exact && l.guessed.len() == l.words.len());
+        let mut app = app_at(l.first(), true);
         let row = cells(&mut app, 30, 1).remove(0).concat();
         assert!(row.starts_with("Sing it like the night"), "{row}");
+        let awake = l.words.iter().position(|w| w.text == "awake").unwrap();
+        let mut app = app_at(l.guessed[awake], true);
+        let row = cells(&mut app, 30, 1).remove(0).concat();
+        assert!(row.contains("awake tonight") && !row.contains("Sing"), "{row}");
     }
 
     /// The position the Pane sings from moves on between the player's updates, stops on a pause, jumps with a seek,
