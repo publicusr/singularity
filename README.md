@@ -196,7 +196,8 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 - **Idle**: after 3 minutes without input the black hole drifts over the screen; any key wakes it (and does nothing
   else). Shift+I or `[idle]` in config.toml switches it off or changes the delay.
 - **Listening log** (private, local): every track you hear for 30 s is logged in `~/.local/share/singularity/`, and
-  Liked Songs and your own playlists are backed up there nightly. Cockpit's listening Pane and the Stats page show it;
+  Liked Songs and your own playlists are backed up there nightly (when a list doesn't come back whole, Settings says so
+  in one line, and the next night's backup tries it again). Cockpit's listening Pane and the Stats page show it;
   Ctrl+K → "Export listening data" / "Delete listening data". Nothing is uploaded.
 - After a rebuild, the next Client notices the running Daemon is older than the installed `singularityd` and replaces
   it by itself ("Updating singularityd…"; the music pauses for a moment). If systemd or launchd ran the
