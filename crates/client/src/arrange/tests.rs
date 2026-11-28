@@ -539,7 +539,7 @@ fn the_undo_line_fits_a_long_wide_name_and_is_clickable_all_along() {
     let r = a.overlays.first().copied().unwrap();
     let y = r.bottom() - 4;
     let line = row(&buf, y, r.x + 1, r.right() - 1);
-    assert!(line.contains('…') && line.trim_end().ends_with("\" · Undo"), "{line:?}");
+    assert!(line.contains('…') && line.trim_end().ends_with("\" · u Undo"), "{line:?}");
     let undo = a.all_hits().iter().find(|(_, h)| *h == Hit::PickerUndo).map(|(r, _)| *r).unwrap();
     assert_eq!((undo.y, undo.x, undo.right()), (y, r.x + 1, r.right() - 1), "the whole line");
     press(&mut a, r.x + 2, y);
@@ -643,7 +643,7 @@ fn a_click_in_the_ask_box_off_the_answers_does_nothing() {
     assert_eq!(a.shown.file(), Some("singularity-edited"));
 }
 
-/// #80 review, on the drawn buffer: the Design picker's hint gets "· Del delete" ("· delete delete" on a Mac, Q132) only on a row of yours; on a built-in
+/// #80 review, on the drawn buffer: the Design picker's hint gets "· Del delete" ("· ⌫ delete" on a Mac, Q132, Q160) only on a row of yours; on a built-in
 /// row it is the hint as it was, and nothing else in the picker's box differs between the two.
 #[test]
 fn the_pickers_delete_hint_shows_only_on_your_designs() {
@@ -679,7 +679,7 @@ fn the_pickers_delete_hint_shows_only_on_your_designs() {
 
 /// Q151, on the drawn buffer: after a delete the picker's box keeps its size; the only cells that differ from the
 /// picker before (on the same built-in row) are the deleted Design's row, now empty, and the new line
-/// `Deleted "Mine" · Undo` above the swatch. After Undo it is exactly the picker with "Mine" highlighted again.
+/// `Deleted "Mine" · u Undo` above the swatch. After Undo it is exactly the picker with "Mine" highlighted again.
 #[test]
 fn after_a_delete_the_picker_differs_only_by_the_undo_line() {
     let (mut a, _dir) = with_dirs();
@@ -698,7 +698,7 @@ fn after_a_delete_the_picker_differs_only_by_the_undo_line() {
     let (mine_row, line) = (r.y + 1 + mine as u16, r.bottom() - 4);
     let text = |b: &Buffer, y: u16| row(b, y, r.x, r.right()).trim_matches(|c| c == '│' || c == ' ').to_string();
     assert_eq!(text(&after, mine_row), "");
-    assert_eq!(text(&after, line), "Deleted \"Mine\" · Undo");
+    assert_eq!(text(&after, line), "Deleted \"Mine\" · u Undo");
     assert_eq!(text(&before, line), "");
     for y in (r.y..r.bottom()).filter(|&y| y != mine_row && y != line) {
         for x in r.x..r.right() {

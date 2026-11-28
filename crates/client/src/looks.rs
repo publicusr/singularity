@@ -598,12 +598,12 @@ pub fn draw_picker(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     // (the whole line is the Undo: a click just beside it mustn't close the picker, making the delete final)
     if let Some(name) = undo {
         let (y, w) = (inner.bottom().saturating_sub(3), inner.width.saturating_sub(2));
-        // a long name is cut short (…) so Undo always fits
-        let room = (w as usize).saturating_sub(UnicodeWidthStr::width("Deleted \"\" · Undo"));
+        // a long name is cut short (…) so its hint always fits: the key before the action, as the hints show it (Q159)
+        let room = (w as usize).saturating_sub(UnicodeWidthStr::width("Deleted \"\" · u Undo"));
         let said = format!("Deleted \"{}\" · ", crate::sidebar::clip(&name, room as u16));
         let n = (UnicodeWidthStr::width(said.as_str()) as u16).min(w);
         text(buf, inner.x + 1, y, w, &said, th.s(th.dim));
-        text(buf, inner.x + 1 + n, y, w - n, "Undo", th.s(th.accent));
+        text(buf, inner.x + 1 + n, y, w - n, "u Undo", th.s(th.accent));
         app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::PickerUndo);
     }
     let hint = if app.picker_on_own() { format!("↑↓ preview · Enter keep · Esc put back · {} delete", crate::keymap::DELETE_KEY) } else { "↑↓ preview · Enter keep · Esc put back".to_string() };

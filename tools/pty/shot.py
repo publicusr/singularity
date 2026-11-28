@@ -2301,7 +2301,7 @@ def layouts(t, out, env):
 
 def delete_design(t, out, env):
     """#80, Q151: two Designs of your own saved; in the Design picker, Delete on the one on screen deletes it at once
-    (the picker stays, without it, on Singularity, saying `Deleted "Other" · Undo`), `u` brings it back, Delete again
+    (the picker stays, without it, on Singularity, saying `Deleted "Other" · u Undo`), `u` brings it back, Delete again
     and a click on Undo too; Esc. Ctrl+K → Delete design… deletes "Other" at once (the bar offers Ctrl+Z), Ctrl+Z brings
     it back. Then the picker on a built-in row (its hint without Del). Prints the layouts folder after each step."""
     files = lambda: sorted(os.listdir(f"{env['XDG_CONFIG_HOME']}/singularity/layouts"))
@@ -2319,7 +2319,7 @@ def delete_design(t, out, env):
     t.shot(f"{out}/2-undone.png")
     print("after u:", files())
     t.send(b"\x7f", 0.8)  # Backspace, a Mac's delete key
-    x, y = t.find("· Undo")
+    x, y = t.find("· u Undo")
     mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
     t.shot(f"{out}/3-clicked-undo.png")
     print("after Backspace and a click on Undo:", files())
