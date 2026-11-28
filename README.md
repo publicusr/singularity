@@ -24,7 +24,7 @@ same way and runs Soloist's arm64 build, but hasn't been tried on ARM hardware y
 ## Not affiliated with Spotify
 
 Singularity is an independent project. It is **not affiliated with, endorsed by or connected to Spotify**. It needs
-a **Spotify Premium** account: its login for Home, the library and search accepts only Premium, as do librespot (the
+a **Spotify Premium** account: its login for Home, the library and search accepts only Premium, as do librespot (an Intel
 Mac's default player) and hosting a Jam. (Soloist itself lets Free accounts listen once it's set up; only the account
 that makes its key needs Premium.) It talks to Spotify through **private, undocumented APIs**, the ones Spotify's own
 apps use. That is against Spotify's Terms of Use, and Spotify may change those APIs, and break Singularity, at any
@@ -89,8 +89,8 @@ Start at login (optional): `packaging/launchd/install.sh` (a LaunchAgent; `--uni
 
 | `kind` | Linux | macOS | Lossless | Cost while playing |
 |--------|-------|-------|----------|--------------------|
-| `auto` (default) | = `soloist` | = `librespot` | Linux yes, macOS no | |
-| `soloist` | Spotify's Soloist, headless | Soloist's Linux build in a small Linux VM that Singularity runs for you (not yet Spotify's Mac build) | yes | macOS: ~300 MB, idle ~1 % CPU |
+| `auto` (default) | = `soloist` | = `soloist` on Apple Silicon, `librespot` on an Intel Mac | yes (Intel Mac: no) | |
+| `soloist` | Spotify's Soloist, headless | the same: Spotify's Mac build (Apple Silicon, macOS 13 or later) | yes | |
 | `librespot` | built into the Daemon | built into the Daemon | no (320 kbps at most) | ~28 MB, ~1 % CPU |
 | `spotify-app` | the official app, hidden, driven over Connect | the same | yes (the app's own setting) | ~600 MB, 5–25 % CPU |
 
@@ -99,29 +99,24 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 
 ### macOS quirks (what's different from Linux, and why)
 
-- **The default plays at most 320 kbps.** On a Mac the default is librespot (light, no setup), and lossless means
-  `kind = "soloist"` (Soloist in a VM) or `"spotify-app"`. Spotify has shipped Soloist, its headless lossless player,
-  for Apple Silicon Macs (macOS 13 or later) since October 2026, but Singularity doesn't use that Mac build yet: it
-  runs Soloist's Linux build in a VM. Trying the Mac build instead is planned (#85).
-- **`kind = "soloist"` runs a Linux VM** (Apple's Virtualization framework, through `vfkit`; networking through
-  `gvproxy`). The first start downloads ~250 MB (the two helpers, pinned by checksum, and Debian's arm64 cloud
-  image) and sets the VM up in about two minutes; after that it starts in ~6 s. It lives in
-  `~/.local/share/singularity/vm/` (~1.5–2 GB on disk) and uses ~300 MB of memory while it runs. It needs a Soloist
-  API key (the wizard asks; or `security add-generic-password -U -s singularity -a soloist -w`) and **one pairing
-  from your phone on the same Wi-Fi**: pick "Singularity on <your Mac> (lossless)" in the device picker, and set it
-  to Lossless there. A quality change applies from the next track.
+- **Soloist on a Mac needs Apple Silicon** (macOS 13 or later): Spotify ships no Intel build, so on an Intel Mac the
+  default is librespot (at most 320 kbps), and lossless means `kind = "spotify-app"`. On Apple Silicon Singularity
+  downloads Spotify's Mac build of Soloist and runs it as on Linux: the wizard asks for a Soloist API key (or
+  `security add-generic-password -U -s singularity -a soloist -w`), and you pair it **once from your phone on the same
+  Wi-Fi**: pick "Singularity on <your Mac> (lossless)" in the device picker, and set it to Lossless there.
   - With a VPN on (Mullvad and similar), allow local network sharing, or the phone can't reach the Mac to pair.
-  - macOS's firewall silently blocks programs it doesn't trust from accepting connections, Singularity included, so
-    while pairing (only then) a tiny relay runs in Apple's own `python3`.
-  - Pairing can't be done without the phone: Soloist only accepts a login minted for it by Spotify's apps.
+  - If you used the Soloist VM of earlier versions, its folder `~/.local/share/singularity/vm/` (~1.5–2 GB) is no
+    longer used: delete it.
+- **The audio Widgets need a permission with Soloist or the app**: they hear the player through a Core Audio process
+  tap, and macOS must let your terminal record other apps' audio: System Settings → Privacy & Security → Screen &
+  System Audio Recording → **System Audio Recording Only** → add your terminal app. Without it the Widgets stay flat
+  and Singularity says so once.
 - **`kind = "spotify-app"`** needs Spotify.app installed and logged in to the same account; Singularity starts it
-  hidden and leaves it running. For the audio Widgets macOS must let your terminal record other apps' audio: System
-  Settings → Privacy & Security → Screen & System Audio Recording → **System Audio Recording Only** → add your
-  terminal app. Without it the Widgets stay flat and Singularity says so once.
-- **Audiobooks don't play on the default.** Spotify won't give librespot the keys to audiobook chapters, so books
-  play with `kind = "soloist"` (the VM) or `"spotify-app"`; with librespot their pages, library rows and search
-  still work, and pressing play says so. (Same on Linux with librespot; Linux's default, Soloist, plays them.)
-- **Media keys and Control Centre**: with librespot or the VM, Singularity has its own Now Playing entry (play,
+  hidden and leaves it running.
+- **Audiobooks don't play with librespot** (an Intel Mac's default). Spotify won't give librespot the keys to
+  audiobook chapters, so books play with Soloist or `"spotify-app"`; with librespot their pages, library rows and
+  search still work, and pressing play says so (the same on Linux).
+- **Media keys and Control Centre**: with Soloist or librespot, Singularity has its own Now Playing entry (play,
   pause, next, previous, drag the position); with the app, the app's own entry. There's no MPRIS (that's D-Bus,
   Linux's).
 - **Track notifications** (`[notifications] track_change`) appear through `osascript`, so macOS shows them as Script
@@ -129,7 +124,7 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 - **Secrets** go to the login Keychain through `/usr/bin/security` (so rebuilt binaries read them without a prompt).
 - The Daemon's socket is under `$TMPDIR` (no `$XDG_RUNTIME_DIR` on macOS); config and data use the same
   `~/.config/singularity` and `~/.local/share/singularity` paths as Linux.
-- The stream Pane's download speed and stall count come from Soloist's log on Linux; the other players don't report
+- The stream Pane's download speed and stall count come from Soloist's log; the other players don't report
   them.
 
 ## Using it
@@ -265,7 +260,7 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 | [docs/research/2026-10-private-api-risk.md](docs/research/2026-10-private-api-risk.md) | How risky the private API is for a one-person client |
 | [docs/PLATFORMS.md](docs/PLATFORMS.md) | Linux/macOS parity: every feature and platform seam, and its exact status |
 | [docs/research/2026-10-macos.md](docs/research/2026-10-macos.md) | How macOS support came about (the Engine options, the audio tap) |
-| [docs/research/2026-10-soloist-vm-spike.md](docs/research/2026-10-soloist-vm-spike.md) | Soloist in a Linux VM on macOS: measurements, pairing, the firewall |
+| [docs/research/2026-10-soloist-vm-spike.md](docs/research/2026-10-soloist-vm-spike.md) | Soloist in a Linux VM on macOS, before Spotify's Mac build (the VM is gone since Q189): measurements, pairing, the firewall |
 | [docs/research/2026-10-free-tiling.md](docs/research/2026-10-free-tiling.md) | What fully free tiling would take |
 
 The early spikes (`spikes/`) and design prototypes (`prototypes/`) are in the git history, before the first public

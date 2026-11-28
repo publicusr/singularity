@@ -145,13 +145,11 @@ audio, and looks spectacular.
 ### Deep modules (each one interface, swappable implementation)
 - **Engine** (ADR-0001): play a context (optionally at an offset), pause/resume, seek, volume, shuffle, repeat, add to
   queue; emits playback, queue, device and position events (position is an anchor plus speed, interpolated by the Client).
-  - *SoloistEngine* (Linux): downloads Soloist from Spotify's CDN, starts it with the keyring-held key, connects to its
+  - *SoloistEngine* (Linux, Apple Silicon macOS 13+: Q188): downloads Soloist from Spotify's CDN, starts it with the keyring-held key, connects to its
     local WebSocket, parses the build lifetime and auto-updates between tracks, reads codec/bitrate from its verbose log.
   - *AppEngine* (macOS, D25, D51): the hidden official Spotify app, controlled over Connect through ConnectRemote; its
     playback, queue and stream quality come from the Connect cluster. `[engine] kind` picks the Engine (default per OS).
-  - *Soloist VM* (macOS, D55, #72): the SoloistEngine with a VM host: Soloist in a Linux VM (vfkit, gvproxy, Debian
-    arm64) the Daemon sets up and runs; its audio over vsock to the Daemon, which plays and taps it. `kind = "soloist"`.
-  - *LibrespotEngine* (both OSes, D52; the macOS default, D54/D56): librespot's Connect receiver and player inside the Daemon, driven over Connect
+  - *LibrespotEngine* (both OSes, D52; the default where Soloist has no build, an Intel Mac: Q190): librespot's Connect receiver and player inside the Daemon, driven over Connect
     like the app; audio to the system output through cpal, and to the AudioTap in-process. The light choice: at most
     320 kbps, never lossless.
   - Commands Soloist lacks (play-at-offset, queue removal, device quality) go through *ConnectRemote*.
@@ -184,8 +182,8 @@ audio, and looks spectacular.
     bad or revoked credentials) isn't tried again: its error shows at once. A connection the computer itself blocks
     (a firewall or a VPN's kill switch at boot) counts as not reaching Spotify, and is tried again.
 - **ConnectRemote** (D12): device list, transfer, remote control of any device, per-device quality (D17, to verify).
-- **AudioTap** (D16): captures only the Engine's stream (PipeWire on Linux; a Core Audio process tap on the Spotify app
-  on macOS; librespot's and the Soloist VM's samples in-process), runs FFT,
+- **AudioTap** (D16): captures only the Engine's stream (PipeWire on Linux; a Core Audio process tap on Soloist or the
+  Spotify app on macOS; librespot's samples in-process), runs FFT,
   onset detection and **automatic gain** (the tap is post-volume), and publishes spectrum frames.
 - **LocalStore** (D20): SQLite listening log and nightly JSON library backups under the XDG data dir, owner-only permissions,
   export/delete commands, no telemetry.

@@ -26,46 +26,46 @@ Vulkan, librespot played and fed the audio Widgets, MPRIS paused it; Soloist on 
 **parked** (Q83, 2026-11-25: no ARM hardware now that the Mac runs macOS again; it stays a one-session job for when
 there is). The feature rows below are for x86_64 Linux.
 
-`[engine] kind` in `config.toml` (Settings page too), read when the Daemon starts. `auto` = Soloist on Linux, librespot
-on macOS (D54, D56: standalone, lightest, the audio Widgets work out of the box; for lossless on macOS, `soloist` (the
-VM) or `spotify-app`).
+`[engine] kind` in `config.toml` (Settings page too), read when the Daemon starts. `auto` = Soloist where Spotify ships
+it (Linux on x86_64 and arm64, Apple Silicon Macs: Q190), librespot elsewhere (an Intel Mac; there, lossless means
+`spotify-app`).
 
 | Engine | Linux | macOS | Lossless | Cost (measured on the Mac, an M2) |
 |--------|-------|-------|----------|-----------------------------------|
-| Soloist (ADR-0001) | ✅ default; cache capped by `engine.cache_gb` (D61, 5 GB) | ➖ natively: Spotify has shipped an Apple Silicon build (macOS 13+, `soloist_release_osx_arm64.tar.gz`) since 2026-10-23, but Singularity doesn't use it yet (trying it is part of #85; its audio goes to Core Audio, so the audio Widgets would need the process tap and the "System Audio Recording Only" permission); today: see the Soloist VM | ✅ | (Linux: not measured yet, singularity-archive#71) |
+| Soloist (ADR-0001) | ✅ default; cache capped by `engine.cache_gb` (D61, 5 GB) | 🔶 default on Apple Silicon (macOS 13+, Q188, Q190): Spotify's `osx_arm64` build as a local process, like Linux; built and CI-tested, **not yet run live** (#85); ➖ an Intel Mac (no build) | ✅ | (Linux: not measured yet, singularity-archive#71) |
 | Spotify app over Connect (D51, singularity-archive#65) | 🔶 built (`spotify --minimized`), never run | 🔶 (✅ live-checked by 2026-10-20; network-change fixes awaiting the owner's re-check) | ✅ the app's own setting | app ~600 MB, 5–25 % CPU playing |
-| librespot in the Daemon (D52, singularity-archive#70) | 🔶 built, type-checked; needs `alsa-lib` to build; never run | 🔶 default (D54); on Connect live (read-only check); playback awaits the owner | ❌ 320 kbps at most, never | Daemon ~26 MB, ~0–1 % CPU idle; playing ~1 % CPU, 28 MB |
-| Soloist in the Soloist VM (D55, singularity-archive#72): `kind = "soloist"` on macOS | ➖ (Soloist runs natively) | 🔶 built (behind the Soloist runner since D89, #94: not run on the Mac since); live (2026-10): VM up and waiting for pairing in 5.6 s, paired from the phone, FLAC on the Mac's speakers, the audio Widgets fed | ✅ FLAC verified | ~300 MB; idle ~1 % CPU (pipe sink over vsock, 1 vCPU); playing FLAC: not measured on this setup yet (the owner was on librespot); first setup ~2 min, ~1.3 GB disk; cache fixed at 200 MB (`engine.cache_gb` doesn't apply: the VM's disk is small) |
+| librespot in the Daemon (D52, singularity-archive#70) | 🔶 built, type-checked; needs `alsa-lib` to build; never run | 🔶 default on an Intel Mac; on Connect live (read-only check); playback awaits the owner | ❌ 320 kbps at most, never | Daemon ~26 MB, ~0–1 % CPU idle; playing ~1 % CPU, 28 MB |
+| Soloist in the Soloist VM (D55, singularity-archive#72) | ➖ | ➖ removed (Q189): replaced by Spotify's Mac build | — | (was ~300 MB, ~1.3 GB disk) |
 
 Lossless without the Spotify app on macOS: not possible with librespot (Spotify keeps lossless to its own players and
-asked librespot not to pursue it), hence Soloist itself in a small Linux VM (D53 spike, D55, singularity-archive#72).
-That was built while Soloist had no macOS build; Spotify added one on 2026-10-23
-(`docs/research/2026-11-reverify.md`), and #85 tries it in place of the VM.
+asked librespot not to pursue it). Until Spotify shipped a Mac build of Soloist (2026-10-23,
+`docs/research/2026-11-reverify.md`) that meant Soloist's Linux build in a small Linux VM (D53 spike, D55); the Mac
+build replaced it in #85 (Q188, Q189).
 
 ## Features, one by one
 
 | Feature (spec story) | Linux | macOS | Gap and ticket |
 |----------------------|-------|-------|----------------|
-| Setup wizard per Engine (1, 2) | ✅ Soloist; 🔶 app, librespot | 🔶 (✅ by 2026-10-20: app (pty + live), librespot (pty)); 🔶 the Soloist VM (Soloist's steps, VM setup in the status bar) | — |
+| Setup wizard per Engine (1, 2) | ✅ Soloist; 🔶 app, librespot | 🔶 (✅ by 2026-10-20: app (pty + live), librespot (pty)); 🔶 native Soloist (Q188): built, not yet run live (the same steps as Linux) | — |
 | Stay logged in (3); secrets in the OS store (63) | ✅ Secret Service | 🔶 Keychain (✅ by 2026-10-20: singularity-archive#64, live round trip) | — |
-| Engine updates itself (4) | ✅ Soloist | 🔶 the VM's Soloist (✅ by 2026-10-20: the guest fetches and swaps builds; same quiet-moment restart); ➖ the app updates itself; librespot ships with Singularity | — |
+| Engine updates itself (4) | ✅ Soloist | 🔶 native Soloist (Q188): built, not yet run live (the same updater, the `osx_arm64` build); ➖ the app updates itself; librespot ships with Singularity | — |
 | Health check (5) | ✅ names missing programs (singularity-archive#77): only those the Daemon runs (#98) | 🔶 (✅ by 2026-10-20: the audio-output row names the system output (cpal), missing programs named); since #98 it names only `tar`, and `open` with the app | — |
-| Lossless notice and fix (6, 26, 27) | ✅ | 🔶 (✅ by 2026-10-20: the VM's Soloist (its log, as on Linux); the app (quality level from Connect, not the exact bitrate)); librespot says "320 kbps, its best" | Stream Pane's exact bitrate: Soloist only (⚠️ the app doesn't report it) |
+| Lossless notice and fix (6, 26, 27) | ✅ | 🔶 native Soloist (Q188): built, not yet run live (its log, as on Linux); 🔶 the app (✅ by 2026-10-20: quality level from Connect, not the exact bitrate); librespot says "320 kbps, its best" | Stream Pane's exact bitrate: Soloist only (⚠️ the app doesn't report it) |
 | Home, search, library, pages, lyrics, devices, queue, playlists, podcasts, stats, Settings (7–25, 31–35, 68–80, 83) | ✅ | 🔶 shared code, much of it new or rebuilt since (✅ by 2026-10-20: pty scenarios passed on macOS) | — |
-| Audiobooks (84, singularity-archive#62): book pages, chapters, resume, library, search | ✅ Soloist (live: a chapter played, its resume point recorded); 🔶 app (Spotify's own player: expected to play, not tried); ⚠️ librespot: Spotify refuses it chapter keys, so playing one says "Audiobooks need Soloist or the Spotify app" (D57); pages, library and search work | 🔶 the VM's Soloist (✅ live check, 2026-10-20); 🔶 app as on Linux; ⚠️ librespot, the default, as on Linux | inherent (D57): DRM, not ours to get around |
-| Download speed and stalls (singularity-archive#45) | ✅ Soloist | 🔶 the VM's Soloist (✅ by 2026-10-20); ⚠️ neither the app nor librespot reports it | inherent; noted in the Stream Pane |
-| Media keys, OS now-playing (28) | ✅ MPRIS | 🔶 librespot and the Soloist VM: the Daemon's own Now Playing entry + remote commands (play/pause/next/previous/seek; built, awaits the owner's media keys); the app: its own entry | singularity-archive#68 (cover art in Now Playing still to do) |
+| Audiobooks (84, singularity-archive#62): book pages, chapters, resume, library, search | ✅ Soloist (live: a chapter played, its resume point recorded); 🔶 app (Spotify's own player: expected to play, not tried); ⚠️ librespot: Spotify refuses it chapter keys, so playing one says "Audiobooks need Soloist or the Spotify app" (D57); pages, library and search work | 🔶 native Soloist (Q188): built, not yet run live (the VM's Soloist played one, 2026-10-20); 🔶 app as on Linux; ⚠️ librespot (an Intel Mac's default) as on Linux | inherent (D57): DRM, not ours to get around |
+| Download speed and stalls (singularity-archive#45) | ✅ Soloist | 🔶 native Soloist (Q188): built, not yet run live (its log, as on Linux); ⚠️ neither the app nor librespot reports it | inherent; noted in the Stream Pane |
+| Media keys, OS now-playing (28) | ✅ MPRIS | 🔶 Soloist and librespot: the Daemon's own Now Playing entry + remote commands (play/pause/next/previous/seek; built, awaits the owner's media keys; Soloist has no entry of its own, Q192); the app: its own entry | singularity-archive#68 (cover art in Now Playing still to do) |
 | Track notifications (29) | ✅ D-Bus, with the cover | 🔶 `osascript` notifications, no cover (a process without an app bundle can't post its own) | singularity-archive#68 |
 | Music survives closing the terminal (30) | ✅ | 🔶 (✅ by 2026-10-20: own process group) | — |
 | Daemon starts at login (optional: a Client starts it anyway) | ✅ systemd user unit | 🔶 LaunchAgent (✅ by 2026-10-20: `packaging/launchd/install.sh` under a scratch label: start, exit-75 restart, uninstall) | — |
-| **Audio Widgets react to the music (40): spectrum, loudness, VU, rain, scope, the hole's pulse** | ✅ Soloist (PipeWire); 🔶 app (its PipeWire stream); 🔶 librespot (in-process) | 🔶 **librespot: in-process, no permission needed**; 🔶 Soloist VM: in-process (its PCM); 🔶 **app: Core Audio process tap, needs the terminal allowed under "System Audio Recording Only"** (silence otherwise, and Singularity says so) | singularity-archive#67 (live check with the app pending) |
+| **Audio Widgets react to the music (40): spectrum, loudness, VU, rain, scope, the hole's pulse** | ✅ Soloist (PipeWire); 🔶 app (its PipeWire stream); 🔶 librespot (in-process) | 🔶 **librespot: in-process, no permission needed**; 🔶 **Soloist (Q191) and the app: Core Audio process tap, needs the terminal allowed under "System Audio Recording Only"** (silence otherwise, and Singularity says so) | singularity-archive#67 (live checks pending) |
 | Visuals on the GPU, paused when hidden (36–42) | ✅ Vulkan | 🔶 Metal (✅ by 2026-10-20: "Apple M2") | `tap_cpu` budget on the M2: singularity-archive#71 |
 | Pixel tier: kitty graphics, shared memory (43) | ✅ kitty, Ghostty | 🔶 same code (POSIX `shm_open`); not tried in a real kitty/Ghostty on macOS yet | owner's terminal check |
 | `top` Widget (Terminal design) | ✅ `/proc` | 🔶 libproc, behind the Host since #96 (✅ by 2026-10-20: it listed processes, the Spotify app and its helpers too) | — |
 | Opening the Spotify login page in the browser | ✅ `xdg-open` | 🔶 `open`, behind the Host since #96 (✅ by 2026-10-20) | — |
 | Stale-Daemon check (singularity-archive#25) | ✅ `/proc/<pid>/exe` | 🔶 `proc_name`, behind the Host since #96 (✅ by 2026-10-20: singularity-archive#63) | — |
-| Engine stops with the Daemon | ✅ Soloist (`PR_SET_PDEATHSIG`) | 🔶 the VM stops when the Daemon quits (✅ by 2026-10-20; its helpers are the Daemon's children; after a SIGKILL: not tried, see the seams); ➖ the app keeps running (the user's app too); librespot is inside the Daemon | — |
-| "Restart the player" | ✅ Soloist; 🔶 app, librespot | 🔶 app (✅ by 2026-10-20); 🔶 librespot, the VM's Soloist | — |
+| Engine stops with the Daemon | ✅ Soloist (`PR_SET_PDEATHSIG`) | 🔶 Soloist stops when the Daemon quits (`kill_on_drop`); after a SIGKILL it runs on until the next Daemon start stops it (no `PR_SET_PDEATHSIG` on macOS); not yet run live; ➖ the app keeps running (the user's app too); librespot is inside the Daemon | — |
+| "Restart the player" | ✅ Soloist; 🔶 app, librespot | 🔶 app (✅ by 2026-10-20); 🔶 librespot, Soloist | — |
 | Local data, backups, config, paths (58–62, D50) | ✅ | 🔶 same XDG-style paths, decided in one place since D89 (App folders, #97) (✅ by 2026-10-20) | — |
 | Mini-player, mouse, palette, layouts, themes (44–57, 67) | ✅ | 🔶 rebuilt since (free tiling, Arrange mode, the wheel) (✅ by 2026-10-20) | — |
 | Demo mode (D90): the filter where events enter the Client, the redactor, the demo Listening log | ✅ pty `demo` and `PTY_DEMO=1 wheel-all`: no fake secret drawn | 🔶 shared code (the computer's name from the Host); not run on the Mac yet | — |
@@ -80,11 +80,11 @@ place, and callers outside these files carry no `cfg`, with **one exception, the
 
 | Seam | Linux | macOS | macOS status |
 |------|-------|-------|--------------|
-| Engine (ADR-0001, D51, D52, D55; chosen by the Engine assembly, `assembly.rs`, D77) | Soloist over its WebSocket; or the app / librespot | librespot; Soloist in the Soloist VM; the app (started hidden) | see the Engines table |
-| Where Soloist runs: the Soloist runner (`soloist/runner.rs`, D89) | a local process (`Local`, `soloist/runner.rs`) | the OS-free VM runner (`InVm`, `soloist/runner/vm.rs`; its contract tested on Linux against a fake VM, `tests/soloist_vm_runner.rs`) over the Soloist VM (`soloist_vm.rs`, `vm.rs`, `pcm.rs`: vfkit, gvproxy, audio over vsock; dev tool `examples/vm_probe.rs`, which drives `vm::Vm` directly, not the runner). The Daemon tells the Client whether Soloist runs in a VM (`soloist_in_vm`, Q94) | 🔶 #94: CI-built, not yet run on the Mac |
+| Engine (ADR-0001, D51, D52; chosen by the Engine assembly, `assembly.rs`, D77) | Soloist over its WebSocket; or the app / librespot | the same (Soloist on Apple Silicon, Q188) | see the Engines table |
+| Where Soloist runs: the Soloist runner (`soloist/runner.rs`, D89) | a local process (`Local`, `soloist/runner.rs`) | the same `Local` (the Soloist VM's runner is removed, Q189) | 🔶 CI-tested, not yet run live |
 | Engine `auto` and Soloist CPUs (`EngineKind::resolved_on`, `host::soloist_build`, `update::cdn_for`; D54, D73) | `auto` = Soloist on x86_64 and aarch64 (the build for this CPU), librespot on any other CPU | `auto` = librespot | 🔶 tested on Linux for both OSes (the OS and CPU are values) and by CI on macOS; not run on a Mac since it moved (D77, D89) |
-| Dying with the Daemon | Soloist is started with `PR_SET_PDEATHSIG` (`soloist/runner.rs`): the kernel stops it when the Daemon dies, even by SIGKILL | no such call: the VM's helpers (vfkit, gvproxy) are the Daemon's children and are stopped when it quits (`kill_on_drop`); after a SIGKILL nothing stops them | 🔶 the SIGKILL case not tried |
-| AudioTap (D16; `tap.rs`; the one seam whose `cfg` reaches its callers, see above) | `parec` on the Engine's PipeWire stream (Soloist's, or the app's); librespot in-process | librespot and the Soloist VM in-process; Core Audio process tap on Spotify.app (`process_tap.rs`, 48 → 44.1 kHz; dev tool `examples/tap_probe.rs`) | 🔶 singularity-archive#67 for the app |
+| Dying with the Daemon | Soloist is started with `PR_SET_PDEATHSIG` (`soloist/runner.rs`): the kernel stops it when the Daemon dies, even by SIGKILL | no such call: Soloist is stopped when the Daemon quits (`kill_on_drop`); one left by a SIGKILLed Daemon (its parent is then launchd) is stopped at the next start (`check_free`, the Host's `parent_of`) | 🔶 the SIGKILL case not tried live |
+| AudioTap (D16; `tap.rs`; the one seam whose `cfg` reaches its callers, see above) | `parec` on the Engine's PipeWire stream (Soloist's, or the app's); librespot in-process | librespot in-process; Core Audio process tap on Soloist's process or Spotify.app's (`process_tap.rs`, `Tap::Process`, 48 → 44.1 kHz; dev tool `examples/tap_probe.rs`) | 🔶 singularity-archive#67: live checks pending |
 | Secrets (D24; `secrets.rs`) | `secret-tool` | `/usr/bin/security` | 🔶 (✅ by 2026-10-20: singularity-archive#64) |
 | OS media integration (`os_media.rs`, D89: one module picks the adapter, owns the main-thread handover and the shared policy; `SINGULARITY_NOWPLAYING=off` turns it off on both, `SINGULARITY_DBUS=off` still works, an address in it counts only on Linux, Q99) | MPRIS on D-Bus (`os_media/mpris.rs`; its test `tests/mpris.rs` runs on Linux only) | Now Playing + remote commands (`os_media/now_playing.rs`, MediaPlayer framework, the macOS-only `objc2-*` dependencies in `daemon/Cargo.toml`; the main thread runs the run loop, tokio another thread) | 🔶 singularity-archive#68; the module (#95) not yet run on the Mac |
 | Notifications (part of OS media integration) | D-Bus, with the cover | `osascript`, without the cover | 🔶 singularity-archive#68 |
@@ -93,7 +93,7 @@ place, and callers outside these files carry no `cfg`, with **one exception, the
 | The computer's name (the Host; how the Spotify app's device is told apart on Connect) | `/etc/hostname`, else `hostname` from `/usr/bin`, `/bin` or `/usr/local/bin` | `scutil --get ComputerName` (`/usr/sbin`) | 🔶 #96, not yet run |
 | Opening a URL (the Host) | `xdg-open` from `/usr/bin`, `/bin` or `/usr/local/bin` | `open` from the same | 🔶 #96, not yet run (✅ by 2026-10-20, before the move) |
 | The Spotify app: detecting the installed app and starting it (`spotify_app`: `app_engine/linux.rs`, `app_engine/macos.rs`; whether it runs: the Host) | a `spotify` binary in `/usr/bin`, `/bin`, `/usr/local/bin` or `/snap/bin`, started as `spotify --minimized` | `Spotify.app` in `/Applications` or `~/Applications`, its version from its `Info.plist` (`defaults`), started with `open -gj -a Spotify` | 🔶 #96, not yet run (✅ by 2026-10-20, before the move). The health view's **Tools** row names the program that starts the app (`spotify`, `open`) only with `kind = "spotify-app"` |
-| Programs the Daemon runs (`programs.rs`; singularity-archive#77, audit S3). Processes are found and stopped through the Host, not `pgrep`/`pkill`; Soloist's Linux builds are unpacked in-process, not by `tar` (#98, Q102) | fixed locations (`/usr/bin`, `/bin`, `/usr/local/bin`; Spotify also `/snap/bin`), never `PATH`; the health check asks for `secret-tool` (while the keyring is on), `pactl`, `parec` | `/usr/bin`, `/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, in that order; the health check asks only for `tar` (the Soloist VM's image) | 🔶 #98, not yet run on the Mac |
+| Programs the Daemon runs (`programs.rs`; singularity-archive#77, audit S3). Processes are found and stopped through the Host, not `pgrep`/`pkill`; Soloist's builds are unpacked in-process, not by `tar` (#98, Q102) | fixed locations (`/usr/bin`, `/bin`, `/usr/local/bin`; Spotify also `/snap/bin`), never `PATH`; the health check asks for `secret-tool` (while the keyring is on), `pactl`, `parec` | `/usr/bin`, `/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, in that order; the health check asks for nothing (`tar` went with the Soloist VM), only `open` with the app | 🔶 #98, not yet run on the Mac |
 | Audio output name (health, `health.rs`) | `pactl` (the Engine's stream → its sink) | cpal's default output device | 🔶 (✅ by 2026-10-20) |
 | The Client starting the Daemon | `singularityd` next to the Client (never `PATH`). When a Daemon that the systemd unit ran goes away (replaced, crashed), every Client waits for it to exit and then 5 s for the unit to start the next one before starting one itself (`SERVICE_GRACE`, #145); one the unit didn't run is started again at once | the same, for the LaunchAgent | 🔶 (✅ by 2026-10-20); the wait for launchd not yet run on a Mac |
 | The last Home and library (#81, `daemon/src/last_seen.rs`): `home-and-library.json` in the App folders cache dir, owner-only, naming its account, removed on logout or when the listening data is deleted | `$XDG_CACHE_HOME/singularity/`, else `~/.cache/singularity/` | the same | 🔶 Linux: tests and a pty run with the fake Catalogue, not yet timed on the real account; not yet run on a Mac |
@@ -120,26 +120,24 @@ make its socket on a Mac. A new release is needed first.
 
 **Engines** (the Engine assembly, D77, and the Soloist session, D76)
 
-- [ ] librespot, the default: play, pause, next, seek, volume, "Restart the player"; after the Mac sleeps and after a
-  network change.
-- [ ] `auto` still means librespot; the device name in the phone's picker is the one Singularity shows; a bad
-  `engine.kind` resets only that key and says so (D77).
-- [ ] `kind = "soloist"`, the Soloist VM behind the Soloist runner (#94): first setup, a start in about 6 s after
-  that, pairing from the phone, FLAC playing, the audio Widgets moving; the setup steps and the status bar speak of
-  the VM (the Daemon now tells the Client, Q94). This is the real check of #94: `examples/vm_probe.rs` drives
-  `vm::Vm` directly and doesn't go through the runner.
-- [ ] The VM's Soloist session: a Build update at a quiet moment, a restart after the VM is stopped, the volume kept.
-- [ ] Quit the Daemon while the VM runs: `vfkit` and `gvproxy` are gone. Then `kill -9` the Daemon: are they still
-  running? (macOS has no `PR_SET_PDEATHSIG`; see "Dying with the Daemon".)
-- [ ] The VM after the Mac sleeps (#1).
+- [ ] Soloist, the default on Apple Silicon (Q188, Q190): the wizard's key step, the `osx_arm64` download, pairing
+  from the phone, FLAC playing, the audio Widgets moving through the process tap and its permission (Q191), the
+  stream Pane's speed; a Build update at a quiet moment; the volume kept across a restart.
+- [ ] Quit the Daemon while Soloist plays: Soloist is gone. Then `kill -9` the Daemon: Soloist runs on, and the next
+  Daemon start stops it and starts its own.
+- [ ] Soloist after the Mac sleeps (#1).
+- [ ] librespot (`kind = "librespot"`, an Intel Mac's default): play, pause, next, seek, volume, "Restart the player";
+  after the Mac sleeps and after a network change.
+- [ ] The device name in the phone's picker is the one Singularity shows; a bad `engine.kind` resets only that key and
+  says so (D77).
 - [ ] `kind = "spotify-app"`: Spotify.app is found (the new `spotify_app` module), its version shows, it starts
   hidden, its Connect device is found by the computer's name (`scutil`, the Host); the health view's Tools row.
-- [ ] The process tap on the app and its "System Audio Recording Only" permission on the new macOS
+- [ ] The process tap on the app and on Soloist, and its "System Audio Recording Only" permission on the new macOS
   (singularity-archive#67).
 
 **OS media integration** (#95)
 
-- [ ] The Now Playing entry in Control Centre with librespot and with the VM: title, artist, position; the media keys
+- [ ] The Now Playing entry in Control Centre with Soloist and with librespot: title, artist, position; the media keys
   (play/pause, next, previous) and dragging the position (singularity-archive#68).
 - [ ] `SINGULARITY_NOWPLAYING=off` turns it off (Q92); `SINGULARITY_DBUS=off` too, and a `SINGULARITY_DBUS` address
   doesn't turn it on (Q99).

@@ -8,35 +8,36 @@ through Spotify Soloist, and built-in audio-reactive visuals.
 ### Backends
 
 **Engine**:
-The thing that actually decodes and plays audio: Spotify Soloist (SoloistEngine: on Linux, or on macOS in the
-Soloist VM, D55), librespot inside the Daemon (LibrespotEngine, D52; the macOS default since D54), or the official
-Spotify app, started hidden (AppEngine, D51), each on either OS. Whichever runs is "this computer" in the device list;
-`[engine] kind` picks it (`auto`: Soloist on Linux, librespot on macOS).
+The thing that actually decodes and plays audio: Spotify Soloist (SoloistEngine: on Linux and Apple Silicon Macs,
+Q188), librespot inside the Daemon (LibrespotEngine, D52), or the official Spotify app, started hidden (AppEngine,
+D51), each on either OS. Whichever runs is "this computer" in the device list; `[engine] kind` picks it (`auto`:
+Soloist where Spotify ships it, librespot elsewhere, such as an Intel Mac: Q190).
 _Avoid_: player backend, daemon, streamer
 
 **AppEngine**:
 The Engine that is the official Spotify desktop app, started hidden and driven over Connect; what it plays is read
-from the Connect cluster. The lossless choice on macOS.
+from the Connect cluster. The lossless choice on an Intel Mac.
 _Avoid_: DesktopAppEngine (its old name), Spotify engine
 
 **LibrespotEngine**:
 The Engine that is librespot (a Connect receiver and player) running inside the Daemon, on Linux and macOS alike: the
-light choice and the macOS default (D54), at most 320 kbps, never lossless. Driven over Connect like the AppEngine; its samples feed the AudioTap
+light choice and the default where Soloist has no build (an Intel Mac), at most 320 kbps, never lossless. Driven over Connect like the AppEngine; its samples feed the AudioTap
 directly (the tap's *Feed*).
 _Avoid_: built-in player (fine in UI text, not as a term), spotifyd
 
-**Soloist VM**:
-Soloist's Linux build run on macOS inside a small Linux VM the Daemon manages (`kind = "soloist"` there, D55): the
-SoloistEngine behind the VM's Soloist runner. Its audio comes to the Daemon over vsock and plays from there.
-_Avoid_: Linux VM engine, "the VM Engine" (the Engine is still Soloist)
+**Soloist VM** (retired, Q189):
+Soloist's Linux build run on macOS inside a small Linux VM the Daemon managed (D55), until Spotify's Mac build
+replaced it (Q188). Only history refers to it.
+_Avoid_: using it for the native Mac Soloist
 
 **Process tap**:
-The macOS AudioTap source for the Spotify app as Engine (#67): Core Audio's per-process capture, which needs the
-"System Audio Recording Only" permission for the terminal Singularity runs in.
+The macOS AudioTap source for an Engine that is another process, the Spotify app (#67) or Soloist (Q191): Core
+Audio's per-process capture, which needs the "System Audio Recording Only" permission for the terminal Singularity
+runs in.
 _Avoid_: screen recording, loopback
 
 **Feed**:
-The AudioTap's in-process input: an Engine that plays from the Daemon (librespot, the Soloist VM) or the process tap
+The AudioTap's in-process input: an Engine that plays from the Daemon (librespot) or the process tap
 hands it samples, only while a Client shows audio Widgets.
 
 **Platform seam**:
@@ -50,8 +51,8 @@ programs the Daemon runs, the audio output's name, and the socket's folder (App 
 _Avoid_: port, backend
 
 **Soloist runner**:
-Where Soloist runs and how it is kept alive: on Linux a local process that dies with the Daemon, on macOS the Soloist
-VM. It starts Soloist, says its version and WebSocket address, keeps its build current, announces it for pairing, and
+Where Soloist runs and how it is kept alive: a local process that dies with the Daemon (on macOS, one left behind by
+a killed Daemon is stopped at the next start). It starts Soloist, says its version and WebSocket address, keeps its build current, announces it for pairing, and
 stops it with the Daemon. The Soloist session (one run's state machine) talks to Soloist through it (D89).
 _Avoid_: VM host, launcher
 
