@@ -156,21 +156,23 @@ fn a_name_already_taken_is_refused_and_suggestions_count_up() {
 fn delete_removes_the_design_on_screen_and_leaves_a_built_in_one() {
     let (mut s, mem) = shown();
     // a built-in one: nothing to delete
-    assert_eq!(s.delete(), None);
+    assert_eq!(s.delete(None), None);
     // its edited copy: the copy goes, its built-in Design stays on screen
     let cockpit = crate::design::by_id("cockpit").unwrap();
     s.show_built_in(cockpit);
     let a = edit(Node::cockpit(), Widget::Fft, Widget::Loudness);
     let _ = s.edited(&a, THEME, false);
-    let o = s.delete().unwrap().expect("deleted");
+    let (o, kept) = s.delete(Some("Ctrl+Z")).unwrap().expect("deleted");
     assert_eq!((said(&o), o.saves_ui()), (Some("Deleted \"Cockpit (edited)\" · back to Cockpit"), true));
+    assert_eq!(kept, None, "an \"(edited)\" copy has the layout undo instead");
     assert_eq!((s.file(), s.design()), (None, cockpit));
     assert!(files(&mem).is_empty(), "the unnamed edit is gone");
     // a Design of your own (made from Cockpit): gone, and the default Design is on screen
     let _ = s.save_as("Mine", &a, THEME);
     let _ = s.save_as("Other", &a, THEME);
-    let o = s.delete().unwrap().expect("deleted");
+    let (o, kept) = s.delete(None).unwrap().expect("deleted");
     assert_eq!(said(&o), Some("Deleted \"Other\" · back to Singularity"));
+    assert_eq!(kept.map(|k| k.saved.name), Some("Other".to_string()));
     assert_eq!((s.file(), s.design()), (None, 0));
     assert_eq!(files(&mem), [("mine".to_string(), "Mine".to_string(), false)], "only the one on screen goes");
     assert!(s.picker_items().iter().all(|i| i.1 != "Other"), "nor in the picker");
@@ -184,11 +186,61 @@ fn a_delete_that_cant_remove_the_file_says_so_and_changes_nothing() {
     let a = edit(Node::cockpit(), Widget::Fft, Widget::Loudness);
     let _ = s.save_as("Mine", &a, THEME);
     mem.fail_next.set(true);
-    let o = s.delete().unwrap().expect_err("not deleted");
+    let o = s.delete(Some("Ctrl+Z")).unwrap().expect_err("not deleted");
     assert_eq!(o.steps(), [Step::Say("Couldn't delete \"Mine\": read-only folder".into())]);
     assert_eq!((s.file(), s.design()), (Some("mine"), cockpit), "still on screen");
     assert_eq!(files(&mem).len(), 1);
     assert!(s.picker_items().iter().any(|i| i.1 == "Mine"));
+}
+
+/// Q151: a Design of the user's deleted comes back from `undelete` exactly as it was, in its place in the list; the bar
+/// offers the key it was given. One whose file name was taken meanwhile isn't written over.
+#[test]
+fn an_undone_delete_puts_the_same_design_back_in_its_place() {
+    let (mut s, mem) = shown();
+    let cockpit = crate::design::by_id("cockpit").unwrap();
+    s.show_built_in(cockpit);
+    let a = edit(Node::cockpit(), Widget::Fft, Widget::Loudness);
+    for n in ["Alpha", "Mine", "Zed"] {
+        let _ = s.save_as(n, &a, THEME);
+    }
+    let _ = s.save_as("Mine", &edit(Node::cockpit(), Widget::Home, Widget::Fft), "ember");
+    let (was, items) = (mem.files.borrow().get("mine").cloned().unwrap(), s.picker_items());
+    let (o, kept) = s.delete(Some("Ctrl+Z")).unwrap().expect("deleted");
+    assert_eq!(said(&o), Some("Deleted \"Mine\" · Ctrl+Z to undo"));
+    assert!(!mem.files.borrow().contains_key("mine"), "its file goes at once");
+    let kept = kept.expect("kept for its undo");
+    let o = s.undelete(&kept).expect("back");
+    assert_eq!((said(&o), o.saves_ui()), (Some("Brought back \"Mine\""), true));
+    assert_eq!(mem.files.borrow().get("mine"), Some(&was), "the same Design");
+    assert_eq!(s.picker_items(), items, "in its place");
+    // taken meanwhile (another Client saved one by that name): left alone
+    s.open(&was);
+    let (_, kept) = s.delete(None).unwrap().unwrap();
+    let other = Saved { name: "Mine".into(), ..was.clone() };
+    mem.files.borrow_mut().insert("mine".into(), Saved { design: "singularity".into(), ..other });
+    let o = s.undelete(&kept.unwrap()).expect_err("not over it");
+    assert_eq!(said(&o), Some("There is already a design called \"Mine\""));
+    assert_eq!(mem.files.borrow().get("mine").map(|s| s.design.as_str()), Some("singularity"));
+}
+
+/// Q151, the layouts folder: the undone delete puts the file's own text back, byte for byte (a comment added by hand
+/// included).
+#[test]
+fn an_undone_delete_puts_the_file_back_byte_for_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = ShownDesign::default();
+    s.set_store(Box::new(Folder(dir.path().to_path_buf())));
+    let _ = s.save_as("Mine", &edit(Node::singularity(), Widget::Stream, Widget::Queue), THEME);
+    let file = dir.path().join("mine.toml");
+    let text = std::fs::read_to_string(&file).unwrap() + "# a note of my own\n";
+    std::fs::write(&file, &text).unwrap();
+    let _ = s.reload();
+    let (_, kept) = s.delete(None).unwrap().expect("deleted");
+    assert!(!file.exists(), "removed at once: a crash now leaves it deleted, not half there");
+    let _ = s.undelete(&kept.unwrap()).expect("back");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+    assert_eq!(s.saved().len(), 1);
 }
 
 #[test]

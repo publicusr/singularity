@@ -382,7 +382,18 @@ impl App {
         arrange!(self, commit, tree)
     }
 
+    /// Ctrl+Z. Right after Ctrl+K deleted a Design of the user's, it brings that Design back (Q151): while the screen
+    /// still shows what the delete left (the same Design, layout and Theme, no file, outside Arrange mode) and there is
+    /// no later edit to undo first. Anything else in between makes that delete final.
     pub fn undo_layout(&mut self) {
+        if let Some(u) = self.undelete.take() {
+            if self.arrange.history.can_undo() {
+                self.undelete = Some(u);
+            } else if !self.arrange.is_on() && self.shown.file().is_none() && (self.shown.design(), &self.theme.id, &self.layout) == (u.left.0, &u.left.1, &u.left.2) {
+                self.undelete(u);
+                return;
+            }
+        }
         arrange!(self, undo, true)
     }
 
@@ -512,15 +523,18 @@ impl App {
     ///
     /// `its_history`: the layout undo history is the deleted Design's (not, from the Design picker, the one it opened
     /// on, whose history stays). Then one undo brings an "(edited)" copy back; a Design of the user's takes its
-    /// history with it.
-    pub fn delete_design(&mut self, its_history: bool) {
+    /// history with it, and comes back as an `Undelete` instead (Q151), whose key the bar offers (`undo_key`).
+    pub fn delete_design(&mut self, its_history: bool, undo_key: Option<&str>) -> Option<crate::looks::Undelete> {
         // a divider held meanwhile is let go first, on the Design it moved (Q103)
         self.gesture_interrupted();
         let before = self.arrange.snapshot(&scene!(self));
-        let (theme, edited) = (self.theme.id.clone(), self.shown.on_edited_copy());
-        let o = match self.shown.delete() {
-            None => return,
-            Some(Err(o)) => return self.shown_did(o),
+        let (theme, edited, layout) = (self.theme.id.clone(), self.shown.on_edited_copy(), self.layout.clone());
+        let (o, kept) = match self.shown.delete(undo_key) {
+            None => return None,
+            Some(Err(o)) => {
+                self.shown_did(o);
+                return None;
+            }
             Some(Ok(o)) => o,
         };
         self.set_design(self.shown.design());
@@ -533,6 +547,8 @@ impl App {
             (true, true) => self.arrange.reset_done(before, &self.layout),
             (true, false) => self.arrange.forget_history(),
         }
+        let left = (self.shown.design(), self.theme.id.clone(), self.layout.clone());
+        kept.map(|file| crate::looks::Undelete { file, theme: theme.clone(), layout, left, before: None })
     }
 
     // ── close and split ───────────────────────────────────────────────

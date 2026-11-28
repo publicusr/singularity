@@ -23,7 +23,25 @@ pub struct Picker {
     pub items: Vec<(String, String, String)>,
     pub sel: usize,
     /// what to go back to on Esc: design, theme id, layout and the saved layout's file
-    before: (usize, String, crate::arrangement::Arrangement, crate::shown::Mark),
+    before: Before,
+    /// the Design of the user's deleted last while it's open, which Undo brings back (Q151); it goes with the picker
+    pub(crate) undo: Option<Undelete>,
+}
+
+/// What the Design picker's Esc goes back to: design, theme id, layout and the saved layout's file.
+type Before = (usize, String, crate::arrangement::Arrangement, crate::shown::Mark);
+
+/// A Design of the user's just deleted, while its undo is offered (#80, owner Q151): its file, kept in memory only
+/// (`shown::Deleted`), and the screen it was on.
+pub struct Undelete {
+    pub(crate) file: crate::shown::Deleted,
+    /// the Theme and layout on screen as it was deleted (a ◂ ▸ swap isn't in its file)
+    pub(crate) theme: String,
+    pub(crate) layout: crate::arrangement::Arrangement,
+    /// what the delete left on screen: Ctrl+K's undo (Ctrl+Z) brings it back only while that is still there
+    pub(crate) left: (usize, String, crate::arrangement::Arrangement),
+    /// (the Design picker's) what Esc went back to before the delete, if it was the Design deleted
+    pub(crate) before: Option<Before>,
 }
 
 /// Delete design's yes/no (#80): the Design on screen it asks about (its file and name), and the Design picker it was
@@ -191,7 +209,11 @@ impl App {
             PickerKind::Theme => self.theme.id.clone(),
         };
         let sel = items.iter().position(|(id, ..)| *id == current).unwrap_or(0);
-        self.open_popup(crate::app::Popup::Picker(Picker { kind, items, sel, before: (self.shown.design(), self.theme.id.clone(), self.layout.clone(), self.shown.mark()) }));
+        // (a delete from Ctrl+K is final once the Design picker opens: its Undo is for its own deletes)
+        if kind == PickerKind::Design {
+            self.undelete = None;
+        }
+        self.open_popup(crate::app::Popup::Picker(Picker { kind, items, sel, before: (self.shown.design(), self.theme.id.clone(), self.layout.clone(), self.shown.mark()), undo: None }));
     }
 
     /// Put saved layout `s` on screen (with the colours it was saved with, or its design's).
@@ -377,13 +399,81 @@ impl App {
         }
     }
 
-    /// Ctrl+K → Delete design… (or its key, `reset_layout`'s too): asks about the Design on screen first. A built-in
-    /// Design has nothing to delete.
+    /// Ctrl+K → Delete design… (or its key, `reset_layout`'s too): a Design of the user's is deleted at once, and
+    /// Ctrl+Z brings it back while the screen still shows what the delete left (Q151, `App::undo_layout`); an
+    /// "(edited)" copy is asked about first. A built-in Design has nothing to delete.
     pub fn ask_delete_design(&mut self) {
         if self.shown.file().is_none() {
             return self.say(format!("{} is built in: nothing to delete", self.shown.built_in().name));
         }
-        self.ask_delete(None);
+        if self.shown.on_edited_copy() {
+            return self.ask_delete(None);
+        }
+        if let Some(u) = self.delete_design(true, Some("Ctrl+Z")) {
+            self.undelete = Some(u);
+        }
+    }
+
+    /// The Design picker's delete key on a Design of the user's (the one on screen): deleted at once, and the picker
+    /// stays, without it and on the Design now on screen, offering Undo until it closes (Q151).
+    fn picker_delete(&mut self) {
+        let Some(mut p) = self.take_picker() else { return };
+        let Some(file) = self.shown.file().map(str::to_string) else { return self.open_popup(crate::app::Popup::Picker(p)) };
+        // the undo history is the Design the picker opened on: it goes only if that's the one deleted
+        let opened_on = p.before.3.file() == Some(file.as_str());
+        if let Some(mut u) = self.delete_design(opened_on, None) {
+            u.before = self.picker_after_delete(&mut p, &file);
+            p.undo = Some(u);
+        }
+        self.open_popup(crate::app::Popup::Picker(p));
+    }
+
+    /// The picker after Design `file` was deleted: its rows without it, on the Design now on screen; Esc can't go back
+    /// to a Design that's gone, so it keeps the one now on screen (what it went back to before, if so).
+    fn picker_after_delete(&self, p: &mut Picker, file: &str) -> Option<Before> {
+        self.picker_on_shown(p);
+        (p.before.3.file() == Some(file)).then(|| std::mem::replace(&mut p.before, (self.shown.design(), self.theme.id.clone(), self.layout.clone(), self.shown.mark())))
+    }
+
+    /// The picker's rows read again, highlighting the Design on screen.
+    fn picker_on_shown(&self, p: &mut Picker) {
+        p.items = self.shown.picker_items();
+        let cur = self.shown.picker_current();
+        p.sel = p.items.iter().position(|i| i.0 == cur).unwrap_or(0);
+    }
+
+    /// The picker's Undo (`u`, or a click on it): the Design deleted last comes back as it was, on screen and
+    /// highlighted in its place, and Esc goes back to what it did before the delete.
+    pub fn picker_undo(&mut self) {
+        let Some(mut p) = self.take_picker() else { return };
+        if let Some(mut u) = p.undo.take() {
+            let before = u.before.take();
+            if self.undelete(u) {
+                self.picker_on_shown(&mut p);
+                if let Some(b) = before {
+                    p.before = b;
+                }
+            }
+        }
+        self.open_popup(crate::app::Popup::Picker(p));
+    }
+
+    /// Put a deleted Design of the user's back (its file, and the screen it was on). False: it couldn't be (the bar
+    /// says why).
+    pub(crate) fn undelete(&mut self, u: Undelete) -> bool {
+        match self.shown.undelete(&u.file) {
+            Err(o) => {
+                self.shown_did(o);
+                false
+            }
+            Ok(o) => {
+                self.use_layout(&u.file.saved);
+                self.set_theme(&u.theme);
+                self.set_layout(u.layout);
+                self.shown_did(o);
+                true
+            }
+        }
     }
 
     /// The yes/no for the Design on screen; `back`, the Design picker it was asked from.
@@ -410,17 +500,14 @@ impl App {
         // the undo history is the Design the picker opened on: it goes only if that's the one deleted
         let opened_on = ask.back.as_ref().is_none_or(|p| p.before.3.file() == Some(ask.file.as_str()));
         if yes {
-            self.delete_design(opened_on);
+            // (only an "(edited)" copy is asked about: nothing to undo here but the layout undo it has always had)
+            let _ = self.delete_design(opened_on, None);
         }
         let Some(mut p) = ask.back else { return };
         if yes && self.shown.file().is_none() {
-            p.items = self.shown.picker_items();
-            let cur = self.shown.picker_current();
-            p.sel = p.items.iter().position(|i| i.0 == cur).unwrap_or(0);
-            // Esc can't go back to a Design that's gone: it keeps the one now on screen
-            if p.before.3.file() == Some(ask.file.as_str()) {
-                p.before = (self.shown.design(), self.theme.id.clone(), self.layout.clone(), self.shown.mark());
-            }
+            // (another delete: the one before can't be undone any more)
+            p.undo = None;
+            let _ = self.picker_after_delete(&mut p, &ask.file);
         }
         self.open_popup(crate::app::Popup::Picker(p));
     }
@@ -433,7 +520,7 @@ impl App {
 
     pub fn picker_key(&mut self, k: KeyEvent) {
         let Some(p) = self.picker() else { return };
-        let (sel, n) = (p.sel, p.items.len());
+        let (sel, n, undo) = (p.sel, p.items.len(), p.undo.is_some());
         match k.code {
             KeyCode::Up => self.picker_select(sel.saturating_sub(1)),
             KeyCode::Down => self.picker_select((sel + 1).min(n.saturating_sub(1))),
@@ -441,11 +528,13 @@ impl App {
             KeyCode::End => self.picker_select(n.saturating_sub(1)),
             KeyCode::Enter => self.picker_keep(),
             KeyCode::Esc | KeyCode::Char('q') => self.picker_cancel(),
-            // (a Mac's delete key is Backspace) a built-in Design has none
-            KeyCode::Delete | KeyCode::Backspace if self.picker_on_own() => {
+            // (a Mac's delete key is Backspace) a built-in Design has none; an "(edited)" copy is asked about first
+            KeyCode::Delete | KeyCode::Backspace if self.picker_on_own() && self.shown.on_edited_copy() => {
                 let p = self.take_picker();
                 self.ask_delete(p);
             }
+            KeyCode::Delete | KeyCode::Backspace if self.picker_on_own() => self.picker_delete(),
+            KeyCode::Char('u') if undo => self.picker_undo(),
             _ => {}
         }
     }
@@ -461,7 +550,8 @@ fn theme_items(user: &[Theme]) -> Vec<(String, String, String)> {
 }
 
 pub fn picker_rect(area: Rect, p: &Picker) -> Rect {
-    centered(area, 64, p.items.len() as u16 + 5)
+    // (one more line while it offers Undo)
+    centered(area, 64, p.items.len() as u16 + 5 + p.undo.is_some() as u16)
 }
 
 /// The picker: the list, a swatch of the theme on screen, and how to keep or undo it.
@@ -475,8 +565,9 @@ pub fn draw_picker(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     let inner = popup(buf, r, th, title);
     let items = p.items.clone();
     let sel = p.sel;
+    let undo = p.undo.as_ref().map(|u| u.file.saved.name.clone());
     // a long list scrolls with the selection
-    let rows = inner.height.saturating_sub(2).max(1) as usize;
+    let rows = inner.height.saturating_sub(2 + undo.is_some() as u16).max(1) as usize;
     let first = crate::scroll::window(sel, rows, items.len());
     for (i, (_, name, what)) in items.iter().enumerate().skip(first).take(rows) {
         let y = inner.y + (i - first) as u16;
@@ -494,8 +585,17 @@ pub fn draw_picker(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
         text(buf, x, y, 2, "██", th.s(c));
         x += 2;
     }
-    let hint = if app.picker_on_own() { "↑↓ preview · Enter keep · Esc put back · Del delete" } else { "↑↓ preview · Enter keep · Esc put back" };
-    text(buf, inner.x + 1, inner.bottom().saturating_sub(1), inner.width.saturating_sub(2), hint, th.s(th.dim));
+    // the Design deleted last, above the swatch, and its Undo (a click too)
+    if let Some(name) = undo {
+        let (y, w) = (inner.bottom().saturating_sub(3), inner.width.saturating_sub(2));
+        let said = format!("Deleted \"{name}\" · ");
+        let n = (said.chars().count() as u16).min(w);
+        text(buf, inner.x + 1, y, w, &said, th.s(th.dim));
+        text(buf, inner.x + 1 + n, y, w - n, "Undo", th.s(th.accent));
+        app.hit(Rect::new(inner.x + 1 + n, y, 4.min(w - n), 1), Hit::PickerUndo);
+    }
+    let hint = if app.picker_on_own() { format!("↑↓ preview · Enter keep · Esc put back · {} delete", crate::keymap::DELETE_KEY) } else { "↑↓ preview · Enter keep · Esc put back".to_string() };
+    text(buf, inner.x + 1, inner.bottom().saturating_sub(1), inner.width.saturating_sub(2), &hint, th.s(th.dim));
 }
 
 pub fn delete_ask_rect(area: Rect) -> Rect {

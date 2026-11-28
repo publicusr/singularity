@@ -95,6 +95,7 @@ place, and callers outside these files carry no `cfg`, with **one exception, the
 | Audio output name (health, `health.rs`) | `pactl` (the Engine's stream → its sink) | cpal's default output device | 🔶 (✅ by 2026-10-20) |
 | The Client starting the Daemon | `singularityd` next to the Client (never `PATH`). When a Daemon that the systemd unit ran goes away (replaced, crashed), every Client waits for it to exit and then 5 s for the unit to start the next one before starting one itself (`SERVICE_GRACE`, #145); one the unit didn't run is started again at once | the same, for the LaunchAgent | 🔶 (✅ by 2026-10-20); the wait for launchd not yet run on a Mac |
 | The last Home and library (#81, `daemon/src/last_seen.rs`): `home-and-library.json` in the App folders cache dir, owner-only, naming its account, removed on logout | `$XDG_CACHE_HOME/singularity/`, else `~/.cache/singularity/` | the same | 🔶 Linux: tests and a pty run with the fake Catalogue, not yet timed on the real account; not yet run on a Mac |
+| The delete key's name in hints (`keymap::DELETE_KEY`, owner Q132) | "Del" | "delete" (the Mac's delete key sends Backspace) | 🔶 not yet seen on a Mac |
 | Socket dir (App folders, `config/src/app_folders.rs`, D89) | `$XDG_RUNTIME_DIR/singularity/` | `$TMPDIR/singularity-<uid>/singularity/` (per-user `$TMPDIR`; the uid part reads "user", #3) | 🔶 a Mac couldn't make its socket from 2026-10-25 until `b2c8d15` (2026-11-20), which no Mac has run; #97 not yet run there either |
 
 ## Not yet run on macOS
@@ -163,7 +164,8 @@ make its socket on a Mac. A new release is needed first.
 - [ ] Lyrics and the Karaoke Widget and Design (D67, D75), big text in the terminal's own font (Ghostty's config where
   macOS keeps it, `termfont.rs`).
 - [ ] Free tiling and Arrange mode (D66, D84, D87): mouse, touchpad and keyboard at the Mac's sizes; the Tray, the
-  Widget picker, New design…, Delete design (#80); every Widget at the Mac's Pane sizes (#6).
+  Widget picker, New design…, Delete design (#80) and its undo, the picker's hint saying "delete" (Q132); every Widget
+  at the Mac's Pane sizes (#6).
 - [ ] The wheel and the touchpad in Ghostty: one notch moves one step (2026-10-23), a touchpad a row a report (D86,
   #32), every list and every popup scrolls under the pointer (popups own the wheel since 2026-11-01; pty `wheel-all`
   shows them all); over a Pane the wheel scrolls a list's view, the pointer highlights a row, a click picks it (D86).
