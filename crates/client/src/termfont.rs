@@ -18,6 +18,8 @@ pub struct Face {
 
 /// The terminal font's regular and bold faces (bold is the regular one again when the family has no bold).
 pub struct TermFont {
+    /// its family's name
+    pub family: String,
     pub regular: Face,
     pub bold: Face,
 }
@@ -173,8 +175,39 @@ pub fn find() -> Option<TermFont> {
     candidates().into_iter().find_map(|family| {
         let r = pick(&db, &family, 400)?;
         let b = pick(&db, &family, 700).filter(|b| db.face(*b).is_some_and(|f| f.weight.0 >= 600)).unwrap_or(r);
-        Some(TermFont { regular: face(&db, r)?, bold: face(&db, b)? })
+        Some(TermFont { family: family.clone(), regular: face(&db, r)?, bold: face(&db, b)? })
     })
+}
+
+/// A system font that draws `c`, the way a terminal falls back for a character its font (`family`) lacks: fontconfig's
+/// order for that family and character where `fc-match` is installed, else any installed face (monospaced, upright
+/// and regular weight first). None when no font has it.
+pub fn with_char(c: char, family: Option<&str>) -> Option<Face> {
+    let has = |data: &[u8], index: u32| ttf_parser::Face::parse(data, index).is_ok_and(|f| f.glyph_index(c).is_some());
+    let pattern = format!("{}:charset={:x}", family.unwrap_or("monospace"), c as u32);
+    let out = std::process::Command::new("fc-match")
+        .env_remove(singularity_config::host::SECRET_ENV)
+        .args(["-s", "-f", "%{file}|%{index}\\n", &pattern])
+        .stderr(std::process::Stdio::null())
+        .output();
+    if let Ok(out) = out
+        && out.status.success()
+    {
+        for line in String::from_utf8_lossy(&out.stdout).lines().take(64) {
+            let Some((file, index)) = line.rsplit_once('|') else { continue };
+            let index = index.trim().parse().unwrap_or(0);
+            if let Ok(data) = std::fs::read(file)
+                && has(&data, index)
+            {
+                return Some(Face { data, index });
+            }
+        }
+    }
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    let mut faces: Vec<&fontdb::FaceInfo> = db.faces().collect();
+    faces.sort_by_key(|f| (!f.monospaced, f.style != fontdb::Style::Normal, f.weight.0.abs_diff(400)));
+    faces.into_iter().find_map(|f| db.with_face_data(f.id, |data, index| has(data, index).then(|| Face { data: data.to_vec(), index })).flatten())
 }
 
 #[cfg(test)]

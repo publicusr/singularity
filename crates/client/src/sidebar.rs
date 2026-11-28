@@ -1,11 +1,11 @@
 //! The library sidebar (#9): Home, Liked Songs, playlists (folders indented), saved albums, followed artists.
 
 use crate::app::{App, Hit};
-use crate::theme::Theme;
+use crate::theme::{Rgb, Theme};
 use crate::ui::{text, blank};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
+use ratatui::style::{Color, Modifier};
 use singularity_proto::LibraryItem;
 
 #[derive(Default, Clone, Copy)]
@@ -233,6 +233,11 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
             let has_art = art.as_ref().is_some_and(|u| app.covers.get(u).is_some());
             match art.filter(|_| has_art) {
                 Some(url) => crate::home::cover(buf, Rect::new(x, y, cw.min(e.right().saturating_sub(x)), cover), &url, g, app, th),
+                // Home: its ⌂ as big as a cover (#76)
+                None if row == 0 => {
+                    let slot = Rect::new(x, y, cw.min(e.right().saturating_sub(x)), cover);
+                    home_icon(buf, slot, if current { th.accent } else { th.dim }, bg, app);
+                }
                 // the glyph where the cover goes (across the middle of a bigger one), level with the name
                 None => {
                     let gx = if cover == 2 { x + 1 } else { x + cover - 1 };
@@ -273,6 +278,66 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         app.hit(rect, h);
     }
     app.sidebar = side;
+}
+
+/// Home's picture where the others have covers (#76; the owner, 2026-11-28: "a larger version of the og icon"): the ⌂ it
+/// has always had, its ink four fifths of a cover's height, in `c` straight on the row's background `bg` (no square
+/// behind it). On the pixel tier it is the ⌂ the terminal shows, drawn big (as big text is): its font's own, else the
+/// one the system has (as the terminal falls back). On cells, or with no font at all that has ⌂, the same outline in
+/// braille dots.
+fn home_icon(buf: &mut Buffer, slot: Rect, c: Rgb, bg: Color, app: &mut App) {
+    use crate::bigtext::{Span, ink, key, render};
+    if slot.width == 0 || slot.height == 0 {
+        return;
+    }
+    if let Some((cw, ch)) = app.pixel_text_for(slot)
+        && let (img_w, img_h) = ((slot.width as f64 * cw).round() as u32, (slot.height as f64 * ch).round() as u32)
+        && let Some((px, pen, baseline)) = centred(img_w, img_h, |px| ink('⌂', px))
+        && let Some(kitty) = app.kitty.as_mut()
+    {
+        let spans = [Span { x: pen, text: "⌂", rgb: c, px, bold: false }];
+        kitty.place_rgba(key(&spans, img_w, img_h, baseline), slot, None, || (img_w, img_h, render(&spans, img_w, img_h, baseline)));
+        return;
+    }
+    // braille: two dots across a cell and four down, about square; four fifths of the slot's height, a roof at 45° over
+    // walls a bit taller than it
+    let (dw, dh) = (slot.width as i32 * 2, slot.height as i32 * 4);
+    let h = ((dh as f32 * 0.8).round() as i32).clamp(4.min(dh), dh);
+    let a = (((h as f32 * 0.78 - 1.0) / 2.0).round() as i32).clamp(1, ((dw - 1) / 2).max(1));
+    let (left, top) = ((dw - 2 * a - 1).max(0) / 2, (dh - h) / 2);
+    let (cx, eave, bottom) = (left + a, top + a, top + h - 1);
+    let mut dots = vec![];
+    for k in 0..=a {
+        dots.extend([(cx - k, top + k), (cx + k, top + k)]);
+    }
+    for y in eave..=bottom {
+        dots.extend([(cx - a, y), (cx + a, y)]);
+    }
+    dots.extend((cx - a..=cx + a).map(|x| (x, bottom)));
+    let mut bits = vec![0u32; slot.width as usize * slot.height as usize];
+    for (x, y) in dots {
+        if x < 0 || y < 0 || x >= dw || y >= dh {
+            continue;
+        }
+        const BIT: [[u32; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
+        bits[(y / 4) as usize * slot.width as usize + (x / 2) as usize] |= BIT[(x % 2) as usize][(y % 4) as usize];
+    }
+    for (i, b) in bits.into_iter().enumerate().filter(|(_, b)| *b != 0) {
+        let (x, y) = (slot.x + (i % slot.width as usize) as u16, slot.y + (i / slot.width as usize) as u16);
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            cell.set_char(char::from_u32(0x2800 + b).unwrap_or(' ')).set_fg(c.color()).set_bg(bg);
+        }
+    }
+}
+
+/// The size a glyph is drawn at to fill four fifths of a `w`×`h`-pixel image's height (or of its width, whichever is
+/// less), with its pen position and baseline that centre its ink: `ink` gives the ink at a size (`bigtext::ink`).
+/// None when no font draws it.
+fn centred(w: u32, h: u32, ink: impl Fn(f32) -> Option<(f32, f32, f32, f32)>) -> Option<(f32, f32, f32)> {
+    let (_, _, w0, h0) = ink(100.0).filter(|i| i.2 > 0.0 && i.3 > 0.0)?;
+    let px = (100.0 * (0.8 * h as f32 / h0).min(0.8 * w as f32 / w0)).floor().max(1.0);
+    let (xmin, ymin, iw, ih) = ink(px)?;
+    Some((px, ((w as f32 - iw) / 2.0 - xmin).round(), ((h as f32 - ih) / 2.0 + ymin + ih).round()))
 }
 
 #[cfg(test)]

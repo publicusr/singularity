@@ -25,8 +25,9 @@ static BOLD: &[u8] = include_bytes!("../assets/fonts/NotoSans-Bold.ttf");
 static NOTES: &[u8] = include_bytes!("../assets/fonts/NotoSansMath-Notes.ttf");
 
 struct Fonts {
-    /// the terminal's regular and bold faces
+    /// the terminal's regular and bold faces, and its family's name
     term: Option<(Font, Font)>,
+    family: Option<String>,
     regular: Font,
     bold: Font,
     notes: Font,
@@ -41,13 +42,14 @@ fn fonts() -> &'static Fonts {
         let load = |b: &[u8], index: u32| Font::from_bytes(b, FontSettings { collection_index: index, ..FontSettings::default() });
         let bundled = |b: &'static [u8]| load(b, 0).expect("bundled font");
         // tests measure with the bundled font only, so they don't depend on the PC's fonts
-        let term = if cfg!(test) { None } else { crate::termfont::find() }
-            .and_then(|t| Some((load(&t.regular.data, t.regular.index).ok()?, load(&t.bold.data, t.bold.index).ok()?)));
+        let found = if cfg!(test) { None } else { crate::termfont::find() };
+        let family = found.as_ref().map(|t| t.family.clone());
+        let term = found.and_then(|t| Some((load(&t.regular.data, t.regular.index).ok()?, load(&t.bold.data, t.bold.index).ok()?)));
         let regular = bundled(REGULAR);
         let main = term.as_ref().map_or(&regular, |t| &t.0);
         // Noto Sans's ascent and descent when a font doesn't say
         let (ascent, line) = main.horizontal_line_metrics(1.0).map_or((1.069, 1.069 + 0.293), |m| (m.ascent, m.ascent - m.descent));
-        Fonts { term, regular, bold: bundled(BOLD), notes: bundled(NOTES), ascent, line }
+        Fonts { term, family, regular, bold: bundled(BOLD), notes: bundled(NOTES), ascent, line }
     })
 }
 
@@ -55,7 +57,55 @@ fn fonts() -> &'static Fonts {
 pub fn warm() {
     std::thread::spawn(|| {
         fonts();
+        any_font(ANY_FONT[0]);
     });
+}
+
+/// Characters big text takes from any font on the system when the terminal's and the bundled ones lack them, as a
+/// terminal falls back for a character its font lacks: Home's ⌂ in the library (#76). Other text keeps to those
+/// fonts (a character they lack is drawn as terminal text).
+const ANY_FONT: [char; 1] = ['⌂'];
+
+#[cfg(test)]
+thread_local! {
+    /// tests: whether "the system" has the `ANY_FONT` characters (the bundled font stands in: `stand_in`)
+    static SYSTEM_HAS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Tests: pretend a system font has the `ANY_FONT` characters (`true`) or none does.
+#[cfg(test)]
+pub fn pretend_system_has(yes: bool) {
+    SYSTEM_HAS.with(|s| s.set(yes));
+}
+
+/// The character whose glyph draws `c`: `c`, except in tests pretending a system font has the `ANY_FONT` characters,
+/// where the bundled font's "A" stands in for them (its own box for them is empty).
+fn stand_in(c: char) -> char {
+    #[cfg(test)]
+    if SYSTEM_HAS.with(|s| s.get()) && ANY_FONT.contains(&c) {
+        return 'A';
+    }
+    c
+}
+
+/// A system font for `c`, one of `ANY_FONT` (found once, in the terminal's fallback order).
+fn any_font(c: char) -> Option<&'static Font> {
+    if cfg!(test) {
+        #[cfg(test)]
+        return SYSTEM_HAS.with(|s| s.get()).then(|| &fonts().regular);
+    }
+    static FOUND: OnceLock<Vec<(char, Font)>> = OnceLock::new();
+    let found = FOUND.get_or_init(|| {
+        let family = fonts().family.as_deref();
+        ANY_FONT
+            .iter()
+            .filter_map(|&c| {
+                let f = crate::termfont::with_char(c, family)?;
+                Some((c, Font::from_bytes(f.data, FontSettings { collection_index: f.index, ..FontSettings::default() }).ok()?))
+            })
+            .collect()
+    });
+    found.iter().find(|(k, _)| *k == c).map(|(_, f)| f)
 }
 
 /// The main font's ascent, in ems: the baseline's depth in a line.
@@ -68,12 +118,13 @@ pub fn line() -> f32 {
     fonts().line
 }
 
-/// The font that draws `c`: the terminal's, else the bundled one, else the notes'.
+/// The font that draws `c`: the terminal's, else the bundled one, else the notes', else (for `ANY_FONT`) any on the
+/// system.
 fn font_for(c: char, bold: bool) -> Option<&'static Font> {
     let f = fonts();
     let term = f.term.as_ref().map(|t| if bold { &t.1 } else { &t.0 });
     let main = if bold { &f.bold } else { &f.regular };
-    [term, Some(main), Some(&f.notes)].into_iter().flatten().find(|font| font.lookup_glyph_index(c) != 0)
+    [term, Some(main), Some(&f.notes)].into_iter().flatten().find(|font| font.lookup_glyph_index(c) != 0).or_else(|| ANY_FONT.contains(&c).then(|| any_font(c)).flatten())
 }
 
 /// Whether the fonts draw every character of `s` (spaces and invisible marks aside).
@@ -83,7 +134,14 @@ pub fn covers(s: &str) -> bool {
 
 /// How far `c` moves the pen at `px` pixels to the em.
 pub fn advance(c: char, px: f32, bold: bool) -> f32 {
-    font_for(c, bold).map_or(0.0, |f| f.metrics(c, px).advance_width)
+    font_for(c, bold).map_or(0.0, |f| f.metrics(stand_in(c), px).advance_width)
+}
+
+/// The ink of `c` drawn at `px` in the regular face: its left edge from the pen, its bottom over the baseline, its
+/// width and height. None when no font draws it.
+pub fn ink(c: char, px: f32) -> Option<(f32, f32, f32, f32)> {
+    let m = font_for(c, false)?.metrics(stand_in(c), px);
+    Some((m.xmin as f32, m.ymin as f32, m.width as f32, m.height as f32))
 }
 
 /// `s`'s width at `px`.
@@ -203,7 +261,7 @@ fn glyph(c: char, px: f32, bold: bool) -> Option<Glyph> {
             g.entry((c, px.to_bits(), bold))
                 .or_insert_with(|| {
                     RASTERIZED.with(|r| r.set(r.get() + 1));
-                    Rc::new(font.rasterize(c, px))
+                    Rc::new(font.rasterize(stand_in(c), px))
                 })
                 .clone(),
         )
