@@ -40,6 +40,12 @@ fn quit(stat: &str) -> bool {
     matches!(stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().next()), Some("Z" | "X"))
 }
 
+/// The parent's pid: the second field after the ")" that ends the command name in `stat`.
+pub fn parent_of(host: &Host, pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(host.proc_root.join(pid.to_string()).join("stat")).ok()?;
+    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()
+}
+
 pub fn exe_name(host: &Host, pid: u32) -> Option<String> {
     std::fs::read_link(host.proc_root.join(pid.to_string()).join("exe")).ok()?.file_name().map(|n| n.to_string_lossy().into_owned())
 }

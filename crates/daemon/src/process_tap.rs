@@ -1,5 +1,5 @@
-//! The AudioTap's source on macOS for an Engine that is another app (#67): a Core Audio process tap (macOS 14.2+) on
-//! that app's processes, so the audio Widgets see exactly what it plays and nothing else.
+//! The AudioTap's source on macOS for an Engine that is another process (the Spotify app, #67; Soloist, Q191): a Core
+//! Audio process tap (macOS 14.2+) on its processes, so the audio Widgets see exactly what it plays and nothing else.
 //!
 //! - A `CATapDescription` (stereo mixdown of the app's process objects, private, unmuted), made into a tap and wrapped
 //!   in a private aggregate device whose IO callback receives the tapped audio (Apple's AudioCap sample does the same).
@@ -15,6 +15,7 @@ use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use crate::tap::StreamOf;
 
 /// Interleaved stereo float samples and their sample rate, from the real-time thread.
 pub type Sink = Box<dyn FnMut(&[f32], f64) + Send>;
@@ -182,22 +183,41 @@ pub fn objects_of(pids: &[i32]) -> Vec<AudioObjectID> {
     }
 }
 
-/// The Spotify app's processes ("Spotify", "Spotify Helper (…)"): which of them plays isn't fixed, so all are tapped.
-pub fn spotify_pids() -> Vec<i32> {
+/// Is a process of this name one of the Engine's? The Spotify app's ("Spotify", "Spotify Helper (…)": which of them
+/// plays isn't fixed, so all are tapped), or Soloist's.
+fn is_engine(of: StreamOf, name: &str) -> bool {
+    match of {
+        StreamOf::SpotifyApp => name == "Spotify" || name.starts_with("Spotify Helper"),
+        StreamOf::Soloist => name == "soloist",
+        // an Engine inside the Daemon feeds the tap itself
+        StreamOf::Daemon => false,
+    }
+}
+
+/// The Engine's processes now.
+pub fn pids_of(of: StreamOf) -> Vec<i32> {
     let mut out: Vec<i32> = singularity_config::host::Host::this()
         .processes()
         .into_iter()
-        .filter(|p| p.name == "Spotify" || p.name.starts_with("Spotify Helper"))
+        .filter(|p| is_engine(of, &p.name))
         .filter_map(|p| i32::try_from(p.pid).ok())
         .collect();
     out.sort_unstable();
     out
 }
 
-/// While the AudioTap wants samples and the Spotify app runs, keep a tap on it feeding `feed` (resampled to
-/// 44.1 kHz); follow the app if it restarts. If macOS hands over only silence while the app plays, say once where the
+/// The Engine as the user knows it.
+fn engine_name(of: StreamOf) -> &'static str {
+    match of {
+        StreamOf::Soloist => "Soloist",
+        _ => "the Spotify app",
+    }
+}
+
+/// While the AudioTap wants samples and the Engine's process runs, keep a tap on it feeding `feed` (resampled to
+/// 44.1 kHz); follow the process if it restarts. If macOS hands over only silence while it plays, say once where the
 /// permission is.
-pub async fn manage(hub: Arc<crate::Hub>, feed: Arc<crate::tap::Feed>) {
+pub async fn manage(hub: Arc<crate::Hub>, of: StreamOf, feed: Arc<crate::tap::Feed>) {
     use std::time::{Duration, Instant};
     let mut tap: Option<(ProcessTap, Vec<i32>, Instant)> = None;
     let mut warned = false;
@@ -207,7 +227,7 @@ pub async fn manage(hub: Arc<crate::Hub>, feed: Arc<crate::tap::Feed>) {
             tap = None;
             continue;
         }
-        let pids = spotify_pids();
+        let pids = pids_of(of);
         if pids.is_empty() {
             tap = None;
             continue;
@@ -215,7 +235,7 @@ pub async fn manage(hub: Arc<crate::Hub>, feed: Arc<crate::tap::Feed>) {
         if tap.as_ref().map(|t| &t.1) != Some(&pids) {
             let objects = objects_of(&pids);
             if objects.is_empty() {
-                // the app runs but hasn't opened audio yet
+                // it runs but hasn't opened audio yet
                 tap = None;
                 continue;
             }
@@ -231,11 +251,11 @@ pub async fn manage(hub: Arc<crate::Hub>, feed: Arc<crate::tap::Feed>) {
             });
             tap = match ProcessTap::start(&objects, sink) {
                 Ok(t) => {
-                    tracing::info!("audio tap on the Spotify app ({} processes)", pids.len());
+                    tracing::info!("audio tap on {} ({} processes)", engine_name(of), pids.len());
                     Some((t, pids, Instant::now()))
                 }
                 Err(e) => {
-                    tracing::warn!("audio tap on the Spotify app: {e}");
+                    tracing::warn!("audio tap on {}: {e}", engine_name(of));
                     None
                 }
             };
@@ -248,7 +268,7 @@ pub async fn manage(hub: Arc<crate::Hub>, feed: Arc<crate::tap::Feed>) {
             && !warned
         {
             warned = true;
-            let message = format!("{NO_PERMISSION} (then restart Singularity)");
+            let message = format!("{} (then restart Singularity)", no_permission(of));
             tracing::warn!("{message}");
             let _ = hub.events.send(singularity_proto::Event::Error { message });
         }
@@ -256,4 +276,23 @@ pub async fn manage(hub: Arc<crate::Hub>, feed: Arc<crate::tap::Feed>) {
 }
 
 /// What to do when the tap gets only silence: macOS gives the permission to the app Singularity runs in.
-pub const NO_PERMISSION: &str = "The audio Widgets can't hear the Spotify app: macOS needs your terminal app allowed in System Settings → Privacy & Security → Screen & System Audio Recording → System Audio Recording Only";
+pub fn no_permission(of: StreamOf) -> String {
+    format!("The audio Widgets can't hear {}: macOS needs your terminal app allowed in System Settings → Privacy & Security → Screen & System Audio Recording → System Audio Recording Only", engine_name(of))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Q191: the tap finds Soloist's process as well as the Spotify app's, and never another's.
+    #[test]
+    fn each_engine_is_found_by_its_process_names() {
+        let names = ["Spotify", "Spotify Helper (Renderer)", "soloist", "singularityd", "Soloist Helper", "spotifyd"];
+        let found = |of| names.iter().filter(|n| is_engine(of, n)).copied().collect::<Vec<_>>();
+        assert_eq!(found(StreamOf::SpotifyApp), ["Spotify", "Spotify Helper (Renderer)"]);
+        assert_eq!(found(StreamOf::Soloist), ["soloist"]);
+        assert!(found(StreamOf::Daemon).is_empty());
+        assert!(no_permission(StreamOf::Soloist).starts_with("The audio Widgets can't hear Soloist: "));
+        assert!(no_permission(StreamOf::SpotifyApp).starts_with("The audio Widgets can't hear the Spotify app: "));
+    }
+}

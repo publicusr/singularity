@@ -207,7 +207,7 @@ impl Analyzer {
     }
 }
 
-/// Which PipeWire stream is the Engine's.
+/// Which Engine's sound the tap is after: its PipeWire stream (Linux), its process (macOS).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StreamOf {
     /// Soloist: `application.name="Spotify"` without a process binary (or binary `soloist`)
@@ -341,20 +341,21 @@ pub enum TapSource {
     PipeWire(StreamOf),
     /// samples from an Engine inside this Daemon (librespot, every OS)
     Feed(Arc<Feed>),
-    /// macOS: a Core Audio process tap on the Spotify app (#67), delivered like a Feed
+    /// macOS: a Core Audio process tap on the Engine's process (the Spotify app, #67; Soloist, Q191), delivered like a
+    /// Feed
     #[cfg(target_os = "macos")]
-    App(Arc<Feed>),
+    Process(StreamOf, Arc<Feed>),
     /// the built-in groove, while the (fake) Engine plays
     Synthetic,
 }
 
 /// Run the tap for the Daemon: idle until a Client listens, then analyse and broadcast frames.
 pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
-    // the Spotify app's tap feeds a Feed of its own while it's wanted
+    // a process tap feeds a Feed of its own while it's wanted
     #[cfg(target_os = "macos")]
     let source = match source {
-        TapSource::App(feed) => {
-            tokio::spawn(crate::process_tap::manage(hub.clone(), feed.clone()));
+        TapSource::Process(of, feed) => {
+            tokio::spawn(crate::process_tap::manage(hub.clone(), of, feed.clone()));
             TapSource::Feed(feed)
         }
         s => s,
@@ -401,7 +402,7 @@ pub async fn run(hub: Arc<crate::Hub>, source: TapSource) {
                 while rx.try_recv().is_ok() {}
             }
             #[cfg(target_os = "macos")]
-            TapSource::App(_) => unreachable!("turned into a Feed when the tap starts"),
+            TapSource::Process(..) => unreachable!("turned into a Feed when the tap starts"),
             TapSource::Synthetic => {
                 // one frame's worth of audio per frame period
                 let mut t = 0u64;

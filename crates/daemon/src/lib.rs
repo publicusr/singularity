@@ -15,7 +15,6 @@ pub mod last_seen;
 pub mod library;
 pub mod lyrics;
 pub mod os_media;
-pub mod pcm;
 #[cfg(target_os = "macos")]
 pub mod process_tap;
 pub mod playlists;
@@ -25,7 +24,6 @@ pub mod playing;
 pub mod queries;
 pub mod secrets;
 pub mod soloist;
-pub mod soloist_vm;
 /// The Spotify app as this OS installs and starts it (a Platform seam; the AppEngine asks it)
 #[cfg_attr(target_os = "macos", path = "app_engine/macos.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "app_engine/linux.rs")]
@@ -33,7 +31,6 @@ pub mod spotify_app;
 pub mod store;
 pub mod tap;
 pub mod update;
-pub mod vm;
 
 use catalogue::{CatCmd, CatEvent};
 use engine::{Engine, EngineEvent};
@@ -89,8 +86,6 @@ pub struct Hub {
     pub started_unix_ms: u64,
     /// which Engine this Daemon runs
     pub engine_kind: proto::EngineKind,
-    /// Soloist runs in the Soloist VM (Q94)
-    pub soloist_in_vm: bool,
     /// what is playing and on which device (D80); never held across an await
     pub now: std::sync::Mutex<playing::NowPlaying>,
     pub engine_status: Mutex<Option<proto::EngineStatus>>,
@@ -326,7 +321,6 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
     let hub = Arc::new(Hub {
         started_unix_ms: proto::now_ms(),
         engine_kind: engine.kind(),
-        soloist_in_vm: engine.soloist_in_vm(),
         now: Default::default(),
         engine_status: Mutex::new(None),
         catalogue_status: Mutex::new(None),
@@ -431,7 +425,7 @@ fn tap_again(source: &tap::TapSource) -> tap::TapSource {
         tap::TapSource::PipeWire(of) => tap::TapSource::PipeWire(*of),
         tap::TapSource::Feed(feed) => tap::TapSource::Feed(feed.clone()),
         #[cfg(target_os = "macos")]
-        tap::TapSource::App(feed) => tap::TapSource::App(feed.clone()),
+        tap::TapSource::Process(of, feed) => tap::TapSource::Process(*of, feed.clone()),
         tap::TapSource::Synthetic => tap::TapSource::Synthetic,
     }
 }
@@ -927,7 +921,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
         Some(ClientMsg::Hello { protocol, client, demo: d }) if protocol == PROTOCOL_VERSION => {
             tracing::info!("client connected: {client}{}", if d { " (demo mode)" } else { "" });
             let account = if d { demo_account(&hub).await } else { String::new() };
-            let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind, soloist_in_vm: hub.soloist_in_vm, demo: d, account, service: run_by_service() };
+            let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind, demo: d, account, service: run_by_service() };
             proto::write_msg(&mut wr, &welcome).await?;
         }
         Some(ClientMsg::Hello { protocol, .. }) => {
@@ -1261,7 +1255,6 @@ mod tests {
         Arc::new(Hub {
             started_unix_ms: 0,
             engine_kind: proto::EngineKind::Fake,
-            soloist_in_vm: false,
             now: Default::default(),
             engine_status: Mutex::new(None),
             catalogue_status: Mutex::new(None),

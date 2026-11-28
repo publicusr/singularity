@@ -24,12 +24,14 @@ pub const SECRET_ENV: &str = "SOLOIST_API_KEY";
 /// The program that opens a link in the user's browser.
 const OPENER: &str = if MACOS { "open" } else { "xdg-open" };
 
-/// The name of Spotify's Soloist build for a CPU (Rust's name for it, `std::env::consts::ARCH`): Spotify publishes
-/// x86_64 and arm64 Linux builds side by side (D73). `None`: no Soloist for this CPU.
-pub fn soloist_build(arch: &str) -> Option<&'static str> {
-    match arch {
-        "x86_64" => Some("x86_64"),
-        "aarch64" => Some("arm64"),
+/// The name of Spotify's Soloist build for an OS and CPU (Rust's name for it, `std::env::consts::ARCH`): Spotify
+/// publishes x86_64 and arm64 Linux builds side by side (D73), and one for Apple Silicon Macs (macOS 13 or later; Q172,
+/// Q188). `None`: no Soloist here (an Intel Mac, another CPU).
+pub fn soloist_build(macos: bool, arch: &str) -> Option<&'static str> {
+    match (macos, arch) {
+        (false, "x86_64") => Some("x86_64"),
+        (false, "aarch64") => Some("arm64"),
+        (true, "aarch64") => Some("osx_arm64"),
         _ => None,
     }
 }
@@ -92,9 +94,9 @@ impl Host {
         }
     }
 
-    /// Is this a CPU Spotify ships Soloist for (D73)?
+    /// Does Spotify ship Soloist for this OS and CPU (D73, Q188)?
     pub fn soloist_cpu(&self) -> bool {
-        soloist_build(self.arch).is_some()
+        soloist_build(MACOS, self.arch).is_some()
     }
 
     /// This computer's name, as the Spotify app registers it on Connect ("this computer" if it can't be told).
@@ -116,6 +118,11 @@ impl Host {
     /// The name process `pid` runs under, if it runs.
     pub fn name_of(&self, pid: u32) -> Option<String> {
         os::name_of(self, pid)
+    }
+
+    /// The process that started process `pid` (1 once that one has gone: it was handed to init or launchd).
+    pub fn parent_of(&self, pid: u32) -> Option<u32> {
+        os::parent_of(self, pid)
     }
 
     /// The file name of the binary process `pid` was started from (it may have been replaced on disk since:
@@ -190,17 +197,28 @@ mod tests {
         assert!(wrote.success());
     }
 
-    /// "Which CPUs have Soloist" is answered here only (D73): Rust's names in, Spotify's build names out.
+    /// "Which OSes and CPUs have Soloist" is answered here only (D73, Q188): Rust's names in, Spotify's build names out.
     #[test]
-    fn soloist_builds_exist_for_x86_64_and_arm64_only() {
-        assert_eq!(soloist_build("x86_64"), Some("x86_64"));
-        assert_eq!(soloist_build("aarch64"), Some("arm64"));
+    fn soloist_builds_exist_for_linux_x86_64_and_arm64_and_apple_silicon_only() {
+        assert_eq!(soloist_build(false, "x86_64"), Some("x86_64"));
+        assert_eq!(soloist_build(false, "aarch64"), Some("arm64"));
+        assert_eq!(soloist_build(true, "aarch64"), Some("osx_arm64"));
+        assert_eq!(soloist_build(true, "x86_64"), None, "an Intel Mac");
         for other in ["riscv64", "powerpc64", "arm", "x86"] {
-            assert_eq!(soloist_build(other), None, "{other}");
+            assert_eq!((soloist_build(false, other), soloist_build(true, other)), (None, None), "{other}");
         }
         let dir = tempfile::tempdir().unwrap();
-        assert!(made_up(dir.path()).soloist_cpu());
+        assert_eq!(made_up(dir.path()).soloist_cpu(), !MACOS, "the made-up Host is an x86_64");
         assert!(!Host { arch: "riscv64", ..made_up(dir.path()) }.soloist_cpu());
+    }
+
+    /// A process's parent: this test's own, and none for a process that doesn't run.
+    #[test]
+    fn a_process_has_its_parent() {
+        let h = Host::this();
+        let me = std::process::id();
+        assert_eq!(h.parent_of(me), Some(std::os::unix::process::parent_id()));
+        assert_eq!(h.parent_of(u32::MAX >> 2), None);
     }
 
     #[test]

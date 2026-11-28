@@ -47,10 +47,6 @@ pub enum DaemonMsg {
         /// which Engine this Daemon runs (#66; older Daemons ran Soloist)
         #[serde(default)]
         engine: EngineKind,
-        /// Soloist runs in the Soloist VM (D55), so the setup says what the VM's first start involves (Q94; older
-        /// Daemons don't say: false)
-        #[serde(default)]
-        soloist_in_vm: bool,
         /// the Client's Hello asked for demo mode and this Daemon runs it so (D90): its stats come from the demo log.
         /// A demo Client that isn't told (an older Daemon) shows no stats and refuses export and delete.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -892,17 +888,17 @@ mod tests {
         assert_eq!(got, msg);
     }
 
-    /// Q94: the Daemon says whether Soloist runs in the Soloist VM; an older Daemon doesn't (not in a VM), and an older
-    /// Client skips the field.
+    /// The welcome round-trips; an older Daemon's still decodes, its word on the Soloist VM (Q94, gone with the VM:
+    /// Q189) skipped, and an older Client skips what it doesn't know.
     #[tokio::test]
-    async fn the_welcome_says_whether_soloist_runs_in_a_vm() {
+    async fn the_welcome_round_trips_and_older_ones_decode() {
         let (mut a, mut b) = tokio::io::duplex(1024);
-        let msg = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: "1".into(), started_unix_ms: 5, engine: EngineKind::Soloist, soloist_in_vm: true, demo: false, account: String::new(), service: true };
+        let msg = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: "1".into(), started_unix_ms: 5, engine: EngineKind::Soloist, demo: false, account: String::new(), service: true };
         write_msg(&mut a, &msg).await.unwrap();
         let got: DaemonMsg = read_msg(&mut b).await.unwrap().unwrap();
         assert_eq!(got, msg);
-        let old: DaemonMsg = serde_json::from_str(r#"{"t":"welcome","protocol":1,"daemon_version":"1","started_unix_ms":5,"engine":"soloist"}"#).unwrap();
-        assert!(matches!(old, DaemonMsg::Welcome { soloist_in_vm: false, demo: false, service: false, .. }), "{old:?}: an older Daemon confirms no demo mode, and no service");
+        let old: DaemonMsg = serde_json::from_str(r#"{"t":"welcome","protocol":1,"daemon_version":"1","started_unix_ms":5,"engine":"soloist","soloist_in_vm":true}"#).unwrap();
+        assert!(matches!(old, DaemonMsg::Welcome { demo: false, service: false, .. }), "{old:?}: an older Daemon confirms no demo mode, and no service");
         #[derive(Deserialize)]
         #[serde(tag = "t", rename_all = "snake_case")]
         #[allow(dead_code)]

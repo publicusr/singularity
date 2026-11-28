@@ -20,7 +20,7 @@ async fn handshake_ping_and_initial_snapshot() {
     let mut s = UnixStream::connect(&path).await.unwrap();
     proto::write_msg(&mut s, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into(), demo: false }).await.unwrap();
     let welcome: DaemonMsg = proto::read_msg(&mut s).await.unwrap().unwrap();
-    assert!(matches!(welcome, DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, soloist_in_vm: false, .. }));
+    assert!(matches!(welcome, DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, .. }));
     // engine status + playback snapshot arrive without asking
     let mut saw_status = false;
     let mut saw_playback = false;

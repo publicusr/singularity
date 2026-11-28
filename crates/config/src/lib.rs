@@ -90,8 +90,8 @@ impl EngineChoice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EngineKind {
-    /// this OS's own: Soloist on Linux (x86_64 and arm64, D73), librespot on macOS (D54) and on CPUs Spotify ships no
-    /// Soloist for
+    /// Soloist where Spotify ships it (Linux on x86_64 and arm64, D73; Apple Silicon Macs, Q190), librespot elsewhere
+    /// (an Intel Mac, other CPUs)
     #[default]
     Auto,
     Soloist,
@@ -103,13 +103,13 @@ pub enum EngineKind {
 impl EngineKind {
     /// What `Auto` means here.
     pub fn resolved(self) -> EngineKind {
-        self.resolved_on(host::MACOS, host::Host::this().soloist_cpu())
+        self.resolved_on(host::Host::this().soloist_cpu())
     }
 
-    /// What `Auto` means on macOS or not, on a CPU Spotify ships Soloist for or not.
-    pub fn resolved_on(self, macos: bool, soloist_cpu: bool) -> EngineKind {
+    /// What `Auto` means where Spotify ships Soloist (Linux on x86_64 and arm64, Apple Silicon Macs: Q190) or not.
+    pub fn resolved_on(self, soloist_cpu: bool) -> EngineKind {
         match self {
-            EngineKind::Auto if macos || !soloist_cpu => EngineKind::Librespot,
+            EngineKind::Auto if !soloist_cpu => EngineKind::Librespot,
             EngineKind::Auto => EngineKind::Soloist,
             k => k,
         }
@@ -223,15 +223,15 @@ enabled = true
 minutes = 3
 
 [engine]
-# what plays the music: "auto" (Soloist on Linux, librespot on macOS), "soloist" (lossless; on macOS it runs in a
-# small Linux VM, ~300 MB), "spotify-app" (the official Spotify app, started hidden and driven over Connect) or
+# what plays the music: "auto" (Soloist; librespot on an Intel Mac, which Soloist isn't made for), "soloist"
+# (lossless, Spotify's own headless player), "spotify-app" (the official Spotify app, started hidden and driven over Connect) or
 # "librespot" (built in: the lightest, but at most 320 kbps, never lossless); restart the Daemon after changing it
 kind = "auto"
 # the player's name in device pickers; empty: the default (the app: this computer's name; librespot: "Singularity on
 # <computer>"; Soloist: "Singularity" on Linux, "Singularity on <computer> (lossless)" on macOS)
 device = ""
 # disk space for Soloist's cache of played songs, in GB; 0 = no limit. Replays come from it instead of the network (a
-# lossless song is ~20–40 MB). Applies when Soloist next starts; Soloist's VM on macOS keeps its own 200 MB.
+# lossless song is ~20–40 MB). Applies when Soloist next starts.
 cache_gb = 5
 
 [lyrics]
@@ -862,7 +862,8 @@ minutes = 3
         let theirs = parse::<Config>("config.toml", "schema = 2\n[engine]\nkind = \"soloist\"\n", CONFIG_MIGRATIONS, CONFIG_SCHEMA);
         assert_eq!(theirs.value.engine.kind, EngineKind::Soloist);
         assert!(theirs.migrated.unwrap().starts_with("schema = 7\n[engine]\nkind = \"soloist\"\n# disk space"));
-        assert_eq!(EngineKind::Auto.resolved(), if cfg!(target_os = "macos") { EngineKind::Librespot } else { EngineKind::Soloist });
+        let here = if host::Host::this().soloist_cpu() { EngineKind::Soloist } else { EngineKind::Librespot };
+        assert_eq!(EngineKind::Auto.resolved(), here);
     }
 
     #[test]

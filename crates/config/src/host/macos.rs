@@ -38,6 +38,16 @@ pub fn has_quit(_: &Host, _: u32) -> bool {
     false
 }
 
+pub fn parent_of(_: &Host, pid: u32) -> Option<u32> {
+    let pid = i32::try_from(pid).ok()?;
+    // SAFETY: proc_pidinfo fills a zeroed proc_bsdinfo of the size passed; the size it returns is checked
+    unsafe {
+        let mut bi: libc::proc_bsdinfo = std::mem::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+        (libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut bi as *mut libc::proc_bsdinfo).cast(), size) == size).then_some(bi.pbi_ppid)
+    }
+}
+
 pub fn exe_name(host: &Host, pid: u32) -> Option<String> {
     name_of(host, pid)
 }

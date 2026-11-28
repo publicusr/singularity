@@ -11,12 +11,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Spotify publishes Soloist for x86_64 and arm64 Linux side by side (D73: Linux on ARM runs the arm64 build).
+/// Spotify publishes Soloist for x86_64 and arm64 Linux side by side (D73: Linux on ARM runs the arm64 build), and
+/// for Apple Silicon Macs (`osx_arm64`, Q188).
 pub const CDN: &str = "https://soloist-builds.spotifycdn.com/soloist_release_";
 
-/// This machine's build: `None` on a CPU Spotify ships no Soloist for (the Host knows which).
-pub fn cdn_for(arch: &str) -> Option<String> {
-    singularity_config::host::soloist_build(arch).map(|name| format!("{CDN}{name}.tar.gz"))
+/// The build for an OS and CPU: `None` where Spotify ships no Soloist (the Host knows which).
+pub fn cdn_for(macos: bool, arch: &str) -> Option<String> {
+    singularity_config::host::soloist_build(macos, arch).map(|name| format!("{CDN}{name}.tar.gz"))
 }
 
 /// The CDN to use (`SINGULARITY_SOLOIST_CDN` points tests and the pty harness at a fake one). On a CPU without a
@@ -25,7 +26,7 @@ pub fn cdn_url() -> String {
     std::env::var("SINGULARITY_SOLOIST_CDN")
         .ok()
         .filter(|u| !u.is_empty())
-        .or_else(|| cdn_for(std::env::consts::ARCH))
+        .or_else(|| cdn_for(singularity_config::host::MACOS, std::env::consts::ARCH))
         .unwrap_or_else(|| format!("{CDN}x86_64.tar.gz"))
 }
 
@@ -110,8 +111,7 @@ pub enum Checked {
 
 /// The slowest a download may be (#142): it is given up when less than `min_rate` bytes a second arrive, averaged over
 /// `window`. There is no deadline for the whole download: on a slow connection a build takes as long as it takes, as
-/// long as it keeps moving. The same rule as curl's `--speed-limit`/`--speed-time`, which the Soloist VM's own
-/// download uses (`vm.rs`).
+/// long as it keeps moving. The same rule as curl's `--speed-limit`/`--speed-time`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pace {
     pub window: Duration,
@@ -124,7 +124,7 @@ pub const PACE: Pace = Pace { window: Duration::from_secs(30), min_rate: 1024 };
 /// The deadline for a short answer (a HEAD, a checksum list), which has no reason to take long.
 pub const SHORT: Duration = Duration::from_secs(30);
 
-/// The client for big downloads (Soloist builds, the macOS VM's image): a connect timeout and a read timeout of the
+/// The client for big downloads (Soloist builds): a connect timeout and a read timeout of the
 /// pace's window (an answer whose headers never come), no total one. Short requests on it set their own deadline
 /// ([`SHORT`]); a body is read with [`save`], which keeps the pace.
 pub fn download_client(pace: Pace) -> anyhow::Result<reqwest::Client> {
@@ -405,9 +405,10 @@ mod tests {
     #[test]
     fn each_cpu_gets_its_own_soloist_build() {
         // (D73) Linux on ARM downloads the arm64 build Spotify publishes next to the x86_64 one
-        assert_eq!(cdn_for("x86_64").as_deref(), Some("https://soloist-builds.spotifycdn.com/soloist_release_x86_64.tar.gz"));
-        assert_eq!(cdn_for("aarch64").as_deref(), Some("https://soloist-builds.spotifycdn.com/soloist_release_arm64.tar.gz"));
-        assert_eq!(cdn_for("riscv64"), None);
+        assert_eq!(cdn_for(false, "x86_64").as_deref(), Some("https://soloist-builds.spotifycdn.com/soloist_release_x86_64.tar.gz"));
+        assert_eq!(cdn_for(false, "aarch64").as_deref(), Some("https://soloist-builds.spotifycdn.com/soloist_release_arm64.tar.gz"));
+        assert_eq!(cdn_for(true, "aarch64").as_deref(), Some("https://soloist-builds.spotifycdn.com/soloist_release_osx_arm64.tar.gz"));
+        assert_eq!((cdn_for(false, "riscv64"), cdn_for(true, "x86_64")), (None, None));
     }
 
     #[test]
