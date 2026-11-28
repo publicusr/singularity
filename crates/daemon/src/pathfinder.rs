@@ -4,6 +4,9 @@
 //! the [`QueryRegistry`] (which doesn't crawl the web player again for an operation a recent crawl didn't have, C3),
 //! asks once more after a hang, and refreshes the registry when a hash is retired. Tests of the Catalogue use a
 //! fixtures adapter instead; tests of these rules use a stand-in [`Raw`] call.
+//!
+//! A clone of the adapter asks through the same registry, so the Catalogue can have a few queries out at once (#81:
+//! Home and the library pages at start).
 
 use crate::queries::QueryRegistry;
 use librespot_core::{error::ErrorKind, session::Session};
@@ -23,22 +26,23 @@ pub trait Raw: Send {
     fn call(&mut self, op: &str, hash: &str, vars: Value) -> impl Future<Output = Result<Value, librespot_core::Error>> + Send;
 }
 
-/// The adapter that talks to Spotify.
+/// The adapter that talks to Spotify. Clones share the registry.
+#[derive(Clone)]
 pub struct Pathfinder<R> {
-    registry: QueryRegistry,
+    registry: Arc<tokio::sync::Mutex<QueryRegistry>>,
     raw: R,
 }
 
 impl<R: Raw> Pathfinder<R> {
     pub fn new(registry: QueryRegistry, raw: R) -> Pathfinder<R> {
-        Pathfinder { registry, raw }
+        Pathfinder { registry: Arc::new(tokio::sync::Mutex::new(registry)), raw }
     }
 }
 
 impl<R: Raw> Fetch for Pathfinder<R> {
     async fn query(&mut self, op: &str, vars: Value) -> anyhow::Result<Value> {
         self.raw.ready()?;
-        let hash = self.registry.hash(op).await?;
+        let hash = self.registry.lock().await.hash(op).await?;
         // a request that hangs is asked once more: the stuck connection went with the abandoned request
         let first = match self.raw.call(op, &hash, vars.clone()).await {
             Err(e) if e.kind == ErrorKind::DeadlineExceeded => {
@@ -49,10 +53,16 @@ impl<R: Raw> Fetch for Pathfinder<R> {
         };
         match first {
             Err(e) if e.kind == ErrorKind::FailedPrecondition => {
-                tracing::warn!("`{op}` hash retired; refreshing the query registry");
-                self.registry.refresh().await?;
-                let hash = self.registry.hash(op).await?;
-                Ok(self.raw.call(op, &hash, vars).await?)
+                let fresh = {
+                    let mut registry = self.registry.lock().await;
+                    // a query that went out alongside this one may have refreshed it already: one crawl, not one each
+                    if registry.hash(op).await? == hash {
+                        tracing::warn!("`{op}` hash retired; refreshing the query registry");
+                        registry.refresh().await?;
+                    }
+                    registry.hash(op).await?
+                };
+                Ok(self.raw.call(op, &fresh, vars).await?)
             }
             r => Ok(r?),
         }
@@ -69,6 +79,7 @@ pub fn session_slot() -> SessionSlot {
 }
 
 /// [`Raw`] through the logged-in session, with [`crate::spotify`]'s deadline.
+#[derive(Clone)]
 pub struct SessionRaw(pub SessionSlot);
 
 impl Raw for SessionRaw {
@@ -155,6 +166,36 @@ mod tests {
         }
         assert_eq!(crawls.load(Ordering::SeqCst), 1, "one crawl, then the answer is remembered");
         assert_eq!(p.query("home", Value::Null).await.unwrap(), Value::from("ok"), "the rest still works");
+    }
+
+    /// Spotify refusing the retired hash "h1" after a moment, so two queries out together both meet it.
+    #[derive(Clone, Default)]
+    struct Retired {
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Raw for Retired {
+        fn ready(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn call(&mut self, _op: &str, hash: &str, _vars: Value) -> Result<Value, librespot_core::Error> {
+            self.calls.lock().unwrap().push(hash.into());
+            tokio::task::yield_now().await;
+            if hash == "h1" { Err(librespot_core::Error::failed_precondition("412")) } else { Ok(Value::from("ok")) }
+        }
+    }
+
+    /// #81: clones of the adapter share one registry, so two queries that meet a retired hash together crawl once.
+    #[tokio::test]
+    async fn queries_out_together_that_meet_a_retired_hash_crawl_once() {
+        let (reg, crawls) = registry(&[("home", "h2")]);
+        let raw = Retired::default();
+        let p = Pathfinder::new(reg, raw.clone());
+        let (mut a, mut b) = (p.clone(), p.clone());
+        let (x, y) = futures_util::join!(a.query("home", Value::Null), b.query("home", Value::Null));
+        assert_eq!((x.unwrap(), y.unwrap()), (Value::from("ok"), Value::from("ok")));
+        assert_eq!(crawls.load(Ordering::SeqCst), 1);
+        assert_eq!(*raw.calls.lock().unwrap(), ["h1", "h1", "h2", "h2"]);
     }
 
     #[tokio::test]

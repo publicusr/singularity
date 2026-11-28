@@ -41,6 +41,9 @@ pub struct SettingsView {
     pub visible: usize,
     /// a number being typed, for the selected setting
     pub typing: Option<String>,
+    /// whether the wheel has the view, on each tab (D86)
+    pub wheeled: crate::scroll::Wheeled,
+    pub key_wheeled: crate::scroll::Wheeled,
 }
 
 /// One line of the page.
@@ -71,7 +74,7 @@ fn choices(app: &App, e: &Entry) -> Vec<(String, String)> {
         }
         (Kind::Named, "ui.layout") => {
             let mut v = vec![own()];
-            v.extend(app.saved_layouts.iter().map(|l| (l.id.clone(), l.id.clone())));
+            v.extend(app.shown.saved().iter().map(|l| (l.id.clone(), l.id.clone())));
             v
         }
         _ => vec![],
@@ -300,16 +303,16 @@ impl App {
         }
     }
 
-    /// The wheel over the page moves the highlight (Shift: a page).
+    /// The wheel over the page scrolls it by lines (Shift: a page), the highlight where it is (D86).
     pub fn settings_wheel(&mut self, d: i64, coarse: bool) {
         let Some(v) = self.page.settings_mut() else { return };
-        v.on_tabs = false;
         let step = if coarse { v.visible.max(1) as i64 } else { 1 };
-        let (sel, n) = match v.tab {
-            Tab::Config => (&mut v.sel, singularity_config::SETTINGS.len()),
-            Tab::Keys => (&mut v.key_sel, Action::ALL.len()),
-        };
-        *sel = (*sel as i64 + d * step).clamp(0, n.saturating_sub(1) as i64) as usize;
+        // the view, by lines; the highlight stays (D86)
+        let rows = (d * step).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        match v.tab {
+            Tab::Config => v.wheeled.by(&mut v.top, rows, v.sel),
+            Tab::Keys => v.key_wheeled.by(&mut v.key_top, rows, v.key_sel),
+        }
     }
 }
 
@@ -358,9 +361,16 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         Tab::Config => (app.config_path().map(home).map(|p| format!("{p} · changes apply at once, and so do edits in the file")), &app.config_problems),
         Tab::Keys => (app.keys_path().map(home).map(|p| format!("{p} · {} preset · change keys there: action = \"key\"", app.keymap.preset)), &app.keys_problems),
     };
+    // demo mode (D90): a config folder outside $HOME, or the user's name in it, doesn't show
+    let path = path.map(|p| app.demo.as_ref().map(|d| d.redact(&p)).unwrap_or(p));
     text(buf, tx + 1, y, (x + w).saturating_sub(tx + 1), &path.unwrap_or_default(), th.s(th.border));
     y += 1;
-    let problems = problems.clone();
+    // the newest library backup, when it came back short (#144): in the empty row under the tabs, so nothing moves
+    if let Some(b) = app.listening.as_ref().and_then(|s| s.backup_short.as_ref()) {
+        text(buf, x, y, w, &backup_line(b, w as usize), th.s(th.error));
+    }
+    // (demo mode: a path or name in a problem is redacted)
+    let problems: Vec<String> = problems.iter().map(|p| app.demo.as_ref().map(|d| d.redact(p)).unwrap_or_else(|| p.clone())).collect();
     if view.tab == Tab::Keys {
         y += 1;
         draw_keys(buf, Rect::new(x, y, w, r.bottom().saturating_sub(y)), app, th, &mut view, &problems, &mut hits);
@@ -381,7 +391,8 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let all = lines(&es, w.saturating_sub(NAME_W) as usize);
     view.visible = r.bottom().saturating_sub(y).max(1) as usize;
     view.sel = view.sel.min(es.len().saturating_sub(1));
-    view.top = scrolled(&all, view.sel, view.top, view.visible);
+    let end = all.len().saturating_sub(view.visible);
+    view.top = if view.wheeled.follows(view.sel, end) { scrolled(&all, view.sel, view.top, view.visible) } else { view.top.min(end) };
     let vx = x + NAME_W;
     let vw = w.saturating_sub(NAME_W);
     for line in all.iter().skip(view.top).take(view.visible) {
@@ -412,7 +423,9 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                         text(buf, vx, y, 5, if on { " on  " } else { " off " }, st);
                     }
                     (_, None) => {
+                        // demo mode: a device name of the owner's choosing shows as its stand-in
                         let s = shown(app, e);
+                        let s = app.demo.as_ref().map(|d| d.redact(&s)).unwrap_or(s);
                         let n = s.chars().count() as u16;
                         text(buf, vx, y, 2, "◂ ", th.s(th.dim).bg(bg));
                         text(buf, vx + 2, y, vw.saturating_sub(4), &s, th.s(th.accent).bg(bg).add_modifier(Modifier::BOLD));
@@ -434,6 +447,32 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     }
 }
 
+/// One line about a backup that came back short, in at most `w` columns: what the Daemon does about it drops off the
+/// end first, then the count is cut with "…".
+fn backup_line(b: &singularity_proto::BackupShort, w: usize) -> String {
+    let (n, k) = (b.lists, b.kept);
+    let kept = match (k, n) {
+        (0, _) => "no whole copy to keep yet".to_string(),
+        (1, 1) => "last whole copy kept".to_string(),
+        (k, n) if k == n => "last whole copies kept".to_string(),
+        (1, _) => "last whole copy kept for 1".to_string(),
+        (k, _) => format!("last whole copies kept for {k}"),
+    };
+    let parts = [format!("Last backup incomplete: {n} list{}", if n == 1 { "" } else { "s" }), "tried again tomorrow".into(), kept];
+    let mut line = String::new();
+    for p in parts {
+        let next = if line.is_empty() { p } else { format!("{line} · {p}") };
+        if next.chars().count() > w && !line.is_empty() {
+            break;
+        }
+        line = next;
+    }
+    if line.chars().count() > w {
+        line = format!("{}…", line.chars().take(w.saturating_sub(1)).collect::<String>());
+    }
+    line
+}
+
 /// The keys tab: what's wrong with `keys.toml`, then every action with its keys and its name in the file.
 fn draw_keys(buf: &mut Buffer, r: Rect, app: &App, th: &Theme, view: &mut SettingsView, problems: &[String], hits: &mut Vec<(Rect, Hit)>) {
     let (x, w) = (r.x, r.width);
@@ -448,10 +487,12 @@ fn draw_keys(buf: &mut Buffer, r: Rect, app: &App, th: &Theme, view: &mut Settin
     let n = Action::ALL.len();
     view.visible = r.bottom().saturating_sub(y).max(1) as usize;
     view.key_sel = view.key_sel.min(n - 1);
-    if view.key_sel < view.key_top {
-        view.key_top = view.key_sel;
-    } else if view.key_sel >= view.key_top + view.visible {
-        view.key_top = view.key_sel + 1 - view.visible;
+    if view.key_wheeled.follows(view.key_sel, n.saturating_sub(view.visible)) {
+        if view.key_sel < view.key_top {
+            view.key_top = view.key_sel;
+        } else if view.key_sel >= view.key_top + view.visible {
+            view.key_top = view.key_sel + 1 - view.visible;
+        }
     }
     view.key_top = view.key_top.min(n.saturating_sub(view.visible));
     let focused = app.is_focused(crate::layout::Widget::Home);
@@ -521,7 +562,7 @@ mod tests {
         select(&mut app, "ui.design");
         key(&mut app, KeyCode::Right);
         assert_eq!(app.config.ui.design, "event-horizon");
-        assert_eq!(crate::design::DESIGNS[app.design].id, "event-horizon");
+        assert_eq!(app.shown.built_in().id, "event-horizon");
         // numbers step, stay in range, and can be typed
         select(&mut app, "visuals.unfocused_fps");
         key(&mut app, KeyCode::Left);
@@ -577,7 +618,7 @@ mod tests {
         let (mut app, dir) = app_with_files();
         let draw = |app: &mut App| {
             let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
-            t.draw(|f| crate::ui::draw(f, app)).unwrap();
+            t.draw(|f| crate::ui::frame(f, app)).unwrap();
             let b = t.backend().buffer().clone();
             (0..48).map(|y| (0..160).map(|x| b[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
         };
@@ -608,6 +649,48 @@ mod tests {
         assert_eq!(app.page.settings().unwrap().tab, Tab::Config);
         key(&mut app, KeyCode::Esc);
         assert!(app.page.settings().is_none());
+    }
+
+    #[test]
+    fn a_short_backup_adds_one_line_under_the_tabs_and_nothing_else_moves() {
+        let (mut app, _dir) = app_with_files();
+        let draw = |app: &mut App| {
+            let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+            t.draw(|f| crate::ui::frame(f, app)).unwrap();
+            t.backend().buffer().clone()
+        };
+        let rows = |b: &Buffer| (0..b.area.height).map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>();
+        // the last backup was whole: no line
+        app.listening = Some(singularity_proto::ListeningSummary { minutes: vec![0; singularity_proto::LISTENING_DAYS], ..Default::default() });
+        let whole = draw(&mut app);
+        assert!(!rows(&whole).iter().any(|r| r.contains("backup")), "{:#?}", rows(&whole));
+        // incomplete: one line; every other cell as before
+        app.listening.as_mut().unwrap().backup_short = Some(singularity_proto::BackupShort { lists: 2, kept: 2 });
+        let short = draw(&mut app);
+        let changed: Vec<u16> = (0..40).filter(|&y| (0..120).any(|x| whole[(x, y)] != short[(x, y)])).collect();
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        let line = &rows(&short)[changed[0] as usize];
+        // (Settings is the middle Pane here, too narrow for the whole line: what's kept drops off)
+        assert!(line.contains("│ Last backup incomplete: 2 lists · tried again tomorrow "), "{line}");
+        // back to whole: gone again
+        app.listening.as_mut().unwrap().backup_short = None;
+        assert_eq!(draw(&mut app), whole);
+    }
+
+    #[test]
+    fn the_backup_line_fits_a_narrow_pane() {
+        use singularity_proto::BackupShort;
+        let b = |lists, kept| BackupShort { lists, kept };
+        assert_eq!(backup_line(&b(1, 1), 80), "Last backup incomplete: 1 list · tried again tomorrow · last whole copy kept");
+        assert_eq!(backup_line(&b(3, 1), 90), "Last backup incomplete: 3 lists · tried again tomorrow · last whole copy kept for 1");
+        assert_eq!(backup_line(&b(2, 0), 90), "Last backup incomplete: 2 lists · tried again tomorrow · no whole copy to keep yet");
+        // what's done about it drops off whole, then the count is cut
+        assert_eq!(backup_line(&b(2, 2), 60), "Last backup incomplete: 2 lists · tried again tomorrow");
+        assert_eq!(backup_line(&b(2, 2), 40), "Last backup incomplete: 2 lists");
+        assert_eq!(backup_line(&b(2, 2), 24), "Last backup incomplete:…");
+        for w in 1..100 {
+            assert!(backup_line(&b(12, 5), w).chars().count() <= w);
+        }
     }
 
     #[test]

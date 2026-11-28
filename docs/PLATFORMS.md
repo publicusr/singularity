@@ -32,13 +32,15 @@ VM) or `spotify-app`).
 
 | Engine | Linux | macOS | Lossless | Cost (measured on the Mac, an M2) |
 |--------|-------|-------|----------|-----------------------------------|
-| Soloist (ADR-0001) | ✅ default; cache capped by `engine.cache_gb` (D61, 5 GB) | ➖ natively (Spotify ships it for Linux only): see the Soloist VM | ✅ | (Linux: not measured yet, singularity-archive#71) |
+| Soloist (ADR-0001) | ✅ default; cache capped by `engine.cache_gb` (D61, 5 GB) | ➖ natively: Spotify has shipped an Apple Silicon build (macOS 13+, `soloist_release_osx_arm64.tar.gz`) since 2026-10-23, but Singularity doesn't use it yet (trying it is part of #85; its audio goes to Core Audio, so the audio Widgets would need the process tap and the "System Audio Recording Only" permission); today: see the Soloist VM | ✅ | (Linux: not measured yet, singularity-archive#71) |
 | Spotify app over Connect (D51, singularity-archive#65) | 🔶 built (`spotify --minimized`), never run | 🔶 (✅ live-checked by 2026-10-20; network-change fixes awaiting the owner's re-check) | ✅ the app's own setting | app ~600 MB, 5–25 % CPU playing |
 | librespot in the Daemon (D52, singularity-archive#70) | 🔶 built, type-checked; needs `alsa-lib` to build; never run | 🔶 default (D54); on Connect live (read-only check); playback awaits the owner | ❌ 320 kbps at most, never | Daemon ~26 MB, ~0–1 % CPU idle; playing ~1 % CPU, 28 MB |
 | Soloist in the Soloist VM (D55, singularity-archive#72): `kind = "soloist"` on macOS | ➖ (Soloist runs natively) | 🔶 built (behind the Soloist runner since D89, #94: not run on the Mac since); live (2026-10): VM up and waiting for pairing in 5.6 s, paired from the phone, FLAC on the Mac's speakers, the audio Widgets fed | ✅ FLAC verified | ~300 MB; idle ~1 % CPU (pipe sink over vsock, 1 vCPU); playing FLAC: not measured on this setup yet (the owner was on librespot); first setup ~2 min, ~1.3 GB disk; cache fixed at 200 MB (`engine.cache_gb` doesn't apply: the VM's disk is small) |
 
 Lossless without the Spotify app on macOS: not possible with librespot (Spotify keeps lossless to its own players and
 asked librespot not to pursue it), hence Soloist itself in a small Linux VM (D53 spike, D55, singularity-archive#72).
+That was built while Soloist had no macOS build; Spotify added one on 2026-10-23
+(`docs/research/2026-11-reverify.md`), and #85 tries it in place of the VM.
 
 ## Features, one by one
 
@@ -66,6 +68,7 @@ asked librespot not to pursue it), hence Soloist itself in a small Linux VM (D53
 | "Restart the player" | ✅ Soloist; 🔶 app, librespot | 🔶 app (✅ by 2026-10-20); 🔶 librespot, the VM's Soloist | — |
 | Local data, backups, config, paths (58–62, D50) | ✅ | 🔶 same XDG-style paths, decided in one place since D89 (App folders, #97) (✅ by 2026-10-20) | — |
 | Mini-player, mouse, palette, layouts, themes (44–57, 67) | ✅ | 🔶 rebuilt since (free tiling, Arrange mode, the wheel) (✅ by 2026-10-20) | — |
+| Demo mode (D90): the filter where events enter the Client, the redactor, the demo Listening log | ✅ pty `demo` and `PTY_DEMO=1 wheel-all`: no fake secret drawn | 🔶 shared code (the computer's name from the Host); not run on the Mac yet | — |
 | Jam: start on this device, invite link + QR, guests, end (D64) | ✅ Soloist (live: start and end, 2026-10-30; a guest joining not yet tried); 🔶 librespot, app (same Connect code, not tried) | 🔶 same code (Connect, no OS part); not tried | a guest's join and the dealer updates: a second phone |
 
 ## The seams (where OS-specific code lives)
@@ -85,14 +88,16 @@ place, and callers outside these files carry no `cfg`, with **one exception, the
 | Secrets (D24; `secrets.rs`) | `secret-tool` | `/usr/bin/security` | 🔶 (✅ by 2026-10-20: singularity-archive#64) |
 | OS media integration (`os_media.rs`, D89: one module picks the adapter, owns the main-thread handover and the shared policy; `SINGULARITY_NOWPLAYING=off` turns it off on both, `SINGULARITY_DBUS=off` still works, an address in it counts only on Linux, Q99) | MPRIS on D-Bus (`os_media/mpris.rs`; its test `tests/mpris.rs` runs on Linux only) | Now Playing + remote commands (`os_media/now_playing.rs`, MediaPlayer framework, the macOS-only `objc2-*` dependencies in `daemon/Cargo.toml`; the main thread runs the run loop, tokio another thread) | 🔶 singularity-archive#68; the module (#95) not yet run on the Mac |
 | Notifications (part of OS media integration) | D-Bus, with the cover | `osascript`, without the cover | 🔶 singularity-archive#68 |
-| Autostart, and the restart hint (`RESTART`, `lib.rs`) | systemd user unit; `systemctl --user restart singularityd` | LaunchAgent; `launchctl kickstart -k …` | 🔶 (✅ by 2026-10-20: singularity-archive#69) |
-| Process lookup and stop, CPU and memory use, the uid, the keyring's name: the Host (`config/src/host.rs`, adapters `host/linux.rs` and `host/macos.rs`, D89) | `/proc` (memory in the kernel's page size: 4 K, or 16 K/64 K on ARM kernels) | libproc (`proc_listallpids`, `proc_name`; memory in bytes) | 🔶 #96: the macOS adapter is CI-built, not yet run |
+| Autostart, the restart hint (`RESTART`, `lib.rs`), and whether the Daemon runs under it (`run_by_service`, told to Clients in the welcome, #145) | systemd user unit; `systemctl --user restart singularityd`; the Daemon's cgroup is `singularityd.service` | LaunchAgent; `launchctl kickstart -k …`; `XPC_SERVICE_NAME` is the LaunchAgent's label (the Client starts the Daemon without the terminal's) | 🔶 (✅ by 2026-10-20: singularity-archive#69); `run_by_service` not yet run on a Mac |
+| Process lookup and stop, CPU and memory use, the uid, the keyring's name: the Host (`config/src/host.rs`, adapters `host/linux.rs` and `host/macos.rs`, D89) | `/proc` (memory in the kernel's page size: 4 K, or 16 K/64 K on ARM kernels); `has_quit` tells a process that quit but isn't reaped yet (a zombie, state `Z`/`X` in `stat`; the Spotify app check skips those, #143) | libproc (`proc_listallpids`, `proc_name`; memory in bytes); `has_quit` is always false: the Spotify app is started through `open` and reaped by launchd | 🔶 #96: the macOS adapter is CI-built, not yet run |
 | The computer's name (the Host; how the Spotify app's device is told apart on Connect) | `/etc/hostname`, else `hostname` from `/usr/bin`, `/bin` or `/usr/local/bin` | `scutil --get ComputerName` (`/usr/sbin`) | 🔶 #96, not yet run |
 | Opening a URL (the Host) | `xdg-open` from `/usr/bin`, `/bin` or `/usr/local/bin` | `open` from the same | 🔶 #96, not yet run (✅ by 2026-10-20, before the move) |
 | The Spotify app: detecting the installed app and starting it (`spotify_app`: `app_engine/linux.rs`, `app_engine/macos.rs`; whether it runs: the Host) | a `spotify` binary in `/usr/bin`, `/bin`, `/usr/local/bin` or `/snap/bin`, started as `spotify --minimized` | `Spotify.app` in `/Applications` or `~/Applications`, its version from its `Info.plist` (`defaults`), started with `open -gj -a Spotify` | 🔶 #96, not yet run (✅ by 2026-10-20, before the move). The health view's **Tools** row names the program that starts the app (`spotify`, `open`) only with `kind = "spotify-app"` |
 | Programs the Daemon runs (`programs.rs`; singularity-archive#77, audit S3). Processes are found and stopped through the Host, not `pgrep`/`pkill`; Soloist's Linux builds are unpacked in-process, not by `tar` (#98, Q102) | fixed locations (`/usr/bin`, `/bin`, `/usr/local/bin`; Spotify also `/snap/bin`), never `PATH`; the health check asks for `secret-tool` (while the keyring is on), `pactl`, `parec` | `/usr/bin`, `/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, in that order; the health check asks only for `tar` (the Soloist VM's image) | 🔶 #98, not yet run on the Mac |
 | Audio output name (health, `health.rs`) | `pactl` (the Engine's stream → its sink) | cpal's default output device | 🔶 (✅ by 2026-10-20) |
-| The Client starting the Daemon | `singularityd` next to the Client (never `PATH`) | the same | 🔶 (✅ by 2026-10-20) |
+| The Client starting the Daemon | `singularityd` next to the Client (never `PATH`). When a Daemon that the systemd unit ran goes away (replaced, crashed), every Client waits for it to exit and then 5 s for the unit to start the next one before starting one itself (`SERVICE_GRACE`, #145); one the unit didn't run is started again at once | the same, for the LaunchAgent | 🔶 (✅ by 2026-10-20); the wait for launchd not yet run on a Mac |
+| The last Home and library (#81, `daemon/src/last_seen.rs`): `home-and-library.json` in the App folders cache dir, owner-only, naming its account, removed on logout or when the listening data is deleted | `$XDG_CACHE_HOME/singularity/`, else `~/.cache/singularity/` | the same | 🔶 Linux: tests and a pty run with the fake Catalogue, not yet timed on the real account; not yet run on a Mac |
+| The delete key's name in hints (`keymap::DELETE_KEY`, owner Q132, Q160) | "Del" | "⌫" (the Mac's delete key sends Backspace) | 🔶 not yet seen on a Mac |
 | Socket dir (App folders, `config/src/app_folders.rs`, D89) | `$XDG_RUNTIME_DIR/singularity/` | `$TMPDIR/singularity-<uid>/singularity/` (per-user `$TMPDIR`; the uid part reads "user", #3) | 🔶 a Mac couldn't make its socket from 2026-10-25 until `b2c8d15` (2026-11-20), which no Mac has run; #97 not yet run there either |
 
 ## Not yet run on macOS
@@ -161,9 +166,11 @@ make its socket on a Mac. A new release is needed first.
 - [ ] Lyrics and the Karaoke Widget and Design (D67, D75), big text in the terminal's own font (Ghostty's config where
   macOS keeps it, `termfont.rs`).
 - [ ] Free tiling and Arrange mode (D66, D84, D87): mouse, touchpad and keyboard at the Mac's sizes; the Tray, the
-  Widget picker, New design…, Delete design (#80); every Widget at the Mac's Pane sizes (#6).
-- [ ] The wheel and the touchpad in Ghostty: one notch moves one step (2026-10-23), every list and every popup scrolls
-  under the pointer (popups own the wheel since 2026-11-01; pty `wheel-all` shows them all).
+  Widget picker, New design…, Delete design (#80) and its undo, the picker's hint saying "⌫ delete" (Q132, Q160); every Widget
+  at the Mac's Pane sizes (#6).
+- [ ] The wheel and the touchpad in Ghostty: one notch moves one step (2026-10-23), a touchpad a row a report (D86,
+  #32), every list and every popup scrolls under the pointer (popups own the wheel since 2026-11-01; pty `wheel-all`
+  shows them all); over a Pane the wheel scrolls a list's view, the pointer highlights a row, a click picks it (D86).
 - [ ] The resize pointer appears on a Pane border and goes back to the normal pointer off it, in Ghostty too
   (2026-11-05).
 - [ ] Open a song's or a Card's menu and wait while Home or the list refreshes, then pick Play or Add to playlist: it
@@ -178,5 +185,7 @@ When it's done: update every row above and the README's "macOS quirks" (#85 step
 
 Paths (D50): `~/.config/singularity`, `~/.local/share/singularity`, `~/.local/state/singularity`,
 `~/.cache/singularity`, with the `XDG_*` variables respected, named in one place (App folders,
-`config/src/app_folders.rs`, D89). With `HOME` unset (and those `XDG_*` unset) the Client and Daemon stop and say so. Terminals: kitty, Ghostty and WezTerm for the pixel tier
+`config/src/app_folders.rs`, D89). The Daemon's log (`daemon.log` in the state dir, opened by a Client or by launchd's
+`StandardErrorPath`) is moved along by the Daemon itself at its start and past 5 MB, keeping three (Q170,
+`daemon/src/daemon_log.rs`); under systemd it's the journal. With `HOME` unset (and those `XDG_*` unset) the Client and Daemon stop and say so. Terminals: kitty, Ghostty and WezTerm for the pixel tier
 on both; the cell tier everywhere else. Visuals: wgpu on Vulkan (Linux) or Metal (macOS), CPU fallback on both.

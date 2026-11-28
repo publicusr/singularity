@@ -7,11 +7,17 @@ use super::*;
 pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
     let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
     let (ev_tx, ev_rx) = mpsc::channel(64);
+    let personal = personal();
+    let home = if personal { personal_home(home) } else { home };
     tokio::spawn(async move {
-        let ready = CatalogueStatus::Ready { username: "fake".into(), country: "SE".into(), premium: true };
+        let ready = CatalogueStatus::Ready { username: if personal { personal::USERNAME.into() } else { "fake".into() }, country: "SE".into(), premium: true };
         let _ = ev_tx.send(CatEvent::Status(ready.clone())).await;
+        // SINGULARITY_FAKE_DELAY_MS: Home and the library take this long, like Spotify's after a fresh start (#81)
+        if let Some(ms) = std::env::var("SINGULARITY_FAKE_DELAY_MS").ok().and_then(|v| v.parse().ok()) {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+        }
         let _ = ev_tx.send(CatEvent::Home(home.clone())).await;
-        let mut lib = fake_library(&home);
+        let mut lib = if personal { personal_library(&home) } else { fake_library(&home) };
         let _ = ev_tx.send(CatEvent::Library(lib.clone())).await;
         // what's been liked/saved here; the rest follows `fake_saved`
         let mut saved: HashMap<String, bool> = HashMap::new();
@@ -30,16 +36,22 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
             let evs = match cmd {
                 CatCmd::Home => vec![CatEvent::Home(home.clone())],
                 CatCmd::Login => vec![CatEvent::Status(ready.clone())],
-                CatCmd::Reconnect => vec![],
+                CatCmd::Reconnect | CatCmd::LoginWanted(_) => vec![],
                 CatCmd::Logout => vec![CatEvent::Status(CatalogueStatus::LoggedOut)],
                 CatCmd::Library => vec![CatEvent::Library(lib.clone())],
+                CatCmd::HomeAndLibrary => vec![CatEvent::Home(home.clone()), CatEvent::Library(lib.clone())],
                 // a name with "fail" in it fails, as does deleting a playlist whose URI has it
-                CatCmd::CreatePlaylist { name, .. } if name.contains("fail") => vec![CatEvent::Error("Couldn't create the playlist (fake failure)".into()), CatEvent::Library(lib.clone())],
+                CatCmd::CreatePlaylist { name, .. } if name.contains("fail") => {
+                    // the personal account fails as Spotify does: with a URL that names the account
+                    let why = if personal { format!("Couldn't create the playlist: error sending request for url (https://spclient.example.invalid/playlist/v2/user/{}/rootlist/changes)", personal::USERNAME) } else { "Couldn't create the playlist (fake failure)".into() };
+                    vec![CatEvent::Error(why), CatEvent::Library(lib.clone())]
+                }
                 CatCmd::CreatePlaylist { name, uris } => {
                     created += 1;
                     let uri = format!("spotify:playlist:fakenew{created}");
                     let at = lib.items.iter().position(|i| i.kind != "liked").unwrap_or(lib.items.len());
-                    lib.items.insert(at, singularity_proto::LibraryItem { uri: uri.clone(), name: name.clone(), subtitle: "Playlist · fake".into(), kind: "playlist".into(), image_url: None, depth: 0, own: true, authors: vec!["fake".into()] });
+                    let me = if personal { personal::DISPLAY_NAME } else { "fake" };
+                    lib.items.insert(at, singularity_proto::LibraryItem { uri: uri.clone(), name: name.clone(), subtitle: format!("Playlist · {me}"), kind: "playlist".into(), image_url: None, depth: 0, own: true, authors: vec![me.into()] });
                     let mut ev = vec![CatEvent::Created { uri: uri.clone(), name: name.clone() }];
                     if !uris.is_empty() {
                         added.entry(uri.clone()).or_default().extend(uris.iter().cloned());
@@ -155,13 +167,23 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                     QueueEdit::Move { uri, uid, to, into_queue } => Command::MoveInQueue { uri, uid, to, into_queue },
                 })],
                 CatCmd::Lyrics { uri, .. } => vec![CatEvent::Lyrics(fake_lyrics(&uri))],
+                CatCmd::LyricsFound { found, .. } => found.map(|(l, _)| CatEvent::Lyrics(l)).into_iter().collect(),
                 CatCmd::Artist(uri) => vec![CatEvent::Artist(fake_artist(&uri, &home))],
+                // demo Home's quiet look (#128): an artist's page, or a list's first page
+                CatCmd::Peek(uri) if uri.starts_with("spotify:artist:") => vec![CatEvent::Peeked { artist: Some(fake_artist(&uri, &home)), tracks: None, uri }],
+                CatCmd::Peek(uri) => {
+                    let first = fake_tracks(&uri).into_iter().find_map(|e| match e {
+                        CatEvent::Tracks(p) => Some(p),
+                        _ => None,
+                    });
+                    vec![CatEvent::Peeked { uri, tracks: first, artist: None }]
+                }
                 CatCmd::MoreTracks { uri, offset } => fake_tracks(&uri).into_iter().filter(|e| matches!(e, CatEvent::Tracks(p) if p.offset >= offset)).collect(),
                 CatCmd::FindShow(uri) => vec![CatEvent::EpisodeShow { episode: uri, show: singularity_proto::Link { name: "Fake Show".into(), uri: "spotify:show:fakeshow".into() } }],
                 CatCmd::Search(q) => vec![CatEvent::Search(fake_search(&q, &home))],
                 CatCmd::Devices => vec![CatEvent::Devices(fake_devices(None)), CatEvent::Jam(jam.clone())],
                 CatCmd::StartJam => {
-                    jam.get_or_insert_with(fake_jam);
+                    jam.get_or_insert_with(if personal { personal_jam } else { fake_jam });
                     vec![CatEvent::Jam(jam.clone())]
                 }
                 CatCmd::EndJam => match jam.take() {
@@ -248,10 +270,71 @@ fn fake_jam() -> singularity_proto::Jam {
 /// The Engine, a phone and a speaker; `active` moves when transferred to.
 fn fake_devices(active: Option<&str>) -> Vec<singularity_proto::Device> {
     let active = active.unwrap_or("engine");
-    [("engine", "Singularity", "speaker"), ("phone", "Pixel", "smartphone"), ("kitchen", "Kitchen", "speaker")]
+    let names = if personal() { [personal::ENGINE, personal::PHONE, personal::SPEAKER] } else { ["Singularity", "Pixel", "Kitchen"] };
+    [("engine", names[0], "speaker"), ("phone", names[1], "smartphone"), ("kitchen", names[2], "speaker")]
         .into_iter()
         .map(|(id, name, kind)| singularity_proto::Device { id: id.into(), name: name.into(), kind: kind.into(), active: id == active, volume: Some(60), is_engine: id == "engine" })
         .collect()
+}
+
+/// `SINGULARITY_FAKE_PERSONAL=1`: the fake account carries made-up personal data (D90), for demo mode's pty check
+/// that none of it is drawn: a username and display name, a "Demo" folder beside private playlists, a personal
+/// Shelf, devices named after their owner, a Jam with a named guest and a secret token.
+pub fn personal() -> bool {
+    std::env::var("SINGULARITY_FAKE_PERSONAL").is_ok_and(|v| v == "1")
+}
+
+/// The personal account's values (all made up), which demo mode must never draw.
+pub mod personal {
+    pub const USERNAME: &str = "zq-fakeuser";
+    pub const DISPLAY_NAME: &str = "Zara Quillfeather";
+    pub const FRIEND: &str = "Bodhi Friendly";
+    pub const ENGINE: &str = "Singularity on zarabox";
+    pub const PHONE: &str = "Zara's Pixel";
+    pub const SPEAKER: &str = "Zara's Kitchen";
+    pub const DIARY: &str = "Zara's Secret Diary";
+    pub const PRIVATE_FOLDER: &str = "Private Stuff";
+    pub const INVITE: &str = "https://open.spotify.com/socialsession/ZqSecretJamToken42";
+}
+
+/// Home with a personal Shelf first: "Made For <display name>", holding the private playlist.
+fn personal_home(mut home: HomeFeed) -> HomeFeed {
+    let diary = Card { uri: "spotify:playlist:fakediary".into(), name: personal::DIARY.into(), subtitle: format!("By {}", personal::DISPLAY_NAME), image_url: None, kind: "playlist".into() };
+    home.shelves.insert(1, singularity_proto::Shelf { id: "spotify:section:fakemadefor".into(), title: format!("Made For {}", personal::DISPLAY_NAME), kind: "shelf".into(), cards: vec![diary] });
+    home
+}
+
+/// The personal library: Liked Songs, a "Demo" folder (the own playlist to edit and a friend's), a private folder
+/// with the diary, and the usual Home-made rows after them.
+fn personal_library(home: &HomeFeed) -> Library {
+    use singularity_proto::LibraryItem;
+    let me = personal::DISPLAY_NAME;
+    let playlist = |uri: &str, name: &str, depth: u8, own: bool, who: &str| LibraryItem { uri: uri.into(), name: name.into(), subtitle: format!("Playlist · {who}"), kind: "playlist".into(), image_url: None, depth, own, authors: vec![who.into()] };
+    let folder = |uri: String, name: &str| LibraryItem { uri, name: name.into(), subtitle: String::new(), kind: "folder".into(), image_url: None, depth: 0, own: false, authors: vec![] };
+    let mut items = fake_library(home).items;
+    items.retain(|i| i.uri != "spotify:playlist:fakemine");
+    let rest = items.split_off(1);
+    items.push(folder(format!("spotify:user:{}:folder:demo", personal::USERNAME), "Demo"));
+    items.push(playlist("spotify:playlist:fakemine", "Fake Mixtape", 1, true, me));
+    items.push(playlist("spotify:playlist:fakefriend", "Road Trip", 1, false, personal::FRIEND));
+    items.push(folder(format!("spotify:user:{}:folder:private", personal::USERNAME), personal::PRIVATE_FOLDER));
+    items.push(playlist("spotify:playlist:fakediary", personal::DIARY, 1, true, me));
+    items.extend(rest);
+    Library { items }
+}
+
+/// The personal account's Jam: on its Engine, a named guest, a secret token.
+fn personal_jam() -> singularity_proto::Jam {
+    use singularity_proto::JamMember;
+    singularity_proto::Jam {
+        host: Some(personal::ENGINE.into()),
+        invite: Some(personal::INVITE.into()),
+        members: vec![
+            JamMember { id: "m-fake".into(), name: personal::DISPLAY_NAME.into(), owner: true, listening: true },
+            JamMember { id: "m-guest".into(), name: personal::FRIEND.into(), owner: false, listening: true },
+        ],
+        ..fake_jam()
+    }
 }
 
 /// Invented results: the Home feed's Cards whose names contain the query, and matching fake tracks.
@@ -300,6 +383,7 @@ fn fake_artist(uri: &str, home: &HomeFeed) -> singularity_proto::ArtistPage {
             added_at: None,
             duration_ms: 200_000 + i * 3_000,
             playable: true,
+            cover_url: None,
         })
         .collect();
     singularity_proto::ArtistPage { uri: uri.into(), name: "Nova Drift".into(), monthly_listeners: Some(1_234_567), image_url: None, top_tracks, shelves }
@@ -321,6 +405,25 @@ fn fake_lyrics(uri: &str) -> singularity_proto::Lyrics {
 /// instrumental gap of about 8 s marked by an empty line, and a long line that wraps.
 fn karaoke_lyrics(uri: &str) -> singularity_proto::Lyrics {
     use singularity_proto::{LyricLine, LyricWord};
+    // SINGULARITY_FAKE_LYRICS=scripts: a verse in scripts with separate marks (Thai, Hindi) and a long CJK line whose
+    // words aren't spaced, every word timed (#146)
+    if std::env::var("SINGULARITY_FAKE_LYRICS").is_ok_and(|v| v == "scripts") {
+        let verse: [(u64, &[&str], u64); 4] = [
+            (500, &["สวัสดี ", "ครับ ", "ทุก ", "คน"], 1_000),
+            (5_000, &["नमस्ते ", "दुनिया ", "गाओ ", "साथ"], 1_000),
+            (9_500, &["夜空", "星屑", "光る", "風鈴", "海辺", "雨音", "花火", "月影", "雪国", "桜色"], 700),
+            (17_000, &[], 0),
+        ];
+        let lines = (0..6u64)
+            .flat_map(|round| verse.iter().map(move |(at, words, step)| (round * 20_000 + at, words, step)))
+            .map(|(start_ms, words, step)| LyricLine {
+                start_ms,
+                text: words.concat(),
+                words: words.iter().enumerate().map(|(k, w)| LyricWord { start_ms: start_ms + k as u64 * step, end_ms: None, text: (*w).into() }).collect(),
+            })
+            .collect();
+        return singularity_proto::Lyrics { uri: uri.into(), synced: true, lines, source: "fake".into(), ..Default::default() };
+    }
     // (start in the verse, ms; text; word starts relative to the line, or none: line-timed only)
     let verse: [(u64, &str, &[u64]); 6] = [
         (3_000, "Turn the lights down low", &[0, 450, 800, 1_400, 2_100]),
@@ -468,6 +571,8 @@ fn fake_tracks(uri: &str) -> Vec<CatEvent> {
                     album_uri: Some(format!("spotify:album:fake{}", (i * 7) % 13 + 1)),
                     uid: uri.contains(":playlist:").then(|| format!("fakeuid{i}")),
                     progress: None,
+                    // the recorded Home feed's covers (the pty harness keeps them cached), one per fake album
+                    cover_url: Some(format!("https://i.scdn.co/image/fixture{:03}", (i * 7) % 13 + 1)),
                 })
                 .collect();
             let header = (offset == 0 && uri.contains(":album:")).then(|| singularity_proto::ListHeader {

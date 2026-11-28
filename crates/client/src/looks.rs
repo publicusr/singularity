@@ -2,7 +2,6 @@
 //! (re-read when they change), and the pickers, which preview as you move and put things back on Esc.
 
 use crate::app::{App, Hit};
-use crate::design::DESIGNS;
 use crate::layout::{PaneId, Widget};
 use crate::theme::{self, Theme};
 use crate::ui::{centered, popup, text, blank};
@@ -11,6 +10,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime};
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickerKind {
@@ -23,8 +23,34 @@ pub struct Picker {
     /// id, name, what it is
     pub items: Vec<(String, String, String)>,
     pub sel: usize,
-    /// what to go back to on Esc: design, theme id, layout and the saved layout's name
-    before: (usize, String, crate::arrangement::Arrangement, Option<String>),
+    /// what to go back to on Esc: design, theme id, layout and the saved layout's file
+    before: Before,
+    /// the Design of the user's deleted last while it's open, which Undo brings back (Q151); it goes with the picker
+    pub(crate) undo: Option<Undelete>,
+}
+
+/// What the Design picker's Esc goes back to: design, theme id, layout and the saved layout's file.
+type Before = (usize, String, crate::arrangement::Arrangement, crate::shown::Mark);
+
+/// A Design of the user's just deleted, while its undo is offered (#80, owner Q151): its file, kept in memory only
+/// (`shown::Deleted`), and the screen it was on.
+pub struct Undelete {
+    pub(crate) file: crate::shown::Deleted,
+    /// the Theme and layout on screen as it was deleted (a ◂ ▸ swap isn't in its file)
+    pub(crate) theme: String,
+    pub(crate) layout: crate::arrangement::Arrangement,
+    /// what the delete left on screen: Ctrl+K's undo (Ctrl+Z) brings it back only while that is still there
+    pub(crate) left: (usize, String, crate::arrangement::Arrangement),
+    /// (the Design picker's) what Esc went back to before the delete, if it was the Design deleted
+    pub(crate) before: Option<Before>,
+}
+
+/// Delete design's yes/no (#80): the Design on screen it asks about (its file and name), and the Design picker it was
+/// asked from, which comes back once it's answered.
+pub struct DeleteAsk {
+    pub file: String,
+    pub name: String,
+    pub back: Option<Picker>,
 }
 
 /// The user's themes folder and what it held last time we looked.
@@ -57,12 +83,14 @@ fn stamp(dir: &std::path::Path) -> Option<(SystemTime, usize)> {
 impl App {
     /// Switch design: its layout, its own palette (unless `theme` says otherwise), its Disk look.
     pub fn set_design(&mut self, d: usize) {
-        let d = d.min(DESIGNS.len() - 1);
-        self.design = d;
-        self.set_layout((DESIGNS[d].layout)());
-        self.hole.look = DESIGNS[d].look;
+        // a divider held meanwhile is let go first, on the Design it moved (Q103)
+        self.gesture_interrupted();
+        self.shown.show_built_in(d);
+        let d = self.shown.built_in();
+        self.set_layout((d.layout)());
+        self.hole.look = d.look;
         self.focus_on(Widget::Home);
-        self.theme = theme::builtin(DESIGNS[d].themes[0]).expect("built in").into();
+        self.theme = theme::builtin(d.themes[0]).expect("built in").into();
         self.want_widget_data();
     }
 
@@ -81,28 +109,21 @@ impl App {
     /// `ui.design`, `ui.layout` and `ui.theme` from the config, if they differ from what's on screen.
     pub fn apply_ui(&mut self, ui: &singularity_config::Ui) {
         match crate::design::by_id(&ui.design) {
-            Some(d) if d != self.design || self.theme.id.is_empty() => {
-                self.set_design(d);
-                self.layout_name = None;
-            }
+            Some(d) if d != self.shown.design() || self.theme.id.is_empty() => self.set_design(d),
             Some(_) => {}
             None => self.say(format!("config.toml: no design called {:?}", ui.design)),
         }
         let want = (!ui.layout.is_empty()).then_some(ui.layout.as_str());
-        if want != self.layout_name.as_deref() {
+        if want != self.shown.file() {
             match want {
-                Some(id) => match self.saved_layouts.iter().find(|s| s.id == id).cloned() {
+                Some(id) => match self.shown.find(id).cloned() {
                     Some(s) => self.use_layout(&s),
                     None => self.say(format!("config.toml: no saved layout called {id:?} in layouts/")),
                 },
-                None => {
-                    let d = self.design;
-                    self.set_design(d);
-                    self.layout_name = None;
-                }
+                None => self.set_design(self.shown.design()),
             }
         }
-        let want = if ui.theme.is_empty() { DESIGNS[self.design].themes[0] } else { ui.theme.as_str() };
+        let want = if ui.theme.is_empty() { self.shown.built_in().themes[0] } else { ui.theme.as_str() };
         if want != self.theme.id && !self.set_theme(want) {
             self.say(format!("config.toml: no theme called {want:?} (built-in, or a file in themes/)"));
         }
@@ -110,10 +131,8 @@ impl App {
 
     /// Remember the design, theme and layout in config.toml (so they survive a restart).
     pub fn save_ui(&mut self) {
-        let own = DESIGNS[self.design].themes[0] == self.theme.id;
-        let (design, theme) = (DESIGNS[self.design].id.to_string(), if own { String::new() } else { self.theme.id.clone() });
         // (while a New design… is built, the Design it began from: it is still the one you have)
-        let layout = self.layout_name.clone().or_else(|| self.building_from()).unwrap_or_default();
+        let crate::shown::Remembered { design, theme, layout } = self.shown.remembered(&self.theme.id, self.building_from().as_deref());
         self.config.ui.design = design.clone();
         self.config.ui.theme = theme.clone();
         self.config.ui.layout = layout.clone();
@@ -128,11 +147,11 @@ impl App {
 
     /// `t`: the design's next palette, then the shared ones, then the user's themes, round again.
     pub fn next_variant(&mut self) {
-        let mut ids: Vec<String> = DESIGNS[self.design].themes.iter().map(|s| s.to_string()).collect();
+        let mut ids: Vec<String> = self.shown.built_in().themes.iter().map(|s| s.to_string()).collect();
         ids.extend(theme::extra_ids().map(String::from));
         ids.extend(self.user_themes.iter().map(|t| t.id.clone()));
         if ids.len() < 2 {
-            return self.say(format!("{} has one palette · Ctrl+K → Pick a theme for the others", DESIGNS[self.design].name));
+            return self.say(format!("{} has one palette · Ctrl+K → Pick a theme for the others", self.shown.built_in().name));
         }
         let i = ids.iter().position(|id| *id == self.theme.id).map(|i| (i + 1) % ids.len()).unwrap_or(0);
         self.set_theme(&ids[i]);
@@ -183,26 +202,27 @@ impl App {
         self.reload_layouts();
         let items = match kind {
             // the built-in designs, then the user's saved layouts
-            PickerKind::Design => DESIGNS
-                .iter()
-                .map(|d| (d.id.to_string(), d.name.to_string(), d.blurb.to_string()))
-                .chain(self.saved_layouts.iter().map(|s| (format!("layout:{}", s.id), s.name.clone(), if s.edited { format!("your changes, unnamed · layouts/{}.toml", s.id) } else { format!("yours · layouts/{}.toml", s.id) })))
-                .collect(),
+            PickerKind::Design => self.shown.picker_items(),
             PickerKind::Theme => theme_items(&self.user_themes),
         };
-        let current = match (kind, &self.layout_name) {
-            (PickerKind::Design, Some(l)) => format!("layout:{l}"),
-            (PickerKind::Design, None) => DESIGNS[self.design].id.to_string(),
-            (PickerKind::Theme, _) => self.theme.id.clone(),
+        let current = match kind {
+            PickerKind::Design => self.shown.picker_current(),
+            PickerKind::Theme => self.theme.id.clone(),
         };
         let sel = items.iter().position(|(id, ..)| *id == current).unwrap_or(0);
-        self.open_popup(crate::app::Popup::Picker(Picker { kind, items, sel, before: (self.design, self.theme.id.clone(), self.layout.clone(), self.layout_name.clone()) }));
+        // (a delete from Ctrl+K is final once the Design picker opens: its Undo is for its own deletes)
+        if kind == PickerKind::Design {
+            self.undelete = None;
+        }
+        self.open_popup(crate::app::Popup::Picker(Picker { kind, items, sel, before: (self.shown.design(), self.theme.id.clone(), self.layout.clone(), self.shown.mark()), undo: None }));
     }
 
     /// Put saved layout `s` on screen (with the colours it was saved with, or its design's).
     pub fn use_layout(&mut self, s: &crate::layouts::Saved) {
-        let d = crate::design::by_id(&s.design).unwrap_or(self.design);
-        if d != self.design {
+        // a divider held meanwhile is let go first, on the Design it moved (Q103)
+        self.gesture_interrupted();
+        let d = crate::design::by_id(&s.design).unwrap_or(self.shown.design());
+        if d != self.shown.design() {
             self.set_design(d);
         }
         // the colours it was saved with (a theme that has since gone keeps the design's own)
@@ -210,32 +230,32 @@ impl App {
             self.set_theme(t);
         }
         self.set_layout(s.arrangement());
-        self.layout_name = Some(s.id.clone());
+        self.shown.open(s);
         self.focus_on(Widget::Home);
         self.want_widget_data();
     }
 
+    /// Read the user's Designs again (what couldn't be read, the bar says).
     pub fn reload_layouts(&mut self) {
-        let Some(dir) = self.layouts_dir.clone() else { return };
-        let (saved, problems) = crate::layouts::load_dir(&dir);
-        self.saved_layouts = saved;
-        if !problems.is_empty() {
-            self.say(problems.join(" · "));
+        if let Some(p) = self.shown.reload() {
+            self.say(p);
+        }
+    }
+
+    /// What a change to the Shown Design asks for, in its order: config.toml follows, the bar says it.
+    pub(crate) fn shown_did(&mut self, o: crate::shown::Outcome) {
+        for step in o.steps() {
+            match step {
+                crate::shown::Step::SaveUi => self.save_ui(),
+                crate::shown::Step::Say(s) => self.say(s),
+            }
         }
     }
 
     /// Save what's on screen under `name`; it shows up in the Design picker.
     pub fn save_layout(&mut self, name: &str) {
-        let Some(dir) = self.layouts_dir.clone() else { return self.say("No config folder to save layouts in") };
-        match crate::layouts::save(&dir, name, DESIGNS[self.design].id, &self.theme.id, &self.layout) {
-            Ok(s) => {
-                self.layout_name = Some(s.id.clone());
-                self.reload_layouts();
-                self.save_ui();
-                self.say(format!("Saved design \"{}\" (Ctrl+K → Pick a design)", s.name));
-            }
-            Err(e) => self.say(format!("Couldn't save the layout: {e}")),
-        }
+        let o = self.shown.save_as(name, &self.layout, &self.theme.id);
+        self.shown_did(o);
     }
 
     /// Discard new design (Ctrl+D on its name prompt, or the palette's, owner Q78): the build is thrown away and the
@@ -281,28 +301,19 @@ impl App {
                     crate::app::NameFor::Layout => {}
                     crate::app::NameFor::Fork if n.text.trim().is_empty() => self.keep_edited(),
                     // never over another Design of the user's
-                    crate::app::NameFor::Fork => {
-                        let id = crate::layouts::file_id(&n.text);
-                        if self.saved_layouts.iter().any(|s| s.id == id && !s.edited) {
-                            self.say(format!("There is already a design called \"{}\"", n.text.trim()));
+                    crate::app::NameFor::Fork => match self.shown.name_edit(&n.text, &self.layout, &self.theme.id) {
+                        Ok(o) => self.shown_did(o),
+                        Err(o) => {
+                            self.shown_did(o);
                             self.open_popup(crate::app::Popup::Naming(n));
-                        } else {
-                            let was = self.layout_name.clone();
-                            self.save_layout(&n.text);
-                            self.named_edited_copy(was);
                         }
-                    }
+                    },
                     crate::app::NameFor::NewPlaylist => self.create_playlist(&n.text),
                     // a New design… (#42): never over a Design of the user's, nor where a built-in Design's unnamed
                     // "(edited)" copy goes (that would later be written over it); a name that can't be saved (one that
                     // makes no file name) keeps the prompt, saying why
                     crate::app::NameFor::NewDesign => {
-                        let id = crate::layouts::file_id(&n.text);
-                        let taken = self.saved_layouts.iter().any(|s| s.id == id) || DESIGNS.iter().any(|d| crate::layouts::edited_id(d.id) == id);
-                        if taken {
-                            self.say(format!("There is already a design called \"{}\"", n.text.trim()));
-                            self.open_popup(crate::app::Popup::Naming(n));
-                        } else if !self.save_new_design(&n.text) {
+                        if !self.save_new_design(&n.text) {
                             self.open_popup(crate::app::Popup::Naming(n));
                         }
                     }
@@ -330,6 +341,8 @@ impl App {
         let mut taken = self.layout.widgets();
         taken.extend(self.layout.tray());
         let Some(to) = crate::layouts::next(from, &taken, dir) else { return false };
+        // a divider held meanwhile is let go first: the swap isn't part of its move (Q103)
+        self.gesture_interrupted();
         match self.layout.replace(id, to) {
             Ok(a) => self.layout = a,
             Err(_) => return false,
@@ -346,12 +359,11 @@ impl App {
         match kind {
             PickerKind::Design => {
                 if let Some(l) = id.strip_prefix("layout:") {
-                    if let Some(s) = self.saved_layouts.iter().find(|s| s.id == l).cloned() {
+                    if let Some(s) = self.shown.find(l).cloned() {
                         self.use_layout(&s);
                     }
-                } else if let Some(d) = crate::design::by_id(&id).filter(|d| *d != self.design || self.layout_name.is_some()) {
+                } else if let Some(d) = crate::design::by_id(&id).filter(|d| *d != self.shown.design() || self.shown.file().is_some()) {
                     self.set_design(d);
-                    self.layout_name = None;
                 }
             }
             PickerKind::Theme => {
@@ -364,8 +376,8 @@ impl App {
     pub fn picker_keep(&mut self) {
         if let Some(p) = self.take_picker() {
             // another Design: the layout undo history was the last one's
-            if p.before.0 != self.design || p.before.2 != self.layout || p.before.3 != self.layout_name {
-                self.history.clear();
+            if p.before.0 != self.shown.design() || p.before.2 != self.layout || p.before.3.file() != self.shown.file() {
+                self.arrange.forget_history();
             }
             self.save_ui();
         }
@@ -374,18 +386,150 @@ impl App {
     /// Esc: put back what was there.
     pub fn picker_cancel(&mut self) {
         let Some(p) = self.take_picker() else { return };
-        if p.before.0 != self.design {
+        if p.before.0 != self.shown.design() {
             self.set_design(p.before.0);
         }
         self.set_theme(&p.before.1);
         self.set_layout(p.before.2);
-        self.layout_name = p.before.3;
+        self.shown.resume(p.before.3);
         self.want_widget_data();
+        // (a Design deleted meanwhile wrote config.toml: it follows back)
+        let r = self.shown.remembered(&self.theme.id, self.building_from().as_deref());
+        if (&r.design, &r.theme, &r.layout) != (&self.config.ui.design, &self.config.ui.theme, &self.config.ui.layout) {
+            self.save_ui();
+        }
+    }
+
+    /// Ctrl+K → Delete design… (or its key, `reset_layout`'s too): a Design of the user's is deleted at once, and
+    /// Ctrl+Z brings it back while the screen still shows what the delete left (Q151, `App::undo_layout`); an
+    /// "(edited)" copy is asked about first. A built-in Design has nothing to delete.
+    pub fn ask_delete_design(&mut self) {
+        if self.shown.file().is_none() {
+            return self.say(format!("{} is built in: nothing to delete", self.shown.built_in().name));
+        }
+        if self.shown.on_edited_copy() {
+            return self.ask_delete(None);
+        }
+        let key = self.keymap.label(crate::app::Action::UndoLayout);
+        if let Some(u) = self.delete_design(true, Some(key.as_str()).filter(|k| !k.is_empty())) {
+            self.undelete = Some(u);
+        }
+    }
+
+    /// The Design picker's delete key on a Design of the user's (the one on screen): deleted at once, and the picker
+    /// stays, without it and on the Design now on screen, offering Undo until it closes (Q151).
+    fn picker_delete(&mut self) {
+        let Some(mut p) = self.take_picker() else { return };
+        let Some(file) = self.shown.file().map(str::to_string) else { return self.open_popup(crate::app::Popup::Picker(p)) };
+        // the undo history is the Design the picker opened on: it goes only if that's the one deleted
+        let opened_on = p.before.3.file() == Some(file.as_str());
+        if let Some(mut u) = self.delete_design(opened_on, None) {
+            u.before = self.picker_after_delete(&mut p, &file);
+            p.undo = Some(u);
+        }
+        self.open_popup(crate::app::Popup::Picker(p));
+    }
+
+    /// The picker after Design `file` was deleted: its rows without it, on the Design now on screen; Esc can't go back
+    /// to a Design that's gone, so it keeps the one now on screen (what it went back to before, if so).
+    fn picker_after_delete(&self, p: &mut Picker, file: &str) -> Option<Before> {
+        self.picker_on_shown(p);
+        (p.before.3.file() == Some(file)).then(|| std::mem::replace(&mut p.before, (self.shown.design(), self.theme.id.clone(), self.layout.clone(), self.shown.mark())))
+    }
+
+    /// The picker's rows read again, highlighting the Design on screen.
+    fn picker_on_shown(&self, p: &mut Picker) {
+        p.items = self.shown.picker_items();
+        let cur = self.shown.picker_current();
+        p.sel = p.items.iter().position(|i| i.0 == cur).unwrap_or(0);
+    }
+
+    /// The picker's Undo (`u`, or a click on it): the Design deleted last comes back as it was, on screen and
+    /// highlighted in its place, and Esc goes back to what it did before the delete.
+    pub fn picker_undo(&mut self) {
+        let Some(mut p) = self.take_picker() else { return };
+        if let Some(mut u) = p.undo.take() {
+            let before = u.before.take();
+            match self.undelete(u) {
+                Ok(()) => {
+                    self.picker_on_shown(&mut p);
+                    if let Some(b) = before {
+                        p.before = b;
+                    }
+                }
+                // (still offered, to try again)
+                Err(mut u) => {
+                    u.before = before;
+                    p.undo = Some(*u);
+                }
+            }
+        }
+        self.open_popup(crate::app::Popup::Picker(p));
+    }
+
+    /// Put a deleted Design of the user's back (its file, and the screen it was on). Err: it couldn't be (the bar says
+    /// why), and it is handed back, to try again.
+    pub(crate) fn undelete(&mut self, u: Undelete) -> Result<(), Box<Undelete>> {
+        match self.shown.undelete(&u.file) {
+            Err(o) => {
+                self.shown_did(o);
+                Err(Box::new(u))
+            }
+            Ok(o) => {
+                self.use_layout(&u.file.saved);
+                self.set_theme(&u.theme);
+                self.set_layout(u.layout);
+                self.shown_did(o);
+                Ok(())
+            }
+        }
+    }
+
+    /// The yes/no for the Design on screen; `back`, the Design picker it was asked from.
+    fn ask_delete(&mut self, back: Option<Picker>) {
+        let Some(file) = self.shown.file().map(str::to_string) else { return };
+        let name = self.shown.find(&file).map_or(file.clone(), |s| s.name.clone());
+        self.open_popup(crate::app::Popup::DeleteDesign(DeleteAsk { file, name, back }));
+    }
+
+    pub fn delete_ask_key(&mut self, k: KeyEvent) {
+        match k.code {
+            KeyCode::Char('y' | 'Y') | KeyCode::Enter => self.delete_answer(true),
+            KeyCode::Char('n' | 'N' | 'q') | KeyCode::Esc => self.delete_answer(false),
+            _ => {}
+        }
+    }
+
+    /// Delete design answered: yes deletes it (`App::delete_design`). Asked from the Design picker, the picker comes
+    /// back, without it and on the Design now on screen.
+    pub fn delete_answer(&mut self, yes: bool) {
+        let Some(ask) = self.take_delete_ask() else { return };
+        // (still the Design on screen: nothing else can change it while it asks)
+        let yes = yes && self.shown.file() == Some(ask.file.as_str());
+        // the undo history is the Design the picker opened on: it goes only if that's the one deleted
+        let opened_on = ask.back.as_ref().is_none_or(|p| p.before.3.file() == Some(ask.file.as_str()));
+        if yes {
+            // (only an "(edited)" copy is asked about: nothing to undo here but the layout undo it has always had)
+            let _ = self.delete_design(opened_on, None);
+        }
+        let Some(mut p) = ask.back else { return };
+        if yes && self.shown.file().is_none() {
+            // (another delete: the one before can't be undone any more)
+            p.undo = None;
+            let _ = self.picker_after_delete(&mut p, &ask.file);
+        }
+        self.open_popup(crate::app::Popup::Picker(p));
+    }
+
+    /// Whether the picker's highlighted row is a Design of the user's (the one on screen: the picker previews it).
+    fn picker_on_own(&self) -> bool {
+        self.picker().is_some_and(|p| p.kind == PickerKind::Design && p.items.get(p.sel).is_some_and(|i| i.0 == self.shown.picker_current()))
+            && self.shown.file().is_some()
     }
 
     pub fn picker_key(&mut self, k: KeyEvent) {
         let Some(p) = self.picker() else { return };
-        let (sel, n) = (p.sel, p.items.len());
+        let (sel, n, undo) = (p.sel, p.items.len(), p.undo.is_some());
         match k.code {
             KeyCode::Up => self.picker_select(sel.saturating_sub(1)),
             KeyCode::Down => self.picker_select((sel + 1).min(n.saturating_sub(1))),
@@ -393,6 +537,13 @@ impl App {
             KeyCode::End => self.picker_select(n.saturating_sub(1)),
             KeyCode::Enter => self.picker_keep(),
             KeyCode::Esc | KeyCode::Char('q') => self.picker_cancel(),
+            // (a Mac's delete key is Backspace) a built-in Design has none; an "(edited)" copy is asked about first
+            KeyCode::Delete | KeyCode::Backspace if self.picker_on_own() && self.shown.on_edited_copy() => {
+                let p = self.take_picker();
+                self.ask_delete(p);
+            }
+            KeyCode::Delete | KeyCode::Backspace if self.picker_on_own() => self.picker_delete(),
+            KeyCode::Char('u') if undo && !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => self.picker_undo(),
             _ => {}
         }
     }
@@ -408,7 +559,8 @@ fn theme_items(user: &[Theme]) -> Vec<(String, String, String)> {
 }
 
 pub fn picker_rect(area: Rect, p: &Picker) -> Rect {
-    centered(area, 64, p.items.len() as u16 + 5)
+    // (one more line while it offers Undo)
+    centered(area, 64, p.items.len() as u16 + 5 + p.undo.is_some() as u16)
 }
 
 /// The picker: the list, a swatch of the theme on screen, and how to keep or undo it.
@@ -422,8 +574,9 @@ pub fn draw_picker(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     let inner = popup(buf, r, th, title);
     let items = p.items.clone();
     let sel = p.sel;
+    let undo = p.undo.as_ref().map(|u| u.file.saved.name.clone());
     // a long list scrolls with the selection
-    let rows = inner.height.saturating_sub(2).max(1) as usize;
+    let rows = inner.height.saturating_sub(2 + undo.is_some() as u16).max(1) as usize;
     let first = crate::scroll::window(sel, rows, items.len());
     for (i, (_, name, what)) in items.iter().enumerate().skip(first).take(rows) {
         let y = inner.y + (i - first) as u16;
@@ -441,12 +594,49 @@ pub fn draw_picker(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
         text(buf, x, y, 2, "██", th.s(c));
         x += 2;
     }
-    text(buf, inner.x + 1, inner.bottom().saturating_sub(1), inner.width.saturating_sub(2), "↑↓ preview · Enter keep · Esc put back", th.s(th.dim));
+    // the Design deleted last, above the swatch, and its Undo (a click too)
+    // (the whole line is the Undo: a click just beside it mustn't close the picker, making the delete final)
+    if let Some(name) = undo {
+        let (y, w) = (inner.bottom().saturating_sub(3), inner.width.saturating_sub(2));
+        // a long name is cut short (…) so its hint always fits: the key before the action, as the hints show it (Q159)
+        let room = (w as usize).saturating_sub(UnicodeWidthStr::width("Deleted \"\" · u Undo"));
+        let said = format!("Deleted \"{}\" · ", crate::sidebar::clip(&name, room as u16));
+        let n = (UnicodeWidthStr::width(said.as_str()) as u16).min(w);
+        text(buf, inner.x + 1, y, w, &said, th.s(th.dim));
+        text(buf, inner.x + 1 + n, y, w - n, "u Undo", th.s(th.accent));
+        app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::PickerUndo);
+    }
+    let hint = if app.picker_on_own() { format!("↑↓ preview · Enter keep · Esc put back · {} delete", crate::keymap::DELETE_KEY) } else { "↑↓ preview · Enter keep · Esc put back".to_string() };
+    text(buf, inner.x + 1, inner.bottom().saturating_sub(1), inner.width.saturating_sub(2), &hint, th.s(th.dim));
+}
+
+pub fn delete_ask_rect(area: Rect) -> Rect {
+    centered(area, 64, 4)
+}
+
+/// Delete design's yes/no: which Design, and the two answers (each a click too).
+pub fn draw_delete_ask(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
+    let Some(name) = app.delete_ask().map(|d| d.name.clone()) else { return };
+    let inner = popup(buf, delete_ask_rect(area), th, "Delete design");
+    let w = inner.width.saturating_sub(2);
+    text(buf, inner.x + 1, inner.y, w, &format!("Delete “{name}”?"), th.title());
+    let (yes, no) = ("y / Enter delete", "n / Esc keep");
+    let y = inner.y + 1;
+    let mut x = inner.x + 1;
+    for (i, s) in [yes, " · ", no].into_iter().enumerate() {
+        let n = s.chars().count() as u16;
+        text(buf, x, y, inner.right().saturating_sub(x + 1), s, th.s(th.dim));
+        if i != 1 {
+            app.hit(Rect::new(x, y, n.min(inner.right().saturating_sub(x)), 1), Hit::DeleteAnswer(i == 0));
+        }
+        x += n;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::design::DESIGNS;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::KeyModifiers;
@@ -455,7 +645,7 @@ mod tests {
 
     fn render(app: &mut App) -> ratatui::buffer::Buffer {
         let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
-        t.draw(|f| crate::ui::draw(f, app)).unwrap();
+        t.draw(|f| crate::ui::frame(f, app)).unwrap();
         t.backend().buffer().clone()
     }
 
@@ -532,21 +722,21 @@ mod tests {
         let (mut app, dir) = with_dirs();
         app.run(crate::app::Action::PickDesign);
         key(&mut app, KeyCode::Down);
-        assert_eq!(DESIGNS[app.design].id, "event-horizon", "previewed at once");
+        assert_eq!(DESIGNS[app.shown.design()].id, "event-horizon", "previewed at once");
         assert!(app.layout.has(Widget::Hole));
         key(&mut app, KeyCode::Esc);
-        assert_eq!((DESIGNS[app.design].id, app.theme.id.as_str()), ("singularity", "singularity"), "Esc puts it back");
+        assert_eq!((DESIGNS[app.shown.design()].id, app.theme.id.as_str()), ("singularity", "singularity"), "Esc puts it back");
         app.run(crate::app::Action::PickDesign);
         key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Enter);
-        assert_eq!(DESIGNS[app.design].id, "classic");
+        assert_eq!(DESIGNS[app.shown.design()].id, "classic");
         let cfg = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
         assert!(cfg.contains("design = \"classic\"") && cfg.contains("# the design:"), "kept in config.toml, comments too:\n{cfg}");
         // a restart reads it back
         let mut again = App::new(None);
         again.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
-        assert_eq!((DESIGNS[again.design].id, again.theme.id.as_str()), ("classic", "classic"));
+        assert_eq!((DESIGNS[again.shown.design()].id, again.theme.id.as_str()), ("classic", "classic"));
     }
 
     #[test]
@@ -579,7 +769,7 @@ mod tests {
         assert_eq!(app.focused(), Some(Widget::Levels), "focus follows the Widget");
         // click the ▸ of the loudness Pane: levels is taken, so scope
         render(&mut app);
-        let r = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Swap(p, 1) if Some(*p) == app.layout.pane_of(Widget::Loudness)).then_some(*r)).expect("a ◂ ▸ on loudness");
+        let r = app.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Swap(p, 1) if Some(*p) == app.layout.pane_of(Widget::Loudness)).then_some(*r)).expect("a ◂ ▸ on loudness");
         app.mouse(ratatui::crossterm::event::MouseEvent { kind: ratatui::crossterm::event::MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left), column: r.x, row: r.y, modifiers: KeyModifiers::NONE });
         assert!(app.layout.has(Widget::Scope));
         // the well has no Widgets to swap: v changes its Disk look
@@ -596,7 +786,7 @@ mod tests {
         let mut app = App::new(None);
         let arrows = |app: &mut App, pane: PaneId| {
             render(app);
-            app.hits.iter().filter(|(_, h)| matches!(h, Hit::Swap(p, _) if *p == pane)).map(|(r, _)| r.x).collect::<Vec<_>>()
+            app.all_hits().iter().filter(|(_, h)| matches!(h, Hit::Swap(p, _) if *p == pane)).map(|(r, _)| r.x).collect::<Vec<_>>()
         };
         let slot = app.layout.widgets().into_iter().find(|s| matches!(s, Widget::Stream | Widget::Listening)).expect("a swappable side Pane");
         let pane = app.layout.pane_of(slot).unwrap();
@@ -623,7 +813,7 @@ mod tests {
         }
         key(&mut app, KeyCode::Enter);
         assert!(dir.path().join("layouts/wide-library.toml").exists());
-        assert_eq!(app.layout_name.as_deref(), Some("wide-library"));
+        assert_eq!(app.shown.file(), Some("wide-library"));
         // a restart
         let mut again = App::new(None);
         again.load_config_from(dir.path().join("config.toml"), dir.path().join("keys.toml"));
@@ -668,14 +858,14 @@ mod tests {
         // saving over the name again takes the new colours
         again.set_theme("cockpit-ice");
         again.save_layout("Warm");
-        assert_eq!(again.saved_layouts[0].theme.as_deref(), Some("cockpit-ice"));
+        assert_eq!(again.shown.saved()[0].theme.as_deref(), Some("cockpit-ice"));
         // an old file (no theme) keeps today's behaviour: the design's own colours
         let old: String = std::fs::read_to_string(dir.path().join("layouts/warm.toml")).unwrap().lines().filter(|l| !l.starts_with("theme")).collect::<Vec<_>>().join("\n");
         std::fs::write(dir.path().join("layouts/warm.toml"), old).unwrap();
         again.set_design(2);
         again.run(crate::app::Action::PickDesign);
         key(&mut again, KeyCode::End);
-        assert_eq!(again.theme.id, DESIGNS[again.design].themes[0]);
+        assert_eq!(again.theme.id, DESIGNS[again.shown.design()].themes[0]);
     }
 
     #[test]

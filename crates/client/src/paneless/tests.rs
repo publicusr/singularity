@@ -13,7 +13,7 @@ const H: u16 = 48;
 
 fn render(app: &mut App) -> String {
     let mut t = Terminal::new(TestBackend::new(W, H)).unwrap();
-    t.draw(|f| crate::ui::draw(f, app)).unwrap();
+    t.draw(|f| crate::ui::frame(f, app)).unwrap();
     let buf = t.backend().buffer().clone();
     (0..H).map(|y| (0..W).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
 }
@@ -191,7 +191,7 @@ fn esc_mid_drag_ends_the_queue_popups_drag_too() {
     mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), x, to);
     key(&mut a, KeyCode::Esc);
     assert_eq!(a.modal(), None);
-    assert!(a.queue_drag.is_none(), "the drag ended with the popup");
+    assert!(a.gesture.is_none(), "the drag ended with the popup");
     // the pointer goes on and lets go: nothing moves out of sight
     mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), x, to);
     mouse(&mut a, MouseEventKind::Up(MouseButton::Left), x, to);

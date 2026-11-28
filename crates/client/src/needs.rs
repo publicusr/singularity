@@ -4,41 +4,14 @@
 //! shows only its frame, the Widget's name in its title. Every drop is allowed, so this is what a Widget in
 //! too small a Pane looks like. Picked from the size contact sheet (`tools/pty`'s `contact-sheet`).
 
-use crate::layout::{MIN_H, MIN_W, WELL_ASPECT};
 use crate::pane::Widget;
 use crate::theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-/// The black hole's (the gravity well's and Event Horizon's) smallest size, its shape rule: four rows inside the frame
-/// (with three the picture is a bare ring), and as wide as `WELL_ASPECT` (4:3 in pixels, cells twice as tall as wide)
-/// over them.
-const HOLE: (u16, u16) = {
-    let h = 6;
-    let rows = (h - 2) as f64;
-    ((rows * 2.0 * WELL_ASPECT + 0.5) as u16 + 2, h)
-};
-
-/// The smallest Pane (columns × rows, frame included) Widget `widget` is usable in. Every Widget has its arm, so a new
-/// one is asked for its own.
+/// The smallest Pane (columns × rows, frame included) Widget `widget` is usable in: its fact in the Widget catalogue.
 pub fn smallest(widget: Widget) -> (u16, u16) {
-    use Widget::*;
-    match widget {
-        Well | Hole => HOLE,
-        // a line has to wrap to be read: in one row only its middle shows
-        Karaoke => (20, 6),
-        // a Card's name beside its cover (Classic gives Home 20 columns in a half-screen laptop window)
-        Home => (16, 6),
-        // the artists' names beside their minutes
-        TopWeek => (20, 4),
-        // the bitrate under the badges
-        Stream => (16, 5),
-        Lyrics | Library | Queue | NowPlaying | Top | Listening | Today | Marquee | Glow => (16, 4),
-        // the meters and the ambient Visuals still read in the smallest Pane with two rows inside
-        Fft | Loudness | Levels | Scope | Rain | Starfield => (MIN_W, MIN_H + 1),
-        // one this build hasn't got draws nothing anyway
-        Unknown(_) => (MIN_W, MIN_H),
-    }
+    crate::widget_catalogue::facts(widget).smallest
 }
 
 /// Whether a Pane of `rect` is too small for `widget`.
@@ -85,7 +58,7 @@ mod tests {
         let top = Node::split(Axis::Horizontal, Size::Cells(w), Node::pane(widget), Node::pane(filler));
         app.layout = Node::split(Axis::Vertical, Size::Cells(h), top, Node::pane(rest)).into();
         let mut t = Terminal::new(TestBackend::new(160, 60)).unwrap();
-        t.draw(|f| crate::ui::draw(f, app)).unwrap();
+        t.draw(|f| crate::ui::frame(f, app)).unwrap();
         let buf = t.backend().buffer().clone();
         let rows = (0..60).map(|y| (0..160).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect();
         (rows, buf)
@@ -110,7 +83,7 @@ mod tests {
         for w in [Widget::Well, Widget::Hole] {
             let (sw, sh) = smallest(w);
             let shape = (sw - 2) as f64 / ((sh - 2) as f64 * 2.0);
-            assert!((shape - WELL_ASPECT).abs() < 0.15, "{w}: {sw}×{sh} is {shape:.2} wide, not the well's 4:3");
+            assert!((shape - crate::layout::WELL_ASPECT).abs() < 0.15, "{w}: {sw}×{sh} is {shape:.2} wide, not the well's 4:3");
         }
     }
 
@@ -159,18 +132,18 @@ mod tests {
         for _ in 0..3 {
             app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: x, row: y, modifiers: KeyModifiers::NONE }, x as f64 + 0.5, false);
         }
-        assert_eq!(app.queue_view.sel, 0, "the wheel moved a hidden highlight");
+        assert_eq!((app.queue_view.sel, app.queue_view.top), (0, 0), "the wheel moved a hidden list");
         app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.queue_view.sel, 0, "a key moved a hidden highlight");
-        // big enough again: the same wheel moves it
+        // big enough again: the same wheel moves it (its view, D86)
         screen(&mut app, Widget::Queue, sw.max(20), sh + 4);
         app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: x, row: y, modifiers: KeyModifiers::NONE }, x as f64 + 0.5, false);
-        assert_eq!(app.queue_view.sel, 1, "a Pane big enough takes the wheel");
+        assert_eq!((app.queue_view.sel, app.queue_view.top), (0, 1), "a Pane big enough takes the wheel");
         // top this week's title is its switch only while its list shows
         let mut app = App::new(None);
         let (sw, sh) = smallest(Widget::TopWeek);
         screen(&mut app, Widget::TopWeek, sw, sh - 1);
-        assert!(!app.hits.iter().any(|(_, h)| *h == crate::app::Hit::TopWeekToggle), "a hidden list's switch");
+        assert!(!app.all_hits().iter().any(|(_, h)| *h == crate::app::Hit::TopWeekToggle), "a hidden list's switch");
         // the hole's origin goes with the hole
         let mut app = App::new(None);
         let (sw, sh) = smallest(Widget::Hole);
@@ -227,7 +200,7 @@ mod tests {
                 let mut app = App::new(None);
                 app.set_design(d);
                 let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-                t.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+                t.draw(|f| crate::ui::frame(f, &mut app)).unwrap();
                 let buf = t.backend().buffer().clone();
                 let s: String = (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect();
                 // (the stream Widget has a "needs 205 kB/s" of its own)

@@ -111,7 +111,7 @@ async fn playerctl_style_control_and_track_notifications() {
     let opts = singularityd::os_media::Options { address: Some(bus.address.clone()), notify: std::sync::Arc::new(true.into()) };
     tokio::spawn(singularityd::serve_with(listener, Box::new(FakeEngine), None, None, singularityd::Extras { os_media: Some(opts), ..Default::default() }));
     let mut s = UnixStream::connect(&path).await.unwrap();
-    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: proto::PROTOCOL_VERSION, client: "test".into() }).await.unwrap();
+    proto::write_msg(&mut s, &ClientMsg::Hello { protocol: proto::PROTOCOL_VERSION, client: "test".into(), demo: false }).await.unwrap();
     // drain the socket so the Daemon never blocks on us
     tokio::spawn(async move {
         let (mut r, mut w) = s.into_split();

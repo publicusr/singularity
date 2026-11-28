@@ -108,8 +108,61 @@ pub enum Checked {
     Staged(Build),
 }
 
-fn http() -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder().timeout(Duration::from_secs(300)).connect_timeout(Duration::from_secs(15)).user_agent(concat!("singularityd/", env!("CARGO_PKG_VERSION"))).build()?)
+/// The slowest a download may be (#142): it is given up when less than `min_rate` bytes a second arrive, averaged over
+/// `window`. There is no deadline for the whole download: on a slow connection a build takes as long as it takes, as
+/// long as it keeps moving. The same rule as curl's `--speed-limit`/`--speed-time`, which the Soloist VM's own
+/// download uses (`vm.rs`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pace {
+    pub window: Duration,
+    pub min_rate: u64,
+}
+
+/// At least 1 KB/s over 30 s.
+pub const PACE: Pace = Pace { window: Duration::from_secs(30), min_rate: 1024 };
+
+/// The deadline for a short answer (a HEAD, a checksum list), which has no reason to take long.
+pub const SHORT: Duration = Duration::from_secs(30);
+
+/// The client for big downloads (Soloist builds, the macOS VM's image): a connect timeout and a read timeout of the
+/// pace's window (an answer whose headers never come), no total one. Short requests on it set their own deadline
+/// ([`SHORT`]); a body is read with [`save`], which keeps the pace.
+pub fn download_client(pace: Pace) -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder().read_timeout(pace.window).connect_timeout(Duration::from_secs(15)).user_agent(concat!("singularityd/", env!("CARGO_PKG_VERSION"))).build()?)
+}
+
+/// Stream the response body to `path`, giving up once it passes `cap` bytes (a broken answer must not fill the disk,
+/// and it is never held in memory whole) or falls under `pace`. `what` names it in the errors ("the build").
+pub async fn save(mut resp: reqwest::Response, path: &Path, cap: u64, pace: Pace, what: &str) -> anyhow::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    const MB: u64 = 1024 * 1024;
+    if let Some(len) = resp.content_length() {
+        anyhow::ensure!(len <= cap, "{what} is {} MB, over the {} MB cap", len.div_ceil(MB), cap.div_ceil(MB));
+    }
+    let mut file = tokio::fs::File::create(path).await?;
+    let mut written = 0u64;
+    // the bytes that came since the window began
+    let (mut since, mut recent) = (tokio::time::Instant::now(), 0u64);
+    let least = (u128::from(pace.min_rate) * pace.window.as_millis() / 1000) as u64;
+    loop {
+        let left = pace.window.saturating_sub(since.elapsed());
+        let chunk = match tokio::time::timeout(left, resp.chunk()).await {
+            Ok(chunk) => chunk?,
+            // the window is over with nothing more: judged below
+            Err(_) => Some(Default::default()),
+        };
+        let Some(chunk) = chunk else { break };
+        written += chunk.len() as u64;
+        recent += chunk.len() as u64;
+        anyhow::ensure!(written <= cap, "{what} is over the {} MB cap", cap.div_ceil(MB));
+        file.write_all(&chunk).await?;
+        if since.elapsed() >= pace.window {
+            anyhow::ensure!(recent >= least, "{what} came too slowly: {recent} bytes in {} s, under {} bytes a second", pace.window.as_secs_f32(), pace.min_rate);
+            (since, recent) = (tokio::time::Instant::now(), 0);
+        }
+    }
+    file.flush().await?;
+    Ok(())
 }
 
 fn header(r: &reqwest::Response, name: &str) -> Option<String> {
@@ -118,7 +171,7 @@ fn header(r: &reqwest::Response, name: &str) -> Option<String> {
 
 /// Ask the CDN whether there's a newer build than the installed one, and stage it if so.
 pub async fn check(builds: &Builds, url: &str) -> anyhow::Result<Checked> {
-    let head = http()?.head(url).send().await?.error_for_status()?;
+    let head = download_client(PACE)?.head(url).timeout(SHORT).send().await?.error_for_status()?;
     let (etag, modified) = (header(&head, "etag"), header(&head, "last-modified"));
     if let Some(b) = builds.installed() {
         if b.same_as(&etag, &modified) {
@@ -155,14 +208,19 @@ pub async fn download(builds: &Builds, url: &str) -> anyhow::Result<Build> {
 
 /// [`download`] with an explicit cap (tests serve a small one).
 pub async fn download_with_cap(builds: &Builds, url: &str, cap: u64) -> anyhow::Result<Build> {
+    download_with(builds, url, cap, PACE).await
+}
+
+/// [`download_with_cap`] with an explicit pace (tests trickle for less than [`PACE`]'s 30 s).
+pub async fn download_with(builds: &Builds, url: &str, cap: u64, pace: Pace) -> anyhow::Result<Build> {
     let dir = builds.staged();
     let _ = tokio::fs::remove_dir_all(&dir).await;
     tokio::fs::create_dir_all(&dir).await?;
     let r = async {
-        let resp = http()?.get(url).send().await?.error_for_status()?;
+        let resp = download_client(pace)?.get(url).send().await?.error_for_status()?;
         let (etag, last_modified) = (header(&resp, "etag"), header(&resp, "last-modified"));
         let tgz = dir.join("soloist.tar.gz");
-        save_archive(resp, &tgz, cap).await?;
+        save(resp, &tgz, cap, pace, "the build").await?;
         // unpacking off the async runtime: it reads a whole archive, capped (audit S4)
         let (from, to) = (tgz.clone(), dir.clone());
         let unpacked = tokio::task::spawn_blocking(move || unpack(&from, &to)).await??;
@@ -177,28 +235,6 @@ pub async fn download_with_cap(builds: &Builds, url: &str, cap: u64) -> anyhow::
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
     r
-}
-
-/// Stream the response body to `path`, giving up once it passes `cap` bytes: a broken CDN answer must not fill the
-/// disk (and it is never held in memory whole).
-async fn save_archive(resp: reqwest::Response, path: &Path, cap: u64) -> anyhow::Result<()> {
-    use futures_util::StreamExt;
-    use tokio::io::AsyncWriteExt;
-    const MB: u64 = 1024 * 1024;
-    if let Some(len) = resp.content_length() {
-        anyhow::ensure!(len <= cap, "the build is {} MB, over the {} MB cap", len.div_ceil(MB), cap.div_ceil(MB));
-    }
-    let mut file = tokio::fs::File::create(path).await?;
-    let mut body = resp.bytes_stream();
-    let mut written = 0u64;
-    while let Some(chunk) = body.next().await {
-        let chunk = chunk?;
-        written += chunk.len() as u64;
-        anyhow::ensure!(written <= cap, "the build is over the {} MB cap", cap.div_ceil(MB));
-        file.write_all(&chunk).await?;
-    }
-    file.flush().await?;
-    Ok(())
 }
 
 /// Unpack `archive` into `dir`, which must be a fresh directory: only regular files and directories, no links, no
@@ -277,7 +313,21 @@ async fn version_of(exe: &Path) -> anyhow::Result<String> {
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::symlink_metadata(exe)?;
     anyhow::ensure!(meta.is_file() && meta.uid() == unsafe { libc::getuid() }, "the build's soloist is not a regular file of ours");
-    let out = tokio::time::timeout(Duration::from_secs(15), crate::programs::tokio_command(exe).arg("--version").kill_on_drop(true).output()).await??;
+    let run = || tokio::time::timeout(Duration::from_secs(15), crate::programs::tokio_command(exe).arg("--version").kill_on_drop(true).output());
+    // "Text file busy" (#16): the build was just written by this process, and a process another thread started in
+    // that moment holds a copy of the file open for writing until it has started its own program (a few ms). The
+    // kernel refuses to run a file open for writing; no fd of ours is open by now, so it passes once that copy closes.
+    let mut out = run().await?;
+    for _ in 0..100 {
+        match &out {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                out = run().await?;
+            }
+            _ => break,
+        }
+    }
+    let out = out?;
     let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
     anyhow::ensure!(out.status.success() && !v.is_empty(), "the new build doesn't run (`--version` failed)");
     Ok(v)

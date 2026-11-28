@@ -26,7 +26,7 @@ directly (the tap's *Feed*).
 _Avoid_: built-in player (fine in UI text, not as a term), spotifyd
 
 **Soloist VM**:
-Soloist (Linux-only) run on macOS inside a small Linux VM the Daemon manages (`kind = "soloist"` there, D55): the
+Soloist's Linux build run on macOS inside a small Linux VM the Daemon manages (`kind = "soloist"` there, D55): the
 SoloistEngine behind the VM's Soloist runner. Its audio comes to the Daemon over vsock and plays from there.
 _Avoid_: Linux VM engine, "the VM Engine" (the Engine is still Soloist)
 
@@ -75,8 +75,9 @@ says so (D89).
 _Avoid_: dirs, paths (in prose)
 
 **Shown Design**:
-The Design on screen: a built-in one or one of yours, its saved file, its "(edited)" copy, and what undo and Reset
-bring back. Editing a built-in Design keeps the edit as "<Design> (edited)"; the built-in never changes (D87 Q33, D89).
+The Design on screen: a built-in one or one of yours, its saved file, its "(edited)" copy, what undo brings back and
+what Delete design leaves. Editing a built-in Design keeps the edit as "<Design> (edited)"; the built-in never changes
+(D87 Q33, D89).
 _Avoid_: current layout, active design
 
 **Screen plan**:
@@ -87,7 +88,8 @@ _Avoid_: hit map, layout (that's the Arrangement)
 
 **Widget catalogue**:
 Every Widget's fixed facts in one place: its title, smallest size, swap group, whether the Widget picker offers it,
-whether it is Required, whether it is the black hole, whether it draws its own frame, and how it is drawn (D89).
+whether it is Required, whether it is the black hole, whether it draws its own frame, whether it moves with the music
+(needs its spectrum), and how it is drawn (D89).
 _Avoid_: registry
 
 **Gesture**:
@@ -124,6 +126,19 @@ _Avoid_: server, backend, service
 **Client**:
 `singularity`, a terminal window that connects to the Daemon and draws the interface. Several can run at once.
 _Avoid_: frontend, TUI (as a noun for the process)
+
+**Demo mode**:
+A Client started with `--demo` (or `SINGULARITY_DEMO=1`) for recording videos on the owner's own account: it shows a
+DEMO chip and hides or replaces anything personal (account and friends' names, device names, the Jam link, paths,
+the library outside the Demo set, Home beyond the Demo set, the song playing until it's from the Demo set or played
+from that Client, real stats, recent searches) while music, Widgets and Designs work as usual. Only that Client changes; the Daemon and other Clients don't (D90).
+_Avoid_: privacy mode, streamer mode, incognito
+
+**Demo set**:
+What the library shows in Demo mode: the playlists in a Spotify folder called "Demo", plus the albums, artists,
+podcasts and audiobooks (and Liked Songs, if turned on) listed in `demo.toml` in the config folder (D90). Home in Demo
+mode is built from it alone: its playlists, the albums and artists their songs are on, Liked Songs (Q155, Q157).
+_Avoid_: demo library, allow-list (that's only the `demo.toml` half)
 
 **Now playing**:
 What is playing and on which device (this computer's Engine, or another device Singularity follows over Connect),
@@ -213,7 +228,9 @@ _Avoid_: history (Spotify's own "recently played" is something else), stats
 
 **Library backup**:
 The nightly JSON copy of Liked Songs and every playlist the account owns (followed playlists by name and link only),
-kept in the LocalStore: the last 14 days plus the first of each month for a year.
+kept in the LocalStore: the last 14 days plus the first of each month for a year. A list that doesn't come back whole
+keeps its last whole copy (the same account's) with the newest short one beside it, or is saved marked incomplete;
+Settings then shows one line about it while that account is logged in, until a backup comes out whole.
 _Avoid_: export (that's the one-file copy the owner asks for), snapshot
 
 **LocalStore**:
@@ -341,6 +358,13 @@ A Layout preset shipped together with the Themes made for it: Singularity (defau
 Terminal, Karaoke. Picking a Design sets the layout, its own Theme and its Disk look; its Palette variants are a `t` away.
 A layout you saved ("Save design as…") is a Design of your own: it remembers the Theme it was saved with.
 _Avoid_: skin, mode, look (that's the Disk look)
+
+**Delete design**:
+Deleting the Design on screen (Ctrl+K, or Delete in the Design picker): a Design of your own goes at once, to the
+default Singularity, and can be undone (Ctrl+Z, or the picker's Undo while it is open; Q151); "<Design> (edited)" is
+asked about first (yes/no) and gives way to its built-in Design. Built-in Designs have none. It replaced "Reset
+design" (#80, Q72/Q75).
+_Avoid_: reset design, remove layout
 
 **Free tiling**:
 Rearranging a Design by hand, in two separate kinds of edit: the *contents* (drag a Pane's title onto another Pane to

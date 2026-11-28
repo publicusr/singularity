@@ -1,7 +1,8 @@
-//! Rendering. Pure function of `App` state, plus hit-box registration for the mouse.
+//! Rendering: the Screen plan painted (`screen_plan`), plus the hit boxes the Widgets register as they draw.
 
 use crate::app::{Action, App, Hit, Link, Menu, Modal, Page};
-use crate::layout::{Pane, PaneId, Widget};
+use crate::layout::Widget;
+use crate::screen_plan::{Drag, PanePlan, Rows, ScreenPlan};
 use crate::scrub::{self, Bar};
 use crate::theme::{Rgb, Theme};
 use ratatui::Frame;
@@ -14,36 +15,7 @@ use singularity_proto::{CatalogueStatus, EngineStatus, PlayStatus};
 
 /// A Pane's title as the Design on screen words it (not the main Pane's, which follows the page).
 pub fn pane_name(design: usize, w: Widget) -> String {
-    crate::design::title(design, w, slot_info(w).0).to_string()
-}
-
-/// Pane titles, and which ticket brings each Pane's real Widget.
-fn slot_info(w: Widget) -> (&'static str, &'static str) {
-    match w {
-        Widget::Library => ("~/library", "library sidebar arrives with #9"),
-        Widget::Stream => ("stream", ""),
-        Widget::Home => ("home", ""),
-        Widget::Queue => ("queue", ""),
-        Widget::Well => ("gravity well", "the black hole arrives with #16"),
-        Widget::Lyrics => ("tail -f lyrics.log", ""),
-        Widget::Karaoke => ("karaoke", ""),
-        Widget::Loudness => ("loudness", "arrives with #15"),
-        Widget::Fft => ("fft", "arrives with #15"),
-        Widget::Hole => ("black hole", ""),
-        Widget::NowPlaying => ("Now playing", ""),
-        Widget::Levels => ("levels", ""),
-        Widget::Listening => ("listening · 26 weeks", ""),
-        Widget::Rain => ("rain", ""),
-        Widget::Scope => ("osc", ""),
-        Widget::Top => ("top · system", ""),
-        Widget::Today => ("today", ""),
-        Widget::TopWeek => ("top this week", ""),
-        Widget::Starfield => ("starfield", ""),
-        Widget::Marquee => ("marquee", ""),
-        Widget::Glow => ("glow", ""),
-        // another build's Widget: as before Panes had an identity, a "?" and nothing in it
-        Widget::Unknown(_) => ("?", ""),
-    }
+    crate::design::title(design, w, crate::widget_catalogue::facts(w).title).to_string()
 }
 
 /// Text at (`x`, `y`), at most `max` columns. Anything outside the buffer is left out (ratatui panics on a row below
@@ -81,27 +53,21 @@ pub fn rows(area: Rect, arranging: bool) -> [Rect; 5] {
     Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(3), Constraint::Length(tray), Constraint::Length(1)]).areas(area)
 }
 
-pub fn draw(f: &mut Frame, app: &mut App) {
-    app.picker_lost_its_pane();
-    app.arrange_if_homeless();
-    app.meters.expire();
-    app.begin_frame();
+/// One frame: everything it changes in the App first (`App::frame_begins`, which works out the Screen plan), then the
+/// plan painted.
+pub fn frame(f: &mut Frame, app: &mut App) {
+    let plan = app.frame_begins(f.area());
+    draw(f, app, &plan);
+}
+
+/// Paint `plan` (D89): where everything goes was worked out before (`App::frame_begins`); what the Widgets draw inside
+/// their Panes registers its hit boxes (`App::hit`) as it is drawn.
+pub fn draw(f: &mut Frame, app: &mut App, plan: &ScreenPlan) {
     let area = f.area();
-    app.window = area;
     let th = app.theme.clone();
-    // covers and the hole follow the Theme's tint (a Theme switch, a theme file saved, `ui.tint_art` edited)
-    let tint = th.art_tint(app.config.ui.tint_art);
-    app.hole.set_tint(tint.as_ref().map(|t| t.stops4()));
-    app.art_tint = tint;
     fill(f.buffer_mut(), area, &th);
     // too small for any layout: just a player (#47)
-    app.mini = crate::mini::wanted(area);
-    if app.mini {
-        app.overlays.clear();
-        app.tile_cancel();
-        if let Some(k) = app.kitty.as_mut() {
-            k.holes.clear();
-        }
+    if plan.mini {
         crate::mini::draw(f.buffer_mut(), area, app, &th);
         if let Some((msg, _)) = app.toast.clone()
             && area.height > 2
@@ -110,38 +76,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         return;
     }
-    let [top, body, player, tray, hints] = rows(area, app.arranging.is_some());
-    // a held Widget: the Pane under the pointer is highlighted with a label, a chip follows the pointer. Neither
-    // changes how anything under it is drawn (no step down a tier: that flickered): images are placed around them
-    // something drawn on top now (the login code, the wizard): a held Widget is let go, its chip would cover it
-    if app.modal().is_some_and(|m| m != Modal::Arrange) {
-        app.tile_cancel();
-    }
-    // a Widget picked up with Enter, and the layout edited by something else since: it is put back
-    app.pick_up_check();
-    if app.body != body {
-        app.body = body;
-        // a new window size moves every Pane: the one under a held Widget is found again
-        app.tile_resized();
-    }
-    let marks = app.drag_marks();
-    let target = marks.as_ref().and_then(|(t, _)| t.clone()).and_then(|(id, label)| Some((app.layout.compute(body).rect(id)?, label)));
-    let chip = marks.as_ref().and_then(|(_, c)| Some((app.chip_rect(area, c)?, c.clone())));
-    // popups are known up front, so pixel images under them can step down to cells this frame; what's over the
-    // Panes, the top first (D83)
+    let Rows { top, body, player, tray, hints } = plan.rows;
     let layers = app.layers();
-    let mut overlays: Vec<Rect> = layers.iter().filter_map(|&m| layer_rect(area, app, m)).collect();
-    overlays.extend(app.toast.as_ref().map(|(msg, _)| toast_rect(area, msg)));
-    app.overlays = overlays;
-    let label_at = marks.as_ref().and_then(|(t, _)| t.as_ref()).zip(target.as_ref()).and_then(|((id, _), (r, l))| app.place_label(*id, *r, l, chip.as_ref().map(|c| c.0)));
-    let holes: Vec<Rect> = label_at.into_iter().chain(chip.as_ref().map(|(r, _)| *r)).collect();
-    if let Some(k) = app.kitty.as_mut() {
-        k.holes = holes;
-    }
     top_bar(f, top, app, &th);
-    panes(f, body, app, &th);
-    if let Some((r, label)) = &target {
-        crate::arrange::draw_target(f.buffer_mut(), *r, label, label_at, &th);
+    panes(f, plan, app, &th);
+    // what the Widgets drew in their Panes is under the Panes' own chrome; what is drawn from here on is over it
+    app.hits_in_panes = app.hits.len();
+    if let Some(Drag { target: Some((_, r, label)), label: at, .. }) = &plan.drag {
+        crate::arrange::draw_target(f.buffer_mut(), *r, label, *at, &th);
     }
     if th.scanlines {
         scanlines(f.buffer_mut(), body);
@@ -149,21 +91,21 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     crate::visual::idle::draw(f.buffer_mut(), body, app, &th);
     // the player bar stays in Arrange mode, the Tray goes under it and the legend and Done where the hints were (Q39)
     player_bar(f, player, app, &th);
-    if app.arranging.is_some() {
-        crate::arrange::draw_tray(f.buffer_mut(), tray, app, &th);
+    if let Some(l) = &plan.tray {
+        crate::arrange::draw_tray(f.buffer_mut(), tray, l, app, &th);
     }
-    match app.arranging.is_some() {
+    match app.arrange.is_on() {
         true => crate::arrange::draw_legend(f.buffer_mut(), hints, app, &th),
         false => hint_bar(f.buffer_mut(), hints, &th, &app.keymap),
     }
-    if app.arranging.is_none() {
+    if !app.arrange.is_on() {
         crate::arrange::draw_undo_chip(f.buffer_mut(), hints, app, &th);
     }
     // the bottom first, so the one on top is drawn last
     for &m in layers.iter().rev() {
         draw_layer(f, area, app, &th, m);
     }
-    if let Some((r, c)) = &chip {
+    if let Some((r, c)) = plan.drag.as_ref().and_then(|d| d.chip.as_ref()) {
         crate::arrange::draw_chip(f.buffer_mut(), *r, c, &th);
     }
     if let Some((msg, _)) = app.toast.clone() {
@@ -174,7 +116,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         transparent(f.buffer_mut(), area, &th);
     }
     if app.kitty.as_ref().is_some_and(|k| k.below_backgrounds) {
-        opaque_overlays(f.buffer_mut(), &app.overlays.clone(), &th);
+        opaque_overlays(f.buffer_mut(), &app.overlays, &th);
     }
 }
 
@@ -225,7 +167,7 @@ fn transparent(buf: &mut Buffer, r: Rect, th: &Theme) {
 }
 
 /// Where what's over the Panes covers the screen (Arrange mode covers nothing: the Panes are the thing).
-fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
+pub(crate) fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
     Some(match m {
         Modal::Login => centered(area, 64, 9),
         Modal::Palette => palette_rect(area, app),
@@ -234,6 +176,7 @@ fn layer_rect(area: Rect, app: &App, m: Modal) -> Option<Rect> {
         Modal::Health => crate::setup::health_rect(area),
         Modal::Devices => devices_rect(area, app),
         Modal::Picker => crate::looks::picker_rect(area, app.picker()?),
+        Modal::DeleteDesign => crate::looks::delete_ask_rect(area),
         Modal::Naming => naming_rect(area, app),
         Modal::WidgetPicker => {
             // (its Pane gone: drawing it closes it)
@@ -267,12 +210,13 @@ fn draw_layer(f: &mut Frame, area: Rect, app: &mut App, th: &Theme, m: Modal) {
         }
         Modal::Devices => devices(f.buffer_mut(), area, app, th),
         Modal::Picker => crate::looks::draw_picker(f.buffer_mut(), area, app, th),
+        Modal::DeleteDesign => crate::looks::draw_delete_ask(f.buffer_mut(), area, app, th),
         Modal::WidgetPicker => crate::panemenu::draw(f.buffer_mut(), area, app, th),
         Modal::Library => crate::paneless::draw_library(f.buffer_mut(), area, app, th),
         Modal::Queue => crate::paneless::draw_queue(f.buffer_mut(), area, app, th),
         Modal::Naming => {
             let Some(n) = app.naming().cloned() else { return };
-            let mut edited = format!("Enter save · Esc keep it as “{} (edited)”", crate::design::DESIGNS[app.design].name);
+            let mut edited = format!("Enter save · Esc keep it as “{} (edited)”", app.shown.built_in().name);
             // the edit can still be undone from here, where there's room to say so
             let undo = app.keymap.label(Action::UndoLayout);
             if !undo.is_empty() && edited.chars().count() + undo.chars().count() + 8 <= naming_rect(area, app).width.saturating_sub(4) as usize {
@@ -363,7 +307,7 @@ fn devices(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     text(buf, inner.x + 2, inner.bottom().saturating_sub(1), inner.width.saturating_sub(4), hint, th.s(th.dim));
 }
 
-fn toast_rect(area: Rect, msg: &str) -> Rect {
+pub(crate) fn toast_rect(area: Rect, msg: &str) -> Rect {
     let w = (msg.chars().count() as u16 + 4).min(area.width);
     Rect::new(area.right().saturating_sub(w + 1), area.bottom().saturating_sub(5), w, 1)
 }
@@ -423,6 +367,10 @@ fn menu(f: &mut Frame, area: Rect, app: &mut App, th: &Theme) {
 fn top_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     let buf = f.buffer_mut();
     text(buf, r.x + 1, r.y, 14, "◉ SINGULARITY", th.title());
+    // demo mode (D90): always in sight, so the owner knows what's being recorded
+    if app.demo.is_some() {
+        text(buf, r.x + 16, r.y, 6, " DEMO ", th.chip(th.accent));
+    }
     let (link, col) = match &app.link {
         Link::Connecting => ("connecting…".to_string(), th.dim),
         Link::Connected { version } => (format!("singularityd {version}"), th.dim),
@@ -437,7 +385,8 @@ fn top_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
         Some(EngineStatus::Failed { .. }) => "engine: failed".into(),
     };
     let account = match &app.catalogue {
-        Some(CatalogueStatus::Ready { username, premium, .. }) => format!("{username}{}", if *premium { " · Premium" } else { "" }),
+        // (demo mode knows no username: "Premium" alone)
+        Some(CatalogueStatus::Ready { username, premium, .. }) => [username.as_str(), if *premium { "Premium" } else { "" }].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "),
         Some(CatalogueStatus::LoginPending { code, .. }) => format!("log in: code {code}"),
         Some(CatalogueStatus::Connecting) => "connecting to Spotify…".into(),
         Some(CatalogueStatus::LoggedOut) => "not logged in (^K → Log in)".into(),
@@ -449,172 +398,71 @@ fn top_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     text(buf, r.right().saturating_sub(w + 1), r.y, w, &right, th.s(col));
 }
 
-/// Superscript digits for numbered Pane titles (Cockpit).
-fn superscript(n: usize) -> String {
-    n.to_string().chars().map(|c| ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'][c as usize - '0' as usize]).collect()
+/// The × that closes a Pane, at `r` in its title bar.
+fn close_button(buf: &mut Buffer, r: Rect, th: &Theme, focused: bool) {
+    text(buf, r.x, r.y, 3, " × ", th.s(if focused { th.accent } else { th.dim }));
 }
 
-/// The × that closes a Pane, in the last cells of its title bar.
-fn close_button(buf: &mut Buffer, rect: Rect, th: &Theme, focused: bool, id: PaneId, hits: &mut Vec<(Rect, Hit)>) {
-    let x = rect.right().saturating_sub(5);
-    text(buf, x, rect.y, 3, " × ", th.s(if focused { th.accent } else { th.dim }));
-    hits.push((Rect::new(x, rect.y, 3, 1), Hit::Close(id)));
+/// Arrange mode's split button (D87), at `r` left of the × (or where it would be): a new empty Pane, the way the Pane
+/// menu's Split row splits it first.
+fn split_button(buf: &mut Buffer, r: Rect, th: &Theme, focused: bool) {
+    text(buf, r.x, r.y, 3, " ⊞ ", th.s(if focused { th.accent } else { th.dim }));
 }
 
-/// Arrange mode's split button (D87), left of the × (or where it would be): a new empty Pane, the way the Pane menu's
-/// Split row splits it first.
-fn split_button(buf: &mut Buffer, rect: Rect, th: &Theme, focused: bool, closable: bool, id: PaneId, hits: &mut Vec<(Rect, Hit)>) {
-    let x = rect.right().saturating_sub(if closable { 8 } else { 5 });
-    text(buf, x, rect.y, 3, " ⊞ ", th.s(if focused { th.accent } else { th.dim }));
-    hits.push((Rect::new(x, rect.y, 3, 1), Hit::SplitPane(id)));
-}
-
-fn panes(f: &mut Frame, body: Rect, app: &mut App, th: &Theme) {
-    let computed = app.layout.compute(body);
-    // the ◂ ▸ swaps sit on a border a divider's grip may cover: registered after the grips, so they win
-    let mut swaps: Vec<(Rect, Hit)> = vec![];
-    let n = computed.panes.len();
-    for (i, (p, rect)) in computed.panes.iter().enumerate() {
-        pane(f, app, th, (i, n), *p, *rect, &mut swaps);
+fn panes(f: &mut Frame, plan: &ScreenPlan, app: &mut App, th: &Theme) {
+    for p in &plan.panes {
+        pane(f, app, th, p);
     }
     // space bends around the hole: neighbouring border lines curve toward it
     if let Some(hole) = app.hole_at {
-        crate::visual::well::bend_borders(f.buffer_mut(), body, hole, app.hole.bass());
-    }
-    // dividers last, so their grips win over the Panes underneath
-    for (i, d) in computed.dividers.iter().enumerate() {
-        app.hit(d.grip, Hit::Divider(i));
+        crate::visual::well::bend_borders(f.buffer_mut(), plan.rows.body, hole, app.hole.bass());
     }
     // the border under the pointer (or being dragged) lights up: it can be grabbed to resize
-    if let Some(d) = app.grip_lit().and_then(|i| computed.dividers.get(i)) {
+    if let Some(d) = app.grip_lit().and_then(|i| plan.dividers.get(i)) {
         crate::arrange::light_grip(f.buffer_mut(), d.grip, th);
     }
-    for (r, h) in swaps.drain(..) {
-        app.hit(r, h);
-    }
-    app.dividers = computed.dividers;
 }
 
-/// One Pane over `rect` (the one whose Widget is being moved, by the mouse or the keyboard, drawn lit). Smaller than
+/// One Pane as planned (the one whose Widget is being moved, by the mouse or the keyboard, drawn lit). Smaller than
 /// its Widget can be drawn in, it is just its frame.
-fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p: Pane, rect: Rect, swaps: &mut Vec<(Rect, Hit)>) {
-    let w = p.widget;
-    let rect = &rect;
-    // its title bar: drag it to move the Pane (registered with the ◂ ▸ after the dividers' grips, so it wins over
-    // them on the row below a horizontal divider; the buttons are registered after it and win in turn)
-    swaps.push((Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(2), 1), Hit::Title(p.id)));
-    // (an empty Pane has no title yet)
-    let (title, todo) = w.map_or(("", ""), slot_info);
-    let title = w.map_or(title, |w| crate::design::title(app.design, w, title));
-    // the main Pane is titled after what it shows
-    let title = match w {
-        Some(Widget::Home) => match &app.page {
-            Page::Search => "search".to_string(),
-            Page::Stats(_) => "stats".to_string(),
-            Page::Settings(_) => "settings".to_string(),
-            Page::Artist(a) => a.name.clone(),
-            Page::List { .. } => app.list_view().map_or_else(|| title.to_string(), |v| v.title.clone()),
-            Page::Home => title.to_string(),
-        },
-        // its title is the switch between artists and tracks
-        Some(Widget::TopWeek) if app.top_week_tracks => "top tracks · week ⇄".to_string(),
-        Some(Widget::TopWeek) => "top artists · week ⇄".to_string(),
-        _ => title.to_string(),
-    };
-    let number = if th.numbered { superscript(i + 1) } else { String::new() };
-    let focused = app.focus == Some(p.id);
-    let held = app.moving() == Some(p.id);
-    let title_st = if focused || held { th.title() } else { th.s(th.accent) };
-    // a Pane that can close has a × at the right end of its title (Home's, the Required Widget's, doesn't)
-    let closable = !crate::arrangement::required(w) && total > 1 && rect.width >= 14;
-    let tail: u16 = if closable { 3 } else { 0 };
-    let mut spans = vec![Span::styled(format!(" {number}"), title_st)];
-    // the main Pane: ← → through the pages seen, while there are any, at the right end of its title like every
-    // Pane's arrows (D44); dim when there's nowhere to go that way
-    let history = w == Some(Widget::Home) && (!app.back.is_empty() || !app.forward.is_empty()) && rect.width > 20 && app.arranging.is_none();
-    // a Pane whose Widget can give way to others always keeps its ◂ ▸ (7 cells at the right): a long title gives way
-    let can_swap = w.is_some_and(|w| !crate::layouts::options(w).is_empty() && w != Widget::Well) || history;
-    // Arrange mode (D87): a split button before the ×, and no ◂ ▸ (what a Pane shows changes by dragging there)
-    let split_btn = app.arranging.is_some() && rect.width >= 14;
-    let can_swap = can_swap && !split_btn;
-    // the ◂ ▸ keep their place whether or not the Widget shown can close: cycling onto the queue (no ×) moved them
-    // three cells, and the next click on ▸ landed on ◂, so the Pane went back and forth between two Widgets
-    let tail: u16 = (if can_swap && rect.width >= 14 { 3 } else { tail }) + if split_btn { 3 } else { 0 };
-    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-    let room = (rect.width as usize).saturating_sub(2 + used + if can_swap { 8 } else { 0 } + tail as usize);
-    // the cells before the ◂ ▸ (their leading space ends the title): in a Pane too narrow for `room`, the title used
-    // to run on under the arrows and its last letter showed between them and the corner ("lis ◂ ▸ g┐")
-    let before_arrows = rect.width as i32 - 2 - used as i32 - 6 - tail as i32;
-    let title = if title.chars().count() < room {
-        title
-    } else if room > 1 {
-        title.chars().take(room - 2).collect::<String>() + "…"
-    } else if can_swap {
-        let free = before_arrows.max(0) as usize;
-        if title.chars().count() <= free { title } else { title.chars().take(free.saturating_sub(1)).collect::<String>() + if free > 0 { "…" } else { "" } }
-    } else {
-        title
-    };
-    spans.push(Span::styled(format!("{title} "), title_st));
-    // an empty Pane has no title at all (not even the spaces round one)
-    if w.is_none() {
-        spans.clear();
-    }
-    // smaller than its Widget is usable in: a plain frame round one dim line, `needs W × H` (#36); the Pane then takes
-    // no wheel, keys or clicks for the Widget it hides, and the idle takeover doesn't start from an unseen hole
-    let short = w.is_some_and(|w| crate::needs::too_small(w, *rect));
-    if short {
-        app.short_panes.push(p.id);
-        if crate::layout::is_hole(w) {
-            app.hole_origin = None;
-        }
-    }
-    if w == Some(Widget::TopWeek) && !short {
-        let tw = spans.iter().map(|s| s.content.chars().count()).sum::<usize>() as u16;
-        swaps.push((Rect::new(rect.x + 1, rect.y, tw.min(rect.width.saturating_sub(2)), 1), Hit::TopWeekToggle));
-    } else if w.is_some() && app.can_replace(p.id) {
-        // the Widget's name: a click opens the Widget picker (top this week's title is its switch, and Home's is the
-        // page's)
-        if let [lead, name, ..] = spans.as_slice() {
-            let x = rect.x + 1 + lead.content.chars().count() as u16;
-            let nw = (name.content.chars().count() as u16).saturating_sub(1).min(rect.right().saturating_sub(x + 1));
-            swaps.push((Rect::new(x, rect.y, nw, 1), Hit::TitleName(p.id)));
-        }
-    }
+fn pane(f: &mut Frame, app: &mut App, th: &Theme, p: &PanePlan) {
+    let (w, rect, t) = (p.pane.widget, p.rect, &p.title);
+    let title_st = if t.lit { th.title() } else { th.s(th.accent) };
+    // (an empty Pane has no title at all)
+    let spans = if w.is_some() { vec![Span::styled(t.lead.as_str(), title_st), Span::styled(t.text.as_str(), title_st)] } else { vec![] };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(th.borders)
-        .border_style(if held {
+        .border_style(if p.held {
             th.s(th.accent2).add_modifier(Modifier::BOLD)
         } else {
-            th.s(if focused { th.border_focus } else { th.pane_border(i) })
+            th.s(if p.focused { th.border_focus } else { th.pane_border(p.index) })
         })
         .title(ratatui::text::Line::from(spans))
         .style(th.base());
-    let inner = block.inner(*rect);
-    // the Pane's own hit first, so the things inside it win
-    app.hit(*rect, Hit::Focus(p.id));
-    // a Pane whose Widget can give way to others says so: ◂ ▸ in its title swap them (so does v)
-    let swappable = can_swap && rect.width >= 12;
+    let inner = block.inner(rect);
     // smaller than any Pane: just its frame
-    if rect.width < crate::layout::MIN_W || rect.height < crate::layout::MIN_H {
-        f.render_widget(block, *rect);
+    if p.bare {
+        f.render_widget(block, rect);
         return;
     }
+    let buttons = |buf: &mut Buffer| {
+        if let Some(r) = t.close {
+            close_button(buf, r, th, p.focused);
+        }
+        if let Some(r) = t.split {
+            split_button(buf, r, th, p.focused);
+        }
+    };
     // the well draws its own (sagging) frame, unless it is too small for its Widget
-    if w == Some(Widget::Well) && !short {
-        crate::visual::well::draw(f.buffer_mut(), *rect, app, th);
-        if closable {
-            close_button(f.buffer_mut(), *rect, th, focused, p.id, swaps);
-        }
-        if split_btn {
-            split_button(f.buffer_mut(), *rect, th, focused, closable, p.id, swaps);
-        }
+    if let Some(framed) = w.and_then(|w| crate::widget_catalogue::facts(w).own_frame).filter(|_| p.own_frame) {
+        framed(f.buffer_mut(), rect, app, th);
+        buttons(f.buffer_mut());
         return;
     }
-    f.render_widget(block, *rect);
-    if history {
-        let (x, y) = (rect.right().saturating_sub(7), rect.y);
+    f.render_widget(block, rect);
+    if let Some(r) = t.history {
+        let (x, y) = (r.x, r.y);
         let buf = f.buffer_mut();
         let on = |b: bool| th.s(if b { th.fg } else { th.border });
         text(buf, x, y, 1, " ", title_st);
@@ -622,24 +470,13 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
         text(buf, x + 2, y, 1, " ", title_st);
         text(buf, x + 3, y, 1, "→", on(!app.forward.is_empty()));
         text(buf, x + 4, y, 1, " ", title_st);
-        swaps.push((Rect::new(x, y, 2, 1), Hit::History(-1)));
-        swaps.push((Rect::new(x + 2, y, 3, 1), Hit::History(1)));
-    } else if swappable {
-        let (x, y) = (rect.right().saturating_sub(7 + tail), rect.y);
-        let buf = f.buffer_mut();
-        text(buf, x, y, 5, " ◂ ▸ ", th.s(if focused { th.accent } else { th.dim }));
-        swaps.push((Rect::new(x, y, 2, 1), Hit::Swap(p.id, -1)));
-        swaps.push((Rect::new(x + 2, y, 3, 1), Hit::Swap(p.id, 1)));
+    } else if let Some(r) = t.swap {
+        text(f.buffer_mut(), r.x, r.y, 5, " ◂ ▸ ", th.s(if p.focused { th.accent } else { th.dim }));
     }
-    if closable {
-        close_button(f.buffer_mut(), *rect, th, focused, p.id, swaps);
-    }
-    if split_btn {
-        split_button(f.buffer_mut(), *rect, th, focused, closable, p.id, swaps);
-    }
+    buttons(f.buffer_mut());
     match w {
-        Some(w) if short => crate::needs::draw(f.buffer_mut(), inner, w, th),
-        Some(w) => widget(f.buffer_mut(), *rect, inner, w, todo, app, th),
+        Some(w) if p.short => crate::needs::draw(f.buffer_mut(), inner, w, th),
+        Some(w) => crate::widget_catalogue::draw(f.buffer_mut(), rect, inner, w, app, th),
         // an empty Pane says so, quietly (a split's new Pane until something is picked for it)
         None => {
             if inner.height > 0 && inner.width >= 5 {
@@ -649,78 +486,15 @@ fn pane(f: &mut Frame, app: &mut App, th: &Theme, (i, total): (usize, usize), p:
     }
 }
 
-/// What a Pane showing `w` draws inside its frame (`rect` the Pane, `inner` inside the frame): the one place each
-/// Widget is
-/// drawn, so tests can draw every Widget at any size the way a Pane does.
-pub fn widget(buf: &mut Buffer, rect: Rect, inner: Rect, w: Widget, todo: &str, app: &mut App, th: &Theme) {
-    use Widget::*;
-    match w {
-        Hole | Well => crate::visual::well::draw_plain(buf, rect, inner, app, th),
-        NowPlaying => crate::widgets::nowplaying(buf, inner, app, th),
-        Levels => crate::widgets::levels(buf, inner, app, th),
-        Listening => {
-            crate::widgets::listening(buf, inner, app, th);
-            // a click opens the whole story
-            app.hit(inner, Hit::Action(Action::Stats));
-        }
-        Rain => crate::widgets::rain(buf, inner, app, th),
-        Scope => crate::widgets::scope(buf, inner, app, th),
-        Top => crate::widgets::top(buf, inner, app, th),
-        Today => {
-            crate::stats::today(buf, inner, app, th);
-            app.hit(inner, Hit::Action(Action::Stats));
-        }
-        TopWeek => crate::stats::top_week(buf, inner, app, th),
-        Starfield => crate::ambient::starfield(buf, inner, app, th),
-        Marquee => crate::ambient::marquee(buf, inner, app, th),
-        Glow => crate::ambient::glow(buf, inner, app, th),
-        Karaoke => crate::karaoke::draw(buf, inner, app, th),
-        _ => {}
-    }
-    if matches!(w, Hole | Well | NowPlaying | Levels | Listening | Rain | Scope | Top | Today | TopWeek | Starfield | Marquee | Glow | Karaoke) {
-        return;
-    }
-    if w == Library {
-        crate::sidebar::draw(buf, inner, app, th);
-        return;
-    }
-    if w == Lyrics {
-        crate::lyrics::draw(buf, inner, app, th);
-        return;
-    }
-    if w == Queue {
-        crate::queue::draw(buf, inner, app, th);
-        return;
-    }
-    if w == Stream {
-        crate::setup::draw_stream(buf, inner, app, th);
-        return;
-    }
-    if w == Fft {
-        crate::meters::spectrum(buf, inner, &app.meters, th);
-        return;
-    }
-    if w == Loudness {
-        crate::meters::loudness(buf, inner, &app.meters, th);
-        return;
-    }
-    // the main Pane draws the page it shows (no catch-all arm)
-    if w == Home {
-        match app.page {
-            Page::Search => crate::search::draw(buf, inner, app, th),
-            Page::Stats(_) => crate::stats::draw(buf, inner, app, th),
-            Page::Settings(_) => crate::settings::draw(buf, inner, app, th),
-            Page::Artist(_) => crate::artist::draw(buf, inner, app, th),
-            Page::List { .. } => crate::tracks::draw(buf, inner, app, th),
-            Page::Home => home_page(buf, inner, app, th),
-        }
-        return;
-    }
-    if inner.height > 0 {
-        let y = inner.y + inner.height / 2;
-        let w = todo.chars().count() as u16;
-        let x = inner.x + inner.width.saturating_sub(w) / 2;
-        text(buf, x, y, inner.width, todo, th.s(th.dim));
+/// The main Pane (Home, the Required Widget) inside its frame: the page it shows (no catch-all arm).
+pub fn main_page(buf: &mut Buffer, inner: Rect, app: &mut App, th: &Theme) {
+    match app.page {
+        Page::Search => crate::search::draw(buf, inner, app, th),
+        Page::Stats(_) => crate::stats::draw(buf, inner, app, th),
+        Page::Settings(_) => crate::settings::draw(buf, inner, app, th),
+        Page::Artist(_) => crate::artist::draw(buf, inner, app, th),
+        Page::List { .. } => crate::tracks::draw(buf, inner, app, th),
+        Page::Home => home_page(buf, inner, app, th),
     }
 }
 
@@ -755,7 +529,7 @@ fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     let pb = singularity_proto::PlaybackState { status: p.status, item: p.item.clone(), context_name: p.context_name.clone(), shuffle: p.shuffle, repeat: p.repeat, ..Default::default() };
     let buf = f.buffer_mut();
     let now = pb.item.as_ref().map(|i| format!("{} — {}", i.name, i.artists.join(", "))).unwrap_or_else(|| "nothing playing".into());
-    match crate::design::DESIGNS[app.design].prompt {
+    match app.shown.built_in().prompt {
         Some(host) => {
             let p = format!("{host}:~$ ");
             let pw = p.chars().count() as u16;
@@ -851,7 +625,7 @@ fn player_bar(f: &mut Frame, r: Rect, app: &mut App, th: &Theme) {
     let now_ms = singularity_proto::now_ms();
     let pos = app.display_position(now_ms);
     let dur = pb.item.as_ref().map(|i| i.duration_ms).unwrap_or(0);
-    let scrubbing = app.scrub.as_ref().map(|s| s.bar);
+    let scrubbing = crate::gesture::Held::scrub(&app.gesture).map(|s| s.bar);
     let bar = Rect::new(mx + 6, y + 1, mid_w.saturating_sub(12), 1);
     let seeking = scrubbing == Some(Bar::Seek);
     let buf = f.buffer_mut();
@@ -1062,13 +836,14 @@ fn help(f: &mut Frame, area: Rect, th: &Theme, m: &crate::keymap::Keymap, scroll
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::Pane;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
     fn render(app: &mut App, w: u16, h: u16) -> String {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-        t.draw(|f| draw(f, app)).unwrap();
+        t.draw(|f| frame(f, app)).unwrap();
         let buf = t.backend().buffer().clone();
         (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
     }
@@ -1142,14 +917,14 @@ mod tests {
             assert!(!s.contains("SINGULARITY") && !s.contains("too small"), "{w}x{h}: no layout");
             assert!(s.lines().all(|l| l.chars().count() <= w as usize));
             if w >= 24 {
-                let play = app.hits.iter().find_map(|(r, h)| (*h == Hit::Action(Action::TogglePlay)).then_some(*r)).unwrap_or_else(|| panic!("{w}x{h}: no ▶"));
+                let play = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::Action(Action::TogglePlay)).then_some(*r)).unwrap_or_else(|| panic!("{w}x{h}: no ▶"));
                 sent(&mut rx);
                 click(&mut app, play.x + 1, play.y);
                 // what the button shows: ▶ plays, ❚❚ pauses
                 assert!(matches!(sent(&mut rx)[..], [Command::Play { uri: None }] | [Command::Pause]), "{w}x{h}");
             }
             if h >= 2 {
-                assert!(app.hits.iter().any(|(_, h)| matches!(h, Hit::Bar(Bar::Seek, _))), "{w}x{h}: a progress bar to seek with");
+                assert!(app.all_hits().iter().any(|(_, h)| matches!(h, Hit::Bar(Bar::Seek, _))), "{w}x{h}: a progress bar to seek with");
             }
         }
         // big enough again: the full layout comes back
@@ -1180,7 +955,7 @@ mod tests {
         let body = Rect::new(0, 1, 160, 48 - 5);
         render(&mut app, 160, 48);
         let before = app.layout.compute(body).panes[0].1.width;
-        let grip = app.dividers[0].grip;
+        let grip = app.dividers()[0].grip;
         app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: grip.x, row: grip.y + 5, modifiers: KeyModifiers::NONE });
         app.mouse(MouseEvent { kind: MouseEventKind::Drag(MouseButton::Left), column: grip.x + 10, row: grip.y + 5, modifiers: KeyModifiers::NONE });
         app.mouse(MouseEvent { kind: MouseEventKind::Up(MouseButton::Left), column: grip.x + 10, row: grip.y + 5, modifiers: KeyModifiers::NONE });
@@ -1347,7 +1122,7 @@ mod tests {
     }
 
     fn seek_bar(app: &App) -> Rect {
-        app.hits.iter().find_map(|(_, h)| match h { Hit::Bar(Bar::Seek, r) => Some(*r), _ => None }).unwrap()
+        app.all_hits().iter().find_map(|(_, h)| match h { Hit::Bar(Bar::Seek, r) => Some(*r), _ => None }).unwrap()
     }
 
     fn mouse(app: &mut App, kind: MouseEventKind, fx: f64, row: u16, precise: bool) {
@@ -1363,7 +1138,7 @@ mod tests {
         let row = bar.y;
         let x0 = bar.x as f64 + 10.5;
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x0, row, false);
-        let start = app.scrub.as_ref().unwrap().value;
+        let start = crate::gesture::Held::scrub(&app.gesture).unwrap().value;
         for d in 1..=7 {
             mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x0 + d as f64, row, false);
         }
@@ -1373,7 +1148,7 @@ mod tests {
         assert!(s.lines().nth(row as usize - 1).unwrap().contains(&format!(" {target} ")), "tooltip with {target} above the bar:\n{s}");
         mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x0 + 7.0, row, false);
         assert_eq!(sent(&mut rx), vec![Command::Seek { position_ms: start + 7000 }]);
-        assert!(app.scrub.is_none());
+        assert!(app.gesture.is_none());
         assert_eq!(app.display_position(app.playback.timestamp_ms), start + 7000, "bar stays at the target");
     }
 
@@ -1417,7 +1192,7 @@ mod tests {
         let (mut app, mut rx) = playing_app(240_000);
         app.playback.volume = 50;
         render(&mut app, 160, 40);
-        let vbar = app.hits.iter().find_map(|(_, h)| match h { Hit::Bar(Bar::Volume, r) => Some(*r), _ => None }).unwrap();
+        let vbar = app.all_hits().iter().find_map(|(_, h)| match h { Hit::Bar(Bar::Volume, r) => Some(*r), _ => None }).unwrap();
         mouse(&mut app, MouseEventKind::ScrollDown, vbar.x as f64 + 1.5, vbar.y, false);
         assert_eq!(app.display_volume(), 49);
         std::thread::sleep(crate::app::NUDGE_SETTLE + std::time::Duration::from_millis(20));
@@ -1430,7 +1205,7 @@ mod tests {
         let (mut app, _rx) = playing_app(240_000);
         app.playback.volume = 50;
         render(&mut app, 160, 40);
-        let vbar = app.hits.iter().find_map(|(_, h)| match h { Hit::Bar(Bar::Volume, r) => Some(*r), _ => None }).unwrap();
+        let vbar = app.all_hits().iter().find_map(|(_, h)| match h { Hit::Bar(Bar::Volume, r) => Some(*r), _ => None }).unwrap();
         mouse(&mut app, MouseEventKind::ScrollDown, vbar.x as f64 + 1.5, vbar.y, false);
         std::thread::sleep(crate::app::NUDGE_SETTLE + std::time::Duration::from_millis(20));
         app.tick();
@@ -1467,7 +1242,7 @@ mod tests {
     }
 
     fn try_card_rect(app: &App, shelf: usize, card: usize) -> Option<Rect> {
-        app.hits.iter().find_map(|(r, h)| (*h == Hit::Card(crate::home::CardRef { shelf, card })).then_some(*r))
+        app.all_hits().iter().find_map(|(r, h)| (*h == Hit::Card(crate::home::CardRef { shelf, card })).then_some(*r))
     }
 
     /// Wheel Home down until the Shelf's first Card is on screen.
@@ -1510,7 +1285,7 @@ mod tests {
         // a new Shelf arrives on top: every Shelf moves down one
         let mut shifted = feed.clone();
         let card = Card { uri: "spotify:album:new".into(), name: "New".into(), subtitle: String::new(), image_url: None, kind: "album".into() };
-        shifted.shelves.insert(1, Shelf { title: "New releases".into(), kind: "shelf".into(), cards: vec![card.clone(), card] });
+        shifted.shelves.insert(1, Shelf { id: String::new(), title: "New releases".into(), kind: "shelf".into(), cards: vec![card.clone(), card] });
         app.hear(singularity_proto::Event::Home(shifted.clone()));
         let copy = |app: &App| app.menu().unwrap().items.iter().position(|(l, _)| l == "Copy link").unwrap();
         app.menu_run(copy(&app));
@@ -1537,7 +1312,7 @@ mod tests {
         let lib = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).rect_of(Widget::Library).unwrap();
         let lib_text = |l: &str| l.chars().skip(lib.x as usize).take(lib.width as usize).collect::<String>();
         assert!(!s.lines().skip(lib.y as usize).take(4).any(|l| lib_text(l).contains("Search")), "no Search row in the library");
-        let bar = app.hits.iter().find_map(|(r, h)| (*h == Hit::SearchBar).then_some(*r)).expect("a clickable bar");
+        let bar = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::SearchBar).then_some(*r)).expect("a clickable bar");
         click(&mut app, bar.x + 4, bar.y);
         assert_eq!(app.current_page(), crate::app::PageName::Search);
         app.run(Action::GoHome);
@@ -1562,10 +1337,10 @@ mod tests {
         use crate::layout::{Axis, Node, Size};
         let (mut app, _rx) = home_app();
         let home_rect = |app: &App| app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).rect_of(Widget::Home).unwrap();
-        let bar = |app: &App| app.hits.iter().find_map(|(r, h)| (*h == Hit::SearchBar).then_some(*r));
+        let bar = |app: &App| app.all_hits().iter().find_map(|(r, h)| (*h == Hit::SearchBar).then_some(*r));
         // the shortcut tiles of the first column, top to bottom
         let column = |app: &App| {
-            let mut tiles: Vec<Rect> = app.hits.iter().filter(|(_, h)| matches!(h, Hit::Card(c) if c.shelf == 0)).map(|(r, _)| *r).collect();
+            let mut tiles: Vec<Rect> = app.all_hits().iter().filter(|(_, h)| matches!(h, Hit::Card(c) if c.shelf == 0)).map(|(r, _)| *r).collect();
             let x = tiles.iter().map(|r| r.x).min().unwrap_or(0);
             tiles.retain(|r| r.x == x);
             tiles.sort_by_key(|r| r.y);
@@ -1621,7 +1396,7 @@ mod tests {
         assert!(s.contains('›'), "long Shelves can scroll sideways");
         // never a Card cut in half at the bottom
         let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).rect_of(Widget::Home).unwrap();
-        assert!(app.hits.iter().all(|(r, h)| !matches!(h, Hit::Card(_)) || r.bottom() < home.bottom()));
+        assert!(app.all_hits().iter().all(|(r, h)| !matches!(h, Hit::Card(_)) || r.bottom() < home.bottom()));
     }
 
     #[test]
@@ -1631,7 +1406,7 @@ mod tests {
             render(app, 200, 64);
             let r = card_rect(app, 1, 0);
             let mut t = Terminal::new(TestBackend::new(200, 64)).unwrap();
-            t.draw(|f| draw(f, app)).unwrap();
+            t.draw(|f| frame(f, app)).unwrap();
             match t.backend().buffer()[(r.x + r.width / 2, r.y + 2)].fg {
                 ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
                 c => panic!("{c:?}"),
@@ -1664,11 +1439,11 @@ mod tests {
     fn the_main_panes_arrows_go_back_and_forward() {
         let (mut app, _rx) = home_app();
         render(&mut app, 200, 64);
-        assert!(!app.hits.iter().any(|(_, h)| matches!(h, Hit::History(_))), "no history yet: no arrows");
+        assert!(!app.all_hits().iter().any(|(_, h)| matches!(h, Hit::History(_))), "no history yet: no arrows");
         let r = card_rect(&app, 1, 0);
         click(&mut app, r.x + 2, r.y + 1);
         render(&mut app, 200, 64);
-        let back = app.hits.iter().find_map(|(r, h)| (*h == Hit::History(-1)).then_some(*r)).expect("← shown with history");
+        let back = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::History(-1)).then_some(*r)).expect("← shown with history");
         // at the right end of the title, where every Pane keeps its arrows (D44)
         let home = app.layout.compute(Rect::new(0, 1, 200, 64 - 5)).rect_of(Widget::Home).unwrap();
         assert!(back.x > home.x + home.width / 2, "{back:?} in {home:?}");
@@ -1677,7 +1452,7 @@ mod tests {
         click(&mut app, back.x + 1, back.y);
         assert!(app.list_view().is_none() && app.forward.len() == 1, "back on Home");
         render(&mut app, 200, 64);
-        let fwd = app.hits.iter().find_map(|(r, h)| (*h == Hit::History(1)).then_some(*r)).expect("▸ shown");
+        let fwd = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::History(1)).then_some(*r)).expect("▸ shown");
         click(&mut app, fwd.x, fwd.y);
         assert!(app.list_view().is_some_and(|v| v.uri == "spotify:playlist:mfy1"), "forward again");
     }
@@ -1771,7 +1546,7 @@ mod tests {
         assert_eq!(app.focused(), Some(Widget::Home));
         let s = render(&mut app, 200, 64);
         assert!(s.contains("Daily Mix 1") && s.contains("▶ Play"), "{s}");
-        let play = app.hits.iter().find_map(|(r, h)| (*h == Hit::PlayView).then_some(*r)).unwrap();
+        let play = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::PlayView).then_some(*r)).unwrap();
         click(&mut app, play.x + 2, play.y);
         assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:playlist:mfy1".into()) }]);
         // Esc is back to Home, where it was
@@ -1862,7 +1637,7 @@ mod tests {
         // the cells under a cover let it show: the terminal's default background
         let card = card_rect(&app, 1, 0);
         let mut t = Terminal::new(TestBackend::new(200, 64)).unwrap();
-        t.draw(|f| draw(f, &mut app)).unwrap();
+        t.draw(|f| frame(f, &mut app)).unwrap();
         assert_eq!(t.backend().buffer()[(card.x + 1, card.y + 1)].bg, ratatui::style::Color::Reset);
         // the palette opens over Home: no half-blocks, nothing removed or re-sent; the palette's cells hide them
         app.run(Action::Palette);
@@ -1871,8 +1646,8 @@ mod tests {
         let out = flush(&mut app);
         assert!(!out.contains("a=d,d=i") && !out.contains("a=t,"), "{out}");
         let mut t = Terminal::new(TestBackend::new(200, 64)).unwrap();
-        t.draw(|f| draw(f, &mut app)).unwrap();
-        let pal = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::PaletteItem(0)).then_some(*r)).unwrap();
+        t.draw(|f| frame(f, &mut app)).unwrap();
+        let pal = app.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::PaletteItem(0)).then_some(*r)).unwrap();
         // …and not one kitty takes for its default: pure black (its usual background) would let the covers through
         let bg = t.backend().buffer()[(pal.x + 2, pal.y + 1)].bg;
         assert!(bg != ratatui::style::Color::Reset && bg != app.theme.bg.color(), "{bg:?}");
@@ -1890,7 +1665,7 @@ mod tests {
         let (w, h) = (200u16, 64u16);
         let frame = |app: &mut App| {
             let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-            t.draw(|f| draw(f, app)).unwrap();
+            t.draw(|f| frame(f, app)).unwrap();
             app.kitty.as_mut().unwrap().flush(&mut vec![]).unwrap();
             t.backend().buffer().clone()
         };
@@ -1999,7 +1774,7 @@ mod tests {
     }
 
     fn side_rect(app: &App, row: usize) -> Rect {
-        app.hits.iter().find_map(|(r, h)| (*h == Hit::Side(row)).then_some(*r)).unwrap()
+        app.all_hits().iter().find_map(|(r, h)| (*h == Hit::Side(row)).then_some(*r)).unwrap()
     }
 
     #[test]
@@ -2023,7 +1798,7 @@ mod tests {
         assert!(s.contains("≡  Night Drive"), "the glyph while the cover loads\n{s}");
         app.covers.insert(url, image::RgbImage::from_pixel(64, 64, image::Rgb([200, 40, 90])));
         let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
-        t.draw(|f| draw(f, &mut app)).unwrap();
+        t.draw(|f| frame(f, &mut app)).unwrap();
         let row = side_rect(&app, 3);
         let buf = t.backend().buffer().clone();
         let x = (row.x..row.right()).find(|&x| buf[(x, row.y)].symbol() == "▀").expect("a half-block cover");
@@ -2051,7 +1826,7 @@ mod tests {
         let s = render(&mut app, 160, 48);
         assert!(s.contains("3000 songs") && !s.contains("loading"));
         // double-click the third row
-        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::Track(2)).then_some(*r)).unwrap();
+        let row = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::Track(2)).then_some(*r)).unwrap();
         click(&mut app, row.x + 5, row.y);
         click(&mut app, row.x + 5, row.y);
         assert_eq!(sent(&mut rx), vec![Command::PlayFrom { context_uri: "spotify:collection".into(), index: 2, track_uri: Some("spotify:track:t2".into()) }]);
@@ -2068,7 +1843,7 @@ mod tests {
         app.track_page(page(0, 50, 50));
         render(&mut app, 160, 48);
         // sort by title via the header
-        let title = app.hits.iter().find_map(|(r, h)| (*h == Hit::SortCol(crate::tracks::Col::Title)).then_some(*r)).unwrap();
+        let title = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::SortCol(crate::tracks::Col::Title)).then_some(*r)).unwrap();
         click(&mut app, title.x, title.y);
         let s = render(&mut app, 160, 48);
         assert!(s.contains("Title ↑"));
@@ -2104,7 +1879,6 @@ mod tests {
         assert!(region(pane(Widget::Fft)).contains('█'), "{}", region(pane(Widget::Fft)));
         let loud = region(pane(Widget::Loudness));
         assert!(loud.starts_with("L ▬") && loud.contains('█'), "{loud}");
-        assert!(!s.contains("arrives with #15"));
         // the loudness Pane follows the real output level, not the gained one
         app.meters = Default::default();
         app.meters.push(singularity_proto::SpectrumFrame { bands: vec![200; 64], level: 230, vu: [230, 230], out_vu: [20, 20], ..Default::default() });
@@ -2159,7 +1933,7 @@ mod tests {
     }
 
     #[test]
-    fn the_wheel_moves_the_highlight_anywhere_over_a_list_and_the_library() {
+    fn the_wheel_scrolls_a_list_and_the_library_anywhere_over_them() {
         let mut app = App::new(None);
         app.open.put_view(crate::tracks::TrackView::new("spotify:playlist:p", "P"));
         app.page = Page::List { uri: "spotify:playlist:p".into(), title: "P".into(), subtitle: String::new() };
@@ -2181,29 +1955,35 @@ mod tests {
         }));
         render(&mut app, 160, 48);
         // over an artist link, where the wheel used to do nothing
-        let link = app.hits.iter().find(|(_, h)| matches!(h, Hit::Link(l) if l.uri == "spotify:artist:n")).unwrap().0;
+        let link = app.all_hits().iter().find(|(_, h)| matches!(h, Hit::Link(l) if l.uri == "spotify:artist:n")).unwrap().0;
+        // the list moves a row a notch; the highlight stays (D86)
         for _ in 0..3 {
             mouse(&mut app, MouseEventKind::ScrollDown, link.x as f64 + 0.5, link.y, false);
         }
-        assert_eq!(app.list_view().unwrap().sel, 3);
+        assert_eq!((app.list_view().unwrap().sel, app.list_view().unwrap().top), (0, 3));
         mouse(&mut app, MouseEventKind::ScrollUp, link.x as f64 + 0.5, link.y, false);
-        assert_eq!(app.list_view().unwrap().sel, 2);
-        // Shift: a page; the list follows the highlight
+        assert_eq!((app.list_view().unwrap().sel, app.list_view().unwrap().top), (0, 2));
+        // Shift: a page, to the end at most
         let vis = app.list_view().unwrap().visible;
+        app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: link.x, row: link.y, modifiers: KeyModifiers::SHIFT }, link.x as f64 + 0.5, false);
+        assert_eq!(app.list_view().unwrap().top, 2 + vis);
         for _ in 0..3 {
             app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: link.x, row: link.y, modifiers: KeyModifiers::SHIFT }, link.x as f64 + 0.5, false);
         }
         let v = app.list_view().unwrap();
-        assert_eq!(v.sel, 2 + 3 * vis);
-        assert!(v.sel >= v.top && v.sel < v.top + v.visible, "the highlight stays in view");
+        assert_eq!((v.sel, v.top), (0, 80 - vis));
+        // a key moves the highlight from where it is, and the list goes back to it
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let v = app.list_view().unwrap();
+        assert_eq!((v.sel, v.top), (1, 0));
         // the library sidebar
         let lib = app.layout.compute(Rect::new(0, 1, 160, 48 - 5)).rect_of(Widget::Library).unwrap();
         for _ in 0..50 {
             mouse(&mut app, MouseEventKind::ScrollDown, lib.x as f64 + 3.5, lib.y + 3, false);
         }
         render(&mut app, 160, 48);
-        assert_eq!(app.sidebar.sel, 50);
-        assert!(app.sidebar.sel >= app.sidebar.top && app.sidebar.sel < app.sidebar.top + app.sidebar.visible);
+        let side = app.sidebar;
+        assert_eq!((side.sel, side.top), (0, 61 - side.visible), "to the end, the highlight where it was");
     }
 
     #[test]
@@ -2214,7 +1994,7 @@ mod tests {
         let mut minutes = vec![0; singularity_proto::LISTENING_DAYS];
         let n = minutes.len();
         (minutes[n - 1], minutes[n - 2], minutes[n - 8]) = (60, 30, 15);
-        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 1.75, top_artist: Some("Nova Drift".into()), streak_days: 2, plays: 9, plays_today: 3 });
+        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 1.75, top_artist: Some("Nova Drift".into()), streak_days: 2, plays: 9, plays_today: 3, backup_short: None });
         let s = render(&mut app, 160, 48);
         assert!(s.contains("listening · 26 weeks") && s.contains("1.8 h this year · top: Nova Drift · streak 2 days"), "{s}");
         // this week is the last column, Monday on top, two days a cell (Cockpit's Pane is short): Wednesday over
@@ -2223,7 +2003,7 @@ mod tests {
         let last = ((r.width - 2) / 2).min(26) - 1;
         let buf = {
             let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
-            t.draw(|f| draw(f, &mut app)).unwrap();
+            t.draw(|f| frame(f, &mut app)).unwrap();
             t.backend().buffer().clone()
         };
         // (the grid and its totals sit in the middle of the Pane, #58: its first cell, inside the frame)
@@ -2282,7 +2062,7 @@ mod tests {
         let mut plain = App::new(None);
         let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
         t.draw(|f| {
-            draw(f, &mut plain);
+            frame(f, &mut plain);
         })
         .unwrap();
         let without: Vec<Vec<char>> = (0..48u16).map(|y| (0..160u16).map(|x| t.backend().buffer()[(x, y)].symbol().chars().next().unwrap_or(' ')).collect()).collect();
@@ -2374,7 +2154,7 @@ mod tests {
             assert!(s.contains(part), "missing {part:?}\n{s}");
         }
         // right-click the queued one → Remove
-        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::QueueRow(0)).then_some(*r)).unwrap();
+        let row = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::QueueRow(0)).then_some(*r)).unwrap();
         app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column: row.x + 2, row: row.y, modifiers: KeyModifiers::NONE });
         let s = render(&mut app, 160, 48);
         assert!(s.contains("Remove from queue") && s.contains("Clear queue"));
@@ -2390,28 +2170,36 @@ mod tests {
     }
 
     #[test]
-    fn the_wheel_moves_the_queues_highlight_and_the_list_follows() {
+    fn the_wheel_scrolls_the_queue_and_leaves_its_highlight() {
         use singularity_proto::{Item, QueueEntry};
         let (mut app, _rx) = playing_app(200_000);
         let e = |i: usize| QueueEntry { item: Item { uri: format!("spotify:track:{i}"), name: format!("Song {i}"), ..Default::default() }, source: if i < 5 { "queue" } else { "context" }.into(), uid: format!("u{i}") };
         app.playback.queue = (0..120).map(e).collect();
         render(&mut app, 160, 48);
-        let pane = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if Some(*p) == app.layout.pane_of(Widget::Queue)).then_some(*r)).unwrap();
+        let pane = app.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if Some(*p) == app.layout.pane_of(Widget::Queue)).then_some(*r)).unwrap();
         // over a heading, a row or "now playing": anywhere in the Pane
+        // (a line a notch, the highlight staying: D86)
         for _ in 0..7 {
             mouse(&mut app, MouseEventKind::ScrollDown, pane.x as f64 + 3.5, pane.y + 1, false);
         }
-        assert_eq!((app.queue_view.sel, app.focused()), (7, Some(Widget::Queue)));
+        render(&mut app, 160, 48);
+        assert_eq!((app.queue_view.sel, app.queue_view.top, app.focused()), (0, 7, Some(Widget::Queue)));
         mouse(&mut app, MouseEventKind::ScrollUp, pane.x as f64 + 3.5, pane.y + 1, false);
-        assert_eq!(app.queue_view.sel, 6);
-        // Shift: a page; the list follows the highlight, which stays on screen
+        render(&mut app, 160, 48);
+        assert_eq!((app.queue_view.sel, app.queue_view.top), (0, 6));
+        // Shift: a page
         for _ in 0..4 {
             app.pointer(MouseEvent { kind: MouseEventKind::ScrollDown, column: pane.x + 3, row: pane.y + 1, modifiers: KeyModifiers::SHIFT }, pane.x as f64 + 3.5, false);
             render(&mut app, 160, 48);
         }
-        let sel = app.queue_view.sel;
-        assert!(sel > 6 + 3 * app.queue_view.visible, "{sel}");
-        assert!(app.hits.iter().any(|(_, h)| *h == Hit::QueueRow(sel)), "the highlighted row is drawn");
+        let top = app.queue_view.top;
+        assert!(top >= 6 + 4 * app.queue_view.visible, "{top}");
+        assert!(!app.all_hits().iter().any(|(_, h)| *h == Hit::QueueRow(0)), "the highlight stayed where it was, off screen");
+        // a key moves it from there, and the list goes back to it
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        render(&mut app, 160, 48);
+        assert_eq!(app.queue_view.sel, 1);
+        assert!(app.all_hits().iter().any(|(_, h)| *h == Hit::QueueRow(1)), "the highlighted row is drawn");
     }
 
     #[test]
@@ -2451,7 +2239,7 @@ mod tests {
         assert!(sent(&mut rx).is_empty(), "the top of a show asks for nothing more");
         // Follow (#60): the chip says so, and the change goes to the Daemon
         assert!(s.contains("♡ Follow"));
-        let chip = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Save(l) if l.uri == show).then_some(*r)).unwrap();
+        let chip = app.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Save(l) if l.uri == show).then_some(*r)).unwrap();
         click(&mut app, chip.x + 1, chip.y);
         assert!(render(&mut app, 160, 48).contains("♥ Following"));
         assert_eq!(sent(&mut rx), vec![Command::SetSaved { uri: show.into(), saved: true }]);
@@ -2478,7 +2266,7 @@ mod tests {
     }
 
     #[test]
-    fn the_wheel_moves_through_recent_searches_and_a_short_pane_follows() {
+    fn the_wheel_scrolls_recent_searches_in_a_short_pane() {
         let (mut app, _rx) = playing_app(200_000);
         app.search = crate::search::Search::with_recent((0..12).map(|i| format!("query {i}")).collect());
         app.run(Action::Search);
@@ -2487,11 +2275,13 @@ mod tests {
         for _ in 0..11 {
             mouse(&mut app, MouseEventKind::ScrollDown, home.x as f64 + 3.5, home.y + 5, false);
         }
-        assert_eq!(app.searching().unwrap().recent_sel, 11);
         let s = render(&mut app, 120, 24);
-        assert!(s.contains("query 11"), "the highlight stays in view\n{s}");
+        assert_eq!(app.searching().unwrap().recent_sel, 0, "the highlight stays (D86)");
+        assert!(s.contains("query 11") && !s.contains("query 0"), "the list's end shows\n{s}");
+        let first = app.searching().unwrap().recent_first;
         mouse(&mut app, MouseEventKind::ScrollUp, home.x as f64 + 3.5, home.y + 5, false);
-        assert_eq!(app.searching().unwrap().recent_sel, 10);
+        render(&mut app, 120, 24);
+        assert_eq!(app.searching().unwrap().recent_first, first - 1);
     }
 
     #[test]
@@ -2557,7 +2347,7 @@ mod tests {
         }
         sent(&mut rx);
         // a double-click plays it
-        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::SearchTrack(0)).then_some(*r)).unwrap();
+        let row = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::SearchTrack(0)).then_some(*r)).unwrap();
         click(&mut app, row.x + 2, row.y);
         click(&mut app, row.x + 2, row.y);
         assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:episode:e1".into()) }]);
@@ -2581,7 +2371,7 @@ mod tests {
         sent(&mut rx);
         app.track_page(page(0, 10, 10));
         render(&mut app, 160, 48);
-        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::Track(3)).then_some(*r)).unwrap();
+        let row = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::Track(3)).then_some(*r)).unwrap();
         app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column: row.x + 5, row: row.y, modifiers: KeyModifiers::NONE });
         let s = render(&mut app, 160, 48);
         assert!(s.contains("Play from here") && s.contains("Play next") && s.contains("Add to queue"));
@@ -2599,7 +2389,7 @@ mod tests {
         let e = |n: &str, source: &str| QueueEntry { item: Item { uri: format!("spotify:track:{n}"), name: format!("Song {n}"), ..Default::default() }, source: source.into(), uid: format!("u{n}") };
         app.playback.queue = vec![e("a", "queue"), e("b", "queue"), e("c", "queue"), e("x", "context"), e("y", "context")];
         render(&mut app, 160, 48);
-        let row = |app: &App, i: usize| app.hits.iter().find_map(|(r, h)| (*h == Hit::QueueRow(i)).then_some(*r)).unwrap();
+        let row = |app: &App, i: usize| app.all_hits().iter().find_map(|(r, h)| (*h == Hit::QueueRow(i)).then_some(*r)).unwrap();
         let (c, a) = (row(&app, 2), row(&app, 0));
         let mouse = |app: &mut App, kind, r: Rect| app.mouse(MouseEvent { kind, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), c);
@@ -2674,7 +2464,7 @@ mod tests {
         let e = |n: &str, source: &str| QueueEntry { item: Item { uri: format!("spotify:track:{n}"), name: format!("Song {n}"), ..Default::default() }, source: source.into(), uid: format!("u{n}") };
         app.playback.queue = vec![e("a", "queue"), e("x", "context"), e("y", "context")];
         render(&mut app, 160, 48);
-        let row = |app: &App, i: usize| app.hits.iter().find_map(|(r, h)| (*h == Hit::QueueRow(i)).then_some(*r)).unwrap();
+        let row = |app: &App, i: usize| app.all_hits().iter().find_map(|(r, h)| (*h == Hit::QueueRow(i)).then_some(*r)).unwrap();
         let mouse = |app: &mut App, kind, r: Rect| app.mouse(MouseEvent { kind, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
         let (y, x) = (row(&app, 2), row(&app, 1));
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), y);
@@ -2699,14 +2489,14 @@ mod tests {
         let p = state(&app, "n", vec![e("a", "queue"), e("b", "queue"), e("c", "queue"), e("x", "context")]);
         app.hear(Event::Playback(p));
         render(&mut app, 160, 48);
-        let row = |app: &App, i: usize| app.hits.iter().find_map(|(r, h)| (*h == Hit::QueueRow(i)).then_some(*r)).unwrap();
+        let row = |app: &App, i: usize| app.all_hits().iter().find_map(|(r, h)| (*h == Hit::QueueRow(i)).then_some(*r)).unwrap();
         // the highlighted song, as drawn
         let lit = |app: &mut App| {
             let mut t = Terminal::new(TestBackend::new(160, 48)).unwrap();
-            t.draw(|f| draw(f, app)).unwrap();
+            t.draw(|f| frame(f, app)).unwrap();
             let buf = t.backend().buffer().clone();
             let sel = app.theme.selection.color();
-            let rows: Vec<Rect> = app.hits.iter().filter_map(|(r, h)| matches!(h, Hit::QueueRow(_)).then_some(*r)).collect();
+            let rows: Vec<Rect> = app.all_hits().iter().filter_map(|(r, h)| matches!(h, Hit::QueueRow(_)).then_some(*r)).collect();
             rows.into_iter().filter(|r| buf[(r.x + 1, r.y)].bg == sel).map(|r| (r.x..r.right()).map(|x| buf[(x, r.y)].symbol().to_string()).collect::<String>().trim().to_string()).collect::<Vec<_>>()
         };
         // swap the first two: a dragged onto b
@@ -2777,7 +2567,7 @@ mod tests {
             // the focus back on the queue: the list comes to its highlight
             app.focus_on(Widget::Queue);
             let s = render(&mut app, 160, 48);
-            assert!(app.hits.iter().any(|(_, h)| *h == Hit::QueueRow(app.queue_view.sel)), "{s}");
+            assert!(app.all_hits().iter().any(|(_, h)| *h == Hit::QueueRow(app.queue_view.sel)), "{s}");
             if placed {
                 assert_eq!(app.playback.queue[app.queue_view.sel].item.name, "Song 100");
                 assert!(app.queue_view.top > 0);
@@ -2859,7 +2649,7 @@ mod tests {
         let s = render(&mut app, 160, 48);
         let line = |s: &str, name: &str| s.lines().find(|l| l.contains(name)).unwrap().to_string();
         assert!(line(&s, "Row 68 ").contains('♥') && line(&s, "Row 69 ").contains('♡'), "{s}");
-        let h = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Save(l) if l.uri == "spotify:track:r69").then_some(*r)).unwrap();
+        let h = app.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Save(l) if l.uri == "spotify:track:r69").then_some(*r)).unwrap();
         click(&mut app, h.x, h.y);
         assert!(sent_all(&mut rx).contains(&Command::SetSaved { uri: "spotify:track:r69".into(), saved: true }));
         assert!(line(&render(&mut app, 160, 48), "Row 69 ").contains('♥'), "shown at once");
@@ -2945,7 +2735,7 @@ mod tests {
         let (mut app, mut rx) = stats_app();
         render(&mut app, 140, 40);
         // a click on the top artist opens its page, and Back comes back to Stats
-        let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::StatsRow(0)).then_some(*r)).unwrap();
+        let r = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::StatsRow(0)).then_some(*r)).unwrap();
         click(&mut app, r.x + 4, r.y);
         assert_eq!(app.page.artist().map(|a| a.uri.as_str()), Some("spotify:artist:0"));
         sent(&mut rx);
@@ -2961,7 +2751,7 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:track:t0".into()) }]);
         // a tab click asks for that period; a logged Play refreshes what's shown
         render(&mut app, 140, 40);
-        let tab = app.hits.iter().find_map(|(r, h)| (*h == Hit::StatsPeriod(StatsPeriod::Year)).then_some(*r)).unwrap();
+        let tab = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::StatsPeriod(StatsPeriod::Year)).then_some(*r)).unwrap();
         click(&mut app, tab.x + 1, tab.y);
         assert_eq!(sent(&mut rx), vec![Command::GetStats { period: StatsPeriod::Year }]);
         app.refresh_stats();
@@ -2969,7 +2759,7 @@ mod tests {
         // a row without a link says so instead of doing nothing
         app.stats.get_mut(&StatsPeriod::Year).unwrap().top_artists[0].uri = None;
         render(&mut app, 140, 40);
-        let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::StatsRow(0)).then_some(*r)).unwrap();
+        let r = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::StatsRow(0)).then_some(*r)).unwrap();
         click(&mut app, r.x + 4, r.y);
         assert!(app.toast.as_ref().is_some_and(|(m, _)| m.contains("Finding its link")));
     }
@@ -3065,7 +2855,7 @@ mod tests {
             app.delivery_event(Delivery { bandwidth_kbps: Some(*k), measured_ms: now - 10_000 + i as u64, stalls_ms: vec![now - 5_000] });
         }
         let minutes: Vec<u32> = (0..singularity_proto::LISTENING_DAYS as u32).map(|d| if d % 5 == 3 { 0 } else { (d * 37) % 190 }).collect();
-        app.listening = Some(ListeningSummary { minutes, today_weekday: 3, hours_this_year: 212.4, top_artist: Some("Nova Drift".into()), streak_days: 6, plays: 1820, plays_today: 14 });
+        app.listening = Some(ListeningSummary { minutes, today_weekday: 3, hours_this_year: 212.4, top_artist: Some("Nova Drift".into()), streak_days: 6, plays: 1820, plays_today: 14, backup_short: None });
         app.stats.insert(StatsPeriod::Week, seeded_stats(StatsPeriod::Week));
         app
     }
@@ -3123,15 +2913,14 @@ mod tests {
         let s = big(&mut app, widgets[4].1, 80, 30);
         assert!(s.contains("20 h 34 min · 321 plays") && s.contains("Saffron Echo") && s.contains('█') && s.contains("when you listened"), "{s}");
         // a tall top this week: each entry is two rows, both clickable
-        let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeek(1)).then_some(*r)).unwrap();
+        let r = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::TopWeek(1)).then_some(*r)).unwrap();
         assert_eq!(r.height, 2);
     }
 
-    /// Every Widget a Slot can show (and the library and Home), as `widget` draws them in a Pane.
-    const EVERY_WIDGET: [Widget; 19] = {
-        use Widget::*;
-        [Lyrics, Queue, NowPlaying, Stream, Top, Listening, Today, TopWeek, Marquee, Glow, Fft, Loudness, Levels, Scope, Rain, Starfield, Library, Home, Karaoke]
-    };
+    /// Every Widget but the black holes, as the Widget catalogue draws them in a Pane.
+    fn every_widget() -> impl Iterator<Item = Widget> {
+        Widget::ALL.iter().copied().filter(|w| !crate::layout::is_hole(Some(*w)))
+    }
 
     /// `widget_app` playing a song with a cover, a long queue, long synced lyrics (30 s in), the meters moving and a
     /// library: something for every Widget to show.
@@ -3170,14 +2959,14 @@ mod tests {
         let mut bad: Vec<(Widget, String)> = vec![];
         for w in widths {
             for &h in &heights {
-                for slot in EVERY_WIDGET {
+                for slot in every_widget() {
                     if bad.iter().any(|(s, _)| *s == slot) {
                         continue;
                     }
                     let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, w + 2, h + 2));
                     app.hits.clear();
                     let outer = buf.area;
-                    let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| widget(&mut buf, outer, Rect::new(1, 1, w, h), slot, "", &mut app, &th)));
+                    let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::widget_catalogue::draw(&mut buf, outer, Rect::new(1, 1, w, h), slot, &mut app, &th)));
                     if drawn.is_err() {
                         bad.push((slot, format!("{slot} {w}x{h}: panicked")));
                         continue;
@@ -3203,22 +2992,22 @@ mod tests {
         app.stats.insert(StatsPeriod::Week, seeded_stats(StatsPeriod::Week));
         let s = render(&mut app, 160, 48);
         assert!(s.contains("top artists") && s.contains("Nova Drift"), "{s}");
-        let toggle = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeekToggle).then_some(*r)).unwrap();
+        let toggle = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::TopWeekToggle).then_some(*r)).unwrap();
         click(&mut app, toggle.x + 3, toggle.y);
         let s = render(&mut app, 160, 48);
         assert!(s.contains("top tracks") && s.contains("Track number 0"), "{s}");
         sent(&mut rx);
         // a track plays on a second click
-        let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeek(1)).then_some(*r)).unwrap();
+        let r = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::TopWeek(1)).then_some(*r)).unwrap();
         click(&mut app, r.x + 4, r.y);
         assert!(sent(&mut rx).is_empty());
         click(&mut app, r.x + 4, r.y);
         assert_eq!(sent(&mut rx), vec![Command::Play { uri: Some("spotify:track:t1".into()) }]);
         // back to artists: a click opens one
-        let toggle = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeekToggle).then_some(*r)).unwrap();
+        let toggle = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::TopWeekToggle).then_some(*r)).unwrap();
         click(&mut app, toggle.x + 3, toggle.y);
         render(&mut app, 160, 48);
-        let r = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopWeek(0)).then_some(*r)).unwrap();
+        let r = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::TopWeek(0)).then_some(*r)).unwrap();
         click(&mut app, r.x + 4, r.y);
         assert_eq!(app.page.artist().map(|a| a.uri.as_str()), Some("spotify:artist:0"));
     }
@@ -3239,7 +3028,7 @@ mod tests {
                         render(&mut app, w, h);
                         let now = app.layout.compute(Rect::new(0, 1, w, h - 5)).panes.into_iter().filter(|(p, _)| swappable(p)).nth(k).unwrap().0;
                         if rect.width >= 12 {
-                            assert!(app.hits.iter().any(|(r, h)| *h == Hit::Swap(now.id, 1) && r.y == rect.y), "{} {w}x{h}: no ▸ on {now:?}", crate::design::DESIGNS[d].id);
+                            assert!(app.all_hits().iter().any(|(r, h)| *h == Hit::Swap(now.id, 1) && r.y == rect.y), "{} {w}x{h}: no ▸ on {now:?}", crate::design::DESIGNS[d].id);
                         }
                         app.swap_widget(now.id, 1);
                     }
@@ -3253,16 +3042,19 @@ mod tests {
         let (mut app, _rx) = playing_app(200_000);
         let mut page = fake_artist();
         let more = page.shelves[0].clone();
-        page.shelves.extend((0..6).map(|i| singularity_proto::Shelf { title: format!("Shelf {i}"), ..more.clone() }));
+        page.shelves.extend((0..6).map(|i| singularity_proto::Shelf { id: String::new(), title: format!("Shelf {i}"), ..more.clone() }));
         app.open("spotify:artist:nova", "Nova Drift", "", "artist");
         app.artist_page(page);
         render(&mut app, 200, 48);
         let wheel = |app: &mut App, x: u16, y: u16| mouse(app, MouseEventKind::ScrollDown, x as f64 + 0.5, y, false);
-        // over a popular track's album name (a link of its own): the highlight moves
-        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopTrack(2)).then_some(*r)).unwrap();
-        let link = app.hits.iter().find_map(|(r, h)| (matches!(h, Hit::Link(_)) && r.y == row.y).then_some(*r)).expect("a name link on the row");
+        // over a popular track's album name (a link of its own): the songs' list moves a row, the highlight stays
+        // (D86), and the Shelves don't move
+        let row = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::TopTrack(2)).then_some(*r)).unwrap();
+        let link = app.all_hits().iter().find_map(|(r, h)| (matches!(h, Hit::Link(_)) && r.y == row.y).then_some(*r)).expect("a name link on the row");
         wheel(&mut app, link.x + 1, link.y);
-        assert_eq!(app.page.artist().unwrap().top_sel, 1);
+        render(&mut app, 200, 48);
+        let a = app.page.artist().unwrap();
+        assert_eq!((a.top_sel, a.top_first, a.shelves.offset), (0, 1, 0));
         // below the songs, over the Shelves (Cards or not): the page scrolls by lines
         let home = app.layout.compute(Rect::new(0, 1, 200, 48 - 5)).rect_of(Widget::Home).unwrap();
         wheel(&mut app, home.right() - 3, home.bottom() - 3);
@@ -3355,7 +3147,7 @@ mod tests {
         app.playback.timestamp_ms = singularity_proto::now_ms();
         let s = render(&mut app, 160, 48);
         assert!(s.contains("[00:30] line 6") && s.contains("lyrics: Musixmatch"), "{s}");
-        let l9 = app.hits.iter().find_map(|(r, h)| (*h == Hit::Lyric(45_000)).then_some(*r)).unwrap();
+        let l9 = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::Lyric(45_000)).then_some(*r)).unwrap();
         click(&mut app, l9.x + 10, l9.y);
         assert_eq!(sent(&mut rx), vec![Command::Seek { position_ms: 45_000 }]);
         // with the words delayed (`lyrics.delay_ms`), the music goes to where the line will show
@@ -3396,7 +3188,7 @@ mod tests {
                 at(&mut app, line * 5_000 + 100);
                 let rows = lyrics_pane(&mut app, w, 12);
                 // the current line's rows are all in view and, joined, are the whole line: nothing cut
-                let mut ys: Vec<u16> = app.hits.iter().filter(|(_, h)| *h == Hit::Lyric(line * 5_000)).map(|(r, _)| r.y).collect();
+                let mut ys: Vec<u16> = app.all_hits().iter().filter(|(_, h)| *h == Hit::Lyric(line * 5_000)).map(|(r, _)| r.y).collect();
                 ys.sort();
                 // text starts after the stamp column when there is one
                 let col = if w >= 32 { 9 } else { 1 };
@@ -3497,7 +3289,7 @@ mod tests {
         use singularity_proto::{Card, Shelf, TrackRow};
         let top = (0..10).map(|i| TrackRow { uri: format!("spotify:track:hit{i}"), name: format!("Hit {i}"), artists: vec!["Nova Drift".into()], album: "Orbits".into(), album_uri: Some("spotify:album:orbits".into()), duration_ms: 200_000, playable: true, ..Default::default() }).collect();
         let card = |n: &str| Card { uri: format!("spotify:album:{n}"), name: n.into(), subtitle: "2024 · Album".into(), image_url: None, kind: "album".into() };
-        singularity_proto::ArtistPage { uri: "spotify:artist:nova".into(), name: "Nova Drift".into(), monthly_listeners: Some(1_234_567), image_url: None, top_tracks: top, shelves: vec![Shelf { title: "Albums".into(), kind: "shelf".into(), cards: vec![card("orbits"), card("drift")] }] }
+        singularity_proto::ArtistPage { uri: "spotify:artist:nova".into(), name: "Nova Drift".into(), monthly_listeners: Some(1_234_567), image_url: None, top_tracks: top, shelves: vec![Shelf { id: String::new(), title: "Albums".into(), kind: "shelf".into(), cards: vec![card("orbits"), card("drift")] }] }
     }
 
     #[test]
@@ -3521,7 +3313,7 @@ mod tests {
         let s = render(&mut app, 200, 48);
         assert!(s.contains("Title ↑"));
         // click an artist's name in a row: their page opens
-        let link = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Link(l) if l.uri == "spotify:artist:nova").then_some(*r)).unwrap();
+        let link = app.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Link(l) if l.uri == "spotify:artist:nova").then_some(*r)).unwrap();
         click(&mut app, link.x, link.y);
         assert_eq!(sent(&mut rx), vec![Command::GetArtist { uri: "spotify:artist:nova".into() }]);
         app.artist_page(fake_artist());
@@ -3541,14 +3333,14 @@ mod tests {
         assert!(app.page.artist().is_some());
         // double-click a popular track: the artist's context from there
         render(&mut app, 200, 48);
-        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::TopTrack(2)).then_some(*r)).unwrap();
+        let row = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::TopTrack(2)).then_some(*r)).unwrap();
         click(&mut app, row.x + 6, row.y);
         click(&mut app, row.x + 6, row.y);
         assert_eq!(sent(&mut rx), vec![Command::PlayFrom { context_uri: "spotify:artist:nova".into(), index: 2, track_uri: Some("spotify:track:hit2".into()) }]);
     }
 
     fn card_rect_any(app: &App) -> Rect {
-        app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Card(_)).then_some(*r)).unwrap()
+        app.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Card(_)).then_some(*r)).unwrap()
     }
 
     // ── Search (#10) ──
@@ -3577,10 +3369,10 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert!(render(&mut app, 200, 64).contains("Nova song 7"));
         // Albums chip by mouse; opening one remembers the search
-        let chip = app.hits.iter().find_map(|(r, h)| (*h == Hit::Chip(3)).then_some(*r)).unwrap();
+        let chip = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::Chip(3)).then_some(*r)).unwrap();
         click(&mut app, chip.x + 1, chip.y);
         render(&mut app, 200, 64);
-        let c = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Card(_)).then_some(*r)).unwrap();
+        let c = app.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Card(_)).then_some(*r)).unwrap();
         click(&mut app, c.x + 2, c.y + 1);
         assert_eq!(sent(&mut rx), vec![Command::GetTracks { uri: "spotify:album:Event Horizon".into() }]);
         assert_eq!(app.search.recent(), ["nova"]);
@@ -3648,11 +3440,13 @@ mod tests {
             // the wheel: over the last song down into the Shelves, and up again
             let y = render(&mut app, 100, 30).lines().position(|r| r.contains('⌕')).unwrap() as u16 + 3;
             let wheel = |app: &mut App, kind: MouseEventKind| app.mouse(MouseEvent { kind, column: 3, row: y, modifiers: KeyModifiers::NONE });
+            // (the highlight stays on the last song throughout, D86)
             wheel(&mut app, MouseEventKind::ScrollDown);
-            assert!(app.searching().is_some_and(|s| s.track_sel.is_none() && s.shelves.sel.is_some()));
-            inside(&mut app);
+            assert!(app.searching().is_some_and(|s| s.showing_shelves() && s.track_sel == Some(3) && s.shelves.sel.is_none()));
+            assert!(!inside(&mut app).iter().any(|r| r.contains("S4")));
             wheel(&mut app, MouseEventKind::ScrollUp);
-            assert_eq!(app.searching().and_then(|s| s.track_sel), Some(3));
+            assert!(app.searching().is_some_and(|s| !s.showing_shelves() && s.track_sel == Some(3)));
+            assert!(inside(&mut app)[3].contains("S4"));
             app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
             app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         }
@@ -3668,6 +3462,106 @@ mod tests {
         receive_search(&mut app, SearchResults { query: "nova".into(), tracks, ..Default::default() });
         let s = render(&mut app, 100, 30);
         assert!(s.contains("Songs") && s.contains("S1"), "{s}");
+    }
+
+    /// #82 (owner Q136): in a Search Pane, short or with room, a highlighted song is the only highlight: ↑ on the
+    /// first song, ← and → do nothing (they gave a Shelf a second highlight, and Enter still played the song); Home
+    /// and End go to the first and last song, PgUp and PgDn page through the songs.
+    #[test]
+    fn a_search_keeps_one_highlight_and_pages_through_its_songs() {
+        use crate::layout::{Axis, Node, Size, Widget};
+        use singularity_proto::{Card, SearchResults, TrackRow};
+        let (_, sh) = crate::needs::smallest(Widget::Home);
+        for (height, short) in [(20, false), (sh, true)] {
+            let (mut app, _rx) = playing_app(1);
+            app.layout = Node::split(Axis::Vertical, Size::Cells(height), Node::pane(Widget::Home), Node::pane(Widget::Queue)).into();
+            app.focus = app.layout.pane_of(Widget::Home);
+            render(&mut app, 100, 30);
+            app.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+            for c in "nova".chars() {
+                app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+            let tracks = (1..=30).map(|i| TrackRow { uri: format!("spotify:track:t{i}"), name: format!("S{i}"), duration_ms: 60_000, ..Default::default() }).collect();
+            let artists = vec![Card { uri: "spotify:artist:a".into(), name: "Arty".into(), subtitle: String::new(), image_url: None, kind: "artist".into() }];
+            receive_search(&mut app, SearchResults { query: "nova".into(), tracks, artists, ..Default::default() });
+            render(&mut app, 100, 30);
+            assert!(app.searching().is_some_and(|s| s.short == short && s.shelves.sel.is_none()), "{height}");
+            let key = |app: &mut App, code: KeyCode| {
+                app.key(KeyEvent::new(code, KeyModifiers::NONE));
+                render(app, 100, 30);
+                app.searching().map(|s| (s.track_sel, s.shelves.sel.is_some())).unwrap()
+            };
+            // All: five songs
+            assert_eq!(key(&mut app, KeyCode::Down), (Some(0), false), "{height}: the first song");
+            for code in [KeyCode::Up, KeyCode::Left, KeyCode::Right, KeyCode::PageUp, KeyCode::Home, KeyCode::Up] {
+                assert_eq!(key(&mut app, code), (Some(0), false), "{height}, {code:?}: the first song stays the only highlight");
+            }
+            assert_eq!(key(&mut app, KeyCode::End), (Some(4), false), "{height}: the last song");
+            assert_eq!(key(&mut app, KeyCode::Right), (Some(4), false), "{height}");
+            assert_eq!(key(&mut app, KeyCode::Home), (Some(0), false), "{height}");
+            // Songs: all thirty, more than show; PgDn and PgUp move a window's worth, and stop at the ends
+            assert_eq!(key(&mut app, KeyCode::Tab), (None, false));
+            assert_eq!(key(&mut app, KeyCode::Down), (Some(0), false));
+            let page = app.searching().map(|s| s.song_rows).unwrap();
+            assert!(page > 1 && page < 30, "{height}: {page}");
+            assert_eq!(key(&mut app, KeyCode::PageDown), (Some(page), false), "{height}");
+            for _ in 0..30 / page + 1 {
+                key(&mut app, KeyCode::PageDown);
+            }
+            assert_eq!(key(&mut app, KeyCode::PageDown), (Some(29), false), "{height}: the last song");
+            assert_eq!(key(&mut app, KeyCode::PageUp), (Some(29 - page), false), "{height}");
+            for code in [KeyCode::Left, KeyCode::Right] {
+                assert_eq!(key(&mut app, code), (Some(29 - page), false), "{height}, {code:?}");
+            }
+            for _ in 0..30 / page + 1 {
+                key(&mut app, KeyCode::PageUp);
+            }
+            assert_eq!(key(&mut app, KeyCode::PageUp), (Some(0), false), "{height}: the first song");
+            assert_eq!(key(&mut app, KeyCode::End), (Some(29), false), "{height}");
+            assert_eq!(key(&mut app, KeyCode::Home), (Some(0), false), "{height}");
+            // ↓ past the last song still goes into the Shelves (under All, where there are some): one highlight there
+            assert_eq!(key(&mut app, KeyCode::BackTab), (None, false));
+            assert_eq!(key(&mut app, KeyCode::Down), (Some(0), false));
+            let songs = app.searching().map(|s| s.songs()).unwrap();
+            for _ in 0..songs - 1 {
+                key(&mut app, KeyCode::Down);
+            }
+            assert_eq!(key(&mut app, KeyCode::Down).0, None, "{height}");
+            assert!(app.searching().is_some_and(|s| s.shelves.sel.is_some()), "{height}");
+        }
+    }
+
+    /// #82 review: a right-click on a Card while a song is highlighted gave the Card its highlight beside the song's;
+    /// after Esc both showed and Enter played the song. The Card's menu takes the highlight from the song.
+    #[test]
+    fn a_cards_menu_takes_the_highlight_from_the_search_song() {
+        use crate::layout::{Axis, Node, Size, Widget};
+        use singularity_proto::{Card, Command, SearchResults, TrackRow};
+        let (mut app, mut rx) = playing_app(1);
+        app.layout = Node::split(Axis::Vertical, Size::Cells(20), Node::pane(Widget::Home), Node::pane(Widget::Queue)).into();
+        app.focus = app.layout.pane_of(Widget::Home);
+        render(&mut app, 100, 30);
+        app.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        for c in "nova".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let tracks = (1..=3).map(|i| TrackRow { uri: format!("spotify:track:t{i}"), name: format!("S{i}"), duration_ms: 60_000, ..Default::default() }).collect();
+        let artists = vec![Card { uri: "spotify:artist:a".into(), name: "Arty".into(), subtitle: String::new(), image_url: None, kind: "artist".into() }];
+        receive_search(&mut app, SearchResults { query: "nova".into(), tracks, artists, ..Default::default() });
+        render(&mut app, 100, 30);
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        render(&mut app, 100, 30);
+        assert_eq!(app.searching().map(|s| (s.track_sel, s.shelves.sel.is_some())), Some((Some(0), false)));
+        let card = app.hits.iter().find_map(|(r, h)| matches!(h, crate::app::Hit::Card(_)).then_some(*r)).expect("a Card");
+        app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column: card.x + 1, row: card.y + 1, modifiers: KeyModifiers::NONE });
+        assert!(app.popup.is_some(), "the Card's menu");
+        assert_eq!(app.searching().map(|s| (s.track_sel, s.shelves.sel.is_some())), Some((None, true)), "the Card's highlight only");
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        render(&mut app, 100, 30);
+        assert_eq!(app.searching().map(|s| (s.track_sel, s.shelves.sel.is_some())), Some((None, true)));
+        sent(&mut rx);
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!sent(&mut rx).iter().any(|c| matches!(c, Command::Play { uri: Some(u) } if u.starts_with("spotify:track:"))), "Enter doesn't play the song");
     }
 
     #[test]
@@ -3726,7 +3620,7 @@ mod tests {
         }
         let s = render(&mut app, 100, 20);
         assert!(s.contains("Speaker 29") && !s.contains("◉ Speaker 00") && s.contains("Start a Jam"), "the selection stays in view: {s}");
-        assert!(app.hits.iter().any(|(_, h)| *h == Hit::DeviceRow(29)), "rows keep their own index");
+        assert!(app.all_hits().iter().any(|(_, h)| *h == Hit::DeviceRow(29)), "rows keep their own index");
     }
 
     #[test]
@@ -3741,7 +3635,7 @@ mod tests {
         assert_eq!(sent(&mut rx), vec![Command::GetDevices]);
         let s = render(&mut app, 160, 48);
         assert!(s.contains("Play on") && s.contains("Singularity (this one)") && s.contains("♪ playing"), "{s}");
-        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::DeviceRow(1)).then_some(*r)).unwrap();
+        let row = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::DeviceRow(1)).then_some(*r)).unwrap();
         click(&mut app, row.x + 3, row.y);
         assert_eq!(sent(&mut rx), vec![Command::Transfer { device_id: "phone".into() }]);
         assert!(!app.is_open(crate::app::Modal::Devices));
@@ -3831,7 +3725,7 @@ mod tests {
         mouse(&mut app, MouseEventKind::ScrollDown, 1.5, 10, false);
         assert_eq!(app.sidebar.sel, 0);
         let v = app.page.settings().unwrap();
-        assert!(v.sel > 0 || v.on_tabs, "the Settings page scrolled");
+        assert!(v.top > 0, "the Settings page scrolled");
     }
 
     /// Open popup `m` with more in it than fits (a list longer than its box, text taller than a short screen).
@@ -3841,6 +3735,9 @@ mod tests {
         match m {
             Modal::Palette => app.run(Action::Palette),
             Modal::Picker => app.open_picker(crate::looks::PickerKind::Theme),
+            Modal::DeleteDesign => {
+                app.open_popup(crate::app::Popup::DeleteDesign(crate::looks::DeleteAsk { file: "mine".into(), name: "Mine".into(), back: None }));
+            }
             Modal::Naming => app.open_popup(crate::app::Popup::Naming(crate::app::Naming::playlist())),
             Modal::WidgetPicker => app.open_widget_picker(app.layout.pane_of(Widget::Stream).unwrap()),
             // a Design without their Panes (D87)
@@ -3901,8 +3798,8 @@ mod tests {
             Modal::Health => app.text_scroll(m).map(|s| s.offset()),
             Modal::Menu => app.menu().map(|m| m.selected),
             Modal::Help => app.text_scroll(m).map(|s| s.offset()),
-            Modal::Naming | Modal::Cover | Modal::Login => None,
-            Modal::Arrange => app.arranging.as_ref().map(|a| a.tray_first),
+            Modal::Naming | Modal::Cover | Modal::Login | Modal::DeleteDesign => None,
+            Modal::Arrange => app.arrange.tray_first(),
         }
     }
 
@@ -3930,15 +3827,18 @@ mod tests {
                 // the popup's box (Arrange mode has none: the Panes are the thing)
                 let r = app.overlays.first().copied().unwrap_or(Rect::new(w / 4, h / 4, w / 2, h / 2));
                 let points = [(r.x + r.width / 2, r.y + r.height / 2), (r.x, r.y + r.height / 2), (r.right().saturating_sub(1), r.y), (0, 0), (w - 1, h - 1)];
-                let (mut wheel, mut t) = (crate::term::WheelBursts::default(), Instant::now());
+                let (mut wheel, mut t) = (crate::term::WheelSteps::default(), Instant::now());
                 // one notch: three reports a microsecond apart, as the terminal sends them
                 let mut notch = |app: &mut App, kind: MouseEventKind, n: usize| {
                     let (x, y) = points[n % points.len()];
                     t += Duration::from_millis(40);
+                    let mut steps = vec![];
                     for i in 0..3 {
-                        if wheel.keep(kind, t + Duration::from_micros(i)) {
-                            app.pointer(MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE }, x as f64 + 0.5, false);
-                        }
+                        steps.extend(wheel.push(MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE }, t + Duration::from_micros(i)));
+                    }
+                    steps.extend(wheel.settle(t + Duration::from_millis(5)));
+                    for m in steps {
+                        app.pointer(m, x as f64 + 0.5, false);
                     }
                 };
                 let mut spin = |app: &mut App, kind: MouseEventKind, notches: std::ops::Range<usize>| {
@@ -3985,7 +3885,7 @@ mod tests {
     /// The screen as drawn: every cell, symbol and colours.
     fn drawn(app: &mut App, w: u16, h: u16) -> Buffer {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-        t.draw(|f| draw(f, app)).unwrap();
+        t.draw(|f| frame(f, app)).unwrap();
         t.backend().buffer().clone()
     }
 
@@ -4029,12 +3929,12 @@ mod tests {
             let (mut app, _rx) = over_wizard(m);
             render(&mut app, w, h);
             click(&mut app, 0, 0);
-            let closes = matches!(m, Modal::Palette | Modal::Picker | Modal::WidgetPicker | Modal::Library | Modal::Queue | Modal::Adding | Modal::Devices | Modal::Menu | Modal::Help);
+            let closes = matches!(m, Modal::Palette | Modal::Picker | Modal::DeleteDesign | Modal::WidgetPicker | Modal::Library | Modal::Queue | Modal::Adding | Modal::Devices | Modal::Menu | Modal::Help);
             assert_eq!(app.modal(), Some(if closes { Modal::Wizard } else { m }), "{m:?}: the click");
             // the click on its first row, inside its box: the row is chosen (the popup has done its job and gone)
             let (mut app, _rx) = over_wizard(m);
             render(&mut app, w, h);
-            let row = app.hits.iter().find(|(_, hit)| matches!(hit, Hit::PaletteItem(0) | Hit::PickerItem(0) | Hit::PickWidget(0) | Hit::AddPick(0) | Hit::DeviceRow(0) | Hit::MenuItem(0)) || (m == Modal::Library && *hit == Hit::Side(0))).map(|(r, _)| *r);
+            let row = app.all_hits().iter().find(|(_, hit)| matches!(hit, Hit::PaletteItem(0) | Hit::PickerItem(0) | Hit::PickWidget(0) | Hit::AddPick(0) | Hit::DeviceRow(0) | Hit::MenuItem(0)) || (m == Modal::Library && *hit == Hit::Side(0))).map(|(r, _)| *r);
             if let Some(r) = row {
                 click(&mut app, r.x + 1, r.y);
                 assert_ne!(app.modal(), Some(m), "{m:?}: the click on its row went to the wizard");
@@ -4170,7 +4070,7 @@ mod tests {
         let s = render(&mut app, 160, 48);
         assert!(s.contains("Song ♡"), "{s}");
         // click the heart
-        let h = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Save(_)).then_some(*r)).unwrap();
+        let h = app.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Save(_)).then_some(*r)).unwrap();
         click(&mut app, h.x, h.y);
         assert_eq!(sent(&mut rx), vec![Command::SetSaved { uri: "spotify:track:fail".into(), saved: true }]);
         assert!(render(&mut app, 160, 48).contains("Song ♥"), "shown before Spotify answers");
@@ -4211,7 +4111,7 @@ mod tests {
         assert!(s.contains("6 songs") && s.contains("Fresh"), "{s}");
         assert_eq!(app.library.as_ref().unwrap().items[0].subtitle, "6 songs", "the sidebar counts along");
         // unlike row 3 (t2) from its menu
-        let row = app.hits.iter().find_map(|(r, h)| (*h == Hit::Track(3)).then_some(*r)).unwrap();
+        let row = app.all_hits().iter().find_map(|(r, h)| (*h == Hit::Track(3)).then_some(*r)).unwrap();
         app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column: row.x + 5, row: row.y, modifiers: KeyModifiers::NONE });
         let m = app.menu().unwrap();
         let i = m.items.iter().position(|(l, _)| l == "Remove from Liked Songs").expect("menu offers removal");
@@ -4249,7 +4149,7 @@ mod tests {
         app.artist_page(fake_artist());
         let s = render(&mut app, 160, 48);
         assert!(s.contains("+ Follow"), "{s}");
-        let b = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Save(l) if l.uri == "spotify:artist:nova").then_some(*r)).unwrap();
+        let b = app.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Save(l) if l.uri == "spotify:artist:nova").then_some(*r)).unwrap();
         click(&mut app, b.x + 1, b.y);
         assert_eq!(sent(&mut rx), vec![Command::SetSaved { uri: "spotify:artist:nova".into(), saved: true }]);
         assert!(render(&mut app, 160, 48).contains("✓ Following"));
@@ -4259,7 +4159,7 @@ mod tests {
         app.saved_event(vec![flag("spotify:playlist:p", true)]);
         let s = render(&mut app, 160, 48);
         assert!(s.contains("♥ Saved"), "{s}");
-        let b = app.hits.iter().find_map(|(r, h)| matches!(h, Hit::Save(l) if l.uri == "spotify:playlist:p").then_some(*r)).unwrap();
+        let b = app.all_hits().iter().find_map(|(r, h)| matches!(h, Hit::Save(l) if l.uri == "spotify:playlist:p").then_some(*r)).unwrap();
         click(&mut app, b.x + 1, b.y);
         assert!(sent(&mut rx).is_empty());
         click(&mut app, b.x + 1, b.y);
@@ -4287,7 +4187,7 @@ mod tests {
         let inside: Vec<String> = rows[1..rows.len() - 1].iter().map(|l| l.chars().skip(1).take(r.width as usize - 2).collect::<String>().trim().to_string()).collect();
         assert_eq!(inside.iter().filter(|l| !l.is_empty()).collect::<Vec<_>>(), ["empty"], "only \"empty\" inside:\n{}", rows.join("\n"));
         assert_eq!(inside.iter().position(|l| !l.is_empty()), Some((inside.len() - 1) / 2), "in the middle");
-        assert!(app.hits.iter().any(|(_, h)| *h == Hit::Focus(gap.id)), "a click focuses it");
+        assert!(app.all_hits().iter().any(|(_, h)| *h == Hit::Focus(gap.id)), "a click focuses it");
         // v on it: nothing to swap, and it isn't the hole's, so the Disk look stays
         let (look, layout) = (app.hole.look, app.layout.clone());
         app.run(Action::NextLook);

@@ -5,6 +5,7 @@
 //! does; the queue's songs are seen, dragged into a new order and removed.
 
 use crate::app::{App, Modal, Popup};
+use crate::gesture::Held;
 use crate::layout::Widget;
 use crate::theme::Theme;
 use crate::ui::{centered, popup, text};
@@ -64,7 +65,9 @@ impl App {
     /// Close the queue popup, and end a drag in it (the drag aims at the popup's list, gone now).
     pub fn close_queue_popup(&mut self) {
         self.close_if_open(Modal::Queue);
-        self.queue_drag = None;
+        if self.gesture.queue().is_some() {
+            self.gesture = None;
+        }
     }
 
     /// Keys in the queue popup: its Pane's (↑↓, Delete removes the song, Enter its menu), Esc closes.
@@ -87,7 +90,7 @@ pub fn library_rect(area: Rect, app: &App) -> Rect {
 pub fn queue_rect(area: Rect, app: &App) -> Rect {
     // while a song is held, the height it had (the queue may change under the drag)
     if let Some(Popup::Queue { h }) = app.popup.as_ref()
-        && app.queue_drag.is_some()
+        && crate::gesture::Held::queue(&app.gesture).is_some()
         && *h > 0
     {
         return centered(area, 64, *h);
@@ -100,7 +103,7 @@ pub fn queue_rect(area: Rect, app: &App) -> Rect {
 /// The library popup: the library Pane's list in a box, titled as the Design titles its Pane.
 pub fn draw_library(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     let r = library_rect(area, app);
-    let inner = popup(buf, r, th, &crate::ui::pane_name(app.design, Widget::Library));
+    let inner = popup(buf, r, th, &crate::ui::pane_name(app.shown.design(), Widget::Library));
     let list = Rect { height: inner.height.saturating_sub(1), ..inner };
     crate::sidebar::draw(buf, list, app, th);
     text(buf, inner.x + 1, inner.bottom().saturating_sub(1), inner.width.saturating_sub(2), "Enter or click: open in Home · Esc close", th.s(th.dim));
@@ -112,7 +115,7 @@ pub fn draw_queue(buf: &mut Buffer, area: Rect, app: &mut App, th: &Theme) {
     if let Some(Popup::Queue { h }) = app.popup.as_mut() {
         *h = r.height;
     }
-    let inner = popup(buf, r, th, &crate::ui::pane_name(app.design, Widget::Queue));
+    let inner = popup(buf, r, th, &crate::ui::pane_name(app.shown.design(), Widget::Queue));
     let list = Rect { height: inner.height.saturating_sub(1), ..inner };
     crate::queue::draw(buf, list, app, th);
     text(buf, inner.x + 1, inner.bottom().saturating_sub(1), inner.width.saturating_sub(2), "drag to reorder · Delete remove · Enter menu · Esc close", th.s(th.dim));

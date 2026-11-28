@@ -196,6 +196,22 @@ pub fn parse_track(v: &Value) -> Option<singularity_proto::Item> {
     })
 }
 
+/// Where a page of Liked Songs, a playlist or an album sits in its answer: its `items` and `totalCount`.
+fn track_list<'a>(uri: &str, v: &'a Value) -> Option<&'a Value> {
+    match uri.split(':').nth(1) {
+        _ if uri == LIKED => Some(&v["data"]["me"]["library"]["tracks"]),
+        Some("playlist") => Some(&v["data"]["playlistV2"]["content"]),
+        Some("album") => Some(&v["data"]["albumUnion"]["tracksV2"]),
+        _ => None,
+    }
+}
+
+/// The list's length as the answer states it; `None` when the answer doesn't have the list's shape (an error, or
+/// Spotify changed it), which `parse_tracks` reads as an empty list.
+pub fn stated_total(uri: &str, v: &Value) -> Option<u32> {
+    Some(track_list(uri, v)?["totalCount"].as_u64()? as u32)
+}
+
 /// One page of a track list, in any of the three shapes, plus the list's total length.
 pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
     if uri.starts_with("spotify:show:") {
@@ -207,21 +223,8 @@ pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
         let rows = e["items"].as_array().into_iter().flatten().map(|it| episode_row(&it["entity"]["data"]).unwrap_or_else(|| stand_in(&it["entity"]["data"], ""))).collect();
         return (rows, e["totalCount"].as_u64().unwrap_or(0) as u32);
     }
-    let (items, total) = match uri.split(':').nth(1) {
-        _ if uri == LIKED => {
-            let t = &v["data"]["me"]["library"]["tracks"];
-            (&t["items"], t["totalCount"].as_u64())
-        }
-        Some("playlist") => {
-            let c = &v["data"]["playlistV2"]["content"];
-            (&c["items"], c["totalCount"].as_u64())
-        }
-        Some("album") => {
-            let t = &v["data"]["albumUnion"]["tracksV2"];
-            (&t["items"], t["totalCount"].as_u64())
-        }
-        _ => return (vec![], 0),
-    };
+    let Some(list) = track_list(uri, v) else { return (vec![], 0) };
+    let (items, total) = (&list["items"], list["totalCount"].as_u64());
     let album_name = v["data"]["albumUnion"]["name"].as_str().unwrap_or_default();
     let album_uri = v["data"]["albumUnion"]["uri"].as_str();
     let rows = items
@@ -262,6 +265,7 @@ pub fn parse_tracks(uri: &str, v: &Value) -> (Vec<TrackRow>, u32) {
                 added_at: it["addedAt"]["isoString"].as_str().map(String::from),
                 duration_ms: ms,
                 playable: d["playability"]["playable"].as_bool().unwrap_or(true),
+                cover_url: image(&d["albumOfTrack"]["coverArt"]["sources"]),
             }
         })
         .collect();
@@ -301,6 +305,7 @@ pub fn episode_row(d: &Value) -> Option<TrackRow> {
         album_uri: None,
         uid: None,
         progress,
+        cover_url: None,
     })
 }
 
@@ -452,6 +457,7 @@ pub fn parse_search(query: &str, v: &Value) -> singularity_proto::SearchResults 
                 added_at: None,
                 duration_ms: t["duration"]["totalMilliseconds"].as_u64().unwrap_or(0),
                 playable: t["playability"]["playable"].as_bool().unwrap_or(true),
+                cover_url: None,
             })
         })
         .collect();
@@ -508,6 +514,7 @@ pub fn parse_artist(v: &Value) -> Option<ArtistPage> {
                 added_at: None,
                 duration_ms: t["duration"]["totalMilliseconds"].as_u64().unwrap_or(0),
                 playable: t["playability"]["playable"].as_bool().unwrap_or(true),
+                cover_url: None,
             })
         })
         .collect();
@@ -529,7 +536,7 @@ pub fn parse_artist(v: &Value) -> Option<ArtistPage> {
     ]
     .into_iter()
     .filter(|(_, c)| !c.is_empty())
-    .map(|(t, cards)| Shelf { title: t.into(), kind: "shelf".into(), cards })
+    .map(|(t, cards)| Shelf { id: String::new(), title: t.into(), kind: "shelf".into(), cards })
     .collect();
     Some(ArtistPage {
         uri,
@@ -590,6 +597,7 @@ mod tests {
         assert_eq!((pl.len(), n), (3, 100), "the episode keeps its place");
         assert_eq!((pl[1].uri.as_str(), pl[1].name.as_str(), pl[1].uid.as_deref()), ("spotify:episode:e0", "Talk", Some("uidE")));
         assert_eq!(pl[2].artists, ["Mira Vale", "Lumen Fields"]);
+        assert_eq!(pl[0].cover_url.as_deref(), Some("https://i.scdn.co/image/pt300"), "a playlist's song carries its album's cover (#128)");
         assert!(!pl[2].playable);
 
         let (al, n) = parse_tracks("spotify:album:a", &fixture("album.json"));

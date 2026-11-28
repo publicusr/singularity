@@ -23,6 +23,7 @@ use ratatui::style::Modifier;
 use singularity_proto::LyricLine;
 use std::time::{Duration, Instant};
 use timing::{Line, Stage, Word};
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// The ball's Visual id on the pixel tier (the hole is 1, the idle takeover 2, glow 3).
@@ -532,6 +533,11 @@ fn plain_text(words: &[Word]) -> String {
 }
 
 pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
+    draw_at(buf, r, app, th, singularity_proto::now_ms());
+}
+
+/// `draw` at the moment `now_ms` (Unix ms).
+fn draw_at(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme, now_ms: u64) {
     if r.width < 4 || r.height == 0 {
         return;
     }
@@ -550,7 +556,7 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
         centre(buf, r, mid, "nothing to sing along to", th.s(th.fg));
         return centre(buf, r, mid + 1, why, th.s(th.dim));
     }
-    let pos = app.lyrics_position(singularity_proto::now_ms());
+    let pos = app.lyrics_position(now_ms);
     if !lyr.synced {
         return unsynced(buf, r, app, pos, th);
     }
@@ -605,7 +611,9 @@ struct Ball {
 fn cell_ball(buf: &mut Buffer, r: Rect, b: Ball, th: &Theme) {
     let x = b.x.round() as i32;
     let y = (b.base - b.height * (b.lane.saturating_sub(1)) as f32).round() as i32;
-    if x >= r.x as i32 && x < r.right() as i32 && y >= r.y as i32 && y < r.bottom() as i32 {
+    // (on its way down to a wrapped line's next row it crosses the row above: it never covers a letter there; a
+    // count-in dot it may)
+    if x >= r.x as i32 && x < r.right() as i32 && y >= r.y as i32 && y < r.bottom() as i32 && matches!(buf[(x as u16, y as u16)].symbol().trim(), "" | "●") {
         text(buf, x as u16, y as u16, 1, "●", th.s(th.accent2).add_modifier(Modifier::BOLD));
     }
 }
@@ -906,20 +914,20 @@ fn draw_line(buf: &mut Buffer, r: Rect, x0: u16, p: &Plan, line: &Line, pos: u64
         let f = timing::fill(w, pos);
         match p.font {
             Font::Plain => {
-                let n = w.text.chars().count().max(1) as f32;
+                // by grapheme cluster: a mark (Thai, Hindi, Vietnamese) goes into its base's cell (#146)
+                let n = w.text.graphemes(true).count().max(1) as f32;
                 let mut x = x0 + s.x;
-                for (j, c) in w.text.chars().enumerate() {
+                for (j, g) in w.text.graphemes(true).enumerate() {
                     let a = (f * n - j as f32).clamp(0.0, 1.0);
                     let mut st = th.s(waiting.lerp(sung, a));
                     if a >= 1.0 {
                         st = st.add_modifier(Modifier::BOLD);
                     }
-                    let cw = c.width().unwrap_or(0) as u16;
+                    let cw = g.width() as u16;
                     if x + cw > r.right() {
                         break;
                     }
-                    let mut tmp = [0u8; 4];
-                    text(buf, x, y, cw.max(1), c.encode_utf8(&mut tmp), st);
+                    text(buf, x, y, cw.max(1), g, st);
                     x += cw;
                 }
             }
@@ -1013,29 +1021,39 @@ fn tiny(buf: &mut Buffer, r: Rect, lines: &[Line], stage: Stage, pos: u64, th: &
         Stage::Gap { next: None, .. } => return centre(buf, r, r.y, "♪", th.s(th.accent)),
     };
     let line = &lines[i];
-    // the whole line as one row of characters, each with its fill
-    let mut cells: Vec<(char, f32)> = vec![];
+    // the whole line as one row of grapheme clusters (a mark stays with its base, #146), each with its fill
+    let mut cells: Vec<(&str, f32)> = vec![];
+    // the column the word being sung starts at
     let mut now = 0usize;
+    let mut width = 0usize;
     for (k, w) in line.words.iter().enumerate() {
         if k > 0 && !w.glued {
-            cells.push((' ', if w.start <= pos { 1.0 } else { 0.0 }));
+            cells.push((" ", if w.start <= pos { 1.0 } else { 0.0 }));
+            width += 1;
         }
         let f = timing::fill(w, pos);
-        let n = w.text.chars().count().max(1) as f32;
+        let n = w.text.graphemes(true).count().max(1) as f32;
         if w.start <= pos {
-            now = cells.len();
+            now = width;
         }
-        for (j, c) in w.text.chars().enumerate() {
-            cells.push((c, (f * n - j as f32).clamp(0.0, 1.0)));
+        for (j, g) in w.text.graphemes(true).enumerate() {
+            cells.push((g, (f * n - j as f32).clamp(0.0, 1.0)));
+            width += g.width();
         }
     }
-    let width: usize = cells.iter().map(|(c, _)| c.width().unwrap_or(0)).sum();
     let w = r.width as usize;
-    // scrolled so the word being sung sits a third of the way in
-    let skip = if width <= w { 0 } else { now.saturating_sub(w / 3).min(cells.len().saturating_sub(w)) };
+    // scrolled (in columns: a CJK character takes two) so the word being sung sits a third of the way in
+    let skip = if width <= w { 0 } else { now.saturating_sub(w / 3).min(width - w) };
     let mut x = r.x + if width <= w { ((w - width) / 2) as u16 } else { 0 };
-    for (c, a) in cells.iter().skip(skip) {
-        let cw = c.width().unwrap_or(0) as u16;
+    let mut col = 0usize;
+    for (g, a) in &cells {
+        let cw = g.width();
+        col += cw;
+        // whole clusters only: one cut by the left edge is skipped too
+        if col - cw < skip {
+            continue;
+        }
+        let cw = cw as u16;
         if x + cw > r.right() {
             break;
         }
@@ -1043,8 +1061,7 @@ fn tiny(buf: &mut Buffer, r: Rect, lines: &[Line], stage: Stage, pos: u64, th: &
         if *a >= 1.0 {
             st = st.add_modifier(Modifier::BOLD);
         }
-        let mut tmp = [0u8; 4];
-        text(buf, x, r.y, cw.max(1), c.encode_utf8(&mut tmp), st);
+        text(buf, x, r.y, cw.max(1), g, st);
         x += cw;
     }
     if r.height >= 2
@@ -1144,6 +1161,86 @@ mod tests {
         let mut l = app.lyrics.current().unwrap().clone();
         l.lines[3].text = "Ever after".into();
         app.lyrics_event(l);
+    }
+
+    /// An App paused at `pos` in a song of one timed line: `words` a second apart from 1 s.
+    fn app_singing(words: &[&str], pos: u64) -> App {
+        let mut app = App::new(None);
+        app.playback.item = Some(singularity_proto::Item { uri: "spotify:track:m".into(), name: "Song".into(), duration_ms: 60_000, ..Default::default() });
+        app.playback.status = singularity_proto::PlayStatus::Paused;
+        app.playback.position_ms = pos;
+        let timed = words.iter().enumerate().map(|(k, w)| LyricWord { start_ms: 1_000 + k as u64 * 1_000, end_ms: None, text: (*w).into() }).collect();
+        let lines = vec![LyricLine { start_ms: 1_000, text: words.concat(), words: timed }];
+        app.lyrics_event(Lyrics { uri: "spotify:track:m".into(), synced: true, lines, source: "fake".into(), ..Default::default() });
+        app
+    }
+
+    /// The cells of `app` drawn into a `w`×`h` Pane at (0, 0), row by row; the cell a wide character covers is "".
+    fn cells(app: &mut App, w: u16, h: u16) -> Vec<Vec<String>> {
+        let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+        draw(&mut buf, Rect::new(0, 0, w, h), app, &Theme::singularity());
+        (0..h)
+            .map(|y| {
+                let mut covered = 0;
+                (0..w)
+                    .map(|x| {
+                        if covered > 0 {
+                            covered -= 1;
+                            return String::new();
+                        }
+                        let s = buf[(x, y)].symbol();
+                        covered = s.width().saturating_sub(1);
+                        s.to_string()
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn marks_stay_with_their_letters() {
+        // Thai and Hindi with vowel marks that are characters of their own, in a normal and a tiny Pane
+        for (line, marks) in [(["สวัสดี ", "ครับ"], ['\u{e31}', '\u{e35}']), (["नमस्ते ", "दुनिया"], ['\u{94d}', '\u{947}'])] {
+            let whole: String = line.concat();
+            for (w, h) in [(40u16, 9u16), (30, 1)] {
+                let mut app = app_singing(&line, 1_500);
+                let rows = cells(&mut app, w, h);
+                let all: Vec<String> = rows.iter().map(|r| r.concat()).collect();
+                assert!(all.iter().any(|r| r.contains(&whole)), "{w}×{h}: {all:#?}");
+                for m in marks {
+                    assert!(rows.iter().flatten().any(|s| s.contains(m) && s.chars().count() > 1), "{m:?} shares a cell with its letter in {w}×{h}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_cjk_line_in_a_tiny_pane_scrolls_to_the_word_being_sung() {
+        // 20 characters, 40 columns, in a 30-column row: ten words of two
+        let line = ["夜空", "星屑", "光る", "風鈴", "海辺", "雨音", "花火", "月影", "雪国", "桜色"];
+        // singing the fifth word (column 16): it sits a third of the way in, at column 10
+        let mut app = app_singing(&line, 5_500);
+        let row = cells(&mut app, 30, 1).remove(0);
+        assert!(row.concat().starts_with("屑光る風鈴海辺"), "{}", row.concat());
+        assert_eq!(row[10], "海");
+        // singing the last one: scrolled as far as the line goes, the word in view
+        let mut app = app_singing(&line, 10_500);
+        let row = cells(&mut app, 30, 1).remove(0).concat();
+        assert!(row.starts_with("る風鈴") && row.ends_with("桜色"), "{row}");
+        // at the start nothing is skipped
+        let mut app = app_singing(&line, 1_500);
+        assert!(cells(&mut app, 30, 1).remove(0).concat().starts_with("夜空"));
+    }
+
+    #[test]
+    fn a_latin_line_in_a_tiny_pane_scrolls_as_before() {
+        // one cell per letter, the word being sung a third of the way in
+        let line = ["Every ", "echo ", "finds ", "its ", "way ", "back ", "home ", "again"];
+        let mut app = app_singing(&line, 5_500);
+        let row = cells(&mut app, 20, 1).remove(0);
+        assert!(row.iter().all(|s| s.chars().count() == 1));
+        // "way" starts at column 21 of the line; 21 - 20/3 = 15 skipped
+        assert!(row.concat().starts_with("s its way back home"), "{:?}", row.concat());
     }
 
     fn render(app: &mut App, w: u16, h: u16) -> String {
@@ -1394,6 +1491,194 @@ mod tests {
             }
             println!("karaoke {w}x{h} {}: {:.1} µs a frame", if px { "big text" } else { "cells" }, t.elapsed().as_secs_f64() * 1e6 / n as f64);
         }
+    }
+
+    /// A song timed word by word the way LRCLIB's Lyricsfile times it (each word's start only, the line's end), invented
+    /// words: three lines in a row (the third too long for a narrow Pane's row), an instrumental, a fourth line.
+    fn timed_song() -> Vec<LyricLine> {
+        let line = |start: u64, words: &[(&str, u64)], end: u64| {
+            let mut w: Vec<LyricWord> = words.iter().map(|(t, s)| LyricWord { start_ms: *s, end_ms: None, text: (*t).into() }).collect();
+            if let Some(last) = w.last_mut() {
+                last.end_ms = Some(end);
+            }
+            LyricLine { start_ms: start, text: words.iter().map(|w| w.0).collect(), words: w }
+        };
+        vec![
+            line(8_120, &[("Paper ", 8_120), ("boats ", 8_790), ("drift ", 9_210), ("past ", 9_760), ("noon", 10_660)], 11_620),
+            line(12_080, &[("Gulls ", 12_080), ("never ", 12_540), ("count ", 12_790), ("the ", 13_050), ("tides", 13_290)], 14_940),
+            line(15_650, &[("Slow, ", 15_650), ("slow, ", 16_010), ("row ", 16_410), ("home ", 16_700), ("across ", 17_000), ("the ", 17_300), ("quiet ", 17_500), ("bay ", 17_900), ("tonight", 18_200)], 19_400),
+            line(40_000, &[("Lanterns ", 40_000), ("on ", 40_400), ("water", 40_700)], 42_000),
+        ]
+    }
+
+    /// The song's length in the sync checks.
+    const SONG_MS: u64 = 60_000;
+
+    fn timed_app(pos: u64, lines: Vec<LyricLine>) -> App {
+        let mut app = App::new(None);
+        app.playback.item = Some(singularity_proto::Item { uri: "spotify:track:t".into(), name: "Song".into(), duration_ms: SONG_MS, ..Default::default() });
+        app.playback.status = singularity_proto::PlayStatus::Paused;
+        app.playback.position_ms = pos;
+        app.lyrics_event(Lyrics { uri: "spotify:track:t".into(), synced: true, lines, source: "fake".into(), ..Default::default() });
+        app
+    }
+
+    /// A fixed clock for the checks (Unix ms).
+    const NOW: u64 = 1_800_000_000_000;
+
+    /// What a `w`×`h` Karaoke Pane shows being sung at `now`: the line on stage (every row drawn in the waiting or the
+    /// sung colour, not the dimmed lines around it; a wrapped line's rows in order) and which of its pieces have begun to
+    /// fill. Pieces are runs of letters (a comma or an apostrophe splits a word).
+    fn on_stage_now(app: &mut App, w: u16, h: u16, now: u64) -> Option<(String, Vec<bool>)> {
+        let th = Theme::singularity();
+        let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+        draw_at(&mut buf, Rect::new(0, 0, w, h), app, &th, now);
+        let quiet = [th.dim.color(), th.border.color()];
+        let mut words: Vec<(String, bool)> = vec![];
+        // (the credit row is the last)
+        for y in 0..h - 1 {
+            let mut prev_space = true;
+            for x in 0..w {
+                let c = &buf[(x, y)];
+                let letter = c.symbol().chars().any(char::is_alphanumeric);
+                if !letter || quiet.contains(&c.fg) {
+                    prev_space = true;
+                    continue;
+                }
+                if prev_space {
+                    words.push((String::new(), c.fg != th.fg.color()));
+                }
+                words.last_mut().expect("pushed").0.push_str(c.symbol());
+                prev_space = false;
+            }
+        }
+        (!words.is_empty()).then(|| (words.iter().map(|w| w.0.as_str()).collect::<Vec<_>>().join(" "), words.iter().map(|w| w.1).collect()))
+    }
+
+    /// How many of `line`'s words have begun to fill, from the pieces `on_stage_now` read: a word is lit when its first
+    /// piece is (the rest of "don't" lights as the fill reaches it).
+    fn words_lit(line: &LyricLine, pieces: &[bool]) -> usize {
+        let mut at = 0;
+        let mut lit = 0;
+        for w in &line.words {
+            let n = bare(&w.text).split(' ').filter(|p| !p.is_empty()).count();
+            if n > 0 && pieces.get(at) == Some(&true) {
+                lit += 1;
+            }
+            at += n;
+        }
+        lit
+    }
+
+    /// A line's text as `on_stage_now` reads it.
+    fn bare(t: &str) -> String {
+        t.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
+    }
+
+    /// The frames of the sync check, 10 ms apart: a begun word may show its tint one frame late, no later.
+    const STEP_MS: u64 = 10;
+
+    /// The sync check over `song`: played `STEP_MS` at a time in a `w`×`h` Pane with the lyrics `delay`, every frame
+    /// read off the drawn Pane. Whenever the timing puts a line on stage, the Pane shows exactly that line (wrapped or
+    /// not) with exactly the words begun lit; each word lights at most one frame after it is sung. Returns the latest
+    /// any word lit, and the frames checked.
+    fn sync_check(song: &[LyricLine], w: u16, h: u16, delay: i32) -> (u64, usize) {
+        let lines = timing::timed(song, SONG_MS);
+        let mut app = timed_app(0, song.to_vec());
+        app.config.lyrics.delay_ms = delay;
+        let mut lit_at: Vec<Vec<Option<u64>>> = lines.iter().map(|l| vec![None; song[l.index].words.len()]).collect();
+        let mut checked = 0;
+        for pos in (0..SONG_MS).step_by(STEP_MS as usize) {
+            app.playback.position_ms = pos;
+            let at = (pos as i64 - delay as i64).max(0) as u64;
+            let Stage::Line { i, .. } = timing::at(&lines, at) else { continue };
+            let want = bare(&song[lines[i].index].text);
+            let Some((text, pieces)) = on_stage_now(&mut app, w, h, NOW) else { panic!("{w}×{h} at {at} ms (delay {delay}): {want:?} should be on stage, nothing is") };
+            assert_eq!(text, want, "{w}×{h} at {at} ms (delay {delay})");
+            let line = &song[lines[i].index];
+            let lit = words_lit(line, &pieces);
+            let starts: Vec<u64> = line.words.iter().map(|wd| wd.start_ms).collect();
+            let begun = starts.iter().filter(|&&s| s <= at).count();
+            let just = begun > 0 && at - starts[begun - 1] < STEP_MS;
+            assert!(lit == begun || (just && lit + 1 == begun), "{w}×{h} at {at} ms (delay {delay}) in {text:?}: {lit} lit, {begun} begun");
+            for seen in lit_at[i].iter_mut().take(lit) {
+                seen.get_or_insert(at);
+            }
+            checked += 1;
+        }
+        let mut worst = 0;
+        for (i, l) in lines.iter().enumerate() {
+            for (k, start) in song[l.index].words.iter().map(|wd| wd.start_ms).enumerate() {
+                let seen = lit_at[i][k].unwrap_or_else(|| panic!("{w}×{h}: word {k} of {:?} never lit (delay {delay})", song[l.index].text));
+                let lag = seen.saturating_sub(start);
+                assert!(lag <= STEP_MS, "{w}×{h}: word {k} of {:?} lit {lag} ms after it is sung (delay {delay})", song[l.index].text);
+                worst = worst.max(lag);
+            }
+        }
+        (worst, checked)
+    }
+
+    /// The sync check on an invented song, in a wide Pane and a narrow one that wraps the long line, with the lyrics
+    /// delay at 0, +250 and -150 ms.
+    #[test]
+    fn the_highlighted_word_is_the_one_being_sung() {
+        let song = timed_song();
+        let (mut worst, mut frames) = (0, 0);
+        for (w, h) in [(30u16, 9u16), (60, 9)] {
+            for delay in [0i32, 250, -150] {
+                let (lag, n) = sync_check(&song, w, h, delay);
+                (worst, frames) = (worst.max(lag), frames + n);
+            }
+        }
+        // the narrow Pane really wraps the long line
+        let mut app = timed_app(17_000, song.clone());
+        let th = Theme::singularity();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 9));
+        draw_at(&mut buf, Rect::new(0, 0, 30, 9), &mut app, &th, NOW);
+        let rows = (0..9).filter(|&y| (0..30).any(|x| buf[(x, y)].symbol().chars().any(char::is_alphanumeric) && buf[(x, y)].fg == th.fg.color())).count();
+        assert!(rows >= 2, "the long line on two rows");
+        println!("karaoke sync: {frames} frames checked, every word lit within {worst} ms of being sung");
+    }
+
+    /// The same through the Daemon's reading of LRCLIB's answer (the recorded fixture: its times, invented words):
+    /// what the Pane lights follows the parsed word times, each line's last word ending with its line.
+    #[test]
+    fn lrclibs_parsed_answer_is_sung_in_sync() {
+        let v: serde_json::Value = serde_json::from_str(include_str!("../../daemon/tests/fixtures/lrclib-word-synced.json")).unwrap();
+        let song = singularityd::lyrics::parse_lrclib("spotify:track:t", &v).expect("parsed").lines;
+        assert!(song.iter().all(|l| !l.words.is_empty() && l.words.last().unwrap().end_ms.is_some()), "{song:?}");
+        let lines = timing::timed(&song, SONG_MS);
+        assert_eq!(lines.iter().map(|l| l.end).collect::<Vec<_>>(), [11_620, 14_936], "lines end where LRCLIB says");
+        for delay in [0, 250] {
+            let (worst, n) = sync_check(&song, 60, 9, delay);
+            assert!(worst <= STEP_MS && n > 500, "{worst} {n}");
+        }
+    }
+
+    /// The position the Pane sings from moves on between the player's updates, stops on a pause, jumps with a seek,
+    /// and a new song's words wait for its own lyrics. A fixed clock.
+    #[test]
+    fn the_words_follow_play_pause_seek_and_a_new_song() {
+        use singularity_proto::PlayStatus::*;
+        let lit_now = |app: &mut App, now: u64| on_stage_now(app, 60, 9, now).map_or(0, |(_, p)| p.iter().filter(|l| **l).count());
+        // playing: the last update was 1.6 s ago at 8.5 s, so "past" (9.76 s) is being sung, not "boats"
+        let mut app = timed_app(8_500, timed_song());
+        (app.playback.status, app.playback.speed, app.playback.timestamp_ms) = (Playing, 1.0, NOW - 1_600);
+        assert_eq!(lit_now(&mut app, NOW), 4);
+        // 1 s later it has moved on to "noon" (10.66 s)
+        assert_eq!(lit_now(&mut app, NOW + 1_000), 5);
+        // paused at 10.1 s: it stays, however late
+        (app.playback.status, app.playback.speed, app.playback.position_ms, app.playback.timestamp_ms) = (Paused, 0.0, 10_100, NOW);
+        assert_eq!(lit_now(&mut app, NOW + 5_000), 4);
+        // a seek into the next line
+        app.seek_to(13_100);
+        app.playback.speed = 0.0;
+        assert_eq!(on_stage_now(&mut app, 60, 9, NOW).map(|s| s.0).as_deref(), Some("Gulls never count the tides"));
+        assert_eq!(lit_now(&mut app, NOW), 4);
+        // another song starts: nothing of the old song's lines shows while its lyrics are on the way
+        app.playback.item = Some(singularity_proto::Item { uri: "spotify:track:u".into(), name: "Next".into(), duration_ms: 60_000, ..Default::default() });
+        app.playback.position_ms = 0;
+        assert_eq!(on_stage_now(&mut app, 60, 9, NOW), None);
     }
 
     #[test]

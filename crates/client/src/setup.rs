@@ -687,7 +687,8 @@ fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
     rows.push(match &app.link {
         Link::Connected { version } => ('✓', "Daemon", format!("singularityd {version}")),
         Link::Connecting => ('✗', "Daemon", "not reachable; starting it…".into()),
-        Link::Incompatible(m) => ('✗', "Daemon", m.clone()),
+        // (demo mode: the socket's path in it is redacted)
+        Link::Incompatible(m) => ('✗', "Daemon", app.demo.as_ref().map(|d| d.redact(m)).unwrap_or_else(|| m.clone())),
     });
     let spotify_app = app.engine_kind.via_connect();
     rows.push(match &app.engine {
@@ -711,7 +712,7 @@ fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
         rows.push((if h.soloist_key == "keyring" || h.soloist_key.starts_with("environment") { '✓' } else if h.soloist_key == "missing" { '✗' } else { '!' }, "Soloist key", place(&h.soloist_key)));
     }
     rows.push(match &app.catalogue {
-        Some(CatalogueStatus::Ready { username, premium, .. }) => (if *premium { '✓' } else { '!' }, "Catalogue", format!("logged in as {username}{}", if *premium { " · Premium" } else { " · not Premium" })),
+        Some(CatalogueStatus::Ready { username, premium, .. }) => (if *premium { '✓' } else { '!' }, "Catalogue", format!("logged in{}{}", if username.is_empty() { String::new() } else { format!(" as {username}") }, if *premium { " · Premium" } else { " · not Premium" })),
         Some(CatalogueStatus::LoggedOut) => ('!', "Catalogue", "logged out (Ctrl+K → Log in to Spotify)".into()),
         Some(CatalogueStatus::LoginPending { code, .. }) => ('!', "Catalogue", format!("waiting for the code {code}")),
         Some(CatalogueStatus::Connecting) => ('!', "Catalogue", "connecting…".into()),
@@ -723,6 +724,8 @@ fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
     }
     let net = match &app.catalogue {
         Some(CatalogueStatus::Ready { .. }) => ('✓', "Network", "Spotify reachable".to_string()),
+        // the keyring didn't answer: says nothing of the network
+        Some(CatalogueStatus::Unavailable { message }) if message == singularity_proto::NO_SAVED_LOGIN => ('·', "Network", "unknown until logged in".into()),
         Some(CatalogueStatus::Unavailable { .. }) => ('✗', "Network", "Spotify unreachable from the Catalogue".into()),
         _ => ('·', "Network", "unknown until logged in".into()),
     };
@@ -788,6 +791,15 @@ fn health_body(buf: &mut Buffer, inner: Rect, app: &App, th: &Theme) -> u16 {
 
 #[cfg(test)]
 mod tests {
+    /// Review of #141 (D90): demo mode redacts the Daemon row's message (a socket path).
+    #[test]
+    fn the_daemon_row_is_redacted_in_demo_mode() {
+        let mut app = App::new(None);
+        app.demo = Some(crate::demo::Demo::new(Default::default(), crate::demo::Redactor::from_env(Some("/home/zed".into()), None, None)));
+        app.link = crate::app::Link::Incompatible("/home/zed/run/daemon.sock belongs to another user".into());
+        assert_eq!(health_rows(&app)[0].2, "~/run/daemon.sock belongs to another user");
+    }
+
     use super::*;
     use singularity_proto::PlayStatus;
 

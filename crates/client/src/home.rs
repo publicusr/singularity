@@ -529,7 +529,7 @@ mod tests {
 
     fn feed() -> HomeFeed {
         let card = |n: usize| Card { uri: format!("spotify:playlist:{n}"), name: format!("Mix {n}"), subtitle: String::new(), image_url: None, kind: "playlist".into() };
-        let shelf = |kind: &str, n: usize| Shelf { title: kind.into(), kind: kind.into(), cards: (0..n).map(card).collect() };
+        let shelf = |kind: &str, n: usize| Shelf { id: String::new(), title: kind.into(), kind: kind.into(), cards: (0..n).map(card).collect() };
         HomeFeed { fetched_unix_ms: 0, shelves: vec![shelf("shortcuts", 8), shelf("shelf", 10), shelf("shelf", 3), shelf("feed", 1), shelf("feed", 1), shelf("feed", 1)] }
     }
 
@@ -538,7 +538,7 @@ mod tests {
         // (D68, D69) 10 shortcuts in a Pane with room for 3 a line, and a one-Card Shelf ("New release from …")
         let mut f = feed();
         f.shelves[0].cards.extend(feed().shelves[0].cards.iter().take(2).cloned());
-        f.shelves.insert(1, Shelf { title: "New release".into(), kind: "shelf".into(), cards: feed().shelves[0].cards[..1].to_vec() });
+        f.shelves.insert(1, Shelf { id: String::new(), title: "New release".into(), kind: "shelf".into(), cards: feed().shelves[0].cards[..1].to_vec() });
         let (rows, _) = rows(&f, 64, 30, 2.0);
         let short: Vec<usize> = rows.iter().filter(|r| r.kind == RowKind::Shortcuts).map(|r| r.per_view).collect();
         assert_eq!(short, [3, 3, 3, 1], "the last line's one tile takes the whole width");
@@ -675,7 +675,7 @@ mod tests {
         v.scroll.insert(1, 2);
         // a Shelf arrives on top and the selected Card moves one along
         let mut new = old.clone();
-        new.shelves.insert(0, Shelf { title: "New".into(), kind: "shelf".into(), cards: feed().shelves[2].cards.clone() });
+        new.shelves.insert(0, Shelf { id: String::new(), title: "New".into(), kind: "shelf".into(), cards: feed().shelves[2].cards.clone() });
         let first = new.shelves[2].cards.remove(0);
         new.shelves[2].cards.push(first);
         v.refeed(&old, &new);

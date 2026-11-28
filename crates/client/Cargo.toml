@@ -31,7 +31,10 @@ wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "1"
 rayon = "1"
+unicode-segmentation = "1"
 unicode-width = "0.2"
 fontdue = "0.9.5"
 # big text in the terminal's own font, found in the system font folders (termfont.rs)
 fontdb = "0.23"
+# whether a system font has a character (termfont::with_char; already in the tree through fontdb)
+ttf-parser = "0.25"

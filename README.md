@@ -24,7 +24,9 @@ same way and runs Soloist's arm64 build, but hasn't been tried on ARM hardware y
 ## Not affiliated with Spotify
 
 Singularity is an independent project. It is **not affiliated with, endorsed by or connected to Spotify**. It needs
-a **Spotify Premium** account, and it talks to Spotify through **private, undocumented APIs**, the ones Spotify's own
+a **Spotify Premium** account: its login for Home, the library and search accepts only Premium, as do librespot (the
+Mac's default player) and hosting a Jam. (Soloist itself lets Free accounts listen once it's set up; only the account
+that makes its key needs Premium.) It talks to Spotify through **private, undocumented APIs**, the ones Spotify's own
 apps use. That is against Spotify's Terms of Use, and Spotify may change those APIs, and break Singularity, at any
 time. Spotify could also restrict or close an account that uses them. **Use it with your own account, at your own
 risk.** Singularity never sees your password (you log in on spotify.com) and plays only what your account may play.
@@ -88,7 +90,7 @@ Start at login (optional): `packaging/launchd/install.sh` (a LaunchAgent; `--uni
 | `kind` | Linux | macOS | Lossless | Cost while playing |
 |--------|-------|-------|----------|--------------------|
 | `auto` (default) | = `soloist` | = `librespot` | Linux yes, macOS no | |
-| `soloist` | Spotify's Soloist, headless | Soloist in a small Linux VM that Singularity runs for you | yes | macOS: ~300 MB, idle ~1 % CPU |
+| `soloist` | Spotify's Soloist, headless | Soloist's Linux build in a small Linux VM that Singularity runs for you (not yet Spotify's Mac build) | yes | macOS: ~300 MB, idle ~1 % CPU |
 | `librespot` | built into the Daemon | built into the Daemon | no (320 kbps at most) | ~28 MB, ~1 % CPU |
 | `spotify-app` | the official app, hidden, driven over Connect | the same | yes (the app's own setting) | ~600 MB, 5–25 % CPU |
 
@@ -97,8 +99,10 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 
 ### macOS quirks (what's different from Linux, and why)
 
-- **The default plays at most 320 kbps.** Soloist, Spotify's own headless lossless player, is Linux-only, so on a Mac
-  the default is librespot (light, no setup), and lossless means `kind = "soloist"` (the VM) or `"spotify-app"`.
+- **The default plays at most 320 kbps.** On a Mac the default is librespot (light, no setup), and lossless means
+  `kind = "soloist"` (Soloist in a VM) or `"spotify-app"`. Spotify has shipped Soloist, its headless lossless player,
+  for Apple Silicon Macs (macOS 13 or later) since October 2026, but Singularity doesn't use that Mac build yet: it
+  runs Soloist's Linux build in a VM. Trying the Mac build instead is planned (#85).
 - **`kind = "soloist"` runs a Linux VM** (Apple's Virtualization framework, through `vfkit`; networking through
   `gvproxy`). The first start downloads ~250 MB (the two helpers, pinned by checksum, and Debian's arm64 cloud
   image) and sets the VM up in about two minutes; after that it starts in ~6 s. It lives in
@@ -170,7 +174,7 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   it), Close pane, Arrange. A split makes a new empty Pane on that side and opens the picker on it: pick what it
   shows, or Esc to leave it empty (it says so) and arrange; a split and its pick are one undo step. A click on the Widget's
   name in a title, `w` on the focused Pane, or Ctrl+K → Replace widget… open the picker too (Home's Pane keeps Home).
-  Ctrl+K also has Split left / right / up / down, Close pane, Arrange and Reset design. In Arrange mode the keyboard
+  Ctrl+K also has Split left / right / up / down, Close pane, Delete design… and Arrange. In Arrange mode the keyboard
   does the same: arrows move between Panes, Enter picks up the focused Widget (the same lit Pane and chip as a drag),
   arrows aim and Enter drops it there (Esc or `m` puts it back); `t` sends the focused Widget to the Tray, `s` then an
   arrow splits its Pane that way, `x` closes it, `+` (or `=`) and `-` move its border left or right of it, `]` and `[`
@@ -185,7 +189,13 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   opens them as a popup, and focuses their Pane where they have one), and no border drag, split or close can leave a Pane too small. An edit never interrupts you and never
   changes a built-in Design: it is kept at once as "Singularity (edited)" (outside Arrange mode the bar says so), and
   Done asks what to call it if you changed something while arranging (Esc keeps it unnamed). Ctrl+K → Save design as…
-  names one any time, Reset design goes back to the built-in one, and a Design of your own saves itself. Ctrl+K →
+  names one any time, and a Design of your own saves itself. Ctrl+K → **Delete design…** (or Delete, or Backspace, on
+  one of yours in Pick a design) deletes the Design on screen: a Design of your own goes at once and the default
+  Singularity comes up; Ctrl+Z brings it back whenever the screen shows Singularity as the delete left it (an edit made
+  since is undone first), until the Design picker opens or the app quits (from the picker: `u` or a click on its
+  "Undo" line, until the picker closes). "Singularity (edited)" is asked about first (yes/no) and goes
+  back to the built-in Singularity; the built-in Designs have nothing to delete. In keys.toml, `reset_layout` is
+  another name for `delete_design`. Ctrl+K →
   **New design…** starts from a blank slate: Arrange mode with one empty Pane filling the screen and Home in the Tray;
   split it, fill it from the Tray, and Done asks for a name and saves it with the current Theme (Esc before anything is
   placed, Ctrl+D on the name prompt or Ctrl+K → Discard new design goes back to the Design you had, untouched; Esc on
@@ -193,10 +203,38 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 - **Idle**: after 3 minutes without input the black hole drifts over the screen; any key wakes it (and does nothing
   else). Shift+I or `[idle]` in config.toml switches it off or changes the delay.
 - **Listening log** (private, local): every track you hear for 30 s is logged in `~/.local/share/singularity/`, and
-  Liked Songs and your own playlists are backed up there nightly. Cockpit's listening Pane and the Stats page show it;
-  Ctrl+K → "Export listening data" / "Delete listening data". Nothing is uploaded.
+  Liked Songs and your own playlists are backed up there nightly (when a list doesn't come back whole, Settings says so
+  in one line, and the next night's backup tries it again). Cockpit's listening Pane and the Stats page show it;
+  Ctrl+K → "Export listening data" / "Delete listening data" (the log, every backup, the demo log and the copy of Home
+  and the library kept for the next start). Nothing is uploaded.
 - After a rebuild, the next Client notices the running Daemon is older than the installed `singularityd` and replaces
-  it by itself ("Updating singularityd…"; the music pauses for a moment).
+  it by itself ("Updating singularityd…"; the music pauses for a moment). If systemd or launchd ran the
+  old one, every Client gives them 5 s to start the new one, so the Daemon stays under the service.
+- **Demo mode**, for recording videos on your own account: `singularity --demo` (or `SINGULARITY_DEMO=1`, `true` or
+  `yes`; any other value, or a mistyped switch, stops with an error, and `singularity --help` lists the switches). A DEMO chip
+  shows in the top bar, and this Client hides or replaces everything personal: the library shows only the playlists in
+  a Spotify folder called "Demo" (plus albums, artists, podcasts and audiobooks listed in `demo.toml` in the config
+  folder, `library = ["spotify:album:…"]`, `liked = true` for Liked Songs; "Add to demo" in a menu writes there), Home
+  shows only that Demo set (its playlists, then the albums and artists their songs are on, then Liked Songs if on;
+  nothing from your recommendations or history), the player stays empty until a song from the Demo set (or one you
+  play or queue in this Client) is on, so the song left playing from before doesn't show, names become "you", "a friend" and "Guest 1", devices "Singularity", "Phone", "Speaker
+  2", the Jam's link is hidden (its QR leads nowhere), paths and the computer's name are replaced, the Added column is
+  blank, stats come from a separate demo log that counts only the songs this Client showed (plays still count in the real one), and recent searches are kept apart.
+  Music, Widgets and Designs work as usual, and other Clients don't change. It can't be switched on or off while
+  running. Recording checklist: hide the terminal's own title bar (it can show user@host), turn off desktop and track
+  notifications (Ctrl+K → "Track notifications on / off"), hide the media widget (Linux) / Now Playing (Mac), don't log
+  in on camera, keep phones off screen. Edits are real:
+  liking, saving, creating or deleting in demo mode changes your account.
+- After a restart of the Daemon, Home and your library show at once as they were last time (kept, owner-only, in
+  `~/.cache/singularity/home-and-library.json`, only for the account they belong to, and removed when you log out or
+  delete the listening data)
+  while the fresh ones load behind.
+  `grep timing: ~/.local/state/singularity/daemon.log*` shows how long each start step took (login, account type,
+  keyring, Home, each library page), `grep search:` where each search's time went, and `grep -E 'reconnect|catalogue login'` each time
+  Spotify dropped the connection and the Daemon logged in again (at once while a Client is open, not at your next
+  search), or tried again after a login at start-up couldn't reach Spotify. The log of this
+  Daemon is `daemon.log`; the two before it are kept as `daemon.log.1` and `daemon.log.2`, and one past 5 MB is moved
+  aside the same way. A Daemon run by systemd logs to the journal instead (`journalctl --user -u singularityd`).
 - Terminals: kitty, Ghostty and WezTerm get the pixel tier (covers, the GPU black hole); every other terminal the cell
   tier.
 
@@ -204,7 +242,9 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 
 - `singularityd --fake-engine` runs a pretend player for UI work; `--no-catalogue` skips Spotify browsing;
   `--fake-catalogue crates/client/tests/fixtures/home.json` serves a recorded (anonymised) Home feed (a build with
-  `cargo build -p singularityd --features fake`).
+  `cargo build -p singularityd --features fake`). `SINGULARITY_FAKE_DELAY_MS=<ms>` makes the fake Catalogue's Home and
+  library that late, like Spotify's after a fresh start; `SINGULARITY_HOME_CACHE=on` keeps the last ones on disk for a
+  fake Catalogue too (`off`: not even for Spotify's). Both are for tests (`tools/pty/README.md`).
 - `tools/check.sh` runs what CI runs (tests, clippy, `cargo deny`); on a Mac, `tools/check-linux.sh` type-checks the Linux build, x86_64 and aarch64 (zig, cargo-zigbuild,
   openssl@3: see the script). The pty harness in `tools/pty/` screenshots the real binaries (its README).
 - `git config core.hooksPath tools/hooks` turns on the pre-commit hook, which runs clippy (`SKIP_CLIPPY_HOOK=1` skips it).

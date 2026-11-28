@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::app::{Action, Target};
+use crate::gesture::Held;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
@@ -11,14 +12,14 @@ const H: u16 = 48;
 
 fn render(app: &mut App) -> String {
     let mut t = Terminal::new(TestBackend::new(W, H)).unwrap();
-    t.draw(|f| crate::ui::draw(f, app)).unwrap();
+    t.draw(|f| crate::ui::frame(f, app)).unwrap();
     let buf = t.backend().buffer().clone();
     (0..H).map(|y| (0..W).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
 }
 
 fn buffer(app: &mut App) -> Buffer {
     let mut t = Terminal::new(TestBackend::new(W, H)).unwrap();
-    t.draw(|f| crate::ui::draw(f, app)).unwrap();
+    t.draw(|f| crate::ui::frame(f, app)).unwrap();
     t.backend().buffer().clone()
 }
 
@@ -53,10 +54,9 @@ fn app() -> App {
 fn pid(a: &App, w: Widget) -> PaneId {
     a.layout.pane_of(w).unwrap_or_else(|| panic!("no Pane shows {w}"))
 }
-/// Pane `w`'s rectangle in the last frame.
+/// Pane `w`'s rectangle, where the Screen plan has it now.
 fn pane(a: &App, w: Widget) -> Rect {
-    let id = pid(a, w);
-    a.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if *p == id).then_some(*r)).unwrap()
+    rect_of(a, pid(a, w))
 }
 /// The Widget's name in Pane `w`'s title.
 fn name_spot(a: &App, w: Widget) -> (u16, u16) {
@@ -136,7 +136,7 @@ fn right_clicking_a_body_opens_the_pane_menu_where_the_body_has_none_of_its_own(
     key(&mut a, KeyCode::Esc);
     // a border between two Panes is no Pane's
     render(&mut a);
-    let d = a.dividers.first().expect("a divider").grip;
+    let d = a.dividers().first().expect("a divider").grip;
     right_click(&mut a, d.x, d.y + d.height / 2);
     assert!(a.menu().is_none());
 }
@@ -159,8 +159,8 @@ fn the_name_the_key_and_the_palette_open_the_picker() {
     let (x, y) = name_spot(&a, Widget::Fft);
     mouse(&mut a, MouseEventKind::Down(MouseButton::Left), x, y);
     mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), x + 10, y + 6);
-    assert!(a.tile.as_ref().is_some_and(|t| t.live), "a drag from the name lifts the Pane");
-    a.tile_cancel();
+    assert!(a.gesture.carry().is_some_and(|t| t.live), "a drag from the name lifts the Pane");
+    crate::arrange::Arrange::drop_held(&mut a.gesture);
     // (the drag turned Arrange mode on)
     a.arrange_done();
     render(&mut a);
@@ -365,9 +365,9 @@ fn a_replace_or_swap_never_changes_any_panes_rect() {
 use crate::tiling::Side;
 const SIDES: [Side; 4] = [Side::Left, Side::Right, Side::Top, Side::Bottom];
 
-/// Pane `id`'s rectangle in the last frame.
+/// Pane `id`'s rectangle, where the Screen plan has it now.
 fn rect_of(a: &App, id: PaneId) -> Rect {
-    a.hits.iter().find_map(|(r, h)| matches!(h, Hit::Focus(p) if *p == id).then_some(*r)).unwrap_or_else(|| panic!("{id:?} isn't drawn"))
+    a.plan().pane(id).map(|p| p.rect).unwrap_or_else(|| panic!("{id:?} isn't on screen"))
 }
 /// Whether `new` is on `side` of `old`, sharing that whole edge (the room `old` gave it).
 fn beside(new: Rect, old: Rect, side: Side) -> bool {
@@ -562,10 +562,10 @@ fn a_split_and_its_pick_are_one_undo_step() {
     typed(&mut a, "scope");
     key(&mut a, KeyCode::Enter);
     assert!(a.modal().is_none(), "no name prompt (Q33)");
-    assert_eq!(a.layout_name.as_deref(), Some("singularity-edited"));
+    assert_eq!(a.shown.file(), Some("singularity-edited"));
     a.run(Action::UndoLayout);
     assert_eq!(a.layout, built_in, "the split went with the pick");
-    assert!(a.layout_name.is_none() && !a.layout.has(Widget::Scope));
+    assert!(a.shown.file().is_none() && !a.layout.has(Widget::Scope));
 }
 
 #[test]
@@ -624,7 +624,7 @@ fn a_split_that_would_squash_a_pane_is_refused_with_the_reason() {
     // the smallest screen with Panes (the mini-player's limit): four columns of 12 fill its 50 columns
     let draw = |a: &mut App| {
         let mut t = Terminal::new(TestBackend::new(crate::mini::MIN_W, crate::mini::MIN_H)).unwrap();
-        t.draw(|f| crate::ui::draw(f, a)).unwrap();
+        t.draw(|f| crate::ui::frame(f, a)).unwrap();
     };
     let columns = |first: Node| {
         let rest = Node::split(Axis::Horizontal, Size::Cells(MIN_W), Node::pane(Widget::Queue), Node::pane(Widget::Lyrics));
@@ -727,4 +727,52 @@ fn a_split_on_a_built_in_design_never_asks_for_a_name_and_says_where_it_went() {
             assert!(a.modal().is_none());
         }
     }
+}
+
+/// The Pane menu right-clicked in Pane `id`'s body: the row of "Close pane", if it offers it.
+fn close_row(a: &mut App, id: PaneId) -> Option<usize> {
+    let r = rect_of(a, id);
+    right_click(a, r.x + r.width / 2, r.y + r.height / 2);
+    let m = a.menu().expect("the Pane menu");
+    assert_eq!(m.target, Target::Pane(id));
+    m.items.iter().position(|(_, x)| matches!(x, crate::app::MenuAct::ClosePane))
+}
+
+/// Row `i` of the open menu, chosen with a click.
+fn choose(a: &mut App, i: usize) {
+    render(a);
+    let row = a.hit_rect(&Hit::MenuItem(i)).unwrap();
+    click(a, row.x + 2, row.y);
+}
+
+/// Q105: "Close pane" follows the ×'s rule (`screen_plan::closable`): an ordinary Pane has both; a Pane too narrow for
+/// a × still closes from the menu; the only Pane on screen has neither.
+#[test]
+fn close_pane_is_offered_wherever_the_pane_could_close() {
+    use crate::layout::{Axis, Node, Size};
+    // an ordinary Pane
+    let mut a = app();
+    let lyrics = pid(&a, Widget::Lyrics);
+    assert!(a.plan().pane(lyrics).unwrap().title.close.is_some(), "a ×");
+    let i = close_row(&mut a, lyrics).expect("Close pane");
+    choose(&mut a, i);
+    assert!(!a.layout.has(Widget::Lyrics), "closed");
+    // too narrow for a ×
+    let mut a = App::new(None);
+    a.layout = Node::split(Axis::Horizontal, Size::Last(13), Node::pane(Widget::Home), Node::pane(Widget::Library)).into();
+    render(&mut a);
+    let library = pid(&a, Widget::Library);
+    let p = a.plan().pane(library).cloned().unwrap();
+    assert_eq!((p.rect.width, p.title.close), (13, None), "no room for a ×");
+    let i = close_row(&mut a, library).expect("Close pane, though there's no ×");
+    choose(&mut a, i);
+    assert!(!a.layout.has(Widget::Library), "closed");
+    assert_eq!(a.layout.panes().len(), 1);
+    // the only Pane on screen (Home waiting in the Tray)
+    let mut a = App::new(None);
+    a.layout = crate::arrangement::Arrangement::new(Node::pane(Widget::Library), vec![Widget::Home]);
+    render(&mut a);
+    let library = pid(&a, Widget::Library);
+    assert_eq!(a.plan().pane(library).unwrap().title.close, None, "no ×");
+    assert_eq!(close_row(&mut a, library), None, "no Close pane");
 }

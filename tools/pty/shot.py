@@ -34,6 +34,39 @@ BRAILLE = first_font("/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf"
 FONT = first_font("/usr/share/fonts/nerd-fonts/DejaVuSansMono/DejaVuSansMNerdFontMono-Regular.ttf",
                   "~/Library/Fonts/DejaVuSansMNerdFontMono-Regular.ttf", "~/Library/Fonts/HackNerdFontMono-Regular.ttf",
                   "/System/Library/Fonts/Menlo.ttc")
+
+
+# lyrics in other scripts (#146): (first, last code point, a font that has them). Used only for a character FONT
+# lacks, and only where the file exists (elsewhere it's drawn in FONT, as a box), so other shots stay as they were.
+SCRIPTS = [(0x0900, 0x097F, "/usr/share/fonts/google-noto-vf/NotoSansDevanagari[wght].ttf"),
+           (0x0E00, 0x0E7F, "/usr/share/fonts/google-noto-vf/NotoSansThai[wght].ttf"),
+           (0x3000, 0x9FFF, "/usr/share/fonts/google-noto-sans-mono-cjk-vf-fonts/NotoSansMonoCJK-VF.ttc")]
+LOADED = {}
+
+
+def lacks(ch):
+    """Whether FONT has no glyph for `ch` (it draws the same box as for a code point no font has)."""
+    def drawn(c):
+        im = Image.new("L", (40, 24))
+        ImageDraw.Draw(im).text((0, 0), c, font=FONT, fill=255)
+        return im.tobytes()
+    if "box" not in LOADED:
+        LOADED["box"] = drawn("\U0010FFFD")
+    return drawn(ch) == LOADED["box"]
+
+
+def font_for(ch):
+    o = ord(ch[0])
+    if 0x2800 <= o <= 0x28FF:
+        return BRAILLE
+    for lo, hi, path in SCRIPTS:
+        if lo <= o <= hi and os.path.exists(path) and lacks(ch[0]):
+            if path not in LOADED:
+                LOADED[path] = ImageFont.truetype(path, 16)
+            return LOADED[path]
+    return FONT
+
+
 # test sockets (short paths) go here: $XDG_RUNTIME_DIR on Linux, an owner-only dir in /tmp where there is none (macOS)
 RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/sgl-{os.getuid()}"
 os.makedirs(RUNTIME, mode=0o700, exist_ok=True)
@@ -140,7 +173,11 @@ class Term:
         self.pump(wait)
 
     def text(self):
-        return "\n".join(self.screen.display)
+        try:
+            return "\n".join(self.screen.display)
+        except IndexError:
+            # pyte's own trips over an empty cell no wide character covers (a mark drawn over one, #146)
+            return "\n".join("".join(self.screen.buffer[y][x].data for x in range(COLS)) for y in range(ROWS))
 
     def find(self, s):
         for y, line in enumerate(self.screen.display):
@@ -188,7 +225,7 @@ class Term:
                     cells.append((x, y, c.data, fg))
         paste(False)
         for x, y, ch, fg in cells:
-            font = BRAILLE if 0x2800 <= ord(ch[0]) <= 0x28FF else FONT
+            font = font_for(ch)
             try:
                 d.text((x * CW, y * CH + 1), ch, font=font, fill=fg)
             except ValueError:
@@ -355,7 +392,7 @@ def meters(t, out):
 
 
 def wheel(t, out):
-    """#26: the wheel moves the highlight over a track list (also over artist/album names) and in the library."""
+    """#26, D86: the wheel scrolls a track list (also over artist/album names) and the library; the highlight stays."""
     t.pump(1.0)
     x, y = t.find("♥  Liked Songs")
     mouse(t, 0, x + 2, y)
@@ -378,7 +415,8 @@ def wheel(t, out):
 
 
 def wheel_burst(t, out):
-    """Ghostty sends three wheel reports per notch in one write: each burst moves the highlight one row."""
+    """Ghostty sends three wheel reports per notch in one write: each burst moves the list one row (D86: the
+    highlight stays, so Enter plays the first song)."""
     t.pump(1.0)
     x, y = t.find("♥  Liked Songs")
     mouse(t, 0, x + 2, y)
@@ -388,8 +426,63 @@ def wheel_burst(t, out):
         t.send(f"\x1b[<65;{rx + 3};{ry + 1}M".encode() * 3, 0.1)  # one notch
     t.pump(0.4)
     t.shot(f"{out}/0-two-notches.png")
-    t.send(b"\r", 1.0)  # play the highlighted song: the third
+    t.send(b"\r", 1.0)  # play the highlighted song: the first (the wheel left it there)
     t.shot(f"{out}/1-playing.png")
+    t.send(b" ", 0.3)
+    t.send(b"q", 0.5)
+
+
+def touchpad(t, out):
+    """D86 (#32): touchpad-like bursts of wheel reports against single mouse-wheel notches over Liked Songs. The
+    reports go as Ghostty sends them (the owner's recording, `crates/client/tests/fixtures/wheel-touchpad-ghostty.txt`):
+    five wheel notches (three reports in one write each), a fast flick (eleven reports in 44 ms, some in one write), a
+    slow drag back up (ten reports 30 to 400 ms apart); then the pointer over a row highlights it and a click picks it.
+    Prints the first song shown and the highlighted one after each; `<n>-<what>.png`."""
+    t.pump(1.0)
+    x, y = t.find("♥  Liked Songs")
+    mouse(t, 0, x + 2, y)
+    mouse(t, 0, x + 2, y, release=True, wait=0.8)
+    rx, ry = t.find("Fake Track 001")
+
+    def report(code, k=1):
+        return f"\x1b[<{code};{rx + 3};{ry + 4}M".encode() * k
+
+    def rows():
+        # the songs on screen, top to bottom, and the one whose background differs from the others' (the highlight)
+        shown = [(yy, line) for yy, line in enumerate(t.screen.display) if "Fake Track" in line]
+        bgs = [t.screen.buffer[yy][rx + 2].bg for yy, _ in shown]
+        lit = [line for (yy, line), bg in zip(shown, bgs) if bgs.count(bg) == 1]
+        name = lambda line: line[line.find("Fake Track"):][:14]
+        return name(shown[0][1]) if shown else None, name(lit[0]) if lit else None
+
+    def step(i, what):
+        t.pump(0.4)
+        t.shot(f"{out}/{i}-{what}.png")
+        first, lit = rows()
+        print(f"{i} {what}: first shown {first!r}, highlighted {lit!r}")
+
+    step(0, "start")
+    for _ in range(5):
+        t.send(report(65, 3), 0.04)  # a wheel notch
+    step(1, "five-wheel-notches")
+    # the flick, with its gaps (ms): two at once, three at once, two close together, then four
+    for k, gap in [(2, 23.7), (3, 6.7), (1, 0.1), (1, 12.8), (1, 0.4), (1, 0.1), (2, 0)]:
+        t.send(report(65, k), gap / 1000)
+    step(2, "fast-flick")
+    for gap in [66.9, 49.7, 133.7, 49.6, 34.2, 50.0, 83.3, 116.7, 100.1, 0]:
+        t.send(report(64), gap / 1000)
+    step(3, "slow-drag-up")
+    # the pointer over the sixth row: it lights; a click there picks it (a second click plays it)
+    shown = [yy for yy, line in enumerate(t.screen.display) if "Fake Track" in line]
+    hy = shown[5]
+    t.send(f"\x1b[<35;{rx + 3};{hy + 1}M".encode(), 0.3)
+    step(4, "hover-sixth-row")
+    mouse(t, 0, rx + 2, hy)
+    mouse(t, 0, rx + 2, hy, release=True, wait=0.3)
+    mouse(t, 0, rx + 2, hy)
+    mouse(t, 0, rx + 2, hy, release=True, wait=1.0)
+    step(5, "double-click-plays-it")
+    print("playing:", next((l.strip()[:60] for l in t.screen.display[-4:] if "Fake Track" in l), None))
     t.send(b" ", 0.3)
     t.send(b"q", 0.5)
 
@@ -498,6 +591,164 @@ def wheel_all(t, out):
     click(x + 1, y)  # its tracks: more of them than fit
     place("top-this-week", *lyr, 4, settle=0.5)
     t.send(b" ", 0.3)
+    t.send(b"q", 0.5)
+
+
+# the fake account's made-up personal values (SINGULARITY_FAKE_PERSONAL=1, crates/daemon/src/catalogue/fake.rs), a
+# recent search and a play in the real listening log, and an engine.device of the owner's choosing: demo mode must
+# draw none of them (D90)
+DEMO_SECRETS = ["zq-fakeuser", "Zara Quillfeather", "Quillfeather", "Bodhi Friendly", "zarabox", "Zara's Pixel", "Zara's Kitchen",
+                "Zara's Secret Diary", "Private Stuff", "ZqSecretJamToken42", "socialsession", "zara secret search",
+                "Secretartist Zq", "Zara's Desk", "Zara's Secret Song", "Zara's Queued Secret", "Secret Album"]
+
+
+def demo_secrets():
+    """DEMO_SECRETS, plus this computer's and user's own names (looked up here, never written down)."""
+    found = {s: s for s in DEMO_SECRETS}
+    for label, value in (("the computer's name", open("/etc/hostname").read().strip() if os.path.exists("/etc/hostname") else ""),
+                         ("the user's name", os.environ.get("USER", "")), ("the home folder", os.environ.get("HOME", ""))):
+        if len(value) > 2:
+            found[label] = value
+    return found
+
+
+def demo_check(out):
+    """In demo mode, every screen dump in `out` searched for each secret: prints what showed, and fails if anything did."""
+    if os.environ.get("SINGULARITY_DEMO") != "1" and os.environ.get("PTY_DEMO") != "1":
+        return
+    seen = {}
+    for f in sorted(os.listdir(out)):
+        if f.endswith(".txt"):
+            text = open(f"{out}/{f}").read().lower()
+            for label, s in demo_secrets().items():
+                if s.lower() in text:
+                    seen.setdefault(label, []).append(f)
+    print("demo check:", {k: v[:3] for k, v in seen.items()} or "no secret in any screen")
+    if seen:
+        sys.exit(f"demo mode drew personal values: {sorted(seen)}")
+
+
+def demo_setup(env, out):
+    """The scratch files the demo walk needs: a real recent search, a play by a secret artist in the real log, a
+    device name of the owner's own choosing."""
+    os.makedirs(f"{env['XDG_STATE_HOME']}/singularity", exist_ok=True)
+    open(f"{env['XDG_STATE_HOME']}/singularity/recent-searches.json", "w").write(json.dumps(["zara secret search"]))
+    os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity", exist_ok=True)
+    open(f"{env['XDG_CONFIG_HOME']}/singularity/config.toml", "w").write("schema = 6\n[engine]\ndevice = \"Zara's Desk\"\n")
+    env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
+    seed_listening(env["SINGULARITY_DATA"])
+    import sqlite3
+    db = sqlite3.connect(f"{env['SINGULARITY_DATA']}/listening.db")
+    now = int(time.time() * 1000)
+    db.execute("INSERT INTO plays (started_ms, day, track_uri, name, artists, album, context_uri, duration_ms, played_ms, device) VALUES (?,?,?,?,?,?,?,?,?,?)",
+               (now - 3_600_000, (now - 3_600_000) // 86_400_000, "spotify:track:secret", "Secret Song", json.dumps(["Secretartist Zq"]), "Secret Album", None, 200_000, 9_000_000, "Zara's Pixel"))
+    db.commit()
+    db.close()
+
+
+def demo(t, out, env):
+    """D90: demo mode on the fake account with personal values (`SINGULARITY_FAKE_PERSONAL=1`) and a personal song left
+    playing (`SINGULARITY_FAKE_CARRYOVER=1`, #128): Home, the library, a playlist and one of its songs played, Search
+    (recent searches, results), the device picker and a Jam, Stats, Settings, the health check, Cockpit's stream
+    Widget, a toast from a refused playlist. Every drawn screen is searched for each secret; prints what showed.
+    `PTY_DEMO=0` runs the same walk without the switch (the secrets must show there)."""
+    secrets = demo_secrets()
+    on = env.get("SINGULARITY_DEMO") == "1"
+    seen = {}
+    n = [0]
+
+    def look(name, wait=0.0):
+        t.pump(wait)
+        t.shot(f"{out}/{n[0]:02}-{name}.png")
+        screen = t.text()
+        for label, s in secrets.items():
+            if s.lower() in screen.lower():
+                seen.setdefault(label, []).append(name)
+        marks = [m for m in ("DEMO", "Premium", "Invite link hidden in demo mode", "Make a folder called Demo", "Guest 1", "you", "a friend") if m in screen]
+        print(f"{n[0]:02} {name}: {', '.join(marks) or '-'}")
+        n[0] += 1
+
+    def palette(what, wait=1.0):
+        t.send(b"\x0b", 0.3)
+        t.send(what.encode(), 0.3)
+        t.send(b"\r", wait)
+
+    t.pump(2.5)
+    look("home")
+    if on == any("Secret Song" in l for l in t.screen.display):
+        sys.exit(f"the carried-over song is {'drawn' if on else 'missing'}")
+    t.send(b"\x1b[B", 0.2)  # a key, so the Home view has a selection; then the shelves below
+    for _ in range(6):
+        t.send(b"\x1b[B", 0.1)
+    look("home-scrolled", 0.5)
+    at = t.find("Fake Mixtape")
+    if at:
+        mouse(t, 0, at[0] + 2, at[1]); mouse(t, 0, at[0] + 2, at[1], release=True, wait=1.0)
+        look("playlist")
+        # (#128) a Demo playlist's song played from here: the player shows it (the carried-over one it didn't)
+        sx = t.find("Fake Track 003")
+        if sx:
+            for _ in range(2):  # double-click plays it
+                mouse(t, 0, sx[0] + 2, sx[1], wait=0.03); mouse(t, 0, sx[0] + 2, sx[1], release=True, wait=0.05)
+            look("playing-demo-song", 1.5)
+            if not any("Track 2" in l and "—" in l for l in t.screen.display):
+                sys.exit("the Demo playlist's song played from here isn't shown")
+            # next: the song queued in the normal session plays, under the Demo playlist; demo mode still hides it
+            t.send(b"n", 0.2)
+            look("queued-secret-plays", 1.0)
+            if on and not any("now-playing --follow  # nothing playing" in l for l in t.screen.display):
+                sys.exit("the song queued in the normal session is shown")
+            t.send(b"n", 0.2)
+            look("next-demo-song", 1.0)
+            if not any("Track 1" in l and "—" in l for l in t.screen.display):
+                sys.exit("the Demo playlist's next song isn't shown")
+        mouse(t, 2, at[0] + 2, at[1], wait=0.4)
+        look("library-menu")
+        t.send(b"\x1b", 0.2)
+        # an artist page from a row's artist link: its Shelves hold the private playlist too
+        ax = t.find("Nova Drift")
+        if ax:
+            mouse(t, 0, ax[0] + 1, ax[1]); mouse(t, 0, ax[0] + 1, ax[1], release=True, wait=1.2)
+            look("artist")
+            for _ in range(8):
+                t.send(f"\x1b[<65;{ax[0] + 2};{ax[1] + 4}M".encode() * 3, 0.1)
+            look("artist-shelves", 0.4)
+    at = t.find("Road Trip")
+    if at:
+        mouse(t, 0, at[0] + 2, at[1]); mouse(t, 0, at[0] + 2, at[1], release=True, wait=1.0)
+        look("friends-playlist")
+    t.send(b"\x0c", 0.8)  # Ctrl+L: Search, empty
+    look("search-recent")
+    t.send(b"mix", 1.5)
+    look("search-results")
+    t.send(b"\x1b", 0.3); t.send(b"\x1b", 0.3)
+    t.send(b"d", 0.8)
+    look("devices")
+    t.send(b"j", 1.0)
+    look("jam")
+    t.send(b"\x1b", 0.4)
+    look("jam-chip")
+    palette("stats", 2.0)
+    look("stats")
+    palette("settings")
+    look("settings")
+    t.send(b"\x1b", 0.4)
+    palette("health check")
+    look("health", 0.5)
+    t.send(b"\x1b", 0.4)
+    palette("new playlist")
+    t.send(b"failing list", 0.3)
+    t.send(b"\r", 1.0)
+    look("toast")
+    palette("design", 0.6)
+    for _ in range(3):
+        t.send(b"\x1b[B", 0.3)  # Cockpit: the stream and listening Widgets
+    t.send(b"\r", 1.0)
+    # (a song plays already: the Demo playlist's, or without the switch the carried-over one)
+    look("cockpit-playing", 2.0)
+    print("demo mode" if on else "without the switch", "· secrets drawn:", {k: v[:3] for k, v in seen.items()} or "none")
+    if on and seen:
+        sys.exit(f"demo mode drew personal values: {sorted(seen)}")
     t.send(b"q", 0.5)
 
 
@@ -797,6 +1048,29 @@ def stalls(t, out):
     t.send(b"q", 0.5)
 
 
+def seed_backup(data, short, account="fake"):
+    """A scratch library backup dated today, the fake Catalogue's account's (`account`): whole, or (#144) with Liked
+    Songs short beside its whole copy and a playlist saved marked incomplete."""
+    os.makedirs(f"{data}/backups", exist_ok=True)
+    b = {"schema": 1, "taken_ms": int(time.time() * 1000), "account": account, "liked": [], "liked_total": 0, "followed": [],
+         "playlists": [{"uri": "spotify:playlist:fake", "name": "Fake List", "tracks": [], "total": 0}]}
+    if short:
+        b["liked_short"] = {"taken_ms": b["taken_ms"], "incomplete": "only 0 of its 3 tracks came back", "total": 3, "tracks": []}
+        b["playlists"][0]["incomplete"] = "the page at 0 came back without its tracks (Something went wrong)"
+    open(f"{data}/backups/library-{time.strftime('%Y-%m-%d')}.json", "w").write(json.dumps(b))
+
+
+def backup_notice(t, out):
+    """#144: Settings with the newest backup short (PTY_BACKUP=whole: whole; =other: another account's); the screen's
+    text goes beside the shot. The backup task reads the backup a couple of seconds after start."""
+    t.pump(3.5)
+    t.send(b"\x0b", 0.3); t.send(b"settings", 0.3); t.send(b"\r", 1.0)
+    t.shot(f"{out}/settings.png")
+    open(f"{out}/screen.txt", "w").write("\n".join(t.screen.display))
+    print("backup line:", [l.strip() for l in t.screen.display if "backup" in l.lower()])
+    t.send(b"q", 0.5)
+
+
 def settings(t, out, env):
     """#57: the Settings page from config.toml: a click flips a setting, → steps the design, a typed number, an edit
     made in the file shows on the page; the file keeps its comments."""
@@ -898,7 +1172,7 @@ def book(t, out):
 
 
 def queue_wheel(t, out):
-    """The wheel over the queue moves its highlight one song at a time and the list follows (as in the lists, #26)."""
+    """The wheel over the queue scrolls it one line a notch and leaves its highlight (D86; as in the lists, #26)."""
     t.pump(1.0)
     x, y = t.find("♥  Liked Songs")
     mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
@@ -1936,6 +2210,58 @@ def mini(t, out):
     t.send(b"q", 0.5)
 
 
+def gesture(t, out):
+    """D89/#104: a seek-bar drag whose release is never heard (a bare move: it lets go, seeking where it was let go of),
+    a divider held while Ctrl+K opens the palette (the move is kept: Ctrl+Z takes it back, Q103 a), and Ctrl+Z while a
+    divider is held (it takes back that drag, not the edit before it, Q103 b)."""
+    t.pump(1.0)
+    t.send(b" ", 1.0)
+
+    def dump(name):
+        t.shot(f"{out}/{name}.png")
+        with open(f"{out}/{name}.txt", "w") as f:
+            f.write("\n".join(t.screen.display))
+
+    def grip():
+        return t.screen.display[5].index("││") + 1
+
+    # Q103 (a): Ctrl+K while a divider is held, the release in the palette, Esc, Ctrl+Z
+    gx = grip()
+    mouse(t, 0, gx, 12); mouse(t, 32, gx + 4, 12); mouse(t, 32, gx + 8, 12, wait=0.3)
+    t.send(b"\x0b", 0.5)
+    dump("02-palette-over-held-divider")
+    mouse(t, 0, gx + 8, 12, release=True, wait=0.3)
+    t.send(b"\x1b", 0.5)
+    dump("03-palette-closed")
+    t.send(b"\x1a", 0.6)
+    dump("04-ctrl-z")
+    # Q103 (b): one divider move let go, then a second held while Ctrl+Z, then its release
+    gx = grip()
+    mouse(t, 0, gx, 12); mouse(t, 32, gx + 6, 12); mouse(t, 0, gx + 6, 12, release=True, wait=0.5)
+    dump("05-first-move")
+    gx = grip()
+    mouse(t, 0, gx, 12); mouse(t, 32, gx + 5, 12); mouse(t, 32, gx + 10, 12, wait=0.3)
+    dump("06-second-held")
+    t.send(b"\x1a", 0.6)
+    dump("07-ctrl-z-while-held")
+    mouse(t, 0, gx + 10, 12, release=True, wait=0.5)
+    dump("08-released")
+    t.send(b"\x1a", 0.6)
+    dump("09-ctrl-z-again")
+    # last (on main a seek drag left held swallows the next press): the seek bar, the player row's run of ━╸─
+    y = max(i for i, l in enumerate(t.screen.display) if re.search(r"\d:\d\d  [━╸─]", l))
+    x = re.search(r"\d:\d\d  ([━╸─])", t.screen.display[y]).start(1)
+    mouse(t, 0, x + 6, y); mouse(t, 32, x + 20, y); mouse(t, 32, x + 40, y, wait=0.4)
+    dump("10-seek-mid-drag")
+    # the release went to another window: the next we hear is a bare move
+    mouse(t, 35, x + 10, y - 12, wait=0.8)
+    dump("11-seek-unheard-move")
+    # a click on a Pane's body afterwards
+    mouse(t, 0, x + 10, y - 12); mouse(t, 0, x + 10, y - 12, release=True, wait=0.8)
+    dump("12-click-after")
+    t.send(b"q", 0.5)
+
+
 def layouts(t, out, env):
     """#19: swap Widgets (v, ◂ ▸), drag a divider, save the layout, and find it again in a new Client."""
     t.pump(1.0)
@@ -1971,6 +2297,47 @@ def layouts(t, out, env):
     t2.send(b"\x0b", 0.3); t2.send(b"design", 0.3); t2.send(b"\r", 0.6)
     t2.shot(f"{out}/4-picker.png")
     t2.send(b"\x1b", 0.3); t2.send(b"q", 0.5)
+
+
+def delete_design(t, out, env):
+    """#80, Q151: two Designs of your own saved; in the Design picker, Delete on the one on screen deletes it at once
+    (the picker stays, without it, on Singularity, saying `Deleted "Other" · u Undo`), `u` brings it back, Delete again
+    and a click on Undo too; Esc. Ctrl+K → Delete design… deletes "Other" at once (the bar offers Ctrl+Z), Ctrl+Z brings
+    it back. Then the picker on a built-in row (its hint without Del). Prints the layouts folder after each step."""
+    files = lambda: sorted(os.listdir(f"{env['XDG_CONFIG_HOME']}/singularity/layouts"))
+    t.pump(1.0)
+    for name in (b"Mine", b"Other"):
+        t.send(b"\x0b", 0.3); t.send(b"save design", 0.3); t.send(b"\r", 0.4)
+        t.send(name, 0.3); t.send(b"\r", 0.6)
+    print("saved:", files())
+    t.send(b"\x0b", 0.3); t.send(b"pick a design", 0.3); t.send(b"\r", 0.6)
+    t.shot(f"{out}/0-picker-on-own.png")
+    t.send(b"\x1b[3~", 0.8)
+    t.shot(f"{out}/1-deleted-undo-line.png")
+    print("after Del:", files())
+    t.send(b"u", 0.8)
+    t.shot(f"{out}/2-undone.png")
+    print("after u:", files())
+    t.send(b"\x7f", 0.8)  # Backspace, a Mac's delete key
+    x, y = t.find("· u Undo")
+    mouse(t, 0, x + 2, y); mouse(t, 0, x + 2, y, release=True, wait=0.8)
+    t.shot(f"{out}/3-clicked-undo.png")
+    print("after Backspace and a click on Undo:", files())
+    t.send(b"\x1b", 0.6)
+    t.send(b"\x0b", 0.3); t.send(b"delete design", 0.3)
+    t.shot(f"{out}/4-palette.png")
+    t.send(b"\r", 0.8)
+    t.shot(f"{out}/5-deleted-bar.png")
+    print("after the palette's:", files())
+    t.send(b"\x1a", 0.8)  # Ctrl+Z
+    t.shot(f"{out}/6-ctrl-z-back.png")
+    print("after Ctrl+Z:", files())
+    t.send(b"\x0b", 0.3); t.send(b"pick a design", 0.3); t.send(b"\r", 0.6)
+    t.send(b"\x1b[H", 0.6)  # Home: Singularity, built in
+    t.shot(f"{out}/7-picker-built-in.png")
+    t.send(b"\x1b", 0.6)
+    print("at the end:", files())
+    t.send(b"q", 0.5)
 
 
 def tiling(t, out, env):
@@ -2738,7 +3105,7 @@ def main():
         env["SINGULARITY_PIXEL"] = "1" if scenario == "idle-pixels" else "0"
     if scenario.startswith("well"):
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("well-pixels", "well-hover") else "0"
-    if scenario.startswith("home") or scenario in ("library", "queue", "lyrics", "artist", "search", "search-recent", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "wheel-burst", "popup-wheel", "wheel-all", "settings", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
+    if scenario.startswith("home") or scenario in ("demo", "library", "queue", "lyrics", "artist", "search", "search-recent", "search-timing", "like", "config", "designs", "readme", "layouts", "tiling", "tiling-fast", "tiling-paths", "listening", "wheel", "home-scroll", "history", "meters", "jam", "stats", "stats-widgets", "ambient", "arrows", "popup", "stalls", "queue-lift", "queue-wheel", "gesture", "wheel-burst", "touchpad", "popup-wheel", "wheel-all", "settings", "backup-notice", "show", "book", "mini", "playlists", "playlist-details", "playlist-add", "playlist-remove", "playlist-move", "playlist-cover", "themes", "widgets-large", "karaoke", "karaoke-cells", "sizes", "design-sizes", "pane-menu", "contact-sheet", "paneless", "arrange-fixes"):
         here = os.path.dirname(os.path.abspath(__file__))
         env["XDG_CACHE_HOME"] = f"{here}/xdgcache"
         env["SINGULARITY_PIXEL"] = "1" if scenario in ("home-pixels", "designs", "readme", "home-scroll", "ambient", "popup", "tiling", "tiling-fast", "tiling-paths", "resize", "karaoke", "arrange-fixes") else "0"
@@ -2755,6 +3122,10 @@ def main():
         env["SINGULARITY_BACKUP_CHECK_SECS"] = "2"
         os.makedirs(env["XDG_DOWNLOAD_DIR"], exist_ok=True)
         seed_listening(env["SINGULARITY_DATA"])
+    if scenario == "backup-notice":
+        env["SINGULARITY_DATA"] = f"{os.path.abspath(out)}/data/singularity"
+        seed_backup(env["SINGULARITY_DATA"], os.environ.get("PTY_BACKUP") != "whole", "someone" if os.environ.get("PTY_BACKUP") == "other" else "fake")
+        env["SINGULARITY_BACKUP_CHECK_SECS"] = "2"
     if scenario == "stalls":
         env["SINGULARITY_FAKE_STALLS"] = "1"
     if scenario in ("stats", "stats-widgets", "widgets-large", "sizes", "wheel-all", "contact-sheet"):
@@ -2787,6 +3158,26 @@ def main():
         os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity", exist_ok=True)
         open(f"{env['XDG_CONFIG_HOME']}/singularity/config.toml", "w").write("schema = 6\n[visuals]\nmotion_fps = 240\n")
         env["SINGULARITY_FRAME_LOG"] = f"{os.path.abspath(out)}/frames.log"
+    # demo mode (D90): `demo` walks every page with the switch on (PTY_DEMO=0: off); PTY_DEMO=1 turns it on for any
+    # other scenario (`wheel-all`), both on the fake account with made-up personal values
+    if scenario == "demo" or os.environ.get("PTY_DEMO") == "1":
+        env["SINGULARITY_FAKE_PERSONAL"] = "1"
+        # (PTY_DEMO=0: no switch at all; the Client refuses a "0" since #167)
+        if os.environ.get("PTY_DEMO") == "0":
+            env.pop("SINGULARITY_DEMO", None)
+        else:
+            env["SINGULARITY_DEMO"] = "1"
+    if scenario == "demo":
+        # the song left playing from a normal session (#128): hidden until a Demo playlist plays
+        env["SINGULARITY_FAKE_CARRYOVER"] = "1"
+        demo_setup(env, out)
+    elif os.environ.get("PTY_DEMO") == "1":
+        # another scenario in demo mode: Liked Songs in the Demo set, and the seeded recent searches in demo mode's file
+        os.makedirs(f"{env['XDG_CONFIG_HOME']}/singularity", exist_ok=True)
+        open(f"{env['XDG_CONFIG_HOME']}/singularity/demo.toml", "w").write("liked = true\n")
+        recent = f"{env['XDG_STATE_HOME']}/singularity/recent-searches.json"
+        if os.path.exists(recent):
+            shutil.copy(recent, recent.replace(".json", "-demo.json"))
     bus = None
     if scenario == "mpris":
         bus, addr = private_bus(out)
@@ -2825,6 +3216,8 @@ def main():
             return idle(t, out)
         if scenario == "listening":
             return listening(t, out, env)
+        if scenario == "backup-notice":
+            return backup_notice(t, out)
         if scenario == "stats":
             return stats(t, out)
         if scenario == "stats-widgets":
@@ -2855,6 +3248,8 @@ def main():
             return queue_wheel(t, out)
         if scenario == "queue-lift":
             return queue_lift(t, out)
+        if scenario == "gesture":
+            return gesture(t, out)
         if scenario == "playlists":
             return playlists(t, out)
         if scenario == "playlist-cover":
@@ -2873,10 +3268,15 @@ def main():
             return wheel(t, out)
         if scenario == "wheel-burst":
             return wheel_burst(t, out)
+        if scenario == "touchpad":
+            return touchpad(t, out)
         if scenario == "popup-wheel":
             return popup_wheel(t, out)
         if scenario == "wheel-all":
-            return wheel_all(t, out)
+            wheel_all(t, out)
+            return demo_check(out)
+        if scenario == "demo":
+            return demo(t, out, env)
         if scenario == "history":
             return history(t, out)
         if scenario == "meters":
@@ -2891,6 +3291,8 @@ def main():
             return readme(t, out)
         if scenario == "layouts":
             return layouts(t, out, env)
+        if scenario == "delete-design":
+            return delete_design(t, out, env)
         if scenario == "tiling":
             return tiling(t, out, env)
         if scenario == "paneless":
@@ -2926,6 +3328,27 @@ def main():
             t.send(b"mix", 1.2)
             t.shot(f"{out}/0-search.png")
             t.send(b"q", 0.1)
+            t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.3)
+            t.send(b"q", 0.5)
+            return
+        if scenario == "search-timing":
+            # #126: the Client's share of a search (the fake Catalogue answers at once): last key to results drawn
+            t.pump(1.0)
+            t.send(b"\x0c", 0.3)  # Ctrl+L
+            times = []
+            for i, q in enumerate((b"mix", b"orbit", b"nova")):
+                if i:
+                    t.send(b"\x1b", 0.5)  # Esc: an empty query
+                for c in q[:-1]:
+                    t.send(bytes([c]), 0.08)
+                began = time.time()
+                t.send(q[-1:], 0)
+                want = f"{q.decode()} song 1"
+                while not t.find(want) and time.time() - began < 5:
+                    t.pump(0.005)
+                times.append(round((time.time() - began) * 1000))
+                print(f"“{q.decode()}”: results on screen {times[-1]} ms after the last key")
+            t.shot(f"{out}/0-search.png")
             t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.2); t.send(b"\x1b", 0.3)
             t.send(b"q", 0.5)
             return

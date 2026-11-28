@@ -201,10 +201,10 @@ impl App {
                     None => return,
                 },
             };
-            if let Some(mut list) = self.open.edit(LIKED, self.shows_list(LIKED)) {
+            if let Some(mut list) = self.open.edit(LIKED) {
                 list.insert(at, row);
             }
-        } else if let Some(removed) = self.open.edit(LIKED, self.shows_list(LIKED)).and_then(|mut l| l.remove(uri)) {
+        } else if let Some(removed) = self.open.edit(LIKED).and_then(|mut l| l.remove(uri)) {
             self.saved.stash.insert(uri.into(), removed);
         }
         // the sidebar's and the list's "N songs" count along
@@ -245,6 +245,7 @@ impl App {
             album_uri: i.album_uri.clone(),
             uid: None,
             progress: None,
+            cover_url: i.cover_url.clone(),
         })
     }
 

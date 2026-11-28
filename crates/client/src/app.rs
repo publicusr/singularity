@@ -2,9 +2,10 @@
 //! Every interactive element registers a hit-box while drawing, so the mouse works everywhere.
 
 use crate::covers::Covers;
+use crate::gesture::{Clicked, Gesture, Held};
 use crate::gfx::Kitty;
 use crate::home::{CardId, CardRef, HomeView};
-use crate::layout::{Divider, Node, PaneId, Widget};
+use crate::layout::{Node, PaneId, Widget};
 use crate::meters::Meters;
 use crate::visual::BlackHole;
 use crate::visual::well::Hole;
@@ -92,7 +93,7 @@ pub enum Action {
     Arrange,
     NewDesign,
     DiscardNewDesign,
-    ResetLayout,
+    DeleteDesign,
     UndoLayout,
     RedoLayout,
     Palette,
@@ -103,7 +104,7 @@ pub enum Action {
 impl Action {
     /// Not offered (and their keys do nothing) while a New design… is built (#42): each would swap or save the Design
     /// under the build. Done names it.
-    pub const NOT_WHILE_BUILDING: [Action; 3] = [Action::PickDesign, Action::SaveLayout, Action::ResetLayout];
+    pub const NOT_WHILE_BUILDING: [Action; 3] = [Action::PickDesign, Action::SaveLayout, Action::DeleteDesign];
 
     pub const ALL: [Action; 66] = [
         Action::TogglePlay,
@@ -166,7 +167,7 @@ impl Action {
         Action::Arrange,
         Action::NewDesign,
         Action::DiscardNewDesign,
-        Action::ResetLayout,
+        Action::DeleteDesign,
         Action::UndoLayout,
         Action::RedoLayout,
         Action::Palette,
@@ -235,7 +236,7 @@ impl Action {
             Action::Arrange => "Arrange",
             Action::NewDesign => "New design…",
             Action::DiscardNewDesign => "Discard new design",
-            Action::ResetLayout => "Reset design",
+            Action::DeleteDesign => "Delete design…",
             Action::UndoLayout => "Undo layout",
             Action::RedoLayout => "Redo layout",
             Action::Palette => "Command palette",
@@ -257,7 +258,7 @@ impl Action {
             Action::SplitDown => "tile add pane widget below",
             Action::ClosePane => "tile remove delete widget",
             Action::Arrange => "tray tile move swap drag layout split close pane widget",
-            Action::ResetLayout => "layout tiling undo original default",
+            Action::DeleteDesign => "layout remove reset original",
             Action::UndoLayout => "tiling pane change back revert move drop close split",
             Action::RedoLayout => "tiling pane change again forward",
             Action::EditPlaylist => "name description rename",
@@ -350,7 +351,7 @@ impl Action {
             Action::Arrange => "arrange",
             Action::NewDesign => "new_design",
             Action::DiscardNewDesign => "discard_new_design",
-            Action::ResetLayout => "reset_layout",
+            Action::DeleteDesign => "delete_design",
             Action::UndoLayout => "undo_layout",
             Action::RedoLayout => "redo_layout",
             Action::Palette => "palette",
@@ -359,9 +360,14 @@ impl Action {
         }
     }
 
-    /// (`move_pane`, Move mode's, is another name for `arrange` since Move mode folded into it: #43)
+    /// (`move_pane`, Move mode's, is another name for `arrange` since Move mode folded into it: #43; `reset_layout`,
+    /// Reset design's, for `delete_design` since Delete design replaced it: #80)
     pub fn from_id(id: &str) -> Option<Action> {
-        Action::ALL.into_iter().find(|a| a.id() == id).or_else(|| (id == "move_pane").then_some(Action::Arrange))
+        Action::ALL.into_iter().find(|a| a.id() == id).or(match id {
+            "move_pane" => Some(Action::Arrange),
+            "reset_layout" => Some(Action::DeleteDesign),
+            _ => None,
+        })
     }
 }
 
@@ -430,6 +436,10 @@ pub enum Hit {
     Save(singularity_proto::Link),
     /// a row of the design or theme picker
     PickerItem(usize),
+    /// the Design picker's Undo, after a Design of the user's was deleted (Q151)
+    PickerUndo,
+    /// Delete design's yes (true) or no (#80)
+    DeleteAnswer(bool),
     /// a row of the "Add to playlist" picker (#53)
     AddPick(usize),
     /// a Pane's ◂ ▸: the Pane, and which way to swap its Widget
@@ -459,7 +469,7 @@ pub enum Hit {
 }
 
 /// Two clicks on the same row within this time play it.
-const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// What a context-menu entry does to its target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -482,6 +492,8 @@ pub enum MenuAct {
     ChangeCover,
     RemoveCover,
     DeletePlaylist,
+    /// demo mode (D90): an album, artist, podcast or audiobook into `demo.toml`'s Demo set
+    AddToDemo,
     /// the Pane menu (right-click on a title, or a body without a menu of its own)
     ReplaceWidget,
     /// the Split row: ← → ↑ ↓, each clickable; the side is the lit arrow, the one the word Split (and Enter) splits
@@ -691,15 +703,15 @@ pub struct App {
     pub quit: bool,
     /// the user dismissed the login overlay (the login itself keeps waiting)
     pub login_hidden: bool,
-    pub dividers: Vec<Divider>,
+    /// what the last frame drew where (the Widgets' own rows, cards, buttons, and what's over the Panes); the Panes,
+    /// their titles and the dividers are the Screen plan's (`App::plan`)
     pub(crate) hits: Vec<(Rect, Hit)>,
-    pub(crate) drag: Option<Hit>,
-    /// a queued song being dragged to a new place
-    pub queue_drag: Option<crate::queue::QueueDrag>,
-    /// boundary minus grab position, so a divider moves exactly with the mouse whichever grip cell was grabbed
-    pub(crate) drag_offset: i32,
-    /// the seek or volume bar being dragged
-    pub scrub: Option<Scrub>,
+    /// how many of `hits` the Widgets drew inside their Panes (under the Panes' titles and dividers); the rest is over
+    /// them
+    pub(crate) hits_in_panes: usize,
+    /// the one press or drag in progress (D89): seeking, the volume, a queued song or a list row dragged, a divider,
+    /// a Widget carried in Arrange mode
+    pub gesture: Option<Gesture>,
     nudge: Nudge,
     /// the volume just set here, until the player confirms it (a Connect device reports its new volume ~0.5 s late:
     /// updates meanwhile would snap the slider back)
@@ -761,9 +773,8 @@ pub struct App {
     /// history: pages to go back and forward to
     pub back: Vec<PageName>,
     pub forward: Vec<PageName>,
-    last_click: Option<(Instant, usize)>,
-    /// the row a click on the open list was on, for telling a double-click (D81)
-    last_row: Option<crate::openlist::RowId>,
+    /// the last click that a second one soon after makes a double click, and what it was on
+    pub(crate) last_click: Option<(Instant, Clicked)>,
     pub meters: Meters,
     pub stream: Option<singularity_proto::StreamInfo>,
     pub health: Option<singularity_proto::Health>,
@@ -780,9 +791,6 @@ pub struct App {
     pub lyrics: crate::songlyrics::SongLyrics,
     /// where the hole was drawn this frame (for bending the neighbouring borders)
     pub hole_at: Option<Hole>,
-    /// the Panes drawn this frame too small for their Widget (its needs line, #36): they take no wheel, keys or clicks
-    /// for it
-    pub short_panes: Vec<PaneId>,
     /// what's liked, saved and followed (#22)
     pub(crate) saved: crate::saved::Saved,
     /// a saved playlist's Saved button was clicked once: a second click soon after removes it
@@ -793,41 +801,33 @@ pub struct App {
     pub config: singularity_config::Config,
     pub keymap: crate::keymap::Keymap,
     config_files: Option<ConfigFiles>,
-    /// the design on screen (index into `design::DESIGNS`) and the user's themes (#18)
-    pub design: usize,
+    /// the Design on screen, its file and the user's own Designs (D89), and the user's themes (#18)
+    pub shown: crate::shown::ShownDesign,
+    /// a Design of the user's that Ctrl+K just deleted, while Ctrl+Z can bring it back (Q151, `App::undo_layout`)
+    pub(crate) undelete: Option<crate::looks::Undelete>,
     pub user_themes: Vec<crate::theme::Theme>,
     pub theme_dir: Option<crate::looks::ThemeDir>,
     /// state of the Widgets other designs bring (rain, scope, top)
     pub widgets: crate::widgets::State,
     /// the ambient Widgets' own state (starfield, marquee, glow)
     pub ambient: crate::ambient::State,
-    /// the saved layout on screen (its file name) and the ones there are (#19)
-    pub layout_name: Option<String>,
-    pub saved_layouts: Vec<crate::layouts::Saved>,
-    /// free tiling (D66): a Widget held by its Pane's title or picked up with Enter in Arrange mode
-    pub tile: Option<crate::arrange::TileDrag>,
-    /// Arrange mode (D87), while it is on
-    pub arranging: Option<crate::arrange::Arranging>,
+    /// Arrange mode (D87, its own module since D89): on or off, a Widget held by its Pane's title or picked up with
+    /// Enter, a divider held, and layout undo
+    pub arrange: crate::arrange::Arrange,
     /// the window is too small for the Panes: the mini player shows, and Arrange mode waits behind it (its keys and
     /// clicks are the player's)
     pub mini: bool,
     pub body: Rect,
     /// the whole window, as last drawn or resized to (the Panes' area follows it and Arrange mode)
     pub window: Rect,
-    /// the layout as it was when a divider was grabbed (a changed one counts as an edit on release)
-    pub(crate) divider_from: Option<crate::arrangement::Arrangement>,
     /// the divider whose grip is under the pointer (lit, and a resize pointer where the terminal has one)
     pub(crate) grip_hover: Option<usize>,
     /// the pointer shape last sent to the terminal (OSC 22)
     pub pointer_shape_sent: &'static str,
     /// when the input event being handled arrived (stamped by the input thread; None: now)
     pub input_at: Option<Instant>,
-    /// layout undo / redo, and when the last edit offered its "undo"
-    pub(crate) history: crate::arrange::history::History<crate::arrange::Snapshot>,
-    pub(crate) undo_offer: Option<(Instant, Action)>,
     /// covers shown before Spotify answered (#56): (library's, header's) to put back
     pub covers_was: HashMap<String, (Option<String>, Option<String>)>,
-    pub layouts_dir: Option<std::path::PathBuf>,
     /// whether we asked the Daemon for spectrum frames
     spectrum_on: bool,
     /// the idle takeover (#17): the last input, since when the hole is out, a preview asked for, and where the hole
@@ -838,6 +838,10 @@ pub struct App {
     pub hole_origin: Option<crate::visual::idle::Origin>,
     last_tick: Instant,
     told_backend: bool,
+    /// demo mode (D90): what this Client hides and replaces; None: everything shows
+    pub demo: Option<crate::demo::Demo>,
+    /// `demo.toml`, for "Add to demo" (None in tests)
+    pub demo_file: Option<std::path::PathBuf>,
     commands: Option<mpsc::Sender<Command>>,
 }
 
@@ -859,12 +863,9 @@ impl App {
             toast: None,
             quit: false,
             login_hidden: false,
-            dividers: vec![],
             hits: vec![],
-            drag: None,
-            queue_drag: None,
-            drag_offset: 0,
-            scrub: None,
+            hits_in_panes: 0,
+            gesture: None,
             nudge: Nudge::default(),
             volume_hold: None,
             play_hold: None,
@@ -900,7 +901,6 @@ impl App {
             back: vec![],
             forward: vec![],
             last_click: None,
-            last_row: None,
             meters: Meters::default(),
             stream: None,
             health: None,
@@ -913,33 +913,26 @@ impl App {
             queue_view: Default::default(),
             lyrics: Default::default(),
             hole_at: None,
-            short_panes: Vec::new(),
             saved: Default::default(),
             confirm_remove: None,
             playlists: Default::default(),
             config: Default::default(),
             keymap: Default::default(),
             config_files: None,
-            design: 0,
+            shown: Default::default(),
+            undelete: None,
             user_themes: vec![],
             theme_dir: None,
             widgets: Default::default(),
             ambient: Default::default(),
-            layout_name: None,
-            saved_layouts: vec![],
-            tile: None,
-            arranging: None,
+            arrange: Default::default(),
             mini: false,
             body: Rect::default(),
             window: Rect::default(),
-            divider_from: None,
             grip_hover: None,
             pointer_shape_sent: "",
             input_at: None,
-            history: Default::default(),
-            undo_offer: None,
             covers_was: HashMap::new(),
-            layouts_dir: None,
             spectrum_on: false,
             last_input: Instant::now(),
             idle_since: None,
@@ -947,7 +940,45 @@ impl App {
             hole_origin: None,
             last_tick: Instant::now(),
             told_backend: false,
+            demo: None,
+            demo_file: None,
             commands,
+        }
+    }
+
+    /// "Add to demo" for an album, artist, podcast or audiobook not yet in the Demo set (demo mode only).
+    pub(crate) fn demo_entry(&self, kind: &str, uri: &str) -> Option<(String, MenuAct)> {
+        let d = self.demo.as_ref()?;
+        (matches!(kind, "album" | "artist" | "show") && !d.file.library.iter().any(|u| u == uri)).then(|| ("Add to demo".to_string(), MenuAct::AddToDemo))
+    }
+
+    /// "Add to demo": into `demo.toml`, and into the library at once if it's saved there.
+    pub(crate) fn add_to_demo(&mut self, uri: &str, name: &str) {
+        let Some(path) = self.demo_file.clone() else { return };
+        match crate::demo::add_to_file(&path, uri) {
+            Ok(_) => {
+                if let Some(d) = self.demo.as_mut() {
+                    d.file.library.push(uri.to_string());
+                }
+                if let Some(l) = self.demo.as_mut().and_then(|d| d.library_again()) {
+                    self.library = Some(l);
+                }
+                self.say(format!("Added {name} to demo.toml"));
+            }
+            Err(e) => self.say(format!("Couldn't write demo.toml: {e}")),
+        }
+    }
+
+    /// Demo mode (D90), with the Demo set's allow-list from `file` and the redactor knowing this computer.
+    pub fn start_demo(&mut self, file: std::path::PathBuf) {
+        let (f, problem) = crate::demo::load(&file);
+        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let mut redactor = crate::demo::Redactor::from_env(env("HOME"), env("USER").or_else(|| env("LOGNAME")), Some(singularity_config::host::Host::this().computer()));
+        redactor.learn_device(&self.config.engine.device, crate::demo::ENGINE);
+        self.demo = Some(crate::demo::Demo::new(f, redactor));
+        self.demo_file = Some(file);
+        if let Some(p) = problem {
+            self.say(p);
         }
     }
 
@@ -962,7 +993,7 @@ impl App {
         // the user's themes first, so a theme named in config.toml can be found
         if let Some(dir) = cp.parent() {
             self.init_theme_dir(dir.join("themes"));
-            self.layouts_dir = Some(dir.join("layouts"));
+            self.shown.set_store(Box::new(crate::shown::Folder(dir.join("layouts"))));
             self.reload_layouts();
         }
         let c = singularity_config::load_config(&cp);
@@ -983,6 +1014,10 @@ impl App {
         }
         let ui = r.value.ui.clone();
         self.config = r.value;
+        // demo mode: a device name of the owner's own choosing, before the Engine reports it
+        if let Some(d) = self.demo.as_mut() {
+            d.redactor.learn_device(&self.config.engine.device, crate::demo::ENGINE);
+        }
         self.apply_ui(&ui);
         self.config_problems = r.problems.clone();
         if !r.problems.is_empty() {
@@ -1090,9 +1125,9 @@ impl App {
 
     pub fn begin_frame(&mut self) {
         self.hits.clear();
+        self.hits_in_panes = 0;
         self.overlays.clear();
         self.hole_at = None;
-        self.short_panes.clear();
         self.covers.poll();
         if self.toast.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_millis(2500)) {
             self.toast = None;
@@ -1103,16 +1138,32 @@ impl App {
         self.hits.push((r, h));
     }
 
-    /// The Pane under a point.
+    /// The Pane under a point (the Screen plan's).
     fn pane_at(&self, x: u16, y: u16) -> Option<PaneId> {
-        self.hits.iter().rev().find_map(|(r, h)| match h {
-            Hit::Focus(p) if x >= r.x && x < r.right() && y >= r.y && y < r.bottom() => Some(*p),
-            _ => None,
-        })
+        self.plan().pane_at(x, y)
     }
 
+    /// What a click at (x, y) is on: what the last frame drew over the Panes (the player bar, the Tray, a popup…),
+    /// else a Pane's title part or a divider (the Screen plan's, as things are now), else what a Widget drew there,
+    /// else the Pane.
     pub(crate) fn hit_at(&self, x: u16, y: u16) -> Option<Hit> {
-        self.hits.iter().rev().find(|(r, _)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom()).map(|(_, h)| h.clone())
+        let at = |(r, _): &&(Rect, Hit)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom();
+        let (inside, over) = self.hits.split_at(self.hits_in_panes.min(self.hits.len()));
+        if let Some((_, h)) = over.iter().rev().find(at) {
+            return Some(h.clone());
+        }
+        let plan = self.plan();
+        plan.title_hit(x, y).or_else(|| plan.divider_at(x, y).map(Hit::Divider)).or_else(|| inside.iter().rev().find(at).map(|(_, h)| h.clone())).or_else(|| plan.pane_at(x, y).map(Hit::Focus))
+    }
+
+    /// Every hit box, the Screen plan's and the last frame's, in the order they win from last to first.
+    #[cfg(test)]
+    pub(crate) fn all_hits(&self) -> Vec<(Rect, Hit)> {
+        let plan = self.plan();
+        let (inside, over) = self.hits.split_at(self.hits_in_panes.min(self.hits.len()));
+        let panes = plan.panes.iter().map(|p| (p.rect, Hit::Focus(p.pane.id)));
+        let dividers = plan.dividers.iter().enumerate().map(|(i, d)| (d.grip, Hit::Divider(i)));
+        panes.chain(inside.iter().cloned()).chain(dividers).chain(plan.chrome()).chain(over.iter().cloned()).collect()
     }
 
     /// The pixel tier's cell size, if `r` can be drawn with it this frame.
@@ -1208,9 +1259,7 @@ impl App {
     /// Spectrum frames flow only while a Widget that moves with the music is on screen (the Daemon's tap idles
     /// otherwise); called on connect and whenever the layout changes.
     pub fn want_spectrum(&mut self) {
-        use Widget::*;
-        const AUDIO: [Widget; 9] = [Fft, Loudness, Levels, Rain, Scope, Well, Hole, Starfield, Glow];
-        let on = self.layout.widgets().iter().any(|w| AUDIO.contains(w));
+        let on = self.layout.widgets().iter().any(|w| crate::widget_catalogue::facts(*w).spectrum);
         if on != self.spectrum_on && matches!(self.link, Link::Connected { .. }) {
             self.spectrum_on = on;
             self.send(Command::Spectrum { on });
@@ -1218,10 +1267,30 @@ impl App {
     }
 
     pub fn say(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
+        let msg = msg.into();
+        // demo mode: whatever it says, nothing personal (D90)
+        let msg = match &self.demo {
+            Some(d) => d.redact(&msg),
+            None => msg,
+        };
+        self.toast = Some((msg, Instant::now()));
     }
 
     pub(crate) fn send(&mut self, c: Command) {
+        self.send_ok(c);
+    }
+
+    /// [`App::send`], saying whether it went to the connection.
+    pub(crate) fn send_ok(&mut self, c: Command) -> bool {
+        // demo mode with a Daemon that didn't confirm it: these would export or delete the real listening log
+        if self.demo.as_ref().is_some_and(|d| !d.confirmed) && matches!(c, Command::ExportLocalData | Command::DeleteLocalData) {
+            self.say(crate::demo::TOO_OLD);
+            return false;
+        }
+        // demo mode: what this Client plays shows in the player (Q156)
+        if let Some(d) = self.demo.as_mut() {
+            d.sent(&c);
+        }
         // A full queue is the connection task being busy, not the Daemon being gone: say the true thing, so a Play or
         // Pause isn't thrown away under a message that sends the user to restart a Daemon that runs fine.
         let sent = match (&self.link, &self.commands) {
@@ -1229,10 +1298,11 @@ impl App {
             _ => None,
         };
         match sent {
-            Some(Ok(())) => {}
+            Some(Ok(())) => return true,
             Some(Err(mpsc::error::TrySendError::Full(_))) => self.say("singularityd is busy — that didn't go through; try again"),
             Some(Err(mpsc::error::TrySendError::Closed(_))) | None => self.say("Not connected to singularityd"),
         }
+        false
     }
 
     // ── actions ───────────────────────────────────────────────────────
@@ -1354,24 +1424,24 @@ impl App {
                 }
             }
             // (while arranging, the key that came in leaves as Esc does, Q70: also one bound with Ctrl or Alt)
-            Action::Arrange if self.arranging.is_some() => self.arrange_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Action::Arrange if self.arrange.is_on() => self.arrange_leave(),
             Action::Arrange => self.enter_arrange(),
             Action::NewDesign => self.new_design(),
             Action::DiscardNewDesign => self.discard_new_design(),
-            Action::ResetLayout => self.reset_design(),
+            Action::DeleteDesign => self.ask_delete_design(),
             Action::UndoLayout => self.undo_layout(),
             Action::RedoLayout => self.redo_layout(),
             Action::Palette => self.open_popup(Popup::Palette(Palette { query: String::new(), selected: 0 })),
             Action::Help => self.open_popup(Popup::Help { scroll: Default::default() }),
-            Action::Quit => self.quit = true,
+            Action::Quit => self.quit_now(),
         }
     }
 
     pub fn palette_items(&self) -> Vec<Action> {
         let q = self.palette().map(|p| p.query.to_lowercase()).unwrap_or_default();
         let building = self.building();
-        // (Discard new design only while one is built, Q78)
-        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && !(building && Action::NOT_WHILE_BUILDING.contains(a)) && (building || *a != Action::DiscardNewDesign) && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
+        // (Discard new design only while one is built, Q78; Delete design… only on a Design that isn't built in, #80)
+        let mut items: Vec<Action> = Action::ALL.into_iter().filter(|a| *a != Action::Palette && !(building && Action::NOT_WHILE_BUILDING.contains(a)) && (building || *a != Action::DiscardNewDesign) && (*a != Action::DeleteDesign || self.shown.file().is_some()) && fuzzy(&format!("{} {}", a.label(), a.keywords()).to_lowercase(), &q)).collect();
         // what you typed, as typed: at the start first, then anywhere, then loose matches
         let q = q.trim();
         items.sort_by_key(|a| {
@@ -1390,7 +1460,7 @@ impl App {
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && k.code == KeyCode::Char('c') {
-            self.quit = true;
+            self.quit_now();
             return;
         }
         // the vim preset's movement keys (j is ↓), unless typing
@@ -1402,6 +1472,7 @@ impl App {
         match self.modal() {
             Some(Modal::Palette) => return self.palette_key(k),
             Some(Modal::Picker) => return self.picker_key(k),
+            Some(Modal::DeleteDesign) => return self.delete_ask_key(k),
             Some(Modal::Naming) => return self.naming_key(k),
             Some(Modal::WidgetPicker) => return self.widget_picker_key(k),
             Some(Modal::Library) => return self.library_popup_key(k),
@@ -1441,10 +1512,7 @@ impl App {
         }
         // a Pane being dragged: Esc puts it back, nothing else gets through (one picked up with Enter is Arrange
         // mode's, below)
-        if self.tile.as_ref().is_some_and(|t| t.aim.is_none() || self.mini) {
-            if k.code == KeyCode::Esc {
-                self.tile_cancel();
-            }
+        if crate::arrange::Arrange::holds_keys(&mut self.gesture, k, self.mini) {
             return;
         }
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
@@ -1462,11 +1530,14 @@ impl App {
         {
             return self.run(a);
         }
-        if self.arranging.is_some() && !self.mini {
+        if self.arrange.is_on() && !self.mini {
             return self.arrange_key(k);
         }
         // a focused Pane showing its needs line has no keys of its own: they'd act on what it hides (#36)
-        let shown = !self.focus.is_some_and(|p| self.short_panes.contains(&p));
+        let shown = !self.focus.is_some_and(|p| self.pane_is_short(p));
+        if shown && self.back_to_highlight(k) {
+            return;
+        }
         if shown && self.is_focused(Widget::Home) && self.page_key(k, shift) {
             return;
         }
@@ -1530,12 +1601,8 @@ impl App {
             }
             return;
         }
-        let key = usize::MAX / 4 - i;
-        if self.last_click.is_some_and(|(t, j)| j == key && t.elapsed() < DOUBLE_CLICK) {
-            self.last_click = None;
+        if self.double_click(Clicked::TopWeek(i)) {
             self.send(Command::Play { uri: Some(row.track_uri) });
-        } else {
-            self.last_click = Some((Instant::now(), key));
         }
     }
 
@@ -1666,7 +1733,7 @@ impl App {
         if p.uri == crate::tracks::LIKED {
             self.seed_liked(&p.tracks);
         }
-        self.open.add_page(&p, self.page.list() == Some(p.uri.as_str()));
+        self.open.add_page(&p);
         self.fetched.insert(p.uri.clone(), Instant::now());
         self.details_arrived(&p.uri);
         self.forget_old();
@@ -1701,6 +1768,8 @@ impl App {
         let Some(it) = self.library.as_ref().and_then(|l| l.items.get(row - crate::sidebar::FIXED)).cloned() else { return };
         match it.kind.as_str() {
             "folder" => self.say("Folders are listed with their playlists indented below"),
+            // demo mode's "Make a folder called Demo" row opens nothing
+            "hint" => {}
             _ => self.open(&it.uri, &it.name, &it.subtitle, &it.kind),
         }
     }
@@ -1918,9 +1987,19 @@ impl App {
             }
             // nothing highlighted and no answer for these words yet: they go out now, without waiting for a pause
             KeyCode::Enter if s.shelves.sel.is_none() && !s.answered() => s.submit(),
-            // a short Pane shows the songs or the Shelves, never both: while a song is highlighted (↑ on the first one
-            // too) the Shelves' moves wait
-            KeyCode::Up | KeyCode::Left | KeyCode::Right | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End if s.short && s.track_sel.is_some() => {}
+            // with a song highlighted the keys stay in the songs, the only highlight (#82, owner Q136): PgUp PgDn page
+            // through them (by the songs shown), Home End go to the first and last; ↑ on the first song, ← and → do
+            // nothing
+            KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End if s.track_sel.is_some() => {
+                let (i, page, last) = (s.track_sel.unwrap_or(0), s.song_rows.max(1), songs.saturating_sub(1));
+                s.track_sel = Some(match k.code {
+                    KeyCode::PageUp => i.saturating_sub(page),
+                    KeyCode::PageDown => (i + page).min(last),
+                    KeyCode::Home => 0,
+                    _ => last,
+                });
+            }
+            KeyCode::Up | KeyCode::Left | KeyCode::Right if s.track_sel.is_some() => {}
             _ => {
                 // the Shelves take arrows and Enter like Home's
                 return self.home_key(k);
@@ -2010,9 +2089,17 @@ impl App {
         self.send(cmd);
     }
 
+    /// Highlight Card `c` in the Shelves shown; on Search the song highlight goes, so only one is ever live (#82).
+    fn pick_card(&mut self, c: CardRef) {
+        self.feed_view().sel = Some(c);
+        if matches!(self.page, Page::Search) {
+            self.search.track_sel = None;
+        }
+    }
+
     /// Open a Home Card (clicking never plays it: the list opens, with ▶ Play there).
     fn open_card(&mut self, c: CardRef) {
-        self.feed_view().sel = Some(c);
+        self.pick_card(c);
         // opening a result is what makes a search worth remembering
         if let Some(s) = self.searching_mut() {
             s.remember();
@@ -2219,10 +2306,11 @@ impl App {
             items.push(("Go to show".into(), MenuAct::GoTo));
         }
         items.extend(self.save_entry(&uri));
+        items.extend(self.demo_entry(&kind, &uri));
         items.push(("Copy link".into(), MenuAct::CopyLink));
         let at = at.or_else(|| self.hit_rect(&Hit::Card(c)).map(|r| (r.x + 2, r.y + 1))).unwrap_or((0, 0));
         let Some(id) = self.active_feed().and_then(|f| CardId::of(f, c)) else { return };
-        self.feed_view().sel = Some(c);
+        self.pick_card(c);
         self.open_popup(Popup::Menu(Menu { at, target: Target::Card(id), items, selected: 0 }));
     }
 
@@ -2319,7 +2407,7 @@ impl App {
     }
 
     pub(crate) fn hit_rect(&self, h: &Hit) -> Option<Rect> {
-        self.hits.iter().find(|(_, x)| x == h).map(|(r, _)| *r)
+        self.hits.iter().find(|(_, x)| x == h).map(|(r, _)| *r).or_else(|| self.plan().rect_of(h))
     }
 
     /// URI and name of a menu's target.
@@ -2402,6 +2490,7 @@ impl App {
             MenuAct::ChangeCover => self.ask_cover(&uri),
             MenuAct::RemoveCover => self.remove_cover(&uri),
             MenuAct::DeletePlaylist => self.delete_playlist(&uri),
+            MenuAct::AddToDemo => self.add_to_demo(&uri, &name),
             MenuAct::ReplaceWidget | MenuAct::Split(_) | MenuAct::Arrange | MenuAct::ClosePane => {}
         }
     }
@@ -2532,14 +2621,14 @@ impl App {
 
     /// Where the seek bar stands: the drag target, a pending nudge, or the interpolated playback position.
     pub fn display_position(&self, now_ms: u64) -> u64 {
-        match &self.scrub {
+        match self.gesture.scrub() {
             Some(s) if s.bar == Bar::Seek => s.value,
             _ => self.nudge.seek.unwrap_or_else(|| self.playback.position_at(now_ms)),
         }
     }
 
     pub fn display_volume(&self) -> u8 {
-        match &self.scrub {
+        match self.gesture.scrub() {
             Some(s) if s.bar == Bar::Volume => s.value as u8,
             _ => self.nudge.volume.unwrap_or(self.playback.volume),
         }
@@ -2582,7 +2671,7 @@ impl App {
     /// Whether something on screen is moving with the pointer or on its way somewhere (a Widget picked up with Enter
     /// moves with the keys only).
     pub fn moving_now(&self) -> bool {
-        self.tile.as_ref().is_some_and(|t| t.live && t.aim.is_none()) || self.divider_from.is_some()
+        crate::arrange::Arrange::moving_now(&self.gesture)
     }
 
     /// Called every frame: sends nudges once they've settled.
@@ -2652,13 +2741,13 @@ impl App {
     }
 
     /// Sends the seek and moves the local position anchor, so the bar doesn't snap back while the Daemon answers.
-    fn seek_to(&mut self, ms: u64) {
+    pub(crate) fn seek_to(&mut self, ms: u64) {
         self.send(Command::Seek { position_ms: ms });
         self.playback.position_ms = ms;
         self.playback.timestamp_ms = singularity_proto::now_ms();
     }
 
-    fn set_volume(&mut self, percent: u8) {
+    pub(crate) fn set_volume(&mut self, percent: u8) {
         if percent != self.playback.volume {
             self.send(Command::SetVolume { percent });
             self.playback.volume = percent;
@@ -2771,18 +2860,18 @@ impl App {
         // (Arrange mode leaves the player bar as it is, Q39: a press or the wheel on it, and a scrub begun there, are
         // the bar's own, as outside it)
         let bar = self.player_rect();
-        let on_bar = self.scrub.is_some() || m.column >= bar.x && m.column < bar.right() && m.row >= bar.y && m.row < bar.bottom();
-        if let Some(modal) = self.modal().filter(|&md| !(md == Modal::Arrange && on_bar && self.tile.is_none() && self.drag.is_none())) {
+        let on_bar = self.gesture.scrub().is_some() || m.column >= bar.x && m.column < bar.right() && m.row >= bar.y && m.row < bar.bottom();
+        if let Some(modal) = self.modal().filter(|&md| !(md == Modal::Arrange && on_bar && !crate::arrange::Arrange::holding(&self.gesture))) {
             return self.modal_pointer(modal, m, coarse);
         }
         // a song held in the queue popup, which has closed (another popup took its place, a key closed it): the drag
         // aimed at a list that's gone, so it ends without moving anything
-        if self.queue_drag.is_some() && !self.layout.has(Widget::Queue) {
-            self.queue_drag = None;
+        if self.gesture.queue().is_some() && !self.layout.has(Widget::Queue) {
+            self.gesture = None;
         }
         // a Pane held by its title: the pointer is the Pane's until it lets go
-        if self.tile.is_some() {
-            return self.tile_pointer(m);
+        if self.gesture.carry().is_some() {
+            return self.arrange_route(m, coarse);
         }
         // the Settings page owns the wheel wherever the pointer is: drifting off it must not scroll a Pane behind
         if self.page.settings().is_some() && matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) {
@@ -2860,18 +2949,21 @@ impl App {
                         // a second click on the same row soon after plays it
                         // (by identity: a page arriving between the clicks doesn't make it another song, D81)
                         let id = self.open.id_at(self.page.list().unwrap_or_default(), vi);
-                        let double = self.last_click.is_some_and(|(t, i)| i == vi && t.elapsed() < DOUBLE_CLICK) && id.is_some() && self.last_row == id;
-                        self.last_row = id;
+                        let double = match id.clone() {
+                            Some(id) => self.double_click(Clicked::Row(id, vi)),
+                            None => {
+                                self.last_click = None;
+                                false
+                            }
+                        };
                         if let Some(v) = self.list_view_mut() {
                             v.sel = vi;
                         }
                         if double {
-                            self.last_click = None;
                             self.play_row(vi);
-                        } else {
-                            self.last_click = Some((Instant::now(), vi));
+                        } else if let Some(id) = id.filter(|_| self.rows_removable()) {
                             // a drag from here reorders your own playlist
-                            self.playlists.press = self.rows_removable().then(|| self.open.id_at(self.page.list().unwrap_or_default(), vi)).flatten();
+                            self.gesture = Some(Gesture::Row(crate::gesture::RowPress { id, drag: None }));
                         }
                     }
                     Some(Hit::SortCol(c)) => self.sort(c),
@@ -2917,19 +3009,18 @@ impl App {
                         }
                         // an artist or album opens at once (like a link); a track plays on a second click
                         let track = matches!(self.stats_entry(i), Some((crate::stats::Section::Tracks, _)));
-                        let double = self.last_click.is_some_and(|(t, j)| j == usize::MAX / 3 - i && t.elapsed() < DOUBLE_CLICK);
-                        if !track || double {
+                        if !track {
                             self.last_click = None;
                             self.stats_act(i);
-                        } else {
-                            self.last_click = Some((Instant::now(), usize::MAX / 3 - i));
+                        } else if self.double_click(Clicked::StatsRow(i)) {
+                            self.stats_act(i);
                         }
                     }
                     Some(Hit::QueueRow(i)) => {
                         self.focus_on(Widget::Queue);
                         self.queue_view.place(i);
                         // a queued or context song can be dragged (a context song also up into your queue)
-                        self.queue_drag = crate::queue::QueueDrag::start(self, i);
+                        self.gesture = crate::queue::QueueDrag::start(self, i).map(Gesture::Queue);
                     }
                     // click a lyric line: jump there (where the music is when the delayed line shows)
                     Some(Hit::Lyric(ms)) => self.seek_to((ms as i64 + self.config.lyrics.delay()).max(0) as u64),
@@ -2957,43 +3048,35 @@ impl App {
                         }
                     }
                     Some(Hit::SearchTrack(i)) => {
-                        let double = self.last_click.is_some_and(|(t, j)| j == usize::MAX / 2 - i && t.elapsed() < DOUBLE_CLICK);
+                        let double = self.double_click(Clicked::SearchTrack(i));
                         if let Some(s) = self.searching_mut() {
                             s.track_sel = Some(i);
                         }
                         if double {
-                            self.last_click = None;
                             self.play_search_track(i);
-                        } else {
-                            self.last_click = Some((Instant::now(), usize::MAX / 2 - i));
                         }
                     }
                     Some(Hit::PlayArtist) => self.play_artist(),
                     Some(Hit::Save(l)) => self.save_clicked(l),
                     Some(Hit::TopTrack(i)) => {
-                        // top tracks share the double-click memory with list rows, kept apart by index
-                        let double = self.last_click.is_some_and(|(t, j)| j == usize::MAX - i && t.elapsed() < DOUBLE_CLICK);
+                        let double = self.double_click(Clicked::TopTrack(i));
                         if let Some(a) = self.page.artist_mut() {
                             a.top_sel = i;
                         }
                         if double {
-                            self.last_click = None;
                             self.play_top(i);
-                        } else {
-                            self.last_click = Some((Instant::now(), usize::MAX - i));
                         }
                     }
-                    Some(Hit::MenuItem(_) | Hit::MenuSplit(_) | Hit::PickerItem(_) | Hit::AddPick(_)) => {}
+                    Some(Hit::MenuItem(_) | Hit::MenuSplit(_) | Hit::PickerItem(_) | Hit::PickerUndo | Hit::DeleteAnswer(_) | Hit::AddPick(_)) => {}
                     Some(Hit::Swap(p, d)) => {
                         self.swap_widget(p, d);
                     }
                     Some(Hit::History(d)) if d < 0 => self.go_back(),
                     Some(Hit::History(_)) => self.go_forward(),
                     Some(Hit::Focus(p)) => self.focus = Some(p),
-                    Some(Hit::Title(p) | Hit::TitleName(p)) => self.tile_down(p, m.column, m.row),
-                    Some(Hit::Close(p)) => self.close_pane(p),
+                    Some(Hit::Title(_) | Hit::TitleName(_) | Hit::Close(_)) => self.arrange_route(m, coarse),
                     Some(Hit::PickWidget(_)) => {}
-                    Some(Hit::Divider(i)) => self.grab_divider(i, m.column, m.row),
+                    Some(Hit::Divider(_)) => self.arrange_route(m, coarse),
                     // (only drawn in Arrange mode, which takes its own clicks)
                     Some(Hit::SplitPane(_) | Hit::TrayItem(_) | Hit::TrayRemove(_) | Hit::ClearTray | Hit::TrayAdd | Hit::TrayScroll(_) | Hit::ArrangeDone) => {}
                     Some(Hit::Action(a)) => self.run(a),
@@ -3010,46 +3093,42 @@ impl App {
                         };
                         if max > 0 {
                             self.nudge = Nudge::default();
-                            self.scrub = Some(Scrub::press(bar, r, max, fx, precise));
+                            self.gesture = Some(Gesture::Scrub(Scrub::press(bar, r, max, fx, precise)));
                         }
                     }
                     None => self.close_if_open(Modal::Palette),
                 }
             }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                if let Some(s) = self.scrub.as_mut() {
+            MouseEventKind::Drag(MouseButton::Left) => match self.gesture.as_mut() {
+                Some(Gesture::Scrub(s)) => {
                     s.drag(fx, coarse);
                     // volume is heard while dragging (deduped per percent); the seek waits for the release
                     if s.bar == Bar::Volume {
                         let v = s.value as u8;
                         self.set_volume(v);
                     }
-                } else if let Some(d) = self.queue_drag.clone() {
-                    self.queue_drag = Some(crate::queue::target(self, d, m.row));
-                } else if self.playlists.press.is_some() {
-                    self.drag_row_to(m.row);
-                } else if let Some(Hit::Divider(i)) = self.drag.clone()
-                    && let Some(d) = self.dividers.get(i).cloned()
-                {
-                    let pos = if d.axis == crate::layout::Axis::Vertical { m.row } else { m.column };
-                    self.drag_divider(&d, (pos as i32 + self.drag_offset).max(0) as u16);
                 }
-            }
-            MouseEventKind::Up(_) => {
-                if self.drag.take().is_some() {
-                    self.divider_released();
+                Some(Gesture::Queue(d)) => {
+                    let d = d.clone();
+                    self.gesture = Some(Gesture::Queue(crate::queue::target(self, d, m.row)));
                 }
-                if let Some(d) = self.queue_drag.take() {
-                    self.drop_queued(d);
+                Some(Gesture::Row(_)) => self.drag_row_to(m.row),
+                Some(Gesture::Divider(_)) => self.arrange_route(m, coarse),
+                Some(Gesture::Carry(_)) | None => {}
+            },
+            MouseEventKind::Up(_) => match self.gesture.take() {
+                g @ Some(Gesture::Divider(_)) => {
+                    self.gesture = g;
+                    self.arrange_route(m, coarse);
                 }
-                self.drop_row();
-                if let Some(s) = self.scrub.take() {
-                    match s.bar {
-                        Bar::Seek => self.seek_to(s.value),
-                        Bar::Volume => self.set_volume(s.value as u8),
-                    }
-                }
-            }
+                Some(Gesture::Queue(d)) => self.drop_queued(d),
+                Some(Gesture::Row(r)) => self.drop_row(r),
+                Some(Gesture::Scrub(s)) => match s.bar {
+                    Bar::Seek => self.seek_to(s.value),
+                    Bar::Volume => self.set_volume(s.value as u8),
+                },
+                g @ (Some(Gesture::Carry(_)) | None) => self.gesture = g,
+            },
             MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
                 let d = if m.kind == MouseEventKind::ScrollLeft { -1 } else { 1 };
                 if let Some(row) = self.home_row_at(m.column, m.row) {
@@ -3069,8 +3148,137 @@ impl App {
                     self.pane_wheel(w, m.column, m.row, rows, coarse);
                 }
             }
+            MouseEventKind::Moved => self.hover(m.column, m.row),
             _ => {}
         }
+    }
+
+    /// The pointer over a list's row in the focused Pane highlights it (D86: the wheel scrolls the view and leaves the
+    /// highlight, so the row to pick is the one under the pointer; a click picks it). It moves the highlight and
+    /// nothing else: the queue's highlight isn't placed (it keeps following as it did), the Settings tabs and a number
+    /// being typed keep the keys, and a highlight in search's Shelves stays there.
+    fn hover(&mut self, x: u16, y: u16) {
+        let Some(hit) = self.hit_at(x, y) else { return };
+        let home = self.is_focused(Widget::Home);
+        match hit {
+            Hit::Side(row) if self.is_focused(Widget::Library) => self.sidebar.sel = row,
+            Hit::QueueRow(i) if self.is_focused(Widget::Queue) => self.queue_view.sel = i,
+            Hit::Track(vi) if home => {
+                if let Some(v) = self.list_view_mut() {
+                    v.sel = vi;
+                }
+            }
+            Hit::StatsRow(i) if home => {
+                if let Some(v) = self.page.stats_mut() {
+                    v.sel = i;
+                }
+            }
+            Hit::TopTrack(i) if home => {
+                if let Some(a) = self.page.artist_mut() {
+                    a.top_sel = i;
+                }
+            }
+            Hit::SearchTrack(i) if home => {
+                if let Some(s) = self.searching_mut().filter(|s| s.shelves.sel.is_none()) {
+                    s.track_sel = Some(i);
+                }
+            }
+            Hit::Recent(i) if home => {
+                if let Some(s) = self.searching_mut() {
+                    s.recent_sel = i;
+                }
+            }
+            // (not while a number is being typed for a setting)
+            Hit::Setting(i) if home => {
+                if let Some(v) = self.page.settings_mut().filter(|v| v.typing.is_none() && !v.on_tabs) {
+                    v.sel = i;
+                }
+            }
+            Hit::KeyRow(i) if home => {
+                if let Some(v) = self.page.settings_mut().filter(|v| !v.on_tabs) {
+                    v.key_sel = i;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// D86: a key that acts on the focused list's highlight brings a view the wheel took back to it first. A movement
+    /// key moves from the highlight and the view follows (a no-op one, ↑ on the first row, just brings it back);
+    /// Enter or Delete on a highlight that isn't on screen only brings it back (true: the key is used up), so nothing
+    /// acts on a row unseen.
+    fn back_to_highlight(&mut self, k: KeyEvent) -> bool {
+        use KeyCode::*;
+        let moves = matches!(k.code, Up | Down | PageUp | PageDown | Home | End);
+        let acts = matches!(k.code, Enter | Delete);
+        if !(moves || acts) || self.settings_typing() {
+            return false;
+        }
+        let held = if self.is_focused(Widget::Library) {
+            let s = &mut self.sidebar;
+            let held = s.wheeled.holds(s.sel);
+            s.wheeled.release();
+            held.then_some(Hit::Side(s.sel))
+        } else if self.is_focused(Widget::Queue) {
+            let q = &mut self.queue_view;
+            let held = q.wheeled.holds(q.sel);
+            q.wheeled.release();
+            held.then_some(Hit::QueueRow(q.sel))
+        } else if self.is_focused(Widget::Home) {
+            match &mut self.page {
+                Page::List { uri, .. } => self.open.view_mut(uri).and_then(|v| {
+                    let held = v.wheeled.holds(v.sel);
+                    v.wheeled.release();
+                    held.then(|| {
+                        v.reveal();
+                        Hit::Track(v.sel)
+                    })
+                }),
+                Page::Artist(a) => {
+                    let held = a.top_wheeled.holds(a.top_sel);
+                    a.top_wheeled.release();
+                    held.then_some(Hit::TopTrack(a.top_sel))
+                }
+                Page::Search => {
+                    let s = &mut self.search;
+                    // a short Pane the wheel turned to the songs while the highlight is in the Shelves: back to them,
+                    // and Enter or Delete does nothing else
+                    let hidden = s.short && s.shelves.sel.is_some() && s.shelves_shown == Some(false);
+                    s.shelves_shown = None;
+                    if hidden {
+                        s.track_wheeled.release();
+                        return acts;
+                    }
+                    if s.query().trim().is_empty() {
+                        let held = s.recent_wheeled.holds(s.recent_sel);
+                        s.recent_wheeled.release();
+                        held.then_some(Hit::Recent(s.recent_sel))
+                    } else {
+                        let (key, held) = (s.track_key(), s.track_wheeled.holds(s.track_key()));
+                        s.track_wheeled.release();
+                        s.track_sel.filter(|_| held && key != usize::MAX).map(Hit::SearchTrack)
+                    }
+                }
+                Page::Stats(v) => {
+                    let held = v.wheeled.holds(v.sel);
+                    v.wheeled.release();
+                    held.then_some(Hit::StatsRow(v.sel))
+                }
+                Page::Settings(v) => {
+                    let (held, hit) = match v.tab {
+                        crate::settings::Tab::Config => (v.wheeled.holds(v.sel), Hit::Setting(v.sel)),
+                        crate::settings::Tab::Keys => (v.key_wheeled.holds(v.key_sel), Hit::KeyRow(v.key_sel)),
+                    };
+                    v.wheeled.release();
+                    v.key_wheeled.release();
+                    (held && !v.on_tabs).then_some(hit)
+                }
+                Page::Home => None,
+            }
+        } else {
+            None
+        };
+        acts && held.is_some_and(|h| !self.hits.iter().any(|(_, x)| *x == h))
     }
 }
 
@@ -3099,6 +3307,8 @@ macro_rules! modals {
 modals! {
     Palette,
     Picker,
+    /// Delete design's yes/no (#80)
+    DeleteDesign,
     Naming,
     /// the Widget picker: what a Pane shows (Replace widget…)
     WidgetPicker,
@@ -3126,6 +3336,7 @@ modals! {
 pub(crate) enum Popup {
     Palette(Palette),
     Picker(crate::looks::Picker),
+    DeleteDesign(crate::looks::DeleteAsk),
     Naming(Naming),
     WidgetPicker(crate::panemenu::WidgetPicker),
     /// the library without a Pane (D87): its list, its selection (`App::sidebar`) and its keys
@@ -3148,6 +3359,7 @@ impl Popup {
         match self {
             Popup::Palette(_) => Modal::Palette,
             Popup::Picker(_) => Modal::Picker,
+            Popup::DeleteDesign(_) => Modal::DeleteDesign,
             Popup::Naming(_) => Modal::Naming,
             Popup::WidgetPicker(_) => Modal::WidgetPicker,
             Popup::Library => Modal::Library,
@@ -3208,10 +3420,30 @@ popup_data! {
 }
 
 impl App {
+    /// Delete design's yes/no, while it's open (nothing in it changes in place: no `_mut`).
+    pub(crate) fn delete_ask(&self) -> Option<&crate::looks::DeleteAsk> {
+        match &self.popup {
+            Some(Popup::DeleteDesign(d)) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Close Delete design's yes/no, if it's the one open, and hand back what it held.
+    pub(crate) fn take_delete_ask(&mut self) -> Option<crate::looks::DeleteAsk> {
+        match self.popup.take() {
+            Some(Popup::DeleteDesign(d)) => Some(d),
+            other => {
+                self.popup = other;
+                None
+            }
+        }
+    }
+
     /// Open `p`, replacing the popup open (popups don't nest).
     pub(crate) fn open_popup(&mut self, p: Popup) {
-        // a Widget held meanwhile is let go: its chip would be drawn over the popup (#40 review)
-        self.tile_cancel();
+        // a Widget held meanwhile is let go (its chip would be drawn over the popup, #40 review), a divider held is
+        // let go where it is (Q103)
+        self.gesture_interrupted();
         self.popup = Some(p);
     }
 
@@ -3250,7 +3482,7 @@ impl App {
         // the wizard shows the code itself
         let login = !wizard && matches!(self.catalogue, Some(CatalogueStatus::LoginPending { .. })) && !self.login_hidden;
         let mut layers: Vec<Modal> = self.popup.as_ref().map(Popup::modal).into_iter().collect();
-        let on = [(wizard, Modal::Wizard), (login, Modal::Login), (self.arranging.is_some() && !self.mini, Modal::Arrange)];
+        let on = [(wizard, Modal::Wizard), (login, Modal::Login), (self.arrange.is_on() && !self.mini, Modal::Arrange)];
         layers.extend(on.into_iter().filter_map(|(on, m)| on.then_some(m)));
         layers
     }
@@ -3323,8 +3555,8 @@ impl App {
                     d.scroll.by(-rows);
                 }
             }
-            // one line to type in, a short notice: nothing to scroll
-            Modal::Naming | Modal::Cover | Modal::Login => {}
+            // one line to type in, a short notice, a yes/no: nothing to scroll
+            Modal::Naming | Modal::Cover | Modal::Login | Modal::DeleteDesign => {}
         }
     }
 
@@ -3336,7 +3568,7 @@ impl App {
     fn modal_pointer(&mut self, modal: Modal, m: MouseEvent, coarse: bool) {
         // Arrange mode is the Panes' own layer: its gestures are the arranging ones (`arrange.rs`)
         if modal == Modal::Arrange {
-            return self.arrange_pointer(m, coarse);
+            return self.arrange_route(m, coarse);
         }
         let up = m.kind == MouseEventKind::ScrollUp;
         let inside = self.overlays.iter().any(|r| m.column >= r.x && m.column < r.right() && m.row >= r.y && m.row < r.bottom());
@@ -3347,12 +3579,12 @@ impl App {
                 _ => {}
             },
             MouseEventKind::Drag(MouseButton::Left) if modal == Modal::Queue => {
-                if let Some(d) = self.queue_drag.clone() {
-                    self.queue_drag = Some(crate::queue::target(self, d, m.row));
+                if let Some(d) = self.gesture.queue().cloned() {
+                    self.gesture = Some(Gesture::Queue(crate::queue::target(self, d, m.row)));
                 }
             }
-            MouseEventKind::Up(_) if modal == Modal::Queue && self.queue_drag.is_some() => {
-                if let Some(d) = self.queue_drag.take() {
+            MouseEventKind::Up(_) if modal == Modal::Queue && self.gesture.queue().is_some() => {
+                if let Some(Gesture::Queue(d)) = self.gesture.take() {
                     self.drop_queued(d);
                 }
             }
@@ -3370,7 +3602,14 @@ impl App {
                             self.picker_select(i);
                             self.picker_keep();
                         }
+                        Some(Hit::PickerUndo) => self.picker_undo(),
                         _ => self.picker_cancel(),
+                    },
+                    // an answer; outside the box is a no; inside, elsewhere, nothing
+                    Modal::DeleteDesign => match hit {
+                        Some(Hit::DeleteAnswer(yes)) => self.delete_answer(yes),
+                        _ if !inside => self.delete_answer(false),
+                        _ => {}
                     },
                     // a click elsewhere only closes the menu
                     Modal::Menu => match hit {
@@ -3410,7 +3649,7 @@ impl App {
                     Modal::Queue => match hit {
                         Some(Hit::QueueRow(i)) => {
                             self.queue_view.place(i);
-                            self.queue_drag = crate::queue::QueueDrag::start(self, i);
+                            self.gesture = crate::queue::QueueDrag::start(self, i).map(Gesture::Queue);
                         }
                         _ if !inside => self.close_queue_popup(),
                         _ => {}
@@ -3420,15 +3659,7 @@ impl App {
                 }
             }
             // a press that started before the popup opened ends without doing anything
-            MouseEventKind::Up(_) => {
-                self.drag = None;
-                self.queue_drag = None;
-                self.scrub = None;
-                self.playlists.press = None;
-                self.playlists.row_drag = None;
-                self.tile = None;
-                self.divider_from = None;
-            }
+            MouseEventKind::Up(_) => self.gesture_dropped(),
             _ => {}
         }
     }

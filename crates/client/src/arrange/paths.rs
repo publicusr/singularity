@@ -17,10 +17,15 @@
 //! - a divider flung past its limit at the well stopped where the last report that fitted left it, short of the limit;
 //! - after a resize mid-drag the drop used a Pane of the old window.
 //!
+//! The other Gestures (D89) are replayed the same way on a Client with a song and a queue: a seek-bar drag seeks
+//! once, on the release, to what the bar showed, and a queued song dragged lands where its preview showed it; a
+//! release never heard lets either go (the seek where it was let go of, the song where it was).
+//!
 //! Not modelled: the terminal's pixel reports (`term::MouseUnits`; the Client gets cells either way) and the wheel.
 
 use super::*;
 use crate::layout::Node;
+use crate::design::DESIGNS;
 use ratatui::crossterm::event::KeyModifiers;
 use crate::arrangement::outline;
 use crate::pace::{Moves, Pacer};
@@ -120,17 +125,42 @@ struct Replay {
     last_drag: Option<(u16, u16)>,
     moves: Moves,
     pacer: Pacer,
+    /// what the Daemon was sent (a Client with a song and a queue: `Replay::playing`)
+    rx: Option<tokio::sync::mpsc::Receiver<singularity_proto::Command>>,
+    /// a seek-bar or queue drag at each release heard: the bar's value, or where the song's preview showed it
+    released: Vec<Let>,
+}
+
+/// What a seek-bar or queue drag showed when its release was heard.
+#[derive(Clone, Debug, PartialEq)]
+enum Let {
+    Seek(u64),
+    Queue { uid: String, to: usize },
 }
 
 impl Replay {
     /// Design `design` at 160×48, drawing at `fps` while something moves, pointer moves combined or not.
     fn new(design: usize, fps: u64, combine: bool) -> Replay {
-        let mut a = App::new(None);
+        Replay::with(App::new(None), None, design, fps, combine)
+    }
+
+    /// `new`, on a Client linked to a Daemon, with a song (paused) and a queue of 12 queued songs.
+    fn playing(design: usize, fps: u64, combine: bool) -> Replay {
+        use singularity_proto::{Item, QueueEntry};
+        let (tx, rx) = tokio::sync::mpsc::channel(4096);
+        let mut a = App::new(Some(tx));
+        a.link = crate::app::Link::Connected { version: "test".into() };
+        a.playback.item = Some(Item { uri: "spotify:track:now".into(), name: "Song".into(), duration_ms: 240_000, ..Default::default() });
+        a.playback.queue = (0..12).map(|i| QueueEntry { item: Item { uri: format!("spotify:track:{i}"), name: format!("Song {i}"), ..Default::default() }, source: "queue".into(), uid: format!("q{i}") }).collect();
+        Replay::with(a, Some(rx), design, fps, combine)
+    }
+
+    fn with(mut a: App, rx: Option<tokio::sync::mpsc::Receiver<singularity_proto::Command>>, design: usize, fps: u64, combine: bool) -> Replay {
         a.set_design(design);
         a.config.visuals.motion_fps = fps as _;
         let t0 = Instant::now() + Duration::from_secs(3600);
         let start = a.layout.clone();
-        let mut r = Replay { a, t0, combine, size: (W, H), frames: vec![], draw: false, drawn: None, drops: vec![], start, divider: None, last_drag: None, moves: Moves::default(), pacer: Pacer::new(t0) };
+        let mut r = Replay { a, t0, combine, size: (W, H), frames: vec![], draw: false, drawn: None, drops: vec![], start, divider: None, last_drag: None, moves: Moves::default(), pacer: Pacer::new(t0), rx, released: vec![] };
         r.render();
         r
     }
@@ -145,7 +175,7 @@ impl Replay {
 
     fn render(&mut self) {
         let mut t = Terminal::new(TestBackend::new(self.size.0, self.size.1)).unwrap();
-        t.draw(|f| crate::ui::draw(f, &mut self.a)).unwrap();
+        t.draw(|f| crate::ui::frame(f, &mut self.a)).unwrap();
         self.drawn = Some(self.a.layout.clone());
     }
 
@@ -153,7 +183,7 @@ impl Replay {
     /// the player bar).
     fn under(&self, x: u16, y: u16, own: PaneId) -> Option<Spot> {
         let t = self.a.tray_rect();
-        if self.a.arranging.is_some() && own != PaneId::UNSET && x < t.right() && y >= t.y && y < t.bottom() {
+        if self.a.arrange.on.is_some() && own != PaneId::UNSET && x < t.right() && y >= t.y && y < t.bottom() {
             return Some(Spot::Tray);
         }
         let c = self.a.layout.compute(self.a.pane_area());
@@ -165,19 +195,19 @@ impl Replay {
         if let Some((at, ev)) = self.moves.flush() {
             self.handle(at, ev);
         }
-        if self.draw || self.a.pane_area() != body(self.size, self.a.arranging.is_some()) || self.drawn.as_ref() != Some(&self.a.layout) {
+        if self.draw || self.a.pane_area() != body(self.size, self.a.arrange.on.is_some()) || self.drawn.as_ref() != Some(&self.a.layout) {
             self.render();
         }
         let area = self.a.pane_area();
         let fits = self.a.layout.fits(area);
         // drawn this frame: the Panes' own hit boxes say where; else where the layout puts them
         let mut rects: Vec<(PaneId, Rect)> = if self.draw {
-            self.a.hits.iter().filter_map(|(r, h)| if let Hit::Focus(p) = h { Some((*p, *r)) } else { None }).collect()
+            self.a.all_hits().iter().filter_map(|(r, h)| if let Hit::Focus(p) = h { Some((*p, *r)) } else { None }).collect()
         } else {
             self.a.layout.compute(area).panes.into_iter().map(|(p, r)| (p.id, r)).collect()
         };
         rects.sort_by_key(|(p, _)| *p);
-        let t = self.a.tile.as_ref().filter(|t| t.live);
+        let t = self.a.gesture.carry().filter(|t| t.live);
         let under = t.and_then(|t| self.under(t.at.0, t.at.1, t.pane.id));
         let ms = self.ms(due);
         self.frames.push(Frame { t: ms, held: t.is_some(), over: t.and_then(Spot::of), under, rects, body: area, fits });
@@ -199,7 +229,7 @@ impl Replay {
     /// One event handled, as `main.rs`'s `handle` does; a hold it ends is recorded with how it ended.
     fn handle(&mut self, at: Instant, ev: Event) {
         self.a.input_at = Some(at);
-        let held = self.a.tile.as_ref().filter(|t| t.live).map(|t| (t.pane.id, Spot::of(t), t.pane.widget.filter(|_| t.from_tray)));
+        let held = self.a.gesture.carry().filter(|t| t.live).map(|t| (t.pane.id, Spot::of(t), t.pane.widget.filter(|_| t.from_tray)));
         let before = self.a.layout.clone();
         match ev {
             Event::Mouse(m) => {
@@ -209,11 +239,18 @@ impl Replay {
                 if m.kind == MouseEventKind::Drag(MouseButton::Left) {
                     self.last_drag = Some((m.column, m.row));
                 }
-                self.a.mouse(m);
-                if let (MouseEventKind::Down(MouseButton::Left), Some(Hit::Divider(i))) = (m.kind, &self.a.drag) {
-                    self.divider = Some(*i);
+                if up {
+                    match &self.a.gesture {
+                        Some(crate::gesture::Gesture::Scrub(s)) => self.released.push(Let::Seek(s.value)),
+                        Some(crate::gesture::Gesture::Queue(d)) => self.released.push(Let::Queue { uid: d.uid.clone(), to: d.to }),
+                        _ => {}
+                    }
                 }
-                if let Some((own, _, from_tray)) = held.filter(|_| self.a.tile.is_none()) {
+                self.a.mouse(m);
+                if let (MouseEventKind::Down(MouseButton::Left), Some(i)) = (m.kind, Arrange::divider_held(&self.a.gesture)) {
+                    self.divider = Some(i);
+                }
+                if let Some((own, _, from_tray)) = held.filter(|_| self.a.gesture.carry().is_none()) {
                     self.drops.push(Drop { before, released, shown, held: own, from_tray, after: self.a.layout.clone() });
                 }
             }
@@ -283,8 +320,9 @@ impl Replay {
         let area = self.a.pane_area();
         assert!(self.a.layout.fits(area), "{what}: the floor plan isn't valid: {:?}", self.a.layout);
         // nothing is left held once the button is up (every path ends with it up)
-        assert!(self.a.tile.is_none(), "{what}: a Widget is still held");
-        assert!(self.a.drag.is_none() && self.a.divider_from.is_none(), "{what}: a divider is still held");
+        assert!(self.a.gesture.carry().is_none(), "{what}: a Widget is still held");
+        assert!(self.a.gesture.divider().is_none(), "{what}: a divider is still held");
+        assert!(self.a.gesture.is_none(), "{what}: a press or a drag is still held");
         assert!(!self.a.moving_now(), "{what}: still moving after the path");
         // a release drops on the Pane under it, which is the one highlighted at release: the two Widgets swap and the
         // floor plan stays; a hold that ended any other way (Esc, unheard, on its own Pane, off the Panes) changes nothing
@@ -496,11 +534,16 @@ fn every_way(name: &str, shape: impl Fn(&Replay, &mut Hand)) -> Vec<(String, Rep
 
 /// `every_way`, from a start `setup` makes (the Design on screen before the path).
 fn every_way_from(name: &str, setup: impl Fn(&mut Replay), shape: impl Fn(&Replay, &mut Hand)) -> Vec<(String, Replay)> {
+    every_way_on(name, Replay::new, setup, shape)
+}
+
+/// `every_way_from`, on the Client `make` makes (`Replay::new`, `Replay::playing`).
+fn every_way_on(name: &str, make: fn(usize, u64, bool) -> Replay, setup: impl Fn(&mut Replay), shape: impl Fn(&Replay, &mut Hand)) -> Vec<(String, Replay)> {
     let mut out = vec![];
     for (design, d) in DESIGNS.iter().enumerate() {
         for (dev, kind) in [(MOUSE, "mouse"), (TRACKPAD, "trackpad")] {
             for (seed, &(fps, combine)) in RIGS.iter().enumerate() {
-                let mut r = Replay::new(design, fps, combine);
+                let mut r = make(design, fps, combine);
                 setup(&mut r);
                 let mut h = Hand::new(dev, seed as u64 + 1, 10.0);
                 shape(&r, &mut h);
@@ -756,7 +799,7 @@ fn a_right_click_mid_drag_does_not_drop_the_widget() {
 
 /// The cell of divider `i`'s grip nearest its middle that a press really grabs (not a title or a button on it).
 fn grip(r: &Replay, i: usize) -> Option<(u16, u16)> {
-    let d = r.a.dividers.get(i)?;
+    let d = r.a.dividers().get(i)?.clone();
     let mut cells: Vec<(u16, u16)> = (d.grip.y..d.grip.bottom()).flat_map(|y| (d.grip.x..d.grip.right()).map(move |x| (x, y))).filter(|&(x, y)| r.a.hit_at(x, y) == Some(Hit::Divider(i))).collect();
     cells.sort_by_key(|&(x, y)| x.abs_diff(d.grip.x + d.grip.width / 2) + y.abs_diff(d.grip.y + d.grip.height / 2));
     cells.first().copied()
@@ -764,12 +807,12 @@ fn grip(r: &Replay, i: usize) -> Option<(u16, u16)> {
 
 /// Every divider of every Design dragged by `shape(hand, the grip, whether it moves left and right)`.
 fn every_divider(name: &str, shape: impl Fn(&mut Hand, (u16, u16), bool)) -> Vec<(String, Replay)> {
-    let most = (0..DESIGNS.len()).map(|d| Replay::new(d, 60, true).a.dividers.len()).max().unwrap();
+    let most = (0..DESIGNS.len()).map(|d| Replay::new(d, 60, true).a.dividers().len()).max().unwrap();
     let mut out = vec![];
     for i in 0..most {
         for (what, r) in every_way(&format!("{name}, divider {i}"), |r, h| {
             if let Some(at) = grip(r, i) {
-                shape(h, at, r.a.dividers[i].axis == crate::layout::Axis::Horizontal);
+                shape(h, at, r.a.dividers()[i].axis == crate::layout::Axis::Horizontal);
             }
         }) {
             assert!(!r.frames.iter().any(|f| f.held), "{what}: a press on a divider picked up a Widget");
@@ -908,5 +951,90 @@ fn a_drag_drawn_frame_by_frame_moves_nothing_but_the_chip_and_the_highlight() {
         assert_eq!(held[0].rects, arranged, "the held frames show the arranged floor plan");
         assert!(r.changes() >= 2, "the highlight went from Pane to Pane");
         assert_eq!(r.a.layout, swapped_with(&r, Widget::Library));
+    }
+}
+
+// ── the other Gestures: seeking and a queued song (D89) ───────────────
+
+/// The seeks, volumes and queue moves the Daemon was sent during the path (a Client from `Replay::playing`).
+fn sent(r: &mut Replay) -> Vec<singularity_proto::Command> {
+    let rx = r.rx.as_mut().expect("a Client linked to a Daemon");
+    std::iter::from_fn(|| rx.try_recv().ok()).filter(|c| matches!(c, singularity_proto::Command::Seek { .. } | singularity_proto::Command::SetVolume { .. } | singularity_proto::Command::MoveInQueue { .. })).collect()
+}
+
+/// The seek bar's cells.
+fn seek_bar(r: &Replay) -> Rect {
+    r.a.all_hits().iter().find_map(|(b, h)| matches!(h, Hit::Bar(crate::scrub::Bar::Seek, _)).then_some(*b)).expect("the seek bar")
+}
+
+/// A seek-bar drag: nothing is sent while it is held, and the one seek, on the release, goes to what the bar showed.
+/// Let go unheard (outside the window, then a bare move), it seeks where it was let go of, once.
+#[test]
+fn a_seek_drag_seeks_once_where_the_bar_was_let_go() {
+    use singularity_proto::Command;
+    let stroke = |r: &Replay, h: &mut Hand| {
+        let b = seek_bar(r);
+        h.press(b.x + 4, b.y).glide(b.x as f64 + b.width as f64 * 0.6, b.y as f64, 180.0).rest(60.0).glide(b.x as f64 + 12.0, b.y as f64, 90.0).rest(40.0);
+    };
+    for (what, mut r) in every_way_on("seek", Replay::playing, |_| {}, |r, h| {
+        stroke(r, h);
+        h.release();
+    }) {
+        let shown = match r.released[..] {
+            [Let::Seek(v)] => v,
+            ref l => panic!("{what}: one seek-bar release heard, not {l:?}"),
+        };
+        assert_eq!(sent(&mut r), vec![Command::Seek { position_ms: shown }], "{what}: one seek, to what the bar showed");
+    }
+    for (what, mut r) in every_way_on("seek released unheard", Replay::playing, |_| {}, |r, h| {
+        stroke(r, h);
+        h.glide(W as f64 + 20.0, 4.0, 60.0).then(300.0, Ev::Hover(W - 1, 4));
+    }) {
+        assert!(r.released.is_empty(), "{what}: no release heard");
+        let seeks: Vec<_> = sent(&mut r).into_iter().filter(|c| matches!(c, Command::Seek { .. })).collect();
+        assert_eq!(seeks.len(), 1, "{what}: one seek, where it was let go of: {seeks:?}");
+    }
+}
+
+/// Queued song `i`'s row, where the queue's Pane draws it (None: this Design has no queue Pane).
+fn queue_row(r: &Replay, i: usize) -> Option<Rect> {
+    r.a.layout.has(Widget::Queue).then(|| r.a.hit_rect(&Hit::QueueRow(i))).flatten()
+}
+
+/// A queued song dragged down the queue: one move, on the release, to where its preview showed it; let go unheard,
+/// nothing moves and the next press is a press of its own.
+#[test]
+fn a_queued_song_dragged_lands_where_it_showed_and_unheard_goes_nowhere() {
+    use singularity_proto::Command;
+    let stroke = |r: &Replay, h: &mut Hand| {
+        if let (Some(a), Some(b)) = (queue_row(r, 1), queue_row(r, 4)) {
+            h.press(a.x + 3, a.y).glide(b.x as f64 + 3.0, b.y as f64, 160.0).rest(80.0);
+        }
+    };
+    let mut played = 0;
+    for (what, mut r) in every_way_on("queue drag", Replay::playing, |_| {}, |r, h| {
+        stroke(r, h);
+        if queue_row(r, 1).is_some() {
+            h.release();
+        }
+    }) {
+        let sent = sent(&mut r);
+        let Some(Let::Queue { uid, to }) = r.released.first().cloned() else {
+            assert!(sent.is_empty(), "{what}: no queue, nothing sent");
+            continue;
+        };
+        played += 1;
+        assert_eq!(uid, "q1", "{what}");
+        assert!(matches!(sent[..], [Command::MoveInQueue { .. }]), "{what}: one move: {sent:?}");
+        assert_eq!(r.a.playback.queue.iter().position(|e| e.uid == "q1"), Some(to), "{what}: it shows where its preview had it");
+    }
+    assert!(played > 0, "some Design has a queue Pane");
+    for (what, mut r) in every_way_on("queue drag released unheard", Replay::playing, |_| {}, |r, h| {
+        stroke(r, h);
+        h.then(5.0, Ev::FocusLost).then(300.0, Ev::Hover(2, 2));
+    }) {
+        assert!(r.released.is_empty(), "{what}: no release heard");
+        assert!(sent(&mut r).is_empty(), "{what}: nothing moved");
+        assert_eq!(r.a.playback.queue[1].uid, "q1", "{what}");
     }
 }

@@ -19,7 +19,14 @@ pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ClientMsg {
-    Hello { protocol: u32, client: String },
+    Hello {
+        protocol: u32,
+        client: String,
+        /// a Client in demo mode (D90): its stats come from the demo Listening log. Additive: older Clients leave it
+        /// out, older Daemons ignore it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        demo: bool,
+    },
     Ping { id: u64 },
     Command(Command),
     #[serde(other)]
@@ -44,6 +51,17 @@ pub enum DaemonMsg {
         /// Daemons don't say: false)
         #[serde(default)]
         soloist_in_vm: bool,
+        /// the Client's Hello asked for demo mode and this Daemon runs it so (D90): its stats come from the demo log.
+        /// A demo Client that isn't told (an older Daemon) shows no stats and refuses export and delete.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        demo: bool,
+        /// to a demo Client only: the saved login's username, so it is redacted before the login is ready
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        account: String,
+        /// this Daemon runs under systemd or launchd (#145): when it goes away, Clients leave starting the next one to
+        /// the service manager for a few seconds. Older Daemons don't say: false (a Client starts one at once).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        service: bool,
     },
     Incompatible { protocol: u32, message: String },
     Pong { id: u64 },
@@ -121,6 +139,12 @@ pub enum Command {
     Search { query: String },
     /// Fetch an artist page; arrives as `Event::Artist`.
     GetArtist { uri: String },
+    /// Demo mode's Home (#128): a playlist's first page or an artist's page, looked at quietly (no toast if it fails, no
+    /// further pages); answered by `Event::Peeked`.
+    Peek { uri: String },
+    /// Demo mode (#128): a demo Client shows this track as playing, so the demo Listening log may count its plays (it
+    /// logs no others).
+    ShownInDemo { uri: String },
     /// Fetch lyrics for a track (Spotify's, else LRCLIB's); arrives as `Event::Lyrics`. `words`: a Karaoke Widget is
     /// on screen, so LRCLIB is also asked for word timing when Spotify's lyrics only time lines (D67). Additive: older
     /// Daemons ignore it, older Clients leave it out.
@@ -266,6 +290,8 @@ pub enum Event {
     MovedInPlaylist { playlist: String, uids: Vec<String>, ok: bool },
     /// The answer to `FindShow`: the episode's show.
     EpisodeShow { episode: String, show: Link },
+    /// The answer to `Peek`: a playlist's first page or an artist's page; neither when it failed.
+    Peeked { uri: String, tracks: Option<TrackPage>, artist: Option<ArtistPage> },
     #[serde(other)]
     Unknown,
 }
@@ -383,6 +409,10 @@ pub enum CatalogueStatus {
     Unavailable { message: String },
 }
 
+/// The Catalogue's `Unavailable` message when, logging in again, it couldn't read the saved login (a keyring that
+/// didn't answer): not a network problem.
+pub const NO_SAVED_LOGIN: &str = "couldn't read the saved Spotify login; trying again";
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct HomeFeed {
     pub fetched_unix_ms: u64,
@@ -391,6 +421,10 @@ pub struct HomeFeed {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Shelf {
+    /// the section's id on Spotify (`spotify:section:…`), when it has one. Additive: older Daemons leave it out.
+    /// (D90's first demo mode hid personal Shelves by it; demo Home is now built from the Demo set, #128.)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub title: String,
     /// `shortcuts` (the grid at the top), `shelf` (a regular row) or `feed` (the endless tail)
     pub kind: String,
@@ -464,6 +498,10 @@ pub struct TrackRow {
     /// an episode's progress, as Spotify keeps it (#59); `added_at` is then its release date
     #[serde(default)]
     pub progress: Option<Progress>,
+    /// the song's album cover, where the list says (playlists, Liked Songs): demo mode's Home builds album Cards from
+    /// the Demo playlists' songs (#128). Additive: older Daemons leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_url: Option<String>,
 }
 
 /// How far into an episode you are (Spotify's `playedState`; marks can't be set from here).
@@ -667,6 +705,19 @@ pub struct ListeningSummary {
     /// plays today
     #[serde(default)]
     pub plays_today: u32,
+    /// the newest library backup, when some of its lists didn't come back whole (#144); `None`: it was whole, or
+    /// there's none. Additive: older Daemons leave it out, older Clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_short: Option<BackupShort>,
+}
+
+/// The lists in the newest library backup that didn't come back whole (Settings shows one line about them).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct BackupShort {
+    /// Liked Songs and owned playlists that came back short
+    pub lists: u32,
+    /// how many of them kept their last whole copy beside the newest backup's short one (the rest are saved marked incomplete)
+    pub kept: u32,
 }
 
 /// A calendar period in local time (weeks start on Monday), for stats.
@@ -846,12 +897,12 @@ mod tests {
     #[tokio::test]
     async fn the_welcome_says_whether_soloist_runs_in_a_vm() {
         let (mut a, mut b) = tokio::io::duplex(1024);
-        let msg = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: "1".into(), started_unix_ms: 5, engine: EngineKind::Soloist, soloist_in_vm: true };
+        let msg = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: "1".into(), started_unix_ms: 5, engine: EngineKind::Soloist, soloist_in_vm: true, demo: false, account: String::new(), service: true };
         write_msg(&mut a, &msg).await.unwrap();
         let got: DaemonMsg = read_msg(&mut b).await.unwrap().unwrap();
         assert_eq!(got, msg);
         let old: DaemonMsg = serde_json::from_str(r#"{"t":"welcome","protocol":1,"daemon_version":"1","started_unix_ms":5,"engine":"soloist"}"#).unwrap();
-        assert!(matches!(old, DaemonMsg::Welcome { soloist_in_vm: false, .. }), "{old:?}");
+        assert!(matches!(old, DaemonMsg::Welcome { soloist_in_vm: false, demo: false, service: false, .. }), "{old:?}: an older Daemon confirms no demo mode, and no service");
         #[derive(Deserialize)]
         #[serde(tag = "t", rename_all = "snake_case")]
         #[allow(dead_code)]
@@ -860,6 +911,19 @@ mod tests {
         }
         let OldDaemonMsg::Welcome { engine, .. } = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
         assert_eq!(engine, EngineKind::Soloist);
+    }
+
+    /// #144: a summary from an older Daemon (no `backup_short`) still decodes, and a whole backup's `None` isn't sent.
+    #[test]
+    fn a_summary_without_a_backup_note_decodes_and_none_is_left_out() {
+        let old: Event = serde_json::from_str(r#"{"ev":"listening","minutes":[1],"today_weekday":2,"hours_this_year":1.5,"top_artist":null,"streak_days":1,"plays":3}"#).unwrap();
+        let Event::Listening(s) = old else { panic!("{old:?}") };
+        assert_eq!((s.plays, &s.backup_short), (3, &None));
+        let json = serde_json::to_string(&Event::Listening(s.clone())).unwrap();
+        assert!(!json.contains("backup_short"), "{json}");
+        let short = ListeningSummary { backup_short: Some(BackupShort { lists: 2, kept: 1 }), ..s };
+        let back: Event = serde_json::from_str(&serde_json::to_string(&Event::Listening(short.clone())).unwrap()).unwrap();
+        assert_eq!(back, Event::Listening(short));
     }
 
     #[test]

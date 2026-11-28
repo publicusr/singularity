@@ -123,6 +123,10 @@ fn prefix(mods: KeyModifiers) -> String {
     s
 }
 
+/// The delete key's name in hints, as the keyboard labels it: "Del" on a PC's, "⌫" on a Mac's, which sends
+/// Backspace (owner Q132, Q160; the one OS-specific word in the Client, docs/PLATFORMS.md).
+pub const DELETE_KEY: &str = if cfg!(target_os = "macos") { "⌫" } else { "Del" };
+
 /// The standard keymap: what each action starts with (the first key is the one shown).
 const STANDARD: &[(Action, &[&str])] = &[
     (Action::TogglePlay, &["Space"]),

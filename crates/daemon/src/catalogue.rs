@@ -44,6 +44,8 @@ pub enum CatCmd {
     Logout,
     Home,
     Library,
+    /// Home and the library at once, each sent as soon as it's in (#81): what a login sets off
+    HomeAndLibrary,
     Tracks(String),
     /// a show's next episodes (#59)
     MoreTracks { uri: String, offset: u32 },
@@ -56,7 +58,12 @@ pub enum CatCmd {
     /// lyrics for a track; `meta` (name, artists, album, duration) helps the LRCLIB fallback
     /// `words`: also ask LRCLIB for word timing when Spotify's lyrics only time lines (a Karaoke Widget is on screen)
     Lyrics { uri: String, meta: Option<singularity_proto::Item>, words: bool },
+    /// a lookup running beside browsing has ended: LRCLIB's answer if there is one to send on to the Clients, and
+    /// whether to remember it
+    LyricsFound { uri: String, found: Option<(singularity_proto::Lyrics, bool)> },
     Artist(String),
+    /// demo mode's quiet look (#128): a playlist's first page or an artist's page, no toast if it fails
+    Peek(String),
     Search(String),
     Devices,
     Transfer(String),
@@ -89,11 +96,16 @@ pub enum CatCmd {
     Query { op: String, vars: Value, reply: tokio::sync::oneshot::Sender<anyhow::Result<Value>> },
     /// Connect found the session ended (D79): browsing, which owns the login, logs in again
     Reconnect,
+    /// a Client connected or asked to play while the Catalogue wasn't ready, at this time (#168): a start-up login that
+    /// stopped trying is tried once more
+    LoginWanted(Instant),
 }
 
 #[derive(Debug, Clone)]
 pub enum CatEvent {
     Status(CatalogueStatus),
+    /// the account the saved login is for, named before Spotify answers (#81: its last Home and library show then)
+    Account(String),
     Home(HomeFeed),
     Library(Library),
     Tracks(TrackPage),
@@ -104,6 +116,8 @@ pub enum CatEvent {
     /// send the Clients the last playback state again (an edit they showed early failed)
     Resync,
     Artist(singularity_proto::ArtistPage),
+    /// the answer to a `Peek`: a first page or an artist page, neither when it failed
+    Peeked { uri: String, tracks: Option<TrackPage>, artist: Option<singularity_proto::ArtistPage> },
     Search(singularity_proto::SearchResults),
     Devices(Vec<singularity_proto::Device>),
     /// the account's Jam, or none (D64)
@@ -228,7 +242,8 @@ pub fn spawn(dirs: Dirs, engine: Identity) -> (mpsc::Sender<CatCmd>, mpsc::Recei
 }
 
 /// The Catalogue over the query port `make` builds for each run (D78): Spotify's adapter, or fixtures in tests.
-fn spawn_with<Q: Fetch + Sync + 'static>(dirs: Dirs, engine: Identity, make: impl Fn(SessionSlot) -> Q + Send + 'static) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
+fn spawn_with<Q: Fetch + Sync + Clone + 'static>(dirs: Dirs, engine: Identity, make: impl Fn(SessionSlot) -> Q + Send + 'static) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEvent>) {
+    STARTED.get_or_init(Instant::now);
     let (cmd_tx, cmd_rx) = mpsc::channel(16);
     let (ev_tx, ev_rx) = mpsc::channel(64);
     tokio::spawn(supervise(dirs, engine, make, cmd_rx, ev_tx));
@@ -237,7 +252,7 @@ fn spawn_with<Q: Fetch + Sync + 'static>(dirs: Dirs, engine: Identity, make: imp
 
 /// Run the Catalogue, and keep it running: a panic would otherwise leave a Daemon that browses nothing, says
 /// "logged in" and never answers again (A1/C2). The command channel survives a restart, so Clients keep working.
-async fn supervise<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, make: impl Fn(SessionSlot) -> Q, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
+async fn supervise<Q: Fetch + Sync + Clone>(dirs: Dirs, engine: Identity, make: impl Fn(SessionSlot) -> Q, mut cmds: mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
     let mut backoff = Duration::from_secs(2);
     loop {
         let began = Instant::now();
@@ -268,19 +283,45 @@ async fn supervise<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, make: impl Fn(
     }
 }
 
-/// The commands that arrived behind a search: the newest search replaces this one, everything else waits its turn.
-/// (A2/C4: they used to be sent back into the channel this task alone reads, which deadlocked it when it was full
-/// and ran them after the search in any case.)
-fn drain_for_search(mut q: String, cmds: &mut mpsc::UnboundedReceiver<CatCmd>) -> (String, VecDeque<CatCmd>) {
-    let mut later = VecDeque::new();
-    while let Ok(c) = cmds.try_recv() {
-        match c {
-            CatCmd::Search(n) => q = n,
-            other => later.push_back(other),
-        }
-    }
-    (q, later)
+/// The newest search not made yet, and when it came (#126). Searches don't queue with the rest of browsing: while
+/// typing only the newest matters, it goes ahead of the browsing work waiting, and long work (a track list's pages,
+/// naming a queue) makes it between two of its requests.
+type PendingSearch = std::sync::Arc<tokio::sync::watch::Sender<Option<(String, Instant)>>>;
+
+/// A login or logout changes what every query after it gets: a search doesn't go ahead of one.
+fn changes_session(cmd: &CatCmd) -> bool {
+    matches!(cmd, CatCmd::Login | CatCmd::Logout | CatCmd::Reconnect)
 }
+
+/// A command's name for the log (its variant, none of what it carries).
+fn cmd_name(cmd: &CatCmd) -> String {
+    format!("{cmd:?}").split(|c: char| !c.is_alphanumeric()).next().unwrap_or_default().to_string()
+}
+
+/// Browsing work this long is logged, with its name: it is what a search (or anything else) waited behind.
+const SLOW_BROWSING: Duration = Duration::from_secs(1);
+
+/// How a search was answered, for its log line.
+enum Searched {
+    Kept,
+    Found { spotify: Duration, read: Duration, found: usize },
+    Failed { spotify: Duration },
+}
+
+/// A search's line in the log (#126): where its time went. It is given no words, so it can't write them (what you
+/// search for is personal; a failure's reason isn't written either, the Client shows it).
+fn search_line(waited: Duration, behind: &str, how: &Searched, all: Duration) -> String {
+    let ms = |d: Duration| d.as_millis();
+    let how = match how {
+        Searched::Kept => "answered from what was kept".to_string(),
+        Searched::Found { spotify, read, found } => format!("Spotify {} ms, read {} ms, {found} results", ms(*spotify), ms(*read)),
+        Searched::Failed { spotify } => format!("Spotify failed after {} ms", ms(*spotify)),
+    };
+    format!("search: waited {} ms{behind}, {how}; {} ms in all", ms(waited), ms(all))
+}
+
+/// Searches made in a row ahead of queued work before one queued command runs: typing can't hold the rest back.
+const SEARCHES_IN_A_ROW: u32 = 3;
 
 struct State<Q> {
     dirs: Dirs,
@@ -304,8 +345,250 @@ struct State<Q> {
     lyrics: HashMap<String, singularity_proto::Lyrics>,
     /// tracks LRCLIB was already asked about for word timing (D67): asked once per track
     word_tried: HashMap<String, ()>,
+    /// browsing's own channel, for answers of work running beside it (LRCLIB lookups)
+    to_browse: mpsc::WeakUnboundedSender<CatCmd>,
+    /// tracks LRCLIB is being asked about right now: asked again meanwhile (another Client, a reconnect), the one
+    /// lookup's answer reaches every Client
+    lrclib_asking: std::collections::HashSet<String>,
     artists: HashMap<String, (Instant, singularity_proto::ArtistPage)>,
     searches: HashMap<String, (Instant, singularity_proto::SearchResults)>,
+    /// the newest search not made yet (#126)
+    pending: PendingSearch,
+    /// browsing's commands as they come (searches aside), and those taken from it waiting their turn, with the
+    /// follow-ups of commands already run (A2: never sent back into the channel). Kept here so a search made in the
+    /// middle of long work sees what is queued (a login or logout it mustn't go ahead of).
+    inbox: mpsc::UnboundedReceiver<CatCmd>,
+    waiting: VecDeque<CatCmd>,
+    /// the work running (a command, or a search), by name and since when, and the last that ended: what a search
+    /// waited behind, for the log
+    busy: Option<(String, Instant)>,
+    last: Option<(String, Instant)>,
+    /// when to log in again after Spotify ended the session (Q171)
+    redial: Redial,
+    /// the reusable login of the last session, for logging in again (Q171: a keyring that doesn't answer then isn't
+    /// a logout)
+    reusable: Option<Credentials>,
+    /// the Clients connected (`CLIENTS`; a test's own count): logins again in the background only while there's one
+    clients: &'static std::sync::atomic::AtomicUsize,
+    /// the command running has tried a login already: at most one per command, however many queries it makes
+    tried: bool,
+    /// how a new session logs in: Spotify (`spotify_dial`), or what a test makes Spotify answer
+    dial: Dial,
+}
+
+/// Logs a new session in with these credentials.
+type Dial = std::sync::Arc<dyn Fn(Session, Credentials) -> futures_util::future::BoxFuture<'static, Result<(), librespot_core::Error>> + Send + Sync>;
+
+fn spotify_dial() -> Dial {
+    std::sync::Arc::new(|session, creds| Box::pin(async move { session.connect(creds, true).await }))
+}
+
+/// How often idle browsing looks whether Spotify ended the session (Q171): librespot only marks it ended, so it's
+/// looked at, not waited on. (A request in between finds it ended too, and logs in again first.)
+const LOOK_EVERY: Duration = Duration::from_secs(5);
+/// The first wait before trying again after a failed login, or after a session that ended soon after its login;
+/// it doubles each time, up to `REDIAL_MAX`.
+const REDIAL_FIRST: Duration = Duration::from_secs(5);
+const REDIAL_MAX: Duration = Duration::from_secs(300);
+/// A session that lasted this long ended in the ordinary way (Spotify drops an idle one): logged in again at once.
+const STEADY: Duration = Duration::from_secs(60);
+/// The start-up login's tries (#168, Q184): a start-up login that couldn't reach Spotify (just after boot, the network
+/// often isn't up yet) is tried again after about `first`, doubling up to `longest` between tries, with a jitter, until
+/// one fails `stop_after` since the first; then it stops (`AtStart::GaveUp`).
+#[derive(Debug, Clone, Copy)]
+struct StartPace {
+    first: Duration,
+    longest: Duration,
+    stop_after: Duration,
+}
+
+const START_PACE: StartPace = StartPace { first: Duration::from_secs(2), longest: Duration::from_secs(60), stop_after: Duration::from_secs(10 * 60) };
+
+/// Where the start-up login's tries are (#168).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AtStart {
+    /// they don't apply: the start-up login worked, there was none to try, or Spotify refused it
+    No,
+    /// the start-up login failed: it's tried again in the background, with or without a Client, until then
+    Until(Instant),
+    /// those tries ran out: a Client connecting or asking to play tries once more (`CatCmd::LoginWanted`)
+    GaveUp,
+}
+
+/// Clients connected to the Daemon (Q171): with none, a session Spotify ended is replaced at the next request, not in
+/// the background (a Daemon run by a service would otherwise log in again all day for no one).
+pub static CLIENTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One connected Client, counted in `CLIENTS` while it lasts.
+pub struct ClientHere;
+
+impl ClientHere {
+    pub fn new() -> ClientHere {
+        CLIENTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ClientHere
+    }
+}
+
+impl Default for ClientHere {
+    fn default() -> ClientHere {
+        ClientHere::new()
+    }
+}
+
+impl Drop for ClientHere {
+    fn drop(&mut self) {
+        CLIENTS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// When to log in again in the background after Spotify ended the session (Q171, #126). Spotify drops a quiet
+/// connection after a while; logging in again when that's seen, not at the next request, keeps the next search from
+/// waiting for the login. A session that lasted is replaced at once. One that ends soon after its login waits, longer
+/// each time it happens again (until one lasts); a login that fails (no network) is tried again later and later,
+/// until one works. So Spotify isn't asked over and over. A request never waits for any of this: it logs in again at
+/// once (`State::session`). Logging out stops it.
+///
+/// A start-up login that failed the same way is tried again too (#168), on its own pace (`StartPace`), with or without
+/// a Client, and not for ever: see `AtStart`.
+#[derive(Debug)]
+struct Redial {
+    /// how often idle browsing looks (`LOOK_EVERY`; shorter in tests)
+    every: Duration,
+    /// the wait after the next failed login
+    backoff: Duration,
+    /// sessions in a row that ended soon after their login
+    quick: u32,
+    /// a background login to try then
+    at: Option<Instant>,
+    /// when the current session logged in
+    since: Option<Instant>,
+    /// a login is owed: the session ended, or logging in again failed
+    owed: bool,
+    /// the session ended and no login was tried since: a request may try at once
+    fresh_end: bool,
+    /// when a login was last tried
+    last_try: Option<Instant>,
+    /// the start-up login's tries (#168)
+    start: AtStart,
+    /// their pace (`START_PACE`; shorter in tests)
+    pace: StartPace,
+}
+
+impl Redial {
+    fn new() -> Redial {
+        Redial { every: LOOK_EVERY, backoff: REDIAL_FIRST, quick: 0, at: None, since: None, owed: false, fresh_end: false, last_try: None, start: AtStart::No, pace: START_PACE }
+    }
+
+    /// A session is in: nothing waits, and the next failure starts from the first wait.
+    fn logged_in(&mut self, now: Instant) {
+        *self = Redial { every: self.every, quick: self.quick, since: Some(now), pace: self.pace, ..Redial::new() };
+    }
+
+    /// The session Spotify ended was seen at `now`: when to log in again (`now` for one that lasted).
+    fn ended(&mut self, now: Instant) -> Instant {
+        let lasted = self.since.is_some_and(|s| now.duration_since(s) >= STEADY);
+        self.since = None;
+        self.owed = true;
+        self.fresh_end = true;
+        let at = if lasted {
+            self.quick = 0;
+            now
+        } else {
+            self.quick += 1;
+            now + REDIAL_FIRST.saturating_mul(1 << (self.quick - 1).min(16)).min(REDIAL_MAX)
+        };
+        self.at = Some(at);
+        at
+    }
+
+    /// The start-up login couldn't reach Spotify at `now` (#168): its tries begin; when the first is.
+    fn failed_at_start(&mut self, now: Instant) -> Option<Instant> {
+        self.start = AtStart::Until(now + self.pace.stop_after);
+        self.backoff = self.pace.first;
+        self.failed(now)
+    }
+
+    /// Logging in again failed at `now`: when to try next. None once the start-up login's tries ran out (a failure
+    /// `stop_after` since the first), or for a try after that: those wait for a Client.
+    fn failed(&mut self, now: Instant) -> Option<Instant> {
+        let wait = match self.start {
+            AtStart::No => {
+                let wait = self.backoff;
+                self.backoff = (wait * 2).min(REDIAL_MAX);
+                wait
+            }
+            // (the jitter shortens a wait, so none is longer than `longest`)
+            AtStart::Until(until) if now < until => {
+                let wait = self.backoff;
+                self.backoff = (wait * 2).min(self.pace.longest);
+                wait - jitter(wait / 4)
+            }
+            AtStart::Until(_) | AtStart::GaveUp => {
+                self.start = AtStart::GaveUp;
+                self.owed = false;
+                self.at = None;
+                return None;
+            }
+        };
+        self.owed = true;
+        let at = now + wait;
+        self.at = Some(at);
+        Some(at)
+    }
+
+    /// Spotify refused the login (#168): the start-up login's tries end, with no try for a Client either.
+    fn refused(&mut self) {
+        *self = Redial { every: self.every, pace: self.pace, last_try: self.last_try, ..Redial::new() };
+    }
+
+    /// Are the start-up login's tries under way, or did they run out?
+    fn at_start(&self) -> bool {
+        self.start != AtStart::No
+    }
+
+    /// Logged out: nothing to log in again with.
+    fn stop(&mut self) {
+        *self = Redial { every: self.every, pace: self.pace, ..Redial::new() };
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        self.at.is_some_and(|at| at <= now)
+    }
+
+    /// A login is being tried at `now`.
+    fn trying(&mut self, now: Instant) {
+        self.last_try = Some(now);
+        self.fresh_end = false;
+    }
+
+    /// May a request try a login at `now`, ahead of the background wait? Only the first try after the session ended,
+    /// or once the last try is `REDIAL_FIRST` old: while Spotify can't be reached, requests fail at once instead of
+    /// each waiting for a login (and asking Spotify over and over).
+    fn request_may_try(&self, now: Instant) -> bool {
+        self.owed && (self.fresh_end || self.last_try.is_none_or(|t| now.duration_since(t) >= REDIAL_FIRST))
+    }
+}
+
+/// How a login went.
+#[derive(Debug, PartialEq)]
+enum LoggedIn {
+    Yes,
+    /// no saved login to use (logged out)
+    NoLogin,
+    /// Spotify couldn't be reached (or a saved login couldn't be read)
+    Failed,
+    /// Spotify refused the login (#168: not tried again at start-up)
+    Refused,
+}
+
+/// Did Spotify refuse the login itself (bad or revoked credentials, an account it won't let in), rather than not
+/// answer? librespot gives Spotify's refusal as `PermissionDenied` with "Login failed with reason: …" (its
+/// `AuthenticationError::LoginFailed`); "try another access point" after its last one isn't one. Nor is a connection
+/// the computer itself blocked (a firewall or a VPN's kill switch at boot: EPERM or EACCES), which librespot passes on
+/// as `PermissionDenied` too, without that text.
+fn spotify_refused(e: &librespot_core::Error) -> bool {
+    let why = e.error.to_string();
+    e.kind == librespot_core::error::ErrorKind::PermissionDenied && why.starts_with("Login failed with reason:") && !why.contains("Try another access point")
 }
 
 /// Which loop runs a command (D79): Connect's, or browsing's.
@@ -324,14 +607,18 @@ fn is_connect(cmd: &CatCmd) -> bool {
         CatCmd::Login
         | CatCmd::Logout
         | CatCmd::Reconnect
+        | CatCmd::LoginWanted(_)
         | CatCmd::Home
         | CatCmd::Library
+        | CatCmd::HomeAndLibrary
         | CatCmd::Tracks(_)
         | CatCmd::MoreTracks { .. }
         | CatCmd::FindShow(_)
         | CatCmd::Describe(_)
         | CatCmd::Lyrics { .. }
+        | CatCmd::LyricsFound { .. }
         | CatCmd::Artist(_)
+        | CatCmd::Peek(_)
         | CatCmd::Search(_)
         | CatCmd::SetSaved { .. }
         | CatCmd::CheckSaved(_)
@@ -347,58 +634,98 @@ fn is_connect(cmd: &CatCmd) -> bool {
 }
 
 /// Browsing and Connect side by side in this one task, so a panic in either is caught by `supervise` and a wait in
-/// one never holds up the other. Commands are passed on as they arrive, so a search still sees the ones behind it.
-async fn run<Q: Fetch + Sync>(dirs: Dirs, engine: Identity, q: Q, slot: SessionSlot, cmds: &mut mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
+/// one never holds up the other. Commands are passed on as they arrive; a search is put where browsing takes it next.
+async fn run<Q: Fetch + Sync + Clone>(dirs: Dirs, engine: Identity, q: Q, slot: SessionSlot, cmds: &mut mpsc::Receiver<CatCmd>, ev: mpsc::Sender<CatEvent>) {
     let (browse_tx, browse_rx) = mpsc::unbounded_channel();
     let (connect_tx, connect_rx) = mpsc::unbounded_channel();
     let logging_in = std::sync::Arc::new(tokio::sync::watch::Sender::new(false));
     let connect = connect::Connect::new(engine.clone(), slot.clone(), logging_in.clone(), ev.clone(), browse_tx.downgrade());
-    let st = State { dirs, session: None, slot, queries: q, ev, to_connect: connect_tx.clone(), logging_in, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new() };
+    let st = State::new(dirs, q, slot, ev, connect_tx.clone(), logging_in, browse_rx, browse_tx.downgrade());
+    let pending = st.pending.clone();
     let pass_on = async move {
         while let Some(c) = cmds.recv().await {
+            if let CatCmd::Search(q) = c {
+                // replaces one not made yet: while typing only the newest matters
+                pending.send_replace(Some((q, Instant::now())));
+                continue;
+            }
             let to = if is_connect(&c) { &connect_tx } else { &browse_tx };
             let _ = to.send(c);
         }
         // the Daemon hung up: browsing ends with its channel, and Connect with browsing
     };
-    futures_util::join!(pass_on, browse(st, browse_rx), connect.run(connect_rx));
+    futures_util::join!(pass_on, browse(st), connect.run(connect_rx));
 }
 
-async fn browse<Q: Fetch + Sync>(mut st: State<Q>, mut cmds: mpsc::UnboundedReceiver<CatCmd>) {
-    // commands drained from behind a search, in their original order, and the follow-ups of commands already run
-    let mut waiting: VecDeque<CatCmd> = VecDeque::new();
-    // resume a previous login
-    if saved_credentials(&st.dirs).is_some() {
-        if st.connect(None).await {
-            waiting.extend([CatCmd::Home, CatCmd::Library, CatCmd::Devices]);
+async fn browse<Q: Fetch + Sync + Clone>(mut st: State<Q>) {
+    let mut searched = st.pending.subscribe();
+    // resume a previous login (the keyring is read once: it can be slow)
+    let began = Instant::now();
+    let saved = saved_credentials(&st.dirs);
+    timing("keyring read", began);
+    if let Some(creds) = saved {
+        if let Some(name) = creds.username.clone() {
+            st.emit(CatEvent::Account(name)).await;
+        }
+        let was = st.begin("Login".into());
+        let began = Instant::now();
+        st.redial.trying(began);
+        let how = st.connect_how(Some(creds.clone())).await;
+        st.end(was);
+        match how {
+            LoggedIn::Yes => st.waiting.extend([CatCmd::Devices, CatCmd::HomeAndLibrary]),
+            // Spotify couldn't be reached (the network isn't up yet after boot): tried again for a while (#168), with
+            // the login read now (the keyring isn't asked again each time). Refused, it isn't: the error stays.
+            LoggedIn::Failed => {
+                st.reusable = Some(creds);
+                let now = Instant::now();
+                if let Some(at) = st.redial.failed_at_start(now) {
+                    tracing::info!("catalogue login at start-up failed after {} ms; trying again in {} s", began.elapsed().as_millis(), at.duration_since(now).as_secs());
+                }
+            }
+            LoggedIn::Refused | LoggedIn::NoLogin => {}
         }
     } else {
         st.status(CatalogueStatus::LoggedOut).await;
     }
+    // searches made ahead of queued work since a queued command last ran
+    let mut in_a_row = 0;
     loop {
-        let cmd = match waiting.pop_front() {
-            Some(c) => c,
-            None => match cmds.recv().await {
-                Some(c) => c,
-                None => return,
-            },
-        };
-        if let CatCmd::Search(q) = cmd {
-            // while typing, only the newest search matters; whatever else waited ran before the search was asked for
-            let (q, later) = drain_for_search(q, &mut cmds);
-            st.search(q).await;
-            waiting.extend(later);
+        // a session Spotify ended is replaced now, not at the next request (Q171)
+        st.look().await;
+        // a search goes ahead of what waits (#126), unless that logs in or out, or typing has held it back long enough
+        st.take_arrived();
+        if (st.waiting.is_empty() || in_a_row < SEARCHES_IN_A_ROW) && st.search_between().await {
+            in_a_row += 1;
             continue;
         }
-        handle(&mut st, cmd, &mut waiting).await;
+        let cmd = match st.waiting.pop_front() {
+            Some(c) => c,
+            None => tokio::select! {
+                c = st.inbox.recv() => match c {
+                    Some(c) => c,
+                    None => return,
+                },
+                _ = searched.changed() => continue,
+                () = tokio::time::sleep(st.redial.every) => continue,
+            },
+        };
+        in_a_row = 0;
+        let (name, began) = (cmd_name(&cmd), Instant::now());
+        let was = st.begin(name.clone());
+        handle(&mut st, cmd).await;
+        st.end(was);
+        if began.elapsed() >= SLOW_BROWSING {
+            tracing::info!("browsing: {name} took {} ms", began.elapsed().as_millis());
+        }
     }
 }
 
-/// Run one command. What it makes necessary next (the sidebar after a playlist change) goes in `next`, which `browse`
-/// takes before the channel: sending it back into the channel only this task reads deadlocked the Catalogue once 16
-/// commands were waiting (2026-11-20 bug hunt, A2; the pattern Search had already lost in A2/C4), and with it every
-/// Client session and the Engine task waiting to send it something.
-async fn handle<Q: Fetch + Sync>(st: &mut State<Q>, cmd: CatCmd, next: &mut VecDeque<CatCmd>) {
+/// Run one command. What it makes necessary next (the sidebar after a playlist change) goes in `st.waiting`: sending
+/// it back into the channel only this task reads deadlocked the Catalogue once 16 commands were waiting (2026-11-20
+/// bug hunt, A2; the pattern Search had already lost in A2/C4), and with it every Client session and the Engine task
+/// waiting to send it something.
+async fn handle<Q: Fetch + Sync + Clone>(st: &mut State<Q>, cmd: CatCmd) {
     let library = |next: &mut VecDeque<CatCmd>| {
         if !next.iter().any(|c| matches!(c, CatCmd::Library)) {
             next.push_back(CatCmd::Library);
@@ -409,54 +736,77 @@ async fn handle<Q: Fetch + Sync>(st: &mut State<Q>, cmd: CatCmd, next: &mut VecD
         CatCmd::Reconnect => {
             st.session().await;
         }
+        // a Client connected or asked to play: a start-up login whose tries ran out gets one more (#168). Several asks
+        // close together make one: none if a try started since this one was asked, or within `REDIAL_FIRST`.
+        CatCmd::LoginWanted(asked) => {
+            let now = Instant::now();
+            let tried_lately = st.redial.last_try.is_some_and(|t| t >= asked || now.duration_since(t) < REDIAL_FIRST);
+            if st.redial.start == AtStart::GaveUp && !tried_lately {
+                st.reconnect().await;
+            }
+        }
         CatCmd::Login => {
             if st.login().await {
-                next.extend([CatCmd::Home, CatCmd::Library, CatCmd::Devices]);
+                st.waiting.extend([CatCmd::Devices, CatCmd::HomeAndLibrary]);
             }
         }
         CatCmd::Logout => st.logout().await,
         CatCmd::Home => st.home().await,
         CatCmd::Library => st.library().await,
+        CatCmd::HomeAndLibrary => st.home_and_library().await,
         CatCmd::Tracks(uri) => st.track_list(uri).await,
         CatCmd::MoreTracks { uri, offset } => st.more_tracks(uri, offset).await,
         CatCmd::FindShow(uri) => st.find_show(uri).await,
         CatCmd::Describe(uris) => st.describe(uris).await,
         CatCmd::Lyrics { uri, meta, words } => st.lyrics(uri, meta, words).await,
+        CatCmd::LyricsFound { uri, found } => {
+            st.lrclib_asking.remove(&uri);
+            if let Some((lyrics, keep)) = found {
+                if keep {
+                    trim_any(&mut st.lyrics, MAX_LYRICS);
+                    st.lyrics.insert(lyrics.uri.clone(), lyrics.clone());
+                }
+                let _ = st.ev.send(CatEvent::Lyrics(lyrics)).await;
+            }
+        }
         CatCmd::Artist(uri) => st.artist(uri).await,
+        CatCmd::Peek(uri) => st.peek(uri).await,
         CatCmd::SetSaved { uri, saved } => {
             // the library changed: the sidebar and Liked Songs follow (Liked Songs from its next open)
             if st.set_saved(uri.clone(), saved).await && !uri.starts_with("spotify:track:") {
-                library(next);
+                library(&mut st.waiting);
             }
         }
         CatCmd::CheckSaved(uris) => st.check_saved(uris).await,
         // either way the sidebar shows the truth afterwards
         CatCmd::CreatePlaylist { name, uris } => {
             st.create_playlist(name, uris).await;
-            library(next);
+            library(&mut st.waiting);
         }
         CatCmd::AddToPlaylist { playlist, name, uris, anyway } => st.add_to_playlist(playlist, name, uris, anyway).await,
         CatCmd::RemoveFromPlaylist { playlist, uids } => st.remove_from_playlist(playlist, uids).await,
         CatCmd::MoveInPlaylist { playlist, uids, before, after } => st.move_in_playlist(playlist, uids, before, after).await,
         CatCmd::SetCover { playlist, jpeg } => {
             if st.set_cover(playlist, jpeg).await {
-                library(next);
+                library(&mut st.waiting);
             }
         }
         CatCmd::DeletePlaylist(uri) => {
             st.delete_playlist(uri).await;
-            library(next);
+            library(&mut st.waiting);
         }
         CatCmd::EditPlaylist { uri, name, description } => {
             if st.edit_playlist(uri, name, description).await {
-                library(next);
+                library(&mut st.waiting);
             }
         }
         CatCmd::Query { op, vars, reply } => {
             let _ = reply.send(st.query(&op, vars).await);
         }
-        // handled by `browse` itself (it drains what came behind a search)
-        CatCmd::Search(_) => {}
+        // searches are kept aside as they come (`run`) and never queue here; one that did would join them
+        CatCmd::Search(q) => {
+            st.pending.send_replace(Some((q, Instant::now())));
+        }
         // the rest is Connect's (`is_connect`): a follow-up such as the device list after a login
         other => {
             let _ = st.to_connect.send(other);
@@ -545,9 +895,16 @@ fn cache(dirs: &Dirs) -> anyhow::Result<Cache> {
     Ok(Cache::new(Some(&dirs.credentials), None, None, None)?)
 }
 
-impl<Q: Fetch + Sync> State<Q> {
+impl<Q: Fetch + Sync + Clone> State<Q> {
+    #[allow(clippy::too_many_arguments)]
+    fn new(dirs: Dirs, queries: Q, slot: SessionSlot, ev: mpsc::Sender<CatEvent>, to_connect: mpsc::UnboundedSender<CatCmd>, logging_in: std::sync::Arc<tokio::sync::watch::Sender<bool>>, inbox: mpsc::UnboundedReceiver<CatCmd>, to_browse: mpsc::WeakUnboundedSender<CatCmd>) -> State<Q> {
+        State { dirs, session: None, slot, queries, ev, to_connect, logging_in, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), to_browse, lrclib_asking: Default::default(), artists: HashMap::new(), searches: HashMap::new(), pending: Default::default(), inbox, waiting: VecDeque::new(), busy: None, last: None, redial: Redial::new(), reusable: None, clients: &CLIENTS, tried: false, dial: spotify_dial() }
+    }
+
     /// The session changes in one place, so the query port's adapter always asks through the current one.
     fn set_session(&mut self, s: Option<Session>) {
+        // answers kept for one account (or none) aren't the next one's
+        self.searches.clear();
         self.slot.send_replace(s.clone());
         self.session = s;
     }
@@ -598,31 +955,38 @@ impl<Q: Fetch + Sync> State<Q> {
 
     /// Connect with fresh credentials, or the cached reusable ones. Connect waits meanwhile.
     async fn connect(&mut self, fresh: Option<Credentials>) -> bool {
-        self.logging_in.send_replace(true);
-        let ok = self.log_in(fresh).await;
-        self.logging_in.send_replace(false);
-        ok
+        self.connect_how(fresh).await == LoggedIn::Yes
     }
 
-    async fn log_in(&mut self, fresh: Option<Credentials>) -> bool {
+    async fn connect_how(&mut self, fresh: Option<Credentials>) -> LoggedIn {
+        self.logging_in.send_replace(true);
+        let how = self.log_in(fresh).await;
+        self.logging_in.send_replace(false);
+        how
+    }
+
+    async fn log_in(&mut self, fresh: Option<Credentials>) -> LoggedIn {
         self.status(CatalogueStatus::Connecting).await;
         let cache = match cache(&self.dirs) {
             Ok(c) => c,
             Err(e) => {
                 self.status(CatalogueStatus::Unavailable { message: e.to_string() }).await;
-                return false;
+                return LoggedIn::Failed;
             }
         };
         let Some(creds) = fresh.or_else(|| saved_credentials(&self.dirs)) else {
             self.status(CatalogueStatus::LoggedOut).await;
-            return false;
+            return LoggedIn::NoLogin;
         };
         let session = Session::new(SessionConfig::default(), Some(cache));
-        if let Err(e) = session.connect(creds, true).await {
+        let began = Instant::now();
+        if let Err(e) = (self.dial)(session.clone(), creds).await {
             self.status(CatalogueStatus::Unavailable { message: format!("couldn't reach Spotify: {e}") }).await;
-            return false;
+            return if spotify_refused(&e) { LoggedIn::Refused } else { LoggedIn::Failed };
         }
+        timing("login", began);
         // the account type and country arrive shortly after login
+        let began = Instant::now();
         let mut product = None;
         for _ in 0..30 {
             product = session.get_user_attribute("type");
@@ -631,13 +995,19 @@ impl<Q: Fetch + Sync> State<Q> {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+        timing("account type", began);
         let premium = product.as_deref() == Some("premium");
+        // the reusable login Spotify gave, as librespot wrote it, before it moves to the keyring: for logging in again
+        self.reusable = session.cache().and_then(|c| c.credentials());
+        let began = Instant::now();
         keep_credentials_in_keyring(&self.dirs);
+        timing("keyring save", began);
         let ready = CatalogueStatus::Ready { username: session.username(), country: session.country(), premium };
         // in the slot first: what Ready sets off (librespot starting, an Engine's commands) finds the session there
         self.set_session(Some(session));
+        self.redial.logged_in(Instant::now());
         self.status(ready).await;
-        true
+        LoggedIn::Yes
     }
 
     /// Logged out, Connect drops its remote too: it finds the session gone from the slot.
@@ -647,19 +1017,99 @@ impl<Q: Fetch + Sync> State<Q> {
             s.shutdown();
         }
         self.set_session(None);
+        self.redial.stop();
+        self.reusable = None;
         let _ = std::fs::remove_file(self.dirs.credentials.join("credentials.json"));
         crate::secrets::clear("spotify");
         self.status(CatalogueStatus::LoggedOut).await;
     }
 
+    /// The session, replaced first if Spotify ended it or a login is owed and a request may try one now
+    /// (`Redial::request_may_try`), once per command; otherwise the request fails at once on what's there.
     async fn session(&mut self) -> Option<Session> {
-        if self.session.as_ref().is_some_and(|s| s.is_invalid()) {
-            tracing::info!("catalogue session ended; reconnecting");
-            // Connect sees the new session in the slot and starts a new remote for it (a dealer belongs to one)
-            self.set_session(None);
-            self.connect(None).await;
+        let now = Instant::now();
+        self.seen_ended(now);
+        if !self.tried && self.redial.request_may_try(now) {
+            self.tried = true;
+            self.reconnect().await;
         }
         self.session.clone()
+    }
+
+    /// Did Spotify end the session? (librespot marks it when the connection closes or its keep-alive goes unanswered)
+    fn ended(&self) -> bool {
+        self.session.as_ref().is_some_and(|s| s.is_invalid())
+    }
+
+    /// A session Spotify ended, seen for the first time: when to log in again in the background.
+    fn seen_ended(&mut self, now: Instant) -> Option<Instant> {
+        (self.ended() && !self.redial.owed).then(|| self.redial.ended(now))
+    }
+
+    /// Between two pieces of work (and every `LOOK_EVERY` while idle): a session Spotify ended is replaced at once
+    /// while a Client is connected, so the next search doesn't wait for the login (Q171); one that ended soon after
+    /// its login, or a login that failed, is tried again when its wait is over. The start-up login's tries (#168) go
+    /// on with no Client too: they stop on their own.
+    async fn look(&mut self) {
+        let now = Instant::now();
+        if let Some(at) = self.seen_ended(now)
+            && at > now
+        {
+            let s = at.duration_since(now).as_secs();
+            tracing::info!("catalogue session ended soon after its login; logging in again in {s} s, or at the next request");
+            self.status(CatalogueStatus::Unavailable { message: format!("Spotify ended the session; logging in again in {s} s") }).await;
+        }
+        let for_no_one = self.clients.load(std::sync::atomic::Ordering::SeqCst) == 0 && !self.redial.at_start();
+        if !self.redial.owed || !self.redial.due(now) || for_no_one {
+            return;
+        }
+        // a search that comes meanwhile waited "behind Reconnect"
+        let was = self.begin("Reconnect".into());
+        self.reconnect().await;
+        self.end(was);
+    }
+
+    /// Log in again with the last session's login (else the saved one), on a line of its own with its time (Q171: a
+    /// search's "Spotify" time doesn't include it). A failure is tried again later, never taken for a logout. A
+    /// start-up login's try that Spotify refuses ends its tries (#168); one that works fetches Home and the library,
+    /// which that start never did.
+    async fn reconnect(&mut self) {
+        let at_start = self.redial.at_start();
+        if self.session.is_some() {
+            tracing::info!("catalogue session ended; reconnecting");
+        } else {
+            tracing::info!("catalogue login: retrying");
+        }
+        // Connect sees the new session in the slot and starts a new remote for it (a dealer belongs to one)
+        self.set_session(None);
+        let began = Instant::now();
+        self.redial.trying(began);
+        let how = match self.reusable.clone().or_else(|| saved_credentials(&self.dirs)) {
+            Some(creds) => self.connect_how(Some(creds)).await,
+            None => {
+                // (the keyring may just not answer now: not a logout, whose Home and library would be forgotten)
+                self.status(CatalogueStatus::Unavailable { message: singularity_proto::NO_SAVED_LOGIN.into() }).await;
+                LoggedIn::Failed
+            }
+        };
+        let ms = began.elapsed().as_millis();
+        if how == LoggedIn::Yes {
+            tracing::info!("reconnect: logged in again in {ms} ms");
+            // the devices and "another device is playing" come back now, not at the next Connect command
+            let _ = self.to_connect.send(CatCmd::Devices);
+            if at_start && !self.waiting.iter().any(|c| matches!(c, CatCmd::HomeAndLibrary)) {
+                self.waiting.push_back(CatCmd::HomeAndLibrary);
+            }
+        } else if how == LoggedIn::Refused && at_start {
+            self.redial.refused();
+            tracing::info!("reconnect: Spotify refused the login after {ms} ms; not trying again");
+        } else {
+            let now = Instant::now();
+            match self.redial.failed(now) {
+                Some(next) => tracing::info!("reconnect: failed after {ms} ms; trying again in {} s, or at the next request", next.duration_since(now).as_secs()),
+                None => tracing::info!("reconnect: failed after {ms} ms; trying again when a Client connects or asks to play"),
+            }
+        }
     }
 
     /// One Pathfinder query through the port (D78); a session Spotify ended is replaced first.
@@ -669,44 +1119,62 @@ impl<Q: Fetch + Sync> State<Q> {
     }
 
     async fn library(&mut self) {
-        match self.library_items().await {
-            Ok(items) => {
-                let _ = self.ev.send(CatEvent::Library(Library { items })).await;
-            }
-            Err(e) => {
-                self.fail(format!("Library unavailable: {e}")).await;
-            }
-        }
+        self.session().await;
+        let walk = Walk::new(Paced::new(self.queries.clone()), self.username(), false);
+        send_library(&self.ev, walk.items().await).await;
     }
 
-    /// The top level, with each folder's contents spliced in right after it (one level deeper).
-    async fn library_items(&mut self) -> anyhow::Result<Vec<singularity_proto::LibraryItem>> {
-        let mut items = self.library_level(None, 0).await?;
-        let mut i = 0;
-        while i < items.len() {
-            // folders nest a few levels at most; guard anyway
-            if items[i].kind == "folder" && items[i].depth < 4 {
-                let children = self.library_level(Some(&items[i].uri.clone()), items[i].depth + 1).await?;
-                items.splice(i + 1..i + 1, children);
-            }
-            i += 1;
-        }
-        Ok(items)
-    }
-
-    async fn library_level(&mut self, folder: Option<&str>, depth: u8) -> anyhow::Result<Vec<singularity_proto::LibraryItem>> {
-        let mut items = vec![];
-        let mut offset = 0;
+    /// Home and the library side by side (#81), each sent as it's in, every step's time in the log. They share one
+    /// gate: never more than `PARALLEL` requests out between them.
+    async fn home_and_library(&mut self) {
+        self.session().await;
+        let paced = Paced::new(self.queries.clone());
+        let walk = Walk::new(paced.clone(), self.username(), true);
+        let ev = self.ev.clone();
+        // owns all it uses, so a search can be made while it runs (#126)
+        let fetch = async move {
+            let home = async {
+                let began = Instant::now();
+                let feed = home_feed(&paced).await;
+                timing("Home", began);
+                send_home(&ev, feed).await;
+            };
+            let library = async {
+                let began = Instant::now();
+                let items = walk.items().await;
+                let asked = walk.requests.load(std::sync::atomic::Ordering::Relaxed);
+                timing(&format!("library ({asked} requests)"), began);
+                send_library(&ev, items).await;
+            };
+            futures_util::join!(home, library);
+        };
+        let mut fetch = std::pin::pin!(fetch);
+        let mut searched = self.pending.subscribe();
+        // a search typed meanwhile is made at once, beside the fetch, not after all of it (#126)
         loop {
-            let me = self.session.as_ref().map(|s| s.username()).unwrap_or_default();
-            let page = library::parse_library(&self.query("libraryV3", library::library_vars(offset, folder)).await?, depth, &me);
-            let n = page.items.len();
-            items.extend(page.items);
-            offset = offset.saturating_add(library::LIBRARY_PAGE);
-            if !library_page_continues(n, offset, page.total, items.len()) {
-                return Ok(items);
+            tokio::select! {
+                () = &mut fetch => return,
+                _ = searched.changed() => {
+                    let search = self.search_between();
+                    let mut search = std::pin::pin!(search);
+                    let mut fetched = false;
+                    loop {
+                        tokio::select! {
+                            _ = &mut search => break,
+                            () = &mut fetch, if !fetched => fetched = true,
+                        }
+                    }
+                    if fetched {
+                        return;
+                    }
+                }
             }
         }
+    }
+
+    /// The logged-in username (playlists it owns are marked `own`).
+    fn username(&self) -> String {
+        self.session.as_ref().map(|s| s.username()).unwrap_or_default()
     }
 
     /// Fetch a track list page by page, sending each as it arrives (so long lists show at once). A show sends its
@@ -752,50 +1220,91 @@ impl<Q: Fetch + Sync> State<Q> {
         let mut pages = vec![];
         let mut offset = from;
         loop {
-            let asked = if self.books.contains(uri) { Some(library::chapters_query(uri, offset)) } else { library::tracks_query(uri, offset) };
-            let Some((mut op, vars)) = asked else {
-                self.fail(format!("can't list the tracks of {uri}")).await;
-                return None;
-            };
-            let mut answer = self.query(op, vars).await;
-            // a show that turns out to be a book: its chapters instead (#62)
-            if op == "queryPodcastEpisodes"
-                && answer.as_ref().is_ok_and(library::is_book)
-            {
-                self.books.insert(uri.to_string());
-                let (o, vars) = library::chapters_query(uri, offset);
-                op = o;
-                answer = self.query(op, vars).await;
-            }
-            let v = match answer {
-                Ok(v) => v,
-                Err(e) => {
-                    self.fail(format!("Track list unavailable: {e}")).await;
+            let (page, page_len) = match self.fetch_page(uri, offset).await {
+                Ok(p) => p,
+                Err(message) => {
+                    self.fail(message).await;
                     return None;
                 }
             };
-            let (tracks, total) = library::parse_tracks(uri, &v);
-            let page_len = match op {
-                "getAlbum" => library::ALBUM_PAGE,
-                "queryPodcastEpisodes" | "queryBookChapters" => library::SHOW_PAGE,
-                _ => library::TRACK_PAGE,
-            };
-            let header = match offset {
-                0 if uri.starts_with("spotify:show:") => {
-                    let vars = json!({ "uri": uri, "includeContentCapabilityTrait": false, "includeEpisodeContentRatingsV2": false });
-                    self.query("queryShowMetadataV2", vars).await.ok().and_then(|m| library::parse_show_header(&m))
-                }
-                0 => library::parse_header(uri, &v),
-                _ => None,
-            };
-            let page = TrackPage { uri: uri.to_string(), offset, total, tracks, header };
+            let total = page.total;
             let _ = self.ev.send(CatEvent::Tracks(page.clone())).await;
             pages.push(page);
+            self.search_between().await;
             offset += page_len;
             if offset >= total.min(until) {
                 return Some(pages);
             }
         }
+    }
+
+    /// One page of a list from `offset`, and how many rows a page of it holds; what went wrong if it failed.
+    async fn fetch_page(&mut self, uri: &str, offset: u32) -> Result<(TrackPage, u32), String> {
+        let asked = if self.books.contains(uri) { Some(library::chapters_query(uri, offset)) } else { library::tracks_query(uri, offset) };
+        let Some((mut op, vars)) = asked else {
+            return Err(format!("can't list the tracks of {uri}"));
+        };
+        let mut answer = self.query(op, vars).await;
+        // a show that turns out to be a book: its chapters instead (#62)
+        if op == "queryPodcastEpisodes"
+            && answer.as_ref().is_ok_and(library::is_book)
+        {
+            self.books.insert(uri.to_string());
+            let (o, vars) = library::chapters_query(uri, offset);
+            op = o;
+            answer = self.query(op, vars).await;
+        }
+        let v = match answer {
+            Ok(v) => v,
+            Err(e) => return Err(format!("Track list unavailable: {e}")),
+        };
+        let (tracks, total) = library::parse_tracks(uri, &v);
+        let page_len = match op {
+            "getAlbum" => library::ALBUM_PAGE,
+            "queryPodcastEpisodes" | "queryBookChapters" => library::SHOW_PAGE,
+            _ => library::TRACK_PAGE,
+        };
+        let header = match offset {
+            0 if uri.starts_with("spotify:show:") => {
+                let vars = json!({ "uri": uri, "includeContentCapabilityTrait": false, "includeEpisodeContentRatingsV2": false });
+                self.query("queryShowMetadataV2", vars).await.ok().and_then(|m| library::parse_show_header(&m))
+            }
+            0 => library::parse_header(uri, &v),
+            _ => None,
+        };
+        Ok((TrackPage { uri: uri.to_string(), offset, total, tracks, header }, page_len))
+    }
+
+    /// Demo mode's quiet look (#128): an artist's page, or a list's first page (from what's kept, else fetched alone),
+    /// answered as `Peeked`; a failure is logged, not toasted, and answered with neither.
+    async fn peek(&mut self, uri: String) {
+        let (mut tracks, mut artist) = (None, None);
+        if uri.starts_with("spotify:artist:") {
+            match self.artists.get(&uri) {
+                Some((at, p)) if at.elapsed() < TRACKS_TTL => artist = Some(p.clone()),
+                _ => match self.query("queryArtistOverview", json!({ "uri": uri, "locale": "", "includePrerelease": true })).await {
+                    Ok(v) => match library::parse_artist(&v) {
+                        Some(p) => {
+                            trim_timed(&mut self.artists, TRACKS_TTL, MAX_PAGES);
+                            self.artists.insert(uri.clone(), (Instant::now(), p.clone()));
+                            artist = Some(p);
+                        }
+                        None => tracing::warn!("demo Home: the artist page of {uri} had an unexpected shape"),
+                    },
+                    Err(e) => tracing::warn!("demo Home: artist page of {uri} unavailable: {e}"),
+                },
+            }
+        } else {
+            match self.tracks.get(&uri).and_then(|(at, pages)| (at.elapsed() < TRACKS_TTL).then(|| pages.first().cloned()).flatten()) {
+                Some(p) => tracks = Some(p),
+                // (one page alone isn't kept: a later open fetches the whole list)
+                None => match self.fetch_page(&uri, 0).await {
+                    Ok((p, _)) => tracks = Some(p),
+                    Err(e) => tracing::warn!("demo Home: {e}"),
+                },
+            }
+        }
+        let _ = self.ev.send(CatEvent::Peeked { uri, tracks, artist }).await;
     }
 
     /// Add to or remove from the library. Returns whether it worked; either way the Daemon hears the truth.
@@ -987,6 +1496,7 @@ impl<Q: Fetch + Sync> State<Q> {
                 Ok(v) => {
                     let flags = library::parse_saved(chunk, &v);
                     let _ = self.ev.send(CatEvent::Saved(flags)).await;
+                    self.search_between().await;
                 }
                 Err(e) => {
                     tracing::debug!("areEntitiesInLibrary: {e}");
@@ -1029,6 +1539,7 @@ impl<Q: Fetch + Sync> State<Q> {
                     failed.push(uri);
                 }
             }
+            self.search_between().await;
         }
         trim_ages(&mut self.describe_failed, DESCRIBE_RETRY, MAX_DESCRIBED);
         if !out.is_empty() {
@@ -1056,7 +1567,67 @@ impl<Q: Fetch + Sync> State<Q> {
         }
     }
 
-    async fn search(&mut self, query: String) {
+    /// Commands that came meanwhile join those waiting, in order.
+    fn take_arrived(&mut self) {
+        while let Ok(c) = self.inbox.try_recv() {
+            self.waiting.push_back(c);
+        }
+    }
+
+    /// Work `name` starts; returns what was running (a search made in the middle of a command).
+    fn begin(&mut self, name: String) -> Option<(String, Instant)> {
+        // a new piece of work (not one made inside another) may try a login again
+        if self.busy.is_none() {
+            self.tried = false;
+        }
+        self.busy.replace((name, Instant::now()))
+    }
+
+    /// The work running ends; what it interrupted (`was`) carries on.
+    fn end(&mut self, was: Option<(String, Instant)>) {
+        if let Some((name, _)) = std::mem::replace(&mut self.busy, was) {
+            self.last = Some((name, Instant::now()));
+        }
+    }
+
+    /// The search that came while browsing was busy, if one did: made now, unless a login or logout is queued (it
+    /// waits for that). True if one was made. Long work calls this between two of its requests.
+    async fn search_between(&mut self) -> bool {
+        self.take_arrived();
+        // (a `LoginWanted` logs in only once the start-up tries gave up: otherwise it's nothing to wait for, #126)
+        let gave_up = self.redial.start == AtStart::GaveUp;
+        if self.waiting.iter().any(|c| changes_session(c) || (gave_up && matches!(c, CatCmd::LoginWanted(_)))) {
+            return false;
+        }
+        // taken quietly: an empty slot wakes no one
+        let mut taken = None;
+        self.pending.send_if_modified(|p| {
+            taken = p.take();
+            false
+        });
+        let Some((query, came)) = taken else { return false };
+        self.search(query, came).await;
+        true
+    }
+
+    /// `came`: when the Client's search reached the Catalogue. The log says where its time went (#126), without the
+    /// words (what you search for is personal).
+    async fn search(&mut self, query: String, came: Instant) {
+        let waited = came.elapsed();
+        // the work running now, else the last that ended after the search came
+        let behind = match (&self.busy, &self.last) {
+            (Some((b, _)), _) => format!(" behind {b}"),
+            (None, Some((l, ended))) if *ended > came => format!(" behind {l}"),
+            _ => String::new(),
+        };
+        let was = self.begin("Search".into());
+        let how = self.search_now(query).await;
+        self.end(was);
+        tracing::info!("{}", search_line(waited, &behind, &how, came.elapsed()));
+    }
+
+    /// The answer, from what was kept or from Spotify, sent on; how it went, for the log.
+    async fn search_now(&mut self, query: String) -> Searched {
         let key = query.trim().to_lowercase();
         if let Some((at, r)) = self.searches.get(&key)
             && at.elapsed() < SEARCH_TTL
@@ -1064,19 +1635,29 @@ impl<Q: Fetch + Sync> State<Q> {
             let mut r = r.clone();
             r.query = query;
             let _ = self.ev.send(CatEvent::Search(r)).await;
-            return;
+            return Searched::Kept;
         }
-        match self.query("searchDesktop", library::search_vars(query.trim())).await {
+        // a login again first, logged on its own: not Spotify's time for the search (Q171)
+        self.session().await;
+        let asked = Instant::now();
+        let answer = self.query("searchDesktop", library::search_vars(query.trim())).await;
+        let spotify = asked.elapsed();
+        match answer {
             Ok(v) => {
+                let read = Instant::now();
                 let r = library::parse_search(&query, &v);
+                let read = read.elapsed();
+                let found = r.tracks.len() + r.episodes.len() + r.top.len() + r.artists.len() + r.albums.len() + r.playlists.len() + r.podcasts.len() + r.audiobooks.len();
                 trim_timed(&mut self.searches, SEARCH_TTL, MAX_PAGES);
                 self.searches.insert(key, (Instant::now(), r.clone()));
                 let _ = self.ev.send(CatEvent::Search(r)).await;
+                Searched::Found { spotify, read, found }
             }
             Err(e) => {
                 // with the search, so the Client stops waiting on "searching…"
                 let r = singularity_proto::SearchResults { query, error: Some(e.to_string()), ..Default::default() };
                 let _ = self.ev.send(CatEvent::Search(r)).await;
+                Searched::Failed { spotify }
             }
         }
     }
@@ -1119,38 +1700,60 @@ impl<Q: Fetch + Sync> State<Q> {
     }
 
     async fn lrclib_for(uri: &str, m: &singularity_proto::Item) -> Result<Option<singularity_proto::Lyrics>, String> {
+        #[cfg(test)]
+        if let Some(fake) = port_tests::fake_lrclib(uri) {
+            return fake.await;
+        }
         crate::lyrics::lrclib(uri, &m.artists.first().cloned().unwrap_or_default(), &m.name, m.album.as_deref(), m.duration_ms).await
     }
 
-    /// Line-synced lyrics without word times, for a Karaoke Widget: LRCLIB's word-synced version instead when it has
+    /// LRCLIB asked beside browsing (it can take seconds, more when it asks us to wait; lookups go one at a time,
+    /// `lyrics::lrclib`): `then` makes what to send of its answer, which comes back as `LyricsFound`, so Home, the
+    /// library and everything else browsing does never wait for it.
+    fn ask_lrclib(&mut self, uri: String, m: singularity_proto::Item, then: impl FnOnce(Result<Option<singularity_proto::Lyrics>, String>) -> Option<(singularity_proto::Lyrics, bool)> + Send + 'static) {
+        self.lrclib_asking.insert(uri.clone());
+        let back = self.to_browse.clone();
+        tokio::spawn(async move {
+            let found = then(Self::lrclib_for(&uri, &m).await);
+            if let Some(back) = back.upgrade() {
+                let _ = back.send(CatCmd::LyricsFound { uri, found });
+            }
+        });
+    }
+
+    /// Line-synced lyrics without word times, for a Karaoke Widget: LRCLIB's word-synced version follows when it has
     /// one (D67, the owner: yes). Asked once per track, whatever the answer.
-    async fn with_words(&mut self, l: singularity_proto::Lyrics, meta: Option<singularity_proto::Item>) -> singularity_proto::Lyrics {
+    async fn with_words(&mut self, l: &singularity_proto::Lyrics, meta: Option<singularity_proto::Item>) {
         if !l.synced || l.lines.iter().any(|x| !x.words.is_empty()) || self.word_tried.contains_key(&l.uri) {
-            return l;
+            return;
         }
         trim_any(&mut self.word_tried, MAX_LYRICS);
         self.word_tried.insert(l.uri.clone(), ());
-        let Some(m) = self.lyrics_meta(&l.uri, meta).await else { return l };
-        match Self::lrclib_for(&l.uri, &m).await {
+        let Some(m) = self.lyrics_meta(&l.uri, meta).await else { return };
+        self.ask_lrclib(l.uri.clone(), m, |got| match got {
             Ok(Some(w)) if w.synced && w.lines.iter().any(|x| !x.words.is_empty()) => {
-                tracing::info!("lyrics for {}: word timing from LRCLIB", l.uri);
-                trim_any(&mut self.lyrics, MAX_LYRICS);
-                self.lyrics.insert(l.uri.clone(), w.clone());
-                w
+                tracing::info!("lyrics for {}: word timing from LRCLIB", w.uri);
+                Some((w, true))
             }
-            Ok(_) => l,
+            Ok(_) => None,
             Err(e) => {
-                tracing::info!("lyrics for {}: LRCLIB (word timing) failed: {e}", l.uri);
-                l
+                tracing::info!("lyrics: LRCLIB (word timing) failed: {e}");
+                None
             }
-        }
+        });
     }
 
     async fn lyrics(&mut self, uri: String, meta: Option<singularity_proto::Item>, words: bool) {
         use crate::lyrics::Outcome;
         if let Some(l) = self.lyrics.get(&uri).cloned() {
-            let l = if words { self.with_words(l, meta).await } else { l };
-            let _ = self.ev.send(CatEvent::Lyrics(l)).await;
+            let _ = self.ev.send(CatEvent::Lyrics(l.clone())).await;
+            if words {
+                self.with_words(&l, meta).await;
+            }
+            return;
+        }
+        // LRCLIB is being asked already: its answer goes to every Client
+        if self.lrclib_asking.contains(&uri) {
             return;
         }
         let mut found = None;
@@ -1169,64 +1772,229 @@ impl<Q: Fetch + Sync> State<Q> {
             (None, _) => Outcome::Failed,
             (_, Err(_)) => Outcome::Nothing,
         };
-        let mut lrclib = Outcome::Nothing;
-        if found.is_none() {
-            // LRCLIB answered here: its word timing, if any, is already in it
-            self.word_tried.insert(uri.clone(), ());
-            lrclib = match self.lyrics_meta(&uri, meta.clone()).await {
-                Some(m) => match Self::lrclib_for(&uri, &m).await {
-                    Ok(Some(l)) => {
-                        found = Some(l);
-                        Outcome::Found
-                    }
-                    Ok(None) => Outcome::Nothing,
-                    Err(e) => {
-                        tracing::info!("lyrics for {uri}: LRCLIB failed: {e}");
-                        Outcome::Failed
-                    }
-                },
-                // without a name and artist there's nothing to look up
-                None => Outcome::Failed,
-            };
-        }
-        tracing::info!("lyrics for {uri}: Spotify {spotify:?}, LRCLIB {}", if spotify == Outcome::Found { "not asked".to_string() } else { format!("{lrclib:?}") });
-        let (l, keep) = match found {
-            Some(l) => (l, true),
-            None => {
-                let (missing, keep) = crate::lyrics::missing(spotify, lrclib);
-                (singularity_proto::Lyrics { uri: uri.clone(), missing, ..Default::default() }, keep)
-            }
-        };
-        if keep {
+        if let Some(l) = found {
+            tracing::info!("lyrics for {uri}: Spotify Found, LRCLIB not asked");
             trim_any(&mut self.lyrics, MAX_LYRICS);
             self.lyrics.insert(uri, l.clone());
+            let _ = self.ev.send(CatEvent::Lyrics(l.clone())).await;
+            if words {
+                self.with_words(&l, meta).await;
+            }
+            return;
         }
-        let l = if words && keep { self.with_words(l, meta).await } else { l };
-        let _ = self.ev.send(CatEvent::Lyrics(l)).await;
+        // a search waiting goes first: the track's name may need looking up
+        self.search_between().await;
+        // LRCLIB's answer has its word timing, if any, in it
+        trim_any(&mut self.word_tried, MAX_LYRICS);
+        self.word_tried.insert(uri.clone(), ());
+        let answer = move |lrclib: Outcome, l: Option<singularity_proto::Lyrics>, uri: &str| {
+            tracing::info!("lyrics for {uri}: Spotify {spotify:?}, LRCLIB {lrclib:?}");
+            match l {
+                Some(l) => (l, true),
+                None => {
+                    let (missing, keep) = crate::lyrics::missing(spotify, lrclib);
+                    (singularity_proto::Lyrics { uri: uri.into(), missing, ..Default::default() }, keep)
+                }
+            }
+        };
+        match self.lyrics_meta(&uri, meta).await {
+            Some(m) => self.ask_lrclib(uri.clone(), m, move |got| {
+                Some(match got {
+                    Ok(Some(l)) => answer(Outcome::Found, Some(l), &uri),
+                    Ok(None) => answer(Outcome::Nothing, None, &uri),
+                    Err(e) => {
+                        tracing::info!("lyrics for {uri}: LRCLIB failed: {e}");
+                        answer(Outcome::Failed, None, &uri)
+                    }
+                })
+            }),
+            // without a name and artist there's nothing to look up
+            None => {
+                let (lyrics, _) = answer(Outcome::Failed, None, &uri);
+                let _ = self.ev.send(CatEvent::Lyrics(lyrics)).await;
+            }
+        }
     }
 
     async fn home(&mut self) {
-        let vars = json!({
-            "includeHomeChapterVideoCards": false,
-            "homeEndUserIntegration": "INTEGRATION_WEB_PLAYER",
-            "timeZone": local_timezone(),
-            "sp_t": "",
-            "facet": "",
-            "sectionItemsLimit": 12,
-            "includeEpisodeContentRatingsV2": false,
-        });
-        match self.query("home", vars).await {
-            Ok(v) => {
-                let feed = parse_home(&v);
-                if feed.shelves.is_empty() {
-                    self.fail("Spotify answered, but the Home feed had an unexpected shape".into()).await;
-                }
-                let _ = self.ev.send(CatEvent::Home(feed)).await;
+        self.session().await;
+        let feed = home_feed(&Paced::new(self.queries.clone())).await;
+        send_home(&self.ev, feed).await;
+    }
+}
+
+/// The Home feed, asked through `q`.
+async fn home_feed<Q: Fetch + Sync + Clone>(q: &Paced<Q>) -> anyhow::Result<HomeFeed> {
+    let vars = json!({
+        "includeHomeChapterVideoCards": false,
+        "homeEndUserIntegration": "INTEGRATION_WEB_PLAYER",
+        "timeZone": local_timezone(),
+        "sp_t": "",
+        "facet": "",
+        "sectionItemsLimit": 12,
+        "includeEpisodeContentRatingsV2": false,
+    });
+    Ok(parse_home(&q.ask("home", vars, None).await?))
+}
+
+/// A Home feed for the Daemon, or what went wrong.
+async fn send_home(ev: &mpsc::Sender<CatEvent>, feed: anyhow::Result<HomeFeed>) {
+    match feed {
+        Ok(feed) => {
+            if feed.shelves.is_empty() {
+                let _ = ev.send(CatEvent::Error("Spotify answered, but the Home feed had an unexpected shape".into())).await;
             }
-            Err(e) => {
-                self.fail(format!("Home feed unavailable: {e}")).await;
+            let _ = ev.send(CatEvent::Home(feed)).await;
+        }
+        Err(e) => {
+            let _ = ev.send(CatEvent::Error(format!("Home feed unavailable: {e}"))).await;
+        }
+    }
+}
+
+/// The library for the Daemon, or what went wrong.
+async fn send_library(ev: &mpsc::Sender<CatEvent>, items: anyhow::Result<Vec<singularity_proto::LibraryItem>>) {
+    let _ = match items {
+        Ok(items) => ev.send(CatEvent::Library(Library { items })).await,
+        Err(e) => ev.send(CatEvent::Error(format!("Library unavailable: {e}"))).await,
+    };
+}
+
+/// How many of Home's and the library's requests are out at once (#81), between them. Spotify documents no limit for
+/// these private queries (`docs/research/2026-10-private-api-risk.md`: human-paced, back off on 429/5xx, never retry
+/// in a loop); librespot's own guess is 300 calls per 30 s, and it waits out a 429 that says how long. A library of a
+/// few hundred items is a handful of requests.
+const PARALLEL: usize = 4;
+/// A request refused for the rate (a 429 that doesn't say how long, or librespot's own limiter) or failed on
+/// Spotify's side (5xx) is asked once more after this and a jitter of up to as long again; then it fails (never
+/// retried in a loop).
+const BACKOFF: Duration = Duration::from_secs(2);
+
+/// Is this a failure worth one more try after a pause: refused for the rate (429), or Spotify's side failing (5xx: 500
+/// and 503 come back as Unavailable, 502 as an unknown status; a 504 is already asked again by the adapter)?
+fn worth_another_try(e: &anyhow::Error) -> bool {
+    use librespot_core::error::ErrorKind;
+    e.downcast_ref::<librespot_core::Error>().is_some_and(|e| match e.kind {
+        ErrorKind::ResourceExhausted | ErrorKind::Unavailable => true,
+        ErrorKind::Unknown => e.to_string().contains("status code: 5"),
+        _ => false,
+    })
+}
+
+/// Up to `max` more: a cheap jitter, without a random number generator.
+fn jitter(max: Duration) -> Duration {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    max.mul_f64(nanos as f64 / 1e9)
+}
+
+/// When the Catalogue started: the timings in the log count from here.
+static STARTED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// One step's time in the log (#81): `grep timing: daemon.log` shows where a slow start went.
+fn timing(step: &str, began: Instant) {
+    let at = STARTED.get().map(|s| s.elapsed().as_secs_f64()).unwrap_or(0.0);
+    tracing::info!("timing: {step} took {} ms ({at:.1} s after the Catalogue started)", began.elapsed().as_millis());
+}
+
+/// Queries through the port behind one gate (#81): at most `PARALLEL` out among all clones, and one more try after
+/// a pause for a 429 or a 5xx.
+#[derive(Clone)]
+struct Paced<Q> {
+    q: Q,
+    gate: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+impl<Q: Fetch + Sync + Clone> Paced<Q> {
+    fn new(q: Q) -> Paced<Q> {
+        Paced { q, gate: std::sync::Arc::new(tokio::sync::Semaphore::new(PARALLEL)) }
+    }
+
+    /// One query; `what` names it in a `timing:` line.
+    async fn ask(&self, op: &str, vars: Value, what: Option<&str>) -> anyhow::Result<Value> {
+        match self.once(op, vars.clone(), what).await {
+            Err(e) if worth_another_try(&e) => {
+                let wait = BACKOFF + jitter(BACKOFF);
+                tracing::warn!("`{op}`: {e}; asking once more in {} ms", wait.as_millis());
+                // the pause holds no place at the gate
+                tokio::time::sleep(wait).await;
+                self.once(op, vars, what).await
+            }
+            r => r,
+        }
+    }
+
+    async fn once(&self, op: &str, vars: Value, what: Option<&str>) -> anyhow::Result<Value> {
+        let _out = self.gate.acquire().await.expect("the gate is never closed");
+        let began = Instant::now();
+        let r = self.q.clone().query(op, vars).await;
+        if let Some(what) = what {
+            timing(what, began);
+        }
+        r
+    }
+}
+
+/// The library walk (#81): the top level, then every folder's contents spliced in right after it (one level deeper).
+/// Every page of a level after the first, and every folder of one depth, are asked at once (as many as the gate lets
+/// out); the items come out in the order a walk one request at a time gives.
+struct Walk<Q> {
+    q: Paced<Q>,
+    me: String,
+    /// each request's time in the log (the walk after a login)
+    log: bool,
+    requests: std::sync::atomic::AtomicUsize,
+}
+
+impl<Q: Fetch + Sync + Clone> Walk<Q> {
+    fn new(q: Paced<Q>, me: String, log: bool) -> Walk<Q> {
+        Walk { q, me, log, requests: Default::default() }
+    }
+
+    async fn items(&self) -> anyhow::Result<Vec<singularity_proto::LibraryItem>> {
+        let mut items = self.level(None, 0, "the top level".into()).await?;
+        // folders nest a few levels at most; guard anyway
+        for depth in 0..4 {
+            let folders: Vec<(usize, String)> = items.iter().enumerate().filter(|(_, it)| it.kind == "folder" && it.depth == depth).map(|(i, it)| (i, it.uri.clone())).collect();
+            if folders.is_empty() {
+                break;
+            }
+            let n = folders.len();
+            let children = futures_util::future::try_join_all(folders.iter().enumerate().map(|(k, (_, uri))| self.level(Some(uri), depth + 1, format!("folder {} of {n} at depth {depth}", k + 1)))).await?;
+            // from the last, so the earlier indices still hold
+            for ((i, _), c) in folders.iter().zip(children).rev() {
+                items.splice(i + 1..i + 1, c);
             }
         }
+        Ok(items)
+    }
+
+    /// One level: its first page says how many there are, the rest are asked at once.
+    async fn level(&self, folder: Option<&str>, depth: u8, name: String) -> anyhow::Result<Vec<singularity_proto::LibraryItem>> {
+        let first = self.page(folder, 0, depth, &name).await?;
+        let total = first.total;
+        let mut items = first.items;
+        if !library_page_continues(items.len(), library::LIBRARY_PAGE, total, items.len()) {
+            return Ok(items);
+        }
+        let offsets = (1..).map(|k| k * library::LIBRARY_PAGE).take_while(|o| *o < total && *o < MAX_TRACKS);
+        let name = &name;
+        let mut pages = futures_util::stream::iter(offsets).map(|o| self.page(folder, o, depth, name).map(move |p| (o, p))).buffered(PARALLEL);
+        while let Some((offset, page)) = pages.next().await {
+            let page = page?;
+            let n = page.items.len();
+            items.extend(page.items);
+            if !library_page_continues(n, offset.saturating_add(library::LIBRARY_PAGE), total, items.len()) {
+                break;
+            }
+        }
+        Ok(items)
+    }
+
+    async fn page(&self, folder: Option<&str>, offset: u32, depth: u8, name: &str) -> anyhow::Result<library::LibraryPage> {
+        self.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let what = self.log.then(|| format!("library page at {offset} of {name}"));
+        let v = self.q.ask("libraryV3", library::library_vars(offset, folder), what.as_deref()).await?;
+        Ok(library::parse_library(&v, depth, &self.me))
     }
 }
 
@@ -1304,10 +2072,12 @@ pub fn parse_home(v: &Value) -> HomeFeed {
             "HomeFeedBaselineSectionData" => "feed",
             _ => "shelf",
         };
+        // the section's own id (`spotify:section:…`), when it has one
+        let id = s["uri"].as_str().unwrap_or_default().to_string();
         let title = s["data"]["title"]["transformedLabel"].as_str().or_else(|| s["data"]["title"]["text"].as_str()).unwrap_or("").to_string();
         let cards: Vec<Card> = s["sectionItems"]["items"].as_array().into_iter().flatten().filter_map(|it| card(&it["content"]["data"])).collect();
         if !cards.is_empty() {
-            shelves.push(Shelf { title, kind: kind.into(), cards });
+            shelves.push(Shelf { id, title, kind: kind.into(), cards });
         }
     }
     HomeFeed { fetched_unix_ms: singularity_proto::now_ms(), shelves }
@@ -1315,6 +2085,24 @@ pub fn parse_home(v: &Value) -> HomeFeed {
 
 #[cfg(test)]
 mod port_tests;
+
+/// A test Catalogue never finds the owner's real Spotify login: no keyring, and the fallback secrets file in a
+/// scratch config dir, for the whole test binary (set once, before the first Catalogue reads them).
+#[cfg(test)]
+fn no_real_login() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let dir = tempfile::tempdir().unwrap().keep();
+        // SAFETY: not strictly sound, as other test threads may be reading the environment meanwhile; the same as the
+        // other tests that set variables (protocol.rs, secrets.rs). It's set once, before the first test Catalogue
+        // reads these two, and a plain `cargo test` must never reach the real login. (.cargo/config.toml's [env]
+        // would also reach `cargo run`, where the keyring is wanted.)
+        unsafe {
+            std::env::set_var("SINGULARITY_NO_KEYRING", "1");
+            std::env::set_var("XDG_CONFIG_HOME", dir);
+        }
+    });
+}
 
 #[cfg(test)]
 mod tests {
@@ -1324,6 +2112,7 @@ mod tests {
     #[tokio::test]
     async fn a_full_queue_of_playlist_edits_does_not_lock_the_catalogue() {
         use super::*;
+        no_real_login();
         let dir = tempfile::tempdir().unwrap();
         let dirs = Dirs { credentials: dir.path().join("creds"), queries: dir.path().join("q.json") };
         let (tx, mut ev) = spawn(dirs, crate::engine::Identity::default());
@@ -1340,6 +2129,80 @@ mod tests {
         };
         let answer = tokio::time::timeout(Duration::from_secs(10), flood).await.expect("the Catalogue locked up");
         assert!(answer.is_err(), "logged out: no query runs");
+    }
+
+    /// Q171: a session that lasted is replaced at once; failed logins wait longer each time up to a cap, and a login
+    /// that works starts that over; sessions that keep ending soon after their login wait longer each time until one
+    /// lasts; logging out stops it.
+    #[test]
+    fn logging_in_again_backs_off_and_starts_over() {
+        use super::*;
+        let secs = |at: Instant, from: Instant| at.duration_since(from).as_secs();
+        let t0 = Instant::now();
+        let mut r = Redial::new();
+        r.logged_in(t0);
+        let t = t0 + STEADY;
+        assert_eq!(r.ended(t), t, "a session that lasted: at once");
+        assert!(r.owed && r.due(t));
+        // no network: later and later
+        let waits: Vec<u64> = (0..8).map(|_| secs(r.failed(t).unwrap(), t)).collect();
+        assert_eq!(waits, [5, 10, 20, 40, 80, 160, 300, 300]);
+        assert!(!r.due(t) && r.due(t + REDIAL_MAX));
+        // a login that works: nothing owed, and the next failure starts from the first wait
+        r.logged_in(t);
+        assert!(!r.owed && !r.due(t + REDIAL_MAX));
+        assert_eq!(secs(r.failed(t).unwrap(), t), 5);
+        // sessions that end soon after their login wait longer each time, though each login worked
+        let t = t + STEADY;
+        for want in [5, 10, 20] {
+            r.logged_in(t);
+            assert_eq!(secs(r.ended(t + Duration::from_secs(1)), t + Duration::from_secs(1)), want);
+        }
+        // until one lasts
+        r.logged_in(t);
+        let t = t + STEADY;
+        assert_eq!(r.ended(t), t);
+        r.logged_in(t);
+        assert_eq!(secs(r.ended(t + Duration::from_secs(1)), t + Duration::from_secs(1)), 5);
+        r.stop();
+        assert!(!r.owed && !r.due(t + REDIAL_MAX), "logged out: nothing owed");
+    }
+
+    /// #168 (Q184): a start-up login that couldn't reach Spotify is tried again after about 2 s, doubling up to a
+    /// minute between tries (the jitter takes up to a quarter off a wait, never adds), until a failure 10 minutes after
+    /// the first; then nothing is owed, and a try after that (a Client's) plans none. A login that works, or Spotify
+    /// refusing one, ends the tries.
+    #[test]
+    fn the_start_up_login_is_tried_again_for_about_ten_minutes() {
+        use super::*;
+        let secs = |at: Instant, from: Instant| at.duration_since(from).as_secs();
+        let t0 = Instant::now();
+        let mut r = Redial::new();
+        let (mut t, mut next) = (t0, r.failed_at_start(t0));
+        let mut waits = vec![];
+        while let Some(at) = next {
+            assert!(r.owed && !r.due(t) && r.due(at));
+            waits.push(at - t);
+            t = at;
+            next = r.failed(t);
+        }
+        let mut want = Duration::from_secs(2);
+        for w in &waits {
+            assert!(*w <= want && *w >= want.mul_f64(0.75), "{w:?} for {want:?}: {waits:?}");
+            want = (want * 2).min(Duration::from_secs(60));
+        }
+        assert!(t - t0 >= Duration::from_secs(600) && t - t0 < Duration::from_secs(660), "stopped after {:?}", t - t0);
+        assert!(r.start == AtStart::GaveUp && !r.owed && !r.due(t + Duration::from_secs(3600)));
+        assert_eq!(r.failed(t + Duration::from_secs(3600)), None, "a Client's try plans no more");
+        assert!(!r.request_may_try(t + Duration::from_secs(3600)), "nor does a request try");
+        r.logged_in(t);
+        assert!(!r.at_start());
+        r.failed_at_start(t);
+        r.refused();
+        assert!(!r.at_start() && !r.owed, "refused: no more tries");
+        // a session that ends later is replaced the usual way (Q171)
+        r.logged_in(t);
+        assert_eq!(secs(r.failed(t).unwrap(), t), 5);
     }
 
     #[test]
@@ -1368,7 +2231,7 @@ mod tests {
       {"data":{"__typename":"HomeShortsSectionData","title":null},"sectionItems":{"items":[
         {"content":{"__typename":"AlbumResponseWrapper","data":{"__typename":"Album","uri":"spotify:album:a","name":"Event Horizon","artists":{"items":[{"profile":{"name":"Nova Drift"}}]},"coverArt":{"sources":[{"url":"https://i.scdn.co/image/64","width":64},{"url":"https://i.scdn.co/image/300","width":300},{"url":"https://i.scdn.co/image/640","width":640}]}}}},
         {"content":{"__typename":"UnknownType","uri":"spotify:x"}}]}},
-      {"data":{"__typename":"HomeGenericSectionData","title":{"transformedLabel":"Made For You"}},"sectionItems":{"items":[
+      {"uri":"spotify:section:fakemadeforyou","data":{"__typename":"HomeGenericSectionData","title":{"transformedLabel":"Made For You"}},"sectionItems":{"items":[
         {"content":{"__typename":"PlaylistResponseWrapper","data":{"__typename":"Playlist","uri":"spotify:playlist:p","name":"Daily Mix 1","description":"Nova Drift, <a href=\"x\">Mira Vale</a> &amp; more","images":{"items":[{"sources":[{"url":"https://i.scdn.co/image/mix","width":null}]}]}}}},
         {"content":{"__typename":"ArtistResponseWrapper","data":{"__typename":"Artist","uri":"spotify:artist:r","profile":{"name":"Lumen Fields"},"visuals":{"avatarImage":{"sources":[{"url":"https://i.scdn.co/image/av","width":320}]}}}}}]}},
       {"data":{"__typename":"HomeFeedBaselineSectionData","title":{"text":"Based on your recent listening"}},"sectionItems":{"items":[
@@ -1408,21 +2271,22 @@ mod tests {
         assert!(!library_page_continues(50, 10_000, u32::MAX, super::MAX_TRACKS as usize), "the cap stops a lying totalCount");
     }
 
-    /// A2/C4: commands that arrived behind a search are kept, in order, and run after it — not sent back into this
-    /// task's own full channel (a deadlock) and not lost.
-    #[tokio::test]
-    async fn a_search_drains_the_commands_behind_it_in_order() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        for c in [CatCmd::Search("a".into()), CatCmd::Library, CatCmd::Devices, CatCmd::Search("b".into())] {
-            tx.send(c).unwrap();
-        }
-        let first = match rx.recv().await.unwrap() {
-            CatCmd::Search(q) => q,
-            other => panic!("unexpected {other:?}"),
-        };
-        let (q, later) = drain_for_search(first, &mut rx);
-        assert_eq!(q, "b", "only the newest of a burst of searches is made");
-        assert!(matches!(later.iter().collect::<Vec<_>>().as_slice(), [CatCmd::Library, CatCmd::Devices]), "the others wait their turn, in order: {later:?}");
+    /// #126: a search's log line says where its time went, and is never given the words to write.
+    #[test]
+    fn a_search_log_line_says_where_the_time_went() {
+        let ms = Duration::from_millis;
+        let found = Searched::Found { spotify: ms(312), read: ms(1), found: 47 };
+        assert_eq!(search_line(ms(2140), " behind Describe", &found, ms(2453)), "search: waited 2140 ms behind Describe, Spotify 312 ms, read 1 ms, 47 results; 2453 ms in all");
+        assert_eq!(search_line(ms(0), "", &Searched::Kept, ms(1)), "search: waited 0 ms, answered from what was kept; 1 ms in all");
+        assert_eq!(search_line(ms(5), "", &Searched::Failed { spotify: ms(12_000) }, ms(12_005)), "search: waited 5 ms, Spotify failed after 12000 ms; 12005 ms in all");
+    }
+
+    /// #126: the log names what a search waited behind by the command alone, none of what it carries.
+    #[test]
+    fn a_command_is_logged_by_its_name_alone() {
+        assert_eq!(cmd_name(&CatCmd::Tracks("spotify:playlist:p".into())), "Tracks");
+        assert_eq!(cmd_name(&CatCmd::Lyrics { uri: "spotify:track:t".into(), meta: None, words: true }), "Lyrics");
+        assert_eq!(cmd_name(&CatCmd::Library), "Library");
     }
 
     #[test]
@@ -1436,6 +2300,8 @@ mod tests {
         assert_eq!(album.image_url.as_deref(), Some("https://i.scdn.co/image/300"));
         let mix = &feed.shelves[1].cards[0];
         assert_eq!(feed.shelves[1].title, "Made For You");
+        // (a section without an id has none)
+        assert_eq!((feed.shelves[1].id.as_str(), feed.shelves[0].id.as_str()), ("spotify:section:fakemadeforyou", ""));
         assert_eq!(mix.subtitle, "Nova Drift, Mira Vale & more");
         assert_eq!(feed.shelves[1].cards[1].kind, "artist");
         assert_eq!(feed.shelves[2].kind, "feed");

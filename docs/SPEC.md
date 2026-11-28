@@ -123,6 +123,9 @@ audio, and looks spectacular.
 61. As a user, I want a private local listening log (never uploaded, owner-only permissions, exportable, deletable), so that stats widgets can show my "live Wrapped".
 62. As a user, I want nightly local backups of my playlists and liked songs, so that my library survives anything.
 63. As a user, I want my Soloist key and Spotify tokens in the system keyring, so that no secret sits in a plain file.
+88. As the owner recording videos, I want a demo mode (`--demo`, D90) that hides everything personal on my own account
+    (library outside the Demo set, names, devices, the Jam link, paths, real stats, recent searches), so that a
+    recording shows nothing private.
 
 ### Robustness
 64. As a user, I want the UI to stay responsive while data loads (skeletons, never freezes), so that it feels fast.
@@ -159,6 +162,27 @@ audio, and looks spectacular.
     automatically on HTTP 412, so rotating hashes never need a release.
   - *OfficialCatalogue*: Web API fallback for library/search when the private source is broken.
   - Rules: metadata only, no crawling, cache with TTLs, back off on 429/5xx, never retry in a loop.
+  - Start (#81): the last Home and library are kept in the user's cache dir (`home-and-library.json`, owner-only,
+    naming its account, removed on logout or when the listening data is deleted) and shown to Clients as soon as the
+    saved login names that account, before
+    Spotify answers; another account's copy is deleted unseen. Home and the library are then fetched side by side,
+    the library's pages and folders together, at most 4 requests out between them; a 429 or 5xx is asked once more
+    after a pause. Each step's time is logged (`timing:` lines in `daemon.log`).
+  - Session (Q171): when Spotify drops the connection (it does with a quiet one), the Catalogue logs in again as soon
+    as it sees that (it looks every 5 s while idle) while a Client is connected; with none, at the next request. It
+    uses the last session's login, so a keyring that doesn't answer then isn't a logout, and logs it on its own
+    `reconnect:` line. In the background, a failed try waits 5 s, then twice as long each time up to 5 min (a login
+    that works starts over), and a session that ends within a minute of its login waits the same way until one lasts;
+    a request may log in again ahead of that wait only as the first try after the session ended, or once the last
+    try is 5 s old, and at most once per command; otherwise it fails at once. Logged out, it isn't tried.
+  - Start-up login (#168, Q184): one that can't reach Spotify (the network isn't up yet after boot) is tried again in
+    the background, with or without a Client, after about 2 s, then twice as long each time up to 1 min between tries
+    (a jitter takes up to a quarter off a wait), with the login read at start (the keyring isn't asked again). After
+    about 10 min of failures it stops and the login error stays; then a Client connecting or asking to play (play,
+    play/pause, play from a list) while the Catalogue isn't ready tries once more, never in a loop (asks within 5 s
+    of a try make none). A try that works fetches Home and the library. A login Spotify refuses ("login failed":
+    bad or revoked credentials) isn't tried again: its error shows at once. A connection the computer itself blocks
+    (a firewall or a VPN's kill switch at boot) counts as not reaching Spotify, and is tried again.
 - **ConnectRemote** (D12): device list, transfer, remote control of any device, per-device quality (D17, to verify).
 - **AudioTap** (D16): captures only the Engine's stream (PipeWire on Linux; a Core Audio process tap on the Spotify app
   on macOS; librespot's and the Soloist VM's samples in-process), runs FFT,
@@ -273,7 +297,19 @@ audio, and looks spectacular.
     queue and lyrics can move but never close. **Built (D66, 2026-10-31):** reopened from the parked state (D59). An edit
     never overwrites a built-in Design: the first one asks for a name (Enter saves a Design of your own, Esc keeps one
     unnamed "<Design> (edited)"); a Design of your own saves itself as you edit; "Reset design" goes back to the
-    built-in one (a Design of your own stays in the picker). **Polished (owner round, 2026-11-01):** a held Pane is
+    built-in one (a Design of your own stays in the picker). **Delete design (#80, owner Q72/Q75, 2026-11-24)**
+    replaces Reset design: Ctrl+K → Delete design… or Delete/Backspace on one of your Designs in Pick a design asks
+    yes/no (`y`/Enter deletes, `n`/Esc keeps), then deletes the Design on screen. Deleting "<Design> (edited)" goes back
+    to that built-in Design (the Theme on screen kept; Ctrl+Z brings the copy back, as it undid a Reset); deleting a
+    Design of your own goes to the default "Singularity" with its own Theme. Built-in Designs have no Delete (the
+    palette leaves it out). keys.toml's `reset_layout` still binds, as `delete_design`, with the same yes/no. **Undo
+    (owner Q151, 2026-11-28):** a Design of your own is deleted at once, no yes/no: in Pick a design the picker says
+    `Deleted "<name>" · u Undo` (Q159) and `u` or a click brings it back as it was (layout, Tray, name, place in the list) until
+    the picker closes; from Ctrl+K the bar says `Deleted "<name>" · ^Z to undo` (the undo key from keys.toml), and
+    Ctrl+Z brings it back whenever the screen shows what the delete left (the same built-in Design, layout and Theme,
+    in Arrange mode too); an edit made since is undone first, then the Design comes back, and its redo steps go. The
+    Design picker opening makes it final. Its file goes at once and it is kept in memory only: quitting or a crash
+    makes the delete final; a failed restore (a file of that name there again, a disk error) keeps it to try again. The picker's hint names the key "Del" (on a Mac "⌫", Q132, Q160). **Polished (owner round, 2026-11-01):** a held Pane is
     lifted and floats live under the pointer (its own Widget, at most ~45% of the screen each way, with a shadow)
     while the others ease into place around a dashed "drop here" slot; on release it lands there (Esc: everything
     goes back). A drop that would only change sizes is no drop (it looked like one Pane "just extended 15%"); the
@@ -324,7 +360,7 @@ audio, and looks spectacular.
     and the bar says "New design discarded" (owner, after #42). A New design is saved only on Done (owner
     Q61, 2026-11-24): quitting mid-build loses it, so spec #34's story 73 (empty Panes and the Tray saved, to come back
     halfway) holds for a Design that has a name, not for an unnamed build. While it is built, Pick a design, Save
-    design as… and Reset design are left out of the palette.
+    design as… and Delete design… are left out of the palette.
 86. As a Mac user, I want the same daily driver on macOS (D25), when the owner has the Mac ready. Started 2026-10-19 (D48),
     tickets #63–#70, parity rule D49; the light librespot Engine on both OSes (D52, #70).
 

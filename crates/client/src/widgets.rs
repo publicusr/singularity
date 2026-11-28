@@ -34,8 +34,8 @@ fn bands3(app: &App) -> [f32; 3] {
 /// Cover, title and artists, and what's next (only while no queue Pane is on screen: the layout is checked every
 /// frame, so opening or closing one takes effect at once). No meters of its own: a Pane holds one thing. A Pane too
 /// small for a cover gets the words, a tiny one a library entry's look; a wide one puts the cover at its left and the
-/// rest beside it; a tall one stacks them; a big one spells the title in the pixel font (with a smaller cover, the
-/// whole in the middle, where a cover as tall as the Pane would leave it no room).
+/// rest beside it; a tall one stacks them; a big one puts the cover at its left and the title as big as fits in the
+/// pixel font beside it, the two in the middle of the Pane (#76).
 pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     let m = u16::from(r.width >= 12);
     let (x, w) = (r.x + m, r.width.saturating_sub(2 * m));
@@ -48,12 +48,12 @@ pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
     };
     let queue = np_queue(app);
     let url = item.cover_url.clone().unwrap_or_default();
+    // big (#76): the cover at the left, the title as big as fits beside it, the two in the middle of the Pane
+    if r.height >= 24 && w >= 40 && np_big(buf, Rect::new(x, r.y, w, r.height), &item, &url, app, queue, th) {
+        return;
+    }
     // wide: a cover as tall as the Pane (twice as wide in cells: about square), the rest beside it
     if r.height >= 4 && w >= r.height * 2 + 24 {
-        // big: a cover as tall as the Pane would leave the words too little room, so a smaller one (#57)
-        if r.height >= 24 && np_big(buf, Rect::new(x, r.y, w, r.height), &item, &url, app, queue, th) {
-            return;
-        }
         // wide and short (under 24 rows, #57): the title in the pixel font beside the cover
         if r.height < 24 && np_strip(buf, Rect::new(x, r.y, w, r.height), &item, &url, app, queue, th) {
             return;
@@ -98,45 +98,63 @@ pub fn nowplaying(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 /// The widest a narrow, tall Pane is (inside its margins) for the title in the pixel font under its cover; wider ones
 /// (square and big tall Panes) keep their look.
 const NARROW_W: u16 = 34;
-/// How many rows short of the Pane's height the cover is when the cover and the words sit fully in the middle; from
-/// there to a cover as tall as the Pane they ease to the top left, where a cover as tall as the Pane draws them.
-const BIG_EASE: u16 = 8;
-/// The room a big Pane's words keep beside the smaller cover.
-const BIG_WORDS: u16 = 56;
-/// The smallest a big Pane's cover gets: four fifths of its height (30 of the sheet's 38 rows), never under 23 rows
-/// (the strip under 24 rows keeps its cover as tall as the Pane).
+/// The least room a big Pane's words keep beside its cover (and never under two fifths of the Pane's width).
+const BIG_WORDS: u16 = 32;
+/// The tallest a big Pane's cover gets: four fifths of its height, never under 23 rows (the strip under 24 rows keeps
+/// its cover as tall as the Pane).
 fn big_floor(h: u16) -> u16 {
     (h * 4 / 5).max(23).min(h)
 }
 
-/// How tall a big, wide Pane's cover is (#57), from the Pane's size alone (never the song's): as tall as the Pane
-/// where it turns wide (`2 × height + 24` columns), a row shorter every two columns from there down to
-/// [`big_floor`], then a row taller every two columns as the words keep [`BIG_WORDS`] columns, back to the Pane's
-/// height, where the old look takes over. So a column or a row more changes it by at most two rows.
-fn big_cover(w: u16, h: u16) -> u16 {
-    let turn = 2 * h + 24;
-    let shrink = h.saturating_sub(w.saturating_sub(turn).div_ceil(2));
-    let grow = w.saturating_sub(2 + BIG_WORDS) / 2;
-    shrink.max(grow).max(big_floor(h)).min(h)
-}
-
-/// A big Pane (#57) where [`big_cover`] is shorter than the Pane: that cover, and beside it the title at the biggest
-/// scale of the pixel font that fits (up to two lines in a third of the Pane; plain bold text where none does or the
-/// font can't spell it), the artists, where it plays from and what's next; the two in the middle of the Pane's height,
-/// easing to the top where the cover grows back to the Pane's height. False (nothing drawn) where the cover is as tall
-/// as the Pane.
+/// A big Pane (#76, the owner's option A): the cover at the left ([`big_floor`] rows, fewer where the words need the
+/// room), beside it the title at the biggest scale of the pixel font that fits (up to four lines in two thirds of the
+/// Pane; plain bold text where none does or the font can't spell it), then the artists, the album and where it plays
+/// from, then what's next (if `queue`, the songs that fit beside the cover). The cover and the words each sit in the
+/// middle of the Pane's height, the pair in the middle of its width. False (nothing drawn) where the words would leave
+/// the cover under half the Pane's height: then the Pane keeps the tall look.
+#[allow(clippy::too_many_arguments)]
 fn np_big(buf: &mut Buffer, r: Rect, item: &singularity_proto::Item, url: &str, app: &mut App, queue: bool, th: &Theme) -> bool {
-    let ch = big_cover(r.width, r.height);
-    if ch >= r.height {
+    use crate::ambient::{pixel_fit, pixel_line, pixel_rows, pixel_width};
+    use unicode_width::UnicodeWidthStr;
+    let words_min = (r.width * 2 / 5).max(BIG_WORDS);
+    let ch = big_floor(r.height).min(r.width.saturating_sub(words_min + 4) / 2);
+    if ch < r.height / 2 {
         return false;
     }
     let cw = ch * 2;
-    let iw = r.width.saturating_sub(cw + 2);
-    let free = r.height - ch;
-    let y = r.y + (u32::from(free) * u32::from(free.min(BIG_EASE)) / u32::from(2 * BIG_EASE)) as u16;
-    crate::home::cover(buf, Rect::new(r.x, y, cw, ch), url, "♪", app, th);
-    let title = (1..=4u16).rev().find_map(|s| crate::ambient::pixel_fit(&item.name, iw, r.height / 3, s, 2).map(|l| (s, l))).filter(|_| spelled(&item.name));
-    np_info(buf, Rect::new(r.x + cw + 2, y, iw, r.bottom() - y), title, item, app, queue, th);
+    let iw = r.width - cw - 4;
+    let subs = np_subtitles(item, app);
+    let title = (1..=6u16).rev().find_map(|s| pixel_fit(&item.name, iw, r.height * 2 / 3, s, 4).map(|l| (s, l))).filter(|_| spelled(&item.name));
+    let (title_h, title_w) = match &title {
+        Some((s, lines)) => (lines.len() as u16 * (pixel_rows(*s) + 1) - 1, lines.iter().map(|l| pixel_width(l.len(), *s)).max().unwrap_or(0)),
+        None => (1, item.name.width() as u16),
+    };
+    // the title, two blank rows, the lines under it; then a blank row and what's next, as many songs as fit beside the
+    // cover
+    let words_h = title_h + 2 + subs.len() as u16;
+    let songs = if queue { ch.saturating_sub(words_h + 2).min(app.playback.queue.len() as u16) } else { 0 };
+    let block = words_h + if songs > 0 { 2 + songs } else { 0 };
+    let ww = subs.iter().map(|s| s.width() as u16).fold(title_w, u16::max).min(iw);
+    let gx = crate::balance::centre(r.x, r.width, cw + 4 + ww);
+    crate::home::cover(buf, Rect::new(gx, r.y + (r.height - ch) / 2, cw, ch), url, "♪", app, th);
+    let tx = gx + cw + 4;
+    let tw = r.right().saturating_sub(tx);
+    let wy = r.y + r.height.saturating_sub(block) / 2;
+    match &title {
+        Some((s, lines)) => {
+            for (i, l) in lines.iter().enumerate() {
+                pixel_line(buf, tx, wy + i as u16 * (pixel_rows(*s) + 1), tw, l, *s, 0, None, 0.0, th);
+            }
+        }
+        None => text(buf, tx, wy, tw, &item.name, th.s(th.fg).add_modifier(Modifier::BOLD)),
+    }
+    let y = wy + title_h + 2;
+    for (i, sub) in subs.iter().enumerate() {
+        text(buf, tx, y + i as u16, tw, sub, th.s(if i == 0 { th.fg } else { th.dim }));
+    }
+    if songs > 0 {
+        np_next(buf, Rect::new(tx, y + subs.len() as u16 + 1, tw, 1 + songs), app, th);
+    }
     true
 }
 
@@ -157,14 +175,25 @@ fn np_subtitles(item: &singularity_proto::Item, app: &App) -> Vec<String> {
 /// A narrow, tall Pane with rows to spare under its cover (#57): the cover (`cw`×`ch`), the title in the small pixel
 /// font (up to three lines), the artists, the album and where it plays from, each line centred, then what's next (if
 /// `queue`, and then only with room for a blank row, "Next in queue" and at least one song), the whole in the middle
-/// of the Pane. False (nothing drawn) when it doesn't fit or the pixel font can't spell the title: then the Pane keeps
+/// of the Pane. Where the pixel font can't spell the title or its words are too wide for it, the title is plain bold
+/// text wrapped onto up to three lines instead (#76). False (nothing drawn) when it doesn't fit: then the Pane keeps
 /// the words under the cover in plain text.
 #[allow(clippy::too_many_arguments)]
 fn np_column(buf: &mut Buffer, r: Rect, ch: u16, cw: u16, item: &singularity_proto::Item, url: &str, app: &mut App, queue: bool, th: &Theme) -> bool {
     use crate::ambient::{pixel_fit, pixel_line, pixel_rows, pixel_width};
-    let Some(lines) = pixel_fit(&item.name, r.width, r.height, 1, 3).filter(|_| spelled(&item.name)) else { return false };
+    let lines = pixel_fit(&item.name, r.width, r.height, 1, 3).filter(|_| spelled(&item.name)).unwrap_or_default();
+    // plain bold text: up to three lines, the last cut where the title runs on
+    let mut plain: Vec<String> = vec![];
+    if lines.is_empty() {
+        plain = crate::lyrics::wrap_indented(&item.name, r.width as usize, 0);
+        if plain.len() > 3 {
+            let rest = plain[2..].join(" ");
+            plain.truncate(2);
+            plain.push(crate::sidebar::clip(&rest, r.width));
+        }
+    }
     let subs = np_subtitles(item, app);
-    let title_h = lines.len() as u16 * (pixel_rows(1) + 1) - 1;
+    let title_h = if lines.is_empty() { plain.len() as u16 } else { lines.len() as u16 * (pixel_rows(1) + 1) - 1 };
     let mut block = ch + 1 + title_h + 1 + subs.len() as u16;
     if block > r.height {
         return false;
@@ -182,6 +211,14 @@ fn np_column(buf: &mut Buffer, r: Rect, ch: u16, cw: u16, item: &singularity_pro
         pixel_line(buf, r.x + (r.width - lw) / 2, y, r.width, l, 1, 0, None, 0.0, th);
         y += pixel_rows(1) + 1;
     }
+    for l in &plain {
+        let lw = (unicode_width::UnicodeWidthStr::width(l.as_str()) as u16).min(r.width);
+        text(buf, r.x + (r.width - lw) / 2, y, lw, l, th.s(th.fg).add_modifier(Modifier::BOLD));
+        y += 1;
+    }
+    if !plain.is_empty() {
+        y += 1;
+    }
     for (i, sub) in subs.iter().enumerate() {
         let sw = (unicode_width::UnicodeWidthStr::width(sub.as_str()) as u16).min(r.width);
         text(buf, r.x + (r.width - sw) / 2, y, sw, sub, th.s(if i == 0 { th.fg } else { th.dim }));
@@ -195,8 +232,9 @@ fn np_column(buf: &mut Buffer, r: Rect, ch: u16, cw: u16, item: &singularity_pro
 
 /// A wide Pane under 24 rows (#57): the cover as tall as the Pane, beside it the title on one line of the pixel font
 /// (the full screen's size when there are rows for it, else the small one), the artists, the album and where it plays
-/// from on the row under it, then what's next (if `queue`, and then only with room for at least one song). False
-/// (nothing drawn) when the title doesn't fit or the pixel font can't spell it: then the words stay plain text.
+/// from on the row under it, then what's next (if `queue`, and then only with room for at least one song). A title too
+/// long for the line is cut with ".." (#76). False (nothing drawn) when not even six letters fit or the pixel font
+/// can't spell the title: then the words stay plain text.
 #[allow(clippy::too_many_arguments)]
 fn np_strip(buf: &mut Buffer, r: Rect, item: &singularity_proto::Item, url: &str, app: &mut App, queue: bool, th: &Theme) -> bool {
     use crate::ambient::{pixel_fit, pixel_line, pixel_rows};
@@ -205,7 +243,22 @@ fn np_strip(buf: &mut Buffer, r: Rect, item: &singularity_proto::Item, url: &str
     let iw = r.right().saturating_sub(ix);
     // a blank row, "Next in queue" and a song
     let next = if queue { 3 } else { 0 };
-    let fit = [2u16, 1].into_iter().filter(|&s| pixel_rows(s) + 1 + next <= r.height).find_map(|s| pixel_fit(&item.name, iw, pixel_rows(s), s, 1).map(|l| (s, l)));
+    let scales = || [2u16, 1].into_iter().filter(|&s| pixel_rows(s) + 1 + next <= r.height);
+    let fit = scales().find_map(|s| pixel_fit(&item.name, iw, pixel_rows(s), s, 1).map(|l| (s, l)));
+    // a title too long for one line (#76): as much of it as fits at the biggest scale that keeps six letters, ending in
+    // ".." (an empty title has nothing to cut: it stays plain text, as before)
+    let fit = fit.or_else(|| {
+        if item.name.trim().is_empty() {
+            return None;
+        }
+        let s = scales().find(|&s| (iw + s) / (4 * s) >= 6)?;
+        let mut line: Vec<char> = item.name.chars().take(((iw + s) / (4 * s)) as usize - 2).collect();
+        while line.last() == Some(&' ') {
+            line.pop();
+        }
+        line.extend(['.', '.']);
+        Some((s, vec![line]))
+    });
     let Some((s, lines)) = fit.filter(|_| spelled(&item.name)) else { return false };
     crate::home::cover(buf, Rect::new(r.x, r.y, cw, r.height), url, "♪", app, th);
     pixel_line(buf, ix, r.y, iw, &lines[0], s, 0, None, 0.0, th);
@@ -352,13 +405,17 @@ fn level_bars(buf: &mut Buffer, r: Rect, bars: &[(&str, f32)], group: usize, cen
 }
 
 /// Cockpit's listening Pane: minutes per day from the local listening log (#23), a column per week (Monday on top,
-/// this week on the right), and a line of totals under it. Short Panes stack two days per cell (half-blocks).
+/// this week on the right), and a line of totals under it. Short Panes stack two days per cell (half-blocks); narrow,
+/// tall ones turn the grid so the weeks run down (#76).
 pub fn listening(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     if r.width < 4 || r.height < 2 {
         return;
     }
     if let Some(s) = app.listening.as_ref().filter(|s| s.plays > 0 && r.width >= 40 && r.height >= 12) {
         return listening_large(buf, r, s, th);
+    }
+    if let Some(s) = app.listening.as_ref().filter(|s| s.plays > 0 && (13..40).contains(&r.width) && r.height >= 20) {
+        return listening_tall(buf, r, s, th);
     }
     let sum = app.listening.as_ref();
     let weeks = (r.width / 2).min(26) as i64;
@@ -425,6 +482,67 @@ pub fn listening(buf: &mut Buffer, r: Rect, app: &App, th: &Theme) {
     let ty = y0 + rows + gap;
     for (i, l) in lines.iter().enumerate().take(room) {
         text(buf, x0, ty + i as u16, (r.right() - 1).saturating_sub(x0), l, th.s(th.dim));
+    }
+}
+
+/// The listening Pane narrow and tall (#76, the owner's option A): the grid turned so the weeks run down, a row a week
+/// (Monday to Sunday across under their initials, this week at the bottom, a month's name beside the week it starts
+/// in where there's room), as many weeks as the rows hold (up to 26), then the totals a line each; the whole in the
+/// middle of the Pane.
+fn listening_tall(buf: &mut Buffer, r: Rect, s: &singularity_proto::ListeningSummary, th: &Theme) {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const GRID_W: u16 = 13;
+    let (x, w) = (r.x + 1, r.width.saturating_sub(2));
+    let today_wd = s.today_weekday as i64;
+    let max = s.minutes.iter().copied().max().unwrap_or(0).max(1) as f32;
+    // a day's colour, `back` days before today: None later this week, the quiet colour for a day without listening
+    let quiet = th.bg.lerp(th.dim, 0.3);
+    let colour = |back: i64| -> Option<Rgb> {
+        if back < 0 {
+            return None;
+        }
+        let m = usize::try_from(s.minutes.len() as i64 - 1 - back).ok().and_then(|i| s.minutes.get(i)).copied().unwrap_or(0);
+        Some(if m == 0 { quiet } else { ramp(th, 0.15 + 0.85 * (m as f32 / max).sqrt()) })
+    };
+    let h = if s.hours_this_year < 10.0 { format!("{:.1}", s.hours_this_year) } else { format!("{:.0}", s.hours_this_year) };
+    let mut lines = vec![format!("{h} h this year")];
+    lines.extend(s.top_artist.as_ref().map(|a| format!("top: {a}")));
+    lines.push(format!("streak {} day{}", s.streak_days, if s.streak_days == 1 { "" } else { "s" }));
+    // the initials, the weeks, a blank row, the totals
+    let weeks = r.height.saturating_sub(3 + lines.len() as u16).min(26) as i64;
+    let months = w >= GRID_W + 5;
+    // (a Pane too narrow for the month names lends the grid and the totals its margins)
+    let (x, w) = if months { (x, w) } else { (r.x, r.width) };
+    let gx = crate::balance::centre(x, w, GRID_W + if months { 4 } else { 0 });
+    let block = 1 + weeks as u16 + 1 + lines.len() as u16;
+    let mut y = r.y + r.height.saturating_sub(block) / 2;
+    for (d, n) in ["M", "T", "W", "T", "F", "S", "S"].iter().enumerate() {
+        text(buf, gx + d as u16 * 2, y, 1, n, th.s(th.border));
+    }
+    y += 1;
+    let today_day = (singularity_proto::now_ms() / 86_400_000) as i64;
+    let mut last_month = 0;
+    for wk in 0..weeks {
+        // the row's Monday, days before today
+        let monday_back = (weeks - 1 - wk) * 7 + today_wd;
+        for d in 0..7 {
+            if let Some(col) = colour(monday_back - d) {
+                text(buf, gx + d as u16 * 2, y, 1, "■", th.s(col));
+            }
+        }
+        let (_, month, _) = crate::stats::civil(today_day - monday_back);
+        if months && month != last_month && wk > 0 {
+            text(buf, gx + GRID_W + 1, y, 3, MONTHS[(month - 1) as usize], th.s(th.dim));
+        }
+        last_month = month;
+        y += 1;
+    }
+    y += 1;
+    for l in &lines {
+        let l = crate::sidebar::clip(l, w);
+        let lw = unicode_width::UnicodeWidthStr::width(l.as_str()) as u16;
+        text(buf, crate::balance::centre(x, w, lw), y, lw, &l, th.s(th.dim));
+        y += 1;
     }
 }
 
@@ -966,7 +1084,7 @@ mod tests {
     fn the_big_listening_pane_keeps_its_numbers_close_under_the_grid() {
         let th = crate::app::App::new(None).theme.clone();
         let minutes: Vec<u32> = (0..singularity_proto::LISTENING_DAYS as u32).map(|i| i * 7 % 50).collect();
-        let s = singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Nova Drift".into()), streak_days: 10, plays: 534, plays_today: 3 };
+        let s = singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Nova Drift".into()), streak_days: 10, plays: 534, plays_today: 3, backup_short: None };
         for (w, h) in [(40, 12), (46, 16), (60, 24), (90, 34), (120, 40), (120, 60), (150, 50), (200, 30), (256, 64), (80, 80)] {
             let r = Rect::new(3, 2, w, h);
             let mut buf = Buffer::empty(Rect::new(0, 0, w + 6, h + 4));
@@ -988,7 +1106,7 @@ mod tests {
         // #58: a narrow, tall Pane left everything under the grid empty; a wide, short one kept it all at the left
         let mut app = App::new(None);
         let minutes: Vec<u32> = (0..singularity_proto::LISTENING_DAYS as u32).map(|i| i * 7 % 50).collect();
-        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Mira Vale".into()), streak_days: 10, plays: 534, plays_today: 3 });
+        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Mira Vale".into()), streak_days: 10, plays: 534, plays_today: 3, backup_short: None });
         let th = app.theme.clone();
         let margins = |w: u16, h: u16| {
             let r = Rect::new(2, 1, w, h);
@@ -996,12 +1114,38 @@ mod tests {
             listening(&mut buf, r, &app, &th);
             crate::balance::margins(&buf, r)
         };
-        let (over, under, ..) = margins(22, 28);
-        assert!(over >= 6 && over.abs_diff(under) <= 1, "narrow-tall: {over} rows over, {under} under");
+        let (over, under, ..) = margins(22, 18);
+        assert!(over >= 2 && over.abs_diff(under) <= 1, "narrow, under 20 rows: {over} rows over, {under} under");
         let (over, _, left, right) = margins(98, 6);
         assert!(over == 0 && left >= 10 && left.abs_diff(right) <= 3, "wide-short: {left} columns left, {right} right");
         let (over, _, left, _) = margins(18, 4);
         assert_eq!((over, left), (0, 1), "tiny: as before");
+    }
+
+    #[test]
+    fn a_narrow_tall_listening_pane_runs_its_weeks_down() {
+        // #76 (option A): a row a week under the weekdays' initials, this week at the bottom, the totals under it; the
+        // rows filled (up to 26 weeks), the whole in the middle
+        let mut app = App::new(None);
+        let minutes: Vec<u32> = (0..singularity_proto::LISTENING_DAYS as u32).map(|i| i * 7 % 50).collect();
+        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Mira Vale".into()), streak_days: 10, plays: 534, plays_today: 3, backup_short: None });
+        let th = app.theme.clone();
+        for (w, h, weeks) in [(14u16, 30u16, 24usize), (24, 30, 24), (30, 40, 26), (22, 20, 14)] {
+            let r = Rect::new(2, 1, w, h);
+            let mut buf = Buffer::empty(Rect::new(0, 0, w + 4, h + 2));
+            listening(&mut buf, r, &app, &th);
+            let rows: Vec<String> = (r.top()..r.bottom()).map(|y| (r.left()..r.right()).map(|x| buf[(x, y)].symbol().to_string()).collect()).collect();
+            let all = rows.join("\n");
+            let head = rows.iter().position(|l| l.contains("M T W T F S S")).unwrap_or_else(|| panic!("{w}x{h}: the initials\n{all}"));
+            let grid: Vec<&String> = rows.iter().skip(head + 1).take_while(|l| l.contains('■')).collect();
+            assert_eq!(grid.len(), weeks, "{w}x{h}: a row a week\n{all}");
+            // this week: Monday to Thursday so far
+            assert_eq!(grid.last().unwrap().matches('■').count(), 4, "{w}x{h}\n{all}");
+            assert!(grid[..weeks - 1].iter().all(|l| l.matches('■').count() == 7), "{w}x{h}\n{all}");
+            assert!(rows.iter().any(|l| l.trim() == "19 h this year") && rows.iter().any(|l| l.trim() == "streak 10 days"), "{w}x{h}\n{all}");
+            let (over, under, ..) = crate::balance::margins(&buf, r);
+            assert!(over.abs_diff(under) <= 1, "{w}x{h}: {over} rows over, {under} under\n{all}");
+        }
     }
 
     fn top_app() -> App {
@@ -1203,20 +1347,23 @@ mod tests {
         assert!((1..3).all(|y| (1..5).all(|x| cover(&tiny, x, y))) && !cover(&tiny, 1, 0) && !cover(&tiny, 1, 3), "{tiny:?}");
         let from = |buf: &Buffer, y: u16, x: usize| row(buf, y).chars().skip(x).collect::<String>();
         assert!(from(&tiny, 1, 7).starts_with("Track 2") && from(&tiny, 2, 7).starts_with("Fake Arti"), "{tiny:?}");
-        // big (120×40): the title in the pixel font as on the full screen, beside a cover shorter than the Pane, the
-        // two together in the middle
-        let big = draw(&mut app, 118, 38);
-        let tall = (0..38).filter(|&y| (0..118).any(|x| cover(&big, x, y))).count() as u16;
-        assert!((19..38).contains(&tall), "a smaller cover, {tall} rows");
-        let top = (0..38).find(|&y| (0..118).any(|x| cover(&big, x, y))).unwrap();
-        assert_eq!(top, (38 - tall) / 2, "centred top to bottom");
-        let used: Vec<u16> = (0..118).filter(|&x| (0..38).any(|y| buf_used(&big, x, y))).collect();
-        let (l, r) = (used[0], 117 - used[used.len() - 1]);
-        assert!(l.abs_diff(r) <= 1, "centred left to right: {l} and {r} columns free");
-        assert!((top..top + 5).any(|y| row(&big, y).contains('█')), "the title in the pixel font");
-        // the full screen (180×49) keeps its cover as tall as the Pane
-        let full = draw(&mut app, 178, 47);
-        assert!((0..47).all(|y| cover(&full, 1, y)));
+        // big (120×40, and the full screen's 180×49, #76): the title in the pixel font beside a cover shorter than the
+        // Pane, each in the middle of its height, the two together in the middle of its width
+        for (w, h) in [(118u16, 38u16), (178, 47)] {
+            let big = draw(&mut app, w, h);
+            let tall = (0..h).filter(|&y| (0..w).any(|x| cover(&big, x, y))).count() as u16;
+            assert!((h / 2..h).contains(&tall), "{w}×{h}: a smaller cover, {tall} rows");
+            let top = (0..h).find(|&y| (0..w).any(|x| cover(&big, x, y))).unwrap();
+            assert_eq!(top, (h - tall) / 2, "{w}×{h}: centred top to bottom");
+            let used: Vec<u16> = (0..w).filter(|&x| (0..h).any(|y| buf_used(&big, x, y))).collect();
+            let (l, r) = (used[0], w - 1 - used[used.len() - 1]);
+            assert!(l.abs_diff(r) <= 1, "{w}×{h}: centred left to right: {l} and {r} columns free");
+            let right = (0..w).rev().find(|&x| cover(&big, x, top)).unwrap();
+            let words: Vec<u16> = (0..h).filter(|&y| (right + 1..w).any(|x| buf_used(&big, x, y))).collect();
+            let (over, under) = (words[0], h - 1 - words[words.len() - 1]);
+            assert!(over.abs_diff(under) <= 1, "{w}×{h}: the words centred top to bottom: {over} and {under} rows free");
+            assert!((right + 1..w).any(|x| big[(x, words[0])].symbol() == "█" || big[(x, words[0] + 1)].symbol() == "█"), "{w}×{h}: the title in the pixel font");
+        }
         // a 3-row strip and a 7-row Pane wider than 30 columns keep the words (only tiny Panes are an entry)
         for (w, h) in [(98, 3), (40, 3), (36, 6)] {
             let b = draw(&mut app, w, h);
@@ -1278,6 +1425,80 @@ mod tests {
         }
     }
 
+    /// #76 (option A): a narrow, tall Pane whose title's words are too wide for the pixel font keeps the centred column,
+    /// the title in plain bold text wrapped onto up to three lines.
+    #[test]
+    fn a_narrow_tall_now_playing_wraps_a_title_too_wide_for_the_pixel_font() {
+        let th = Theme::singularity();
+        let mut app = App::new(None);
+        for (name, lines) in [("Golden Engines at Midnight Overture", vec!["Golden Engines at", "Midnight Overture"]), ("夜に駆ける", vec!["夜に駆ける"]), ("Golden Engines at Midnight and the Long Road Home Again and Again", vec!["Golden Engines at", "Midnight and the Long", "Road Home Again and A…"])] {
+            app.playback.item = Some(singularity_proto::Item { name: name.into(), artists: vec!["Fake Artist".into()], ..Default::default() });
+            let (w, h) = (24u16, 30u16);
+            let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+            nowplaying(&mut buf, Rect::new(0, 0, w, h), &mut app, &th);
+            let rows: Vec<String> = (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect()).collect();
+            let all = rows.join("\n");
+            let at = rows.iter().position(|r| r.trim().replace(' ', "") == lines[0].replace(' ', "")).unwrap_or_else(|| panic!("{name}\n{all}"));
+            for (i, l) in lines.iter().enumerate() {
+                let row = &rows[at + i];
+                assert_eq!(row.trim().replace(' ', ""), l.replace(' ', ""), "{name}\n{all}");
+                let (left, right) = (row.len() - row.trim_start().len(), row.len() - row.trim_end().len());
+                assert!(left.abs_diff(right) <= 1 || !name.is_ascii(), "{name}: centred\n{all}");
+                assert!(buf[(left as u16, at as u16 + i as u16)].modifier.contains(Modifier::BOLD), "{name}: bold");
+            }
+            assert_eq!(rows[at + lines.len() + 1].trim(), "Fake Artist", "{name}\n{all}");
+            let used: Vec<usize> = (0..h as usize).filter(|&y| rows[y].trim() != "" || (0..w).any(|x| buf[(x, y as u16)].bg == th.selection.color())).collect();
+            let (top, bottom) = (used[0], h as usize - 1 - used[used.len() - 1]);
+            assert!(top.abs_diff(bottom) <= 1, "{name}: {top} rows free above, {bottom} below\n{all}");
+        }
+    }
+
+    /// #76 (option A): a wide, short Pane spells a title too long for its line in the pixel font too, cut with "..",
+    /// from where six letters fit.
+    #[test]
+    fn a_wide_short_now_playing_cuts_a_long_title_in_the_pixel_font() {
+        let th = Theme::singularity();
+        let mut app = App::new(None);
+        app.playback.item = Some(singularity_proto::Item { name: "Golden Engines at Midnight".into(), artists: vec!["Fake Artist".into()], ..Default::default() });
+        for w in 43u16..=140 {
+            let h = 8;
+            let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+            nowplaying(&mut buf, Rect::new(0, 0, w, h), &mut app, &th);
+            let rows: Vec<String> = (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect()).collect();
+            let all = rows.join("\n");
+            assert!(!all.contains("Golden"), "{w}: not plain text\n{all}");
+            assert!(rows[..3].iter().any(|r| r.contains('█') || r.contains('▀') || r.contains('▄')), "{w}: the pixel font\n{all}");
+            assert!(rows.iter().any(|r| r.contains("Fake Artist")), "{w}\n{all}");
+        }
+        // narrower, not even six letters fit: plain text as before
+        let mut buf = Buffer::empty(Rect::new(0, 0, 42, 8));
+        nowplaying(&mut buf, Rect::new(0, 0, 42, 8), &mut app, &th);
+        assert!((0..42).map(|x| buf[(x, 0)].symbol().to_string()).collect::<String>().contains("Golden"));
+    }
+
+    /// An empty title has nothing to cut: no ".." in the pixel font, the strip draws as before #76.
+    #[test]
+    fn a_wide_short_now_playing_with_an_empty_title_draws_no_dots() {
+        let th = Theme::singularity();
+        let mut app = App::new(None);
+        for name in ["", "   "] {
+            app.playback.item = Some(singularity_proto::Item { name: name.into(), artists: vec!["Fake Artist".into()], ..Default::default() });
+            for w in [43u16, 60, 100, 140] {
+                let r = Rect::new(0, 0, w, 8);
+                let mut got = Buffer::empty(r);
+                nowplaying(&mut got, r, &mut app, &th);
+                let pixels = (0..8).flat_map(|y| (0..w).map(move |x| (x, y))).any(|(x, y)| x >= 18 && matches!(got[(x, y)].symbol(), "█" | "▀" | "▄"));
+                assert!(!pixels, "{name:?} {w}: no block letters");
+                // the old wide look: the cover as tall as the Pane, the words beside it
+                let mut want = Buffer::empty(r);
+                crate::home::cover(&mut want, Rect::new(1, 0, 16, 8), "", "♪", &mut app, &th);
+                let item = app.playback.item.clone().unwrap();
+                np_info(&mut want, Rect::new(19, 0, w - 20, 8), None, &item, &app, np_queue(&app), &th);
+                assert_eq!(got, want, "{name:?} {w}");
+            }
+        }
+    }
+
     #[test]
     fn a_big_now_playing_keeps_the_panes_background() {
         // the words were drawn aside and copied over, background and all (none: the terminal's own)
@@ -1296,7 +1517,9 @@ mod tests {
     #[test]
     fn a_big_now_playings_cover_grows_with_the_pane_and_never_jumps() {
         // every wide Pane, short to big, and every song alike: one column or one row more changes the cover by at most
-        // two rows and moves it by at most two; the cover's size is the Pane's alone
+        // two rows; the cover's size is the Pane's alone. Under 24 rows (the strip) it also moves by at most two and
+        // ends as tall as the Pane; from 24 rows (#76) it sits in the middle of the height, and across, the pair of it
+        // and the title sits in the middle, so it moves with the title
         let th = Theme::singularity();
         let mut app = App::new(None);
         let at = |app: &mut App, w: u16, h: u16| {
@@ -1319,17 +1542,27 @@ mod tests {
             }
             for (&(w, h), &(x, y, ch)) in &grid {
                 for (dw, dh) in [(1, 0), (0, 1)] {
+                    // (the 24th row changes the look: no step across it)
+                    if h == 24 && dh == 1 {
+                        continue;
+                    }
                     if let Some(&(lx, ly, lch)) = grid.get(&(w - dw, h - dh)) {
-                        assert!(ch.abs_diff(lch) <= 2 && x.abs_diff(lx) <= 2 && y.abs_diff(ly) <= 2, "{name} {w}×{h} (one less: {dw}, {dh}): ({lx},{ly}) {lch} rows → ({x},{y}) {ch}");
+                        let moved = if h < 24 { x.abs_diff(lx) } else { 0 };
+                        assert!(ch.abs_diff(lch) <= 2 && moved <= 2 && y.abs_diff(ly) <= 2, "{name} {w}×{h} (one less: {dw}, {dh}): ({lx},{ly}) {lch} rows → ({x},{y}) {ch}");
                     }
                 }
+                if h >= 24 {
+                    assert!(y == (h - ch) / 2 && ch >= h / 2 && ch < h, "{name} {w}×{h}: ({x},{y}) {ch} rows");
+                }
             }
-            for h in 4u16..=62 {
+            for h in 4u16..24 {
                 assert_eq!(grid[&(2 * h + 99, h)].2, h, "{name}, {h} rows: at last a cover as tall as the Pane");
             }
+            // the song moves the cover across a big Pane, never up or down, nor changes its size
+            let kept: Grid = grid.into_iter().map(|((w, h), (x, y, ch))| ((w, h), (if h < 24 { x } else { 0 }, y, ch))).collect();
             match &first {
-                None => first = Some(grid),
-                Some(f) => assert!(f.iter().all(|(k, v)| grid[k] == *v), "{name}: the cover moved with the song"),
+                None => first = Some(kept),
+                Some(f) => assert!(f.iter().all(|(k, v)| kept[k] == *v), "{name}: the cover changed with the song"),
             }
         }
     }
@@ -1349,38 +1582,34 @@ mod tests {
     ];
 
     #[test]
-    fn the_full_screen_looks_as_before_for_every_song_and_the_big_one_spells_what_fits() {
+    fn a_big_now_playing_spells_what_fits_beside_its_cover_for_every_song() {
+        // #76: the sheet's big size (118×38) and the full screen (178×47): the same cover for every song (30 and 37
+        // rows), the title in the pixel font where it fits (up to four lines in two thirds of the Pane) and the font
+        // has its letters, else in plain bold text, at the top of the words
         let th = Theme::singularity();
         let mut app = App::new(None);
-        for name in TITLES {
-            app.playback.item = Some(singularity_proto::Item { name: name.into(), artists: vec!["Fake Artist".into()], ..Default::default() });
-            // the full screen (178×47): the cover as tall as the Pane, the words beside it as they always were
-            let r = Rect::new(0, 0, 178, 47);
-            let mut got = Buffer::empty(r);
-            nowplaying(&mut got, r, &mut app, &th);
-            let mut want = Buffer::empty(r);
-            crate::home::cover(&mut want, Rect::new(1, 0, 94, 47), "", "♪", &mut app, &th);
-            let item = app.playback.item.clone().unwrap();
-            np_info(&mut want, Rect::new(97, 0, 79, 47), np_title(name, 79, 47), &item, &app, false, &th);
-            assert_eq!(got, want, "{name}");
-            // the sheet's big size (118×38): a 30-row cover for every song, the title in the pixel font where it fits
-            // and the font has its letters, else in plain bold text beside the cover's top
-            let r = Rect::new(0, 0, 118, 38);
-            let mut buf = Buffer::empty(r);
-            nowplaying(&mut buf, r, &mut app, &th);
-            let rows = (0..38).filter(|&y| buf[(1, y)].bg == th.selection.color()).count();
-            assert_eq!(rows, 30, "{name}");
-            let top = (0..38).find(|&y| buf[(1, y)].bg == th.selection.color()).unwrap();
-            let pixels = (63..118).any(|x| "█▀▄".contains(buf[(x, top)].symbol()) || "█▀▄".contains(buf[(x, top + 1)].symbol()));
-            let plain = (63..118).map(|x| buf[(x, top)].symbol().to_string()).collect::<String>();
-            // (54 columns beside the cover, up to two lines in a third of the Pane)
-            let fits = name.is_ascii() && (1..=4).any(|s| crate::ambient::pixel_fit(name, 54, 12, s, 2).is_some());
-            assert_eq!(fits, ["Track 2", "Hey Jude", "Mr Brightside", "Bohemian Rhapsody", "Smells Like Teen Spirit"].contains(&name), "{name}");
-            if fits {
-                assert!(pixels, "{name}: in the pixel font");
-            } else {
-                let first: String = name.chars().take(2).collect();
-                assert!(!pixels && plain.replace(" ", "").contains(&first.replace(" ", "")) && buf[(63, top)].modifier.contains(Modifier::BOLD), "{name}: plain bold: {plain}");
+        for (w, h, ch, iw) in [(118u16, 38u16, 30usize, 54u16), (178, 47, 37, 100)] {
+            for name in TITLES {
+                app.playback.item = Some(singularity_proto::Item { name: name.into(), artists: vec!["Fake Artist".into()], ..Default::default() });
+                let r = Rect::new(0, 0, w, h);
+                let mut buf = Buffer::empty(r);
+                nowplaying(&mut buf, r, &mut app, &th);
+                let cover = |x: u16, y: u16| buf[(x, y)].bg == th.selection.color();
+                let left = (0..w).find(|&x| (0..h).any(|y| cover(x, y))).unwrap();
+                let rows = (0..h).filter(|&y| cover(left, y)).count();
+                assert_eq!(rows, ch, "{w}×{h} {name}");
+                let tx = (0..w).rev().find(|&x| (0..h).any(|y| cover(x, y))).unwrap() + 5;
+                let top = (0..h).find(|&y| (tx..w).any(|x| buf_used(&buf, x, y))).unwrap();
+                let pixels = (tx..w).any(|x| "█▀▄".contains(buf[(x, top)].symbol()) || "█▀▄".contains(buf[(x, top + 1)].symbol()));
+                let plain = (tx..w).map(|x| buf[(x, top)].symbol().to_string()).collect::<String>();
+                let fits = name.is_ascii() && (1..=6).any(|s| crate::ambient::pixel_fit(name, iw, h * 2 / 3, s, 4).is_some());
+                assert_eq!(fits, !["Supercalifragilisticexpialidocious", "夜に駆ける", "Fire 🔥"].contains(&name), "{w}×{h} {name}");
+                if fits {
+                    assert!(pixels, "{w}×{h} {name}: in the pixel font");
+                } else {
+                    let first: String = name.chars().take(2).collect();
+                    assert!(!pixels && plain.replace(' ', "").contains(&first.replace(' ', "")) && buf[(tx, top)].modifier.contains(Modifier::BOLD), "{w}×{h} {name}: plain bold: {plain}");
+                }
             }
         }
     }

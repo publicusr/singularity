@@ -40,6 +40,14 @@ pub fn uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
+/// Wait for a started program on a thread of its own, so that once it quits it doesn't stay behind as a zombie (#143:
+/// the Spotify app the Daemon starts, the Daemon a Client starts). Its exit status is not needed.
+pub fn reap(mut child: std::process::Child) {
+    let _ = std::thread::Builder::new().name("reap".into()).spawn(move || {
+        let _ = child.wait();
+    });
+}
+
 /// A running process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Process {
@@ -97,6 +105,12 @@ impl Host {
     /// The processes running now, with the names they run under.
     pub fn processes(&self) -> Vec<Process> {
         os::processes(self)
+    }
+
+    /// Has process `pid` quit, though it is still listed (a zombie its parent hasn't reaped yet, #143)? Linux only;
+    /// on macOS, false.
+    pub fn has_quit(&self, pid: u32) -> bool {
+        os::has_quit(self, pid)
     }
 
     /// The name process `pid` runs under, if it runs.
@@ -167,10 +181,13 @@ mod tests {
         Host { arch: "x86_64", page_size: 4096, proc_root: bin.join("no-proc"), bin_dirs: vec![bin.to_path_buf()] }
     }
 
+    /// A shell script at `path`, written by a child process (#125). Written by this one, a process another test
+    /// starts in that moment would hold a copy of it open for writing until that process runs its own program, and
+    /// running a file open for writing fails ("Text file busy"): the opener then never ran.
     fn script(path: &Path, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let script = format!("#!/bin/sh\n{body}\n");
+        let wrote = std::process::Command::new("/bin/sh").args(["-c", "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"", "sh", &script]).arg(path).status().unwrap();
+        assert!(wrote.success());
     }
 
     /// "Which CPUs have Soloist" is answered here only (D73): Rust's names in, Spotify's build names out.
@@ -213,6 +230,22 @@ mod tests {
         // no opener: nothing happens (and nothing panics)
         let empty = tempfile::tempdir().unwrap();
         made_up(empty.path()).open("https://example.invalid/pair");
+    }
+
+    /// #143: a program handed to `reap` is waited for, so once it quits it is gone from the table, not a zombie.
+    #[test]
+    fn a_reaped_program_leaves_no_zombie() {
+        let child = std::process::Command::new("/bin/sh").args(["-c", "exit 0"]).spawn().unwrap();
+        let pid = child.id();
+        reap(child);
+        let h = Host::this();
+        for _ in 0..200 {
+            if h.name_of(pid).is_none() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("pid {pid} is still in the table (a zombie: {})", h.has_quit(pid));
     }
 
     /// A process the test started is stopped by a signal. (Pids 0 and above i32::MAX aren't tried: if the guard

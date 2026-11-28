@@ -21,6 +21,9 @@ pub fn start() -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
     let null = || std::process::Stdio::null();
     let spotify = Tool::Spotify.find().ok_or_else(|| std::io::Error::other(format!("the Spotify app is missing ({SEARCHED})")))?;
-    // its own process group, so it outlives the Daemon like the desktop app it is
-    command(spotify).arg("--minimized").stdin(null()).stdout(null()).stderr(null()).process_group(0).spawn().map(|_| ())
+    // its own process group, so it outlives the Daemon like the desktop app it is; reaped when it quits, or it would
+    // stay behind as a zombie named `spotify` that looks like the app still running (#143)
+    let child = command(spotify).arg("--minimized").stdin(null()).stdout(null()).stderr(null()).process_group(0).spawn()?;
+    singularity_config::host::reap(child);
+    Ok(())
 }

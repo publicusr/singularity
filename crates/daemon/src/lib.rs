@@ -7,9 +7,11 @@ pub mod librespot;
 pub mod backup;
 pub mod catalogue;
 pub mod connect;
+pub mod daemon_log;
 pub mod engine;
 pub mod health;
 pub mod jam;
+pub mod last_seen;
 pub mod library;
 pub mod lyrics;
 pub mod os_media;
@@ -53,6 +55,35 @@ pub const RESTART: &str = if cfg!(target_os = "macos") {
     "`systemctl --user restart singularityd`"
 };
 
+/// The systemd user unit's name (packaging/systemd).
+pub const SYSTEMD_UNIT: &str = "singularityd.service";
+
+/// The LaunchAgent's label (packaging/launchd/singularityd.plist).
+pub const LAUNCHD_LABEL: &str = "io.github.publicusr.singularityd";
+
+/// Does this Daemon run under the OS's service manager, as our own unit (#145)? It says so in its welcome, so that when
+/// it goes away Clients leave the next one to the service manager. Only our unit counts: a Daemon a Client started
+/// from a terminal that itself runs under some unit (a terminal's D-Bus service, `systemd-run`) is not systemd's.
+/// Linux: this process's cgroup is the unit's. macOS: launchd sets `XPC_SERVICE_NAME` to the job's label (a shell in a
+/// terminal app has its own, `application.…`, or "0"; the Client doesn't pass it on, `conn.rs`).
+pub fn run_by_service() -> bool {
+    if cfg!(target_os = "macos") {
+        launchd_job(std::env::var("XPC_SERVICE_NAME").ok().as_deref())
+    } else {
+        std::fs::read_to_string("/proc/self/cgroup").is_ok_and(|c| in_systemd_unit(&c))
+    }
+}
+
+/// Does `/proc/self/cgroup` put this process in [`SYSTEMD_UNIT`] (`0::/user.slice/…/app.slice/singularityd.service`)?
+fn in_systemd_unit(cgroup: &str) -> bool {
+    cgroup.lines().any(|l| l.rsplit_once(':').is_some_and(|(_, path)| path.rsplit('/').next() == Some(SYSTEMD_UNIT)))
+}
+
+/// Is `XPC_SERVICE_NAME` our LaunchAgent's label?
+fn launchd_job(xpc_service_name: Option<&str>) -> bool {
+    xpc_service_name == Some(LAUNCHD_LABEL)
+}
+
 /// Shared Daemon state that every connection reads.
 pub struct Hub {
     pub started_unix_ms: u64,
@@ -83,8 +114,18 @@ pub struct Hub {
     pub shutdown: tokio::sync::Notify,
     /// the listening log and library backups (LocalStore); None: off (tests, fake Daemons)
     pub store: Option<Arc<std::sync::Mutex<store::Store>>>,
+    /// the demo Listening log beside it (D90): plays go there too while a demo Client is connected, and demo
+    /// Clients' stats come from it
+    pub demo_store: Option<Arc<std::sync::Mutex<store::Store>>>,
+    /// how many demo Clients are connected
+    pub demo_clients: std::sync::atomic::AtomicUsize,
+    /// tracks a demo Client showed as playing (#128): only their plays go into the demo log; forgotten when the last
+    /// demo Client leaves
+    pub demo_shown: std::sync::Mutex<std::collections::HashSet<String>>,
     /// background tasks that stopped and haven't run for a while: the health view names them (A1)
     pub stopped_tasks: Mutex<BTreeSet<String>>,
+    /// the last Home and library on disk (#81); None: off (tests, fake Daemons)
+    pub last_seen: Option<last_seen::LastSeen>,
 }
 
 /// How long a background task has to run before it counts as back (its health row goes).
@@ -243,6 +284,8 @@ pub struct Extras {
     pub store: Option<PathBuf>,
     /// the desktop-notification flag a background task keeps following `config.toml` (`notifications.track_change`)
     pub notify: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// where the last Home and library are kept for the next start (#81)
+    pub last_seen: Option<PathBuf>,
 }
 
 /// Run the Daemon on `listener` with `engine` until the process ends.
@@ -260,12 +303,26 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
         }
         None => None,
     };
+    let demo_store = match extras.store.as_deref().filter(|_| store.is_some()).map(store::Store::open_demo) {
+        Some(Ok(s)) => Some(Arc::new(std::sync::Mutex::new(s))),
+        Some(Err(e)) => {
+            tracing::warn!("the demo listening log is unavailable: {e}");
+            None
+        }
+        None => None,
+    };
     let (events, _) = broadcast::channel(256);
     let (commands, command_rx) = mpsc::channel(64);
     let (cat_tx, cat_rx) = match catalogue {
         Some((tx, rx)) => (Some(tx), Some(rx)),
         None => (None, None),
     };
+    // without the Catalogue nothing would replace them
+    let last_seen = extras.last_seen.filter(|_| cat_rx.is_some()).map(last_seen::LastSeen::at);
+    // shown once the Catalogue names the account (`claim_last_seen`)
+    if let Some(l) = &last_seen {
+        l.read();
+    }
     let hub = Arc::new(Hub {
         started_unix_ms: proto::now_ms(),
         engine_kind: engine.kind(),
@@ -287,7 +344,11 @@ pub async fn serve_with(listener: UnixListener, engine: Box<dyn Engine>, catalog
         spectrum_wake: Default::default(),
         shutdown: Default::default(),
         store,
+        demo_store,
+        demo_clients: Default::default(),
+        demo_shown: Default::default(),
         stopped_tasks: Default::default(),
+        last_seen,
     });
     if hub.store.is_some() {
         let h = hub.clone();
@@ -541,17 +602,31 @@ async fn log_plays(hub: Arc<Hub>) {
         let now = proto::now_ms();
         if let Some(play) = rec.observe(&state, &device, now) {
             let summary = {
-                let s = store.lock().expect("store lock");
+                let mut s = store.lock().expect("store lock");
                 if let Err(e) = s.record(&play) {
                     tracing::warn!("couldn't log a play: {e}");
                 }
                 s.summary(now)
             };
+            // while a demo Client is connected, its own log gets the play too (D90; the real one keeps it as well), if
+            // that Client showed the track: a hidden one (the song left from before, one queued elsewhere) stays out
+            // of demo stats (#128)
+            if demo_logs(&hub, &play)
+                && let Some(d) = &hub.demo_store
+                && let Err(e) = d.lock().expect("demo store lock").record(&play)
+            {
+                tracing::warn!("couldn't log a play in the demo log: {e}");
+            }
             if let Ok(summary) = summary {
                 let _ = hub.events.send(Event::Listening(summary));
             }
         }
     }
+}
+
+/// Does this play go into the demo Listening log: a demo Client is connected and showed its track (#128)?
+fn demo_logs(hub: &Hub, play: &store::Play) -> bool {
+    hub.demo_clients.load(std::sync::atomic::Ordering::SeqCst) > 0 && hub.demo_shown.lock().expect("demo shown lock").contains(&play.item.uri)
 }
 
 /// Where playback is happening, for the listening log.
@@ -568,23 +643,32 @@ async fn device_name(hub: &Hub) -> String {
     }
 }
 
-/// Answer a LocalStore command (`GetListening`, `GetStats`, `ExportLocalData`, `DeleteLocalData`).
-async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>) {
-    let Some(store) = hub.store.clone() else {
+/// The demo Listening log summed up, for a demo Client (D90), in place of the real one's summary.
+fn demo_summary(hub: &Hub) -> Option<Event> {
+    let s = hub.demo_store.as_ref()?.lock().expect("demo store lock");
+    s.summary(proto::now_ms()).ok().map(Event::Listening)
+}
+
+/// Answer a LocalStore command (`GetListening`, `GetStats`, `ExportLocalData`, `DeleteLocalData`). A demo Client's
+/// questions and its "delete" go to the demo Listening log (D90).
+async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>, demo: bool) {
+    let store = if demo { hub.demo_store.clone() } else { hub.store.clone() };
+    let Some(store) = store else {
         // questions go unanswered (Widgets keep waiting quietly); asking to export or delete is told
         if matches!(cmd, Command::ExportLocalData | Command::DeleteLocalData) {
             let _ = out.send(DaemonMsg::Event(Event::Error { message: "the listening log is off in this Daemon".into() })).await;
         }
         return;
     };
+    let deleting = !demo && matches!(cmd, Command::DeleteLocalData);
     let now = proto::now_ms();
     let (reply, everyone) = {
-        let s = store.lock().expect("store lock");
+        let mut s = store.lock().expect("store lock");
         match cmd {
             Command::GetListening => (s.summary(now).map(Event::Listening), None),
             Command::GetStats { period } => {
                 // plays logged before links were kept get them from the Catalogue, a few at a time (see Described)
-                if let Some(c) = &hub.catalogue
+                if !demo && let Some(c) = &hub.catalogue
                     && let Ok(uris) = s.unlinked_tracks(20)
                     && !uris.is_empty()
                 {
@@ -593,17 +677,47 @@ async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>) {
                 (s.stats(period, now).map(Event::Stats), None)
             }
             Command::ExportLocalData => (store::downloads_dir().and_then(|d| s.export(&d, now)).map(|p| Event::Notice { message: format!("Listening data exported to {}", p.display()) }), None),
+            // (the real log's summary goes to everyone: demo Clients swap it for theirs)
+            _ if demo => match s.delete_all() {
+                Ok(()) => (Ok(Event::Notice { message: "Deleted the demo listening log".into() }), hub.store.as_ref().and_then(|r| r.lock().expect("store lock").summary(now).ok()).map(Event::Listening)),
+                Err(e) => (Err(e), None),
+            },
             _ => match s.delete_all() {
                 Ok(()) => (Ok(Event::Notice { message: "Deleted the listening log and every library backup".into() }), s.summary(now).ok().map(Event::Listening)),
                 Err(e) => (Err(e), None),
             },
         }
     };
+    // the real "delete" also takes the fast-start copy of Home and the library and the demo Listening log, files and
+    // all (#167), after the real log (a failure here can't leave that one); every part is tried, each failure told
+    let reply = if deleting {
+        match (reply, delete_the_rest(hub, &store)) {
+            (Ok(_), Err(e)) => Err(e),
+            (Err(a), Err(b)) => Err(anyhow::anyhow!("{a}; {b}")),
+            (r, Ok(())) => r,
+        }
+    } else {
+        reply
+    };
     let ev = reply.unwrap_or_else(|e| Event::Error { message: format!("Local data: {e}") });
     let _ = out.send(DaemonMsg::Event(ev)).await;
     if let Some(ev) = everyone {
         let _ = hub.events.send(ev);
     }
+}
+
+/// What "Delete listening data" takes besides the real log (#167): the fast-start copy (not written again in this
+/// run until a logout and a login, or another account) and the demo Listening log, by its path beside `store` when
+/// this Daemon couldn't open it.
+fn delete_the_rest(hub: &Hub, store: &std::sync::Mutex<store::Store>) -> anyhow::Result<()> {
+    if let Some(l) = &hub.last_seen {
+        l.delete();
+    }
+    match &hub.demo_store {
+        Some(d) => d.lock().expect("demo store lock").remove(),
+        None => store.lock().expect("store lock").remove_demo_files(),
+    }
+    .map_err(|e| anyhow::anyhow!("the demo listening log: {e}"))
 }
 
 async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
@@ -666,22 +780,55 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
                 if matches!(s, proto::CatalogueStatus::LoggedOut | proto::CatalogueStatus::Unavailable { .. }) {
                     hub.feed(|now| now.gone()).await;
                 }
+                // Home and the library were the account's that left (#81), on disk or not: a Client that connects
+                // now isn't shown them, and they aren't written back
+                if matches!(s, proto::CatalogueStatus::LoggedOut) {
+                    *hub.home.lock().await = None;
+                    *hub.library.lock().await = None;
+                    if let Some(l) = &hub.last_seen {
+                        l.forget();
+                    }
+                }
+                if let proto::CatalogueStatus::Ready { username, .. } = &s {
+                    claim_last_seen(&hub, username).await;
+                }
+                // the listening summary speaks of the logged-in account's backups only, and of none while logged out
+                let account = match &s {
+                    proto::CatalogueStatus::Ready { username, .. } => Some(Some(username.clone())),
+                    proto::CatalogueStatus::LoggedOut | proto::CatalogueStatus::LoginPending { .. } => Some(None),
+                    _ => None,
+                };
+                if let (Some(account), Some(store)) = (account, &hub.store) {
+                    let summary = {
+                        let mut st = store.lock().expect("store lock");
+                        st.set_account(account).then(|| st.summary(proto::now_ms()).ok()).flatten()
+                    };
+                    if let Some(summary) = summary {
+                        let _ = hub.events.send(Event::Listening(summary));
+                    }
+                }
                 *hub.catalogue_status.lock().await = Some(s.clone());
                 let _ = hub.events.send(Event::Catalogue(s));
             }
             CatEvent::Home(h) => {
                 *hub.home.lock().await = Some(h.clone());
                 let _ = hub.events.send(Event::Home(h));
+                keep_last_seen(&hub).await;
             }
             CatEvent::Library(l) => {
                 *hub.library.lock().await = Some(l.clone());
                 let _ = hub.events.send(Event::Library(l));
+                keep_last_seen(&hub).await;
             }
+            CatEvent::Account(name) => claim_last_seen(&hub, &name).await,
             CatEvent::Search(r) => {
                 let _ = hub.events.send(Event::Search(r));
             }
             CatEvent::Artist(p) => {
                 let _ = hub.events.send(Event::Artist(p));
+            }
+            CatEvent::Peeked { uri, tracks, artist } => {
+                let _ = hub.events.send(Event::Peeked { uri, tracks, artist });
             }
             CatEvent::Lyrics(l) => {
                 let _ = hub.events.send(Event::Lyrics(l));
@@ -713,6 +860,39 @@ async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
     }
 }
 
+/// Keep the Hub's Home and library for the next start, as the named account's (#81). A logout empties both, so what
+/// the Hub holds is always the current account's.
+async fn keep_last_seen(hub: &Hub) {
+    let Some(l) = &hub.last_seen else { return };
+    l.write(hub.home.lock().await.clone(), hub.library.lock().await.clone());
+}
+
+/// The Catalogue named its account (#81): the last copy on disk is shown when it is that account's (and nothing fresher
+/// is in yet); another account's Home and library, on disk or held, go.
+async fn claim_last_seen(hub: &Hub, account: &str) {
+    let Some(l) = &hub.last_seen else { return };
+    let claimed = l.claim(account);
+    if claimed.switched {
+        *hub.home.lock().await = None;
+        *hub.library.lock().await = None;
+    }
+    let Some(seen) = claimed.seen else { return };
+    if let Some(h) = seen.home {
+        let mut home = hub.home.lock().await;
+        if home.is_none() {
+            *home = Some(h.clone());
+            let _ = hub.events.send(Event::Home(h));
+        }
+    }
+    if let Some(lib) = seen.library {
+        let mut library = hub.library.lock().await;
+        if library.is_none() {
+            *library = Some(lib.clone());
+            let _ = hub.events.send(Event::Library(lib));
+        }
+    }
+}
+
 /// Is this playback event older than the snapshot just sent? Such an event is already in the snapshot, so
 /// forwarding it would put a freshly connected Client back in time (B6/C12). A state without an anchor is always
 /// forwarded: it carries no time to compare.
@@ -738,6 +918,7 @@ fn catalogue_cmd(cmd: &Command) -> Option<Result<CatCmd, &'static str>> {
         Command::ClearQueue => CatCmd::Queue(connect::QueueEdit::Clear),
         Command::MoveInQueue { uri, uid, to, into_queue } => CatCmd::Queue(connect::QueueEdit::Move { uri: uri.clone(), uid: uid.clone(), to: *to, into_queue: *into_queue }),
         Command::GetArtist { uri } => CatCmd::Artist(uri.clone()),
+        Command::Peek { uri } => CatCmd::Peek(uri.clone()),
         Command::Search { query } => CatCmd::Search(query.clone()),
         Command::GetDevices => CatCmd::Devices,
         Command::Transfer { device_id } => CatCmd::Transfer(device_id.clone()),
@@ -766,10 +947,13 @@ fn catalogue_cmd(cmd: &Command) -> Option<Result<CatCmd, &'static str>> {
 async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()> {
     let (mut rd, mut wr) = stream.into_split();
     let hello: Option<ClientMsg> = proto::read_msg(&mut rd).await?;
+    // a demo Client (D90): its stats come from the demo Listening log, which logs plays while it's connected
+    let demo = matches!(hello, Some(ClientMsg::Hello { demo: true, .. }));
     match hello {
-        Some(ClientMsg::Hello { protocol, client }) if protocol == PROTOCOL_VERSION => {
-            tracing::info!("client connected: {client}");
-            let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind, soloist_in_vm: hub.soloist_in_vm };
+        Some(ClientMsg::Hello { protocol, client, demo: d }) if protocol == PROTOCOL_VERSION => {
+            tracing::info!("client connected: {client}{}", if d { " (demo mode)" } else { "" });
+            let account = if d { demo_account(&hub).await } else { String::new() };
+            let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: VERSION.into(), started_unix_ms: hub.started_unix_ms, engine: hub.engine_kind, soloist_in_vm: hub.soloist_in_vm, demo: d, account, service: run_by_service() };
             proto::write_msg(&mut wr, &welcome).await?;
         }
         Some(ClientMsg::Hello { protocol, .. }) => {
@@ -779,6 +963,11 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
         }
         _ => return Ok(()),
     }
+    let _demo_client = demo.then(|| DemoClient::new(hub.clone()));
+    // while one is here, a session Spotify ended is replaced in the background (Q171)
+    let _here = catalogue::ClientHere::new();
+    // and a start-up login that stopped trying is tried once more (#168), if Spotify isn't ready
+    login_wanted(&hub).await;
     // everything to this Client goes through one writer; a Client that takes nothing for WRITE_DEADLINE has stopped
     // reading, and its session ends (#71: it used to stay, blocked, for as long as it was connected)
     let (out_tx, mut out_rx) = mpsc::channel::<DaemonMsg>(64);
@@ -821,6 +1010,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     }
 
     let fwd_tx = out_tx.clone();
+    let fwd_hub = hub.clone();
     let forwarder = tokio::spawn(async move {
         loop {
             let ev = match events.recv().await {
@@ -842,6 +1032,14 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                 }
                 newest = newest.max(p.timestamp_ms);
             }
+            // a demo Client never sees the real log's summary: its own instead (D90)
+            let ev = match ev {
+                Event::Listening(_) if demo => match demo_summary(&fwd_hub) {
+                    Some(ev) => ev,
+                    None => continue,
+                },
+                ev => ev,
+            };
             if fwd_tx.send(DaemonMsg::Event(ev)).await.is_err() {
                 break;
             }
@@ -851,6 +1049,13 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     let mut spectrum: Option<tokio::task::JoinHandle<()>> = None;
     let reading = async {
         while let Some(msg) = proto::read_msg::<_, ClientMsg>(&mut rd).await? {
+            // asked to play: a start-up login that stopped trying is tried once more (#168). It's asked first, but the
+            // play doesn't wait for it: Play and TogglePlay go to the Engine (librespot's isn't set up until the login
+            // works), and Connect waits for a PlayFrom only if browsing already marked the login under way when it takes
+            // it; otherwise that one fails at once as "not logged in" and the next press finds the login done (or not)
+            if let ClientMsg::Command(Command::Play { .. } | Command::TogglePlay | Command::PlayFrom { .. }) = &msg {
+                login_wanted(&hub).await;
+            }
             match msg {
                 ClientMsg::Command(Command::Spectrum { on }) => {
                     use std::sync::atomic::Ordering;
@@ -908,7 +1113,13 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
                     h.stopped_tasks = hub.stopped_tasks.lock().await.iter().cloned().collect();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Health(h))).await;
                 }
-                ClientMsg::Command(cmd @ (Command::GetListening | Command::GetStats { .. } | Command::ExportLocalData | Command::DeleteLocalData)) => local_data(&hub, cmd, &out_tx).await,
+                ClientMsg::Command(cmd @ (Command::GetListening | Command::GetStats { .. } | Command::ExportLocalData | Command::DeleteLocalData)) => local_data(&hub, cmd, &out_tx, demo).await,
+                // (only a demo Client's word counts)
+                ClientMsg::Command(Command::ShownInDemo { uri }) => {
+                    if demo {
+                        hub.demo_shown.lock().expect("demo shown lock").insert(uri);
+                    }
+                }
                 ClientMsg::Command(Command::GetState) => {
                     let s = hub.playback();
                     let _ = out_tx.send(DaemonMsg::Event(Event::Playback(s))).await;
@@ -949,6 +1160,44 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     forwarder.abort();
     writer.abort();
     result
+}
+
+/// A Client connected or asked to play while the Catalogue isn't ready (`Unavailable`): it tries a start-up login that
+/// stopped trying once more (#168). Ready, or logged out, nothing is sent: browsing and searches don't see it.
+async fn login_wanted(hub: &Hub) {
+    let unready = matches!(*hub.catalogue_status.lock().await, Some(proto::CatalogueStatus::Unavailable { .. }));
+    if let (true, Some(c)) = (unready, &hub.catalogue) {
+        let _ = c.send(CatCmd::LoginWanted(std::time::Instant::now())).await;
+    }
+}
+
+/// The account's username for a demo Client to redact (D90): the logged-in one, else the saved login's.
+async fn demo_account(hub: &Hub) -> String {
+    if let Some(proto::CatalogueStatus::Ready { username, .. }) = hub.catalogue_status.lock().await.clone() {
+        return username;
+    }
+    if hub.catalogue.is_none() {
+        return String::new();
+    }
+    tokio::task::spawn_blocking(|| catalogue::saved_credentials(&catalogue::Dirs::from_env()).and_then(|c| c.username)).await.ok().flatten().unwrap_or_default()
+}
+
+/// A demo Client's session, counted while it lasts (D90: plays go to the demo Listening log meanwhile).
+struct DemoClient(Arc<Hub>);
+
+impl DemoClient {
+    fn new(hub: Arc<Hub>) -> DemoClient {
+        hub.demo_clients.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        DemoClient(hub)
+    }
+}
+
+impl Drop for DemoClient {
+    fn drop(&mut self) {
+        if self.0.demo_clients.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            self.0.demo_shown.lock().expect("demo shown lock").clear();
+        }
+    }
 }
 
 /// How long one request to Spotify may take. librespot's HTTP client has no timeout of its own: a request on a
@@ -999,6 +1248,57 @@ pub fn default_socket() -> PathBuf {
 mod tests {
     use super::*;
 
+    /// #128: while a demo Client is connected, the demo Listening log gets only the plays of tracks it showed; a
+    /// hidden one (the song left from before) goes only into the real log.
+    #[tokio::test]
+    async fn the_demo_log_gets_only_the_tracks_a_demo_client_showed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut hub = Arc::into_inner(test_hub()).expect("one owner");
+        hub.store = Some(Arc::new(std::sync::Mutex::new(store::Store::open(dir.path()).unwrap())));
+        hub.demo_store = Some(Arc::new(std::sync::Mutex::new(store::Store::open_demo(dir.path()).unwrap())));
+        let hub = Arc::new(hub);
+        hub.demo_clients.store(1, std::sync::atomic::Ordering::SeqCst);
+        hub.demo_shown.lock().unwrap().insert("spotify:track:shown".into());
+        tokio::spawn(log_plays(hub.clone()));
+        tokio::task::yield_now().await;
+        let playing = |uri: &str| PlaybackState { status: proto::PlayStatus::Playing, item: Some(proto::Item { uri: uri.into(), name: "T".into(), artists: vec!["A".into()], duration_ms: 400, ..Default::default() }), speed: 1.0, ..Default::default() };
+        for uri in ["spotify:track:hidden", "spotify:track:shown", "spotify:track:last"] {
+            let _ = hub.events.send(Event::Playback(playing(uri)));
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        }
+        let now = proto::now_ms();
+        assert_eq!(hub.store.as_ref().unwrap().lock().unwrap().summary(now).unwrap().plays, 2, "the real log: both");
+        assert_eq!(hub.demo_store.as_ref().unwrap().lock().unwrap().summary(now).unwrap().plays, 1, "the demo log: only the shown one");
+    }
+
+    /// #145: the Daemon knows it runs under the service manager from what systemd or launchd put in its environment.
+    /// #145: only our own unit counts, never a unit the terminal (and so the Client) runs under.
+    #[test]
+    fn a_daemon_under_its_systemd_unit_knows_it() {
+        assert!(in_systemd_unit("0::/user.slice/user-1000.slice/user@1000.service/app.slice/singularityd.service\n"));
+        assert!(in_systemd_unit("1:name=systemd:/user.slice/user-1000.slice/user@1000.service/app.slice/singularityd.service\n0::/\n"), "cgroup v1");
+        // started by a Client in a terminal: the terminal's scope or service, a systemd-run unit, a login session
+        for other in [
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-ghostty-surface-transient-6202.scope\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome\\x2dterminal\\x2dserver.service\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-u42.service\n",
+            "0::/user.slice/user-1000.slice/session-2.scope\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/not-singularityd.service\n",
+            "",
+        ] {
+            assert!(!in_systemd_unit(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn a_daemon_under_its_launchagent_knows_it() {
+        assert!(launchd_job(Some("io.github.publicusr.singularityd")));
+        // a shell in Terminal, iTerm2 or Ghostty passes on its own value (the Client drops it, but an older one won't)
+        for other in [None, Some("0"), Some(""), Some("application.com.googlecode.iterm2.1234.5678"), Some("application.com.mitchellh.ghostty.1.2")] {
+            assert!(!launchd_job(other), "{other:?}");
+        }
+    }
+
     fn test_hub() -> Arc<Hub> {
         let (events, _) = broadcast::channel(8);
         let (commands, _) = mpsc::channel(4);
@@ -1023,7 +1323,11 @@ mod tests {
             spectrum_wake: Default::default(),
             shutdown: Default::default(),
             store: None,
+            demo_store: None,
+            demo_clients: Default::default(),
+            demo_shown: Default::default(),
             stopped_tasks: Default::default(),
+            last_seen: None,
         })
     }
 
@@ -1082,6 +1386,41 @@ mod tests {
         .await
         .expect("the other device is still remembered after logout");
         assert_eq!(hub.playback(), ours, "the bar is back on this computer");
+    }
+
+    /// What the Catalogue is sent, by name, for a Client that connects and asks for Home, then to play from a list,
+    /// while the Catalogue's status is `status`.
+    async fn sent_for_a_client(status: proto::CatalogueStatus, n: usize) -> Vec<String> {
+        let mut hub = Arc::into_inner(test_hub()).expect("one owner");
+        let (tx, mut cat) = mpsc::channel(16);
+        hub.catalogue = Some(tx);
+        hub.catalogue_status = Mutex::new(Some(status));
+        let hub = Arc::new(hub);
+        let (mut client, daemon) = UnixStream::pair().unwrap();
+        tokio::spawn(client_session(daemon, hub.clone()));
+        proto::write_msg(&mut client, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into(), demo: false }).await.unwrap();
+        let play = Command::PlayFrom { context_uri: "spotify:playlist:p".into(), index: 0, track_uri: None };
+        for cmd in [Command::GetHome, play] {
+            proto::write_msg(&mut client, &ClientMsg::Command(cmd)).await.unwrap();
+        }
+        let mut got = vec![];
+        for _ in 0..n {
+            let c = tokio::time::timeout(std::time::Duration::from_secs(2), cat.recv()).await.expect("the Catalogue wasn't told").unwrap();
+            got.push(format!("{c:?}").split(|ch: char| !ch.is_alphanumeric()).next().unwrap_or_default().to_string());
+        }
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(200), cat.recv()).await.is_err(), "more was sent: {got:?}");
+        got
+    }
+
+    /// #168: while the Catalogue isn't ready, a Client connecting and a Client asking to play each give it a
+    /// `LoginWanted` (a start-up login whose tries ran out is tried once more), sent ahead of the play; other commands
+    /// don't. Ready, nothing is sent, so searches never wait behind one (#126).
+    #[tokio::test]
+    async fn a_client_connecting_or_asking_to_play_wants_the_login() {
+        let unready = proto::CatalogueStatus::Unavailable { message: "couldn't reach Spotify".into() };
+        assert_eq!(sent_for_a_client(unready, 4).await, ["LoginWanted", "Home", "LoginWanted", "PlayFrom"]);
+        let ready = proto::CatalogueStatus::Ready { username: "someone".into(), country: "XX".into(), premium: true };
+        assert_eq!(sent_for_a_client(ready, 2).await, ["Home", "PlayFrom"]);
     }
 
     /// A1: a background task that panics is named in the health view and started again.

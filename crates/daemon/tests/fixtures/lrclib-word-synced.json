@@ -1,0 +1,13 @@
+{
+  "id": 1,
+  "name": "Invented Song",
+  "trackName": "Invented Song",
+  "artistName": "Nobody",
+  "albumName": "Invented Album",
+  "duration": 208.0,
+  "instrumental": false,
+  "hasWordSync": true,
+  "plainLyrics": "Paper boats drift past, the harbour wall\nGulls don't count the tides\n",
+  "syncedLyrics": "[00:07.49] Paper boats drift past, the harbour wall\n[00:11.74] Gulls don't count the tides\n",
+  "lyricsfile": "version: '1.0'\nmetadata:\n  title: Invented Song\n  artist: Nobody\n  album: Invented Album\n  duration_ms: 208000\n  instrumental: false\n  language: en\nlines:\n- text: Paper boats drift past, the harbour wall\n  start_ms: 8120\n  end_ms: 11620\n  words:\n  - text: 'Paper '\n    start_ms: 8120\n  - text: 'boats '\n    start_ms: 8789\n  - text: 'drift '\n    start_ms: 9212\n  - text: 'past, '\n    start_ms: 9757\n  - text: 'the '\n    start_ms: 9997\n  - text: 'harbour '\n    start_ms: 10663\n  - text: wall\n    start_ms: 11126\n- text: Gulls don't count the tides\n  start_ms: 12080\n  end_ms: 14936\n  words:\n  - text: 'Gulls '\n    start_ms: 12080\n  - text: 'don''t '\n    start_ms: 12542\n  - text: 'count '\n    start_ms: 12791\n  - text: 'the '\n    start_ms: 13286\n  - text: tides\n    start_ms: 14237\n"
+}

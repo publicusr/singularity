@@ -10,7 +10,7 @@ const H: u16 = 50;
 /// The last row (the legend's) of a frame drawn `w` wide, its blanks at the end trimmed.
 fn legend(app: &mut App, w: u16) -> String {
     let mut t = Terminal::new(TestBackend::new(w, H)).unwrap();
-    t.draw(|f| crate::ui::draw(f, app)).unwrap();
+    t.draw(|f| crate::ui::frame(f, app)).unwrap();
     let buf = t.backend().buffer();
     (0..w).map(|x| buf[(x, H - 1)].symbol().to_string()).collect::<String>().trim_end().to_string()
 }
@@ -20,7 +20,7 @@ fn key(app: &mut App, code: KeyCode) {
 }
 
 fn tray_focus(app: &App) -> Option<TrayStop> {
-    app.arranging.as_ref().and_then(|a| a.tray_focus)
+    app.arrange.on.as_ref().and_then(|a| a.tray_focus)
 }
 
 /// ↓ from the queue's Pane until the keyboard's focus is on the Tray.
@@ -46,13 +46,13 @@ fn state(name: &str, w: u16) -> App {
             key(&mut a, KeyCode::Char('m'));
             a.focus_on(Widget::Queue);
             key(&mut a, KeyCode::Enter);
-            assert!(a.tile.as_ref().is_some_and(|t| t.aim.is_some()), "{w}: Enter picked it up");
+            assert!(a.gesture.carry().is_some_and(|t| t.aim.is_some()), "{w}: Enter picked it up");
         }
         "s waiting for its arrow" => {
             key(&mut a, KeyCode::Char('m'));
             a.focus_on(Widget::Queue);
             key(&mut a, KeyCode::Char('s'));
-            assert!(a.arranging.as_ref().is_some_and(|r| r.split_next), "{w}: s waits");
+            assert!(a.arrange.on.as_ref().is_some_and(|r| r.split_next), "{w}: s waits");
         }
         "a Tray Widget focused" => {
             key(&mut a, KeyCode::Char('m'));
@@ -80,7 +80,7 @@ fn state(name: &str, w: u16) -> App {
         }
         _ => unreachable!("{name}"),
     }
-    assert!(a.arranging.is_some(), "{w} {name}: arranging");
+    assert!(a.arrange.on.is_some(), "{w} {name}: arranging");
     a
 }
 
