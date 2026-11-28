@@ -281,8 +281,10 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
 }
 
 /// Home's picture where the others have covers (#76; the owner, 2026-11-28: "a larger version of the og icon"): the ⌂ it
-/// has always had, as big as a cover, in `c` straight on the row's background `bg` (no square behind it). On the pixel
-/// tier it is the terminal font's own ⌂ drawn big (as big text is), on cells the same outline in braille dots.
+/// has always had, its ink four fifths of a cover's height, in `c` straight on the row's background `bg` (no square
+/// behind it). On the pixel tier it is the ⌂ the terminal shows, drawn big (as big text is): its font's own, else the
+/// one the system has (as the terminal falls back). On cells, or with no font at all that has ⌂, the same outline in
+/// braille dots.
 fn home_icon(buf: &mut Buffer, slot: Rect, c: Rgb, bg: Color, app: &mut App) {
     use crate::bigtext::{Span, ink, key, render};
     if slot.width == 0 || slot.height == 0 {
@@ -297,9 +299,10 @@ fn home_icon(buf: &mut Buffer, slot: Rect, c: Rgb, bg: Color, app: &mut App) {
         kitty.place_rgba(key(&spans, img_w, img_h, baseline), slot, None, || (img_w, img_h, render(&spans, img_w, img_h, baseline)));
         return;
     }
-    // braille: two dots across a cell and four down, about square; a roof at 45° over walls a bit taller than it
+    // braille: two dots across a cell and four down, about square; four fifths of the slot's height, a roof at 45° over
+    // walls a bit taller than it
     let (dw, dh) = (slot.width as i32 * 2, slot.height as i32 * 4);
-    let h = ((dh as f32 * 0.85).round() as i32).clamp(4.min(dh), dh);
+    let h = ((dh as f32 * 0.8).round() as i32).clamp(4.min(dh), dh);
     let a = (((h as f32 * 0.78 - 1.0) / 2.0).round() as i32).clamp(1, ((dw - 1) / 2).max(1));
     let (left, top) = ((dw - 2 * a - 1).max(0) / 2, (dh - h) / 2);
     let (cx, eave, bottom) = (left + a, top + a, top + h - 1);
