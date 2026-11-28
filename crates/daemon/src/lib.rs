@@ -7,6 +7,7 @@ pub mod librespot;
 pub mod backup;
 pub mod catalogue;
 pub mod connect;
+pub mod daemon_log;
 pub mod engine;
 pub mod health;
 pub mod jam;
@@ -937,6 +938,8 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
         _ => return Ok(()),
     }
     let _demo_client = demo.then(|| DemoClient::new(hub.clone()));
+    // while one is here, a session Spotify ended is replaced in the background (Q171)
+    let _here = catalogue::ClientHere::new();
     // everything to this Client goes through one writer; a Client that takes nothing for WRITE_DEADLINE has stopped
     // reading, and its session ends (#71: it used to stay, blocked, for as long as it was connected)
     let (out_tx, mut out_rx) = mpsc::channel::<DaemonMsg>(64);

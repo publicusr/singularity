@@ -185,5 +185,7 @@ When it's done: update every row above and the README's "macOS quirks" (#85 step
 
 Paths (D50): `~/.config/singularity`, `~/.local/share/singularity`, `~/.local/state/singularity`,
 `~/.cache/singularity`, with the `XDG_*` variables respected, named in one place (App folders,
-`config/src/app_folders.rs`, D89). With `HOME` unset (and those `XDG_*` unset) the Client and Daemon stop and say so. Terminals: kitty, Ghostty and WezTerm for the pixel tier
+`config/src/app_folders.rs`, D89). The Daemon's log (`daemon.log` in the state dir, opened by a Client or by launchd's
+`StandardErrorPath`) is moved along by the Daemon itself at its start and past 5 MB, keeping three (Q170,
+`daemon/src/daemon_log.rs`); under systemd it's the journal. With `HOME` unset (and those `XDG_*` unset) the Client and Daemon stop and say so. Terminals: kitty, Ghostty and WezTerm for the pixel tier
 on both; the cell tier everywhere else. Visuals: wgpu on Vulkan (Linux) or Metal (macOS), CPU fallback on both.

@@ -167,6 +167,13 @@ audio, and looks spectacular.
     Spotify answers; another account's copy is deleted unseen. Home and the library are then fetched side by side,
     the library's pages and folders together, at most 4 requests out between them; a 429 or 5xx is asked once more
     after a pause. Each step's time is logged (`timing:` lines in `daemon.log`).
+  - Session (Q171): when Spotify drops the connection (it does with a quiet one), the Catalogue logs in again as soon
+    as it sees that (it looks every 5 s while idle) while a Client is connected; with none, at the next request. It
+    uses the last session's login, so a keyring that doesn't answer then isn't a logout, and logs it on its own
+    `reconnect:` line. In the background, a failed try waits 5 s, then twice as long each time up to 5 min (a login
+    that works starts over), and a session that ends within a minute of its login waits the same way until one lasts;
+    a request may log in again ahead of that wait only as the first try after the session ended, or once the last
+    try is 5 s old, and at most once per command; otherwise it fails at once. Logged out, it isn't tried.
 - **ConnectRemote** (D12): device list, transfer, remote control of any device, per-device quality (D17, to verify).
 - **AudioTap** (D16): captures only the Engine's stream (PipeWire on Linux; a Core Audio process tap on the Spotify app
   on macOS; librespot's and the Soloist VM's samples in-process), runs FFT,

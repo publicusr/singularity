@@ -45,10 +45,13 @@ async fn run() -> anyhow::Result<i32> {
         return Ok(0);
     }
     // nowhere to keep settings and data without HOME: stop and say so (Q93), before taking the socket
-    if let Err(e) = singularity_config::app_folders::AppFolders::from_env() {
-        eprintln!("singularityd: {e}");
-        return Ok(1);
-    }
+    let folders = match singularity_config::app_folders::AppFolders::from_env() {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("singularityd: {e}");
+            return Ok(1);
+        }
+    };
     let path = singularityd::default_socket();
     let listener = match singularityd::bind(&path) {
         Ok(l) => l,
@@ -58,6 +61,11 @@ async fn run() -> anyhow::Result<i32> {
         }
         Err(e) => return Err(e.into()),
     };
+    // this is the Daemon now: the one before's log is kept aside, and this one's can't grow for ever (Q170)
+    let log = folders.state.join(singularityd::daemon_log::NAME);
+    if singularityd::daemon_log::take_over(libc::STDERR_FILENO, &log) {
+        tokio::spawn(singularityd::daemon_log::watch(libc::STDERR_FILENO, log));
+    }
     tracing::info!("singularityd {} listening on {}", singularityd::VERSION, path.display());
     // the Engine (D51, D52, D55), its tap and the Catalogue, from config.toml's [engine], the environment and the flags
     // (--fake-engine, --no-catalogue, --fake-catalogue <home.json>): see `assembly`
