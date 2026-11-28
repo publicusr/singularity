@@ -1,0 +1,67 @@
+[
+  {
+    "id": 3,
+    "name": "Wymyślona piosenka",
+    "trackName": "Wymyślona piosenka",
+    "artistName": "Nikt",
+    "albumName": "Wymyślony album",
+    "duration": null,
+    "instrumental": false,
+    "hasWordSync": false,
+    "plainLyrics": "Lampy nad rzeką gasną powoli\nTramwaj jedzie pusty do rana\n",
+    "syncedLyrics": "[00:18.43] Lampy nad rzeką gasną powoli\n[00:23.51] Tramwaj jedzie pusty do rana\n",
+    "lyricsfile": "version: '1.0'\nmetadata:\n  title: Wymyślona piosenka\n  artist: Nikt\n  album: Wymyślony album\n  duration_ms: 0\n  instrumental: false\n  language: pl\nlines:\n- text: Lampy nad rzeką gasną powoli\n  start_ms: 18850\n  end_ms: 20562\n- text: Tramwaj jedzie pusty do rana\n  start_ms: 23910\n  end_ms: 26028\n"
+  },
+  {
+    "id": 4,
+    "name": "Wymyślona piosenka",
+    "trackName": "Wymyślona piosenka",
+    "artistName": "Nikt",
+    "albumName": "Wymyślony album",
+    "duration": 169.70158550566896,
+    "instrumental": false,
+    "hasWordSync": true,
+    "plainLyrics": "Lampy nad rzeką gasną powoli\nTramwaj jedzie pusty do rana\n",
+    "syncedLyrics": "[00:18.43] Lampy nad rzeką gasną powoli\n[00:23.51] Tramwaj jedzie pusty do rana\n",
+    "lyricsfile": "version: '1.0'\nmetadata:\n  title: Wymyślona piosenka\n  artist: Nikt\n  album: Wymyślony album\n  duration_ms: 169701\n  instrumental: false\n  language: pl\nlines:\n- text: Lampy nad rzeką gasną powoli\n  start_ms: 18850\n  end_ms: 20562\n  words:\n  - text: 'Lampy '\n    start_ms: 18850\n  - text: 'nad '\n    start_ms: 19230\n  - text: 'rzeką '\n    start_ms: 19500\n  - text: 'gasną '\n    start_ms: 19900\n  - text: powoli\n    start_ms: 20060\n- text: Tramwaj jedzie pusty do rana\n  start_ms: 23910\n  end_ms: 26028\n  words:\n  - text: 'Tramwaj '\n    start_ms: 23910\n  - text: 'jedzie '\n    start_ms: 24260\n  - text: 'pusty '\n    start_ms: 24420\n  - text: 'do '\n    start_ms: 25000\n  - text: rana\n    start_ms: 25220\n"
+  },
+  {
+    "id": 5,
+    "name": "Wymyślona piosenka",
+    "trackName": "Wymyślona piosenka",
+    "artistName": "Nikt",
+    "albumName": "Wymyślony album",
+    "duration": 243.0,
+    "instrumental": false,
+    "hasWordSync": false,
+    "plainLyrics": "Lampy nad rzeką gasną powoli\nTramwaj jedzie pusty do rana\n",
+    "syncedLyrics": "[00:18.43] Lampy nad rzeką gasną powoli\n[00:23.51] Tramwaj jedzie pusty do rana\n",
+    "lyricsfile": "version: '1.0'\nmetadata:\n  title: Wymyślona piosenka\n  artist: Nikt\n  album: Wymyślony album\n  duration_ms: 243000\n  instrumental: false\n  language: pl\nlines:\n- text: Lampy nad rzeką gasną powoli\n  start_ms: 18850\n  end_ms: 20562\n- text: Tramwaj jedzie pusty do rana\n  start_ms: 23910\n  end_ms: 26028\n"
+  },
+  {
+    "id": 6,
+    "name": "Wymyślona piosenka",
+    "trackName": "Wymyślona piosenka",
+    "artistName": "Nikt",
+    "albumName": "Single",
+    "duration": 241.4,
+    "instrumental": false,
+    "hasWordSync": true,
+    "plainLyrics": "Lampy nad rzeką gasną powoli\nTramwaj jedzie pusty do rana\n",
+    "syncedLyrics": "[00:18.43] Lampy nad rzeką gasną powoli\n[00:23.51] Tramwaj jedzie pusty do rana\n",
+    "lyricsfile": "version: '1.0'\nmetadata:\n  title: Wymyślona piosenka\n  artist: Nikt\n  album: Wymyślony album\n  duration_ms: 241400\n  instrumental: false\n  language: pl\nlines:\n- text: Lampy nad rzeką gasną powoli\n  start_ms: 18850\n  end_ms: 20562\n  words:\n  - text: 'Lampy '\n    start_ms: 18850\n  - text: 'nad '\n    start_ms: 19230\n  - text: 'rzeką '\n    start_ms: 19500\n  - text: 'gasną '\n    start_ms: 19900\n  - text: powoli\n    start_ms: 20060\n- text: Tramwaj jedzie pusty do rana\n  start_ms: 23910\n  end_ms: 26028\n  words:\n  - text: 'Tramwaj '\n    start_ms: 23910\n  - text: 'jedzie '\n    start_ms: 24260\n  - text: 'pusty '\n    start_ms: 24420\n  - text: 'do '\n    start_ms: 25000\n  - text: rana\n    start_ms: 25220\n"
+  },
+  {
+    "id": 7,
+    "name": "Wymyślona piosenka (Prod. Ktoś)",
+    "trackName": "Wymyślona piosenka (Prod. Ktoś)",
+    "artistName": "Nikt",
+    "albumName": "WYMYŚLONY ALBUM",
+    "duration": 242.56,
+    "instrumental": false,
+    "hasWordSync": true,
+    "plainLyrics": "Lampy nad rzeką gasną powoli\nTramwaj jedzie pusty do rana\n",
+    "syncedLyrics": "[00:18.43] Lampy nad rzeką gasną powoli\n[00:23.51] Tramwaj jedzie pusty do rana\n",
+    "lyricsfile": "version: '1.0'\nmetadata:\n  title: Wymyślona piosenka\n  artist: Nikt\n  album: Wymyślony album\n  duration_ms: 242560\n  instrumental: false\n  language: pl\nlines:\n- text: Lampy nad rzeką gasną powoli\n  start_ms: 18850\n  end_ms: 20562\n  words:\n  - text: 'Lampy '\n    start_ms: 18850\n  - text: 'nad '\n    start_ms: 19230\n  - text: 'rzeką '\n    start_ms: 19500\n  - text: 'gasną '\n    start_ms: 19900\n  - text: powoli\n    start_ms: 20060\n- text: Tramwaj jedzie pusty do rana\n  start_ms: 23910\n  end_ms: 26028\n  words:\n  - text: 'Tramwaj '\n    start_ms: 23910\n  - text: 'jedzie '\n    start_ms: 24260\n  - text: 'pusty '\n    start_ms: 24420\n  - text: 'do '\n    start_ms: 25000\n  - text: rana\n    start_ms: 25220\n"
+  }
+]

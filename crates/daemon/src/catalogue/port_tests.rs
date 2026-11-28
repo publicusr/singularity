@@ -573,14 +573,15 @@ fn connect_work_goes_to_connect_and_browsing_stays() {
     }
 }
 
-/// A stand-in for LRCLIB, by track: the Catalogue's lookup of that track goes to it instead of the network.
-type FakeLrclib = Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, Result<Option<singularity_proto::Lyrics>, String>> + Send + Sync>;
+/// A stand-in for LRCLIB, by track: the Catalogue's lookup of that track goes to it instead of the network. It's told
+/// whether a Karaoke Widget is on screen (`lyrics::lrclib`'s `words`).
+type FakeLrclib = Arc<dyn Fn(bool) -> futures_util::future::BoxFuture<'static, Result<Option<singularity_proto::Lyrics>, String>> + Send + Sync>;
 
 static FAKE_LRCLIB: Mutex<Option<HashMap<String, FakeLrclib>>> = Mutex::new(None);
 
 /// The stand-in's answer for `uri`, if a test put one there.
-pub(super) fn fake_lrclib(uri: &str) -> Option<futures_util::future::BoxFuture<'static, Result<Option<singularity_proto::Lyrics>, String>>> {
-    FAKE_LRCLIB.lock().unwrap().as_ref()?.get(uri).map(|f| f())
+pub(super) fn fake_lrclib(uri: &str, words: bool) -> Option<futures_util::future::BoxFuture<'static, Result<Option<singularity_proto::Lyrics>, String>>> {
+    FAKE_LRCLIB.lock().unwrap().as_ref()?.get(uri).map(|f| f(words))
 }
 
 /// LRCLIB runs beside browsing: a search is answered while it takes its time, its answer reaches the Clients and is
@@ -592,7 +593,7 @@ async fn lrclib_is_asked_beside_browsing_once_a_track() {
     const URI: &str = "spotify:track:lrclibbeside";
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let c = calls.clone();
-    let fake: FakeLrclib = Arc::new(move || {
+    let fake: FakeLrclib = Arc::new(move |_| {
         c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Box::pin(async {
             tokio::time::sleep(Duration::from_millis(1_500)).await;
@@ -623,6 +624,45 @@ async fn lrclib_is_asked_beside_browsing_once_a_track() {
     let l = next(&mut ev, |e| if let CatEvent::Lyrics(l) = e { Some(l) } else { None }).await;
     assert!(l.lines[0].text == "Invented line" && again.elapsed() < Duration::from_millis(500));
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// Q183: LRCLIB's lookup is told whether a Karaoke Widget is on screen (only then may it search for a word-timed
+/// version). A line-timed answer found without one is kept; a Karaoke Widget asking later has LRCLIB asked once more,
+/// and only once.
+#[tokio::test]
+async fn lrclib_is_told_whether_a_karaoke_widget_is_on_screen() {
+    no_real_login();
+    const URI: &str = "spotify:track:lrclibkaraoke";
+    let told = Arc::new(Mutex::new(vec![]));
+    let t = told.clone();
+    let fake: FakeLrclib = Arc::new(move |words| {
+        t.lock().unwrap().push(words);
+        Box::pin(async {
+            let lines = vec![singularity_proto::LyricLine { start_ms: 1_000, text: "Invented line".into(), ..Default::default() }];
+            Ok(Some(singularity_proto::Lyrics { uri: URI.into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() }))
+        })
+    });
+    FAKE_LRCLIB.lock().unwrap().get_or_insert_default().insert(URI.into(), fake);
+    let f = Fixtures::new(|_, _| Ok(json!({})));
+    let (_dir, tx, mut ev) = catalogue(&f);
+    let meta = || Some(singularity_proto::Item { uri: URI.into(), name: "Invented".into(), artists: vec!["Nobody".into()], duration_ms: 200_000, ..Default::default() });
+    let lyrics = |words| CatCmd::Lyrics { uri: URI.into(), meta: meta(), words };
+    tx.send(lyrics(false)).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Lyrics(_)).then_some(())).await;
+    assert_eq!(*told.lock().unwrap(), [false]);
+    // a Karaoke Widget now: the kept lines at once, and LRCLIB asked again, told so
+    tx.send(lyrics(true)).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Lyrics(_)).then_some(())).await;
+    let asked = Instant::now();
+    while told.lock().unwrap().len() < 2 && asked.elapsed() < Duration::from_secs(3) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(*told.lock().unwrap(), [false, true]);
+    // and not again
+    tx.send(lyrics(true)).await.unwrap();
+    next(&mut ev, |e| matches!(e, CatEvent::Lyrics(_)).then_some(())).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(*told.lock().unwrap(), [false, true]);
 }
 
 /// A browsing State as `run` makes one, not yet started, with a session that logged in `ago` and reaches nothing
