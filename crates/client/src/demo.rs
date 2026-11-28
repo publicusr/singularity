@@ -44,6 +44,8 @@ const MAX_ALBUMS: usize = 20;
 const MAX_ARTISTS: usize = 12;
 /// How many of each Demo playlist's songs Home ranks albums and artists by (a list's first page).
 const RANKED_SONGS: usize = 100;
+/// How long a list this Client started waits for its first song (a Play that went nowhere is forgotten).
+const STARTING_FOR: std::time::Duration = std::time::Duration::from_secs(5);
 /// How many times a look for Home is made (the first, and one more after a failure, on the next library).
 const TRIES: u8 = 2;
 
@@ -271,13 +273,22 @@ pub struct Demo {
     /// tracks shown as playing that the Daemon was told of (its demo Listening log counts only those)
     reported: HashSet<String>,
     /// a list this Client just started without naming the song: its first song is one this Client played
-    starting: Option<String>,
+    starting: Option<Starting>,
     /// when the Daemon's last Home feed was fetched (demo Home takes its time, not its Shelves)
     home_fetched: u64,
     /// Home and the player changed with what came (a library, a Demo playlist's songs, an artist's picture)
     changed: bool,
     /// this Client played or queued something new: the player may show now
     replay: bool,
+}
+
+/// A list this Client just started without naming the song: the list, the song playing when it was asked (a player
+/// state still carrying that one is older than the Play), and when.
+#[derive(Debug, Clone)]
+struct Starting {
+    list: String,
+    before: Option<String>,
+    at: std::time::Instant,
 }
 
 /// What a demo Client does after an event: Home and the player as they are now, and what to send the Daemon (looks
@@ -287,6 +298,8 @@ pub struct FollowUp {
     pub home: Option<HomeFeed>,
     pub playback: Option<PlaybackState>,
     pub send: Vec<Command>,
+    /// the track shown as playing, for the Daemon (`ShownInDemo`), until it was told ([`Demo::reported`])
+    pub shown: Option<String>,
 }
 
 impl Demo {
@@ -368,7 +381,11 @@ impl Demo {
                 Event::Health(h)
             }
             Event::Notice { message } => Event::Notice { message: self.redact(&message) },
-            Event::Error { message } => Event::Error { message: self.redact(&message) },
+            Event::Error { message } => {
+                // (a Play that failed starts nothing)
+                self.starting = None;
+                Event::Error { message: self.redact(&message) }
+            }
             ev => ev,
         }
     }
@@ -429,12 +446,27 @@ impl Demo {
                 }
             }
         }
-        if let Some(i) = self.shown_playback.as_ref().and_then(|p| p.item.as_ref())
-            && self.reported.insert(i.uri.clone())
-        {
-            up.send.push(Command::ShownInDemo { uri: i.uri.clone() });
-        }
+        up.shown = self.shown_playback.as_ref().and_then(|p| p.item.as_ref()).map(|i| i.uri.clone()).filter(|u| !self.reported.contains(u));
         up
+    }
+
+    /// The Daemon was told this track is shown as playing.
+    pub fn reported(&mut self, uri: &str) {
+        self.reported.insert(uri.to_string());
+    }
+
+    /// Connected (again): the Daemon may be a new one, so it's told again what is shown, and the looks for Home that
+    /// never answered are asked again.
+    pub fn reconnected(&mut self) {
+        self.reported.clear();
+        let unanswered: Vec<String> = self.asked.keys().filter(|u| !self.songs.contains_key(*u) && !self.artist_images.contains_key(*u) && !self.failed.contains(*u)).cloned().collect();
+        for u in unanswered {
+            self.asked.remove(&u);
+            self.due.remove(&u);
+            if u.starts_with("spotify:artist:") {
+                self.artist_asks = self.artist_asks.saturating_sub(1);
+            }
+        }
     }
 
     /// A look for Home at `uri`, counted.
@@ -456,12 +488,14 @@ impl Demo {
                 self.replay = true;
             }
         }
-        self.starting = match c {
+        let list = match c {
             Command::Play { uri: Some(u) } if !u.starts_with("spotify:track:") && !u.starts_with("spotify:episode:") => Some(u.clone()),
             Command::PlayFrom { context_uri, track_uri: None, .. } => Some(context_uri.clone()),
             Command::Play { .. } | Command::PlayFrom { .. } => None,
-            _ => self.starting.take(),
+            _ => return,
         };
+        let before = self.raw_playback.as_ref().and_then(|p| p.item.as_ref()).map(|i| i.uri.clone());
+        self.starting = list.map(|list| Starting { list, before, at: std::time::Instant::now() });
     }
 
     /// The Demo set's playlists, in the library's order.
@@ -506,11 +540,17 @@ impl Demo {
     /// Songs coming up from a context the player shows are the Demo set's too (a long Demo playlist, Liked Songs): they
     /// show when they play. Songs queued by hand aren't learned.
     fn learn(&mut self, p: &PlaybackState) {
-        // the first song of a list this Client started (Spotify plays it before anything queued)
+        // the first song of a list this Client started (Spotify plays it before anything queued): a new song under
+        // that list, soon after, and on its first page when that's known; a state still carrying the song from before
+        // the Play is older than it
+        self.starting = self.starting.take().filter(|s| s.at.elapsed() < STARTING_FOR);
         if let (Some(s), Some(i)) = (&self.starting, &p.item)
-            && p.context_uri.as_ref() == Some(s)
+            && p.context_uri.as_ref() == Some(&s.list)
+            && s.before.as_ref() != Some(&i.uri)
         {
-            self.learned.insert(i.uri.clone());
+            if self.songs.get(&s.list).is_none_or(|rows| rows.iter().any(|t| t.uri == i.uri)) {
+                self.learned.insert(i.uri.clone());
+            }
             self.starting = None;
         }
         if self.ctx_shown(p.context_uri.as_deref().unwrap_or("")) {

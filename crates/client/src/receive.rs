@@ -24,6 +24,7 @@ impl App {
                 if let Some(d) = self.demo.as_mut() {
                     d.redactor.learn(&account, "user");
                     d.confirmed = demo;
+                    d.reconnected();
                     if !demo {
                         self.listening = None;
                         self.stats.clear();
@@ -138,6 +139,14 @@ impl App {
         }
         for c in up.send {
             self.send(c);
+        }
+        // (told only while connected, and remembered only once it went: a reconnect tells it again)
+        if let Some(uri) = up.shown
+            && matches!(self.link, crate::app::Link::Connected { .. })
+            && self.send_ok(singularity_proto::Command::ShownInDemo { uri: uri.clone() })
+            && let Some(d) = self.demo.as_mut()
+        {
+            d.reported(&uri);
         }
     }
 }

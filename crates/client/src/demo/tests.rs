@@ -382,19 +382,70 @@ fn what_this_client_plays_shows() {
     assert!(shown(&mut d, playing("spotify:track:next", "spotify:user:zed:collection")).item.is_some());
 }
 
-/// Review of #159: the Daemon is told of each track shown as playing (the demo Listening log counts only those), once.
+/// Review of #159: the Daemon is told of each track shown as playing (the demo Listening log counts only those),
+/// once it went; a hidden one never.
 #[test]
 fn the_daemon_hears_which_tracks_were_shown() {
     let mut d = demo();
     d.scrub(Event::Library(library()));
     d.follow_up();
     shown(&mut d, playing("spotify:track:real", "spotify:playlist:diary"));
-    assert!(!d.follow_up().send.iter().any(|c| matches!(c, Command::ShownInDemo { .. })), "a hidden one: no");
+    assert_eq!(d.follow_up().shown, None, "a hidden one: no");
     d.sent(&Command::Play { uri: Some("spotify:track:found".into()) });
     shown(&mut d, playing("spotify:track:found", "spotify:album:x"));
-    assert!(d.follow_up().send.contains(&Command::ShownInDemo { uri: "spotify:track:found".into() }));
-    shown(&mut d, playing("spotify:track:found", "spotify:album:x"));
-    assert!(d.follow_up().send.is_empty(), "once");
+    assert_eq!(d.follow_up().shown.as_deref(), Some("spotify:track:found"));
+    assert_eq!(d.follow_up().shown.as_deref(), Some("spotify:track:found"), "until it went");
+    d.reported("spotify:track:found");
+    assert_eq!(d.follow_up().shown, None, "once");
+}
+
+/// Re-review of #159 (N1): after a Play on a Demo-set list, a player state still carrying the song from before (the
+/// phone's queued song, under that list) is older than the Play: it isn't learned as the list's first song.
+#[test]
+fn a_stale_state_after_a_play_stays_hidden() {
+    let mut d = demo();
+    d.scrub(Event::Library(library()));
+    shown(&mut d, playing("spotify:track:secret", "spotify:playlist:public"));
+    d.sent(&Command::Play { uri: Some("spotify:playlist:public".into()) });
+    assert!(shown(&mut d, playing("spotify:track:secret", "spotify:playlist:public")).item.is_none(), "the old song under the list");
+    assert!(shown(&mut d, playing("spotify:track:first", "spotify:playlist:public")).item.is_some(), "then its first song");
+    // a Demo playlist whose first page is known: the first song must be on it
+    d.scrub(peeked(songs("spotify:playlist:show1", &[("s1", "Orbits", &["Nova"])])));
+    d.follow_up();
+    d.sent(&Command::Play { uri: Some("spotify:playlist:show1".into()) });
+    assert!(shown(&mut d, playing("spotify:track:other", "spotify:playlist:show1")).item.is_none(), "not on its first page");
+    // a Play that failed starts nothing
+    d.sent(&Command::Play { uri: Some("spotify:playlist:public2".into()) });
+    d.scrub(Event::Error { message: "Couldn't play that".into() });
+    assert!(shown(&mut d, playing("spotify:track:x2", "spotify:playlist:public2")).item.is_none());
+}
+
+/// Re-review of #159 (N2, N3): after a reconnect the Daemon is told again what is shown, and the looks for Home that
+/// never answered are asked again (so the artists' pages can still come).
+#[test]
+fn a_reconnect_tells_again_and_asks_again() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let mut app = crate::app::App::new(Some(tx));
+    app.demo = Some(demo());
+    connected(&mut app, true, "");
+    app.hear(Event::Library(library()));
+    app.send(Command::PlayFrom { context_uri: "spotify:playlist:show1".into(), index: 0, track_uri: Some("spotify:track:a".into()) });
+    app.hear(Event::Playback(playing("spotify:track:a", "spotify:playlist:show1")));
+    let sent: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert!(sent.contains(&Command::ShownInDemo { uri: "spotify:track:a".into() }), "{sent:?}");
+    assert_eq!(sent.iter().filter(|c| matches!(c, Command::Peek { .. })).count(), 3);
+    // the Daemon goes and comes back; one list had answered
+    app.receive(crate::conn::ConnEvent::Disconnected);
+    app.hear(peeked(songs("spotify:playlist:show1", &[("a", "Orbits", &["Nova"])])));
+    connected(&mut app, true, "");
+    let sent: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert!(sent.contains(&Command::ShownInDemo { uri: "spotify:track:a".into() }), "told again: {sent:?}");
+    assert_eq!(sent.iter().filter(|c| matches!(c, Command::Peek { .. })).cloned().collect::<Vec<_>>(), [peek("spotify:playlist:friend"), peek("spotify:playlist:deep")], "the unanswered looks again");
+    app.hear(peeked(songs("spotify:playlist:friend", &[("b", "Tides", &["Mira"])])));
+    app.hear(peeked(songs("spotify:playlist:deep", &[("c", "Tides", &["Mira"])])));
+    let sent: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert!(sent.contains(&peek("spotify:artist:Mira")), "the artists' gate opened: {sent:?}");
+    assert!(!sent.iter().any(|c| matches!(c, Command::ShownInDemo { .. })), "told once per connection");
 }
 
 fn row(added: &str, progress: Option<Progress>) -> TrackRow {
