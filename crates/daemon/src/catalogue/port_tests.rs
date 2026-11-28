@@ -571,3 +571,29 @@ fn connect_work_goes_to_connect_and_browsing_stays() {
         assert!(!is_connect(&c), "{c:?}");
     }
 }
+
+/// Q171: Spotify ending the session is seen while idle and the login is tried again then, with no request to set it
+/// off; with no saved login (logged out) it isn't tried again.
+#[tokio::test]
+async fn a_session_spotify_ended_is_replaced_without_a_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = Dirs { credentials: dir.path().join("creds"), queries: dir.path().join("q.json") };
+    let (ev_tx, mut ev) = mpsc::channel(64);
+    let (connect_tx, _connect_rx) = mpsc::unbounded_channel();
+    let (_browse_tx, browse_rx) = mpsc::unbounded_channel();
+    let mut st = State::new(dirs, Fixtures::new(|_, _| Ok(json!({}))), session_slot(), ev_tx, connect_tx, Default::default(), browse_rx);
+    st.redial.every = Duration::from_millis(10);
+    // a session that has run a while (it reaches nothing: never connected)
+    let session = Session::new(SessionConfig::default(), None);
+    st.set_session(Some(session.clone()));
+    st.redial.logged_in(Instant::now() - STEADY);
+    tokio::spawn(browse(st));
+    // the start: no saved login in the scratch dir
+    next(&mut ev, |e| matches!(e, CatEvent::Status(CatalogueStatus::LoggedOut)).then_some(())).await;
+    // nothing is asked of it; Spotify ends the session
+    session.shutdown();
+    next(&mut ev, |e| matches!(e, CatEvent::Status(CatalogueStatus::Connecting)).then_some(())).await;
+    next(&mut ev, |e| matches!(e, CatEvent::Status(CatalogueStatus::LoggedOut)).then_some(())).await;
+    let again = tokio::time::timeout(Duration::from_millis(200), next(&mut ev, |e| matches!(e, CatEvent::Status(CatalogueStatus::Connecting)).then_some(()))).await;
+    assert!(again.is_err(), "logged out: not tried again");
+}

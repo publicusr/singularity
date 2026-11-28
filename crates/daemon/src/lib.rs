@@ -7,6 +7,7 @@ pub mod librespot;
 pub mod backup;
 pub mod catalogue;
 pub mod connect;
+pub mod daemon_log;
 pub mod engine;
 pub mod health;
 pub mod jam;

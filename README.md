@@ -221,8 +221,11 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 - After a restart of the Daemon, Home and your library show at once as they were last time (kept, owner-only, in
   `~/.cache/singularity/home-and-library.json`, only for the account they belong to, and removed when you log out)
   while the fresh ones load behind.
-  `grep timing: ~/.local/state/singularity/daemon.log` shows how long each start step took (login, account type,
-  keyring, Home, each library page).
+  `grep timing: ~/.local/state/singularity/daemon.log*` shows how long each start step took (login, account type,
+  keyring, Home, each library page), `grep search:` where each search's time went, and `grep reconnect` each time
+  Spotify dropped the connection and the Daemon logged in again (at once, not at your next search). The log of this
+  Daemon is `daemon.log`; the two before it are kept as `daemon.log.1` and `daemon.log.2`, and one past 5 MB is moved
+  aside the same way. A Daemon run by systemd logs to the journal instead (`journalctl --user -u singularityd`).
 - Terminals: kitty, Ghostty and WezTerm get the pixel tier (covers, the GPU black hole); every other terminal the cell
   tier.
 
