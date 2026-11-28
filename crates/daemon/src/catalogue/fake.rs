@@ -167,6 +167,7 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                     QueueEdit::Move { uri, uid, to, into_queue } => Command::MoveInQueue { uri, uid, to, into_queue },
                 })],
                 CatCmd::Lyrics { uri, .. } => vec![CatEvent::Lyrics(fake_lyrics(&uri))],
+                CatCmd::LyricsFound { found, .. } => found.map(|(l, _)| CatEvent::Lyrics(l)).into_iter().collect(),
                 CatCmd::Artist(uri) => vec![CatEvent::Artist(fake_artist(&uri, &home))],
                 // demo Home's quiet look (#128): an artist's page, or a list's first page
                 CatCmd::Peek(uri) if uri.starts_with("spotify:artist:") => vec![CatEvent::Peeked { artist: Some(fake_artist(&uri, &home)), tracks: None, uri }],

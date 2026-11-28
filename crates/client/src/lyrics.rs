@@ -65,6 +65,12 @@ pub struct Wrapped {
 }
 
 impl Wrapped {
+    /// For new lyrics of the same song (Spotify's lines, then LRCLIB's with word times): the rows are wrapped afresh,
+    /// the view stays where it is (where it glides, the wheel's hold, the reader's scroll).
+    pub(crate) fn same_song(self) -> Wrapped {
+        Wrapped { shown: self.shown, at: self.at, followed: self.followed, held: self.held, follow: self.follow, scroll: self.scroll, ..Default::default() }
+    }
+
     /// Whether the fonts draw every line, worked out once for the lyrics in hand.
     fn covers(&mut self, lines: &[LyricLine]) -> bool {
         *self.covers.get_or_insert_with(|| lines.iter().all(|l| crate::bigtext::covers(&l.text)))

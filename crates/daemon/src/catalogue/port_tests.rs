@@ -573,6 +573,58 @@ fn connect_work_goes_to_connect_and_browsing_stays() {
     }
 }
 
+/// A stand-in for LRCLIB, by track: the Catalogue's lookup of that track goes to it instead of the network.
+type FakeLrclib = Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, Result<Option<singularity_proto::Lyrics>, String>> + Send + Sync>;
+
+static FAKE_LRCLIB: Mutex<Option<HashMap<String, FakeLrclib>>> = Mutex::new(None);
+
+/// The stand-in's answer for `uri`, if a test put one there.
+pub(super) fn fake_lrclib(uri: &str) -> Option<futures_util::future::BoxFuture<'static, Result<Option<singularity_proto::Lyrics>, String>>> {
+    FAKE_LRCLIB.lock().unwrap().as_ref()?.get(uri).map(|f| f())
+}
+
+/// LRCLIB runs beside browsing: a search is answered while it takes its time, its answer reaches the Clients and is
+/// kept, and the same track asked again meanwhile (a second Client, a reconnect) starts no second lookup.
+#[tokio::test]
+async fn lrclib_is_asked_beside_browsing_once_a_track() {
+    // (`catalogue` sees to it too: never the real login)
+    no_real_login();
+    const URI: &str = "spotify:track:lrclibbeside";
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c = calls.clone();
+    let fake: FakeLrclib = Arc::new(move || {
+        c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(1_500)).await;
+            let lines = vec![singularity_proto::LyricLine { start_ms: 1_000, text: "Invented line".into(), ..Default::default() }];
+            Ok(Some(singularity_proto::Lyrics { uri: URI.into(), synced: true, lines, source: "LRCLIB".into(), ..Default::default() }))
+        })
+    });
+    FAKE_LRCLIB.lock().unwrap().get_or_insert_default().insert(URI.into(), fake);
+    let f = Fixtures::new(|_, _| Ok(json!({})));
+    let (_dir, tx, mut ev) = catalogue(&f);
+    let meta = || Some(singularity_proto::Item { uri: URI.into(), name: "Invented".into(), artists: vec!["Nobody".into()], duration_ms: 200_000, ..Default::default() });
+    let asked = Instant::now();
+    tx.send(CatCmd::Lyrics { uri: URI.into(), meta: meta(), words: true }).await.unwrap();
+    tx.send(CatCmd::Lyrics { uri: URI.into(), meta: meta(), words: true }).await.unwrap();
+    tx.send(CatCmd::Search("nova".into())).await.unwrap();
+    // browsing answers the search while LRCLIB takes its 1.5 s
+    next(&mut ev, |e| matches!(e, CatEvent::Search(_)).then_some(())).await;
+    assert!(asked.elapsed() < Duration::from_millis(1_000), "the search waited {:?}", asked.elapsed());
+    let l = next(&mut ev, |e| if let CatEvent::Lyrics(l) = e { Some(l) } else { None }).await;
+    assert!(asked.elapsed() >= Duration::from_millis(1_500));
+    assert_eq!((l.uri.as_str(), l.lines[0].text.as_str(), l.source.as_str()), (URI, "Invented line", "LRCLIB"));
+    // one answer for both requests: no second lookup, no second answer
+    assert!(tokio::time::timeout(Duration::from_millis(300), next(&mut ev, |e| matches!(e, CatEvent::Lyrics(_)).then_some(()))).await.is_err(), "a second answer");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // kept: asked again later, answered at once from what was kept
+    let again = Instant::now();
+    tx.send(CatCmd::Lyrics { uri: URI.into(), meta: meta(), words: true }).await.unwrap();
+    let l = next(&mut ev, |e| if let CatEvent::Lyrics(l) = e { Some(l) } else { None }).await;
+    assert!(l.lines[0].text == "Invented line" && again.elapsed() < Duration::from_millis(500));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
 /// A browsing State as `run` makes one, not yet started, with a session that logged in `ago` and reaches nothing
 /// (never connected), and `clients` Clients connected; idle browsing looks every 10 ms.
 fn ended_soon(ago: Duration, clients: usize) -> (State<Fixtures>, Session, mpsc::Receiver<CatEvent>, mpsc::UnboundedSender<CatCmd>, tempfile::TempDir) {
@@ -583,7 +635,7 @@ fn ended_soon(ago: Duration, clients: usize) -> (State<Fixtures>, Session, mpsc:
     let (connect_tx, connect_rx) = mpsc::unbounded_channel();
     std::mem::forget(connect_rx);
     let (browse_tx, browse_rx) = mpsc::unbounded_channel();
-    let mut st = State::new(dirs, Fixtures::new(|_, _| Ok(json!({}))), session_slot(), ev_tx, connect_tx, Default::default(), browse_rx);
+    let mut st = State::new(dirs, Fixtures::new(|_, _| Ok(json!({}))), session_slot(), ev_tx, connect_tx, Default::default(), browse_rx, browse_tx.downgrade());
     st.redial.every = Duration::from_millis(10);
     st.clients = Box::leak(Box::new(std::sync::atomic::AtomicUsize::new(clients)));
     let session = Session::new(SessionConfig::default(), None);
