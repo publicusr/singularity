@@ -643,3 +643,60 @@ async fn a_request_logs_in_again_at_once_while_the_background_waits() {
         other => panic!("the request didn't log in again: {other:?}"),
     }
 }
+
+/// The `Unavailable` statuses from the Catalogue within `wait`.
+async fn failed_tries_within(ev: &mut mpsc::Receiver<CatEvent>, wait: Duration) -> usize {
+    let mut n = 0;
+    let deadline = tokio::time::Instant::now() + wait;
+    while let Ok(Some(e)) = tokio::time::timeout_at(deadline, ev.recv()).await {
+        n += matches!(e, CatEvent::Status(CatalogueStatus::Unavailable { .. })) as usize;
+    }
+    n
+}
+
+/// Q171 (re-review): while Spotify can't be reached, a request soon after a failed login doesn't try again: it fails
+/// at once instead of waiting for a login (each could take a minute) and asking Spotify over and over.
+#[tokio::test]
+async fn a_request_during_the_failure_wait_does_not_log_in() {
+    let (st, session, mut ev, browse_tx, _dir) = ended_soon(STEADY, 0);
+    tokio::spawn(browse(st));
+    assert!(matches!(status_within(&mut ev, Duration::from_secs(5)).await, Some(CatalogueStatus::LoggedOut)));
+    session.shutdown();
+    browse_tx.send(query("x")).unwrap();
+    assert_eq!(failed_tries_within(&mut ev, Duration::from_millis(300)).await, 1, "the first request after the end tries");
+    for _ in 0..3 {
+        browse_tx.send(query("x")).unwrap();
+    }
+    assert_eq!(failed_tries_within(&mut ev, Duration::from_millis(300)).await, 0, "the next ones don't");
+}
+
+/// Q171 (re-review): one command tries at most one login, however many queries it makes.
+#[tokio::test]
+async fn a_describe_of_many_tracks_tries_one_login() {
+    let (st, session, mut ev, browse_tx, _dir) = ended_soon(STEADY, 0);
+    tokio::spawn(browse(st));
+    assert!(matches!(status_within(&mut ev, Duration::from_secs(5)).await, Some(CatalogueStatus::LoggedOut)));
+    session.shutdown();
+    // (the first try is allowed at once; make the wait over too, so only the per-command rule holds them back)
+    browse_tx.send(CatCmd::Describe((0..50).map(|i| format!("spotify:track:t{i}")).collect())).unwrap();
+    assert_eq!(failed_tries_within(&mut ev, Duration::from_millis(500)).await, 1);
+}
+
+/// Q171 (re-review): the once-per-command rule on its own: past the failure wait, a command's second query still
+/// doesn't try again; the next command does.
+#[tokio::test]
+async fn one_login_try_per_command_even_past_the_wait() {
+    let (mut st, session, mut ev, _browse, _dir) = ended_soon(STEADY, 0);
+    session.shutdown();
+    let was = st.begin("Describe".into());
+    st.session().await;
+    assert_eq!(failed_tries_within(&mut ev, Duration::from_millis(50)).await, 1);
+    st.redial.last_try = Some(Instant::now() - REDIAL_FIRST);
+    st.session().await;
+    assert_eq!(failed_tries_within(&mut ev, Duration::from_millis(50)).await, 0, "the same command");
+    st.end(was);
+    let was = st.begin("Describe".into());
+    st.session().await;
+    st.end(was);
+    assert_eq!(failed_tries_within(&mut ev, Duration::from_millis(50)).await, 1, "the next command, past the wait");
+}

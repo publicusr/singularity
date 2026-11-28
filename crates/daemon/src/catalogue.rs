@@ -359,6 +359,8 @@ struct State<Q> {
     reusable: Option<Credentials>,
     /// the Clients connected (`CLIENTS`; a test's own count): logins again in the background only while there's one
     clients: &'static std::sync::atomic::AtomicUsize,
+    /// the command running has tried a login already: at most one per command, however many queries it makes
+    tried: bool,
 }
 
 /// How often idle browsing looks whether Spotify ended the session (Q171): librespot only marks it ended, so it's
@@ -415,13 +417,17 @@ struct Redial {
     at: Option<Instant>,
     /// when the current session logged in
     since: Option<Instant>,
-    /// a login is owed: the session ended, or logging in again failed (requests log in again at once)
+    /// a login is owed: the session ended, or logging in again failed
     owed: bool,
+    /// the session ended and no login was tried since: a request may try at once
+    fresh_end: bool,
+    /// when a login was last tried
+    last_try: Option<Instant>,
 }
 
 impl Redial {
     fn new() -> Redial {
-        Redial { every: LOOK_EVERY, backoff: REDIAL_FIRST, quick: 0, at: None, since: None, owed: false }
+        Redial { every: LOOK_EVERY, backoff: REDIAL_FIRST, quick: 0, at: None, since: None, owed: false, fresh_end: false, last_try: None }
     }
 
     /// A session is in: nothing waits, and the next failure starts from the first wait.
@@ -434,6 +440,7 @@ impl Redial {
         let lasted = self.since.is_some_and(|s| now.duration_since(s) >= STEADY);
         self.since = None;
         self.owed = true;
+        self.fresh_end = true;
         let at = if lasted {
             self.quick = 0;
             now
@@ -461,6 +468,19 @@ impl Redial {
 
     fn due(&self, now: Instant) -> bool {
         self.at.is_some_and(|at| at <= now)
+    }
+
+    /// A login is being tried at `now`.
+    fn trying(&mut self, now: Instant) {
+        self.last_try = Some(now);
+        self.fresh_end = false;
+    }
+
+    /// May a request try a login at `now`, ahead of the background wait? Only the first try after the session ended,
+    /// or once the last try is `REDIAL_FIRST` old: while Spotify can't be reached, requests fail at once instead of
+    /// each waiting for a login (and asking Spotify over and over).
+    fn request_may_try(&self, now: Instant) -> bool {
+        self.owed && (self.fresh_end || self.last_try.is_none_or(|t| now.duration_since(t) >= REDIAL_FIRST))
     }
 }
 
@@ -747,7 +767,7 @@ fn cache(dirs: &Dirs) -> anyhow::Result<Cache> {
 
 impl<Q: Fetch + Sync + Clone> State<Q> {
     fn new(dirs: Dirs, queries: Q, slot: SessionSlot, ev: mpsc::Sender<CatEvent>, to_connect: mpsc::UnboundedSender<CatCmd>, logging_in: std::sync::Arc<tokio::sync::watch::Sender<bool>>, inbox: mpsc::UnboundedReceiver<CatCmd>) -> State<Q> {
-        State { dirs, session: None, slot, queries, ev, to_connect, logging_in, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), pending: Default::default(), inbox, waiting: VecDeque::new(), busy: None, last: None, redial: Redial::new(), reusable: None, clients: &CLIENTS }
+        State { dirs, session: None, slot, queries, ev, to_connect, logging_in, tracks: HashMap::new(), books: Default::default(), described: HashMap::new(), describe_failed: HashMap::new(), lyrics: HashMap::new(), word_tried: HashMap::new(), artists: HashMap::new(), searches: HashMap::new(), pending: Default::default(), inbox, waiting: VecDeque::new(), busy: None, last: None, redial: Redial::new(), reusable: None, clients: &CLIENTS, tried: false }
     }
 
     /// The session changes in one place, so the query port's adapter always asks through the current one.
@@ -846,12 +866,13 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
         }
         timing("account type", began);
         let premium = product.as_deref() == Some("premium");
+        // the reusable login Spotify gave, as librespot wrote it, before it moves to the keyring: for logging in again
+        self.reusable = session.cache().and_then(|c| c.credentials());
         let began = Instant::now();
         keep_credentials_in_keyring(&self.dirs);
         timing("keyring save", began);
         let ready = CatalogueStatus::Ready { username: session.username(), country: session.country(), premium };
         // in the slot first: what Ready sets off (librespot starting, an Engine's commands) finds the session there
-        self.reusable = Some(Credentials { username: Some(session.username()), auth_type: librespot_protocol::authentication::AuthenticationType::AUTHENTICATION_STORED_SPOTIFY_CREDENTIALS, auth_data: session.auth_data() });
         self.set_session(Some(session));
         self.redial.logged_in(Instant::now());
         self.status(ready).await;
@@ -872,11 +893,13 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
         self.status(CatalogueStatus::LoggedOut).await;
     }
 
-    /// The session, replaced first if Spotify ended it or a login is owed: a request never waits for `look`'s
-    /// backoff.
+    /// The session, replaced first if Spotify ended it or a login is owed and a request may try one now
+    /// (`Redial::request_may_try`), once per command; otherwise the request fails at once on what's there.
     async fn session(&mut self) -> Option<Session> {
-        self.seen_ended(Instant::now());
-        if self.redial.owed {
+        let now = Instant::now();
+        self.seen_ended(now);
+        if !self.tried && self.redial.request_may_try(now) {
+            self.tried = true;
             self.reconnect().await;
         }
         self.session.clone()
@@ -924,17 +947,20 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
         // Connect sees the new session in the slot and starts a new remote for it (a dealer belongs to one)
         self.set_session(None);
         let began = Instant::now();
+        self.redial.trying(began);
         let how = match self.reusable.clone().or_else(|| saved_credentials(&self.dirs)) {
             Some(creds) => self.connect_how(Some(creds)).await,
             None => {
                 // (the keyring may just not answer now: not a logout, whose Home and library would be forgotten)
-                self.status(CatalogueStatus::Unavailable { message: "couldn't read the saved Spotify login; trying again".into() }).await;
+                self.status(CatalogueStatus::Unavailable { message: singularity_proto::NO_SAVED_LOGIN.into() }).await;
                 LoggedIn::Failed
             }
         };
         let ms = began.elapsed().as_millis();
         if how == LoggedIn::Yes {
             tracing::info!("reconnect: logged in again in {ms} ms");
+            // the devices and "another device is playing" come back now, not at the next Connect command
+            let _ = self.to_connect.send(CatCmd::Devices);
         } else {
             let now = Instant::now();
             let next = self.redial.failed(now).duration_since(now);
@@ -1406,6 +1432,10 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
 
     /// Work `name` starts; returns what was running (a search made in the middle of a command).
     fn begin(&mut self, name: String) -> Option<(String, Instant)> {
+        // a new piece of work (not one made inside another) may try a login again
+        if self.busy.is_none() {
+            self.tried = false;
+        }
         self.busy.replace((name, Instant::now()))
     }
 
@@ -1889,7 +1919,10 @@ fn no_real_login() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let dir = tempfile::tempdir().unwrap().keep();
-        // SAFETY: set once, before any Catalogue in this binary reads them
+        // SAFETY: not strictly sound, as other test threads may be reading the environment meanwhile; the same as the
+        // other tests that set variables (protocol.rs, secrets.rs). It's set once, before the first test Catalogue
+        // reads these two, and a plain `cargo test` must never reach the real login. (.cargo/config.toml's [env]
+        // would also reach `cargo run`, where the keyring is wanted.)
         unsafe {
             std::env::set_var("SINGULARITY_NO_KEYRING", "1");
             std::env::set_var("XDG_CONFIG_HOME", dir);

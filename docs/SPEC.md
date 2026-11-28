@@ -172,7 +172,8 @@ audio, and looks spectacular.
     uses the last session's login, so a keyring that doesn't answer then isn't a logout, and logs it on its own
     `reconnect:` line. In the background, a failed try waits 5 s, then twice as long each time up to 5 min (a login
     that works starts over), and a session that ends within a minute of its login waits the same way until one lasts;
-    a request never waits for that and logs in again at once. Logged out, it isn't tried.
+    a request may log in again ahead of that wait only as the first try after the session ended, or once the last
+    try is 5 s old, and at most once per command; otherwise it fails at once. Logged out, it isn't tried.
 - **ConnectRemote** (D12): device list, transfer, remote control of any device, per-device quality (D17, to verify).
 - **AudioTap** (D16): captures only the Engine's stream (PipeWire on Linux; a Core Audio process tap on the Spotify app
   on macOS; librespot's and the Soloist VM's samples in-process), runs FFT,

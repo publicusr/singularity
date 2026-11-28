@@ -724,6 +724,8 @@ fn health_rows(app: &App) -> Vec<(char, &'static str, String)> {
     }
     let net = match &app.catalogue {
         Some(CatalogueStatus::Ready { .. }) => ('✓', "Network", "Spotify reachable".to_string()),
+        // the keyring didn't answer: says nothing of the network
+        Some(CatalogueStatus::Unavailable { message }) if message == singularity_proto::NO_SAVED_LOGIN => ('·', "Network", "unknown until logged in".into()),
         Some(CatalogueStatus::Unavailable { .. }) => ('✗', "Network", "Spotify unreachable from the Catalogue".into()),
         _ => ('·', "Network", "unknown until logged in".into()),
     };
