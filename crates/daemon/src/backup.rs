@@ -156,7 +156,9 @@ pub async fn take(f: &mut impl Fetch, username: &str, previous: Option<&Value>, 
     }
     // when the previous backup was taken: a copy it carried from further back says its own
     let then = previous.and_then(|p| p["taken_ms"].as_u64()).unwrap_or(0);
+    // Liked Songs is every account's: only this account's own copy can stand in (a backup from before #144 names none)
     let liked_last = previous
+        .filter(|p| p["account"].as_str() == Some(username))
         .filter(|p| whole(&p["liked"], &p["liked_total"], &p["liked_incomplete"]))
         .map(|p| (&p["liked"], &p["liked_total"], p["liked_from_ms"].as_u64().unwrap_or(then)));
     let liked = settle(tracks(f, LIKED).await?, liked_last, now_ms, "Liked Songs");
@@ -195,7 +197,7 @@ pub async fn take(f: &mut impl Fetch, username: &str, previous: Option<&Value>, 
         entry.as_object_mut().expect("an object").extend(fields);
         owned.push(entry);
     }
-    let mut b = json!({ "schema": 1, "taken_ms": now_ms, "playlists": owned, "followed": followed });
+    let mut b = json!({ "schema": 1, "taken_ms": now_ms, "account": username, "playlists": owned, "followed": followed });
     for (k, v) in liked {
         // Liked Songs' fields at the top: `liked`, `liked_total`, `liked_short`, …
         b[if k == "tracks" { "liked".to_string() } else { format!("liked_{k}") }] = v;
@@ -217,7 +219,17 @@ pub async fn run(hub: Arc<Hub>) {
             _ => None,
         };
         let now = singularity_proto::now_ms();
-        let previous = store.lock().expect("store lock").latest_backup();
+        let previous = {
+            let mut s = store.lock().expect("store lock");
+            let previous = s.latest_backup();
+            // what came back short in it, learnt here rather than when the Daemon starts (#144); Clients are told
+            if previous.as_ref().is_some_and(|(_, b)| s.note_backup(b))
+                && let Ok(summary) = s.summary(now)
+            {
+                let _ = hub.events.send(singularity_proto::Event::Listening(summary));
+            }
+            previous
+        };
         let due = previous.as_ref().is_none_or(|(at, _)| now.saturating_sub(*at) >= EVERY_MS);
         if let Some(user) = user.filter(|_| due) {
             tracing::info!("taking the nightly library backup");
@@ -422,6 +434,25 @@ mod tests {
         // without an earlier backup: tonight's, marked
         let mut first = Fake { asked: vec![], revision: "r1", trouble: Some(Trouble::LikedGrows) };
         let b3 = take(&mut first, "me", None, 9).await.unwrap();
+        assert!(b3["liked_incomplete"].is_string() && b3.get("liked_short").is_none(), "{b3}");
+    }
+
+    #[tokio::test]
+    async fn another_accounts_liked_songs_never_stand_in() {
+        let mut f = Fake { asked: vec![], revision: "r1", trouble: None };
+        let b = take(&mut f, "me", None, 7).await.unwrap();
+        assert_eq!(b["account"], "me");
+        // the next night another account is logged in, and its Liked Songs come back short: saved marked incomplete,
+        // not "kept" from the first account's
+        let mut other = Fake { asked: vec![], revision: "r1", trouble: Some(Trouble::LikedGrows) };
+        let b2 = take(&mut other, "you", Some(&b), 8).await.unwrap();
+        assert!(b2["liked_incomplete"].is_string() && b2.get("liked_short").is_none() && b2.get("liked_from_ms").is_none(), "{b2}");
+        assert_eq!(b2["account"], "you");
+        // nor does a backup from before #144, which names no account
+        let mut unnamed = b.clone();
+        unnamed.as_object_mut().unwrap().remove("account");
+        let mut again = Fake { asked: vec![], revision: "r1", trouble: Some(Trouble::LikedGrows) };
+        let b3 = take(&mut again, "me", Some(&unnamed), 9).await.unwrap();
         assert!(b3["liked_incomplete"].is_string() && b3.get("liked_short").is_none(), "{b3}");
     }
 

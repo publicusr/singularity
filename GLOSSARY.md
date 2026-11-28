@@ -228,8 +228,8 @@ _Avoid_: history (Spotify's own "recently played" is something else), stats
 **Library backup**:
 The nightly JSON copy of Liked Songs and every playlist the account owns (followed playlists by name and link only),
 kept in the LocalStore: the last 14 days plus the first of each month for a year. A list that doesn't come back whole
-keeps its last whole copy with the newest short one beside it, or is saved marked incomplete; Settings then shows one
-line about it until a backup comes out whole.
+keeps its last whole copy (the same account's) with the newest short one beside it, or is saved marked incomplete;
+Settings then shows one line about it while that account is logged in, until a backup comes out whole.
 _Avoid_: export (that's the one-file copy the owner asks for), snapshot
 
 **LocalStore**:
