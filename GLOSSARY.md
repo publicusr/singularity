@@ -26,7 +26,7 @@ directly (the tap's *Feed*).
 _Avoid_: built-in player (fine in UI text, not as a term), spotifyd
 
 **Soloist VM**:
-Soloist (Linux-only) run on macOS inside a small Linux VM the Daemon manages (`kind = "soloist"` there, D55): the
+Soloist's Linux build run on macOS inside a small Linux VM the Daemon manages (`kind = "soloist"` there, D55): the
 SoloistEngine behind the VM's Soloist runner. Its audio comes to the Daemon over vsock and plays from there.
 _Avoid_: Linux VM engine, "the VM Engine" (the Engine is still Soloist)
 

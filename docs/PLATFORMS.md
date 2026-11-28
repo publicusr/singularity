@@ -32,13 +32,15 @@ VM) or `spotify-app`).
 
 | Engine | Linux | macOS | Lossless | Cost (measured on the Mac, an M2) |
 |--------|-------|-------|----------|-----------------------------------|
-| Soloist (ADR-0001) | ✅ default; cache capped by `engine.cache_gb` (D61, 5 GB) | ➖ natively (Spotify ships it for Linux only): see the Soloist VM | ✅ | (Linux: not measured yet, singularity-archive#71) |
+| Soloist (ADR-0001) | ✅ default; cache capped by `engine.cache_gb` (D61, 5 GB) | ➖ natively: Spotify has shipped an Apple Silicon build (macOS 13+, `soloist_release_osx_arm64.tar.gz`) since 2026-10-23, but Singularity doesn't use it yet (trying it is part of #85; its audio goes to Core Audio, so the audio Widgets would need the process tap and the "System Audio Recording Only" permission); today: see the Soloist VM | ✅ | (Linux: not measured yet, singularity-archive#71) |
 | Spotify app over Connect (D51, singularity-archive#65) | 🔶 built (`spotify --minimized`), never run | 🔶 (✅ live-checked by 2026-10-20; network-change fixes awaiting the owner's re-check) | ✅ the app's own setting | app ~600 MB, 5–25 % CPU playing |
 | librespot in the Daemon (D52, singularity-archive#70) | 🔶 built, type-checked; needs `alsa-lib` to build; never run | 🔶 default (D54); on Connect live (read-only check); playback awaits the owner | ❌ 320 kbps at most, never | Daemon ~26 MB, ~0–1 % CPU idle; playing ~1 % CPU, 28 MB |
 | Soloist in the Soloist VM (D55, singularity-archive#72): `kind = "soloist"` on macOS | ➖ (Soloist runs natively) | 🔶 built (behind the Soloist runner since D89, #94: not run on the Mac since); live (2026-10): VM up and waiting for pairing in 5.6 s, paired from the phone, FLAC on the Mac's speakers, the audio Widgets fed | ✅ FLAC verified | ~300 MB; idle ~1 % CPU (pipe sink over vsock, 1 vCPU); playing FLAC: not measured on this setup yet (the owner was on librespot); first setup ~2 min, ~1.3 GB disk; cache fixed at 200 MB (`engine.cache_gb` doesn't apply: the VM's disk is small) |
 
 Lossless without the Spotify app on macOS: not possible with librespot (Spotify keeps lossless to its own players and
 asked librespot not to pursue it), hence Soloist itself in a small Linux VM (D53 spike, D55, singularity-archive#72).
+That was built while Soloist had no macOS build; Spotify added one on 2026-10-23
+(`docs/research/2026-11-reverify.md`), and #85 tries it in place of the VM.
 
 ## Features, one by one
 
@@ -183,5 +185,7 @@ When it's done: update every row above and the README's "macOS quirks" (#85 step
 
 Paths (D50): `~/.config/singularity`, `~/.local/share/singularity`, `~/.local/state/singularity`,
 `~/.cache/singularity`, with the `XDG_*` variables respected, named in one place (App folders,
-`config/src/app_folders.rs`, D89). With `HOME` unset (and those `XDG_*` unset) the Client and Daemon stop and say so. Terminals: kitty, Ghostty and WezTerm for the pixel tier
+`config/src/app_folders.rs`, D89). The Daemon's log (`daemon.log` in the state dir, opened by a Client or by launchd's
+`StandardErrorPath`) is moved along by the Daemon itself at its start and past 5 MB, keeping three (Q170,
+`daemon/src/daemon_log.rs`); under systemd it's the journal. With `HOME` unset (and those `XDG_*` unset) the Client and Daemon stop and say so. Terminals: kitty, Ghostty and WezTerm for the pixel tier
 on both; the cell tier everywhere else. Visuals: wgpu on Vulkan (Linux) or Metal (macOS), CPU fallback on both.

@@ -30,3 +30,11 @@ librespot also reportedly won't play on accounts created since Dec 2024, which i
 "Linux only" is still true of Soloist itself, but no longer of Singularity: on macOS, Soloist runs in the Soloist VM
 (D55), behind the same Soloist runner as the local Linux process (D89), and the macOS default Engine is librespot
 (D54). The decision above stands.
+
+## Note (2026-11-28)
+
+"Linux only" no longer holds for Soloist itself: since 2026-10-23 Spotify also ships it for Apple Silicon macOS 13+
+and x86_64 Windows (`docs/research/2026-11-reverify.md`). Also, only the key needs Premium: once Soloist runs, Free
+accounts can listen (lossless and crossfade stay Premium). Singularity's Mac Engines are unchanged for v1.0
+(librespot by default, Soloist in the VM, the app); whether the Mac build replaces the VM is for the Mac session
+(#85). The decision above stands.

@@ -317,10 +317,11 @@ fn start_daemon() -> Result<(), String> {
     };
     let log_dir = singularity_config::app_folders::AppFolders::from_env().map_err(|e| e.to_string())?.state;
     let _ = std::fs::create_dir_all(&log_dir);
-    // owner-only: the log names the account and what plays
+    // owner-only: the log names the account and what plays. Appended to: the new Daemon moves the last one's lines
+    // aside once it holds the socket (Q170, `daemon_log`), and one that finds a Daemon running adds only its line
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let path = log_dir.join("daemon.log");
-    let log = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&path).ok();
+    let log = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&path).ok();
     // (one made by an older build is 0644)
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     let mut cmd = std::process::Command::new(&exe);

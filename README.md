@@ -24,7 +24,9 @@ same way and runs Soloist's arm64 build, but hasn't been tried on ARM hardware y
 ## Not affiliated with Spotify
 
 Singularity is an independent project. It is **not affiliated with, endorsed by or connected to Spotify**. It needs
-a **Spotify Premium** account, and it talks to Spotify through **private, undocumented APIs**, the ones Spotify's own
+a **Spotify Premium** account: its login for Home, the library and search accepts only Premium, as do librespot (the
+Mac's default player) and hosting a Jam. (Soloist itself lets Free accounts listen once it's set up; only the account
+that makes its key needs Premium.) It talks to Spotify through **private, undocumented APIs**, the ones Spotify's own
 apps use. That is against Spotify's Terms of Use, and Spotify may change those APIs, and break Singularity, at any
 time. Spotify could also restrict or close an account that uses them. **Use it with your own account, at your own
 risk.** Singularity never sees your password (you log in on spotify.com) and plays only what your account may play.
@@ -88,7 +90,7 @@ Start at login (optional): `packaging/launchd/install.sh` (a LaunchAgent; `--uni
 | `kind` | Linux | macOS | Lossless | Cost while playing |
 |--------|-------|-------|----------|--------------------|
 | `auto` (default) | = `soloist` | = `librespot` | Linux yes, macOS no | |
-| `soloist` | Spotify's Soloist, headless | Soloist in a small Linux VM that Singularity runs for you | yes | macOS: ~300 MB, idle ~1 % CPU |
+| `soloist` | Spotify's Soloist, headless | Soloist's Linux build in a small Linux VM that Singularity runs for you (not yet Spotify's Mac build) | yes | macOS: ~300 MB, idle ~1 % CPU |
 | `librespot` | built into the Daemon | built into the Daemon | no (320 kbps at most) | ~28 MB, ~1 % CPU |
 | `spotify-app` | the official app, hidden, driven over Connect | the same | yes (the app's own setting) | ~600 MB, 5–25 % CPU |
 
@@ -97,8 +99,10 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 
 ### macOS quirks (what's different from Linux, and why)
 
-- **The default plays at most 320 kbps.** Soloist, Spotify's own headless lossless player, is Linux-only, so on a Mac
-  the default is librespot (light, no setup), and lossless means `kind = "soloist"` (the VM) or `"spotify-app"`.
+- **The default plays at most 320 kbps.** On a Mac the default is librespot (light, no setup), and lossless means
+  `kind = "soloist"` (Soloist in a VM) or `"spotify-app"`. Spotify has shipped Soloist, its headless lossless player,
+  for Apple Silicon Macs (macOS 13 or later) since October 2026, but Singularity doesn't use that Mac build yet: it
+  runs Soloist's Linux build in a VM. Trying the Mac build instead is planned (#85).
 - **`kind = "soloist"` runs a Linux VM** (Apple's Virtualization framework, through `vfkit`; networking through
   `gvproxy`). The first start downloads ~250 MB (the two helpers, pinned by checksum, and Debian's arm64 cloud
   image) and sets the VM up in about two minutes; after that it starts in ~6 s. It lives in
@@ -221,8 +225,12 @@ All of them show up in Spotify's device pickers and are driven the same way; the
 - After a restart of the Daemon, Home and your library show at once as they were last time (kept, owner-only, in
   `~/.cache/singularity/home-and-library.json`, only for the account they belong to, and removed when you log out)
   while the fresh ones load behind.
-  `grep timing: ~/.local/state/singularity/daemon.log` shows how long each start step took (login, account type,
-  keyring, Home, each library page).
+  `grep timing: ~/.local/state/singularity/daemon.log*` shows how long each start step took (login, account type,
+  keyring, Home, each library page), `grep search:` where each search's time went, and `grep reconnect` each time
+  Spotify dropped the connection and the Daemon logged in again (at once while a Client is open, not at your next
+  search). The log of this
+  Daemon is `daemon.log`; the two before it are kept as `daemon.log.1` and `daemon.log.2`, and one past 5 MB is moved
+  aside the same way. A Daemon run by systemd logs to the journal instead (`journalctl --user -u singularityd`).
 - Terminals: kitty, Ghostty and WezTerm get the pixel tier (covers, the GPU black hole); every other terminal the cell
   tier.
 

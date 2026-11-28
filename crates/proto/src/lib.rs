@@ -409,6 +409,10 @@ pub enum CatalogueStatus {
     Unavailable { message: String },
 }
 
+/// The Catalogue's `Unavailable` message when, logging in again, it couldn't read the saved login (a keyring that
+/// didn't answer): not a network problem.
+pub const NO_SAVED_LOGIN: &str = "couldn't read the saved Spotify login; trying again";
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct HomeFeed {
     pub fetched_unix_ms: u64,
