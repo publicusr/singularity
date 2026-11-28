@@ -1341,3 +1341,12 @@ flowchart LR
   picks showcase songs that way), Q164 yes (the KDE media widget and notifications are left to the recording
   checklist), Q165 yes (songs by the artists and albums `demo.toml` lists show even when queued elsewhere; autoplay
   stays hidden), Q166 yes (big text uses the terminal's own Ghostty font, found through its includes, #160).
+  2026-11-28, day: owner answered Q167–Q175 yes (v1 review, research re-verify, search diagnosis; Q172 native Soloist
+  on the Mac in #85; Q173 Karaoke fixed in #165), Q176 yes (Delete listening data also deletes the fast-start copy and
+  the demo log; the recording checklist names the media widget / Now Playing), Q177 yes (unknown arguments and bad
+  `SINGULARITY_DEMO` values are errors; a short `--help`), Q178 yes (`--seed-demo` after v1.0, before the first
+  recording), Q179 yes (one tidy-up pass), Q181 yes (without real word timing Karaoke lights whole lines), Q182 yes (the
+  fill stops at a word's end, the ball waits), Q183 yes (a line-only LRCLIB match leads to one search for a word-timed
+  version, only with Karaoke on screen), Q184 yes (start-up login retried with a growing wait, stopping after a while),
+  Q185 yes, Q186 yes (as built in #165). Q187: Polish rap still wrong on some lines; songs unknown, checked in #166.
+  Tickets: #166, #167, #168, #170 (v1), #169 (after v1.0).
