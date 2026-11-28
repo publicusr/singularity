@@ -602,7 +602,7 @@ async fn log_plays(hub: Arc<Hub>) {
         let now = proto::now_ms();
         if let Some(play) = rec.observe(&state, &device, now) {
             let summary = {
-                let s = store.lock().expect("store lock");
+                let mut s = store.lock().expect("store lock");
                 if let Err(e) = s.record(&play) {
                     tracing::warn!("couldn't log a play: {e}");
                 }
@@ -660,6 +660,18 @@ async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>, demo
         }
         return;
     };
+    // the real "delete" also takes the fast-start copy of Home and the library (not written back from what the Daemon
+    // holds until the account is named again) and the demo Listening log, files and all (#167)
+    if !demo && matches!(cmd, Command::DeleteLocalData) {
+        if let Some(l) = &hub.last_seen {
+            l.forget();
+        }
+        let removed = hub.demo_store.as_ref().map(|d| d.lock().expect("demo store lock").remove());
+        if let Some(Err(e)) = removed {
+            let _ = out.send(DaemonMsg::Event(Event::Error { message: format!("Local data: {e}") })).await;
+            return;
+        }
+    }
     let now = proto::now_ms();
     let (reply, everyone) = {
         let mut s = store.lock().expect("store lock");

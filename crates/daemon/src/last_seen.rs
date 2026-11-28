@@ -2,8 +2,8 @@
 //! fetches them again behind; the fresh ones replace them as they arrive.
 //!
 //! The file is the account's own data: it lives in the user's cache dir (App folders: `~/.cache/singularity`, or
-//! `$XDG_CACHE_HOME/singularity`), owner-only, names the account it belongs to, and goes when the account logs out.
-//! The copy is shown only once the Catalogue names the account it's logging in as (from the saved login, before
+//! `$XDG_CACHE_HOME/singularity`), owner-only, names the account it belongs to, and goes when the account logs out or
+//! the listening data is deleted (#167). The copy is shown only once the Catalogue names the account it's logging in as (from the saved login, before
 //! Spotify answers) and that is the file's account; another account's copy is deleted unseen. A file this build
 //! can't read (an older shape, a broken write) is treated as none. Writes happen on a thread of their own, in order.
 
@@ -108,7 +108,9 @@ impl LastSeen {
 
     /// Keep the Daemon's Home and library as the current account's. Nothing is written before an account is named.
     pub fn write(&self, home: Option<HomeFeed>, library: Option<Library>) {
-        let Some(account) = self.account.lock().expect("account lock").clone() else { return };
+        // (held until the write is queued: a `forget` meanwhile queues its removal after it)
+        let held = self.account.lock().expect("account lock");
+        let Some(account) = held.clone() else { return };
         match serde_json::to_vec(&Seen { account: Some(account), home, library }) {
             Ok(bytes) => {
                 let _ = self.jobs.send(Job::Write(bytes));
@@ -117,10 +119,12 @@ impl LastSeen {
         }
     }
 
-    /// Logged out: the file goes, and nothing is written until an account is named again.
+    /// Logged out, or the listening data deleted (#167): the file goes, and nothing is written until an account is
+    /// named again.
     pub fn forget(&self) {
         *self.waiting.lock().expect("waiting lock") = None;
-        *self.account.lock().expect("account lock") = None;
+        let mut account = self.account.lock().expect("account lock");
+        *account = None;
         let _ = self.jobs.send(Job::Remove);
     }
 

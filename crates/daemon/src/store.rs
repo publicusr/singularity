@@ -31,9 +31,13 @@ pub struct Play {
 
 pub struct Store {
     dir: PathBuf,
+    /// the file's name in `dir`
+    name: &'static str,
     db: Connection,
     /// the demo Listening log (D90): deleting it leaves the library backups alone
     demo: bool,
+    /// its file was removed ([`Store::remove`]): `db` is an empty one in memory until the next play opens a fresh file
+    removed: bool,
     /// what came back short in the newest backup (#144) and whose backup it is, for the summary; learnt off the start
     /// path (`note_backup`: by the backup task, and as each backup is written)
     backup_short: Option<(String, singularity_proto::BackupShort)>,
@@ -52,30 +56,31 @@ impl Store {
         Store::open_named(dir, DEMO_DB, true)
     }
 
-    fn open_named(dir: &Path, name: &str, demo: bool) -> anyhow::Result<Store> {
+    fn open_named(dir: &Path, name: &'static str, demo: bool) -> anyhow::Result<Store> {
         std::fs::create_dir_all(dir)?;
         let path = dir.join(name);
         let db = Connection::open(&path)?;
         // owner-only, also for a file an older run left behind; SQLite's journal copies these permissions
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        db.execute_batch(
-            "CREATE TABLE IF NOT EXISTS plays (
-                id INTEGER PRIMARY KEY,
-                started_ms INTEGER NOT NULL,
-                day INTEGER NOT NULL,
-                track_uri TEXT NOT NULL,
-                name TEXT NOT NULL,
-                artists TEXT NOT NULL,
-                album TEXT,
-                context_uri TEXT,
-                duration_ms INTEGER NOT NULL,
-                played_ms INTEGER NOT NULL,
-                device TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS plays_day ON plays(day);",
-        )?;
-        migrate(&db)?;
-        Ok(Store { dir: dir.to_path_buf(), db, demo, backup_short: None, account: None })
+        schema(&db)?;
+        Ok(Store { dir: dir.to_path_buf(), name, db, demo, removed: false, backup_short: None, account: None })
+    }
+
+    /// Delete the log's file itself (the demo Listening log, when the real one is deleted: #167). Until the next play
+    /// opens a fresh file, it answers as an empty log.
+    pub fn remove(&mut self) -> anyhow::Result<()> {
+        let empty = Connection::open_in_memory()?;
+        schema(&empty)?;
+        // (the file's connection closes here, before the file goes)
+        self.db = empty;
+        self.removed = true;
+        for suffix in ["", "-journal", "-wal", "-shm"] {
+            match std::fs::remove_file(self.dir.join(format!("{}{suffix}", self.name))) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// The default place: `$XDG_DATA_HOME/singularity`.
@@ -83,7 +88,11 @@ impl Store {
         singularity_config::app_folders::AppFolders::this().data
     }
 
-    pub fn record(&self, p: &Play) -> anyhow::Result<()> {
+    pub fn record(&mut self, p: &Play) -> anyhow::Result<()> {
+        if self.removed {
+            self.db = Store::open_named(&self.dir, self.name, self.demo)?.db;
+            self.removed = false;
+        }
         self.db.execute(
             "INSERT INTO plays (started_ms, day, track_uri, name, artists, album, context_uri, duration_ms, played_ms, device, album_uri, artist_uris)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
@@ -536,6 +545,27 @@ fn parse_date(s: &str) -> Option<i64> {
 
 /// The log's schema: 1 (#23); 2 adds album and artist links and an index for per-track counts (#35). Each step runs
 /// once, in place, keeping every row.
+/// The plays table as this build has it.
+fn schema(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS plays (
+            id INTEGER PRIMARY KEY,
+            started_ms INTEGER NOT NULL,
+            day INTEGER NOT NULL,
+            track_uri TEXT NOT NULL,
+            name TEXT NOT NULL,
+            artists TEXT NOT NULL,
+            album TEXT,
+            context_uri TEXT,
+            duration_ms INTEGER NOT NULL,
+            played_ms INTEGER NOT NULL,
+            device TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS plays_day ON plays(day);",
+    )?;
+    migrate(db)
+}
+
 fn migrate(db: &Connection) -> rusqlite::Result<()> {
     let v: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if v < 2 {
@@ -682,7 +712,7 @@ mod tests {
         (d * 86_400_000 + 12 * 3_600_000) as u64
     }
 
-    fn play(store: &Store, at: u64, track: &str, artists: &[&str], album: &str, mins: u64) {
+    fn play(store: &mut Store, at: u64, track: &str, artists: &[&str], album: &str, mins: u64) {
         let it = Item {
             uri: format!("spotify:track:{track}"),
             name: format!("Song {track}"),
@@ -699,19 +729,19 @@ mod tests {
     #[test]
     fn stats_rank_by_minutes_in_calendar_periods() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path()).unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
         // a Wednesday: the week started two days ago
         let today = days_from_civil(2026, 10, 14);
         assert_eq!(weekday(today), 2);
         let now = noon(today);
-        play(&store, noon(today), "a", &["Nova Drift"], "Orbits", 10);
-        play(&store, noon(today - 1), "a", &["Nova Drift"], "Orbits", 10);
+        play(&mut store, noon(today), "a", &["Nova Drift"], "Orbits", 10);
+        play(&mut store, noon(today - 1), "a", &["Nova Drift"], "Orbits", 10);
         // a duet: both artists get its minutes
-        play(&store, noon(today - 2), "b", &["Mira Vale", "Nova Drift"], "Duets", 25);
+        play(&mut store, noon(today - 2), "b", &["Mira Vale", "Nova Drift"], "Duets", 25);
         // last Sunday: the month and year, not the week
-        play(&store, noon(today - 3), "c", &["Glass Harbour"], "Tides", 60);
+        play(&mut store, noon(today - 3), "c", &["Glass Harbour"], "Tides", 60);
         // last year
-        play(&store, noon(days_from_civil(2025, 12, 31)), "c", &["Glass Harbour"], "Tides", 40);
+        play(&mut store, noon(days_from_civil(2025, 12, 31)), "c", &["Glass Harbour"], "Tides", 40);
 
         let w = store.stats(StatsPeriod::Week, now).unwrap();
         assert_eq!((w.from_day, w.to_day, w.minutes, w.plays), (today - 2, today, 45, 3));
@@ -871,5 +901,25 @@ mod tests {
         later.write_backup(now + 2 * 86_400_000, &short).unwrap();
         later.delete_all().unwrap();
         assert_eq!(later.summary(now).unwrap().backup_short, None);
+    }
+
+    /// #167: a removed log's file is gone; it answers as empty, and the next play opens a fresh file.
+    #[test]
+    fn a_removed_log_leaves_no_file_until_its_next_play() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = 1_792_000_000_000u64;
+        let it = Item { uri: "spotify:track:a".into(), name: "A".into(), artists: vec!["Nova Drift".into()], duration_ms: 600_000, ..Default::default() };
+        let p = Play { started_ms: now, item: it, context_uri: None, played_ms: 120_000, device: "here".into() };
+        let mut demo = Store::open_demo(dir.path()).unwrap();
+        demo.record(&p).unwrap();
+        demo.remove().unwrap();
+        assert!(!dir.path().join(DEMO_DB).exists());
+        assert_eq!((demo.summary(now).unwrap().plays, demo.stats(StatsPeriod::All, now).unwrap().plays), (0, 0));
+        assert!(!dir.path().join(DEMO_DB).exists(), "asking doesn't bring it back");
+        demo.record(&p).unwrap();
+        assert_eq!(demo.summary(now).unwrap().plays, 1);
+        let mode = std::fs::metadata(dir.path().join(DEMO_DB)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(Store::open_demo(dir.path()).unwrap().summary(now).unwrap().plays, 1, "on disk");
     }
 }
