@@ -1277,9 +1277,19 @@ impl App {
     }
 
     pub(crate) fn send(&mut self, c: Command) {
+        self.send_ok(c);
+    }
+
+    /// [`App::send`], saying whether it went to the connection.
+    pub(crate) fn send_ok(&mut self, c: Command) -> bool {
         // demo mode with a Daemon that didn't confirm it: these would export or delete the real listening log
         if self.demo.as_ref().is_some_and(|d| !d.confirmed) && matches!(c, Command::ExportLocalData | Command::DeleteLocalData) {
-            return self.say(crate::demo::TOO_OLD);
+            self.say(crate::demo::TOO_OLD);
+            return false;
+        }
+        // demo mode: what this Client plays shows in the player (Q156)
+        if let Some(d) = self.demo.as_mut() {
+            d.sent(&c);
         }
         // A full queue is the connection task being busy, not the Daemon being gone: say the true thing, so a Play or
         // Pause isn't thrown away under a message that sends the user to restart a Daemon that runs fine.
@@ -1288,10 +1298,11 @@ impl App {
             _ => None,
         };
         match sent {
-            Some(Ok(())) => {}
+            Some(Ok(())) => return true,
             Some(Err(mpsc::error::TrySendError::Full(_))) => self.say("singularityd is busy — that didn't go through; try again"),
             Some(Err(mpsc::error::TrySendError::Closed(_))) | None => self.say("Not connected to singularityd"),
         }
+        false
     }
 
     // ── actions ───────────────────────────────────────────────────────

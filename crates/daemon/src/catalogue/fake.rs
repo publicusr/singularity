@@ -168,6 +168,15 @@ pub fn spawn_fake(home: HomeFeed) -> (mpsc::Sender<CatCmd>, mpsc::Receiver<CatEv
                 })],
                 CatCmd::Lyrics { uri, .. } => vec![CatEvent::Lyrics(fake_lyrics(&uri))],
                 CatCmd::Artist(uri) => vec![CatEvent::Artist(fake_artist(&uri, &home))],
+                // demo Home's quiet look (#128): an artist's page, or a list's first page
+                CatCmd::Peek(uri) if uri.starts_with("spotify:artist:") => vec![CatEvent::Peeked { artist: Some(fake_artist(&uri, &home)), tracks: None, uri }],
+                CatCmd::Peek(uri) => {
+                    let first = fake_tracks(&uri).into_iter().find_map(|e| match e {
+                        CatEvent::Tracks(p) => Some(p),
+                        _ => None,
+                    });
+                    vec![CatEvent::Peeked { uri, tracks: first, artist: None }]
+                }
                 CatCmd::MoreTracks { uri, offset } => fake_tracks(&uri).into_iter().filter(|e| matches!(e, CatEvent::Tracks(p) if p.offset >= offset)).collect(),
                 CatCmd::FindShow(uri) => vec![CatEvent::EpisodeShow { episode: uri, show: singularity_proto::Link { name: "Fake Show".into(), uri: "spotify:show:fakeshow".into() } }],
                 CatCmd::Search(q) => vec![CatEvent::Search(fake_search(&q, &home))],
@@ -373,6 +382,7 @@ fn fake_artist(uri: &str, home: &HomeFeed) -> singularity_proto::ArtistPage {
             added_at: None,
             duration_ms: 200_000 + i * 3_000,
             playable: true,
+            cover_url: None,
         })
         .collect();
     singularity_proto::ArtistPage { uri: uri.into(), name: "Nova Drift".into(), monthly_listeners: Some(1_234_567), image_url: None, top_tracks, shelves }
@@ -560,6 +570,8 @@ fn fake_tracks(uri: &str) -> Vec<CatEvent> {
                     album_uri: Some(format!("spotify:album:fake{}", (i * 7) % 13 + 1)),
                     uid: uri.contains(":playlist:").then(|| format!("fakeuid{i}")),
                     progress: None,
+                    // the recorded Home feed's covers (the pty harness keeps them cached), one per fake album
+                    cover_url: Some(format!("https://i.scdn.co/image/fixture{:03}", (i * 7) % 13 + 1)),
                 })
                 .collect();
             let header = (offset == 0 && uri.contains(":album:")).then(|| singularity_proto::ListHeader {

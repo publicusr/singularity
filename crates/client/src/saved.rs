@@ -245,6 +245,7 @@ impl App {
             album_uri: i.album_uri.clone(),
             uid: None,
             progress: None,
+            cover_url: i.cover_url.clone(),
         })
     }
 

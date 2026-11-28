@@ -24,6 +24,7 @@ impl App {
                 if let Some(d) = self.demo.as_mut() {
                     d.redactor.learn(&account, "user");
                     d.confirmed = demo;
+                    d.reconnected();
                     if !demo {
                         self.listening = None;
                         self.stats.clear();
@@ -57,7 +58,7 @@ impl App {
                 }
                 self.catalogue = Some(c);
             }
-            // demo mode: Home waits for the library, which says which playlists are the owner's (none may flash)
+            // demo mode: Home waits for the library, the Demo set it's built from
             ConnEvent::Msg(DaemonMsg::Event(Event::Home(_))) if self.demo.as_ref().is_some_and(|d| !d.knows_library()) => {}
             ConnEvent::Msg(DaemonMsg::Event(Event::Home(h))) => {
                 // the selection stays on its Card (#23)
@@ -68,13 +69,6 @@ impl App {
             }
             ConnEvent::Msg(DaemonMsg::Event(Event::Library(l))) => {
                 self.library = Some(l);
-                // demo mode: now it's known which playlists are the owner's, Home drops those outside the Demo set
-                if let Some(h) = self.demo.as_mut().and_then(|d| d.home_again()) {
-                    if let Some(old) = &self.home {
-                        self.home_view.refeed(old, &h);
-                    }
-                    self.home = Some(h);
-                }
             }
             ConnEvent::Msg(DaemonMsg::Event(Event::PlaylistCreated { uri, name })) => {
                 // demo mode: a playlist this Client made in this session stays in the library
@@ -125,6 +119,34 @@ impl App {
                 self.stats.insert(s.period, s);
             }
             ConnEvent::Msg(_) => {}
+        }
+        self.demo_follow_up();
+    }
+
+    /// Demo mode (Q155–Q157): Home and the player again when what decides them came (the library, a Demo playlist's
+    /// songs, an artist's picture), what Home still needs looked at, and the track shown as playing for the Daemon.
+    fn demo_follow_up(&mut self) {
+        let Some(up) = self.demo.as_mut().map(|d| d.follow_up()) else { return };
+        if let Some(h) = up.home {
+            // the selection stays on its Card (#23)
+            if let Some(old) = &self.home {
+                self.home_view.refeed(old, &h);
+            }
+            self.home = Some(h);
+        }
+        if let Some(p) = up.playback {
+            self.playback_event(p);
+        }
+        for c in up.send {
+            self.send(c);
+        }
+        // (told only while connected, and remembered only once it went: a reconnect tells it again)
+        if let Some(uri) = up.shown
+            && matches!(self.link, crate::app::Link::Connected { .. })
+            && self.send_ok(singularity_proto::Command::ShownInDemo { uri: uri.clone() })
+            && let Some(d) = self.demo.as_mut()
+        {
+            d.reported(&uri);
         }
     }
 }

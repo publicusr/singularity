@@ -59,6 +59,8 @@ pub enum CatCmd {
     /// `words`: also ask LRCLIB for word timing when Spotify's lyrics only time lines (a Karaoke Widget is on screen)
     Lyrics { uri: String, meta: Option<singularity_proto::Item>, words: bool },
     Artist(String),
+    /// demo mode's quiet look (#128): a playlist's first page or an artist's page, no toast if it fails
+    Peek(String),
     Search(String),
     Devices,
     Transfer(String),
@@ -108,6 +110,8 @@ pub enum CatEvent {
     /// send the Clients the last playback state again (an edit they showed early failed)
     Resync,
     Artist(singularity_proto::ArtistPage),
+    /// the answer to a `Peek`: a first page or an artist page, neither when it failed
+    Peeked { uri: String, tracks: Option<TrackPage>, artist: Option<singularity_proto::ArtistPage> },
     Search(singularity_proto::SearchResults),
     Devices(Vec<singularity_proto::Device>),
     /// the account's Jam, or none (D64)
@@ -375,6 +379,7 @@ fn is_connect(cmd: &CatCmd) -> bool {
         | CatCmd::Describe(_)
         | CatCmd::Lyrics { .. }
         | CatCmd::Artist(_)
+        | CatCmd::Peek(_)
         | CatCmd::Search(_)
         | CatCmd::SetSaved { .. }
         | CatCmd::CheckSaved(_)
@@ -492,6 +497,7 @@ async fn handle<Q: Fetch + Sync + Clone>(st: &mut State<Q>, cmd: CatCmd) {
         CatCmd::Describe(uris) => st.describe(uris).await,
         CatCmd::Lyrics { uri, meta, words } => st.lyrics(uri, meta, words).await,
         CatCmd::Artist(uri) => st.artist(uri).await,
+        CatCmd::Peek(uri) => st.peek(uri).await,
         CatCmd::SetSaved { uri, saved } => {
             // the library changed: the sidebar and Liked Songs follow (Liked Songs from its next open)
             if st.set_saved(uri.clone(), saved).await && !uri.starts_with("spotify:track:") {
@@ -849,43 +855,14 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
         let mut pages = vec![];
         let mut offset = from;
         loop {
-            let asked = if self.books.contains(uri) { Some(library::chapters_query(uri, offset)) } else { library::tracks_query(uri, offset) };
-            let Some((mut op, vars)) = asked else {
-                self.fail(format!("can't list the tracks of {uri}")).await;
-                return None;
-            };
-            let mut answer = self.query(op, vars).await;
-            // a show that turns out to be a book: its chapters instead (#62)
-            if op == "queryPodcastEpisodes"
-                && answer.as_ref().is_ok_and(library::is_book)
-            {
-                self.books.insert(uri.to_string());
-                let (o, vars) = library::chapters_query(uri, offset);
-                op = o;
-                answer = self.query(op, vars).await;
-            }
-            let v = match answer {
-                Ok(v) => v,
-                Err(e) => {
-                    self.fail(format!("Track list unavailable: {e}")).await;
+            let (page, page_len) = match self.fetch_page(uri, offset).await {
+                Ok(p) => p,
+                Err(message) => {
+                    self.fail(message).await;
                     return None;
                 }
             };
-            let (tracks, total) = library::parse_tracks(uri, &v);
-            let page_len = match op {
-                "getAlbum" => library::ALBUM_PAGE,
-                "queryPodcastEpisodes" | "queryBookChapters" => library::SHOW_PAGE,
-                _ => library::TRACK_PAGE,
-            };
-            let header = match offset {
-                0 if uri.starts_with("spotify:show:") => {
-                    let vars = json!({ "uri": uri, "includeContentCapabilityTrait": false, "includeEpisodeContentRatingsV2": false });
-                    self.query("queryShowMetadataV2", vars).await.ok().and_then(|m| library::parse_show_header(&m))
-                }
-                0 => library::parse_header(uri, &v),
-                _ => None,
-            };
-            let page = TrackPage { uri: uri.to_string(), offset, total, tracks, header };
+            let total = page.total;
             let _ = self.ev.send(CatEvent::Tracks(page.clone())).await;
             pages.push(page);
             self.search_between().await;
@@ -894,6 +871,75 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
                 return Some(pages);
             }
         }
+    }
+
+    /// One page of a list from `offset`, and how many rows a page of it holds; what went wrong if it failed.
+    async fn fetch_page(&mut self, uri: &str, offset: u32) -> Result<(TrackPage, u32), String> {
+        let asked = if self.books.contains(uri) { Some(library::chapters_query(uri, offset)) } else { library::tracks_query(uri, offset) };
+        let Some((mut op, vars)) = asked else {
+            return Err(format!("can't list the tracks of {uri}"));
+        };
+        let mut answer = self.query(op, vars).await;
+        // a show that turns out to be a book: its chapters instead (#62)
+        if op == "queryPodcastEpisodes"
+            && answer.as_ref().is_ok_and(library::is_book)
+        {
+            self.books.insert(uri.to_string());
+            let (o, vars) = library::chapters_query(uri, offset);
+            op = o;
+            answer = self.query(op, vars).await;
+        }
+        let v = match answer {
+            Ok(v) => v,
+            Err(e) => return Err(format!("Track list unavailable: {e}")),
+        };
+        let (tracks, total) = library::parse_tracks(uri, &v);
+        let page_len = match op {
+            "getAlbum" => library::ALBUM_PAGE,
+            "queryPodcastEpisodes" | "queryBookChapters" => library::SHOW_PAGE,
+            _ => library::TRACK_PAGE,
+        };
+        let header = match offset {
+            0 if uri.starts_with("spotify:show:") => {
+                let vars = json!({ "uri": uri, "includeContentCapabilityTrait": false, "includeEpisodeContentRatingsV2": false });
+                self.query("queryShowMetadataV2", vars).await.ok().and_then(|m| library::parse_show_header(&m))
+            }
+            0 => library::parse_header(uri, &v),
+            _ => None,
+        };
+        Ok((TrackPage { uri: uri.to_string(), offset, total, tracks, header }, page_len))
+    }
+
+    /// Demo mode's quiet look (#128): an artist's page, or a list's first page (from what's kept, else fetched alone),
+    /// answered as `Peeked`; a failure is logged, not toasted, and answered with neither.
+    async fn peek(&mut self, uri: String) {
+        let (mut tracks, mut artist) = (None, None);
+        if uri.starts_with("spotify:artist:") {
+            match self.artists.get(&uri) {
+                Some((at, p)) if at.elapsed() < TRACKS_TTL => artist = Some(p.clone()),
+                _ => match self.query("queryArtistOverview", json!({ "uri": uri, "locale": "", "includePrerelease": true })).await {
+                    Ok(v) => match library::parse_artist(&v) {
+                        Some(p) => {
+                            trim_timed(&mut self.artists, TRACKS_TTL, MAX_PAGES);
+                            self.artists.insert(uri.clone(), (Instant::now(), p.clone()));
+                            artist = Some(p);
+                        }
+                        None => tracing::warn!("demo Home: the artist page of {uri} had an unexpected shape"),
+                    },
+                    Err(e) => tracing::warn!("demo Home: artist page of {uri} unavailable: {e}"),
+                },
+            }
+        } else {
+            match self.tracks.get(&uri).and_then(|(at, pages)| (at.elapsed() < TRACKS_TTL).then(|| pages.first().cloned()).flatten()) {
+                Some(p) => tracks = Some(p),
+                // (one page alone isn't kept: a later open fetches the whole list)
+                None => match self.fetch_page(&uri, 0).await {
+                    Ok((p, _)) => tracks = Some(p),
+                    Err(e) => tracing::warn!("demo Home: {e}"),
+                },
+            }
+        }
+        let _ = self.ev.send(CatEvent::Peeked { uri, tracks, artist }).await;
     }
 
     /// Add to or remove from the library. Returns whether it worked; either way the Daemon hears the truth.
@@ -1625,7 +1671,7 @@ pub fn parse_home(v: &Value) -> HomeFeed {
             "HomeFeedBaselineSectionData" => "feed",
             _ => "shelf",
         };
-        // the section's own id (`spotify:section:…`), when it has one: demo mode hides personal Shelves by it (D90)
+        // the section's own id (`spotify:section:…`), when it has one
         let id = s["uri"].as_str().unwrap_or_default().to_string();
         let title = s["data"]["title"]["transformedLabel"].as_str().or_else(|| s["data"]["title"]["text"].as_str()).unwrap_or("").to_string();
         let cards: Vec<Card> = s["sectionItems"]["items"].as_array().into_iter().flatten().filter_map(|it| card(&it["content"]["data"])).collect();
@@ -1760,7 +1806,7 @@ mod tests {
         assert_eq!(album.image_url.as_deref(), Some("https://i.scdn.co/image/300"));
         let mix = &feed.shelves[1].cards[0];
         assert_eq!(feed.shelves[1].title, "Made For You");
-        // (D90: demo mode hides personal Shelves by this id; a section without one has none)
+        // (a section without an id has none)
         assert_eq!((feed.shelves[1].id.as_str(), feed.shelves[0].id.as_str()), ("spotify:section:fakemadeforyou", ""));
         assert_eq!(mix.subtitle, "Nova Drift, Mira Vale & more");
         assert_eq!(feed.shelves[1].cards[1].kind, "artist");

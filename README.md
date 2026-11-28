@@ -209,9 +209,11 @@ All of them show up in Spotify's device pickers and are driven the same way; the
   shows in the top bar, and this Client hides or replaces everything personal: the library shows only the playlists in
   a Spotify folder called "Demo" (plus albums, artists, podcasts and audiobooks listed in `demo.toml` in the config
   folder, `library = ["spotify:album:…"]`, `liked = true` for Liked Songs; "Add to demo" in a menu writes there), Home
-  drops its personal Shelves, names become "you", "a friend" and "Guest 1", devices "Singularity", "Phone", "Speaker
+  shows only that Demo set (its playlists, then the albums and artists their songs are on, then Liked Songs if on;
+  nothing from your recommendations or history), the player stays empty until a song from the Demo set (or one you
+  play or queue in this Client) is on, so the song left playing from before doesn't show, names become "you", "a friend" and "Guest 1", devices "Singularity", "Phone", "Speaker
   2", the Jam's link is hidden (its QR leads nowhere), paths and the computer's name are replaced, the Added column is
-  blank, stats come from a separate demo log (plays still count in the real one), and recent searches are kept apart.
+  blank, stats come from a separate demo log that counts only the songs this Client showed (plays still count in the real one), and recent searches are kept apart.
   Music, Widgets and Designs work as usual, and other Clients don't change. It can't be switched on or off while
   running. Recording checklist: hide the terminal's own title bar (it can show user@host), turn off desktop and track
   notifications (Ctrl+K → "Track notifications on / off"), don't log in on camera, keep phones off screen. Edits are real:

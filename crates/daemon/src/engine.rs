@@ -119,6 +119,23 @@ impl Engine for FakeEngine {
             // (SINGULARITY_FAKE_PERSONAL=1: named after a made-up computer, as librespot names itself; D90's demo check)
             let name = if std::env::var("SINGULARITY_FAKE_PERSONAL").is_ok_and(|v| v == "1") { "Singularity on zarabox" } else { "Fake" };
             let _ = ev_tx.send(EngineEvent::Status(EngineStatus::Ready { device_name: name.into(), active: true, version: "fake".into(), expires_in_days: Some(90) })).await;
+            // SINGULARITY_FAKE_CARRYOVER=1: a made-up personal song already playing from a private playlist, with one queued,
+            // as if left from a normal session (D90: a demo Client must draw neither, #128)
+            if std::env::var("SINGULARITY_FAKE_CARRYOVER").is_ok_and(|v| v == "1") {
+                tracks.push(Item { uri: "spotify:track:zqsecret".into(), name: "Zara's Secret Song".into(), artists: vec!["Secretartist Zq".into()], album: Some("Secret Album".into()), duration_ms: 200_000, cover_url: Some(fixture_cover(7)), ..Default::default() });
+                idx = tracks.len() - 1;
+                let queued = Item { uri: "spotify:track:zqqueued".into(), name: "Zara's Queued Secret".into(), artists: vec!["Secretartist Zq".into()], duration_ms: 180_000, ..Default::default() };
+                st = PlaybackState {
+                    status: PlayStatus::Playing,
+                    item: Some(tracks[idx].clone()),
+                    context_uri: Some("spotify:playlist:fakediary".into()),
+                    timestamp_ms: singularity_proto::now_ms(),
+                    speed: 1.0,
+                    queue: vec![singularity_proto::QueueEntry { item: queued, source: "queue".into(), uid: "qsecret".into() }],
+                    ..st
+                };
+                let _ = ev_tx.send(EngineEvent::Playback(st.clone())).await;
+            }
             // SINGULARITY_FAKE_STALLS=1: a lossless stream on a starving connection, for the stream Pane (#45);
             // =fine: the same stream on a healthy connection whose speed wanders (a measurement a second)
             if let Some(mode) = std::env::var("SINGULARITY_FAKE_STALLS").ok().filter(|v| v == "1" || v == "fine") {
@@ -172,7 +189,17 @@ impl Engine for FakeEngine {
                         st.status = if st.status == PlayStatus::Playing { PlayStatus::Paused } else { PlayStatus::Playing };
                     }
                     Command::Next => {
-                        idx = (idx + 1) % tracks.len();
+                        // a song the user queued plays first (the context stays, as Spotify keeps it: #128's demo check)
+                        match st.queue.iter().position(|q| q.source == "queue") {
+                            Some(i) => {
+                                let q = st.queue.remove(i);
+                                idx = pick(&mut tracks, &q.item.uri, None);
+                                if !q.item.name.is_empty() {
+                                    tracks[idx] = q.item;
+                                }
+                            }
+                            None => idx = (idx + 1) % tracks.len(),
+                        }
                         st.position_ms = 0;
                     }
                     Command::Previous => {
