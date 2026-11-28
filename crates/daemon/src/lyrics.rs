@@ -2,6 +2,8 @@
 //! (<https://lrclib.net>, free and open; only artist, title, album and duration are sent).
 
 use serde_json::Value;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use singularity_proto::{LyricLine, LyricWord, Lyrics};
 
 /// Spotify's answer → lines (times come as strings; `UNSYNCED` lyrics have zeros).
@@ -263,18 +265,44 @@ pub fn parse_lrclib(uri: &str, v: &Value) -> Option<Lyrics> {
     (!lines.is_empty()).then(|| Lyrics { uri: uri.into(), synced: false, lines, source: "LRCLIB".into(), ..Default::default() })
 }
 
-/// Ask LRCLIB (one request, no retry loop): `Ok(None)` when it has nothing, `Err` when it couldn't be asked.
+/// LRCLIB asked us to wait (a 429 or 503 with `Retry-After`): no request goes to it before this (Unix ms), for any
+/// track. Its docs: clients "must honor `Retry-After`", with jitter, or risk a temporary ban.
+static LRCLIB_QUIET_UNTIL: AtomicU64 = AtomicU64::new(0);
+
+/// How long LRCLIB asks us to wait after an answer with `status`: `Retry-After` in seconds (an HTTP date or none: a
+/// minute after a 429, a second after a 503), plus `jitter` (0..1) of up to 30 % of it. None: no wait asked.
+fn wait_asked(status: u16, retry_after: Option<&str>, jitter: f64) -> Option<Duration> {
+    let default = match status {
+        429 => 60,
+        503 => 1,
+        _ => return None,
+    };
+    let secs = retry_after.and_then(|r| r.trim().parse::<u64>().ok()).unwrap_or(default).min(3_600);
+    Some(Duration::from_millis(secs * 1000 + (secs as f64 * 1000.0 * 0.3 * jitter.clamp(0.0, 1.0)) as u64))
+}
+
+/// Whether LRCLIB may be asked now; if not, the seconds still to wait.
+fn quiet_left(now_ms: u64) -> Option<u64> {
+    let until = LRCLIB_QUIET_UNTIL.load(Ordering::Relaxed);
+    (now_ms < until).then(|| (until - now_ms).div_ceil(1000))
+}
+
+/// Ask LRCLIB: with the album, then without it if that finds nothing (`asks`). `Ok(None)` when it has nothing, `Err`
+/// when it couldn't be asked, including while it has asked us to wait.
 pub async fn lrclib(uri: &str, artist: &str, title: &str, album: Option<&str>, duration_ms: u64) -> Result<Option<Lyrics>, String> {
+    if let Some(s) = quiet_left(singularity_proto::now_ms()) {
+        return Err(format!("LRCLIB asked us to wait ({s} s left)"));
+    }
     let http = reqwest::Client::builder()
         .user_agent(concat!("Singularity/", env!("CARGO_PKG_VERSION"), " (https://github.com/publicusr/singularity)"))
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
     let q = vec![("artist_name", artist.to_string()), ("track_name", title.to_string()), ("duration", (duration_ms / 1000).to_string())];
     for (k, q) in asks(q, album).iter().enumerate() {
         if k > 0 {
             // LRCLIB's docs ask for 200–500 ms between requests
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
         }
         if let Some(v) = lrclib_get(&http, q).await? {
             return Ok(parse_lrclib(uri, &v));
@@ -299,6 +327,13 @@ fn asks(q: Vec<(&'static str, String)>, album: Option<&str>) -> Vec<Vec<(&'stati
 /// One `/api/get`: the record, `None` on a 404.
 async fn lrclib_get(http: &reqwest::Client, q: &[(&'static str, String)]) -> Result<Option<Value>, String> {
     let resp = http.get("https://lrclib.net/api/get").query(q).send().await.map_err(|e| e.to_string())?;
+    let retry_after = resp.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok());
+    // (a jitter from the clock's nanoseconds: no randomness crate for this)
+    let jitter = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos()) as f64 / 1e9;
+    if let Some(wait) = wait_asked(resp.status().as_u16(), retry_after, jitter) {
+        LRCLIB_QUIET_UNTIL.fetch_max(singularity_proto::now_ms() + wait.as_millis() as u64, Ordering::Relaxed);
+        return Err(format!("HTTP {}: LRCLIB asks us to wait {} s", resp.status(), wait.as_secs()));
+    }
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
@@ -454,6 +489,28 @@ plain: |
     }
 
     #[test]
+    fn lrclib_is_left_alone_as_long_as_it_asks() {
+        // Retry-After in seconds, plus up to 30 % jitter; an HTTP date or none: a minute (429), a second (503)
+        assert_eq!(wait_asked(429, Some("12"), 0.0), Some(Duration::from_secs(12)));
+        assert_eq!(wait_asked(429, Some(" 10 "), 1.0), Some(Duration::from_secs(13)));
+        assert_eq!(wait_asked(429, Some("Wed, 21 Oct 2026 07:28:00 GMT"), 0.0), Some(Duration::from_secs(60)));
+        assert_eq!(wait_asked(503, None, 0.0), Some(Duration::from_secs(1)));
+        assert_eq!(wait_asked(429, Some("999999"), 0.0), Some(Duration::from_secs(3_600)), "an hour at most");
+        assert_eq!(wait_asked(200, Some("5"), 0.0), None);
+        assert_eq!(wait_asked(404, None, 0.0), None);
+        // while it lasts, no track is asked about: the lookup fails at once without a request
+        let now = singularity_proto::now_ms();
+        LRCLIB_QUIET_UNTIL.store(now + 20_000, Ordering::Relaxed);
+        assert_eq!(quiet_left(now), Some(20));
+        assert_eq!(quiet_left(now + 19_500), Some(1));
+        assert_eq!(quiet_left(now + 20_000), None);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let got = rt.block_on(lrclib("u", "A", "T", Some("LP"), 200_000));
+        assert!(got.as_ref().is_err_and(|e| e.contains("wait")), "{got:?}");
+        LRCLIB_QUIET_UNTIL.store(0, Ordering::Relaxed);
+    }
+
+    #[test]
     fn hostile_yaml_is_refused_without_blowing_up() {
         // aliases (a billion laughs), deep nesting, garbage, too big
         let laughs = "a: &a [x, x, x, x, x, x, x, x, x]\nb: &b [*a, *a, *a, *a, *a, *a, *a, *a]\nc: &c [*b, *b, *b, *b, *b, *b, *b, *b]\nlines: [*c, *c]\n";
@@ -485,4 +542,3 @@ plain: |
         assert!(!missing(Nothing, Failed).1 && !missing(Failed, Failed).1);
     }
 }
-
