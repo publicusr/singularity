@@ -18,18 +18,46 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS minutes cost ten times as much on a private repository: there macOS runs only when started by hand.
-        # Linux on ARM (D73): GitHub's arm64 runners are free for public repositories only
-        os: ${{ fromJSON((github.event.repository.private && github.event_name != 'workflow_dispatch') && '["ubuntu-latest"]' || (github.event.repository.private && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest"]')) }}
+        # Linux on ARM (D73): GitHub's arm64 runners are free for public repositories only. macOS runs on the owner's
+        # Mac (the `macos` job below), never on hosted runners (their minutes ran out).
+        os: ${{ fromJSON(github.event.repository.private && '["ubuntu-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Linux build dependencies
-        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libasound2-dev dbus
       - run: rustup toolchain install stable --profile minimal --component clippy && rustup default stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  # The owner's Mac, a self-hosted runner labelled `macbook` (#85, Q193-Q195). It runs only what the owner started from
+  # this repository's own branches (the repository is public: a fork's pull request must never run on it), waits while
+  # the Mac sleeps, and nothing waits for it. Nothing may show on its screen or play: the fake Engine, no Keychain, no
+  # Now Playing, the Spotify app never started; the owner's `rustup default` is left alone.
+  macos:
+    if: >-
+      github.actor == github.repository_owner &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, macbook]
+    env:
+      SINGULARITY_ENGINE: fake
+      SINGULARITY_SOLOIST: local
+      SINGULARITY_START_APP: "0"
+      SINGULARITY_NOWPLAYING: "off"
+      SINGULARITY_NO_KEYRING: "1"
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - run: rustup toolchain install stable --profile minimal --component clippy
+      # scratch dirs for the tests' state and sockets, inside the job's own temp folder
+      - run: |
+          mkdir -p "$RUNNER_TEMP/xdg/config" "$RUNNER_TEMP/xdg/data" "$RUNNER_TEMP/xdg/state" "$RUNNER_TEMP/xdg/cache"
+          { echo "XDG_CONFIG_HOME=$RUNNER_TEMP/xdg/config"; echo "XDG_DATA_HOME=$RUNNER_TEMP/xdg/data"
+            echo "XDG_STATE_HOME=$RUNNER_TEMP/xdg/state"; echo "XDG_CACHE_HOME=$RUNNER_TEMP/xdg/cache"
+            echo "TMPDIR=$(realpath "$RUNNER_TEMP")"; } >> "$GITHUB_ENV"
+      - run: caffeinate -i cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   msrv:
