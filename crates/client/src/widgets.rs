@@ -1128,7 +1128,7 @@ mod tests {
         // rows filled (up to 26 weeks), the whole in the middle
         let mut app = App::new(None);
         let minutes: Vec<u32> = (0..singularity_proto::LISTENING_DAYS as u32).map(|i| i * 7 % 50).collect();
-        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Mira Vale".into()), streak_days: 10, plays: 534, plays_today: 3 });
+        app.listening = Some(singularity_proto::ListeningSummary { minutes, today_weekday: 3, hours_this_year: 19.0, top_artist: Some("Mira Vale".into()), streak_days: 10, plays: 534, plays_today: 3, backup_short: None });
         let th = app.theme.clone();
         for (w, h, weeks) in [(14u16, 30u16, 24usize), (24, 30, 24), (30, 40, 26), (22, 20, 14)] {
             let r = Rect::new(2, 1, w, h);
