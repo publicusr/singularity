@@ -1486,6 +1486,131 @@ mod tests {
         }
     }
 
+    /// A song timed word by word the way LRCLIB's Lyricsfile times it (each word's start only, the line's end), invented
+    /// words: three lines in a row, an instrumental, a fourth line.
+    fn timed_song() -> Vec<LyricLine> {
+        let line = |start: u64, words: &[(&str, u64)], end: u64| {
+            let mut w: Vec<LyricWord> = words.iter().map(|(t, s)| LyricWord { start_ms: *s, end_ms: None, text: (*t).into() }).collect();
+            if let Some(last) = w.last_mut() {
+                last.end_ms = Some(end);
+            }
+            LyricLine { start_ms: start, text: words.iter().map(|w| w.0).collect(), words: w }
+        };
+        vec![
+            line(8_120, &[("Paper ", 8_120), ("boats ", 8_790), ("drift ", 9_210), ("past ", 9_760), ("noon", 10_660)], 11_620),
+            line(12_080, &[("Gulls ", 12_080), ("never ", 12_540), ("count ", 12_790), ("the ", 13_050), ("tides", 13_290)], 14_940),
+            line(15_650, &[("Slow, ", 15_650), ("slow, ", 16_010), ("row ", 16_410), ("home", 17_460)], 18_420),
+            line(40_000, &[("Lanterns ", 40_000), ("on ", 40_400), ("water", 40_700)], 42_000),
+        ]
+    }
+
+    fn timed_app(pos: u64) -> App {
+        let mut app = App::new(None);
+        app.playback.item = Some(singularity_proto::Item { uri: "spotify:track:t".into(), name: "Song".into(), duration_ms: 60_000, ..Default::default() });
+        app.playback.status = singularity_proto::PlayStatus::Paused;
+        app.playback.position_ms = pos;
+        app.lyrics_event(Lyrics { uri: "spotify:track:t".into(), synced: true, lines: timed_song(), source: "fake".into(), ..Default::default() });
+        app
+    }
+
+    /// What a 60×9 Karaoke Pane shows being sung: the line on stage (the row drawn in the waiting or the sung colour,
+    /// not the dimmed lines around it) and how many of its words have begun to fill.
+    fn on_stage_now(app: &mut App) -> Option<(String, usize)> {
+        let th = Theme::singularity();
+        let (w, h) = (60u16, 9u16);
+        let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+        draw(&mut buf, Rect::new(0, 0, w, h), app, &th);
+        let quiet = [th.dim.color(), th.border.color()];
+        for y in 0..h - 1 {
+            let mut words: Vec<(String, bool)> = vec![];
+            let mut prev_space = true;
+            for x in 0..w {
+                let c = &buf[(x, y)];
+                let letter = c.symbol().chars().any(char::is_alphanumeric);
+                if !letter || quiet.contains(&c.fg) {
+                    prev_space = true;
+                    continue;
+                }
+                if prev_space {
+                    words.push((String::new(), c.fg != th.fg.color()));
+                }
+                words.last_mut().expect("pushed").0.push_str(c.symbol());
+                prev_space = false;
+            }
+            if !words.is_empty() {
+                let text = words.iter().map(|w| w.0.as_str()).collect::<Vec<_>>().join(" ");
+                return Some((text, words.iter().filter(|w| w.1).count()));
+            }
+        }
+        None
+    }
+
+    /// The sync check: the song played through 10 ms at a time, the word the Pane highlights against the word being
+    /// sung. Every word lights up within a step of its start, the line on stage is the one being sung, and the delay
+    /// setting shifts it all by exactly its amount.
+    #[test]
+    fn the_highlighted_word_is_the_one_being_sung() {
+        // how soon a begun word shows it: its first letter's tint is visible within this
+        const TINT_MS: u64 = 40;
+        let song = timed_song();
+        let mut worst = 0;
+        for delay in [0i32, 250, -150] {
+            let mut app = timed_app(0);
+            app.config.lyrics.delay_ms = delay;
+            let mut lit_at: Vec<Vec<Option<u64>>> = song.iter().map(|l| vec![None; l.words.len()]).collect();
+            for pos in (0..45_000u64).step_by(10) {
+                app.playback.position_ms = pos;
+                let at = (pos as i64 - delay as i64).max(0) as u64;
+                let Some((text, lit)) = on_stage_now(&mut app) else { continue };
+                let bare = |t: &str| t.chars().filter(|c| c.is_alphanumeric() || *c == ' ').collect::<String>();
+                let Some(i) = song.iter().position(|l| bare(&l.text).trim() == text) else { continue };
+                // the line being sung is on stage while it is sung
+                if let Some(now) = song.iter().position(|l| l.words[0].start_ms <= at && at < l.words.last().unwrap().end_ms.unwrap()) {
+                    assert_eq!(i, now, "at {at} ms (delay {delay}): {text:?} on stage");
+                }
+                // and exactly the words begun are lit (a word's first letter shows its tint a few ms into the word)
+                let begun = song[i].words.iter().filter(|w| w.start_ms <= at).count();
+                let just = begun > 0 && at - song[i].words[begun - 1].start_ms < TINT_MS;
+                assert!(lit == begun || (just && lit + 1 == begun), "at {at} ms (delay {delay}) in {text:?}: {lit} lit, {begun} begun");
+                for seen in lit_at[i].iter_mut().take(lit) {
+                    seen.get_or_insert(pos);
+                }
+            }
+            for (i, l) in song.iter().enumerate() {
+                for (k, w) in l.words.iter().enumerate() {
+                    let seen = lit_at[i][k].unwrap_or_else(|| panic!("{:?} never lit (delay {delay})", w.text));
+                    let lag = seen as i64 - delay as i64 - w.start_ms as i64;
+                    assert!((0..TINT_MS as i64).contains(&lag), "{:?} lit {lag} ms after it is sung (delay {delay})", w.text);
+                    worst = worst.max(lag);
+                }
+            }
+        }
+        println!("karaoke sync: every word lit at most {worst} ms after it is sung");
+    }
+
+    /// The position the Pane sings from moves on between the player's updates, stops on a pause, jumps with a seek,
+    /// and a new song's words wait for its own lyrics.
+    #[test]
+    fn the_words_follow_play_pause_seek_and_a_new_song() {
+        use singularity_proto::PlayStatus::*;
+        let now = singularity_proto::now_ms();
+        // playing: the last update was 1.6 s ago at 8.5 s, so "past" (9.76 s) is being sung, not "boats"
+        let mut app = timed_app(8_500);
+        (app.playback.status, app.playback.speed, app.playback.timestamp_ms) = (Playing, 1.0, now - 1_600);
+        assert_eq!(on_stage_now(&mut app).map(|s| s.1), Some(4), "{:?}", on_stage_now(&mut app));
+        // paused there: it stays
+        (app.playback.status, app.playback.speed, app.playback.position_ms, app.playback.timestamp_ms) = (Paused, 0.0, 10_100, now - 5_000);
+        assert_eq!(on_stage_now(&mut app).map(|s| s.1), Some(4));
+        // a seek into the next line
+        app.seek_to(13_100);
+        app.playback.speed = 0.0;
+        assert_eq!(on_stage_now(&mut app), Some(("Gulls never count the tides".into(), 4)));
+        // another song starts: nothing of the old song's lines shows while its lyrics are on the way
+        app.playback.item = Some(singularity_proto::Item { uri: "spotify:track:u".into(), name: "Next".into(), duration_ms: 60_000, ..Default::default() });
+        app.playback.position_ms = 0;
+        assert_eq!(on_stage_now(&mut app), None);
+    }
+
     #[test]
     fn every_size_and_moment_draws_inside_the_pane_on_the_pixel_tier() {
         let moments = [0, 2_900, 3_000, 3_700, 4_300, 7_000, 9_000, 13_000, 20_000, 200_000];
