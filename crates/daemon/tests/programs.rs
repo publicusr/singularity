@@ -5,9 +5,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 #[test]
-fn a_fake_tar_earlier_on_the_path_is_not_used() {
+fn a_fake_program_earlier_on_the_path_is_not_used() {
     let scratch = tempfile::tempdir().unwrap();
-    let fake = scratch.path().join("tar");
+    let fake = scratch.path().join("open");
     std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     let old = std::env::var_os("PATH");
@@ -18,13 +18,13 @@ fn a_fake_tar_earlier_on_the_path_is_not_used() {
     }
     // SAFETY: this test binary has no other test that reads `PATH`.
     unsafe { std::env::set_var("PATH", &path) };
-    let found = Tool::Tar.find();
+    let found = Tool::Open.find();
     match &old {
         Some(old) => unsafe { std::env::set_var("PATH", old) },
         None => unsafe { std::env::remove_var("PATH") },
     }
     assert_ne!(found.as_deref(), Some(fake.as_path()), "the fake on PATH was used");
     if let Some(found) = found {
-        assert!(Tool::DIRS.iter().any(|d| found == Path::new(d).join("tar")), "{} is not a fixed location", found.display());
+        assert!(Tool::DIRS.iter().any(|d| found == Path::new(d).join("open")), "{} is not a fixed location", found.display());
     }
 }

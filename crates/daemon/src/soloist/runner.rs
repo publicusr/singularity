@@ -2,11 +2,8 @@
 //! WebSocket address, keeps its build current, announces it for pairing, and stops it with the Daemon; the Soloist
 //! session (`soloist.rs`, `session.rs`) talks to Soloist through it and holds no OS-specific code.
 //!
-//! - [`Local`] is Linux's: Soloist as a local process that dies with the Daemon, its builds under the data directory.
-//! - [`vm::InVm`] is macOS's: Soloist inside the Soloist VM (D55). The VM itself is behind [`vm::Guest`]: the real one
-//!   in `soloist_vm.rs`, a fake one in the tests, so the VM runner's contract is tested on Linux too (Q95).
-
-pub mod vm;
+//! - [`Local`]: Soloist as a local process that dies with the Daemon, its builds under the data directory (Linux, and
+//!   Apple Silicon Macs since Q188, which replaced the Soloist VM of D55: Q189).
 
 use crate::update::{self, Builds, Checked};
 use std::future::Future;
@@ -18,10 +15,7 @@ use tokio::sync::{Notify, watch};
 
 /// Where Soloist runs.
 pub trait Runner: Clone + Send + Sync + 'static {
-    /// Does Soloist run in the Soloist VM? (Clients word their setup for it: Q94.)
-    fn in_vm(&self) -> bool;
-
-    /// Singularity's data folder: Soloist's builds (a local Soloist) or the VM's files are under it.
+    /// Singularity's data folder: Soloist's builds are under it.
     fn data_dir(&self) -> &Path;
 
     /// Soloist's state on this computer: its log and the last volume (a local Soloist's pairing and cache too).
@@ -93,8 +87,8 @@ impl Announcement {
     }
 }
 
-/// Soloist as a local process (Linux; on macOS only the pty harness's stand-in, `SINGULARITY_SOLOIST=local`). Its
-/// binary is downloaded from Spotify's CDN when missing and kept current by `update` (#6).
+/// Soloist as a local process (Linux; Apple Silicon Macs, Q188). Its binary is downloaded from Spotify's CDN when
+/// missing and kept current by `update` (#6).
 #[derive(Clone)]
 pub struct Local {
     builds: Builds,
@@ -115,10 +109,6 @@ impl Local {
 }
 
 impl Runner for Local {
-    fn in_vm(&self) -> bool {
-        false
-    }
-
     fn data_dir(&self) -> &Path {
         &self.builds.root
     }
@@ -158,6 +148,12 @@ impl Runner for Local {
 
     fn check_free(&self) -> anyhow::Result<()> {
         if let Some(pid) = running_soloist(&self.state) {
+            // macOS has no PR_SET_PDEATHSIG: a Soloist whose Daemon was killed outright runs on, handed to launchd.
+            // Nobody drives it any more, so it makes way for this Daemon's.
+            if orphaned(pid) {
+                stop_orphan(pid);
+                return Ok(());
+            }
             anyhow::bail!("Soloist is already running (pid {pid}) with Singularity's data: is a second singularityd running?");
         }
         Ok(())
@@ -178,7 +174,7 @@ impl Runner for Local {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         // Soloist must never outlive the Daemon, even if the Daemon is SIGKILLed: ask the kernel to
-        // SIGTERM it when its parent dies. (Linux-only, like Soloist itself.)
+        // SIGTERM it when its parent dies. (Linux only: on macOS an orphan is stopped at the next start, `check_free`.)
         #[cfg(target_os = "linux")]
         unsafe {
             cmd.pre_exec(|| {
@@ -239,6 +235,25 @@ async fn keep_current(builds: Builds, url: String, days: watch::Receiver<Option<
 /// The wait before the next update check (`SINGULARITY_SOLOIST_CHECK_SECS`: a short interval for the pty harness).
 fn check_wait(failures: u32, days: &watch::Receiver<Option<u32>>) -> Duration {
     std::env::var("SINGULARITY_SOLOIST_CHECK_SECS").ok().and_then(|s| s.parse().ok()).map(Duration::from_secs).unwrap_or_else(|| update::next_check(failures, *days.borrow()))
+}
+
+/// Has this process lost the process that started it (its parent is now init or launchd)?
+fn orphaned(pid: u32) -> bool {
+    singularity_config::host::Host::this().parent_of(pid) == Some(1)
+}
+
+/// Stop an orphaned Soloist: asked first, then made to, within about 3 s.
+fn stop_orphan(pid: u32) {
+    let host = singularity_config::host::Host::this();
+    tracing::warn!("stopping Soloist {pid}, left running by a Daemon that was killed");
+    host.stop(pid, false);
+    for _ in 0..30 {
+        if host.name_of(pid).as_deref() != Some("soloist") {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    host.stop(pid, true);
 }
 
 /// Is a Soloist already running on this state directory? (Its pid file names a live `soloist` process.)

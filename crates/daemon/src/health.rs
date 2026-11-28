@@ -127,8 +127,8 @@ mod tests {
         assert!(with_app.contains(&app), "{app} not named in {with_app:?}");
     }
 
-    /// #98, Q102: Linux unpacks Soloist's builds with the `tar` crate, and nothing runs `pgrep`/`pkill` any more (the
-    /// Host finds and stops processes); only the macOS VM still runs `tar`. Named here even with every program
+    /// #98, Q102: Soloist's builds are unpacked with the `tar` crate, and nothing runs `pgrep`/`pkill` any more (the
+    /// Host finds and stops processes); `tar` went with the macOS VM (Q189). Named here even with every program
     /// missing.
     #[test]
     fn only_the_programs_the_daemon_runs_are_asked_for() {
@@ -141,11 +141,10 @@ mod tests {
             assert!(linux.iter().all(|t| !not_used.contains(&t.as_str())), "Linux, {kind:?}: {linux:?}");
             assert!(linux.iter().any(|t| t == "pactl") && linux.iter().any(|t| t == "parec"), "Linux, {kind:?}: {linux:?}");
             let mac = missing_tools_in(&dirs, true, kind);
-            assert!(mac.iter().any(|t| t == "tar"), "macOS, {kind:?}: {mac:?}");
-            assert!(mac.iter().all(|t| t != "pgrep" && t != "pkill"), "macOS, {kind:?}: {mac:?}");
+            assert!(mac.iter().all(|t| !not_used.contains(&t.as_str())), "macOS, {kind:?}: {mac:?}");
         }
         assert_eq!(missing_tools_in(&dirs, false, EngineKind::SpotifyApp).last().map(String::as_str), Some("spotify"));
-        assert_eq!(missing_tools_in(&dirs, true, EngineKind::SpotifyApp), ["tar", "open"]);
+        assert_eq!(missing_tools_in(&dirs, true, EngineKind::SpotifyApp), ["open"]);
     }
 
     #[test]

@@ -10,9 +10,7 @@
 //! - output: Soloist's verbose log is piped through the Daemon, which reads the stream format and build lifetime
 //!   from it and writes it on to `soloist.log` (the previous one is kept as `soloist.log.1`, never truncated)
 //! - Soloist's own state (pairing, cache) lives under `$XDG_DATA_HOME/singularity/soloist-state`
-//! - On macOS (D55) the same supervision runs Soloist inside the Soloist VM: only the Soloist runner differs
-//!   (`runner/vm.rs`): the build is kept current in the guest, Soloist is started in a session there, its WebSocket and
-//!   audio come through forwarded ports, and pairing is announced on the LAN while it waits for it
+//! - On an Apple Silicon Mac the same: Spotify's Mac build, as a local process (Q188)
 
 pub mod runner;
 mod session;
@@ -21,7 +19,6 @@ pub use runner::running_soloist;
 pub use session::{Action, Handover, Input, Now, Session, Stop};
 
 use crate::engine::{Engine, EngineEvent};
-use runner::vm::InVm;
 use runner::{Announcement, Launched, Local, Runner};
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde_json::Value;
@@ -58,17 +55,8 @@ impl SoloistEngine<Local> {
     }
 }
 
-impl SoloistEngine<InVm<crate::soloist_vm::Mac>> {
-    /// Soloist in the Soloist VM, as `device_name` on Connect (the Engine assembly names it); its audio also goes to
-    /// `feed`.
-    pub fn in_vm(device_name: String, feed: Arc<crate::tap::Feed>) -> SoloistEngine<InVm<crate::soloist_vm::Mac>> {
-        let data = SoloistEngine::from_env().data_dir().to_path_buf();
-        SoloistEngine { device_name, runner: InVm::new(crate::soloist_vm::Mac::new(&data, feed), data) }
-    }
-}
-
 impl<R: Runner> SoloistEngine<R> {
-    /// Soloist run by `runner`, as `device_name` on Connect (the tests' fake VM).
+    /// Soloist run by `runner`, as `device_name` on Connect (the tests' stand-in runners).
     pub fn with_runner(device_name: String, runner: R) -> SoloistEngine<R> {
         SoloistEngine { device_name, runner }
     }
@@ -253,10 +241,6 @@ impl<R: Runner> Engine for SoloistEngine<R> {
         Some(Box::new(self.clone()))
     }
 
-    fn soloist_in_vm(&self) -> bool {
-        self.runner.in_vm()
-    }
-
     fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<EngineEvent>) {
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let (ev_tx, ev_rx) = mpsc::channel(256);
@@ -327,7 +311,7 @@ async fn supervise<R: Runner>(engine: SoloistEngine<R>, mut cmd_rx: mpsc::Receiv
             continue;
         };
         status(&ev_tx, EngineStatus::Starting).await;
-        // Soloist isn't running: the best moment to put a staged build in place (and bring the VM up, on macOS)
+        // Soloist isn't running: the best moment to put a staged build in place
         if let Err(e) = runner.prepare(&say).await {
             status(&ev_tx, EngineStatus::Failed { message: e.to_string() }).await;
             runner.down().await;
@@ -378,7 +362,7 @@ async fn supervise<R: Runner>(engine: SoloistEngine<R>, mut cmd_rx: mpsc::Receiv
             }
             Err(e) => status(&ev_tx, EngineStatus::Failed { message: e.to_string() }).await,
         }
-        // what Soloist runs in may be what went away (the VM): the next round brings it up again
+        // what Soloist runs in may be what went away: the next round brings it up again
         if !runner.alive().await {
             runner.down().await;
         }

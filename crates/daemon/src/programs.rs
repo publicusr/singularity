@@ -15,8 +15,6 @@ use singularity_config::host::MACOS;
 /// A program the Daemon runs, or one the Client starts for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
-    /// macOS: unpacks the Soloist VM's image (Soloist's own builds are unpacked by the `tar` crate)
-    Tar,
     /// the Secret Service client behind the Linux keyring
     SecretTool,
     /// PipeWire's control tool and recorder (the audio tap, and the health check's output name)
@@ -37,12 +35,11 @@ impl Tool {
     /// The tools the Daemon uses on macOS (`macos`) or Linux, whatever the Engine; the health check names the ones it
     /// can't find. Processes are found and stopped through the Host, not `pgrep`/`pkill` (Q102).
     pub fn required(macos: bool) -> &'static [Tool] {
-        if macos { &[Tool::Tar] } else { &[Tool::SecretTool, Tool::Pactl, Tool::Parec] }
+        if macos { &[] } else { &[Tool::SecretTool, Tool::Pactl, Tool::Parec] }
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            Tool::Tar => "tar",
             Tool::SecretTool => "secret-tool",
             Tool::Pactl => "pactl",
             Tool::Parec => "parec",
@@ -98,7 +95,7 @@ pub fn command(prog: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
     c
 }
 
-/// [`command`] for the daemon's async spawns (Soloist, the VM's helpers, `tar`).
+/// [`command`] for the daemon's async spawns (Soloist).
 pub fn tokio_command(prog: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
     let mut c = tokio::process::Command::new(prog);
     c.env_remove(SECRET_ENV);
@@ -117,16 +114,16 @@ mod tests {
     #[test]
     fn fixed_locations_win_over_anything_else() {
         let scratch = tempfile::tempdir().unwrap();
-        let fake = scratch.path().join("tar");
+        let fake = scratch.path().join("open");
         std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let dirs = [scratch.path().to_str().unwrap()];
-        assert_eq!(Tool::Tar.find_in(&dirs).as_deref(), Some(fake.as_path()), "a scratch directory is usable when it is searched");
+        assert_eq!(Tool::Open.find_in(&dirs).as_deref(), Some(fake.as_path()), "a scratch directory is usable when it is searched");
         // the real lookup never looks there: only `Tool::DIRS` is consulted
-        if let Some(found) = Tool::Tar.find() {
+        if let Some(found) = Tool::Open.find() {
             assert_ne!(found, fake, "PATH and a scratch directory are ignored");
-            assert!(Tool::DIRS.iter().any(|d| found == Path::new(d).join("tar")), "{} is not a fixed location", found.display());
+            assert!(Tool::DIRS.iter().any(|d| found == Path::new(d).join("open")), "{} is not a fixed location", found.display());
         }
     }
 

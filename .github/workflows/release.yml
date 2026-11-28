@@ -23,7 +23,8 @@ jobs:
           # Linux on ARM, built natively on GitHub's arm64 runner (the oldest one, for the same glibc reason)
           - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-          - os: macos-14
+          # the owner's Mac, a self-hosted runner (#85, Q195): the draft release waits for it, so it always has all three
+          - os: [self-hosted, macbook]
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
@@ -31,7 +32,11 @@ jobs:
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libasound2-dev
-      - run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }} && rustup default stable
+      - if: runner.os == 'macOS'
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      # on the owner's Mac the toolchain is picked per job (RUSTUP_TOOLCHAIN), never by changing its default
+      - run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }} && if [ "$RUNNER_OS" = Linux ]; then rustup default stable; else echo RUSTUP_TOOLCHAIN=stable >> "$GITHUB_ENV"; fi
+        shell: bash
       - run: cargo build --release --locked --target ${{ matrix.target }} -p singularityd -p singularity
       - name: Package
         shell: bash

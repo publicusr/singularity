@@ -632,7 +632,7 @@ fn without_demo_mode_everything_shows_as_before() {
 }
 
 fn connected(app: &mut crate::app::App, demo: bool, account: &str) {
-    app.receive(crate::conn::ConnEvent::Connected { daemon_version: "1".into(), engine: Default::default(), soloist_in_vm: false, demo, account: account.into() });
+    app.receive(crate::conn::ConnEvent::Connected { daemon_version: "1".into(), engine: Default::default(), demo, account: account.into() });
 }
 
 /// Review of #141: a Daemon too old to know demo mode would answer with the real log, and delete it: until the

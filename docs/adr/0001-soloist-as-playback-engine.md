@@ -38,3 +38,10 @@ and x86_64 Windows (`docs/research/2026-11-reverify.md`). Also, only the key nee
 accounts can listen (lossless and crossfade stay Premium). Singularity's Mac Engines are unchanged for v1.0
 (librespot by default, Soloist in the VM, the app); whether the Mac build replaces the VM is for the Mac session
 (#85). The decision above stands.
+
+## Note (2026-11-28, #85: Q188–Q192)
+
+Soloist now runs natively on Apple Silicon Macs: the Daemon downloads Spotify's `osx_arm64` build and runs it as the
+same local process as on Linux, and `auto` means Soloist there too (librespot only on an Intel Mac, which has no
+build). Its sound is heard through a Core Audio process tap. The Soloist VM (D55) is removed. "Linux only" now holds
+for neither Soloist nor Singularity. The decision above stands.

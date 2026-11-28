@@ -60,10 +60,6 @@ pub trait Engine: Send + 'static {
     fn kind(&self) -> singularity_proto::EngineKind {
         singularity_proto::EngineKind::Soloist
     }
-    /// Does Soloist run in the Soloist VM? (Clients word their setup for it: Q94.)
-    fn soloist_in_vm(&self) -> bool {
-        false
-    }
     /// A fresh Engine of the same kind, for the Daemon's supervisor to start after this one's task ended (A1).
     /// `None`: this one can't be built again (a stand-in in a test): the Daemon only reports it.
     fn respawn(&self) -> Option<Box<dyn Engine>> {

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Type-check the whole workspace for Linux, x86_64 and aarch64 (D73), from a Mac, so macOS work can't break the Linux
 # build (D49).
-# Once: rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu && brew install zig cargo-zigbuild openssl@3
+# Once: rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu && brew install zig cargo-zigbuild openssl@3 pkgconf
 # (OpenSSL's headers are only read and ALSA is only named: nothing is linked.)
 set -e
 cd "$(dirname "$0")/.."
@@ -21,6 +21,7 @@ need() {
 }
 command -v zig >/dev/null 2>&1 || need "zig is missing"
 command -v cargo-zigbuild >/dev/null 2>&1 || need "cargo-zigbuild is missing"
+command -v pkg-config >/dev/null 2>&1 || need "pkg-config is missing (brew install pkgconf)"
 installed=$(rustup target list --installed 2>/dev/null || true)
 for target in $targets; do
   echo "$installed" | grep -qx "$target" || need "the Rust target $target isn't installed"

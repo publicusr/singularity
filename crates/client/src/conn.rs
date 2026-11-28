@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 pub enum ConnEvent {
     Connecting,
     /// `demo`: the Daemon confirmed demo mode (D90), `account`: the saved login's username it gave a demo Client
-    Connected { daemon_version: String, engine: proto::EngineKind, soloist_in_vm: bool, demo: bool, account: String },
+    Connected { daemon_version: String, engine: proto::EngineKind, demo: bool, account: String },
     /// the running Daemon is older than the `singularityd` on disk; it's being replaced
     Updating,
     Incompatible(String),
@@ -130,7 +130,7 @@ async fn run_with(path: std::path::PathBuf, mut cmd_rx: mpsc::Receiver<Command>,
             continue;
         }
         match proto::read_msg::<_, DaemonMsg>(&mut rd).await {
-            Ok(Some(DaemonMsg::Welcome { daemon_version, started_unix_ms, engine, soloist_in_vm, demo, account, service, .. })) => {
+            Ok(Some(DaemonMsg::Welcome { daemon_version, started_unix_ms, engine, demo, account, service, .. })) => {
                 supervised = service;
                 // after a rebuild the old Daemon keeps running; ask it to make way for the new binary (once)
                 if !replaced && (launch.outdated)(started_unix_ms) {
@@ -155,7 +155,7 @@ async fn run_with(path: std::path::PathBuf, mut cmd_rx: mpsc::Receiver<Command>,
                     continue;
                 }
                 starts.connected();
-                let _ = ev_tx.send(ConnEvent::Connected { daemon_version, engine, soloist_in_vm, demo, account }).await;
+                let _ = ev_tx.send(ConnEvent::Connected { daemon_version, engine, demo, account }).await;
             }
             Ok(Some(DaemonMsg::Incompatible { message, .. })) => {
                 let _ = ev_tx.send(ConnEvent::Incompatible(message)).await;
@@ -346,42 +346,6 @@ fn start_daemon() -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// Q94 end to end: a real Daemon whose Soloist runs in the Soloist VM says so in its welcome, and the App takes it.
-    #[tokio::test]
-    async fn the_daemons_word_on_the_soloist_vm_reaches_the_app() {
-        /// An Engine that says its Soloist runs in the VM, and does nothing else.
-        struct SoloistInVm;
-        impl singularityd::engine::Engine for SoloistInVm {
-            fn spawn(self: Box<Self>) -> (mpsc::Sender<Command>, mpsc::Receiver<singularityd::engine::EngineEvent>) {
-                let ((cmd_tx, cmd_rx), (ev_tx, ev_rx)) = (mpsc::channel(8), mpsc::channel(8));
-                // kept for the test's length: a closed Engine would be reported, not the point here
-                std::mem::forget((cmd_rx, ev_tx));
-                (cmd_tx, ev_rx)
-            }
-            fn soloist_in_vm(&self) -> bool {
-                true
-            }
-        }
-        let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-        let path = dir.path().join("s").join("daemon.sock");
-        let listener = singularityd::bind(&path).unwrap();
-        tokio::spawn(singularityd::serve(listener, Box::new(SoloistInVm), None, None));
-        let (_cmd_tx, cmd_rx) = mpsc::channel(8);
-        let (ev_tx, mut ev_rx) = mpsc::channel(64);
-        tokio::spawn(run_at(path, cmd_rx, ev_tx));
-        let mut app = crate::app::App::new(None);
-        assert!(!app.soloist_in_vm);
-        loop {
-            let ev = tokio::time::timeout(Duration::from_secs(10), ev_rx.recv()).await.expect("connected").expect("the connection runs");
-            let connected = matches!(ev, ConnEvent::Connected { .. });
-            app.receive(ev);
-            if connected {
-                break;
-            }
-        }
-        assert!(app.soloist_in_vm, "the setup wizard words the Soloist step for the VM");
-    }
-
     /// The pump (D82): a frame used to be read inside the `select!`, so a command sent while a frame was half
     /// in threw the half away, and the stream fell out of step ("frame too large", garbage, then a reconnect).
     #[tokio::test]
@@ -474,7 +438,7 @@ mod tests {
         let (s, _) = listener.accept().await.unwrap();
         let (mut rd, mut wr) = s.into_split();
         let _hello = proto::read_msg::<_, ClientMsg>(&mut rd).await;
-        let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: "stand-in".into(), started_unix_ms, engine: proto::EngineKind::default(), soloist_in_vm: false, demo: false, account: String::new(), service };
+        let welcome = DaemonMsg::Welcome { protocol: PROTOCOL_VERSION, daemon_version: "stand-in".into(), started_unix_ms, engine: proto::EngineKind::default(), demo: false, account: String::new(), service };
         proto::write_msg(&mut wr, &welcome).await.unwrap();
         match quits {
             Quits::OnShutdown => {

@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 /// needs them.
 pub struct AssemblyFacts<'a> {
     pub macos: bool,
-    /// a CPU Spotify ships Soloist for (x86_64, arm64: D73)
+    /// an OS and CPU Spotify ships Soloist for (Linux on x86_64 and arm64: D73; Apple Silicon Macs: Q188)
     pub soloist_cpu: bool,
     /// this computer's name (what the Spotify app registers under)
     pub computer: &'a dyn Fn() -> String,
@@ -45,10 +45,8 @@ impl AssemblyFacts<'static> {
 pub enum Plan {
     /// `--fake-engine`: a pretend player for UI work and tests
     Fake,
-    /// Soloist on this computer; `cache_mb` is its `--cache-size` (0: no limit)
+    /// Soloist on this computer (Linux; Apple Silicon Macs, Q188); `cache_mb` is its `--cache-size` (0: no limit)
     Soloist { cache_mb: u32 },
-    /// macOS: Soloist in the Soloist VM (D55), its audio played and tapped by the Daemon; the VM keeps its own cache
-    SoloistVm,
     /// the official app, driven over Connect; `start_app`: find and start it (off in tests)
     SpotifyApp { start_app: bool },
     /// librespot inside the Daemon
@@ -60,10 +58,10 @@ pub enum Plan {
 pub enum Tap {
     /// the fake Engine's synthetic groove
     Synthetic,
-    /// the samples of an Engine that plays from this Daemon (librespot, the Soloist VM)
+    /// the samples of an Engine that plays from this Daemon (librespot)
     EngineFeed,
-    /// macOS: a Core Audio process tap on the Spotify app (#67)
-    AppProcess,
+    /// macOS: a Core Audio process tap on the Engine's process (the Spotify app, #67; Soloist, Q191)
+    Process(StreamOf),
     /// Linux: the Engine's PipeWire stream
     PipeWire(StreamOf),
 }
@@ -93,8 +91,8 @@ pub struct Assembly {
 }
 
 /// Decide the Engine: `--fake-engine`, else `SINGULARITY_ENGINE=soloist|spotify-app|librespot` (tests pin it,
-/// whatever the OS), else config.toml's `[engine] kind` (`auto`: Soloist on Linux, librespot on macOS and on CPUs
-/// without Soloist). `env` reads an environment variable.
+/// whatever the OS), else config.toml's `[engine] kind` (`auto`: Soloist where Spotify ships it, Linux on x86_64 and
+/// arm64 and Apple Silicon Macs; librespot elsewhere, an Intel Mac included). `env` reads an environment variable.
 pub fn assemble(config: Read<Config>, args: &[String], env: impl Fn(&str) -> Option<String>, facts: &AssemblyFacts) -> Assembly {
     let mut problems = config.problems;
     let choice = config.value.engine;
@@ -108,7 +106,7 @@ pub fn assemble(config: Read<Config>, args: &[String], env: impl Fn(&str) -> Opt
             if let Some(v) = other.filter(|v| !v.is_empty()) {
                 problems.push(format!("SINGULARITY_ENGINE={v} isn't known (soloist, spotify-app or librespot); using config.toml's"));
             }
-            Some(choice.kind.resolved_on(facts.macos, facts.soloist_cpu))
+            Some(choice.kind.resolved_on(facts.soloist_cpu))
         }
     };
     let device = choice.device.trim();
@@ -117,22 +115,20 @@ pub fn assemble(config: Read<Config>, args: &[String], env: impl Fn(&str) -> Opt
         None => (Plan::Fake, Identity::default(), Tap::Synthetic),
         Some(EngineKind::SpotifyApp) => {
             let identity = Identity { device_name: named(facts.computer), via_connect: true, version: (facts.app_version)(), player: "the Spotify app" };
-            let tap = if facts.macos { Tap::AppProcess } else { Tap::PipeWire(StreamOf::SpotifyApp) };
+            let tap = if facts.macos { Tap::Process(StreamOf::SpotifyApp) } else { Tap::PipeWire(StreamOf::SpotifyApp) };
             (Plan::SpotifyApp { start_app: env("SINGULARITY_START_APP").as_deref() != Some("0") }, identity, tap)
         }
         Some(EngineKind::Librespot) => {
             let identity = Identity { device_name: named(&|| format!("Singularity on {}", (facts.computer)())), via_connect: true, version: String::new(), player: "librespot" };
             (Plan::Librespot, identity, Tap::EngineFeed)
         }
-        // Soloist (Auto is resolved above): in the VM on macOS, where its audio comes to the Daemon, which plays it and
-        // taps it; SINGULARITY_SOLOIST=local is a local stand-in instead, as the pty harness's tests use on any OS. The
-        // VM's default name sets it apart from a Linux machine's "Singularity" and this Mac's librespot, which can
-        // linger in the device list after a switch, as devices are found by name.
+        // Soloist (Auto is resolved above) on this computer: on macOS Spotify's Mac build (Q188), its sound tapped where
+        // it goes, in Core Audio (Q191). A Mac's default name sets it apart from a Linux machine's "Singularity" and
+        // this Mac's librespot, which can linger in the device list after a switch, as devices are found by name.
         Some(_) => {
-            let in_vm = facts.macos && env("SINGULARITY_SOLOIST").as_deref() != Some("local");
-            let device_name = if in_vm { named(&|| format!("Singularity on {} (lossless)", (facts.computer)())) } else { named(&|| crate::soloist::DEVICE_NAME.into()) };
-            let tap = if in_vm { Tap::EngineFeed } else { Tap::PipeWire(StreamOf::Soloist) };
-            (if in_vm { Plan::SoloistVm } else { Plan::Soloist { cache_mb: choice.soloist_cache_mb() } }, Identity { device_name, ..Identity::default() }, tap)
+            let device_name = if facts.macos { named(&|| format!("Singularity on {} (lossless)", (facts.computer)())) } else { named(&|| crate::soloist::DEVICE_NAME.into()) };
+            let tap = if facts.macos { Tap::Process(StreamOf::Soloist) } else { Tap::PipeWire(StreamOf::Soloist) };
+            (Plan::Soloist { cache_mb: choice.soloist_cache_mb() }, Identity { device_name, ..Identity::default() }, tap)
         }
     };
     let catalogue = match args.iter().position(|a| a == "--fake-catalogue").and_then(|i| args.get(i + 1)) {
@@ -150,8 +146,7 @@ impl Assembly {
     }
 
     /// Make the Engine (commands go to `catalogue`, if there is one) and the tap's source. Only for an assembly made
-    /// with [`AssemblyFacts::this`]: off macOS the Soloist VM can't start (its Engine says so) and there is no app
-    /// process tap (none).
+    /// with [`AssemblyFacts::this`]: off macOS there is no process tap (none).
     pub fn build(&self, catalogue: Option<mpsc::Sender<CatCmd>>) -> (Box<dyn Engine>, Option<TapSource>) {
         let identity = self.identity.clone();
         // the samples of an Engine that plays from this Daemon, for the tap
@@ -167,10 +162,6 @@ impl Assembly {
                 tracing::info!("Engine: the Spotify app, {:?} on Connect", identity.device_name);
                 Box::new(crate::app_engine::AppEngine { identity, catalogue, start_app })
             }
-            Plan::SoloistVm => {
-                tracing::info!("Engine: Soloist in the Soloist VM, {:?} on Connect", identity.device_name);
-                Box::new(crate::soloist::SoloistEngine::in_vm(identity.device_name, feed.insert(crate::tap::Feed::new()).clone()))
-            }
             Plan::Soloist { cache_mb } => {
                 Box::new(crate::soloist::SoloistEngine::local(identity.device_name, cache_mb))
             }
@@ -179,9 +170,9 @@ impl Assembly {
             Tap::Synthetic => Some(TapSource::Synthetic),
             Tap::EngineFeed => feed.map(TapSource::Feed),
             #[cfg(target_os = "macos")]
-            Tap::AppProcess => Some(TapSource::App(crate::tap::Feed::new())),
+            Tap::Process(of) => Some(TapSource::Process(of, crate::tap::Feed::new())),
             #[cfg(not(target_os = "macos"))]
-            Tap::AppProcess => None,
+            Tap::Process(_) => None,
             Tap::PipeWire(of) => Some(TapSource::PipeWire(of)),
         });
         (engine, tap)
@@ -229,21 +220,21 @@ mod tests {
         assert_eq!((name("Kitchen"), name("  Kitchen  "), name(""), name("   ")), ("Kitchen".into(), "Kitchen".into(), "Singularity".into(), "Singularity".into()));
     }
 
+    /// Q188, Q190, Q191: Soloist on an Apple Silicon Mac, `auto` too, runs here and is tapped in Core Audio.
     #[test]
-    fn soloist_on_macos_runs_in_the_vm_and_its_audio_comes_to_the_daemon() {
-        let a = assemble(config("kind = \"soloist\""), &[], no_env, &mac());
-        assert_eq!((a.plan, a.tap), (Plan::SoloistVm, Some(Tap::EngineFeed)));
-        assert_eq!(a.identity.device_name, "Singularity on desk (lossless)");
+    fn soloist_on_macos_runs_here_and_is_tapped_in_core_audio() {
+        for kind in ["soloist", "auto"] {
+            let a = assemble(config(&format!("kind = \"{kind}\"")), &[], no_env, &mac());
+            assert_eq!((a.plan, a.tap), (Plan::Soloist { cache_mb: 5120 }, Some(Tap::Process(StreamOf::Soloist))), "{kind}");
+            assert_eq!(a.identity.device_name, "Singularity on desk (lossless)");
+        }
         let named = assemble(config("kind = \"soloist\"\ndevice = \"Den\""), &[], no_env, &mac());
         assert_eq!(named.identity.device_name, "Den");
-        // the pty harness's local stand-in, on any OS
-        let local = assemble(config("kind = \"soloist\""), &[], with(&[("SINGULARITY_SOLOIST", "local")]), &mac());
-        assert_eq!((local.plan, local.tap, local.identity.device_name.as_str()), (Plan::Soloist { cache_mb: 5120 }, Some(Tap::PipeWire(StreamOf::Soloist)), "Singularity"));
     }
 
     #[test]
-    fn auto_is_librespot_on_macos_and_where_soloist_has_no_build() {
-        for facts in [mac(), AssemblyFacts { soloist_cpu: false, ..linux() }] {
+    fn auto_is_librespot_where_soloist_has_no_build() {
+        for facts in [AssemblyFacts { soloist_cpu: false, ..mac() }, AssemblyFacts { soloist_cpu: false, ..linux() }] {
             let a = assemble(config("kind = \"auto\""), &[], no_env, &facts);
             assert_eq!((a.plan, a.tap), (Plan::Librespot, Some(Tap::EngineFeed)));
             assert_eq!((a.identity.device_name.as_str(), a.identity.via_connect, a.identity.player), ("Singularity on desk", true, "librespot"));
@@ -256,7 +247,7 @@ mod tests {
         assert_eq!((a.plan, a.tap), (Plan::SpotifyApp { start_app: true }, Some(Tap::PipeWire(StreamOf::SpotifyApp))));
         assert_eq!((a.identity.device_name.as_str(), a.identity.version.as_str(), a.identity.player), ("desk", "1.2.3", "the Spotify app"));
         let m = assemble(config("kind = \"spotify-app\"\ndevice = \"Den\""), &[], with(&[("SINGULARITY_START_APP", "0")]), &mac());
-        assert_eq!((m.plan, m.tap, m.identity.device_name.as_str()), (Plan::SpotifyApp { start_app: false }, Some(Tap::AppProcess), "Den"));
+        assert_eq!((m.plan, m.tap, m.identity.device_name.as_str()), (Plan::SpotifyApp { start_app: false }, Some(Tap::Process(StreamOf::SpotifyApp)), "Den"));
     }
 
     #[test]
