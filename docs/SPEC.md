@@ -177,9 +177,11 @@ audio, and looks spectacular.
   - Start-up login (#168, Q184): one that can't reach Spotify (the network isn't up yet after boot) is tried again in
     the background, with or without a Client, after about 2 s, then twice as long each time up to 1 min between tries
     (a jitter takes up to a quarter off a wait), with the login read at start (the keyring isn't asked again). After
-    about 10 min of failures it stops and the login error stays; then each time a Client connects or asks to play
-    (play, play/pause, play from a list) it tries once more, never in a loop. A try that works fetches Home and the
-    library. A login Spotify refuses (bad or revoked credentials) isn't tried again: its error shows at once.
+    about 10 min of failures it stops and the login error stays; then a Client connecting or asking to play (play,
+    play/pause, play from a list) while the Catalogue isn't ready tries once more, never in a loop (asks within 5 s
+    of a try make none). A try that works fetches Home and the library. A login Spotify refuses ("login failed":
+    bad or revoked credentials) isn't tried again: its error shows at once. A connection the computer itself blocks
+    (a firewall or a VPN's kill switch at boot) counts as not reaching Spotify, and is tried again.
 - **ConnectRemote** (D12): device list, transfer, remote control of any device, per-device quality (D17, to verify).
 - **AudioTap** (D16): captures only the Engine's stream (PipeWire on Linux; a Core Audio process tap on the Spotify app
   on macOS; librespot's and the Soloist VM's samples in-process), runs FFT,

@@ -940,7 +940,7 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     let _demo_client = demo.then(|| DemoClient::new(hub.clone()));
     // while one is here, a session Spotify ended is replaced in the background (Q171)
     let _here = catalogue::ClientHere::new();
-    // and a start-up login that stopped trying is tried once more (#168)
+    // and a start-up login that stopped trying is tried once more (#168), if Spotify isn't ready
     login_wanted(&hub).await;
     // everything to this Client goes through one writer; a Client that takes nothing for WRITE_DEADLINE has stopped
     // reading, and its session ends (#71: it used to stay, blocked, for as long as it was connected)
@@ -1023,7 +1023,10 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     let mut spectrum: Option<tokio::task::JoinHandle<()>> = None;
     let reading = async {
         while let Some(msg) = proto::read_msg::<_, ClientMsg>(&mut rd).await? {
-            // asked to play: so is a start-up login that stopped trying (#168), first, so the play can wait for it
+            // asked to play: a start-up login that stopped trying is tried once more (#168). It's asked first, but the
+            // play doesn't wait for it: Play and TogglePlay go to the Engine (librespot's isn't set up until the login
+            // works), and Connect waits for a PlayFrom only if browsing already marked the login under way when it takes
+            // it; otherwise that one fails at once as "not logged in" and the next press finds the login done (or not)
             if let ClientMsg::Command(Command::Play { .. } | Command::TogglePlay | Command::PlayFrom { .. }) = &msg {
                 login_wanted(&hub).await;
             }
@@ -1133,10 +1136,12 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     result
 }
 
-/// A Client connected or asked to play: the Catalogue tries a start-up login that stopped trying once more (#168).
+/// A Client connected or asked to play while the Catalogue isn't ready (`Unavailable`): it tries a start-up login that
+/// stopped trying once more (#168). Ready, or logged out, nothing is sent: browsing and searches don't see it.
 async fn login_wanted(hub: &Hub) {
-    if let Some(c) = &hub.catalogue {
-        let _ = c.send(CatCmd::LoginWanted).await;
+    let unready = matches!(*hub.catalogue_status.lock().await, Some(proto::CatalogueStatus::Unavailable { .. }));
+    if let (true, Some(c)) = (unready, &hub.catalogue) {
+        let _ = c.send(CatCmd::LoginWanted(std::time::Instant::now())).await;
     }
 }
 
@@ -1357,14 +1362,13 @@ mod tests {
         assert_eq!(hub.playback(), ours, "the bar is back on this computer");
     }
 
-    /// #168: a Client connecting, and a Client asking to play, each give the Catalogue a `LoginWanted` (a start-up
-    /// login whose tries ran out is tried once more); the play comes after it, so it can wait for that login. Other
-    /// commands don't.
-    #[tokio::test]
-    async fn a_client_connecting_or_asking_to_play_wants_the_login() {
+    /// What the Catalogue is sent, by name, for a Client that connects and asks for Home, then to play from a list,
+    /// while the Catalogue's status is `status`.
+    async fn sent_for_a_client(status: proto::CatalogueStatus, n: usize) -> Vec<String> {
         let mut hub = Arc::into_inner(test_hub()).expect("one owner");
         let (tx, mut cat) = mpsc::channel(16);
         hub.catalogue = Some(tx);
+        hub.catalogue_status = Mutex::new(Some(status));
         let hub = Arc::new(hub);
         let (mut client, daemon) = UnixStream::pair().unwrap();
         tokio::spawn(client_session(daemon, hub.clone()));
@@ -1374,11 +1378,23 @@ mod tests {
             proto::write_msg(&mut client, &ClientMsg::Command(cmd)).await.unwrap();
         }
         let mut got = vec![];
-        for _ in 0..4 {
+        for _ in 0..n {
             let c = tokio::time::timeout(std::time::Duration::from_secs(2), cat.recv()).await.expect("the Catalogue wasn't told").unwrap();
             got.push(format!("{c:?}").split(|ch: char| !ch.is_alphanumeric()).next().unwrap_or_default().to_string());
         }
-        assert_eq!(got, ["LoginWanted", "Home", "LoginWanted", "PlayFrom"]);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(200), cat.recv()).await.is_err(), "more was sent: {got:?}");
+        got
+    }
+
+    /// #168: while the Catalogue isn't ready, a Client connecting and a Client asking to play each give it a
+    /// `LoginWanted` (a start-up login whose tries ran out is tried once more), sent ahead of the play; other commands
+    /// don't. Ready, nothing is sent, so searches never wait behind one (#126).
+    #[tokio::test]
+    async fn a_client_connecting_or_asking_to_play_wants_the_login() {
+        let unready = proto::CatalogueStatus::Unavailable { message: "couldn't reach Spotify".into() };
+        assert_eq!(sent_for_a_client(unready, 4).await, ["LoginWanted", "Home", "LoginWanted", "PlayFrom"]);
+        let ready = proto::CatalogueStatus::Ready { username: "someone".into(), country: "XX".into(), premium: true };
+        assert_eq!(sent_for_a_client(ready, 2).await, ["Home", "PlayFrom"]);
     }
 
     /// A1: a background task that panics is named in the health view and started again.

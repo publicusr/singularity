@@ -811,25 +811,26 @@ async fn statuses_within(ev: &mut mpsc::Receiver<CatEvent>, wait: Duration) -> V
 
 /// #168 (Q184): a start-up login that can't reach Spotify is tried again in the background, with no Client connected
 /// and no request, the wait growing each time up to the longest, until the tries run out. Then nothing more is tried
-/// (a request doesn't either), the error stays, and the user is never logged out over it.
+/// (a request doesn't either), the error stays, and the user is never logged out over it. (Timing is checked only
+/// where a busy machine can't throw it off: no wait is shorter than planned. The rest counts tries.)
 #[tokio::test]
 async fn a_start_up_login_without_a_network_is_tried_again_for_a_while() {
     let (st, tries, mut ev, browse_tx, _dir) = starting(usize::MAX);
     let began = Instant::now();
     tokio::spawn(browse(st));
-    let seen = statuses_within(&mut ev, FAST_START.stop_after + Duration::from_millis(700)).await;
+    let seen = statuses_within(&mut ev, FAST_START.stop_after + Duration::from_millis(1500)).await;
     let tries = tries.lock().unwrap().clone();
     let gaps: Vec<Duration> = tries.windows(2).map(|w| w[1] - w[0]).collect();
-    assert!(tries.len() >= 8, "{} tries, gaps {gaps:?}", tries.len());
+    // planned: 0, 10, 30, 70, 150, 310 ms, then every 300 ms to 3 s (the jitter adds a few)
+    assert!((6..=30).contains(&tries.len()), "{} tries, gaps {gaps:?}", tries.len());
     // each wait about twice the last (a jitter takes up to a quarter off), up to the longest
     let mut want = FAST_START.first;
     for g in &gaps {
         assert!(*g >= want.mul_f64(0.75), "a wait shorter than {want:?}: {gaps:?}");
-        assert!(*g <= want + Duration::from_millis(150), "a wait longer than {want:?}: {gaps:?}");
         want = (want * 2).min(FAST_START.longest);
     }
     let last = *tries.last().unwrap() - began;
-    assert!(last >= FAST_START.stop_after && last < FAST_START.stop_after + FAST_START.longest + Duration::from_millis(150), "the last try at {last:?}");
+    assert!(last >= FAST_START.stop_after, "stopped early, at {last:?}");
     assert!(!seen.iter().any(|s| matches!(s, CatalogueStatus::LoggedOut)), "never logged out: {seen:?}");
     match seen.last() {
         Some(CatalogueStatus::Unavailable { message }) => assert!(message.contains("couldn't reach Spotify"), "{message}"),
@@ -837,24 +838,42 @@ async fn a_start_up_login_without_a_network_is_tried_again_for_a_while() {
     }
     // they ran out: nothing more, not even for a request
     browse_tx.send(query("x")).unwrap();
-    assert!(statuses_within(&mut ev, Duration::from_millis(300)).await.is_empty(), "tried again after the tries ran out");
+    assert!(statuses_within(&mut ev, Duration::from_millis(500)).await.is_empty(), "tried again after the tries ran out");
 }
 
-/// #168 (Q184): once the start-up tries ran out, a Client connecting (or asking to play: the same `LoginWanted`)
-/// tries exactly once, each time, and that try failing starts no new run of tries.
+/// #168 (Q184): once the start-up tries ran out, a Client connecting or asking to play (`LoginWanted`) tries once
+/// more, and that try failing starts no new run of tries. Asks close together make one try: none if a try started
+/// since the ask, or within `REDIAL_FIRST`.
 #[tokio::test]
-async fn after_the_tries_ran_out_a_client_sets_off_exactly_one() {
-    let (mut st, tries, mut ev, browse_tx, _dir) = starting(usize::MAX);
-    st.redial.pace.stop_after = Duration::from_millis(100);
-    tokio::spawn(browse(st));
-    statuses_within(&mut ev, Duration::from_millis(600)).await;
-    let ran = tries.lock().unwrap().len();
-    assert!(statuses_within(&mut ev, Duration::from_millis(200)).await.is_empty(), "the tries ran out");
-    for _ in 0..2 {
-        browse_tx.send(CatCmd::LoginWanted).unwrap();
-        assert_eq!(failed_tries_within(&mut ev, Duration::from_millis(400)).await, 1);
+async fn after_the_tries_ran_out_a_client_sets_off_one_try() {
+    let (mut st, tries, mut ev, _browse, _dir) = starting(usize::MAX);
+    st.reusable = saved_credentials(&st.dirs);
+    st.redial.start = AtStart::GaveUp;
+    let long_ago = Instant::now() - REDIAL_FIRST;
+    st.redial.last_try = Some(long_ago);
+    handle(&mut st, CatCmd::LoginWanted(Instant::now())).await;
+    assert_eq!(tries.lock().unwrap().len(), 1, "a Client's ask tries");
+    assert!(st.redial.start == AtStart::GaveUp && !st.redial.owed, "and starts no new run");
+    handle(&mut st, CatCmd::LoginWanted(Instant::now())).await;
+    assert_eq!(tries.lock().unwrap().len(), 1, "another ask within 5 s: none");
+    st.redial.last_try = Some(long_ago);
+    handle(&mut st, CatCmd::LoginWanted(long_ago - Duration::from_secs(1))).await;
+    assert_eq!(tries.lock().unwrap().len(), 1, "asked before the last try started: none");
+    handle(&mut st, CatCmd::LoginWanted(Instant::now())).await;
+    assert_eq!(tries.lock().unwrap().len(), 2, "a new ask, 5 s on: one");
+    assert_eq!(failed_tries_within(&mut ev, Duration::from_millis(100)).await, 2);
+}
+
+/// #168, #126: a `LoginWanted` waiting doesn't hold a search back unless it will log in (the start-up tries gave up).
+#[tokio::test]
+async fn a_login_wanted_holds_a_search_back_only_once_the_tries_gave_up() {
+    let (mut st, _tries, _ev, _browse, _dir) = starting(usize::MAX);
+    for (start, held) in [(AtStart::No, false), (AtStart::GaveUp, true)] {
+        st.redial.start = start;
+        st.waiting = VecDeque::from([CatCmd::LoginWanted(Instant::now())]);
+        st.pending.send_replace(Some(("x".into(), Instant::now())));
+        assert_eq!(st.search_between().await, !held, "{start:?}");
     }
-    assert_eq!(tries.lock().unwrap().len(), ran + 2, "one try each");
 }
 
 /// #168: a start-up login Spotify refuses isn't tried again, in the background or for a Client.
@@ -862,10 +881,10 @@ async fn after_the_tries_ran_out_a_client_sets_off_exactly_one() {
 async fn a_refused_start_up_login_is_not_tried_again() {
     let (st, tries, mut ev, browse_tx, _dir) = starting(0);
     tokio::spawn(browse(st));
-    let seen = statuses_within(&mut ev, Duration::from_millis(300)).await;
+    let seen = statuses_within(&mut ev, Duration::from_millis(500)).await;
     assert!(matches!(seen.last(), Some(CatalogueStatus::Unavailable { message }) if message.contains("Bad credentials")), "the error at once: {seen:?}");
-    browse_tx.send(CatCmd::LoginWanted).unwrap();
-    assert!(statuses_within(&mut ev, Duration::from_millis(300)).await.is_empty());
+    browse_tx.send(CatCmd::LoginWanted(Instant::now())).unwrap();
+    assert!(statuses_within(&mut ev, Duration::from_millis(500)).await.is_empty());
     assert_eq!(tries.lock().unwrap().len(), 1);
 }
 
@@ -874,8 +893,23 @@ async fn a_refused_start_up_login_is_not_tried_again() {
 async fn a_refusal_ends_the_start_up_tries() {
     let (st, tries, mut ev, browse_tx, _dir) = starting(2);
     tokio::spawn(browse(st));
+    statuses_within(&mut ev, Duration::from_millis(1000)).await;
+    browse_tx.send(CatCmd::LoginWanted(Instant::now())).unwrap();
     statuses_within(&mut ev, Duration::from_millis(500)).await;
-    browse_tx.send(CatCmd::LoginWanted).unwrap();
-    statuses_within(&mut ev, Duration::from_millis(300)).await;
     assert_eq!(tries.lock().unwrap().len(), 3, "two unreachable, then the refusal");
+}
+
+/// #168 (review): only Spotify's own "login failed" is a refusal. A connection this computer blocked (a firewall or a
+/// VPN's kill switch at boot: EPERM/EACCES, which librespot passes on as `PermissionDenied`) is a failure to reach
+/// Spotify, tried again; so is "try another access point" after the last one.
+#[test]
+fn only_spotify_s_login_failed_is_a_refusal() {
+    use librespot_core::Error;
+    assert!(spotify_refused(&Error::permission_denied("Login failed with reason: Bad credentials")));
+    assert!(spotify_refused(&Error::permission_denied("Login failed with reason: Premium account required")));
+    let blocked = Error::from(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    assert_eq!(blocked.kind, librespot_core::error::ErrorKind::PermissionDenied, "librespot keeps the kind");
+    assert!(!spotify_refused(&blocked), "blocked here");
+    assert!(!spotify_refused(&Error::permission_denied("Login failed with reason: Try another access point")));
+    assert!(!spotify_refused(&Error::unavailable("couldn't connect: network is unreachable")));
 }

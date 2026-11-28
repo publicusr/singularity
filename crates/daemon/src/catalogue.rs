@@ -96,8 +96,9 @@ pub enum CatCmd {
     Query { op: String, vars: Value, reply: tokio::sync::oneshot::Sender<anyhow::Result<Value>> },
     /// Connect found the session ended (D79): browsing, which owns the login, logs in again
     Reconnect,
-    /// a Client connected or asked to play (#168): a start-up login that stopped trying is tried once more
-    LoginWanted,
+    /// a Client connected or asked to play while the Catalogue wasn't ready, at this time (#168): a start-up login that
+    /// stopped trying is tried once more
+    LoginWanted(Instant),
 }
 
 #[derive(Debug, Clone)]
@@ -289,7 +290,7 @@ type PendingSearch = std::sync::Arc<tokio::sync::watch::Sender<Option<(String, I
 
 /// A login or logout changes what every query after it gets: a search doesn't go ahead of one.
 fn changes_session(cmd: &CatCmd) -> bool {
-    matches!(cmd, CatCmd::Login | CatCmd::Logout | CatCmd::Reconnect | CatCmd::LoginWanted)
+    matches!(cmd, CatCmd::Login | CatCmd::Logout | CatCmd::Reconnect)
 }
 
 /// A command's name for the log (its variant, none of what it carries).
@@ -410,7 +411,7 @@ enum AtStart {
     No,
     /// the start-up login failed: it's tried again in the background, with or without a Client, until then
     Until(Instant),
-    /// those tries ran out: a Client connecting or asking to play tries once more, each time (`CatCmd::LoginWanted`)
+    /// those tries ran out: a Client connecting or asking to play tries once more (`CatCmd::LoginWanted`)
     GaveUp,
 }
 
@@ -581,10 +582,13 @@ enum LoggedIn {
 }
 
 /// Did Spotify refuse the login itself (bad or revoked credentials, an account it won't let in), rather than not
-/// answer? librespot gives a refusal as `PermissionDenied`; "try another access point" after its last one isn't one.
+/// answer? librespot gives Spotify's refusal as `PermissionDenied` with "Login failed with reason: …" (its
+/// `AuthenticationError::LoginFailed`); "try another access point" after its last one isn't one. Nor is a connection
+/// the computer itself blocked (a firewall or a VPN's kill switch at boot: EPERM or EACCES), which librespot passes on
+/// as `PermissionDenied` too, without that text.
 fn spotify_refused(e: &librespot_core::Error) -> bool {
-    use librespot_core::error::ErrorKind;
-    matches!(e.kind, ErrorKind::PermissionDenied | ErrorKind::Unauthenticated) && !e.error.to_string().contains("Try another access point")
+    let why = e.error.to_string();
+    e.kind == librespot_core::error::ErrorKind::PermissionDenied && why.starts_with("Login failed with reason:") && !why.contains("Try another access point")
 }
 
 /// Which loop runs a command (D79): Connect's, or browsing's.
@@ -603,7 +607,7 @@ fn is_connect(cmd: &CatCmd) -> bool {
         CatCmd::Login
         | CatCmd::Logout
         | CatCmd::Reconnect
-        | CatCmd::LoginWanted
+        | CatCmd::LoginWanted(_)
         | CatCmd::Home
         | CatCmd::Library
         | CatCmd::HomeAndLibrary
@@ -732,9 +736,12 @@ async fn handle<Q: Fetch + Sync + Clone>(st: &mut State<Q>, cmd: CatCmd) {
         CatCmd::Reconnect => {
             st.session().await;
         }
-        // a Client connected or asked to play: a start-up login whose tries ran out gets one more (#168)
-        CatCmd::LoginWanted => {
-            if st.redial.start == AtStart::GaveUp {
+        // a Client connected or asked to play: a start-up login whose tries ran out gets one more (#168). Several asks
+        // close together make one: none if a try started since this one was asked, or within `REDIAL_FIRST`.
+        CatCmd::LoginWanted(asked) => {
+            let now = Instant::now();
+            let tried_lately = st.redial.last_try.is_some_and(|t| t >= asked || now.duration_since(t) < REDIAL_FIRST);
+            if st.redial.start == AtStart::GaveUp && !tried_lately {
                 st.reconnect().await;
             }
         }
@@ -1587,7 +1594,9 @@ impl<Q: Fetch + Sync + Clone> State<Q> {
     /// waits for that). True if one was made. Long work calls this between two of its requests.
     async fn search_between(&mut self) -> bool {
         self.take_arrived();
-        if self.waiting.iter().any(changes_session) {
+        // (a `LoginWanted` logs in only once the start-up tries gave up: otherwise it's nothing to wait for, #126)
+        let gave_up = self.redial.start == AtStart::GaveUp;
+        if self.waiting.iter().any(|c| changes_session(c) || (gave_up && matches!(c, CatCmd::LoginWanted(_)))) {
             return false;
         }
         // taken quietly: an empty slot wakes no one
