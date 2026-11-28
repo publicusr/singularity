@@ -492,7 +492,7 @@ async fn the_listening_log_sums_up_exports_and_deletes_through_the_protocol() {
     let data = dir.path().join("data");
     let now = proto::now_ms();
     {
-        let s = Store::open(&data).unwrap();
+        let mut s = Store::open(&data).unwrap();
         for (i, back) in [0u64, 0, 1].into_iter().enumerate() {
             let item = Item { uri: format!("spotify:track:{i}"), name: "T".into(), artists: vec!["Nova Drift".into()], duration_ms: 600_000, ..Default::default() };
             s.record(&Play { started_ms: now - back * 86_400_000, item, context_uri: None, played_ms: 120_000, device: "here".into() }).unwrap();

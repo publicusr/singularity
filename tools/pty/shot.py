@@ -3162,7 +3162,11 @@ def main():
     # other scenario (`wheel-all`), both on the fake account with made-up personal values
     if scenario == "demo" or os.environ.get("PTY_DEMO") == "1":
         env["SINGULARITY_FAKE_PERSONAL"] = "1"
-        env["SINGULARITY_DEMO"] = "0" if os.environ.get("PTY_DEMO") == "0" else "1"
+        # (PTY_DEMO=0: no switch at all; the Client refuses a "0" since #167)
+        if os.environ.get("PTY_DEMO") == "0":
+            env.pop("SINGULARITY_DEMO", None)
+        else:
+            env["SINGULARITY_DEMO"] = "1"
     if scenario == "demo":
         # the song left playing from a normal session (#128): hidden until a Demo playlist plays
         env["SINGULARITY_FAKE_CARRYOVER"] = "1"

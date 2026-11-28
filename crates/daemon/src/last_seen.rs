@@ -2,14 +2,15 @@
 //! fetches them again behind; the fresh ones replace them as they arrive.
 //!
 //! The file is the account's own data: it lives in the user's cache dir (App folders: `~/.cache/singularity`, or
-//! `$XDG_CACHE_HOME/singularity`), owner-only, names the account it belongs to, and goes when the account logs out.
-//! The copy is shown only once the Catalogue names the account it's logging in as (from the saved login, before
+//! `$XDG_CACHE_HOME/singularity`), owner-only, names the account it belongs to, and goes when the account logs out or
+//! the listening data is deleted (#167). The copy is shown only once the Catalogue names the account it's logging in as (from the saved login, before
 //! Spotify answers) and that is the file's account; another account's copy is deleted unseen. A file this build
 //! can't read (an older shape, a broken write) is treated as none. Writes happen on a thread of their own, in order.
 
 use singularity_proto::{HomeFeed, Library};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// What the file holds.
 #[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -42,6 +43,9 @@ pub struct LastSeen {
     waiting: Mutex<Option<Seen>>,
     /// the account logged in (or logging in), once named
     account: Mutex<Option<String>>,
+    /// the listening data was deleted ([`LastSeen::delete`]): nothing is written until a logout and a login, or
+    /// another account (read and set under `account`'s lock)
+    deleted: AtomicBool,
 }
 
 impl LastSeen {
@@ -64,7 +68,13 @@ impl LastSeen {
                             }
                         }
                         Job::Remove => {
-                            let _ = std::fs::remove_file(&file);
+                            // (a write cut short leaves its temp file)
+                            for f in [file.clone(), file.with_extension("json.part")] {
+                                match std::fs::remove_file(&f) {
+                                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => tracing::warn!("couldn't remove {}: {e}", f.display()),
+                                    _ => {}
+                                }
+                            }
                         }
                         Job::Flush(done) => {
                             let _ = done.send(());
@@ -73,7 +83,7 @@ impl LastSeen {
                 }
             })
             .expect("a thread for the last-seen file");
-        LastSeen { jobs, path, waiting: Default::default(), account: Default::default() }
+        LastSeen { jobs, path, waiting: Default::default(), account: Default::default(), deleted: Default::default() }
     }
 
     /// Read the last Daemon's copy, to be shown once its account is named ([`LastSeen::claim`]).
@@ -91,6 +101,10 @@ impl LastSeen {
         let switched = {
             let mut current = self.account.lock().expect("account lock");
             let switched = current.as_deref().is_some_and(|a| a != account);
+            // another account's Home and library are kept again; the same one named again (a reconnect) changes nothing
+            if switched {
+                self.deleted.store(false, Ordering::SeqCst);
+            }
             *current = Some(account.to_string());
             switched
         };
@@ -108,7 +122,12 @@ impl LastSeen {
 
     /// Keep the Daemon's Home and library as the current account's. Nothing is written before an account is named.
     pub fn write(&self, home: Option<HomeFeed>, library: Option<Library>) {
-        let Some(account) = self.account.lock().expect("account lock").clone() else { return };
+        // (held until the write is queued: a `forget` meanwhile queues its removal after it)
+        let held = self.account.lock().expect("account lock");
+        let Some(account) = held.clone() else { return };
+        if self.deleted.load(Ordering::SeqCst) {
+            return;
+        }
         match serde_json::to_vec(&Seen { account: Some(account), home, library }) {
             Ok(bytes) => {
                 let _ = self.jobs.send(Job::Write(bytes));
@@ -120,7 +139,19 @@ impl LastSeen {
     /// Logged out: the file goes, and nothing is written until an account is named again.
     pub fn forget(&self) {
         *self.waiting.lock().expect("waiting lock") = None;
-        *self.account.lock().expect("account lock") = None;
+        let mut account = self.account.lock().expect("account lock");
+        *account = None;
+        self.deleted.store(false, Ordering::SeqCst);
+        let _ = self.jobs.send(Job::Remove);
+    }
+
+    /// The listening data was deleted (#167): the file goes, and nothing is written again in this run until a logout
+    /// and a login, or another account. The same account named again (a reconnect) doesn't bring it back.
+    pub fn delete(&self) {
+        *self.waiting.lock().expect("waiting lock") = None;
+        // (under `account`'s lock: a write under way is queued before the removal)
+        let _held = self.account.lock().expect("account lock");
+        self.deleted.store(true, Ordering::SeqCst);
         let _ = self.jobs.send(Job::Remove);
     }
 
@@ -215,6 +246,44 @@ mod tests {
         assert!(!l.claim("bob").switched, "logged out in between: nothing of alice's is held");
         l.claim("bob");
         assert!(l.claim("carol").switched);
+    }
+
+    /// #167: after a delete nothing is written, through reconnects (the same account named again), until a logout and
+    /// a login, or another account; a delete before the account is first named holds too.
+    #[test]
+    fn a_delete_stops_writes_until_a_logout_and_login_or_another_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.json");
+        std::fs::write(path.with_extension("json.part"), b"{").unwrap();
+        let l = LastSeen::at(path.clone());
+        l.claim("alice");
+        l.write(Some(home("Alice's")), None);
+        l.delete();
+        l.flush();
+        assert!(!path.exists() && !path.with_extension("json.part").exists(), "the file and a cut-short write's temp file go");
+        let kept = |l: &LastSeen| {
+            l.write(Some(home("again")), Some(library("again")));
+            l.flush();
+            path.exists()
+        };
+        l.claim("alice");
+        assert!(!kept(&l), "a reconnect doesn't bring it back");
+        l.forget();
+        l.claim("alice");
+        assert!(kept(&l), "a logout and a login do");
+        l.delete();
+        l.flush();
+        l.claim("bob");
+        assert!(kept(&l), "another account does");
+
+        // deleted before the account is first named: its first naming doesn't bring it back either
+        let path = dir.path().join("g.json");
+        let l = LastSeen::at(path.clone());
+        l.delete();
+        l.claim("alice");
+        l.write(Some(home("Alice's")), None);
+        l.flush();
+        assert!(!path.exists());
     }
 
     #[test]

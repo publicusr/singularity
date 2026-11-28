@@ -163,7 +163,8 @@ audio, and looks spectacular.
   - *OfficialCatalogue*: Web API fallback for library/search when the private source is broken.
   - Rules: metadata only, no crawling, cache with TTLs, back off on 429/5xx, never retry in a loop.
   - Start (#81): the last Home and library are kept in the user's cache dir (`home-and-library.json`, owner-only,
-    naming its account, removed on logout) and shown to Clients as soon as the saved login names that account, before
+    naming its account, removed on logout or when the listening data is deleted) and shown to Clients as soon as the
+    saved login names that account, before
     Spotify answers; another account's copy is deleted unseen. Home and the library are then fetched side by side,
     the library's pages and folders together, at most 4 requests out between them; a 429 or 5xx is asked once more
     after a pause. Each step's time is logged (`timing:` lines in `daemon.log`).
@@ -174,6 +175,14 @@ audio, and looks spectacular.
     that works starts over), and a session that ends within a minute of its login waits the same way until one lasts;
     a request may log in again ahead of that wait only as the first try after the session ended, or once the last
     try is 5 s old, and at most once per command; otherwise it fails at once. Logged out, it isn't tried.
+  - Start-up login (#168, Q184): one that can't reach Spotify (the network isn't up yet after boot) is tried again in
+    the background, with or without a Client, after about 2 s, then twice as long each time up to 1 min between tries
+    (a jitter takes up to a quarter off a wait), with the login read at start (the keyring isn't asked again). After
+    about 10 min of failures it stops and the login error stays; then a Client connecting or asking to play (play,
+    play/pause, play from a list) while the Catalogue isn't ready tries once more, never in a loop (asks within 5 s
+    of a try make none). A try that works fetches Home and the library. A login Spotify refuses ("login failed":
+    bad or revoked credentials) isn't tried again: its error shows at once. A connection the computer itself blocks
+    (a firewall or a VPN's kill switch at boot) counts as not reaching Spotify, and is tried again.
 - **ConnectRemote** (D12): device list, transfer, remote control of any device, per-device quality (D17, to verify).
 - **AudioTap** (D16): captures only the Engine's stream (PipeWire on Linux; a Core Audio process tap on the Spotify app
   on macOS; librespot's and the Soloist VM's samples in-process), runs FFT,

@@ -596,7 +596,7 @@ async fn log_plays(hub: Arc<Hub>) {
         let now = proto::now_ms();
         if let Some(play) = rec.observe(&state, &device, now) {
             let summary = {
-                let s = store.lock().expect("store lock");
+                let mut s = store.lock().expect("store lock");
                 if let Err(e) = s.record(&play) {
                     tracing::warn!("couldn't log a play: {e}");
                 }
@@ -654,6 +654,7 @@ async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>, demo
         }
         return;
     };
+    let deleting = !demo && matches!(cmd, Command::DeleteLocalData);
     let now = proto::now_ms();
     let (reply, everyone) = {
         let mut s = store.lock().expect("store lock");
@@ -681,11 +682,36 @@ async fn local_data(hub: &Hub, cmd: Command, out: &mpsc::Sender<DaemonMsg>, demo
             },
         }
     };
+    // the real "delete" also takes the fast-start copy of Home and the library and the demo Listening log, files and
+    // all (#167), after the real log (a failure here can't leave that one); every part is tried, each failure told
+    let reply = if deleting {
+        match (reply, delete_the_rest(hub, &store)) {
+            (Ok(_), Err(e)) => Err(e),
+            (Err(a), Err(b)) => Err(anyhow::anyhow!("{a}; {b}")),
+            (r, Ok(())) => r,
+        }
+    } else {
+        reply
+    };
     let ev = reply.unwrap_or_else(|e| Event::Error { message: format!("Local data: {e}") });
     let _ = out.send(DaemonMsg::Event(ev)).await;
     if let Some(ev) = everyone {
         let _ = hub.events.send(ev);
     }
+}
+
+/// What "Delete listening data" takes besides the real log (#167): the fast-start copy (not written again in this
+/// run until a logout and a login, or another account) and the demo Listening log, by its path beside `store` when
+/// this Daemon couldn't open it.
+fn delete_the_rest(hub: &Hub, store: &std::sync::Mutex<store::Store>) -> anyhow::Result<()> {
+    if let Some(l) = &hub.last_seen {
+        l.delete();
+    }
+    match &hub.demo_store {
+        Some(d) => d.lock().expect("demo store lock").remove(),
+        None => store.lock().expect("store lock").remove_demo_files(),
+    }
+    .map_err(|e| anyhow::anyhow!("the demo listening log: {e}"))
 }
 
 async fn run_catalogue(mut events: mpsc::Receiver<CatEvent>, hub: Arc<Hub>) {
@@ -934,6 +960,8 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     let _demo_client = demo.then(|| DemoClient::new(hub.clone()));
     // while one is here, a session Spotify ended is replaced in the background (Q171)
     let _here = catalogue::ClientHere::new();
+    // and a start-up login that stopped trying is tried once more (#168), if Spotify isn't ready
+    login_wanted(&hub).await;
     // everything to this Client goes through one writer; a Client that takes nothing for WRITE_DEADLINE has stopped
     // reading, and its session ends (#71: it used to stay, blocked, for as long as it was connected)
     let (out_tx, mut out_rx) = mpsc::channel::<DaemonMsg>(64);
@@ -1015,6 +1043,13 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     let mut spectrum: Option<tokio::task::JoinHandle<()>> = None;
     let reading = async {
         while let Some(msg) = proto::read_msg::<_, ClientMsg>(&mut rd).await? {
+            // asked to play: a start-up login that stopped trying is tried once more (#168). It's asked first, but the
+            // play doesn't wait for it: Play and TogglePlay go to the Engine (librespot's isn't set up until the login
+            // works), and Connect waits for a PlayFrom only if browsing already marked the login under way when it takes
+            // it; otherwise that one fails at once as "not logged in" and the next press finds the login done (or not)
+            if let ClientMsg::Command(Command::Play { .. } | Command::TogglePlay | Command::PlayFrom { .. }) = &msg {
+                login_wanted(&hub).await;
+            }
             match msg {
                 ClientMsg::Command(Command::Spectrum { on }) => {
                     use std::sync::atomic::Ordering;
@@ -1119,6 +1154,15 @@ async fn client_session(stream: UnixStream, hub: Arc<Hub>) -> std::io::Result<()
     forwarder.abort();
     writer.abort();
     result
+}
+
+/// A Client connected or asked to play while the Catalogue isn't ready (`Unavailable`): it tries a start-up login that
+/// stopped trying once more (#168). Ready, or logged out, nothing is sent: browsing and searches don't see it.
+async fn login_wanted(hub: &Hub) {
+    let unready = matches!(*hub.catalogue_status.lock().await, Some(proto::CatalogueStatus::Unavailable { .. }));
+    if let (true, Some(c)) = (unready, &hub.catalogue) {
+        let _ = c.send(CatCmd::LoginWanted(std::time::Instant::now())).await;
+    }
 }
 
 /// The account's username for a demo Client to redact (D90): the logged-in one, else the saved login's.
@@ -1335,6 +1379,41 @@ mod tests {
         .await
         .expect("the other device is still remembered after logout");
         assert_eq!(hub.playback(), ours, "the bar is back on this computer");
+    }
+
+    /// What the Catalogue is sent, by name, for a Client that connects and asks for Home, then to play from a list,
+    /// while the Catalogue's status is `status`.
+    async fn sent_for_a_client(status: proto::CatalogueStatus, n: usize) -> Vec<String> {
+        let mut hub = Arc::into_inner(test_hub()).expect("one owner");
+        let (tx, mut cat) = mpsc::channel(16);
+        hub.catalogue = Some(tx);
+        hub.catalogue_status = Mutex::new(Some(status));
+        let hub = Arc::new(hub);
+        let (mut client, daemon) = UnixStream::pair().unwrap();
+        tokio::spawn(client_session(daemon, hub.clone()));
+        proto::write_msg(&mut client, &ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into(), demo: false }).await.unwrap();
+        let play = Command::PlayFrom { context_uri: "spotify:playlist:p".into(), index: 0, track_uri: None };
+        for cmd in [Command::GetHome, play] {
+            proto::write_msg(&mut client, &ClientMsg::Command(cmd)).await.unwrap();
+        }
+        let mut got = vec![];
+        for _ in 0..n {
+            let c = tokio::time::timeout(std::time::Duration::from_secs(2), cat.recv()).await.expect("the Catalogue wasn't told").unwrap();
+            got.push(format!("{c:?}").split(|ch: char| !ch.is_alphanumeric()).next().unwrap_or_default().to_string());
+        }
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(200), cat.recv()).await.is_err(), "more was sent: {got:?}");
+        got
+    }
+
+    /// #168: while the Catalogue isn't ready, a Client connecting and a Client asking to play each give it a
+    /// `LoginWanted` (a start-up login whose tries ran out is tried once more), sent ahead of the play; other commands
+    /// don't. Ready, nothing is sent, so searches never wait behind one (#126).
+    #[tokio::test]
+    async fn a_client_connecting_or_asking_to_play_wants_the_login() {
+        let unready = proto::CatalogueStatus::Unavailable { message: "couldn't reach Spotify".into() };
+        assert_eq!(sent_for_a_client(unready, 4).await, ["LoginWanted", "Home", "LoginWanted", "PlayFrom"]);
+        let ready = proto::CatalogueStatus::Ready { username: "someone".into(), country: "XX".into(), premium: true };
+        assert_eq!(sent_for_a_client(ready, 2).await, ["Home", "PlayFrom"]);
     }
 
     /// A1: a background task that panics is named in the health view and started again.

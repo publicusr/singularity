@@ -53,13 +53,17 @@ async fn next(s: &mut UnixStream, want: fn(&Event) -> bool) -> Event {
 
 /// A Daemon whose Catalogue the test speaks for, keeping the last copy at `file`.
 fn daemon(dir: &std::path::Path, file: &std::path::Path) -> (std::path::PathBuf, tokio::sync::mpsc::Sender<CatEvent>) {
+    daemon_with(dir.join("ls.sock"), file, None)
+}
+
+/// `daemon` on the socket `path`, with its LocalStore in `store`.
+fn daemon_with(path: std::path::PathBuf, file: &std::path::Path, store: Option<std::path::PathBuf>) -> (std::path::PathBuf, tokio::sync::mpsc::Sender<CatEvent>) {
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(16);
     // (kept open: a Catalogue that hasn't answered anything yet)
     std::mem::forget(cmd_rx);
     let (ev_tx, ev_rx) = tokio::sync::mpsc::channel(16);
-    let path = dir.join("ls.sock");
     let listener = singularityd::bind(&path).unwrap();
-    let extras = singularityd::Extras { last_seen: Some(file.to_path_buf()), ..Default::default() };
+    let extras = singularityd::Extras { last_seen: Some(file.to_path_buf()), store, ..Default::default() };
     tokio::spawn(singularityd::serve_with(listener, Box::new(NoEngine { reason: "test".into() }), Some((cmd_tx, ev_rx)), None, extras));
     (path, ev_tx)
 }
@@ -125,6 +129,76 @@ async fn another_accounts_copy_is_never_shown_and_is_deleted() {
     let (_b, evs) = snapshot(&path).await;
     assert!(!evs.iter().any(|e| matches!(e, Event::Home(_) | Event::Library(_))), "{evs:?}");
     assert!(gone(&file).await, "alice's copy is gone");
+}
+
+/// #167: "Delete listening data" also takes the copy and the demo Listening log, files and all; a fresh Home isn't
+/// written back, and the next Daemon shows no library until the Catalogue fetches one.
+#[tokio::test]
+async fn deleting_the_listening_data_takes_the_copy_and_the_demo_log() {
+    use singularity_proto::{Command, Item};
+    use singularityd::store::{Play, Store};
+    let dir = common::scratch();
+    let file = dir.path().join("cache").join("home-and-library.json");
+    let data = dir.path().join("data");
+    write(&file, &alice());
+    let item = Item { uri: "spotify:track:d".into(), name: "D".into(), artists: vec!["Demo Artist".into()], duration_ms: 600_000, ..Default::default() };
+    Store::open_demo(&data).unwrap().record(&Play { started_ms: proto::now_ms(), item, context_uri: None, played_ms: 120_000, device: "here".into() }).unwrap();
+    let demo_log = data.join("listening-demo.db");
+    let (path, ev) = daemon_with(dir.path().join("a.sock"), &file, Some(data.clone()));
+    let (mut a, _) = snapshot(&path).await;
+    ev.send(ready("alice")).await.unwrap();
+    assert_eq!(next(&mut a, |e| matches!(e, Event::Library(_))).await, Event::Library(library("Old")));
+
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::DeleteLocalData)).await.unwrap();
+    let said = next(&mut a, |e| matches!(e, Event::Notice { .. } | Event::Error { .. })).await;
+    assert_eq!(said, Event::Notice { message: "Deleted the listening log and every library backup".into() });
+    assert!(gone(&file).await, "the copy is gone");
+    assert!(!demo_log.exists(), "the demo log is gone");
+    // what the Daemon fetches next isn't written back, also after a reconnect names the same account again
+    ev.send(CatEvent::Home(home("Today"))).await.unwrap();
+    next(&mut a, |e| matches!(e, Event::Home(_))).await;
+    ev.send(ready("alice")).await.unwrap();
+    ev.send(CatEvent::Account("alice".into())).await.unwrap();
+    ev.send(CatEvent::Home(home("Later"))).await.unwrap();
+    ev.send(CatEvent::Library(library("Later"))).await.unwrap();
+    next(&mut a, |e| matches!(e, Event::Library(_))).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!file.exists(), "written back");
+
+    // the next Daemon: nothing shows when the account is named, until the Catalogue fetches the library
+    let (path, ev) = daemon_with(dir.path().join("b.sock"), &file, Some(data.clone()));
+    let (mut b, _) = snapshot(&path).await;
+    ev.send(ready("alice")).await.unwrap();
+    next(&mut b, |e| matches!(e, Event::Catalogue(CatalogueStatus::Ready { .. }))).await;
+    let (_c, evs) = snapshot(&path).await;
+    assert!(!evs.iter().any(|e| matches!(e, Event::Home(_) | Event::Library(_))), "{evs:?}");
+    ev.send(CatEvent::Library(library("Fresh"))).await.unwrap();
+    assert_eq!(next(&mut b, |e| matches!(e, Event::Library(_))).await, Event::Library(library("Fresh")));
+}
+
+/// #167: a Delete before the Catalogue names the account: the copy read at start is never shown, and what is fetched
+/// after isn't written.
+#[tokio::test]
+async fn deleting_before_the_account_is_named_shows_and_keeps_nothing() {
+    use singularity_proto::Command;
+    let dir = common::scratch();
+    let file = dir.path().join("cache").join("home-and-library.json");
+    let data = dir.path().join("data");
+    write(&file, &alice());
+    let (path, ev) = daemon_with(dir.path().join("a.sock"), &file, Some(data.clone()));
+    let (mut a, _) = snapshot(&path).await;
+    proto::write_msg(&mut a, &ClientMsg::Command(Command::DeleteLocalData)).await.unwrap();
+    let said = next(&mut a, |e| matches!(e, Event::Notice { .. } | Event::Error { .. })).await;
+    assert_eq!(said, Event::Notice { message: "Deleted the listening log and every library backup".into() });
+    assert!(gone(&file).await);
+    ev.send(ready("alice")).await.unwrap();
+    next(&mut a, |e| matches!(e, Event::Catalogue(CatalogueStatus::Ready { .. }))).await;
+    let (_b, evs) = snapshot(&path).await;
+    assert!(!evs.iter().any(|e| matches!(e, Event::Home(_) | Event::Library(_))), "{evs:?}");
+    ev.send(CatEvent::Library(library("Fresh"))).await.unwrap();
+    next(&mut a, |e| matches!(e, Event::Library(_))).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!file.exists(), "written back");
 }
 
 /// What the file holds once the Daemon's writer has done what `done` waits for (it writes on its own thread).

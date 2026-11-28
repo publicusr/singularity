@@ -20,8 +20,8 @@ fn weeks_and_hours_follow_local_time_across_the_october_change() {
         tzset();
     }
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path()).unwrap();
-    let rec = |at: u64, uri: &str, mins: u64| {
+    let mut store = Store::open(dir.path()).unwrap();
+    let mut rec = |at: u64, uri: &str, mins: u64| {
         let item = Item { uri: uri.into(), name: uri.into(), artists: vec!["Nova Drift".into()], duration_ms: 3_600_000, ..Default::default() };
         store.record(&Play { started_ms: at, item, context_uri: None, played_ms: mins * 60_000, device: "here".into() }).unwrap();
     };
