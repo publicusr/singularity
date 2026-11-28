@@ -167,7 +167,7 @@ fn line_at(all: &[Line], view: &QueueView, dy: i64) -> i64 {
     hi
 }
 
-/// The rows line `l` takes: a song two in a big queue (its title, then its artists and album), else one.
+/// The rows line `l` takes: a song two in a big queue (its title, then its first artist and album), else one.
 fn height(l: &Line, big: bool) -> u16 {
     if big && matches!(l, Line::Entry(_)) { 2 } else { 1 }
 }
@@ -185,8 +185,8 @@ fn fitting(all: &[Line], top: usize, rows: usize, big: bool) -> usize {
 }
 
 /// A queue this big shows each song on two rows with its cover beside it, and a cover for what's playing (#59): the
-/// area inside a Pane of 90×32 with its frame.
-pub const BIG: (u16, u16) = (88, 30);
+/// area inside a Pane of 58×30 with its frame (#76; it was 90×32).
+pub const BIG: (u16, u16) = (56, 28);
 
 pub fn is_big(r: Rect) -> bool {
     r.width >= BIG.0 && r.height >= BIG.1
@@ -373,14 +373,19 @@ pub fn draw(buf: &mut Buffer, r: Rect, app: &mut App, th: &Theme) {
                 let artists = e.item.artists.join(", ");
                 let name_st = if dragged { th.s(th.accent).add_modifier(Modifier::BOLD) } else if e.source == "queue" { th.s(th.fg).add_modifier(Modifier::BOLD) } else if auto { th.s(th.dim).add_modifier(Modifier::ITALIC) } else { th.s(th.fg) };
                 if big {
-                    // its cover, then the title (and the length) over the artists and album
+                    // its cover, then the title (and the length) over the first artist and the album
                     let url = e.item.cover_url.clone().unwrap_or_default();
                     crate::home::cover(buf, Rect::new(x, y, COVER.0, COVER.1), &url, "♪", app, th);
                     let tx = x + COVER.0 + 2;
                     let lw = (x + w).saturating_sub(tx + rw + 1);
                     text(buf, tx, y, lw, &crate::sidebar::clip(&name, lw), name_st.bg(bg));
-                    let album = e.item.album.clone().unwrap_or_default();
-                    let sub = [artists, album].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+                    // the first artist and the album, the album left out where the two don't fit (#76)
+                    let first = e.item.artists.first().cloned().unwrap_or_default();
+                    let sub = match e.item.album.as_deref().filter(|a| !a.is_empty()) {
+                        Some(a) if first.is_empty() => a.to_string(),
+                        Some(a) if unicode_width::UnicodeWidthStr::width(format!("{first} · {a}").as_str()) as u16 <= lw => format!("{first} · {a}"),
+                        _ => first,
+                    };
                     text(buf, tx, y + 1, lw, &crate::sidebar::clip(&sub, lw), th.s(th.dim).bg(bg));
                 } else {
                     let lw = w.saturating_sub(rw + 1) as usize;
@@ -643,7 +648,7 @@ mod tests {
                 sizes += 1;
             }
         }
-        assert!(sizes > 5900, "{sizes}");
+        assert!(sizes > 5200, "{sizes}");
         assert!(fixed > 1000, "the wide titles and narrow lengths are drawn (and so fixed) often: {fixed}");
         // the gate's edge: one column or row short of it is still the old look
         for (w, h) in [(BIG.0 - 1, BIG.1), (BIG.0, BIG.1 - 1), (BIG.0 - 1, 60), (200, BIG.1 - 1)] {
@@ -698,7 +703,8 @@ mod tests {
         use unicode_width::UnicodeWidthStr;
         let th = Theme::singularity();
         let mut changes = 0;
-        for (w, h) in [(BIG.0, BIG.1), (BIG.0 + 1, BIG.1 + 7), (140, 50)] {
+        // (the sizes from before #76 moved the gate down: big still, the heading in view)
+        for (w, h) in [(88, 30), (89, 37), (140, 50)] {
             let r = Rect::new(0, 0, w, h);
             for name in ["Night Drive", wide] {
                 let mut app = full_app(27);
@@ -804,6 +810,24 @@ mod tests {
     }
 
     #[test]
+    fn a_big_queues_second_row_is_the_first_artist_and_the_album_where_both_fit() {
+        // #76: the other artists are left out, and the album where the two don't fit
+        let mut app = full_app(3);
+        app.playback.queue[0].item.artists = vec!["Mira Vale".into(), "Nova Drift".into()];
+        app.playback.queue[1].item.album = Some("An album name far too long for a queue this narrow, on and on".into());
+        let r = Rect::new(0, 0, BIG.0, BIG.1);
+        let (buf, hits, _) = drawn(r, &mut app, draw);
+        let tx = 1 + COVER.0 + 2;
+        let second = |i: usize| {
+            let rr = hits.iter().find_map(|(rr, h)| (*h == Hit::QueueRow(i)).then_some(*rr)).unwrap();
+            row_text(&buf, tx, r.width - 1, rr.y + 1).trim_end().to_string()
+        };
+        assert_eq!(second(0), "Mira Vale · Album 0");
+        assert_eq!(second(1), "Mira Vale");
+        assert_eq!(second(2), "Mira Vale · Album 2");
+    }
+
+    #[test]
     fn a_big_queues_long_and_wide_titles_are_cut_by_their_width() {
         let r = Rect::new(0, 0, BIG.0, BIG.1 + 20);
         let mut app = full_app(27);
@@ -876,7 +900,7 @@ mod tests {
     #[test]
     fn a_big_queue_shows_no_heading_without_its_first_song() {
         // eleven queued songs fill 23 of the 24 rows under what's playing; "Next from" would sit alone on the 24th
-        let r = Rect::new(0, 0, BIG.0, BIG.1 + 1);
+        let r = Rect::new(0, 0, BIG.0, 31);
         let mut app = full_app(33);
         let (buf, _, (top, visible, list_y)) = drawn(r, &mut app, draw);
         assert_eq!((top, list_y), (0, NOW_COVER.1 + 1));
