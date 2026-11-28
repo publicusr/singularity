@@ -599,7 +599,7 @@ def wheel_all(t, out):
 # draw none of them (D90)
 DEMO_SECRETS = ["zq-fakeuser", "Zara Quillfeather", "Quillfeather", "Bodhi Friendly", "zarabox", "Zara's Pixel", "Zara's Kitchen",
                 "Zara's Secret Diary", "Private Stuff", "ZqSecretJamToken42", "socialsession", "zara secret search",
-                "Secretartist Zq", "Zara's Desk"]
+                "Secretartist Zq", "Zara's Desk", "Zara's Secret Song", "Zara's Queued Secret", "Secret Album"]
 
 
 def demo_secrets():
@@ -647,9 +647,10 @@ def demo_setup(env, out):
 
 
 def demo(t, out, env):
-    """D90: demo mode on the fake account with personal values (`SINGULARITY_FAKE_PERSONAL=1`): Home, the library, a
-    playlist, Search (recent searches, results), the device picker and a Jam, Stats, Settings, the health check, Cockpit's
-    stream Widget, a toast from a refused playlist. Every drawn screen is searched for each secret; prints what showed.
+    """D90: demo mode on the fake account with personal values (`SINGULARITY_FAKE_PERSONAL=1`) and a personal song left
+    playing (`SINGULARITY_FAKE_CARRYOVER=1`, #128): Home, the library, a playlist and one of its songs played, Search
+    (recent searches, results), the device picker and a Jam, Stats, Settings, the health check, Cockpit's stream
+    Widget, a toast from a refused playlist. Every drawn screen is searched for each secret; prints what showed.
     `PTY_DEMO=0` runs the same walk without the switch (the secrets must show there)."""
     secrets = demo_secrets()
     on = env.get("SINGULARITY_DEMO") == "1"
@@ -672,8 +673,9 @@ def demo(t, out, env):
         t.send(what.encode(), 0.3)
         t.send(b"\r", wait)
 
-    t.pump(1.5)
+    t.pump(2.5)
     look("home")
+    print("   carried-over song drawn:", any("Secret Song" in l for l in t.screen.display))
     t.send(b"\x1b[B", 0.2)  # a key, so the Home view has a selection; then the shelves below
     for _ in range(6):
         t.send(b"\x1b[B", 0.1)
@@ -682,6 +684,13 @@ def demo(t, out, env):
     if at:
         mouse(t, 0, at[0] + 2, at[1]); mouse(t, 0, at[0] + 2, at[1], release=True, wait=1.0)
         look("playlist")
+        # (#128) a Demo playlist's song played from here: the player shows it (the carried-over one it didn't)
+        sx = t.find("Fake Track 003")
+        if sx:
+            for _ in range(2):  # double-click plays it
+                mouse(t, 0, sx[0] + 2, sx[1], wait=0.03); mouse(t, 0, sx[0] + 2, sx[1], release=True, wait=0.05)
+            look("playing-demo-song", 1.5)
+            print("   playing shown:", any("Fake Track 003" in l and ("—" in l or "♪" in l) for l in t.screen.display))
         mouse(t, 2, at[0] + 2, at[1], wait=0.4)
         look("library-menu")
         t.send(b"\x1b", 0.2)
@@ -724,9 +733,8 @@ def demo(t, out, env):
     for _ in range(3):
         t.send(b"\x1b[B", 0.3)  # Cockpit: the stream and listening Widgets
     t.send(b"\r", 1.0)
-    t.send(b" ", 2.0)
-    look("cockpit-playing")
-    t.send(b" ", 0.3)
+    # (a song plays already: the Demo playlist's, or without the switch the carried-over one)
+    look("cockpit-playing", 2.0)
     print("demo mode" if on else "without the switch", "· secrets drawn:", {k: v[:3] for k, v in seen.items()} or "none")
     if on and seen:
         sys.exit(f"demo mode drew personal values: {sorted(seen)}")
@@ -3109,6 +3117,8 @@ def main():
         env["SINGULARITY_FAKE_PERSONAL"] = "1"
         env["SINGULARITY_DEMO"] = "0" if os.environ.get("PTY_DEMO") == "0" else "1"
     if scenario == "demo":
+        # the song left playing from a normal session (#128): hidden until a Demo playlist plays
+        env["SINGULARITY_FAKE_CARRYOVER"] = "1"
         demo_setup(env, out)
     elif os.environ.get("PTY_DEMO") == "1":
         # another scenario in demo mode: Liked Songs in the Demo set, and the seeded recent searches in demo mode's file

@@ -130,13 +130,14 @@ _Avoid_: frontend, TUI (as a noun for the process)
 **Demo mode**:
 A Client started with `--demo` (or `SINGULARITY_DEMO=1`) for recording videos on the owner's own account: it shows a
 DEMO chip and hides or replaces anything personal (account and friends' names, device names, the Jam link, paths,
-the library outside the Demo set, personal Home Shelves, real stats, recent searches) while music, Widgets and
-Designs work as usual. Only that Client changes; the Daemon and other Clients don't (D90).
+the library outside the Demo set, Home beyond the Demo set, the song playing until it's from the Demo set or played
+from that Client, real stats, recent searches) while music, Widgets and Designs work as usual. Only that Client changes; the Daemon and other Clients don't (D90).
 _Avoid_: privacy mode, streamer mode, incognito
 
 **Demo set**:
 What the library shows in Demo mode: the playlists in a Spotify folder called "Demo", plus the albums, artists,
-podcasts and audiobooks (and Liked Songs, if turned on) listed in `demo.toml` in the config folder (D90).
+podcasts and audiobooks (and Liked Songs, if turned on) listed in `demo.toml` in the config folder (D90). Home in Demo
+mode is built from it alone: its playlists, the albums and artists their songs are on, Liked Songs (Q155, Q157).
 _Avoid_: demo library, allow-list (that's only the `demo.toml` half)
 
 **Now playing**:

@@ -1,13 +1,14 @@
 //! Demo mode (D90): a Client started with `--demo` (or `SINGULARITY_DEMO=1`) for recording videos on the owner's own
 //! account. Daemon events pass [`Demo::scrub`] where they enter (`App::receive`, D82): the library shows only the Demo
-//! set, Home loses its personal Shelves, devices and Jam guests get neutral names, the Jam's invite is swapped for one
+//! set, Home is built from the Demo set alone (Q155, Q157), the player stays empty until a song from the Demo set or
+//! one this Client played is on (Q156), devices and Jam guests get neutral names, the Jam's invite is swapped for one
 //! that leads nowhere, and every free text goes through the [`Redactor`], which replaces what it has learned is
 //! personal (the account's username and display name, device and computer names, `$HOME`, `$USER`). Only this Client
 //! changes: the Daemon and other Clients don't.
 //!
 //! Everything here is a function on data: no terminal, no Daemon.
 
-use singularity_proto::{Event, HomeFeed, Library, LibraryItem, SearchResults, TrackPage};
+use singularity_proto::{Card, Command, Event, HomeFeed, Library, LibraryItem, PlaybackState, SearchResults, Shelf, TrackPage, TrackRow};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +32,16 @@ pub const FRIENDS_DEVICE: &str = "A friend's device";
 pub const TOO_OLD: &str = "This background player is too old for demo mode; restart it";
 /// A context that isn't in the Demo set ("Playing from a playlist").
 pub const SOME_PLAYLIST: &str = "a playlist";
+/// Home's Shelves in demo mode (Q157), in this order.
+pub const PLAYLISTS: &str = "Playlists";
+pub const ALBUMS: &str = "Albums";
+pub const ARTISTS: &str = "Artists";
+pub const LIKED: &str = "Liked Songs";
+/// How many Demo playlists' songs Home reads (a fetch each), and how many albums and artists it shows (an artist's
+/// picture is a fetch each).
+const MAX_LISTS: usize = 12;
+const MAX_ALBUMS: usize = 20;
+const MAX_ARTISTS: usize = 12;
 
 static ON: AtomicBool = AtomicBool::new(false);
 
@@ -48,21 +59,13 @@ pub fn asked(args: &[String], env: Option<&str>) -> bool {
     args.iter().any(|a| a == "--demo") || env.is_some_and(|v| v == "1")
 }
 
-/// `demo.toml` in the config folder: the Demo set's albums, artists, podcasts and audiobooks, Liked Songs, and Home
-/// Shelves to hide or keep (by section id or title).
+/// `demo.toml` in the config folder: the Demo set's albums, artists, podcasts and audiobooks, and Liked Songs. (An
+/// older file's `[home]` rules are ignored: Home is built from the Demo set alone.)
 #[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct DemoFile {
     pub library: Vec<String>,
     pub liked: bool,
-    pub home: HomeRules,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
-#[serde(default)]
-pub struct HomeRules {
-    pub hide: Vec<String>,
-    pub show: Vec<String>,
 }
 
 pub fn file_path() -> PathBuf {
@@ -199,16 +202,6 @@ fn replace(s: &str, secret: &str, with: &str, kind: Kind) -> String {
     out
 }
 
-/// Home Shelves that are about the account, by the start of their title (lower case), when no section id says so:
-/// "Made For …", "Recently played", "Jump back in", "Daily Mix 1"… Titles with "you"/"your" in them count too
-/// ("Your top mixes", "Because you listened to …", "Albums with songs you like").
-const PERSONAL_TITLES: &[&str] = &["made for", "recently played", "jump back in", "daily mix", "recents", "more of what you like", "new release from"];
-
-fn personal_title(title: &str) -> bool {
-    let t = title.to_lowercase();
-    PERSONAL_TITLES.iter().any(|p| t.starts_with(p)) || t.split(|c: char| !c.is_alphanumeric()).any(|w| matches!(w, "you" | "your" | "yours"))
-}
-
 /// The neutral name for a device of `kind`, the `n`-th of that kind (1-based): "Phone", "Phone 2", "Speaker", "TV".
 pub fn neutral_name(kind: &str, n: usize) -> String {
     let base = match kind {
@@ -232,7 +225,7 @@ pub struct Demo {
     /// the Demo set as the last library had it: its playlists, the allow-listed items, Liked Songs if on
     set: HashSet<String>,
     /// every playlist of the owner's (to tell "you" from "a friend"), and those outside the Demo set (dropped from
-    /// Home and Search)
+    /// Search and artist pages)
     own: HashSet<String>,
     own_outside: HashSet<String>,
     /// playlists created in this session: they stay in the library
@@ -243,9 +236,35 @@ pub struct Demo {
     devices: HashMap<String, String>,
     /// Jam member id → "Guest N"
     guests: HashMap<String, String>,
-    /// the last Home feed and library as the Daemon sent them, scrubbed again when what decides them changes
-    raw_home: Option<HomeFeed>,
+    /// the last library and playback as the Daemon sent them, scrubbed again when what decides them changes
     raw_library: Option<Library>,
+    raw_playback: Option<PlaybackState>,
+    /// the player as last passed on (it goes again only when it would look different)
+    shown_playback: Option<PlaybackState>,
+    /// the library as shown (the Demo set), what Home is built from
+    shown: Vec<LibraryItem>,
+    /// the Demo playlists' songs, as far as they've come (their albums and artists make Home's Shelves)
+    songs: HashMap<String, Vec<TrackRow>>,
+    /// an artist's picture, once its page came
+    artist_images: HashMap<String, Option<String>>,
+    /// track lists and artist pages asked for, so each is asked once
+    asked: HashSet<String>,
+    /// what this Client asked to play or queue in this session: shown when it plays
+    played: HashSet<String>,
+    /// when the Daemon's last Home feed was fetched (demo Home takes its time, not its Shelves)
+    home_fetched: u64,
+    /// Home and the player changed with what came (a library, a Demo playlist's songs, an artist's picture)
+    changed: bool,
+    /// this Client played or queued something new: the player may show now
+    replay: bool,
+}
+
+/// What a demo Client does after an event: Home and the player as they are now, and what to fetch for Home.
+#[derive(Debug, Default)]
+pub struct FollowUp {
+    pub home: Option<HomeFeed>,
+    pub playback: Option<PlaybackState>,
+    pub fetch: Vec<Command>,
 }
 
 impl Demo {
@@ -277,23 +296,32 @@ impl Demo {
             }
             Event::Catalogue(C::Unavailable { message }) => Event::Catalogue(C::Unavailable { message: self.redact(&message) }),
             Event::Home(h) => {
-                self.raw_home = Some(h.clone());
-                Event::Home(self.home(h))
+                self.home_fetched = h.fetched_unix_ms;
+                Event::Home(self.home())
             }
             Event::Library(l) => {
                 self.raw_library = Some(l.clone());
+                self.changed = true;
                 Event::Library(self.library(l))
             }
-            Event::Tracks(p) => Event::Tracks(self.tracks(p)),
+            Event::Tracks(p) => {
+                self.keep_songs(&p);
+                Event::Tracks(self.tracks(p))
+            }
             Event::Search(r) => Event::Search(self.search(r)),
-            Event::Artist(p) => Event::Artist(self.artist(p)),
+            Event::Artist(p) => {
+                if self.asked.contains(&p.uri) && self.artist_images.insert(p.uri.clone(), p.image_url.clone()) != Some(p.image_url.clone()) {
+                    self.changed = true;
+                }
+                Event::Artist(self.artist(p))
+            }
             Event::Devices { devices } => Event::Devices { devices: devices.into_iter().map(|d| self.device(d)).collect() },
             Event::Jam { jam } => Event::Jam { jam: jam.map(|j| self.jam(j)) },
-            Event::Playback(mut p) => {
-                if p.context_name.is_some() && !self.context_shown(p.context_uri.as_deref().unwrap_or("")) {
-                    p.context_name = Some(SOME_PLAYLIST.into());
-                }
-                Event::Playback(p)
+            Event::Playback(p) => {
+                self.raw_playback = Some(p.clone());
+                let shown = self.playback(p);
+                self.shown_playback = Some(shown.clone());
+                Event::Playback(shown)
             }
             Event::Health(mut h) => {
                 h.soloist_key = self.redact(&h.soloist_key);
@@ -323,10 +351,107 @@ impl Demo {
         Some(self.library(l))
     }
 
-    /// Home again, after the library said which playlists are the owner's: None before the first.
-    pub fn home_again(&mut self) -> Option<HomeFeed> {
-        let h = self.raw_home.clone()?;
-        Some(self.home(h))
+    /// After an event: Home and the player again if what decides them changed (nothing before the library), and the
+    /// Demo playlists' songs and artists' pages Home still needs.
+    pub fn follow_up(&mut self) -> FollowUp {
+        if !self.knows_library() {
+            return FollowUp::default();
+        }
+        let mut up = FollowUp::default();
+        let replay = std::mem::take(&mut self.replay);
+        if std::mem::take(&mut self.changed) {
+            up.home = Some(self.home());
+        }
+        if (replay || up.home.is_some())
+            && let Some(p) = self.raw_playback.clone().map(|p| self.playback(p))
+            && self.shown_playback.as_ref() != Some(&p)
+        {
+            self.shown_playback = Some(p.clone());
+            up.playback = Some(p);
+        }
+        let lists: Vec<String> = self.demo_playlists().take(MAX_LISTS).map(|i| i.uri.clone()).collect();
+        for uri in lists {
+            if !self.songs.contains_key(&uri) && self.asked.insert(uri.clone()) {
+                up.fetch.push(Command::GetTracks { uri });
+            }
+        }
+        for (uri, ..) in self.artists() {
+            if !self.artist_images.contains_key(&uri) && self.asked.insert(uri.clone()) {
+                up.fetch.push(Command::GetArtist { uri });
+            }
+        }
+        up
+    }
+
+    /// A command this Client sends: what it plays or queues shows in the player when it's on.
+    pub fn sent(&mut self, c: &Command) {
+        let uris: Vec<&String> = match c {
+            Command::Play { uri: Some(u) } | Command::AddToQueue { uri: u } | Command::PlayNext { uri: u } => vec![u],
+            Command::PlayFrom { context_uri, track_uri, .. } => std::iter::once(context_uri).chain(track_uri).collect(),
+            _ => vec![],
+        };
+        for u in uris {
+            if self.played.insert(u.clone()) {
+                self.replay = true;
+            }
+        }
+    }
+
+    /// The Demo set's playlists, in the library's order.
+    fn demo_playlists(&self) -> impl Iterator<Item = &LibraryItem> {
+        self.shown.iter().filter(|i| i.kind == "playlist")
+    }
+
+    /// A page of a Demo playlist's songs, kept for Home.
+    fn keep_songs(&mut self, p: &TrackPage) {
+        if !self.demo_playlists().any(|i| i.uri == p.uri) {
+            return;
+        }
+        let rows = self.songs.entry(p.uri.clone()).or_default();
+        rows.truncate(p.offset as usize);
+        rows.extend(p.tracks.iter().cloned());
+        self.changed = true;
+    }
+
+    /// The Demo playlists' songs (those Home reads), in order.
+    fn demo_songs(&self) -> impl Iterator<Item = &TrackRow> {
+        self.demo_playlists().take(MAX_LISTS).filter_map(|i| self.songs.get(&i.uri)).flatten().filter(|t| t.playable)
+    }
+
+    /// Things the Demo playlists' songs are on (an album, an artist), the most songs first (then the first seen), as
+    /// (uri, its first song), leaving out those the library already holds, at most `max`.
+    fn ranked(&self, of: impl Fn(&TrackRow) -> Vec<String>, max: usize) -> Vec<(String, &TrackRow)> {
+        let mut seen: Vec<(String, &TrackRow, usize)> = Vec::new();
+        let mut at: HashMap<String, usize> = HashMap::new();
+        for t in self.demo_songs() {
+            for uri in of(t) {
+                if uri.is_empty() || self.shown.iter().any(|i| i.uri == uri) {
+                    continue;
+                }
+                match at.get(&uri) {
+                    Some(&n) => seen[n].2 += 1,
+                    None => {
+                        at.insert(uri.clone(), seen.len());
+                        seen.push((uri, t, 1));
+                    }
+                }
+            }
+        }
+        // (a stable sort: ties stay in the order first seen)
+        seen.sort_by_key(|(.., n)| std::cmp::Reverse(*n));
+        seen.into_iter().take(max).map(|(u, r, _)| (u, r)).collect()
+    }
+
+    /// The Demo playlists' artists Home shows: (uri, name), after those `demo.toml` lists.
+    fn artists(&self) -> Vec<(String, String)> {
+        let listed = self.shown.iter().filter(|i| i.kind == "artist").count();
+        self.ranked(|t| t.artist_uris.clone(), MAX_ARTISTS.saturating_sub(listed))
+            .into_iter()
+            .filter_map(|(uri, t)| {
+                let n = t.artist_uris.iter().position(|u| *u == uri)?;
+                Some((uri, t.artists.get(n)?.clone()))
+            })
+            .collect()
     }
 
     /// Only the Demo set: the "Demo" folder's playlists (flattened to the top level), what `demo.toml` lists, Liked
@@ -364,39 +489,51 @@ impl Demo {
             .collect();
         self.set = items.iter().map(|i| i.uri.clone()).collect();
         self.own_outside = self.own.difference(&self.set).cloned().collect();
+        self.shown = items.clone();
         if folder.is_none() {
             items.insert(0, LibraryItem { uri: String::new(), name: HINT.into(), subtitle: String::new(), kind: "hint".into(), image_url: None, depth: 0, own: false, authors: vec![] });
         }
         Library { items }
     }
 
-    fn rule(list: &[String], id: &str, title: &str) -> bool {
-        list.iter().any(|r| (!id.is_empty() && r == id) || r.eq_ignore_ascii_case(title))
+    /// Home from the Demo set alone (Q155, Q157): its playlists, then albums and then artists (those `demo.toml` lists
+    /// first, then the ones the Demo playlists' songs are on, the most songs first), then Liked Songs if it's on.
+    /// Nothing from the account's own Home: no recommendations, stations or history.
+    pub fn home(&self) -> HomeFeed {
+        let card = |i: &LibraryItem, kind: &str| Card { uri: i.uri.clone(), name: i.name.clone(), subtitle: i.subtitle.clone(), image_url: i.image_url.clone(), kind: kind.into() };
+        let listed = |kind: &str| self.shown.iter().filter(|i| i.kind == kind).map(|i| card(i, kind)).collect::<Vec<_>>();
+        let playlists = listed("playlist");
+        let mut albums = listed("album");
+        albums.extend(self.ranked(|t| t.album_uri.iter().cloned().collect(), MAX_ALBUMS.saturating_sub(albums.len())).into_iter().map(|(uri, t)| Card { uri, name: t.album.clone(), subtitle: self.redact(&t.artists.join(", ")), image_url: t.cover_url.clone(), kind: "album".into() }));
+        let mut artists = listed("artist");
+        artists.extend(self.artists().into_iter().map(|(uri, name)| Card { image_url: self.artist_images.get(&uri).cloned().flatten(), uri, name, subtitle: "Artist".into(), kind: "artist".into() }));
+        // (Liked Songs opens as a list, like Home's own shortcut to it)
+        let liked = self.shown.iter().filter(|i| i.kind == "liked").map(|i| card(i, "playlist")).collect();
+        let shelves = [(PLAYLISTS, playlists), (ALBUMS, albums), (ARTISTS, artists), (LIKED, liked)]
+            .into_iter()
+            .filter(|(_, cards)| !cards.is_empty())
+            .map(|(title, cards)| Shelf { id: String::new(), title: title.into(), kind: "shelf".into(), cards })
+            .collect();
+        HomeFeed { fetched_unix_ms: self.home_fetched, shelves }
     }
 
-    /// Home without the shortcuts grid, the personal Shelves and the owner's playlists outside the Demo set.
-    pub fn home(&self, h: HomeFeed) -> HomeFeed {
-        let shelves = h
-            .shelves
-            .into_iter()
-            .filter(|s| s.kind != "shortcuts")
-            .filter(|s| {
-                let (id, title) = (s.id.as_str(), s.title.as_str());
-                if Self::rule(&self.file.home.show, id, title) {
-                    return true;
-                }
-                !Self::rule(&self.file.home.hide, id, title) && !personal_title(title) && self.redact(title) == title
-            })
-            .map(|mut s| {
-                s.cards.retain(|c| !self.own_outside.contains(&c.uri));
-                for c in &mut s.cards {
-                    c.subtitle = self.redact(&c.subtitle);
-                }
-                s
-            })
-            .filter(|s| !s.cards.is_empty())
-            .collect();
-        HomeFeed { shelves, ..h }
+    /// The player as this Client may show it (Q156): a song shows once it's from the Demo set (its context is, or it's
+    /// one of the Demo playlists' songs) or this Client played or queued it (or its list) in this session; any other
+    /// is as if nothing played, even while it plays on. Play, pause, skip and volume still work. Shown, the queue keeps
+    /// the context's songs when the context shows, and the songs queued that show on their own; a context's name
+    /// outside the Demo set is "a playlist".
+    pub fn playback(&self, mut p: PlaybackState) -> PlaybackState {
+        let ctx = p.context_uri.as_deref().unwrap_or("");
+        let ctx_shown = !ctx.is_empty() && (self.set.contains(ctx) || self.played.contains(ctx) || (self.file.liked && (ctx.ends_with(":collection") || ctx == crate::tracks::LIKED)));
+        let song_shown = |uri: &str| self.played.contains(uri) || self.demo_songs().any(|t| t.uri == uri);
+        if !p.item.as_ref().is_some_and(|i| ctx_shown || song_shown(&i.uri)) {
+            return PlaybackState { status: p.status, timestamp_ms: p.timestamp_ms, volume: p.volume, shuffle: p.shuffle, repeat: p.repeat, ..Default::default() };
+        }
+        p.queue.retain(|e| song_shown(&e.item.uri) || (ctx_shown && e.source != "queue"));
+        if p.context_name.is_some() && !self.context_shown(ctx) {
+            p.context_name = Some(SOME_PLAYLIST.into());
+        }
+        p
     }
 
     /// A list without when its songs were added, its owner as "you" or "a friend", and an episode's progress only
@@ -503,10 +640,10 @@ impl Demo {
         j
     }
 
-    /// A context's name shows when it's in the Demo set, Liked Songs, or an album or artist (public); else it's
-    /// "a playlist".
+    /// A context's name shows when it's in the Demo set, this Client played it, Liked Songs, or an album or artist
+    /// (public); else it's "a playlist".
     fn context_shown(&self, uri: &str) -> bool {
-        self.set.contains(uri) || uri.starts_with("spotify:album:") || uri.starts_with("spotify:artist:") || uri.ends_with(":collection") || uri == crate::tracks::LIKED
+        self.set.contains(uri) || self.played.contains(uri) || uri.starts_with("spotify:album:") || uri.starts_with("spotify:artist:") || uri.ends_with(":collection") || uri == crate::tracks::LIKED
     }
 }
 

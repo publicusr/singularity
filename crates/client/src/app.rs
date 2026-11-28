@@ -1276,6 +1276,10 @@ impl App {
         if self.demo.as_ref().is_some_and(|d| !d.confirmed) && matches!(c, Command::ExportLocalData | Command::DeleteLocalData) {
             return self.say(crate::demo::TOO_OLD);
         }
+        // demo mode: what this Client plays shows in the player (Q156)
+        if let Some(d) = self.demo.as_mut() {
+            d.sent(&c);
+        }
         // A full queue is the connection task being busy, not the Daemon being gone: say the true thing, so a Play or
         // Pause isn't thrown away under a message that sends the user to restart a Daemon that runs fine.
         let sent = match (&self.link, &self.commands) {
